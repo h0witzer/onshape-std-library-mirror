@@ -9,8 +9,9 @@ import(path : "onshape/std/units.fs", version : "2656.0");
 import(path : "onshape/std/valueBounds.fs", version : "2656.0");
 import(path : "onshape/std/curveGeometry.fs", version : "2656.0"); // For bSplineCurve() constructor and BSplineCurve type
 import(path : "onshape/std/error.fs", version : "2656.0"); // For reportFeatureWarning
-
-//import(path : "onshape/std/editCurve.fs", version : "2656.0");
+import(path : "onshape/std/approximationUtils.fs", version : "2656.0");
+import(path : "onshape/std/splineUtils.fs", version : "2656.0");
+import(path : "onshape/std/containers.fs", version : "2656.0");
 
 
 const TWEEN_FRACTION_BOUNDS = { (unitless) : [0, 0.5, 1] } as RealBoundSpec;
@@ -77,22 +78,53 @@ export const tweenTwoCurves = defineFeature(function(context is Context, id is I
         var weights1 = bSpline1.weights; // undefined if not rational
         var weights2_orig = bSpline2.weights; // undefined if not rational
 
-        var autoDecidedFlip = false;
-        try
+        if (bSpline1.isPeriodic && bSpline2.isPeriodic && size(cpList1) == size(cpList2_orig))
         {
-            if (size(cpList1) > 1 && size(cpList2_orig) > 1)
+            const shiftNormal = bestPeriodicShift(cpList1, cpList2_orig);
+            const normalRot = rotateArray(cpList2_orig, -shiftNormal);
+            var normalWeightRot = weights2_orig == undefined ? undefined : rotateArray(weights2_orig, -shiftNormal);
+            const distNormal = sumDistances(cpList1, normalRot);
+
+            const reversed = reverse(cpList2_orig);
+            const shiftRev = bestPeriodicShift(cpList1, reversed);
+            const revRot = rotateArray(reversed, -shiftRev);
+            var revWeightRot = weights2_orig == undefined ? undefined : rotateArray(reverse(weights2_orig), -shiftRev);
+            const distRev = sumDistances(cpList1, revRot);
+
+            if (distRev < distNormal)
             {
-                var vecDir1 = cpList1[size(cpList1) - 1] - cpList1[0];
-                var vecDir2 = cpList2_orig[size(cpList2_orig) - 1] - cpList2_orig[0];
-                var dir1 = normalize(vecDir1);
-                var dir2 = normalize(vecDir2);
-                if (dot(dir1, dir2) < 0)
-                    autoDecidedFlip = true;
+                cpList2_orig = revRot;
+                if (weights2_orig != undefined)
+                    weights2_orig = revWeightRot;
+            }
+            else
+            {
+                cpList2_orig = normalRot;
+                if (weights2_orig != undefined)
+                    weights2_orig = normalWeightRot;
             }
         }
-        catch
-        { /* autoDecidedFlip remains false */
+
+        var autoDecidedFlip = false;
+        if (!(bSpline1.isPeriodic && bSpline2.isPeriodic))
+        {
+            try
+            {
+                if (size(cpList1) > 1 && size(cpList2_orig) > 1)
+                {
+                    var dir1 = normalize(cpList1[1] - cpList1[0]);
+                    var dir2 = normalize(cpList2_orig[1] - cpList2_orig[0]);
+                    if (dot(dir1, dir2) < 0)
+                    {
+                        autoDecidedFlip = true;
+                    }
+                }
+            }
+            catch
+            { /* autoDecidedFlip remains false */
+            }
         }
+
 
         var finalCpList2 = autoDecidedFlip ? reverse(cpList2_orig) : cpList2_orig;
         var finalWeights2 = bSpline2.isRational && autoDecidedFlip ? reverse(weights2_orig) : weights2_orig;
@@ -158,46 +190,6 @@ export const tweenTwoCurves = defineFeature(function(context is Context, id is I
 //==================================================================
 //======================== Input Processing ========================
 //==================================================================
-
-function inputCanBeModified(context is Context, wire is Query) returns boolean
-{
-    const allBodiesQuery = qOwnerBody(wire);
-    const allBodiesEdgesQuery = qOwnedByBody(allBodiesQuery, EntityType.EDGE);
-    const edgesQuery = qEntityFilter(wire, EntityType.EDGE);
-    const bodiesQuery = qEntityFilter(wire, EntityType.BODY);
-    const bodiesEdgesQuery = qOwnedByBody(bodiesQuery, EntityType.EDGE);
-    const allEdgesQuery = qUnion([edgesQuery, bodiesEdgesQuery]);
-    const nonModifiableSelections = qSubtraction(wire, qModifiableEntityFilter(wire));
-
-    // We can only use the raw input if:
-    // - all the inputs come from a single body,
-    // - all the edges of said body have been selected,
-    // - the body is a wire,
-    // - the body is not a sketch body.
-    // - all the selections are not from in-context entities
-
-    const singleBody = size(evaluateQuery(context, allBodiesQuery)) == 1;
-    const allEdgesSelected = size(evaluateQuery(context, allBodiesEdgesQuery)) == size(evaluateQuery(context, allEdgesQuery));
-    const isWireBody = !isQueryEmpty(context, qBodyType(allBodiesQuery, BodyType.WIRE));
-    const isNotSketchBody = isQueryEmpty(context, qSketchFilter(allBodiesQuery, SketchObject.YES));
-    const allEdgesNotInContext = isQueryEmpty(context, nonModifiableSelections);
-
-    return singleBody && allEdgesSelected && isWireBody && isNotSketchBody && allEdgesNotInContext;
-}
-
-function getQueryToReplace(context is Context, id is Id, definition is map) returns Query
-{
-    if (inputCanBeModified(context, definition))
-    {
-        return definition;
-    }
-
-    opExtractWires(context, id + "opExtractWires", {
-                "edges" : getAllEdgesQuery(definition)
-            });
-
-    return qCreatedBy(id + "opExtractWires", EntityType.BODY);
-}
 
 function checkBSpline(bspline is BSplineCurve, wire is Query)
 {
@@ -290,19 +282,6 @@ function cleanUpPeriodicBSplineDefinition(bspline is map) returns map
 //==================================================================
 //=========================== Elevation ============================
 //==================================================================
-
-function elevate(context is Context, id is Id, bspline is map, targetDegree is number) returns map
-{
-    if (bspline.degree >= targetDegree)
-    {
-        reportFeatureInfo(context, id, "Curve degree is already equal or above elevation target degree.");
-    }
-    else
-    {
-        bspline = elevateDegree(bspline, targetDegree);
-    }
-    return bspline;
-}
 
 function subdivideIntoBeziers(points is array, knots is array, curveDegree is number) returns array
 {
@@ -507,82 +486,43 @@ function matchCPCount(context is Context, bspline is map, targetCount is number)
 //=========================== Utilities ============================
 //==================================================================
 
-// Returns {} if there's an issue, otherwise the bspline
-function computeBSplineBeforeEdit(context is Context, definition is map) returns map
-{
-    if (isQueryEmpty(context, definition))
-    {
-        return {};
-    }
-    // If getBSplineFromInput throws, we it means that either we need to reapproximate the curve,
-    // or the approximation parameters are wrong.
-    // In both cases, it's fine to just set the new weight to 1.
-    var bspline;
-    try
-    {
-        bspline = getBSplineFromInput(context, definition);
-    }
-    catch
-    {
-        return {};
-    }
-    if (definition.elevate && bspline.degree < definition.elevationDegree)
-    {
-        bspline = elevateDegree(bspline, definition.elevationDegree);
-    }
-    return bspline;
-}
-
 function isBezier(points is array, curveDegree is number, knots is array) returns boolean
 {
     return size(points) == curveDegree + 1 && knots[0] == 0;
 }
 
-function computeSpans(bspline is map) returns number
-{
-    var spans = 1;
-    for (var i = bspline.degree + 1; i < size(bspline.knots) - (bspline.degree + 1); i += 1)
-    {
-        if (bspline.knots[i] != bspline.knots[i - 1])
-        {
-            spans += 1;
-        }
-    }
-    return spans;
-}
-
-function showPolyline(context is Context, bspline is map)
-{
-    for (var i = 0; i < size(bspline.controlPoints) - 1; i += 1)
-    {
-        if (tolerantEquals(bspline.controlPoints[i], bspline.controlPoints[i + 1]))
-        {
-            continue;
-        }
-        addDebugLine(context, bspline.controlPoints[i], bspline.controlPoints[i + 1], DebugColor.MAGENTA);
-    }
-    if (bspline.isPeriodic && !firstAndLastCPShouldOverlap(bspline))
-    {
-        addDebugLine(context, bspline.controlPoints[size(bspline.controlPoints) - 1], bspline.controlPoints[0], DebugColor.MAGENTA);
-    }
-}
-
-function updateCurveData(context is Context, id is Id, bspline is map)
-{
-    const spans = computeSpans(bspline);
-    const numCP = size(bspline.controlPoints);
-
-    setFeatureComputedParameter(context, id, { "name" : "curveDegree", "value" : bspline.degree });
-    setFeatureComputedParameter(context, id, { "name" : "curveNumCPs", "value" : numCP });
-    setFeatureComputedParameter(context, id, { "name" : "curveNumSpans", "value" : spans });
-}
 
 function getAllEdgesQuery(query is Query) returns Query
 {
     return qUnion([qEntityFilter(query, EntityType.EDGE), qEntityFilter(query, EntityType.BODY)->qOwnedByBody(EntityType.EDGE)]);
 }
 
-function firstAndLastCPShouldOverlap(bspline is map) returns boolean
+// Compute the sum of point distances between two control point arrays
+function sumDistances(points1 is array, points2 is array) returns ValueWithUnits
 {
-    return bspline.isPeriodic && bspline.knots[0] == 0;
+    var total = 0*meter;
+    for (var i = 0; i < size(points1); i += 1)
+    {
+        total += norm(points1[i] - points2[i]);
+    }
+    return total;
+}
+
+// Find the rotation of `candidate` that best matches `reference`
+function bestPeriodicShift(reference is array, candidate is array) returns number
+{
+    const n = size(reference);
+    var bestShift = 0;
+    var bestDistance = 1e30*meter;
+    for (var shift = 0; shift < n; shift += 1)
+    {
+        const rotated = rotateArray(candidate, -shift);
+        const distance = sumDistances(reference, rotated);
+        if (distance < bestDistance)
+        {
+            bestDistance = distance;
+            bestShift = shift;
+        }
+    }
+    return bestShift;
 }
