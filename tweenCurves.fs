@@ -57,6 +57,20 @@ export const tweenTwoCurves = defineFeature(function(context is Context, id is I
             }
         }
 
+        // === CONTROL POINT COUNT MATCHING ===
+        if (size(bSpline1.controlPoints) != size(bSpline2.controlPoints))
+        {
+            const targetCount = max(size(bSpline1.controlPoints), size(bSpline2.controlPoints));
+            if (size(bSpline1.controlPoints) < targetCount)
+            {
+                bSpline1 = matchCPCount(context, bSpline1, targetCount);
+            }
+            if (size(bSpline2.controlPoints) < targetCount)
+            {
+                bSpline2 = matchCPCount(context, bSpline2, targetCount);
+            }
+        }
+
 
         var cpList1 = bSpline1.controlPoints;
         var cpList2_orig = bSpline2.controlPoints;
@@ -201,31 +215,6 @@ function getBSplineFromInput(context is Context, definition is map) returns map
 {
     var bspline;
     const edgesQuery = getAllEdgesQuery(definition);
-    // if (definition.approximate)
-    // {
-    //     var path;
-    //     try silent
-    //     {
-    //         path = constructPath(context, edgesQuery, { "tolerance" : 1e-5 * meter }).path;
-    //     }
-    //     catch (error)
-    //     {
-    //         throw regenError(error, ["wire"], definition);
-    //     }
-
-    //     checkApproximationParameters(definition, path);
-
-    //     const approximationTarget = makeApproximationTarget(context, path, definition.keepStartDerivative, definition.keepEndDerivative);
-
-    //     bspline = approximateSpline(context, {
-    //                     "degree" : definition.approximationDegree,
-    //                     "tolerance" : definition.approximationTolerance,
-    //                     "isPeriodic" : path.closed,
-    //                     "targets" : [approximationTarget],
-    //                     "maxControlPoints" : definition.approximationMaxCPs
-    //                 })[0];
-    // }
-    // else
     {
         const edges = evaluateQuery(context, edgesQuery);
         if (size(edges) > 1)
@@ -474,6 +463,42 @@ function elevateBSpline(originalPoints is array, originalKnots is array, origina
     return removeKnots(points, newKnots, newDegree);
 }
 
+// Refine a B-spline so that it has exactly `targetCount` control points.
+// Uses sampling and spline approximation to preserve the original shape.
+function matchCPCount(context is Context, bspline is map, targetCount is number) returns map
+{
+    if (size(bspline.controlPoints) >= targetCount)
+    {
+        // If the curve already has the desired number of points or more,
+        // leave it unchanged.
+        return bspline;
+    }
+
+    const startParam = bspline.knots[bspline.degree];
+    const endParam = bspline.knots[size(bspline.knots) - bspline.degree - 1];
+    var params = [];
+    for (var i = 0; i < targetCount; i += 1)
+    {
+        params = append(params, startParam + (endParam - startParam) * i / (targetCount - 1));
+    }
+    const positions = evaluateSpline({ "spline" : bspline, "parameters" : params })[0];
+    const target = approximationTarget({ 'positions' : positions });
+    var refined = approximateSpline(context, {
+                "degree" : bspline.degree,
+                "tolerance" : 1e-8 * meter,
+                "isPeriodic" : bspline.isPeriodic,
+                "targets" : [target],
+                "parameters" : params,
+                "maxControlPoints" : targetCount
+            })[0];
+
+    if (bspline.isRational && !refined.isRational)
+    {
+        refined.isRational = true;
+        refined.weights = makeArray(size(refined.controlPoints), 1);
+    }
+    return refined;
+}
 
 
 
