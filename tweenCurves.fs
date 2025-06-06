@@ -249,14 +249,40 @@ function getBSplineFromInput(context is Context, definition is map) returns map
         bspline.weights = makeArray(size(bspline.controlPoints), 1);
         bspline.isRational = true;
     }
-    return cleanUpPeriodicBSplineDefinition(bspline);
+    bspline = cleanUpPeriodicBSplineDefinition(bspline);
+    // Ensure knot and control point counts are consistent
+    bspline = bSplineCurve({
+                "degree" : bspline.degree,
+                "isPeriodic" : bspline.isPeriodic,
+                "controlPoints" : bspline.controlPoints,
+                "weights" : bspline.weights,
+                "knots" : bspline.knots
+            });
+    return bspline;
 }
 
 // There are a few ways that periodic NURBS are handled, the can have no overlaps, overlapping knots or onverlapping knots and control points.
 // For our purposes, if a curve has overlapping knots and overlapping control points, we remove the overlapping control points.
 function cleanUpPeriodicBSplineDefinition(bspline is map) returns map
 {
-    if (!bspline.isPeriodic || bspline.knots[0] == 0 || size(bspline.controlPoints) + 2 * bspline.degree + 1 == size(bspline.knots))
+    if (!bspline.isPeriodic)
+    {
+        return bspline;
+    }
+
+    // Normalize counts if knot and control point sizes do not align
+    if (size(bspline.knots) != size(bspline.controlPoints) + bspline.degree + 1)
+    {
+        bspline = bSplineCurve({
+                    "degree" : bspline.degree,
+                    "isPeriodic" : bspline.isPeriodic,
+                    "controlPoints" : bspline.controlPoints,
+                    "weights" : bspline.weights,
+                    "knots" : bspline.knots
+                });
+    }
+
+    if (bspline.knots[0] == 0 || size(bspline.controlPoints) + 2 * bspline.degree + 1 == size(bspline.knots))
     {
         return bspline;
     }
@@ -276,6 +302,13 @@ function cleanUpPeriodicBSplineDefinition(bspline is map) returns map
     {
         bspline.weights = subArray(bspline.weights, 0, lastIndex);
     }
+    bspline = bSplineCurve({
+                "degree" : bspline.degree,
+                "isPeriodic" : bspline.isPeriodic,
+                "controlPoints" : bspline.controlPoints,
+                "weights" : bspline.weights,
+                "knots" : bspline.knots
+            });
     return bspline;
 }
 
@@ -462,14 +495,31 @@ function matchCPCount(context is Context, bspline is map, targetCount is number)
     }
     const positions = evaluateSpline({ "spline" : bspline, "parameters" : params })[0];
     const target = approximationTarget({ 'positions' : positions });
+    var interpIndices = [];
+    for (var i = 0; i < targetCount; i += 1)
+    {
+        interpIndices = append(interpIndices, i);
+    }
     var refined = approximateSpline(context, {
                 "degree" : bspline.degree,
                 "tolerance" : 1e-8 * meter,
                 "isPeriodic" : bspline.isPeriodic,
                 "targets" : [target],
                 "parameters" : params,
-                "maxControlPoints" : targetCount
+                "maxControlPoints" : targetCount,
+                "interpolateIndices" : interpIndices
             })[0];
+    if (size(refined.controlPoints) != targetCount)
+    {
+        refined = bSplineCurve({
+                    "degree" : bspline.degree,
+                    "isPeriodic" : bspline.isPeriodic,
+                    "controlPoints" : positions,
+                    "weights" : bspline.isRational ? makeArray(targetCount, 1) : undefined,
+                    "knots" : makeUniformKnotArray(bspline.degree, targetCount, bspline.isPeriodic)
+                });
+    }
+
 
     if (bspline.isRational && !refined.isRational)
     {
@@ -500,7 +550,7 @@ function getAllEdgesQuery(query is Query) returns Query
 // Compute the sum of point distances between two control point arrays
 function sumDistances(points1 is array, points2 is array) returns ValueWithUnits
 {
-    var total = 0*meter;
+    var total = 0 * meter;
     for (var i = 0; i < size(points1); i += 1)
     {
         total += norm(points1[i] - points2[i]);
@@ -513,7 +563,7 @@ function bestPeriodicShift(reference is array, candidate is array) returns numbe
 {
     const n = size(reference);
     var bestShift = 0;
-    var bestDistance = 1e30*meter;
+    var bestDistance = 1e30 * meter;
     for (var shift = 0; shift < n; shift += 1)
     {
         const rotated = rotateArray(candidate, -shift);
