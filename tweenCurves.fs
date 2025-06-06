@@ -9,14 +9,15 @@ import(path : "onshape/std/units.fs", version : "2656.0");
 import(path : "onshape/std/valueBounds.fs", version : "2656.0");
 import(path : "onshape/std/curveGeometry.fs", version : "2656.0"); // For bSplineCurve() constructor and BSplineCurve type
 import(path : "onshape/std/error.fs", version : "2656.0"); // For reportFeatureWarning
+
 //import(path : "onshape/std/editCurve.fs", version : "2656.0");
 
 
 const TWEEN_FRACTION_BOUNDS = { (unitless) : [0, 0.5, 1] } as RealBoundSpec;
 
-annotation { "Feature Type Name" : "Tween Two Curves (CP Interpolation)", 
-             "Feature Type Description" : "Interpolates B-spline control points. Curves must be compatible or convertible to compatible B-splines (same degree & CP count).",
-             "UIHint" : "NO_PREVIEW_PROVIDED" }
+annotation { "Feature Type Name" : "Tween Two Curves (CP Interpolation)",
+        "Feature Type Description" : "Interpolates B-spline control points. Curves must be compatible or convertible to compatible B-splines (same degree & CP count).",
+        "UIHint" : "NO_PREVIEW_PROVIDED" }
 export const tweenTwoCurves = defineFeature(function(context is Context, id is Id, definition is map)
     precondition
     {
@@ -29,8 +30,10 @@ export const tweenTwoCurves = defineFeature(function(context is Context, id is I
         // definition.numSamples can be removed if no fallback
     }
     {
-        if (evaluateQueryCount(context, definition.curve1) == 0) throw regenError("Select first curve.", ["curve1"]);
-        if (evaluateQueryCount(context, definition.curve2) == 0) throw regenError("Select second curve.", ["curve2"]);
+        if (evaluateQueryCount(context, definition.curve1) == 0)
+            throw regenError("Select first curve.", ["curve1"]);
+        if (evaluateQueryCount(context, definition.curve2) == 0)
+            throw regenError("Select second curve.", ["curve2"]);
 
 
         var bSpline1 = getBSplineFromInput(context, definition.curve1);
@@ -39,37 +42,61 @@ export const tweenTwoCurves = defineFeature(function(context is Context, id is I
         if (bSpline1 == undefined || bSpline2 == undefined)
             throw regenError("Could not get B-spline representation for input curves.");
 
+        // === DEGREE MATCHING ===
+        // Elevate the lower degree curve so both have the same degree
+        if (bSpline1.degree != bSpline2.degree)
+        {
+            const targetDegree = max(bSpline1.degree, bSpline2.degree);
+            if (bSpline1.degree < targetDegree)
+            {
+                bSpline1 = elevateDegree(bSpline1, targetDegree);
+            }
+            if (bSpline2.degree < targetDegree)
+            {
+                bSpline2 = elevateDegree(bSpline2, targetDegree);
+            }
+        }
+
+
         var cpList1 = bSpline1.controlPoints;
         var cpList2_orig = bSpline2.controlPoints;
         var weights1 = bSpline1.weights; // undefined if not rational
         var weights2_orig = bSpline2.weights; // undefined if not rational
 
         var autoDecidedFlip = false;
-        try 
+        try
         {
-            if (size(cpList1) > 1 && size(cpList2_orig) > 1) {
+            if (size(cpList1) > 1 && size(cpList2_orig) > 1)
+            {
                 var vecDir1 = cpList1[size(cpList1) - 1] - cpList1[0];
                 var vecDir2 = cpList2_orig[size(cpList2_orig) - 1] - cpList2_orig[0];
                 var dir1 = normalize(vecDir1);
                 var dir2 = normalize(vecDir2);
-                if (dot(dir1, dir2) < 0) autoDecidedFlip = true;
+                if (dot(dir1, dir2) < 0)
+                    autoDecidedFlip = true;
             }
-        } catch { /* autoDecidedFlip remains false */ }
+        }
+        catch
+        { /* autoDecidedFlip remains false */
+        }
 
         var finalCpList2 = autoDecidedFlip ? reverse(cpList2_orig) : cpList2_orig;
         var finalWeights2 = bSpline2.isRational && autoDecidedFlip ? reverse(weights2_orig) : weights2_orig;
 
         // === COMPATIBILITY CHECK ===
-        // Degree Check (Cannot elevate with current stdlib utilities for general B-splines)
-        if (bSpline1.degree != bSpline2.degree) {
-            throw regenError("Curves have different B-spline degrees (" ~ bSpline1.degree ~ " vs " ~ bSpline2.degree ~ "). Degree matching is not auto-implemented. Please use curves of same degree or enable point sampling fallback.", ["curve1", "curve2"]);
+        // Sanity check: degrees should match after elevation step
+        if (bSpline1.degree != bSpline2.degree)
+        {
+            throw regenError("Failed to match curve degrees after elevation.", ["curve1", "curve2"]);
         }
         // CP Count Check (Cannot "elevate" CP count with current stdlib utilities)
-        if (size(cpList1) != size(finalCpList2)) {
+        if (size(cpList1) != size(finalCpList2))
+        {
             throw regenError("Curves have different B-spline control point counts (" ~ size(cpList1) ~ " vs " ~ size(finalCpList2) ~ "). CP count matching is not auto-implemented. Please use curves with same CP count or enable point sampling fallback.", ["curve1", "curve2"]);
         }
         // Rationality Check
-        if (bSpline1.isRational != bSpline2.isRational) {
+        if (bSpline1.isRational != bSpline2.isRational)
+        {
             // Ideally, make both rational if one is. For now, error if different.
             throw regenError("Curves have different rationality. Both must be rational or non-rational.", ["curve1", "curve2"]);
         }
@@ -79,34 +106,37 @@ export const tweenTwoCurves = defineFeature(function(context is Context, id is I
         var tweenedWeights = bSpline1.isRational ? [] : undefined;
         const fraction = definition.fraction;
 
-        for (var i = 0; i < size(cpList1); i += 1) {
+        for (var i = 0; i < size(cpList1); i += 1)
+        {
             tweenedCps = append(tweenedCps, cpList1[i] * (1 - fraction) + finalCpList2[i] * fraction);
-            if (bSpline1.isRational) {
+            if (bSpline1.isRational)
+            {
                 tweenedWeights = append(tweenedWeights, weights1[i] * (1 - fraction) + finalWeights2[i] * fraction);
             }
         }
-        
+
         // Assume periodicity matches if degrees and CP counts do; otherwise, could be complex.
         // Simplification: take periodicity from first curve, or ensure both match.
         var isPeriodicTween = bSpline1.isPeriodic;
-        if (bSpline1.isPeriodic != bSpline2.isPeriodic) {
-             reportFeatureWarning(context, id, "Curves have different periodicity; tweened curve will adopt periodicity of the first curve.");
-             // Or could throw an error if strict matching is required for periodicity too.
+        if (bSpline1.isPeriodic != bSpline2.isPeriodic)
+        {
+            reportFeatureWarning(context, id, "Curves have different periodicity; tweened curve will adopt periodicity of the first curve.");
+            // Or could throw an error if strict matching is required for periodicity too.
         }
 
 
         var newBSplineDef = bSplineCurve({
-            "degree" : bSpline1.degree,
-            "controlPoints" : tweenedCps,
-            "isPeriodic" : isPeriodicTween, 
-            "isRational" : bSpline1.isRational,
-            "weights" : tweenedWeights
-            // Knots will be defaulted by bSplineCurve()
-        });
+                "degree" : bSpline1.degree,
+                "controlPoints" : tweenedCps,
+                "isPeriodic" : isPeriodicTween,
+                "isRational" : bSpline1.isRational,
+                "weights" : tweenedWeights
+                // Knots will be defaulted by bSplineCurve()
+            });
         opCreateBSplineCurve(context, id + "tweenedCpSpline", { "bSplineCurve" : newBSplineDef });
     });
-    
-    
+
+
 //==================================================================
 //=================== Stealing from editCurve ======================
 //==================================================================
