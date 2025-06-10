@@ -14,13 +14,6 @@ import(path : "onshape/std/valueBounds.fs", version : "2679.0");
 import(path : "onshape/std/math.fs", version : "2679.0");
 
 
-const CACHE_VERSION_BOUNDS =
-{
-            (unitless) : [0, 0, 1e6]
-        } as IntegerBoundSpec;
-
-
-
 /**
  * Perform Delaunay triangulation of a planar face and output the triangles as a sketch.
  */
@@ -35,8 +28,6 @@ export const delaunayTriangulation = defineFeature(function(context is Context, 
         isLength(definition.edgeResolution, NONNEGATIVE_LENGTH_BOUNDS);
         annotation { "UIHint" : UIHint.ALWAYS_HIDDEN }
         isAnything(definition.cachedTriangulation);
-        annotation { "UIHint" : UIHint.ALWAYS_HIDDEN }
-        isInteger(definition.cacheVersion, CACHE_VERSION_BOUNDS);
         annotation { "Name" : "Refresh cache" }
         isButton(definition.refreshCache);
     }
@@ -270,12 +261,8 @@ function collectFaceSamples(context is Context, faceQuery is Query, plane is Pla
  * Editing logic function that precomputes triangulation data for faster regeneration.
  */
 export function delaunayTriangulationEditLogic(context is Context, id is Id,
-    oldDefinition is map, definition is map, clickedButton is string) returns map
+    oldDefinition is map, definition is map, isCreating is boolean, clickedButton is string) returns map
 {
-    // if (definition.cacheVersion == undefined)
-    // {
-    //     definition.cacheVersion = 0;
-    // }
 
     if (definition.cachedTriangulation != undefined && clickedButton != "refreshCache" &&
         oldDefinition != {} &&
@@ -303,6 +290,5 @@ export function delaunayTriangulationEditLogic(context is Context, id is Id,
 
     definition.cachedTriangulation =
         { "points" : sample.points, "pairs" : sample.pairs, "triangles" : triangles };
-    //definition.cacheVersion += 1;
     return definition;
 }
