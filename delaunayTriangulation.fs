@@ -16,7 +16,8 @@ import(path : "onshape/std/math.fs", version : "2679.0");
 /**
  * Perform Delaunay triangulation of a planar face and output the triangles as a sketch.
  */
-annotation { "Feature Type Name" : "Delaunay triangulation" }
+annotation { "Feature Type Name" : "Delaunay triangulation",
+            "Editing Logic Function" : "delaunayTriangulationEditLogic" }
 export const delaunayTriangulation = defineFeature(function(context is Context, id is Id, definition is map)
     precondition
     {
@@ -24,6 +25,8 @@ export const delaunayTriangulation = defineFeature(function(context is Context, 
         definition.face is Query;
         annotation { "Name" : "Edge resolution", "Default" : 5 * millimeter }
         isLength(definition.edgeResolution, NONNEGATIVE_LENGTH_BOUNDS);
+        annotation { "UIHint" : UIHint.ALWAYS_HIDDEN }
+        definition.cachedTriangulation is map;
     }
     {
         if (isQueryEmpty(context, definition.face))
@@ -38,16 +41,30 @@ export const delaunayTriangulation = defineFeature(function(context is Context, 
         }
         const facePlane = surfaceInfo as Plane;
 
-        const sample = collectFaceSamples(context, definition.face, facePlane,
-            definition.edgeResolution);
-        const points2D = sample.points;
-        const boundaryPairs = sample.pairs;
-        if (size(points2D) < 3)
+        var sample;
+        var points2D;
+        var boundaryPairs;
+        var triangles;
+        if (definition.cachedTriangulation != undefined)
         {
-            throw regenError("Need at least three sample points on face", ["face"]);
+            sample = definition.cachedTriangulation;
+            points2D = sample.points;
+            boundaryPairs = sample.pairs;
+            triangles = sample.triangles;
         }
+        else
+        {
+            sample = collectFaceSamples(context, definition.face, facePlane,
+                definition.edgeResolution);
+            points2D = sample.points;
+            boundaryPairs = sample.pairs;
+            if (size(points2D) < 3)
+            {
+                throw regenError("Need at least three sample points on face", ["face"]);
+            }
 
-        const triangles = delaunayTriangulate(points2D);
+            triangles = delaunayTriangulate(points2D);
+        }
 
         var boundarySet = {} as map;
         for (var pair in boundaryPairs)
@@ -234,4 +251,32 @@ function collectFaceSamples(context is Context, faceQuery is Query, plane is Pla
         }
     }
     return { "points" : points, "pairs" : boundaryPairs };
+}
+
+/**
+ * @internal
+ * Editing logic function that precomputes triangulation data for faster regeneration.
+ */
+export function delaunayTriangulationEditLogic(context is Context, id is Id,
+        oldDefinition is map, definition is map) returns map
+{
+    if (isQueryEmpty(context, definition.face))
+    {
+        return definition;
+    }
+
+    const surfaceInfo = evSurfaceDefinition(context, { "face" : definition.face });
+    if (!(surfaceInfo is Plane))
+    {
+        return definition;
+    }
+    const facePlane = surfaceInfo as Plane;
+
+    const sample = collectFaceSamples(context, definition.face, facePlane,
+            definition.edgeResolution);
+    const triangles = (size(sample.points) < 3) ? [] : delaunayTriangulate(sample.points);
+
+    definition.cachedTriangulation =
+            { "points" : sample.points, "pairs" : sample.pairs, "triangles" : triangles };
+    return definition;
 }
