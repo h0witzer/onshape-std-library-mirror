@@ -1,17 +1,17 @@
-FeatureScript 2679;
-import(path : "onshape/std/common.fs", version : "2679.0");
+FeatureScript ✨; /* Automatically generated version */
+import(path : "onshape/std/common.fs", version : "✨");
 
-import(path : "onshape/std/feature.fs", version :"2679.0");
-import(path : "onshape/std/sketch.fs", version : "2679.0");
-import(path : "onshape/std/query.fs", version : "2679.0");
-import(path : "onshape/std/evaluate.fs", version : "2679.0");
-import(path : "onshape/std/vector.fs", version : "2679.0");
-import(path : "onshape/std/containers.fs", version : "2679.0");
-import(path : "onshape/std/surfacetype.gen.fs", version : "2679.0");
-import(path : "onshape/std/surfaceGeometry.fs", version : "2679.0");
-import(path : "onshape/std/units.fs", version : "2679.0");
-import(path : "onshape/std/valueBounds.fs", version : "2679.0");
-import(path : "onshape/std/math.fs", version : "2679.0");
+import(path : "onshape/std/feature.fs", version : "✨");
+import(path : "onshape/std/sketch.fs", version : "✨");
+import(path : "onshape/std/query.fs", version : "✨");
+import(path : "onshape/std/evaluate.fs", version : "✨");
+import(path : "onshape/std/vector.fs", version : "✨");
+import(path : "onshape/std/containers.fs", version : "✨");
+import(path : "onshape/std/surfacetype.gen.fs", version : "✨");
+import(path : "onshape/std/surfaceGeometry.fs", version : "✨");
+import(path : "onshape/std/units.fs", version : "✨");
+import(path : "onshape/std/valueBounds.fs", version : "✨");
+import(path : "onshape/std/math.fs", version : "✨");
 
 /**
  * Perform Delaunay triangulation of a planar face and output the triangles as a sketch.
@@ -121,7 +121,7 @@ function delaunayTriangulate(points is array) returns array
 
     for (var idx = 0; idx < count; idx += 1)
     {
-        var edges = [];
+        var edges = {} as map;
         const point = pts[idx];
 
         for (var t = size(triangles) - 1; t >= 0; t -= 1)
@@ -133,15 +133,17 @@ function delaunayTriangulate(points is array) returns array
             if (squaredNorm(point - circle.center) < circle.radius * circle.radius)
             {
                 triangles = removeElementAt(triangles, t);
-                edges = addEdge(edges, tri.i, tri.j);
-                edges = addEdge(edges, tri.j, tri.k);
-                edges = addEdge(edges, tri.k, tri.i);
+                edges = addEdgeMap(edges, tri.i, tri.j);
+                edges = addEdgeMap(edges, tri.j, tri.k);
+                edges = addEdgeMap(edges, tri.k, tri.i);
             }
         }
-
-        for (var edge in edges)
+        for (var key, edge in edges)
         {
-            triangles = append(triangles, { "i" : edge.a, "j" : edge.b, "k" : idx });
+            if (edge != undefined)
+            {
+                triangles = append(triangles, { "i" : edge.a, "j" : edge.b, "k" : idx });
+            }
         }
     }
 
@@ -156,18 +158,18 @@ function delaunayTriangulate(points is array) returns array
     return result;
 }
 
-function addEdge(edgeList is array, a is number, b is number) returns array
+function addEdgeMap(edgeMap is map, a is number, b is number) returns map
 {
-    for (var i = 0; i < size(edgeList); i += 1)
+    const key = a < b ? toString(a) ~ "-" ~ toString(b) : toString(b) ~ "-" ~ toString(a);
+    if (edgeMap[key] != undefined)
     {
-        if (edgeList[i].a == b && edgeList[i].b == a)
-        {
-            edgeList = removeElementAt(edgeList, i);
-            return edgeList;
-        }
+        edgeMap[key] = undefined; // remove if opposite already exists
     }
-    edgeList = append(edgeList, { "a" : a, "b" : b });
-    return edgeList;
+    else
+    {
+        edgeMap[key] = { "a" : a, "b" : b };
+    }
+    return edgeMap;
 }
 
 function circumcenter(p1 is Vector, p2 is Vector, p3 is Vector) returns map
@@ -186,20 +188,9 @@ function circumcenter(p1 is Vector, p2 is Vector, p3 is Vector) returns map
 function triangleInsideFace(context is Context, faceQuery is Query, facePlane is Plane,
                             p1 is Vector, p2 is Vector, p3 is Vector) returns boolean
 {
-    var testPoints = [ (p1 + p2 + p3) / 3,
-                       (p1 + p2) / 2,
-                       (p2 + p3) / 2,
-                       (p3 + p1) / 2 ];
-
-    for (var test in testPoints)
-    {
-        const worldPoint = planeToWorld(facePlane, test);
-        if (isQueryEmpty(context, qContainsPoint(faceQuery, worldPoint)))
-        {
-            return false;
-        }
-    }
-    return true;
+    const centroid = (p1 + p2 + p3) / 3;
+    const worldPoint = planeToWorld(facePlane, centroid);
+    return !isQueryEmpty(context, qContainsPoint(faceQuery, worldPoint));
 }
 
 // Sample the boundary of a face for triangulation.
