@@ -8,6 +8,7 @@ import(path : "onshape/std/math.fs", version : "2679.0");
 import(path : "onshape/std/valueBounds.fs", version : "2679.0");
 import(path : "onshape/std/error.fs", version : "2679.0");
 import(path : "onshape/std/errorstringenum.gen.fs", version : "2679.0");
+import(path : "onshape/std/string.fs", version : "2679.0");
 
 export type TangentArc typecheck isTangentArc;
 
@@ -21,9 +22,20 @@ export predicate isTangentArc(value)
     value.normal is Vector;
 }
 
+// Toggle diagnostic logging for this feature. Set to `true` to emit debug
+// output via the `println` function.
+const ENABLE_DEBUG_LOGS = true;
+
+function logDebug(msg)
+{
+    if (ENABLE_DEBUG_LOGS)
+        println(msg);
+}
+
+
 annotation { "Feature Type Name" : "Spline to minimal tangent arcs",
         "Editing Logic Function" : "splineToMinimalTangentArcsEditLogic",
-        "Description" : "Custom feature for approximating a spline with tangent arcs"}
+        "Description" : "Custom feature for approximating a spline with tangent arcs" }
 export const splineToMinimalTangentArcs = defineFeature(function(context is Context, id is Id, definition is map)
     precondition
     {
@@ -77,43 +89,61 @@ function lineIntersection(p0 is Vector, v0 is Vector, p1 is Vector, v1 is Vector
     return (psc + ptc) / 2;
 }
 
-function circleFromPointTangentEnd(p0 is Vector, t0 is Vector, p1 is Vector) returns map
+// Performs the raw circle construction without any error handling.
+// This mirrors the approach used in the Standard Library.
+function circleFromPointTangentEndInternal(p0 is Vector, t0 is Vector, p1 is Vector) returns map
 {
-    if (norm(t0) <= TOLERANCE.zeroLength * meter)
-        return undefined;
-
+    logDebug("circleFromPointTangentEndInternal: p0=" ~ toString(p0) ~
+            " t0=" ~ toString(t0) ~ " p1=" ~ toString(p1));
     t0 = normalize(t0);
     const d = p1 - p0;
-    if (norm(d) <= TOLERANCE.zeroLength * meter)
-        return undefined;
 
     const n = cross(t0, d);
-
-    if (norm(n) <= TOLERANCE.zeroLength * meter)
-        return undefined;
-
-    const uVec = cross(n, t0);
-    if (norm(uVec) <= TOLERANCE.zeroLength * meter)
-        return undefined;
-    const u = normalize(uVec);
-
+    const u = normalize(cross(n, t0));
     const denom = dot(d, u);
-
-    if (abs(denom) <= TOLERANCE.zeroLength * meter)
-        return undefined;
-
     const r = dot(d, d) / (2 * denom);
-    if (r != r)
-        return undefined;
-
     const center = p0 + u * r;
+    logDebug("circleFromPointTangentEndInternal result center=" ~ toString(center)
+            ~ " radius=" ~ toString(abs(r)));
     return { 'center' : center, 'radius' : abs(r), 'normal' : normalize(n) };
+
 }
+
+function circleFromPointTangentEnd(p0 is Vector, t0 is Vector, p1 is Vector) returns map
+{
+    // Attempt the nominal construction and catch any errors from degenerate
+    // input.  When it fails, fall back to a very large-radius arc that behaves
+    // like a straight segment.
+    const result = try(circleFromPointTangentEndInternal(p0, t0, p1));
+    if (result != undefined)
+    {
+        logDebug("circleFromPointTangentEnd: normal case");
+        return result;
+    }
+
+    logDebug("circleFromPointTangentEnd: fallback path");
+
+    // Choose a plane roughly orthogonal to the tangent for the fallback arc.
+    const axis = norm(cross(t0, Z_DIRECTION)) > TOLERANCE.zeroLength * meter
+        ? Z_DIRECTION
+        : X_DIRECTION;
+    const fallbackNormal = normalize(cross(t0, axis));
+    const u = cross(fallbackNormal, t0);
+    const r = 1e8 * meter;
+    logDebug("circleFromPointTangentEnd fallback radius=" ~ toString(r));
+    return { 'center' : p0 + u * r,
+            'radius' : r,
+            'normal' : fallbackNormal };
+}
+
+
+
 
 function positionOnArc(arc is TangentArc, fraction is number) returns Vector
 precondition
 {
-    fraction >= 0; fraction <= 1;
+    fraction >= 0;
+    fraction <= 1;
 }
 {
     const radiusVec = arc.start - arc.center;
@@ -132,6 +162,7 @@ function evaluatePosTan(bspline is BSplineCurve, parameter is number) returns ma
 
 function computeBiarc(bspline is BSplineCurve, t0 is number, t1 is number) returns array
 {
+    logDebug("computeBiarc t0=" ~ toString(t0) ~ " t1=" ~ toString(t1));
     const start = evaluatePosTan(bspline, t0);
     const end = evaluatePosTan(bspline, t1);
     var startTan = start.tan;
@@ -145,13 +176,17 @@ function computeBiarc(bspline is BSplineCurve, t0 is number, t1 is number) retur
     var q = lineIntersection(start.pos, startTan, end.pos, -endTan);
     if (q == undefined)
         q = (start.pos + end.pos) / 2;
+    logDebug("computeBiarc intersection q=" ~ toString(q));
     const arc1 = circleFromPointTangentEnd(start.pos, startTan, q);
     const arc2 = circleFromPointTangentEnd(end.pos, -endTan, q);
+    logDebug("computeBiarc arc1=" ~ toString(arc1));
+    logDebug("computeBiarc arc2=" ~ toString(arc2));
     var arcs = [];
     if (arc1 != undefined)
         arcs = append(arcs, { 'start' : start.pos, 'end' : q, 'center' : arc1.center, 'radius' : arc1.radius, 'normal' : arc1.normal } as TangentArc);
     if (arc2 != undefined)
         arcs = append(arcs, { 'start' : q, 'end' : end.pos, 'center' : arc2.center, 'radius' : arc2.radius, 'normal' : arc2.normal } as TangentArc);
+    logDebug("computeBiarc arcs size=" ~ toString(size(arcs)));
     return arcs;
 }
 
@@ -179,14 +214,17 @@ function deviationFromBiarc(bspline is BSplineCurve, t0 is number, t1 is number,
 
 function approximateSegment(bspline is BSplineCurve, t0 is number, t1 is number, tolerance is ValueWithUnits, depth is number) returns array
 {
+    logDebug("approximateSegment t0=" ~ toString(t0) ~ " t1=" ~ toString(t1) ~ " depth=" ~ toString(depth));
     const arcs = computeBiarc(bspline, t0, t1);
     if (size(arcs) == 0)
         return [];
 
     const dev = deviationFromBiarc(bspline, t0, t1, arcs);
+    logDebug("approximateSegment deviation=" ~ toString(dev));
     if (dev > tolerance && depth < 10)
     {
         const mid = (t0 + t1) / 2;
+        logDebug("approximateSegment recurse mid=" ~ toString(mid));
         return approximateSegment(bspline, t0, mid, tolerance, depth + 1) ~ approximateSegment(bspline, mid, t1, tolerance, depth + 1);
     }
     return arcs;
@@ -217,6 +255,7 @@ function arcToBSpline(start is Vector, end is Vector, center is Vector, normal i
 
 export function splineToMinimalTangentArcsEditLogic(context is Context, id is Id, oldDefinition is map, definition is map, isCreating is boolean, clickedButton is string) returns map
 {
+    logDebug("splineToMinimalTangentArcsEditLogic invoked");
     if (definition.cachedArcs != undefined && clickedButton != "refine" &&
         oldDefinition != {} &&
         definition.edge == oldDefinition.edge &&
@@ -237,6 +276,7 @@ export function splineToMinimalTangentArcsEditLogic(context is Context, id is Id
         return definition;
 
     const arcs = splineToMinimalArcs(bspline, definition.tolerance);
+    logDebug("splineToMinimalTangentArcsEditLogic produced " ~ toString(size(arcs)) ~ " arcs");
     definition.cachedArcs = arcs;
     return definition;
 }
