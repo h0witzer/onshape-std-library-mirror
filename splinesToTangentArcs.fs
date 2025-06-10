@@ -79,31 +79,32 @@ function lineIntersection(p0 is Vector, v0 is Vector, p1 is Vector, v1 is Vector
 
 function circleFromPointTangentEnd(p0 is Vector, t0 is Vector, p1 is Vector) returns map
 {
-    // if (norm(t0) <= TOLERANCE.zeroLength * meter)
-    //     return undefined;
+    if (norm(t0) <= TOLERANCE.zeroLength * meter)
+        return undefined;
 
     t0 = normalize(t0);
     const d = p1 - p0;
-    // if (norm(d) <= TOLERANCE.zeroLength * meter)
-    //     return undefined;
+    if (norm(d) <= TOLERANCE.zeroLength * meter)
+        return undefined;
 
     const n = cross(t0, d);
-    // if (norm(n) <= TOLERANCE.zeroLength * meter ^ 2)
-    //     return undefined;
+
+    if (norm(n) <= TOLERANCE.zeroLength * meter)
+        return undefined;
 
     const uVec = cross(n, t0);
-    // if (norm(uVec) <= TOLERANCE.zeroLength * meter ^ 2)
-    //     return undefined;
-    println(uVec);
+    if (norm(uVec) <= TOLERANCE.zeroLength * meter)
+        return undefined;
     const u = normalize(uVec);
 
     const denom = dot(d, u);
-    // if (abs(denom) <= TOLERANCE.zeroLength * meter)
-    //     return undefined;
+
+    if (abs(denom) <= TOLERANCE.zeroLength * meter)
+        return undefined;
 
     const r = dot(d, d) / (2 * denom);
-    // if (r != r)
-    //     return undefined;
+    if (r != r)
+        return undefined;
 
     const center = p0 + u * r;
     return { 'center' : center, 'radius' : abs(r), 'normal' : normalize(n) };
