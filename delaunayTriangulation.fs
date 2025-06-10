@@ -1,0 +1,249 @@
+FeatureScript 2679;
+import(path : "onshape/std/common.fs", version : "2679.0");
+
+import(path : "onshape/std/feature.fs", version :"2679.0");
+import(path : "onshape/std/sketch.fs", version : "2679.0");
+import(path : "onshape/std/query.fs", version : "2679.0");
+import(path : "onshape/std/evaluate.fs", version : "2679.0");
+import(path : "onshape/std/vector.fs", version : "2679.0");
+import(path : "onshape/std/containers.fs", version : "2679.0");
+import(path : "onshape/std/surfacetype.gen.fs", version : "2679.0");
+import(path : "onshape/std/surfaceGeometry.fs", version : "2679.0");
+import(path : "onshape/std/units.fs", version : "2679.0");
+import(path : "onshape/std/valueBounds.fs", version : "2679.0");
+import(path : "onshape/std/math.fs", version : "2679.0");
+
+/**
+ * Perform Delaunay triangulation of a planar face and output the triangles as a sketch.
+ */
+annotation { "Feature Type Name" : "Delaunay triangulation" }
+export const delaunayTriangulation = defineFeature(function(context is Context, id is Id, definition is map)
+    precondition
+    {
+        annotation { "Name" : "Face", "Filter" : EntityType.FACE && GeometryType.PLANE && SketchObject.NO, "MaxNumberOfPicks" : 1 }
+        definition.face is Query;
+        annotation { "Name" : "Edge resolution", "Default" : 5 * millimeter }
+        isLength(definition.edgeResolution, NONNEGATIVE_LENGTH_BOUNDS);
+    }
+    {
+        if (isQueryEmpty(context, definition.face))
+        {
+            throw regenError(ErrorStringEnum.CANNOT_RESOLVE_ENTITIES, ["face"]);
+        }
+
+        const surfaceInfo = evSurfaceDefinition(context, { "face" : definition.face });
+        if (!(surfaceInfo is Plane))
+        {
+            throw regenError("Selected face must be planar", ["face"]);
+        }
+        const facePlane = surfaceInfo as Plane;
+
+        const sample = collectFaceSamples(context, definition.face, facePlane,
+                                           definition.edgeResolution);
+        const points2D = sample.points;
+        const boundaryPairs = sample.pairs;
+        if (size(points2D) < 3)
+        {
+            throw regenError("Need at least three sample points on face", ["face"]);
+        }
+
+        const triangles = delaunayTriangulate(points2D);
+
+        var boundarySet = {} as map;
+        for (var pair in boundaryPairs)
+        {
+            const key = pair.a < pair.b ?
+                        toString(pair.a) ~ "-" ~ toString(pair.b) :
+                        toString(pair.b) ~ "-" ~ toString(pair.a);
+            boundarySet[key] = true;
+        }
+
+        var sketch = newSketchOnPlane(context, id + "_sketch", { "sketchPlane" : facePlane });
+        var lineIndex = 0;
+        for (var tri in triangles)
+        {
+            const triIndices = [ tri.i, tri.j, tri.k ];
+            const trianglePoints = [ points2D[tri.i], points2D[tri.j], points2D[tri.k] ];
+
+            const inside = triangleInsideFace(context, definition.face, facePlane,
+                                              trianglePoints[0], trianglePoints[1], trianglePoints[2]);
+
+            for (var edgeIdx = 0; edgeIdx < 3; edgeIdx += 1)
+            {
+                const startIndex = triIndices[edgeIdx];
+                const endIndex = triIndices[(edgeIdx + 1) % 3];
+                const startPoint = points2D[startIndex];
+                const endPoint = points2D[endIndex];
+                const key = startIndex < endIndex ?
+                            toString(startIndex) ~ "-" ~ toString(endIndex) :
+                            toString(endIndex) ~ "-" ~ toString(startIndex);
+                if (inside || (boundarySet[key] == true))
+                {
+                    skLineSegment(sketch, "line" ~ lineIndex,
+                                  { "start" : startPoint, "end" : endPoint });
+                    lineIndex += 1;
+                }
+            }
+        }
+        skSolve(sketch);
+    }, { });
+
+function delaunayTriangulate(points is array) returns array
+{
+    var minX = points[0][0];
+    var minY = points[0][1];
+    var maxX = points[0][0];
+    var maxY = points[0][1];
+    const count = size(points);
+    for (var i = 1; i < count; i += 1)
+    {
+        const p = points[i];
+        minX = min(minX, p[0]);
+        minY = min(minY, p[1]);
+        maxX = max(maxX, p[0]);
+        maxY = max(maxY, p[1]);
+    }
+    var dx = maxX - minX;
+    var dy = maxY - minY;
+    var deltaMax = max(dx, dy);
+    var midx = (minX + maxX) / 2;
+    var midy = (minY + maxY) / 2;
+
+    var p1 = vector(midx - 20 * deltaMax, midy - deltaMax);
+    var p2 = vector(midx, midy + 20 * deltaMax);
+    var p3 = vector(midx + 20 * deltaMax, midy - deltaMax);
+
+    var pts = append(points, p1);
+    pts = append(pts, p2);
+    pts = append(pts, p3);
+
+    var triangles = [ { "i" : count, "j" : count + 1, "k" : count + 2 } ];
+
+    for (var idx = 0; idx < count; idx += 1)
+    {
+        var edges = [];
+        const point = pts[idx];
+
+        for (var t = size(triangles) - 1; t >= 0; t -= 1)
+        {
+            const tri = triangles[t];
+            const circle = circumcenter(pts[tri.i], pts[tri.j], pts[tri.k]);
+            if (circle.invalid)
+                continue;
+            if (squaredNorm(point - circle.center) < circle.radius * circle.radius)
+            {
+                triangles = removeElementAt(triangles, t);
+                edges = addEdge(edges, tri.i, tri.j);
+                edges = addEdge(edges, tri.j, tri.k);
+                edges = addEdge(edges, tri.k, tri.i);
+            }
+        }
+
+        for (var edge in edges)
+        {
+            triangles = append(triangles, { "i" : edge.a, "j" : edge.b, "k" : idx });
+        }
+    }
+
+    var result = [];
+    for (var tri in triangles)
+    {
+        if (tri.i < count && tri.j < count && tri.k < count)
+        {
+            result = append(result, tri);
+        }
+    }
+    return result;
+}
+
+function addEdge(edgeList is array, a is number, b is number) returns array
+{
+    for (var i = 0; i < size(edgeList); i += 1)
+    {
+        if (edgeList[i].a == b && edgeList[i].b == a)
+        {
+            edgeList = removeElementAt(edgeList, i);
+            return edgeList;
+        }
+    }
+    edgeList = append(edgeList, { "a" : a, "b" : b });
+    return edgeList;
+}
+
+function circumcenter(p1 is Vector, p2 is Vector, p3 is Vector) returns map
+{
+    const d = 2 * (p1[0] * (p2[1] - p3[1]) + p2[0] * (p3[1] - p1[1]) + p3[0] * (p1[1] - p2[1]));
+    if (abs(d) < 1e-9*meter^2)
+        return { "invalid" : true };
+
+    const ux = ((squaredNorm(p1) * (p2[1] - p3[1]) + squaredNorm(p2) * (p3[1] - p1[1]) + squaredNorm(p3) * (p1[1] - p2[1])) / d);
+    const uy = ((squaredNorm(p1) * (p3[0] - p2[0]) + squaredNorm(p2) * (p1[0] - p3[0]) + squaredNorm(p3) * (p2[0] - p1[0])) / d);
+    const center = vector(ux, uy);
+    const radius = sqrt(squaredNorm(center - p1));
+    return { "center" : center, "radius" : radius, "invalid" : false };
+}
+
+function triangleInsideFace(context is Context, faceQuery is Query, facePlane is Plane,
+                            p1 is Vector, p2 is Vector, p3 is Vector) returns boolean
+{
+    var testPoints = [ (p1 + p2 + p3) / 3,
+                       (p1 + p2) / 2,
+                       (p2 + p3) / 2,
+                       (p3 + p1) / 2 ];
+
+    for (var test in testPoints)
+    {
+        const worldPoint = planeToWorld(facePlane, test);
+        if (isQueryEmpty(context, qContainsPoint(faceQuery, worldPoint)))
+        {
+            return false;
+        }
+    }
+    return true;
+}
+
+// Sample the boundary of a face for triangulation.
+// Straight edges contribute only endpoints, while curved edges are subdivided
+// according to the provided resolution.
+function collectFaceSamples(context is Context, faceQuery is Query, plane is Plane,
+                            resolution is ValueWithUnits) returns map
+{
+    const edgeQuery = qAdjacent(faceQuery, AdjacencyType.EDGE, EntityType.EDGE);
+    const edges = evaluateQuery(context, edgeQuery);
+    var points = [];
+    var indexMap = {} as map;
+    var boundaryPairs = [];
+    for (var edge in edges)
+    {
+        const length = evLength(context, { "entities" : edge });
+        const curve = evCurveDefinition(context, { "edge" : edge, "returnBSplinesAsOther" : true });
+        var segs = 1;
+        if (!(curve is Line))
+        {
+            segs = max(1, ceil(length / resolution));
+        }
+        var previousIndex = undefined;
+        for (var i = 0; i <= segs; i += 1)
+        {
+            const t = i / segs;
+            const lineOnEdge = evEdgeTangentLine(context, { "edge" : edge,
+                        "parameter" : t, "arcLengthParameterization" : true });
+            const pt2d = worldToPlane(plane, lineOnEdge.origin);
+            const key = toString(round(pt2d[0] / meter, 1e-6)) ~ "," ~
+                         toString(round(pt2d[1] / meter, 1e-6));
+            var index = indexMap[key];
+            if (index == undefined)
+            {
+                index = size(points);
+                indexMap[key] = index;
+                points = append(points, pt2d);
+            }
+            if (previousIndex != undefined && previousIndex != index)
+            {
+                boundaryPairs = append(boundaryPairs, { "a" : previousIndex, "b" : index });
+            }
+            previousIndex = index;
+        }
+    }
+    return { "points" : points, "pairs" : boundaryPairs };
+}
