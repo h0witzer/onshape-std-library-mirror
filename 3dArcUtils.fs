@@ -55,27 +55,6 @@ precondition
     return qCreatedBy(id + "wire", EntityType.BODY);
 }
 
-function tangentArcData(start is Vector, end is Vector, tangentDir is Vector,
-    radialDir is Vector) returns map
-{
-    var r = squaredNorm(end - start) / (2 * dot(end - start, radialDir));
-    if (r < 0)
-    {
-        r = -r;
-        radialDir = -radialDir;
-    }
-    const c = start + r * radialDir;
-    const normal = cross(tangentDir, radialDir);
-    const sv = start - c;
-    const ev = end - c;
-    var ang = atan2(dot(normal, cross(sv, ev)), dot(sv, ev));
-    if (ang < 0)
-        ang += 2 * PI * radian;
-    return { "radius" : r, "center" : c, "planeNormal" : normal,
-            "sweep" : ang, "rad" : radialDir };
-}
-
-
 /**
  * Create a circular arc wire through a start and end point such that the arc is
  * tangent to a given edge at the start point.
@@ -118,16 +97,21 @@ precondition
     }
     const chord = end - start;
     // Component of chord perpendicular to the tangent direction
-    var baseRad = cross(tangentDir, cross(chord, tangentDir));
-    baseRad = normalize(baseRad);
-    const arc = tangentArcData(start, end, tangentDir, baseRad);
-
-    const radialDir = arc.rad;
-    const radius = arc.radius;
-    const center = arc.center;
-    const planeNormal = arc.planeNormal;
-    const sweepAngle = arc.sweep;
+    var radialDir = cross(tangentDir, cross(chord, tangentDir));
+    radialDir = normalize(radialDir);
+    var radius = squaredNorm(end - start) / (2 * dot(chord, radialDir));
+    if (radius < 0)
+    {
+        radius = -radius;
+        radialDir = -radialDir;
+    }
+    const center = start + radius * radialDir;
+    const planeNormal = cross(tangentDir, radialDir);
     const startVec = start - center;
+    const endVec = end - center;
+    var sweepAngle = atan2(dot(planeNormal, cross(startVec, endVec)), dot(startVec, endVec));
+    if (sweepAngle < 0)
+        sweepAngle += 2 * PI * radian;
     const midVec = rotationMatrix3d(normalize(planeNormal), sweepAngle / 2) * startVec;
     const mid = center + midVec;
     const planeCSys = coordSystem(center, normalize(startVec), normalize(planeNormal));
