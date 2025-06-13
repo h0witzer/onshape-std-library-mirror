@@ -8,6 +8,7 @@ import(path : "onshape/std/transform.fs", version : "2679.0");
 import(path : "onshape/std/math.fs", version : "2679.0");
 import(path : "onshape/std/geomOperations.fs", version : "2679.0");
 import(path : "onshape/std/units.fs", version : "2679.0");
+import(path : "onshape/std/matrix.fs", version : "2679.0");
 import(path : "onshape/std/error.fs", version : "2679.0");
 
 /**
@@ -105,18 +106,14 @@ precondition
         radius = -radius;
         radialDir = -radialDir;
     }
-    const center = start + radius * radialDir;
-    const planeNormal = cross(tangentDir, radialDir);
-    const startVec = start - center;
-    const endVec = end - center;
-    var sweepAngle = atan2(dot(planeNormal, cross(startVec, endVec)), dot(startVec, endVec));
-    if (sweepAngle < 0)
-        sweepAngle += 2 * PI * radian;
-    const midVec = rotationMatrix3d(normalize(planeNormal), sweepAngle / 2) * startVec;
-    const mid = center + midVec;
-    const planeCSys = coordSystem(center, normalize(startVec), normalize(planeNormal));
-    const start2d = vector(radius, 0 * meter);
-    const midLocal = fromWorld(planeCSys, mid);
+    const arcData = getTangentArcData(start, tangentDir, end);
+    if (!arcData.valid)
+        throw regenError(ErrorStringEnum.READ_FAILED, id);
+    const planeCSys = coordSystem(arcData.center,
+                                  normalize(start - arcData.center),
+                                  arcData.normal);
+    const start2d = vector(arcData.radius, 0 * meter);
+    const midLocal = fromWorld(planeCSys, arcData.mid);
     const endLocal = fromWorld(planeCSys, end);
     const mid2d = vector(midLocal[0], midLocal[1]);
     const end2d = vector(endLocal[0], endLocal[1]);
@@ -131,4 +128,38 @@ precondition
     opExtractWires(context, id + "wire", { "edges" : edgeQuery });
     opDeleteBodies(context, id + "deleteSketch", { "entities" : qCreatedBy(sketchId, EntityType.BODY) });
     return qCreatedBy(id + "wire", EntityType.BODY);
+}
+
+/**
+ * Compute parameters describing the circular arc defined by a start point,
+ * a tangent direction at that point and an end point.
+ *
+ * Returns a map containing the center, radius, mid-point and plane normal
+ * of the arc. If the construction fails the `valid` field will be false.
+ */
+export function getTangentArcData(start is Vector, tangentDir is Vector, end is Vector) returns map
+{
+    const chord = end - start;
+    var radialDir = cross(tangentDir, cross(chord, tangentDir));
+    if (norm(radialDir) < 1e-8 * meter)
+        return { valid : false };
+    radialDir = normalize(radialDir);
+    var radius = squaredNorm(end - start) / (2 * dot(chord, radialDir));
+    if (radius < 0 * meter)
+    {
+        radius = -radius;
+        radialDir = -radialDir;
+    }
+    const center = start + radius * radialDir;
+    const planeNormal = cross(tangentDir, radialDir);
+    if (norm(planeNormal) < 1e-8)
+        return { valid : false };
+    const startVec = start - center;
+    const endVec = end - center;
+    var sweepAngle = atan2(dot(planeNormal, cross(startVec, endVec)), dot(startVec, endVec));
+    if (sweepAngle < 0)
+        sweepAngle += 2 * PI * radian;
+    const midVec = rotationMatrix3d(normalize(planeNormal), sweepAngle / 2) * startVec;
+    const mid = center + midVec;
+    return { valid : true, ("center") : center, ("radius") : radius, normal : normalize(planeNormal), ("mid") : mid };
 }
