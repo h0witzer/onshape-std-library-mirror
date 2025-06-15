@@ -10,6 +10,8 @@
 - These .fs files are not F Sharp or Javascript, Featurescript is a custom language developed for Onshape
 - Naming convention for the features we are working with should be more explicit and less shorthand. Match the level of readability seen in the Onshape Standard Library functions
 - Don't use abbreviated naming convention for functions or counters, I can't read that shit, name things with clarity and relation to application like the Standard Library does
+- Function nesting is not a thing in featurescript
+- Bitshifting and bitmasking operations are not a thing in featurescript
 
 ## Testing Instructions
 - Since there is no way to run Onshape in a localized environment here we will rely mostly on comparing code samples with existing functions in the standard library and against the reference docs to ensure consistency with the code base
