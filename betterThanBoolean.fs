@@ -16,8 +16,6 @@ import(path : "onshape/std/debug.fs", version : "2679.0");
 import(path : "onshape/std/valueBounds.fs", version : "2679.0");
 import(path : "onshape/std/booleanoperationtype.gen.fs", version : "2679.0");
 import(path : "onshape/std/error.fs", version : "2679.0");
-import(path : "261d99c1a339a5b7d6ca9096", version : "b54d38cfec96ea8493687118");
-
 
 
 // Bounds for part index parameters
@@ -46,8 +44,6 @@ annotation { "Feature Type Name" : "Better Than Boolean",
 export const betterThanBoolean = defineFeature(function(context is Context, id is Id, definition is map)
     precondition
     {
-        annotation { "Name" : "Target Bodies", "Filter" : EntityType.BODY, "MaxNumberOfPicks" : 10 }
-        definition.targetBodies is Query;
         // Indices of bodies that belong to the keep group.
         annotation { "Name" : "Keep indices", "Item name" : "entry", "UIHint" : UIHint.ALWAYS_HIDDEN }
         definition.keepIndices is array;
@@ -67,7 +63,7 @@ export const betterThanBoolean = defineFeature(function(context is Context, id i
     }
     {
         // Gather all modifiable solid bodies in the Part Studio.
-        const bodies = decomposeIntoCells(context, id, definition.targetBodies);
+        const bodies = evaluateQuery(context, qAllModifiableSolidBodies());
 
         // Create manipulator points at each body's centroid and draw debug points.
         var handlePoints = [];
@@ -202,7 +198,7 @@ export function betterThanBooleanEditLogic(context is Context, id is Id,
 {
     if (clickedButton == "invertSelection")
     {
-        const bodies = decomposeIntoCells(context, id, definition.targetBodies);
+        const bodies = evaluateQuery(context, qAllModifiableSolidBodies());
         var newKeep = [];
         var index = 0;
         for (var body in bodies)
