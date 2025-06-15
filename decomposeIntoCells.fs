@@ -17,7 +17,7 @@ import(path : "onshape/std/booleanoperationtype.gen.fs", version : "2679.0");
  * @returns {Query} union of all created cell bodies. Tracking queries are used
  *                  so the returned query references the cells even after the
  *                  input bodies are deleted.
-*/
+ */
 export function decomposeIntoCells(context is Context, id is Id, bodies is Query) returns Query
 precondition
 {
@@ -26,29 +26,33 @@ precondition
 {
     const bodyArray = evaluateQuery(context, bodies);
     const bodyCount = size(bodyArray);
+    const touchMap = buildTouchingBodiesMap(context, bodyArray);
     const originalsQ = qUnion(bodyArray);
     var createdCellsQ = qNothing();
     var subsetIndex = 0;
 
-    const subsets = generateIndexSubsets(bodyCount);
+    const subsets = generateTouchingSubsets(touchMap, bodyArray);
     for (var subset in subsets)
     {
         var subsetBodies = [];
+        var includedIndices = {};
+        for (var index in subset)
+        {
+            subsetBodies = append(subsetBodies, bodyArray[index]);
+            includedIndices[index] = true;
+        }
+
         var otherBodies = [];
         for (var i = 0; i < bodyCount; i += 1)
         {
-            if (subsetContains(subset, i))
-            {
-                subsetBodies = append(subsetBodies, bodyArray[i]);
-            }
-            else
+            if (includedIndices[i] == undefined)
             {
                 otherBodies = append(otherBodies, bodyArray[i]);
             }
         }
 
         // Only create subsets if the input parts are touching or intersecting
-        if (!bodiesInterfereOrContain(context, subsetBodies))
+        if (!bodiesInterfereOrContain(touchMap, subsetBodies))
         {
             subsetIndex += 1;
             continue;
@@ -108,36 +112,91 @@ precondition
 
 }
 
-function subsetContains(subset is array, value is number) returns boolean
+
+/**
+ * Generate all index subsets where every body touches all others
+ * in the subset based on the provided touching map. This avoids
+ * creating subsets for completely disjoint bodies.
+ */
+
+function buildTouchingSubsetsRec(prefix is array, start is number, bodies is array,
+    touchMap is map) returns array
 {
-    for (var elem in subset)
+    var subsets = [];
+    if (size(prefix) > 0)
+        subsets = append(subsets, prefix);
+
+    for (var i = start; i < size(bodies); i += 1)
     {
-        if (elem == value)
+        var canAdd = true;
+        const candidate = bodies[i];
+        for (var index in prefix)
         {
-            return true;
+            const existing = bodies[index];
+            var touches = false;
+            if (touchMap[existing] != undefined)
+            {
+                for (var entry in touchMap[existing])
+                {
+                    if (entry == candidate)
+                    {
+                        touches = true;
+                        break;
+                    }
+                }
+            }
+            if (!touches)
+            {
+                canAdd = false;
+                break;
+            }
+        }
+
+        if (canAdd)
+            subsets = concatenateArrays([subsets,
+                        buildTouchingSubsetsRec(append(prefix,
+                            i),
+                        i + 1,
+                        bodies,
+                        touchMap)]);
+    }
+
+
+    return subsets;
+}
+
+function generateTouchingSubsets(touchMap is map, bodies is array) returns array
+{
+    return buildTouchingSubsetsRec([], 0, bodies, touchMap);
+}
+
+function buildTouchingBodiesMap(context is Context, bodies is array) returns map
+{
+    var touchingMap = {};
+    const collisions = evCollision(context, { "tools" : qUnion(bodies),
+                "targets" : qUnion(bodies) });
+    for (var collision in collisions)
+    {
+        if (collision.toolBody == collision.targetBody)
+            continue;
+
+        const clashType = collision['type'];
+        if (clashType == ClashType.INTERFERE ||
+            clashType == ClashType.TARGET_IN_TOOL ||
+            clashType == ClashType.TOOL_IN_TARGET)
+        {
+            if (touchingMap[collision.toolBody] == undefined)
+                touchingMap[collision.toolBody] = [];
+            if (touchingMap[collision.targetBody] == undefined)
+                touchingMap[collision.targetBody] = [];
+            touchingMap[collision.toolBody] = append(touchingMap[collision.toolBody], collision.targetBody);
+            touchingMap[collision.targetBody] = append(touchingMap[collision.targetBody], collision.toolBody);
         }
     }
-    return false;
+    return touchingMap;
 }
 
-
-function buildSubsets(prefix is array, start is number, count is number) returns array
-{
-    var result = [];
-    for (var i = start; i < count; i += 1)
-    {
-        var next = append(prefix, i);
-        result = concatenateArrays([result, [next], buildSubsets(next, i + 1, count)]);
-    }
-    return result;
-}
-
-function generateIndexSubsets(count is number) returns array
-{
-    return buildSubsets([], 0, count);
-}
-
-function bodiesInterfereOrContain(context is Context, bodies is array) returns boolean
+function bodiesInterfereOrContain(touchMap is map, bodies is array) returns boolean
 {
     // If there is only one body in the subset we treat it as valid
     if (size(bodies) <= 1)
@@ -148,21 +207,19 @@ function bodiesInterfereOrContain(context is Context, bodies is array) returns b
     {
         for (var j = i + 1; j < size(bodies); j += 1)
         {
-            const collisions = evCollision(context, {
-                        "tools" : bodies[i],
-                        "targets" : bodies[j]
-                    });
 
             var pairValid = false;
-            for (var collision in collisions)
+            if (touchMap[bodies[i]] != undefined)
             {
-                const clashType = collision['type'];
-                if (clashType == ClashType.INTERFERE ||
-                    clashType == ClashType.TARGET_IN_TOOL ||
-                    clashType == ClashType.TOOL_IN_TARGET)
+
+                for (var entry in touchMap[bodies[i]])
                 {
-                    pairValid = true;
-                    break;
+
+                    if (entry == bodies[j])
+                    {
+                        pairValid = true;
+                        break;
+                    }
                 }
             }
 
