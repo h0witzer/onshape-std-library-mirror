@@ -87,13 +87,42 @@ precondition
 
         if (size(otherBodies) > 0)
         {
-            const subtractId = id + unstableIdComponent(subsetIndex) + "subtract";
-            opBoolean(context, subtractId, {
-                        "targets" : resultQ,
-                        "tools" : qUnion(otherBodies),
-                        "operationType" : BooleanOperationType.SUBTRACTION,
-                        "keepTools" : true
-                    });
+            // Only subtract bodies that actually overlap the subset
+            // to avoid unnecessary boolean operations on abutting parts
+            var subtractBodies = [];
+            for (var other in otherBodies)
+            {
+                var shouldSubtract = false;
+                for (var body in subsetBodies)
+                {
+                    if (touchMap[body] != undefined)
+                    {
+                        for (var entry in touchMap[body])
+                        {
+                            if (entry == other)
+                            {
+                                shouldSubtract = true;
+                                break;
+                            }
+                        }
+                    }
+                    if (shouldSubtract)
+                        break;
+                }
+                if (shouldSubtract)
+                    subtractBodies = append(subtractBodies, other);
+            }
+
+            if (size(subtractBodies) > 0)
+            {
+                const subtractId = id + unstableIdComponent(subsetIndex) + "subtract";
+                opBoolean(context, subtractId, {
+                            "targets" : resultQ,
+                            "tools" : qUnion(subtractBodies),
+                            "operationType" : BooleanOperationType.SUBTRACTION,
+                            "keepTools" : true
+                        });
+            }
         }
 
         if (!isQueryEmpty(context, resultQ))
