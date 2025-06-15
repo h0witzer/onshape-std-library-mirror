@@ -26,7 +26,8 @@ precondition
 {
     const bodyArray = evaluateQuery(context, bodies);
     const bodyCount = size(bodyArray);
-    var cellQueries = [];
+    const originalsQ = qUnion(bodyArray);
+    var createdCellsQ = qNothing();
     var subsetIndex = 0;
 
     const subsets = generateIndexSubsets(bodyCount);
@@ -89,13 +90,11 @@ precondition
                         "operationType" : BooleanOperationType.SUBTRACTION,
                         "keepTools" : true
                     });
-            resultQ = qCreatedBy(subtractId, EntityType.BODY);
         }
 
         if (!isQueryEmpty(context, resultQ))
         {
-            const trackedResult = qUnion([resultQ, startTracking(context, resultQ)]);
-            cellQueries = append(cellQueries, trackedResult);
+            createdCellsQ = qUnion([createdCellsQ, resultQ]);
         }
         subsetIndex += 1;
     }
@@ -103,11 +102,10 @@ precondition
 
     // Remove the original bodies so only the decomposed cells remain
     const cleanupId = id + unstableIdComponent(subsetIndex) + "deleteOriginals";
-    opDeleteBodies(context, cleanupId, { "entities" : bodies });
-        // Build and return a query for all newly created cell bodies
-    const cellsQ = qUnion(cellQueries);
+    opDeleteBodies(context, cleanupId, { "entities" : originalsQ });
+    // Build and return a query for all newly created cell bodies
+    return createdCellsQ;
 
-    return cellsQ;
 }
 
 function subsetContains(subset is array, value is number) returns boolean
