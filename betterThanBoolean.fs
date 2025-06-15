@@ -16,7 +16,7 @@ import(path : "onshape/std/debug.fs", version : "2679.0");
 import(path : "onshape/std/valueBounds.fs", version : "2679.0");
 import(path : "onshape/std/booleanoperationtype.gen.fs", version : "2679.0");
 import(path : "onshape/std/error.fs", version : "2679.0");
-import(path : "261d99c1a339a5b7d6ca9096", version : "591eafe5d3bfd174a2ef5dd8");
+import(path : "261d99c1a339a5b7d6ca9096", version : "600a8fd1f9c822c331095cf1");
 
 
 
@@ -30,14 +30,12 @@ const CELLS_VARIABLE_NAME = "-betterThanBooleanCells";
 function getCellsQuery(context is Context, id is Id, bodies is Query) returns Query
 {
     const varName = toAttributeId(id) ~ CELLS_VARIABLE_NAME;
-    var cached = try (getVariable(context, varName));
+    var cached = try(getVariable(context, varName));
     if (cached != undefined)
     {
         return cached as Query;
     }
     var cells = decomposeIntoCells(context, id + "cells", bodies);
-    println(cells);
-    debug(context, cells, DebugColor.GREEN);
     setVariable(context, varName, cells);
     return cells;
 }
@@ -64,6 +62,7 @@ annotation { "Feature Type Name" : "Better Than Boolean",
 export const betterThanBoolean = defineFeature(function(context is Context, id is Id, definition is map)
     precondition
     {
+
         annotation { "Name" : "Bodies to modify",
                     "Filter" : EntityType.BODY && BodyType.SOLID && ModifiableEntityOnly.YES }
         definition.bodies is Query;
@@ -81,6 +80,10 @@ export const betterThanBoolean = defineFeature(function(context is Context, id i
         annotation { "Name" : "Handle index", "UIHint" : UIHint.ALWAYS_HIDDEN }
         isInteger(definition.index, PART_INDEX_BOUNDS);
 
+        // Button to select all cell regions.
+        annotation { "Name" : "Select All" }
+        isButton(definition.selectAll);
+
         // Button to invert membership of all parts.
         annotation { "Name" : "Invert selection" }
         isButton(definition.invertSelection);
@@ -88,8 +91,6 @@ export const betterThanBoolean = defineFeature(function(context is Context, id i
     {
         verifyNonemptyQuery(context, definition, "bodies", "Select bodies to modify.");
         const cellsQuery = getCellsQuery(context, id, definition.bodies);
-        println(cellsQuery);
-        debug(context, cellsQuery, DebugColor.RED);
         const bodies = evaluateQuery(context, cellsQuery);
         // Create manipulator points at each body's centroid and draw debug points.
         var handlePoints = [];
@@ -100,7 +101,7 @@ export const betterThanBoolean = defineFeature(function(context is Context, id i
             handlePoints = append(handlePoints, centroidPoint);
 
             // Show point location in the group's color.
-            const debugColor = isInKeepGroup(definition, partIndex) ? DebugColor.YELLOW : DebugColor.MAGENTA;
+            const debugColor = isInKeepGroup(definition, partIndex) ? DebugColor.YELLOW : DebugColor.BLACK;
             addDebugPoint(context, centroidPoint, debugColor);
             partIndex += 1;
         }
@@ -109,16 +110,13 @@ export const betterThanBoolean = defineFeature(function(context is Context, id i
         addManipulators(context, id, { (HANDLE_MANIPULATOR) : pointsManipulator({ "points" : handlePoints, "index" : definition.index }) });
 
         // Determine which bodies belong to each group so they can be combined
-        // or removed after coloring.
+        // or removed after boolean operation
         var keepGroup = [];
         var deleteGroup = [];
         partIndex = 0;
         for (var body in bodies)
         {
             const inKeep = isInKeepGroup(definition, partIndex);
-            const debugColor = inKeep ? DebugColor.YELLOW : DebugColor.MAGENTA;
-            //addDebugEntities(context, body, debugColor);
-
             if (inKeep)
             {
                 keepGroup = append(keepGroup, body);
@@ -127,7 +125,6 @@ export const betterThanBoolean = defineFeature(function(context is Context, id i
             {
                 deleteGroup = append(deleteGroup, body);
             }
-
             partIndex += 1;
         }
 
@@ -222,6 +219,20 @@ export function betterThanBooleanManipulatorChange(context is Context, definitio
 export function betterThanBooleanEditLogic(context is Context, id is Id,
     oldDefinition is map, definition is map, isCreating is boolean, clickedButton is string) returns map
 {
+    if (clickedButton == "selectAll")
+    {
+        const cellsQuery = getCellsQuery(context, id, definition.bodies);
+        const bodies = evaluateQuery(context, cellsQuery);
+        var newKeep = [];
+        var index = 0;
+        for (var body in bodies)
+        {
+
+            newKeep = append(newKeep, { "keepIndex" : index });
+            index += 1;
+        }
+        definition.keepIndices = newKeep;
+    }
     if (clickedButton == "invertSelection")
     {
         const cellsQuery = getCellsQuery(context, id, definition.bodies);
