@@ -7,7 +7,7 @@ FeatureScript 2679;
 // If merging keep parts fails because the boolean results in non-manifold
 // geometry, the user is notified with an informational message.
 // An additional message warns when the union creates more than one region.
-import(path : "onshape/std/feature.fs", version : "2679.0");
+import(path : "onshape/std/common.fs", version : "2679.0");
 import(path : "onshape/std/query.fs", version : "2679.0");
 import(path : "onshape/std/evaluate.fs", version : "2679.0");
 import(path : "onshape/std/manipulator.fs", version : "2679.0");
@@ -16,12 +16,32 @@ import(path : "onshape/std/debug.fs", version : "2679.0");
 import(path : "onshape/std/valueBounds.fs", version : "2679.0");
 import(path : "onshape/std/booleanoperationtype.gen.fs", version : "2679.0");
 import(path : "onshape/std/error.fs", version : "2679.0");
+import(path : "261d99c1a339a5b7d6ca9096", version : "2d8f3fc5cc9c3cb7bd674b04");
+
 
 
 // Bounds for part index parameters
 const PART_INDEX_BOUNDS = { (unitless) : [-10000, 0, 10000] } as IntegerBoundSpec;
 
 const HANDLE_MANIPULATOR = "groupHandles";
+
+const CELLS_VARIABLE_NAME = "-betterThanBooleanCells";
+
+function getCellsQuery(context is Context, id is Id, bodies is Query) returns Query
+{
+    const varName = toAttributeId(id) ~ CELLS_VARIABLE_NAME;
+    var cached = try (getVariable(context, varName));
+    if (cached != undefined)
+    {
+        return cached as Query;
+    }
+    var cells = decomposeIntoCells(context, id + "cells", bodies);
+    println(cells);
+    debug(context, cells, DebugColor.GREEN);
+    setVariable(context, varName, cells);
+    return cells;
+}
+
 
 // Returns true if the given part index is currently in the keep group list.
 function isInKeepGroup(definition is map, partIndex is number) returns boolean
@@ -44,6 +64,10 @@ annotation { "Feature Type Name" : "Better Than Boolean",
 export const betterThanBoolean = defineFeature(function(context is Context, id is Id, definition is map)
     precondition
     {
+        annotation { "Name" : "Bodies to modify",
+                    "Filter" : EntityType.BODY && BodyType.SOLID && ModifiableEntityOnly.YES }
+        definition.bodies is Query;
+
         // Indices of bodies that belong to the keep group.
         annotation { "Name" : "Keep indices", "Item name" : "entry", "UIHint" : UIHint.ALWAYS_HIDDEN }
         definition.keepIndices is array;
@@ -62,9 +86,11 @@ export const betterThanBoolean = defineFeature(function(context is Context, id i
         isButton(definition.invertSelection);
     }
     {
-        // Gather all modifiable solid bodies in the Part Studio.
-        const bodies = evaluateQuery(context, qAllModifiableSolidBodies());
-
+        verifyNonemptyQuery(context, definition, "bodies", "Select bodies to modify.");
+        const cellsQuery = getCellsQuery(context, id, definition.bodies);
+        println(cellsQuery);
+        debug(context, cellsQuery, DebugColor.RED);
+        const bodies = evaluateQuery(context, cellsQuery);
         // Create manipulator points at each body's centroid and draw debug points.
         var handlePoints = [];
         var partIndex = 0;
@@ -198,7 +224,8 @@ export function betterThanBooleanEditLogic(context is Context, id is Id,
 {
     if (clickedButton == "invertSelection")
     {
-        const bodies = evaluateQuery(context, qAllModifiableSolidBodies());
+        const cellsQuery = getCellsQuery(context, id, definition.bodies);
+        const bodies = evaluateQuery(context, cellsQuery);
         var newKeep = [];
         var index = 0;
         for (var body in bodies)
@@ -213,3 +240,4 @@ export function betterThanBooleanEditLogic(context is Context, id is Id,
     }
     return definition;
 }
+
