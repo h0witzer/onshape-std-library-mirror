@@ -1,12 +1,9 @@
 FeatureScript 2679;
 
-// Feature "Better Than Boolean" divides all modifiable bodies into keep and
-// delete groups for intersecting operations.
-// Point manipulators at each body centroid toggle group membership when clicked.
-// Parts are visualized only with debug colors rather than appearance changes.
-// If merging keep parts fails because the boolean results in non-manifold
-// geometry, the user is notified with an informational message.
-// An additional message warns when the union creates more than one region.
+// Vibe coded by Derek Van Allen with help from Codex and Gemini
+// This feature is inspired by the Intersect tool from Solidworks and Boundary fill feature in Fusion
+// Manipulator usage was inspired by Caden Armstrong and Michael Pascoe from various sources
+
 import(path : "onshape/std/common.fs", version : "2679.0");
 import(path : "onshape/std/query.fs", version : "2679.0");
 import(path : "onshape/std/evaluate.fs", version : "2679.0");
@@ -16,9 +13,8 @@ import(path : "onshape/std/debug.fs", version : "2679.0");
 import(path : "onshape/std/valueBounds.fs", version : "2679.0");
 import(path : "onshape/std/booleanoperationtype.gen.fs", version : "2679.0");
 import(path : "onshape/std/error.fs", version : "2679.0");
-import(path : "261d99c1a339a5b7d6ca9096", version : "600a8fd1f9c822c331095cf1");
-
-
+import(path : "261d99c1a339a5b7d6ca9096", version : "8b403bd9faf83c5a4e65834f");
+icon::import(path : "32e129618be41ad8355ae1fe", version : "645e53d0896e5a01563e0e1e");
 
 // Bounds for part index parameters
 const PART_INDEX_BOUNDS = { (unitless) : [-10000, 0, 10000] } as IntegerBoundSpec;
@@ -54,7 +50,19 @@ function isInKeepGroup(definition is map, partIndex is number) returns boolean
     return false;
 }
 
+/**
+ * Feature "Better Than Boolean" divides all modifiable bodies into keep and
+ * delete groups for intersecting operations.
+ * Point manipulators at each body centroid toggle group membership when clicked.
+ * Parts are visualized only with debug colors rather than appearance changes.
+ * If merging keep parts fails because the boolean results in non-manifold
+ * geometry, the user is notified with an informational message.
+ * An additional message warns when the union creates more than one region.
+ */
+
 annotation { "Feature Type Name" : "Better Than Boolean",
+        "Icon" : icon::BLOB_DATA,
+        "Feature Type Description" : "<b> Summary </b> <br> Decompose inputs into regions of overlap and recombine the result. <br>",
         "Manipulator Change Function" : "betterThanBooleanManipulatorChange",
         "Editing Logic Function" : "betterThanBooleanEditLogic",
         // Disallow picking geometry other than the manipulators
