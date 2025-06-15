@@ -14,8 +14,10 @@ import(path : "onshape/std/booleanoperationtype.gen.fs", version : "2679.0");
  * @param context   {@link Context}
  * @param id        {@link Id} used as a base for created operations
  * @param bodies    {Query} query selecting any number of bodies
- * @returns {Query} union of all created cell bodies
- */
+ * @returns {Query} union of all created cell bodies. Tracking queries are used
+ *                  so the returned query references the cells even after the
+ *                  input bodies are deleted.
+*/
 export function decomposeIntoCells(context is Context, id is Id, bodies is Query) returns Query
 precondition
 {
@@ -92,16 +94,18 @@ precondition
 
         if (!isQueryEmpty(context, resultQ))
         {
-            cellQueries = append(cellQueries, resultQ);
+            const trackedResult = qUnion([resultQ, startTracking(context, resultQ)]);
+            cellQueries = append(cellQueries, trackedResult);
         }
         subsetIndex += 1;
     }
 
-    const cellsQ = qUnion(cellQueries);
 
     // Remove the original bodies so only the decomposed cells remain
     const cleanupId = id + unstableIdComponent(subsetIndex) + "deleteOriginals";
     opDeleteBodies(context, cleanupId, { "entities" : bodies });
+        // Build and return a query for all newly created cell bodies
+    const cellsQ = qUnion(cellQueries);
 
     return cellsQ;
 }
