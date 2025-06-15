@@ -3,6 +3,7 @@ FeatureScript 2679;
 // Vibe coded by Derek Van Allen with help from Codex and Gemini
 // This feature is inspired by the Intersect tool from Solidworks and Boundary fill feature in Fusion
 // Manipulator usage was inspired by Caden Armstrong and Michael Pascoe from various sources
+// Stealing Evan Reese's pseudo-rng utility for manipulator jiggling when points overlap
 
 import(path : "onshape/std/common.fs", version : "2679.0");
 import(path : "onshape/std/query.fs", version : "2679.0");
@@ -13,7 +14,9 @@ import(path : "onshape/std/debug.fs", version : "2679.0");
 import(path : "onshape/std/valueBounds.fs", version : "2679.0");
 import(path : "onshape/std/booleanoperationtype.gen.fs", version : "2679.0");
 import(path : "onshape/std/error.fs", version : "2679.0");
-import(path : "261d99c1a339a5b7d6ca9096", version : "8b403bd9faf83c5a4e65834f");
+import(path : "261d99c1a339a5b7d6ca9096", version : "95e031e109071cad34633a39");
+import(path : "9f4c9835d8018ff7dbdb5683/77c856824c783f8f1c5a3312/f937aebd788e8d724a4de67b", version : "1e843593890adcd0071cee82");
+
 icon::import(path : "32e129618be41ad8355ae1fe", version : "645e53d0896e5a01563e0e1e");
 
 // Bounds for part index parameters
@@ -22,6 +25,23 @@ const PART_INDEX_BOUNDS = { (unitless) : [-10000, 0, 10000] } as IntegerBoundSpe
 const HANDLE_MANIPULATOR = "groupHandles";
 
 const CELLS_VARIABLE_NAME = "-betterThanBooleanCells";
+
+// Distance within which two centroid points are considered overlapping
+const CENTROID_OVERLAP_TOLERANCE = 1e-5 * meter;
+
+// Distance to separate overlapping centroid points along the X axis
+const CENTROID_OFFSET_DISTANCE = 0.005 * meter;
+
+// Generates a random unit vector using pseudoRandomNumber for a given seed.
+function randomUnitVector(seed is number) returns Vector
+{
+    const azimuth = pseudoRandomNumber(seed, 0, 2 * PI);
+    const inclination = pseudoRandomNumber(seed + 1, 0, PI);
+    return vector(
+            cos(azimuth * radian) * sin(inclination * radian),
+            sin(azimuth * radian) * sin(inclination * radian),
+            cos(inclination * radian));
+}
 
 function getCellsQuery(context is Context, id is Id, bodies is Query) returns Query
 {
@@ -103,15 +123,46 @@ export const betterThanBoolean = defineFeature(function(context is Context, id i
         // Create manipulator points at each body's centroid and draw debug points.
         var handlePoints = [];
         var partIndex = 0;
+        var centroidsAdjusted = false;
+
         for (var body in bodies)
         {
-            const centroidPoint = evApproximateCentroid(context, { "entities" : body });
+            var centroidPoint = evApproximateCentroid(context, { "entities" : body });
+
+            // Check for coincident centroids and offset if necessary.
+            var overlapCount = 0;
+            for (var existingPoint in handlePoints)
+            {
+                if (norm(centroidPoint - existingPoint) < CENTROID_OVERLAP_TOLERANCE)
+                {
+                    overlapCount += 1;
+                }
+            }
+            if (overlapCount > 0)
+            {
+                centroidsAdjusted = true;
+                const randDir = randomUnitVector(partIndex + overlapCount);
+                centroidPoint += overlapCount * CENTROID_OFFSET_DISTANCE * randDir;
+            }
+
             handlePoints = append(handlePoints, centroidPoint);
 
             // Show point location in the group's color.
-            const debugColor = isInKeepGroup(definition, partIndex) ? DebugColor.YELLOW : DebugColor.BLACK;
+            var debugColor = DebugColor.BLACK;
+            if (isInKeepGroup(definition, partIndex))
+            {
+                debugColor = DebugColor.YELLOW;
+            }
+            else if (overlapCount > 0)
+            {
+                debugColor = DebugColor.BLUE;
+            }
             addDebugPoint(context, centroidPoint, debugColor);
             partIndex += 1;
+        }
+                if (centroidsAdjusted)
+        {
+            reportFeatureInfo(context, id, "Overlapping centroids adjusted; shifted points are shown in blue");
         }
 
         // Display manipulators for all bodies.
