@@ -16,7 +16,7 @@ import(path : "onshape/std/debug.fs", version : "2679.0");
 import(path : "onshape/std/valueBounds.fs", version : "2679.0");
 import(path : "onshape/std/booleanoperationtype.gen.fs", version : "2679.0");
 import(path : "onshape/std/error.fs", version : "2679.0");
-import(path : "261d99c1a339a5b7d6ca9096", version : "2d8f3fc5cc9c3cb7bd674b04");
+import(path : "261d99c1a339a5b7d6ca9096", version : "591eafe5d3bfd174a2ef5dd8");
 
 
 
@@ -240,4 +240,3 @@ export function betterThanBooleanEditLogic(context is Context, id is Id,
     }
     return definition;
 }
-
