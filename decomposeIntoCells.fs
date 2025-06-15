@@ -44,6 +44,13 @@ precondition
             }
         }
 
+        // Only create subsets if the input parts are touching or intersecting
+        if (!bodiesInterfereOrContain(context, subsetBodies))
+        {
+            subsetIndex += 1;
+            continue;
+        }
+
         var resultQ;
         if (size(subsetBodies) == 1)
         {
@@ -111,6 +118,7 @@ function subsetContains(subset is array, value is number) returns boolean
     return false;
 }
 
+
 function buildSubsets(prefix is array, start is number, count is number) returns array
 {
     var result = [];
@@ -125,4 +133,43 @@ function buildSubsets(prefix is array, start is number, count is number) returns
 function generateIndexSubsets(count is number) returns array
 {
     return buildSubsets([], 0, count);
+}
+
+function bodiesInterfereOrContain(context is Context, bodies is array) returns boolean
+{
+    // If there is only one body in the subset we treat it as valid
+    if (size(bodies) <= 1)
+        return true;
+
+    // Ensure every pair of bodies either interferes or one contains the other
+    for (var i = 0; i < size(bodies); i += 1)
+    {
+        for (var j = i + 1; j < size(bodies); j += 1)
+        {
+            const collisions = evCollision(context, {
+                        "tools" : bodies[i],
+                        "targets" : bodies[j]
+                    });
+
+            var pairValid = false;
+            for (var collision in collisions)
+            {
+                const clashType = collision['type'];
+                if (clashType == ClashType.INTERFERE ||
+                    clashType == ClashType.TARGET_IN_TOOL ||
+                    clashType == ClashType.TOOL_IN_TARGET)
+                {
+                    pairValid = true;
+                    break;
+                }
+            }
+
+            if (!pairValid)
+            {
+                return false;
+            }
+        }
+    }
+
+    return true;
 }
