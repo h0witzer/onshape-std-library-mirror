@@ -24,6 +24,7 @@ import(path : "onshape/std/math.fs", version : "2679.0");
 import(path : "onshape/std/units.fs", version : "2679.0");
 
 const TRIAD_MANIPULATOR = "triadManipulator";
+const POINT_MANIPULATOR = "pointManipulator";
 const GROUP_INDEX_BOUNDS = { (unitless) : [0, 0, 50] } as IntegerBoundSpec;
 
 predicate transformGroupPredicate(group is map)
@@ -63,6 +64,14 @@ predicate transformGroupsPredicate(definition is map)
     }
 }
 
+predicate triadTransformPredicate(definition is map)
+{
+    annotation { "Name" : "Selected group", "UIHint" : UIHint.ALWAYS_HIDDEN }
+    isInteger(definition.selectedGroup, GROUP_INDEX_BOUNDS);
+
+    transformGroupsPredicate(definition);
+}
+
 /** Add a triad manipulator centered on the given coordinate system. */
 function addTriadManipulator(context is Context, id is Id,
         baseCSys is CoordSystem, definition is map, index is number)
@@ -82,6 +91,16 @@ function addTriadManipulator(context is Context, id is Id,
     addManipulators(context, id, { (manipName) : triadManip });
 }
 
+function addPointManipulator(context is Context, id is Id, positions is array, index is number)
+{
+    const pointManip = pointsManipulator({
+                "points" : positions,
+                "index" : index,
+                "primaryParameterId" : "selectedGroup"
+            });
+    addManipulators(context, id, { (POINT_MANIPULATOR) : pointManip });
+}
+
 /**
  * Simple transform tool using a full triad manipulator. Allows translation
  * and rotation in one feature. By default transformation is performed about
@@ -93,16 +112,44 @@ annotation { "Feature Type Name" : "Triad transform",
 export const triadTransform = defineFeature(function(context is Context, id is Id, definition is map)
     precondition
     {
-        transformGroupsPredicate(definition);
+        triadTransformPredicate(definition);
     }
     {
+        var positions = [];
+        var cSysArray = [];
         for (var i = 0; i < size(definition.groups); i += 1)
         {
             const group = definition.groups[i];
             const subId = id + unstableIdComponent(i);
             const baseCSys = getBaseCoordinateSystem(context, subId, group);
+            cSysArray = append(cSysArray, baseCSys);
 
-            addTriadManipulator(context, id, baseCSys, group, i);
+            const rotationMatrix = composeRotation(baseCSys,
+                    group.rx, group.ry, group.rz);
+            const localTransform = transform(rotationMatrix,
+                    vector(group.dx, group.dy, group.dz));
+            const worldTransform = toWorld(baseCSys) * localTransform * fromWorld(baseCSys);
+            const finalCSys = worldTransform * baseCSys;
+            positions = append(positions, finalCSys.origin);
+        }
+
+        if (size(positions) > 0)
+        {
+            addPointManipulator(context, id, positions, definition.selectedGroup);
+        }
+
+        if (definition.selectedGroup < size(definition.groups))
+        {
+            const selectedCSys = cSysArray[definition.selectedGroup];
+            const selectedGroup = definition.groups[definition.selectedGroup];
+            addTriadManipulator(context, id, selectedCSys, selectedGroup, definition.selectedGroup);
+        }
+
+        for (var i = 0; i < size(definition.groups); i += 1)
+        {
+            const group = definition.groups[i];
+            const baseCSys = cSysArray[i];
+            const subId = id + unstableIdComponent(i);
 
             const rotationMatrix = composeRotation(baseCSys,
                     group.rx, group.ry, group.rz);
@@ -116,6 +163,7 @@ export const triadTransform = defineFeature(function(context is Context, id is I
                     });
         }
     }, {
+            "selectedGroup" : 0,
             "groups" : [{
                     "index" : 0,
                     "entities" : qNothing(),
@@ -135,9 +183,14 @@ export function triadTransformManipulatorChange(context is Context, definition i
 {
 
     var groups = definition.groups;
+
+    if (newManipulators[POINT_MANIPULATOR] is map)
+    {
+        definition.selectedGroup = newManipulators[POINT_MANIPULATOR].index;
+    }
+
     for (var key, manipulator in newManipulators)
     {
-
         if (startsWith(key, TRIAD_MANIPULATOR))
         {
             const index = stringToNumber(replace(key, TRIAD_MANIPULATOR, ""));
