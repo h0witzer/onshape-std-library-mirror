@@ -13,6 +13,76 @@ import(path : "onshape/std/query.fs", version : "2679.0");
 import(path : "onshape/std/deleteBodies.fs", version : "2679.0");
 import(path : "onshape/std/transform.fs", version : "2679.0");
 
+// Custom feature to use cut list definitions to unroll a frame into a straightened state for future frame layout script or possibly as a kirigami unfolding function
+// Written by Derek Van Allen
+
+annotation { "Feature Type Name" : "Unroll frame" }
+export const frameUnroll = defineFeature(function(context is Context, id is Id, definition is map)
+    precondition
+    {
+        annotation { "Name" : "Frames", "Filter" : EntityType.BODY && BodyType.SOLID }
+        definition.frames is Query;
+
+    }
+    {
+        var index = 0;
+        for (var frame in evaluateQuery(context, definition.frames))
+        {
+            var cleanup = new box([]);
+            const lenData = getCutlistLengthAndAngles(context, id + ("calc" ~ index), id + ("curve" ~ index), frame, cleanup);
+            if (lenData.length == undefined)
+            {
+                reportFeatureWarning(context, id, "Unable to determine frame length");
+                index += 1;
+                continue;
+            }
+
+            const startFace = qFrameStartFace(frame);
+            const plane = capFacePlane(context, startFace);
+            if (plane == undefined)
+            {
+                reportFeatureWarning(context, id, "Start face not planar");
+                index += 1;
+                continue;
+            }
+
+            const extractId = id + ("extract" ~ index);
+            opExtractSurface(context, extractId, { "faces" : startFace });
+            const profileFace = qOwnedByBody(qCreatedBy(extractId, EntityType.BODY), EntityType.FACE);
+
+            const extrudeId = id + ("unroll" ~ index);
+            opExtrude(context, extrudeId, {
+                        "entities" : profileFace,
+                        "direction" : getFrameDirection(context, frame),
+                        "endBound" : BoundingType.BLIND,
+                        "endDepth" : lenData.length
+                    });
+
+            copyEndFace(context, qFrameEndFace(frame),
+                qCapEntity(extrudeId, CapType.END, EntityType.FACE),
+                extrudeId);
+
+            const newFrame = qCreatedBy(extrudeId, EntityType.BODY);
+            const profileAttr = try silent(getFrameProfileAttribute(context, frame));
+            const profileData = { "profileAttribute" : profileAttr };
+            const newFrameData = {
+                    "sweptEdges" : qNonCapEntity(extrudeId, EntityType.EDGE),
+                    "sweptFaces" : qNonCapEntity(extrudeId, EntityType.FACE),
+                    "startFace" : qCapEntity(extrudeId, CapType.START, EntityType.FACE),
+                    "endFace" : qCapEntity(extrudeId, CapType.END, EntityType.FACE)
+                };
+            setFrameAttributes(context, newFrame, profileData, newFrameData);
+
+            // opDeleteBodies(context, extrudeId + "cleanup", { "entities" : qCreatedBy(extractId, EntityType.BODY) });
+            // opDeleteBodies(context, extrudeId + "temp", { "entities" : qUnion(cleanup[]) });
+            // opDeleteBodies(context, extrudeId + "orig", { "entities" : frame });
+            index += 1;
+        }
+    },
+    {});
+
+
+
 function capFacePlane(context is Context, faces is Query) returns Plane
 {
     const faceArray = evaluateQuery(context, faces);
@@ -106,69 +176,3 @@ function copyEndFace(context is Context, sourceFace is Query, targetFace is Quer
     opDeleteBodies(context, baseId + "endCleanup", { "entities" : qUnion([qCreatedBy(extract, EntityType.BODY), qCreatedBy(moveId, EntityType.BODY)]) });
 }
 
-annotation {
-        "Feature Type Name" : "Unroll frame"
-    }
-export const frameUnroll = defineFeature(function(context is Context, id is Id, definition is map)
-    precondition
-    {
-        annotation { "Name" : "Frames", "Filter" : EntityType.BODY && BodyType.SOLID }
-        definition.frames is Query;
-
-    }
-    {
-        var index = 0;
-        for (var frame in evaluateQuery(context, definition.frames))
-        {
-            var cleanup = new box([]);
-            const lenData = getCutlistLengthAndAngles(context, id + ("calc" ~ index), id + ("curve" ~ index), frame, cleanup);
-            if (lenData.length == undefined)
-            {
-                reportFeatureWarning(context, id, "Unable to determine frame length");
-                index += 1;
-                continue;
-            }
-
-            const startFace = qFrameStartFace(frame);
-            const plane = capFacePlane(context, startFace);
-            if (plane == undefined)
-            {
-                reportFeatureWarning(context, id, "Start face not planar");
-                index += 1;
-                continue;
-            }
-
-            const extractId = id + ("extract" ~ index);
-            opExtractSurface(context, extractId, { "faces" : startFace });
-            const profileFace = qOwnedByBody(qCreatedBy(extractId, EntityType.BODY), EntityType.FACE);
-
-            const extrudeId = id + ("unroll" ~ index);
-            opExtrude(context, extrudeId, {
-                        "entities" : profileFace,
-                        "direction" : getFrameDirection(context, frame),
-                        "endBound" : BoundingType.BLIND,
-                        "endDepth" : lenData.length
-                    });
-
-            copyEndFace(context, qFrameEndFace(frame),
-                        qCapEntity(extrudeId, CapType.END, EntityType.FACE),
-                        extrudeId);
-
-            const newFrame = qCreatedBy(extrudeId, EntityType.BODY);
-            const profileAttr = try silent(getFrameProfileAttribute(context, frame));
-            const profileData = { "profileAttribute" : profileAttr };
-            const newFrameData = {
-                        "sweptEdges" : qNonCapEntity(extrudeId, EntityType.EDGE),
-                        "sweptFaces" : qNonCapEntity(extrudeId, EntityType.FACE),
-                        "startFace" : qCapEntity(extrudeId, CapType.START, EntityType.FACE),
-                        "endFace" : qCapEntity(extrudeId, CapType.END, EntityType.FACE)
-                    };
-            setFrameAttributes(context, newFrame, profileData, newFrameData);
-
-            // opDeleteBodies(context, extrudeId + "cleanup", { "entities" : qCreatedBy(extractId, EntityType.BODY) });
-            // opDeleteBodies(context, extrudeId + "temp", { "entities" : qUnion(cleanup[]) });
-            // opDeleteBodies(context, extrudeId + "orig", { "entities" : frame });
-            index += 1;
-        }
-    },
-    {});
