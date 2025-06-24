@@ -149,16 +149,21 @@ export const tweenTwoCurves = defineFeature(function(context is Context, id is I
 
         // --- If compatible, proceed with Control Point Tweening ---
         var tweenedCps = [];
-        var tweenedWeights = bSpline1.isRational ? [] : undefined;
+        var tweenedWeights = [];
         const fraction = definition.fraction;
 
         for (var i = 0; i < size(cpList1); i += 1)
         {
-            tweenedCps = append(tweenedCps, cpList1[i] * (1 - fraction) + finalCpList2[i] * fraction);
-            if (bSpline1.isRational)
-            {
-                tweenedWeights = append(tweenedWeights, weights1[i] * (1 - fraction) + finalWeights2[i] * fraction);
-            }
+            const weight1 = weights1[i];
+            const weight2 = finalWeights2[i];
+            const blendedWeight = weight1 * (1 - fraction) + weight2 * fraction;
+
+            const pos1 = cpList1[i];
+            const pos2 = finalCpList2[i];
+            const blendedPos = pos1 * (1 - fraction) + pos2 * fraction;
+
+            tweenedCps = append(tweenedCps, blendedPos / blendedWeight);
+            tweenedWeights = append(tweenedWeights, blendedWeight);
         }
 
         // Assume periodicity matches if degrees and CP counts do; otherwise, could be complex.
