@@ -15,199 +15,177 @@ import(path : "onshape/std/containers.fs", version : "2679.0");
 import(path : "f42f46716945f2a9bda5a481/eabbc18661ba5776e0ba962d/97730412fb61f53dcd526c08", version : "a24da502290d2ae4706c631f"); // 3d Arc Utilities
 
 
-const TWEEN_FRACTION_BOUNDS = { (unitless) : [0, 0.5, 1] } as RealBoundSpec;
+export const TWEEN_FRACTION_BOUNDS = { (unitless) : [0, 0.5, 1] } as RealBoundSpec;
 
-annotation { "Feature Type Name" : "Tween Two Curves",
-        "Feature Type Description" : "Interpolates B-spline control points. Curves must be compatible or convertible to compatible B-splines (same degree & CP count).",
-        "UIHint" : "NO_PREVIEW_PROVIDED" }
-export const tweenTwoCurves = defineFeature(function(context is Context, id is Id, definition is map)
-    precondition
+
+/**
+ * Create a curve that is the tween between two input curves.
+ *
+ * All compatibility checks and conversions are handled internally.
+ */
+export function tweenCurves(context is Context, id is Id,
+        curve1 is Query, curve2 is Query, fraction is number)
+{
+    if (evaluateQueryCount(context, curve1) == 0)
+        throw regenError("Select first curve.", ["curve1"]);
+    if (evaluateQueryCount(context, curve2) == 0)
+        throw regenError("Select second curve.", ["curve2"]);
+
+    const edge1 = evaluateQuery(context, curve1)[0];
+    const edge2 = evaluateQuery(context, curve2)[0];
+
+    const def1 = evCurveDefinition(context, { "edge" : edge1, "returnBSplinesAsOther" : true });
+    const def2 = evCurveDefinition(context, { "edge" : edge2, "returnBSplinesAsOther" : true });
+
+    if ((def1 is Circle && def2 is Circle) ||
+        (def1 is Circle && def2 is Line) ||
+        (def1 is Line && def2 is Circle))
     {
-        annotation { "Name" : "First curve", "Filter" : EntityType.EDGE && SketchObject.NO && ConstructionObject.NO, "MaxNumberOfPicks" : 1 }
-        definition.curve1 is Query;
-        annotation { "Name" : "Second curve", "Filter" : EntityType.EDGE && SketchObject.NO && ConstructionObject.NO, "MaxNumberOfPicks" : 1 }
-        definition.curve2 is Query;
-        annotation { "Name" : "Tween fraction" }
-        isReal(definition.fraction, TWEEN_FRACTION_BOUNDS);
-        // definition.numSamples can be removed if no fallback
+        tweenCircleOrLine(context, id, edge1, edge2, fraction);
+        return;
     }
+
+    var bSpline1 = getBSplineFromInput(context, curve1);
+    var bSpline2 = getBSplineFromInput(context, curve2);
+
+    if (bSpline1 == undefined || bSpline2 == undefined)
+        throw regenError("Could not get B-spline representation for input curves.");
+
+    // === DEGREE MATCHING ===
+    if (bSpline1.degree != bSpline2.degree)
     {
-        if (evaluateQueryCount(context, definition.curve1) == 0)
-            throw regenError("Select first curve.", ["curve1"]);
-        if (evaluateQueryCount(context, definition.curve2) == 0)
-            throw regenError("Select second curve.", ["curve2"]);
-
-
-        const edge1 = evaluateQuery(context, definition.curve1)[0];
-        const edge2 = evaluateQuery(context, definition.curve2)[0];
-
-        const def1 = evCurveDefinition(context, { "edge" : edge1, "returnBSplinesAsOther" : true });
-        const def2 = evCurveDefinition(context, { "edge" : edge2, "returnBSplinesAsOther" : true });
-
-        if ((def1 is Circle && def2 is Circle) ||
-            (def1 is Circle && def2 is Line) ||
-            (def1 is Line && def2 is Circle))
+        const targetDegree = max(bSpline1.degree, bSpline2.degree);
+        if (bSpline1.degree < targetDegree)
         {
-            tweenCircleOrLine(context, id, edge1, edge2, definition.fraction);
-            return;
+            bSpline1 = elevateDegree(bSpline1, targetDegree);
         }
-
-        var bSpline1 = getBSplineFromInput(context, definition.curve1);
-        var bSpline2 = getBSplineFromInput(context, definition.curve2);
-
-        if (bSpline1 == undefined || bSpline2 == undefined)
-            throw regenError("Could not get B-spline representation for input curves.");
-
-        // === DEGREE MATCHING ===
-        // Elevate the lower degree curve so both have the same degree
-        if (bSpline1.degree != bSpline2.degree)
+        if (bSpline2.degree < targetDegree)
         {
-            const targetDegree = max(bSpline1.degree, bSpline2.degree);
-            if (bSpline1.degree < targetDegree)
-            {
-                bSpline1 = elevateDegree(bSpline1, targetDegree);
-            }
-            if (bSpline2.degree < targetDegree)
-            {
-                bSpline2 = elevateDegree(bSpline2, targetDegree);
-            }
+            bSpline2 = elevateDegree(bSpline2, targetDegree);
         }
+    }
 
-        // === CONTROL POINT COUNT MATCHING ===
-        if (size(bSpline1.controlPoints) != size(bSpline2.controlPoints))
+    // === CONTROL POINT COUNT MATCHING ===
+    if (size(bSpline1.controlPoints) != size(bSpline2.controlPoints))
+    {
+        const targetCount = max(size(bSpline1.controlPoints), size(bSpline2.controlPoints));
+        const cpFractions1 = computeControlPointFractions(bSpline1.controlPoints);
+        const cpFractions2 = computeControlPointFractions(bSpline2.controlPoints);
+
+        if (size(bSpline1.controlPoints) < targetCount)
         {
-            const targetCount = max(size(bSpline1.controlPoints), size(bSpline2.controlPoints));
-            const cpFractions1 = computeControlPointFractions(bSpline1.controlPoints);
-            const cpFractions2 = computeControlPointFractions(bSpline2.controlPoints);
-
-            if (size(bSpline1.controlPoints) < targetCount)
-            {
-                bSpline1 = matchCPCount(context, bSpline1, targetCount,
+            bSpline1 = matchCPCount(context, bSpline1, targetCount,
                     cpFractions2);
-            }
-            if (size(bSpline2.controlPoints) < targetCount)
-            {
-                bSpline2 = matchCPCount(context, bSpline2, targetCount,
+        }
+        if (size(bSpline2.controlPoints) < targetCount)
+        {
+            bSpline2 = matchCPCount(context, bSpline2, targetCount,
                     cpFractions1);
-            }
         }
+    }
 
+    var cpList1 = bSpline1.controlPoints;
+    var cpList2_orig = bSpline2.controlPoints;
+    var weights1 = bSpline1.weights; // undefined if not rational
+    var weights2_orig = bSpline2.weights; // undefined if not rational
 
-        var cpList1 = bSpline1.controlPoints;
-        var cpList2_orig = bSpline2.controlPoints;
-        var weights1 = bSpline1.weights; // undefined if not rational
-        var weights2_orig = bSpline2.weights; // undefined if not rational
+    if (bSpline1.isPeriodic && bSpline2.isPeriodic && size(cpList1) == size(cpList2_orig))
+    {
+        const shiftNormal = bestPeriodicShift(cpList1, cpList2_orig);
+        const normalRot = rotateArray(cpList2_orig, -shiftNormal);
+        var normalWeightRot = weights2_orig == undefined ? undefined : rotateArray(weights2_orig, -shiftNormal);
+        const distNormal = sumDistances(cpList1, normalRot);
 
-        if (bSpline1.isPeriodic && bSpline2.isPeriodic && size(cpList1) == size(cpList2_orig))
+        const reversed = reverse(cpList2_orig);
+        const shiftRev = bestPeriodicShift(cpList1, reversed);
+        const revRot = rotateArray(reversed, -shiftRev);
+        var revWeightRot = weights2_orig == undefined ? undefined : rotateArray(reverse(weights2_orig), -shiftRev);
+        const distRev = sumDistances(cpList1, revRot);
+
+        if (distRev < distNormal)
         {
-            const shiftNormal = bestPeriodicShift(cpList1, cpList2_orig);
-            const normalRot = rotateArray(cpList2_orig, -shiftNormal);
-            var normalWeightRot = weights2_orig == undefined ? undefined : rotateArray(weights2_orig, -shiftNormal);
-            const distNormal = sumDistances(cpList1, normalRot);
-
-            const reversed = reverse(cpList2_orig);
-            const shiftRev = bestPeriodicShift(cpList1, reversed);
-            const revRot = rotateArray(reversed, -shiftRev);
-            var revWeightRot = weights2_orig == undefined ? undefined : rotateArray(reverse(weights2_orig), -shiftRev);
-            const distRev = sumDistances(cpList1, revRot);
-
-            if (distRev < distNormal)
-            {
-                cpList2_orig = revRot;
-                if (weights2_orig != undefined)
-                    weights2_orig = revWeightRot;
-            }
-            else
-            {
-                cpList2_orig = normalRot;
-                if (weights2_orig != undefined)
-                    weights2_orig = normalWeightRot;
-            }
+            cpList2_orig = revRot;
+            if (weights2_orig != undefined)
+                weights2_orig = revWeightRot;
         }
-
-        var autoDecidedFlip = false;
-        if (!(bSpline1.isPeriodic && bSpline2.isPeriodic))
+        else
         {
-            try
+            cpList2_orig = normalRot;
+            if (weights2_orig != undefined)
+                weights2_orig = normalWeightRot;
+        }
+    }
+
+    var autoDecidedFlip = false;
+    if (!(bSpline1.isPeriodic && bSpline2.isPeriodic))
+    {
+        try
+        {
+            if (size(cpList1) > 1 && size(cpList2_orig) > 1)
             {
-                if (size(cpList1) > 1 && size(cpList2_orig) > 1)
+                var dir1 = normalize(cpList1[1] - cpList1[0]);
+                var dir2 = normalize(cpList2_orig[1] - cpList2_orig[0]);
+                if (dot(dir1, dir2) < 0)
                 {
-                    var dir1 = normalize(cpList1[1] - cpList1[0]);
-                    var dir2 = normalize(cpList2_orig[1] - cpList2_orig[0]);
-                    if (dot(dir1, dir2) < 0)
-                    {
-                        autoDecidedFlip = true;
-                    }
+                    autoDecidedFlip = true;
                 }
             }
-            catch
-            { /* autoDecidedFlip remains false */
-            }
         }
-
-
-        var finalCpList2 = autoDecidedFlip ? reverse(cpList2_orig) : cpList2_orig;
-        var finalWeights2 = bSpline2.isRational && autoDecidedFlip ? reverse(weights2_orig) : weights2_orig;
-
-        // === COMPATIBILITY CHECK ===
-        // Sanity check: degrees should match after elevation step
-        if (bSpline1.degree != bSpline2.degree)
-        {
-            throw regenError("Failed to match curve degrees after elevation.", ["curve1", "curve2"]);
+        catch
+        { /* autoDecidedFlip remains false */
         }
-        // CP Count Check (Cannot "elevate" CP count with current stdlib utilities)
-        if (size(cpList1) != size(finalCpList2))
-        {
-            throw regenError("Curves have different B-spline control point counts (" ~ size(cpList1) ~ " vs " ~ size(finalCpList2) ~ "). CP count matching is not auto-implemented. Please use curves with same CP count or enable point sampling fallback.", ["curve1", "curve2"]);
-        }
-        // Rationality Check
-        if (bSpline1.isRational != bSpline2.isRational)
-        {
-            // Ideally, make both rational if one is. For now, error if different.
-            throw regenError("Curves have different rationality. Both must be rational or non-rational.", ["curve1", "curve2"]);
-        }
+    }
 
-        // --- If compatible, proceed with Control Point Tweening ---
-        var tweenedCps = [];
-        var tweenedWeights = [];
-        const fraction = definition.fraction;
+    var finalCpList2 = autoDecidedFlip ? reverse(cpList2_orig) : cpList2_orig;
+    var finalWeights2 = bSpline2.isRational && autoDecidedFlip ? reverse(weights2_orig) : weights2_orig;
 
-        for (var i = 0; i < size(cpList1); i += 1)
-        {
-            const weight1 = weights1[i];
-            const weight2 = finalWeights2[i];
-            const blendedWeight = weight1 * (1 - fraction) + weight2 * fraction;
+    // === COMPATIBILITY CHECK ===
+    if (bSpline1.degree != bSpline2.degree)
+    {
+        throw regenError("Failed to match curve degrees after elevation.", ["curve1", "curve2"]);
+    }
+    if (size(cpList1) != size(finalCpList2))
+    {
+        throw regenError("Curves have different B-spline control point counts (" ~ size(cpList1) ~ " vs " ~ size(finalCpList2) ~ "). CP count matching is not auto-implemented. Please use curves with same CP count or enable point sampling fallback.", ["curve1", "curve2"]);
+    }
+    if (bSpline1.isRational != bSpline2.isRational)
+    {
+        throw regenError("Curves have different rationality. Both must be rational or non-rational.", ["curve1", "curve2"]);
+    }
 
-            const pos1 = cpList1[i];
-            const pos2 = finalCpList2[i];
-            const blendedPos = pos1 * (1 - fraction) + pos2 * fraction;
+    var tweenedCps = [];
+    var tweenedWeights = [];
 
-            tweenedCps = append(tweenedCps, blendedPos / blendedWeight);
-            tweenedWeights = append(tweenedWeights, blendedWeight);
-        }
+    for (var i = 0; i < size(cpList1); i += 1)
+    {
+        const weight1 = weights1[i];
+        const weight2 = finalWeights2[i];
+        const blendedWeight = weight1 * (1 - fraction) + weight2 * fraction;
 
-        // Assume periodicity matches if degrees and CP counts do; otherwise, could be complex.
-        // Simplification: take periodicity from first curve, or ensure both match.
-        var isPeriodicTween = bSpline1.isPeriodic;
-        if (bSpline1.isPeriodic != bSpline2.isPeriodic)
-        {
-            reportFeatureWarning(context, id, "Curves have different periodicity; tweened curve will adopt periodicity of the first curve.");
-            // Or could throw an error if strict matching is required for periodicity too.
-        }
+        const pos1 = cpList1[i];
+        const pos2 = finalCpList2[i];
+        const blendedPos = pos1 * (1 - fraction) + pos2 * fraction;
 
+        tweenedCps = append(tweenedCps, blendedPos / blendedWeight);
+        tweenedWeights = append(tweenedWeights, blendedWeight);
+    }
 
-        var newBSplineDef = bSplineCurve({
-                "degree" : bSpline1.degree,
-                "controlPoints" : tweenedCps,
-                "isPeriodic" : isPeriodicTween,
-                "isRational" : bSpline1.isRational,
-                "weights" : tweenedWeights
-                // Knots will be defaulted by bSplineCurve()
-            });
+    var isPeriodicTween = bSpline1.isPeriodic;
+    if (bSpline1.isPeriodic != bSpline2.isPeriodic)
+    {
+        reportFeatureWarning(context, id, "Curves have different periodicity; tweened curve will adopt periodicity of the first curve.");
+    }
 
-        opCreateBSplineCurve(context, id + "tweenedCpSpline", { "bSplineCurve" : newBSplineDef });
-    });
+    var newBSplineDef = bSplineCurve({
+            "degree" : bSpline1.degree,
+            "controlPoints" : tweenedCps,
+            "isPeriodic" : isPeriodicTween,
+            "isRational" : bSpline1.isRational,
+            "weights" : tweenedWeights
+        });
 
+    opCreateBSplineCurve(context, id + "tweenedCpSpline", { "bSplineCurve" : newBSplineDef });
+}
 
 //==================================================================
 //=================== Stealing from editCurve ======================
