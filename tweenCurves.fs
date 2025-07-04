@@ -17,7 +17,7 @@ import(path : "f42f46716945f2a9bda5a481/eabbc18661ba5776e0ba962d/97730412fb61f53
 
 const TWEEN_FRACTION_BOUNDS = { (unitless) : [0, 0.5, 1] } as RealBoundSpec;
 
-annotation { "Feature Type Name" : "Tween Two Curves (CP Interpolation)",
+annotation { "Feature Type Name" : "Tween Two Curves",
         "Feature Type Description" : "Interpolates B-spline control points. Curves must be compatible or convertible to compatible B-splines (same degree & CP count).",
         "UIHint" : "NO_PREVIEW_PROVIDED" }
 export const tweenTwoCurves = defineFeature(function(context is Context, id is Id, definition is map)
@@ -77,13 +77,18 @@ export const tweenTwoCurves = defineFeature(function(context is Context, id is I
         if (size(bSpline1.controlPoints) != size(bSpline2.controlPoints))
         {
             const targetCount = max(size(bSpline1.controlPoints), size(bSpline2.controlPoints));
+            const cpFractions1 = computeControlPointFractions(bSpline1.controlPoints);
+            const cpFractions2 = computeControlPointFractions(bSpline2.controlPoints);
+
             if (size(bSpline1.controlPoints) < targetCount)
             {
-                bSpline1 = matchCPCount(context, bSpline1, targetCount);
+                bSpline1 = matchCPCount(context, bSpline1, targetCount,
+                    cpFractions2);
             }
             if (size(bSpline2.controlPoints) < targetCount)
             {
-                bSpline2 = matchCPCount(context, bSpline2, targetCount);
+                bSpline2 = matchCPCount(context, bSpline2, targetCount,
+                    cpFractions1);
             }
         }
 
@@ -465,7 +470,7 @@ function elevateBSpline(originalPoints is array, originalKnots is array, origina
 
 // Refine a B-spline so that it has exactly `targetCount` control points.
 // Uses sampling and spline approximation to preserve the original shape.
-function matchCPCount(context is Context, bspline is map, targetCount is number) returns map
+function matchCPCount(context is Context, bspline is map, targetCount is number, refFractions is array) returns map
 {
     if (size(bspline.controlPoints) >= targetCount)
     {
@@ -479,7 +484,12 @@ function matchCPCount(context is Context, bspline is map, targetCount is number)
     var params = [];
     for (var i = 0; i < targetCount; i += 1)
     {
-        params = append(params, startParam + (endParam - startParam) * i / (targetCount - 1));
+        var fraction = i / (targetCount - 1);
+        if (refFractions != undefined && size(refFractions) == targetCount)
+        {
+            fraction = refFractions[i];
+        }
+        params = append(params, startParam + (endParam - startParam) * fraction);
     }
     const positions = evaluateSpline({ "spline" : bspline, "parameters" : params })[0];
     const target = approximationTarget({ 'positions' : positions });
@@ -491,16 +501,23 @@ function matchCPCount(context is Context, bspline is map, targetCount is number)
                 "parameters" : params,
                 "maxControlPoints" : targetCount
             })[0];
-
-    if (bspline.isRational && !refined.isRational)
+    if (size(refined.controlPoints) != targetCount)
+    {
+        refined = bSplineCurve({
+                    "degree" : bspline.degree,
+                    "isPeriodic" : bspline.isPeriodic,
+                    "isRational" : bspline.isRational,
+                    "controlPoints" : positions,
+                    "weights" : bspline.isRational ? makeArray(targetCount, 1) : undefined
+                });
+    }
+    else if (bspline.isRational && !refined.isRational)
     {
         refined.isRational = true;
         refined.weights = makeArray(size(refined.controlPoints), 1);
     }
     return refined;
 }
-
-
 
 
 //==================================================================
@@ -528,6 +545,35 @@ function sumDistances(points1 is array, points2 is array) returns ValueWithUnits
     }
     return total;
 }
+
+// Compute cumulative fractions along a control point list
+function computeControlPointFractions(points is array) returns array
+{
+    if (size(points) == 0)
+    {
+        return [];
+    }
+    var fractions = makeArray(size(points));
+    // Use a distance value so that divisions by the total length
+    // later yield dimensionless fractions.
+    fractions[0] = 0 * meter;
+    var total = 0 * meter;
+    for (var i = 1; i < size(points); i += 1)
+    {
+        total += norm(points[i] - points[i - 1]);
+        fractions[i] = total;
+    }
+    if (total == 0 * meter)
+    {
+        return makeArray(size(points), 0);
+    }
+    for (var i = 0; i < size(points); i += 1)
+    {
+        fractions[i] /= total;
+    }
+    return fractions;
+}
+
 
 // Find the rotation of `candidate` that best matches `reference`
 function bestPeriodicShift(reference is array, candidate is array) returns number
@@ -562,9 +608,11 @@ function alignCircleToCurve(context is Context, circleEdge is Query, otherEdge i
         sampleParams = append(sampleParams, i / sampleCount);
 
     const circlePts = mapArray(evEdgeTangentLines(context, { "edge" : circleEdge, "parameters" : sampleParams }),
-                               line => line.origin);
+        line
+        =>line.origin);
     const otherPts = mapArray(evEdgeTangentLines(context, { "edge" : otherEdge, "parameters" : sampleParams }),
-                              line => line.origin);
+        line
+        =>line.origin);
 
     const normalShift = bestPeriodicShift(circlePts, otherPts);
     const normalRot = rotateArray(circlePts, -normalShift);
