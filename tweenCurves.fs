@@ -1,17 +1,18 @@
-FeatureScript 2656;
+FeatureScript 2679;
 // Standard Library Imports
-import(path : "onshape/std/common.fs", version : "2656.0");
-import(path : "onshape/std/evaluate.fs", version : "2656.0");
-import(path : "onshape/std/geomOperations.fs", version : "2656.0");
-import(path : "onshape/std/query.fs", version : "2656.0");
-import(path : "onshape/std/vector.fs", version : "2656.0");
-import(path : "onshape/std/units.fs", version : "2656.0");
-import(path : "onshape/std/valueBounds.fs", version : "2656.0");
-import(path : "onshape/std/curveGeometry.fs", version : "2656.0"); // For bSplineCurve() constructor and BSplineCurve type
-import(path : "onshape/std/error.fs", version : "2656.0"); // For reportFeatureWarning
-import(path : "onshape/std/approximationUtils.fs", version : "2656.0");
-import(path : "onshape/std/splineUtils.fs", version : "2656.0");
-import(path : "onshape/std/containers.fs", version : "2656.0");
+import(path : "onshape/std/common.fs", version : "2679.0");
+import(path : "onshape/std/evaluate.fs", version : "2679.0");
+import(path : "onshape/std/geomOperations.fs", version : "2679.0");
+import(path : "onshape/std/query.fs", version : "2679.0");
+import(path : "onshape/std/vector.fs", version : "2679.0");
+import(path : "onshape/std/units.fs", version : "2679.0");
+import(path : "onshape/std/valueBounds.fs", version : "2679.0");
+import(path : "onshape/std/curveGeometry.fs", version : "2679.0"); // For bSplineCurve() constructor and BSplineCurve type
+import(path : "onshape/std/error.fs", version : "2679.0"); // For reportFeatureWarning
+import(path : "onshape/std/approximationUtils.fs", version : "2679.0");
+import(path : "onshape/std/splineUtils.fs", version : "2679.0");
+import(path : "onshape/std/containers.fs", version : "2679.0");
+import(path : "f42f46716945f2a9bda5a481/eabbc18661ba5776e0ba962d/97730412fb61f53dcd526c08", version : "a24da502290d2ae4706c631f"); // 3d Arc Utilities
 
 
 const TWEEN_FRACTION_BOUNDS = { (unitless) : [0, 0.5, 1] } as RealBoundSpec;
@@ -36,6 +37,20 @@ export const tweenTwoCurves = defineFeature(function(context is Context, id is I
         if (evaluateQueryCount(context, definition.curve2) == 0)
             throw regenError("Select second curve.", ["curve2"]);
 
+
+        const edge1 = evaluateQuery(context, definition.curve1)[0];
+        const edge2 = evaluateQuery(context, definition.curve2)[0];
+
+        const def1 = evCurveDefinition(context, { "edge" : edge1, "returnBSplinesAsOther" : true });
+        const def2 = evCurveDefinition(context, { "edge" : edge2, "returnBSplinesAsOther" : true });
+
+        if ((def1 is Circle && def2 is Circle) ||
+            (def1 is Circle && def2 is Line) ||
+            (def1 is Line && def2 is Circle))
+        {
+            tweenCircleOrLine(context, id, edge1, edge2, definition.fraction);
+            return;
+        }
 
         var bSpline1 = getBSplineFromInput(context, definition.curve1);
         var bSpline2 = getBSplineFromInput(context, definition.curve2);
@@ -184,6 +199,7 @@ export const tweenTwoCurves = defineFeature(function(context is Context, id is I
                 "weights" : tweenedWeights
                 // Knots will be defaulted by bSplineCurve()
             });
+
         opCreateBSplineCurve(context, id + "tweenedCpSpline", { "bSplineCurve" : newBSplineDef });
     });
 
@@ -505,7 +521,7 @@ function getAllEdgesQuery(query is Query) returns Query
 // Compute the sum of point distances between two control point arrays
 function sumDistances(points1 is array, points2 is array) returns ValueWithUnits
 {
-    var total = 0*meter;
+    var total = 0 * meter;
     for (var i = 0; i < size(points1); i += 1)
     {
         total += norm(points1[i] - points2[i]);
@@ -518,7 +534,7 @@ function bestPeriodicShift(reference is array, candidate is array) returns numbe
 {
     const n = size(reference);
     var bestShift = 0;
-    var bestDistance = 1e30*meter;
+    var bestDistance = 1e30 * meter;
     for (var shift = 0; shift < n; shift += 1)
     {
         const rotated = rotateArray(candidate, -shift);
@@ -530,4 +546,95 @@ function bestPeriodicShift(reference is array, candidate is array) returns numbe
         }
     }
     return bestShift;
+}
+
+
+function collinearPoints(p1 is Vector, p2 is Vector, p3 is Vector) returns boolean
+{
+    return parallelVectors(p2 - p1, p3 - p1);
+}
+
+function alignCircleToCurve(context is Context, circleEdge is Query, otherEdge is Query, baseParams is array) returns array
+{
+    const sampleCount = 8;
+    var sampleParams = [];
+    for (var i = 0; i < sampleCount; i += 1)
+        sampleParams = append(sampleParams, i / sampleCount);
+
+    const circlePts = mapArray(evEdgeTangentLines(context, { "edge" : circleEdge, "parameters" : sampleParams }),
+                               line => line.origin);
+    const otherPts = mapArray(evEdgeTangentLines(context, { "edge" : otherEdge, "parameters" : sampleParams }),
+                              line => line.origin);
+
+    const normalShift = bestPeriodicShift(circlePts, otherPts);
+    const normalRot = rotateArray(circlePts, -normalShift);
+    const reversed = reverse(circlePts);
+    const revShift = bestPeriodicShift(reversed, otherPts);
+    const revRot = rotateArray(reversed, -revShift);
+    const distNorm = sumDistances(normalRot, otherPts);
+    const distRev = sumDistances(revRot, otherPts);
+
+    if (distRev < distNorm)
+        return rotateArray(reverse(baseParams), -revShift);
+    return rotateArray(baseParams, -normalShift);
+}
+
+function tweenCircleOrLine(context is Context, id is Id, edge1 is Query, edge2 is Query, fraction is number)
+{
+    const baseParams = [0, 0.5, 1];
+    var params1 = baseParams;
+    var params2 = baseParams;
+
+    const info1 = evEdgeTangentLine(context, { "edge" : edge1, "parameter" : 0 });
+    const info2 = evEdgeTangentLine(context, { "edge" : edge2, "parameter" : 0 });
+    const dir1 = normalize(info1.direction);
+    const dir2 = normalize(info2.direction);
+    if (dot(dir1, dir2) < 0)
+        params2 = reverse(params2);
+
+    const def1 = evCurveDefinition(context, { "edge" : edge1, "returnBSplinesAsOther" : true });
+    const def2 = evCurveDefinition(context, { "edge" : edge2, "returnBSplinesAsOther" : true });
+
+    if (def1 is Circle && def2 is Circle)
+    {
+        params2 = alignCircleToCurve(context, edge2, edge1, params2);
+    }
+    else if (def1 is Circle && !(def2 is Circle))
+    {
+        params1 = alignCircleToCurve(context, edge1, edge2, params1);
+    }
+    else if (def2 is Circle && !(def1 is Circle))
+    {
+        params2 = alignCircleToCurve(context, edge2, edge1, params2);
+    }
+
+    const tangents1 = evEdgeTangentLines(context, { "edge" : edge1, "parameters" : params1 });
+    const tangents2 = evEdgeTangentLines(context, { "edge" : edge2, "parameters" : params2 });
+
+    var points = [];
+    for (var i = 0; i < size(baseParams); i += 1)
+    {
+        const pos1 = tangents1[i].origin;
+        const pos2 = tangents2[i].origin;
+        points = append(points, pos1 * (1 - fraction) + pos2 * fraction);
+    }
+
+    if (collinearPoints(points[0], points[1], points[2]))
+    {
+        const lineDef = bSplineCurve({ "degree" : 1, "isPeriodic" : false, "controlPoints" : [points[0], points[2]] });
+        opCreateBSplineCurve(context, id + "tweenedCpSpline", { "bSplineCurve" : lineDef });
+        return;
+    }
+
+    if (squaredNorm(points[0] - points[2]) < 1e-8 * meter * meter)
+    {
+        const center = def1.coordSystem.origin * (1 - fraction) + def2.coordSystem.origin * fraction;
+        const radius = def1.radius * (1 - fraction) + def2.radius * fraction;
+        const normal = normalize(def1.coordSystem.zAxis * (1 - fraction) + def2.coordSystem.zAxis * fraction);
+        opCircle3d(context, id + "tweenedCpSpline", { "center" : center, "normal" : normal, "radius" : radius });
+    }
+    else
+    {
+        opArc3d(context, id + "tweenedCpSpline", { "start" : points[0], "mid" : points[1], "end" : points[2] });
+    }
 }
