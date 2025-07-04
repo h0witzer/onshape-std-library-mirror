@@ -1,7 +1,7 @@
 FeatureScript 2679;
 import(path : "onshape/std/common.fs", version : "2679.0");
 
-import(path : "onshape/std/feature.fs", version : "2679.0");
+import(path : "onshape/std/geometry.fs", version : "2679.0");
 import(path : "onshape/std/vector.fs", version : "2679.0");
 import(path : "onshape/std/coordSystem.fs", version : "2679.0");
 import(path : "onshape/std/transform.fs", version : "2679.0");
@@ -55,6 +55,130 @@ precondition
     opDeleteBodies(context, id + "deleteSketch", { "entities" : qCreatedBy(sketchId, EntityType.BODY) });
     return qCreatedBy(id + "wire", EntityType.BODY);
 }
+
+
+/**
+ * Create a full circle wire in 3D space using sketch geometry.
+ * Returns a query for the created wire body.
+ *
+ * @param id : @autocomplete `id + "circle"`
+ * @param definition {{
+ *      @field center {Vector} : Center of the circle.
+ *      @field normal {Vector} : Normal direction of the circle plane.
+ *      @field radius {ValueWithUnits} : Circle radius.
+ *      @field xDirection {Vector} : Optional in-plane x direction.
+ * }}
+ */
+export function opCircle3d(context is Context, id is Id, definition is map)
+precondition
+{
+    is3dLengthVector(definition.center);
+    is3dDirection(definition.normal);
+    isLength(definition.radius);
+    definition.xDirection == undefined || is3dDirection(definition.xDirection);
+}
+{
+    var xDir = definition.xDirection;
+    if (xDir == undefined)
+        xDir = perpendicularVector(definition.normal);
+    const cSys = coordSystem(definition.center, normalize(xDir), normalize(definition.normal));
+    const sketchId = id + "sketch";
+    {
+        const sketch = newSketchOnPlane(context, sketchId, { "sketchPlane" : plane(cSys) });
+        skCircle(sketch, "circle", { "center" : vector(0, 0) * meter, "radius" : definition.radius });
+        skSolve(sketch);
+    }
+    opExtractWires(context, id + "wire", { "edges" : qCreatedBy(sketchId, EntityType.EDGE) });
+        opDropCurve(context, id + "wire", {
+            "tools" : qCreatedBy(sketchId, EntityType.EDGE),
+            "targets" : qCreatedBy(planeId, EntityType.FACE),
+            "projectionType" : ProjectionType.NORMAL_TO_TARGET
+    });
+    opDeleteBodies(context, id + "deleteSketch", { "entities" : qCreatedBy(sketchId, EntityType.BODY) });
+    return qCreatedBy(id + "wire", EntityType.BODY);
+}
+
+
+/**
+ * Create a circular wire body through three points in 3D space.
+ * The resulting circle lies in the plane defined by the points and is
+ * created with a sketch circle that is converted to a wire using
+ * [opDropCurve].
+ * Returns a query for the created wire body.
+ *
+ * @param id : @autocomplete `id + "circle"`
+ * @param definition {{
+ *      @field first {Vector} : First vertex defining the circle.
+ *      @field second {Vector} : Second vertex defining the circle.
+ *      @field third {Vector} : Third vertex defining the circle.
+ * }}
+ */
+export function op3PointCircle3d(context is Context, id is Id, definition is map)
+precondition
+{
+    is3dLengthVector(definition.first);
+    is3dLengthVector(definition.second);
+    is3dLengthVector(definition.third);
+}
+{
+    const p1 = definition.first;
+    const p2 = definition.second;
+    const p3 = definition.third;
+
+    // Determine a coordinate system whose XY plane contains the three points
+    const v1 = p2 - p1;
+    var normal = cross(v1, p3 - p1);
+    if (norm(normal) < 1e-8 * meter^2)
+        throw regenError(ErrorStringEnum.READ_FAILED, id);
+    const xAxis = normalize(v1);
+    normal = normalize(normal);
+    const planeCSys = coordSystem(p1, xAxis, normal);
+
+    const p2Local = fromWorld(planeCSys, p2);
+    const p3Local = fromWorld(planeCSys, p3);
+    const p1d = vector(0 * meter, 0 * meter);
+    const p2d = vector(p2Local[0], p2Local[1]);
+    const p3d = vector(p3Local[0], p3Local[1]);
+
+    const circleData = circumcenter2d(p1d, p2d, p3d);
+    if (circleData.invalid)
+        throw regenError(ErrorStringEnum.READ_FAILED, id);
+
+    const planeId = id + "plane";
+    opPlane(context, planeId, { "plane" : plane(planeCSys) });
+
+    const sketchId = id + "sketch";
+    {
+        const sketch = newSketchOnPlane(context, sketchId, { "sketchPlane" : plane(planeCSys) });
+        skCircle(sketch, "circle", { "center" : circleData.center, "radius" : circleData.radius });
+        skSolve(sketch);
+    }
+
+    const edgeQuery = qCreatedBy(sketchId, EntityType.EDGE);
+    opDropCurve(context, id + "wire", {
+            "tools" : edgeQuery,
+            "targets" : qCreatedBy(planeId, EntityType.FACE),
+            "projectionType" : ProjectionType.NORMAL_TO_TARGET
+    });
+
+    opDeleteBodies(context, id + "deleteSketch", { "entities" : qCreatedBy(sketchId, EntityType.BODY) });
+    opDeleteBodies(context, id + "deletePlane", { "entities" : qCreatedBy(planeId, EntityType.BODY) });
+    return qCreatedBy(id + "wire", EntityType.BODY);
+}
+
+function circumcenter2d(p1 is Vector, p2 is Vector, p3 is Vector) returns map
+{
+    const d = 2 * (p1[0] * (p2[1] - p3[1]) + p2[0] * (p3[1] - p1[1]) + p3[0] * (p1[1] - p2[1]));
+    if (abs(d) < 1e-9 * meter ^ 2)
+        return { "invalid" : true };
+
+    const ux = ((squaredNorm(p1) * (p2[1] - p3[1]) + squaredNorm(p2) * (p3[1] - p1[1]) + squaredNorm(p3) * (p1[1] - p2[1])) / d);
+    const uy = ((squaredNorm(p1) * (p3[0] - p2[0]) + squaredNorm(p2) * (p1[0] - p3[0]) + squaredNorm(p3) * (p2[0] - p1[0])) / d);
+    const center = vector(ux, uy);
+    const radius = sqrt(squaredNorm(center - p1));
+    return { "center" : center, "radius" : radius, "invalid" : false };
+}
+
 
 /**
  * Create a circular arc wire through a start and end point such that the arc is
@@ -129,6 +253,88 @@ precondition
     opDeleteBodies(context, id + "deleteSketch", { "entities" : qCreatedBy(sketchId, EntityType.BODY) });
     return qCreatedBy(id + "wire", EntityType.BODY);
 }
+
+/**
+ * Create a pair of tangent circular arcs connecting the start and end of a path.
+ *
+ * The arcs are tangent to the input path at the start and end and form a
+ * tangent arc chain with each other.
+ *
+ * @param id : @autocomplete `id + "biArc"`
+ * @param definition {{
+ *      @field startPath {Query} : Path providing the start point and
+ *          start tangent constraint.
+ *      @field endPath {Query} : Path providing the end point and
+ *          end tangent constraint.
+ * }}
+ */
+export function opBiArc3d(context is Context, id is Id, definition is map)
+precondition
+{
+        is3dLengthVector(definition.start);
+
+    definition.tangentStartEdge is Query;
+    definition.tangentEndEdge is Query;
+        is3dLengthVector(definition.end);
+
+}
+{
+    const startPath = constructPath(context, definition.tangentStartEdge);
+    const endPath = constructPath(context, definition.tangentEndEdge);
+
+    const startEval = evPathTangentLines(context, startPath, [1]).tangentLines[0];
+    const endEval = evPathTangentLines(context, endPath, [0]).tangentLines[0];
+
+    const startPoint = definition.start;
+    const startTangent = normalize(startEval.direction);
+    const endPoint = definition.end;
+    const endTangent = normalize(endEval.direction);
+
+    const chord = endPoint - startPoint;
+    var parameter = 0.5;
+    var step = 0.25;
+    var junction;
+    var firstArc;
+    var firstTangent;
+    var secondArc;
+    for (var i = 0; i < 8; i += 1)
+    {
+        junction = startPoint + parameter * chord;
+        firstArc = getTangentArcData(startPoint, startTangent, junction);
+        if (!firstArc.valid)
+        {
+            parameter += step;
+            step *= 0.5;
+            continue;
+        }
+
+        firstTangent = normalize(cross(firstArc.normal, junction - firstArc.center));
+        secondArc = getTangentArcData(junction, firstTangent, endPoint);
+        if (!secondArc.valid)
+        {
+            parameter -= step;
+            step *= 0.5;
+            continue;
+        }
+
+        const endDir = normalize(cross(secondArc.normal, endPoint - secondArc.center));
+        const diff = dot(endDir, endTangent) - 1;
+        if (abs(diff) < 1e-4)
+            break;
+        if (diff > 0)
+            parameter += step;
+        else
+            parameter -= step;
+        step *= 0.5;
+    }
+
+    const firstWire = opArc3d(context, id + "a1", { "start" : startPoint, "mid" : firstArc.mid, "end" : junction });
+    const secondWire = opArc3d(context, id + "a2", { "start" : junction, "mid" : secondArc.mid, "end" : endPoint });
+    return qUnion([firstWire, secondWire]);
+}
+
+
+
 
 /**
  * Compute parameters describing the circular arc defined by a start point,
