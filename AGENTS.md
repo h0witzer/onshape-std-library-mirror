@@ -11,6 +11,7 @@
 - Naming convention for the features we are working with should be more explicit and less shorthand. Match the level of readability seen in the Onshape Standard Library functions
 - Don't use abbreviated naming convention for functions or counters, I can't read that shit, name things with clarity and relation to application like the Standard Library does
 - Function nesting is not a thing in featurescript
+- Put the functions below the feature definition, I hate having to scroll to find my feature
 - Bitshifting and bitmasking operations are not a thing in featurescript
 
 ## Testing Instructions
