@@ -1,0 +1,668 @@
+//_______________________________________________________________________________________________________________________________________________
+//
+// This FeatureScript is owned by Michael Pascoe and is distributed by CADSharp LLC. 
+// You may not redistribute it for commercial purposes without the permission of said owner and CADSharp LLC. Copyright (c) 2025 Michael Pascoe.
+//_______________________________________________________________________________________________________________________________________________
+
+
+FeatureScript 2695;
+import(path : "onshape/std/common.fs", version : "2695.0");
+
+icon::import(path : "9bf02d7b6f4d1d54474f4161", version : "f4b603ca80ced348f6d8959b");
+import(path : "12312312345abcabcabcdeff/f2bb4cfe550d510254d4a301/1609b2014b90745ff149a187", version : "da53888e5c57434ff3cd867f");
+export import(path : "cbeb3dcf671e00785597bd76/144bf6a7fdc989e9e28ce5ea/a75ab01def146a42f55baa7f", version : "dc78e9b85c9f16ea9e131d3f");
+
+
+export enum OperationType
+{
+    annotation { "Name" : "Fill" }
+    FILL,
+    annotation { "Name" : "Constrained surface" }
+    CONSTRAINED_SURFACE,
+}
+
+
+annotation {
+        "Feature Type Name" : "Approximate face",
+        "Icon" : icon::BLOB_DATA,
+        "Feature Type Description" : "<br> <b>Summary</b> <br> Creates an approximated surface by sampling selected faces.",
+        "Description Image" : cadsharpLogo::BLOB_DATA,
+        "Editing Logic Function" : "cadsharpUrlEditLogic" }
+export const approximateFace = defineFeature(function(context is Context, id is Id, definition is map)
+    precondition
+    {
+        annotation { "Name" : "Operation type", "UIHint" : [UIHint.SHOW_LABEL, UIHint.REMEMBER_PREVIOUS_VALUE], "Default" : OperationType.CONSTRAINED_SURFACE }
+        definition.operationType is OperationType;
+
+        annotation { "Group Name" : "Settings", "Collapsed By Default" : false }
+        {
+            annotation { "Name" : "Samples", "UIHint" : UIHint.REMEMBER_PREVIOUS_VALUE }
+            isInteger(definition.samples, { (unitless) : [3, 3, 10000] } as IntegerBoundSpec);
+
+            annotation { "Name" : "Border offset %", "UIHint" : UIHint.REMEMBER_PREVIOUS_VALUE }
+            isInteger(definition.border, { (unitless) : [0, 20, 100] } as IntegerBoundSpec);
+
+            if (definition.operationType == OperationType.FILL)
+            {
+                annotation { "Name" : "Replace faces", "UIHint" : UIHint.REMEMBER_PREVIOUS_VALUE }
+                definition.replaceFaces is boolean;
+            }
+            else
+            {
+                annotation { "Name" : "Include vertices", "UIHint" : UIHint.REMEMBER_PREVIOUS_VALUE, "Default" : true }
+                definition.includeVerticesM is boolean;
+
+                annotation { "Name" : "Sample boundary edges", "UIHint" : UIHint.REMEMBER_PREVIOUS_VALUE, "Default" : false }
+                definition.sampleExternalBoundaryEdgesM is boolean;
+
+                annotation { "Group Name" : "External edges", "Driving Parameter" : "sampleExternalBoundaryEdgesM", "Collapsed By Default" : false }
+                {
+                    if (definition.sampleExternalBoundaryEdgesM)
+                    {
+                        annotation { "Name" : "Edge samples", "UIHint" : UIHint.REMEMBER_PREVIOUS_VALUE }
+                        isInteger(definition.edgeSamplesM, { (unitless) : [1, 3, 10000] } as IntegerBoundSpec);
+
+                        annotation { "Name" : "Edge clearance %", "UIHint" : UIHint.REMEMBER_PREVIOUS_VALUE }
+                        isInteger(definition.edgeClearanceM, { (unitless) : [0, 20, 100] } as IntegerBoundSpec);
+                    }
+                }
+
+                annotation { "Name" : "Sample internal edges", "UIHint" : UIHint.REMEMBER_PREVIOUS_VALUE, "Default" : false }
+                definition.sampleInternalBoundaryEdgesM is boolean;
+
+                annotation { "Group Name" : "External edges", "Driving Parameter" : "sampleInternalBoundaryEdgesM", "Collapsed By Default" : false }
+                {
+                    if (definition.sampleInternalBoundaryEdgesM)
+                    {
+                        annotation { "Name" : "Edge samples", "UIHint" : UIHint.REMEMBER_PREVIOUS_VALUE }
+                        isInteger(definition.edgeSamplesInternalM, { (unitless) : [1, 3, 10000] } as IntegerBoundSpec);
+
+                        annotation { "Name" : "Edge clearance %", "UIHint" : UIHint.REMEMBER_PREVIOUS_VALUE }
+                        isInteger(definition.edgeClearanceInternalM, { (unitless) : [0, 10, 100] } as IntegerBoundSpec);
+                    }
+                }
+
+                annotation { "Name" : "Trim to boundary", "UIHint" : UIHint.REMEMBER_PREVIOUS_VALUE, "Default" : true }
+                definition.trimToBoundary is boolean;
+
+                annotation { "Name" : "Smooth", "UIHint" : UIHint.REMEMBER_PREVIOUS_VALUE, "Default" : true }
+                definition.smooth is boolean;
+
+                annotation { "Name" : "Tolerance", "UIHint" : UIHint.REMEMBER_PREVIOUS_VALUE }
+                isLength(definition.tolerance, { (inch) : [0, 0.05, 1] } as LengthBoundSpec);
+            }
+        }
+
+        annotation { "Name" : "Faces", "Item name" : "Face",
+                    "Driven query" : "thisFaces",
+                    "Item label template" : "#thisFaces",
+                    "UIHint" : UIHint.COLLAPSE_ARRAY_ITEMS }
+        definition.faces is array;
+        for (var face in definition.faces)
+        {
+            annotation { "Name" : "Entities", "Filter" : EntityType.FACE } //, "MaxNumberOfPicks" : 1 }
+            face.thisFaces is Query;
+
+            annotation { "Name" : "Override settings", "UIHint" : UIHint.MATCH_LAST_ARRAY_ITEM, "Default" : false }
+            face.overrideSettings is boolean;
+
+            if (face.overrideSettings)
+            {
+                annotation { "Name" : "U samples", "UIHint" : UIHint.MATCH_LAST_ARRAY_ITEM }
+                isInteger(face.uSamples, { (unitless) : [3, 3, 10000] } as IntegerBoundSpec);
+
+                annotation { "Name" : "V samples", "UIHint" : UIHint.MATCH_LAST_ARRAY_ITEM }
+                isInteger(face.vSamples, { (unitless) : [3, 3, 10000] } as IntegerBoundSpec);
+
+                annotation { "Name" : "B1 %", "UIHint" : UIHint.MATCH_LAST_ARRAY_ITEM }
+                isInteger(face.b1, { (unitless) : [0, 20, 100] } as IntegerBoundSpec);
+
+                annotation { "Name" : "B2 %", "UIHint" : UIHint.MATCH_LAST_ARRAY_ITEM }
+                isInteger(face.b2, { (unitless) : [0, 20, 100] } as IntegerBoundSpec);
+
+                annotation { "Name" : "B3 %", "UIHint" : UIHint.MATCH_LAST_ARRAY_ITEM }
+                isInteger(face.b3, { (unitless) : [0, 20, 100] } as IntegerBoundSpec);
+
+                annotation { "Name" : "B4 %", "UIHint" : UIHint.MATCH_LAST_ARRAY_ITEM }
+                isInteger(face.b4, { (unitless) : [0, 20, 100] } as IntegerBoundSpec);
+
+
+                if (face.operationType == OperationType.CONSTRAINED_SURFACE)
+                {
+                    annotation { "Name" : "Include vertices", "UIHint" : UIHint.MATCH_LAST_ARRAY_ITEM, "Default" : true }
+                    face.includeVertices is boolean;
+
+                    annotation { "Name" : "Sample boundary edges", "UIHint" : UIHint.MATCH_LAST_ARRAY_ITEM, "Default" : false }
+                    face.sampleExternalBoundaryEdges is boolean;
+
+                    // annotation { "Group Name" : "External edges", "Driving Parameter" : "sampleExternalBoundaryEdges", "Collapsed By Default" : false }
+                    // {
+                    //     if (face.sampleExternalBoundaryEdges)
+                    {
+                        annotation { "Name" : "Edge samples", "UIHint" : UIHint.MATCH_LAST_ARRAY_ITEM }
+                        isInteger(face.edgeSamples, { (unitless) : [1, 3, 10000] } as IntegerBoundSpec);
+
+                        annotation { "Name" : "Edge clearance %", "UIHint" : UIHint.MATCH_LAST_ARRAY_ITEM }
+                        isInteger(face.edgeClearance, { (unitless) : [0, 20, 100] } as IntegerBoundSpec);
+                    }
+                    // }
+
+                    annotation { "Name" : "Sample internal edges", "UIHint" : UIHint.MATCH_LAST_ARRAY_ITEM, "Default" : false }
+                    face.sampleInternalBoundaryEdges is boolean;
+
+                    // annotation { "Group Name" : "External edges", "Driving Parameter" : "sampleInternalBoundaryEdges", "Collapsed By Default" : false }
+                    // {
+                    if (face.sampleInternalBoundaryEdges)
+                    {
+                        annotation { "Name" : "Edge samples", "UIHint" : UIHint.MATCH_LAST_ARRAY_ITEM }
+                        isInteger(face.edgeSamplesInternal, { (unitless) : [1, 3, 10000] } as IntegerBoundSpec);
+
+                        annotation { "Name" : "Edge clearance %", "UIHint" : UIHint.MATCH_LAST_ARRAY_ITEM }
+                        isInteger(face.edgeClearanceInternal, { (unitless) : [0, 10, 100] } as IntegerBoundSpec);
+                    }
+                    // }
+                }
+            }
+        }
+
+        cadsharpUrlPredicate(definition);
+    }
+    {
+        var toColor = qNothing();
+
+        const allFaces = mapArray(definition.faces, data
+                =>data.thisFaces)->qUnion();
+        const externalBoundaryEdges = qLoopEdges(allFaces);
+        const internalBoundaryEdges = qSubtraction(qAdjacent(allFaces, AdjacencyType.EDGE, EntityType.EDGE), externalBoundaryEdges);
+        const ownerBody = makeRobustQuery(context, qOwnerBody(externalBoundaryEdges));
+
+        const arrayQty = size(definition.faces);
+        var gridPoints = qNothing();
+        var constrainedSurfaceDefinition = { "points" : [] };
+
+        for (var i = 0; i < arrayQty; i += 1)
+        {
+            const a = definition.faces[i];
+
+            var thisDef = {};
+
+            thisDef.faces = a.thisFaces;
+            const thisEdges = qAdjacent(thisDef.faces, AdjacencyType.EDGE, EntityType.EDGE);
+            thisDef.externalBoundaryEdges = qIntersection([externalBoundaryEdges, thisEdges]);
+            thisDef.internalBoundaryEdges = qIntersection([internalBoundaryEdges, thisEdges]);
+
+            if (a.overrideSettings)
+            {
+                thisDef.sampleExternalBoundaryEdges = a.sampleExternalBoundaryEdges;
+                thisDef.sampleInternalBoundaryEdges = a.sampleInternalBoundaryEdges;
+                thisDef.uSamples = a.uSamples;
+                thisDef.vSamples = a.vSamples;
+                thisDef.b1 = a.b1;
+                thisDef.b2 = a.b2;
+                thisDef.b3 = a.b3;
+                thisDef.b4 = a.b4;
+                thisDef.edgeSamples = a.edgeSamples;
+                thisDef.edgeClearance = a.edgeClearance;
+                thisDef.includeVertices = a.includeVertices;
+            }
+            else
+            {
+                thisDef.sampleExternalBoundaryEdges = definition.sampleExternalBoundaryEdgesM;
+                thisDef.sampleInternalBoundaryEdges = definition.sampleInternalBoundaryEdgesM;
+                thisDef.uSamples = definition.samples;
+                thisDef.vSamples = definition.samples;
+                thisDef.b1 = definition.border;
+                thisDef.b2 = definition.border;
+                thisDef.b3 = definition.border;
+                thisDef.b4 = definition.border;
+                thisDef.edgeSamples = definition.edgeSamplesM;
+                thisDef.edgeClearance = definition.edgeClearanceM;
+                thisDef.includeVertices = definition.includeVerticesM;
+            }
+
+            const faces = thisDef.faces;
+            const evFaces = evaluateQuery(context, faces);
+            const qty = size(evFaces);
+
+
+            var edgeSampleQuery = qNothing();
+            edgeSampleQuery = thisDef.sampleExternalBoundaryEdges ? thisDef.externalBoundaryEdges : edgeSampleQuery;
+
+
+            for (var k = 0; k < qty; k += 1)
+            {
+                const face = evFaces[k];
+
+                if (definition.operationType == OperationType.FILL)
+                {
+                    const thisFacePoints = createUVPointGrid(context, id + i + k, face, thisDef.uSamples, thisDef.vSamples, thisDef.externalBoundaryEdges, thisDef.b1, thisDef.b2, thisDef.b3, thisDef.b4);
+                    gridPoints = qUnion([gridPoints, thisFacePoints]);
+                }
+                else
+                {
+                    const thisDef = createConstrainedSurfacePointDefinition(context, id, face, thisDef.uSamples, thisDef.vSamples, thisDef.b1, thisDef.b2, thisDef.b3, thisDef.b4);
+                    constrainedSurfaceDefinition.points = mergeArrays(constrainedSurfaceDefinition.points, thisDef.points);
+                }
+            }
+
+            // Add points along external edges
+            if (!isQueryEmpty(context, thisDef.externalBoundaryEdges) && thisDef.sampleExternalBoundaryEdges)
+            {
+                const edgeDef = createConstrainedSurfacePointDefinitionAlongEdge(context, id, thisDef.edgeSamples, thisDef.edgeSamples, thisDef.edgeClearance, thisDef.externalBoundaryEdges, faces);
+                constrainedSurfaceDefinition.points = mergeArrays(constrainedSurfaceDefinition.points, edgeDef.points);
+            }
+
+            if (!isQueryEmpty(context, thisDef.internalBoundaryEdges) && thisDef.sampleInternalBoundaryEdges)
+            {
+                const edgeDef = createConstrainedSurfacePointDefinitionAlongEdge(context, id, thisDef.edgeSamplesInternal, thisDef.edgeSamplesInternal, thisDef.edgeClearanceInternal, internalBoundaryEdges, faces);
+                constrainedSurfaceDefinition.points = mergeArrays(constrainedSurfaceDefinition.points, edgeDef.points);
+            }
+
+            // Add vertices
+            if (thisDef.includeVertices)
+            {
+                const vertexDef = createConstrainedSurfacePointDefinitionAtVertices(context, id, qAdjacent(faces, AdjacencyType.VERTEX, EntityType.VERTEX));
+                constrainedSurfaceDefinition.points = mergeArrays(constrainedSurfaceDefinition.points, vertexDef.points);
+            }
+        }
+
+        if (definition.operationType == OperationType.FILL)
+        {
+            opFillSurface(context, id + "opFillSurface1", {
+                        "edgesG0" : externalBoundaryEdges,
+                        "edgesG1" : qNothing(),
+                        "edgesG2" : qNothing(),
+                        "guideVertices" : gridPoints,
+                    });
+
+            const fillSurface = qCreatedBy(id + "opFillSurface1", EntityType.BODY);
+            const fillFaces = qCreatedBy(id + "opFillSurface1", EntityType.FACE);
+
+            opDeleteBodies(context, id + "deleteBodies1", {
+                        "entities" : qOwnerBody(gridPoints)
+                    });
+
+            if (definition.replaceFaces)
+            {
+                try silent
+                {
+                    opReplaceFace(context, id + "replaceFace1", {
+                                "replaceFaces" : allFaces,
+                                "templateFace" : fillFaces
+                            });
+                }
+                catch
+                {
+                    opDeleteFace(context, id + "deleteFaceFill", {
+                                "deleteFaces" : allFaces,
+                                "includeFillet" : false,
+                                "capVoid" : false,
+                                "leaveOpen" : true
+                            });
+
+
+                    try
+                    {
+                        opBoolean(context, id + "booleanFill", {
+                                    "tools" : qUnion([ownerBody, fillSurface]),
+                                    "operationType" : BooleanOperationType.UNION
+                                });
+                    }
+                }
+            }
+            else
+            {
+                toColor = qUnion([toColor, fillSurface]);
+            }
+        }
+        else // Constrained surface
+        {
+            // const tooCloseToPointTolerance = 0.00001 * inch; //definition.tolerance;
+            // println(size(constrainedSurfaceDefinition.points));
+            // constrainedSurfaceDefinition.points = cullOverlappingVectors(context, constrainedSurfaceDefinition.points, tooCloseToPointTolerance);
+            // println(size(constrainedSurfaceDefinition.points));
+
+            const sizePoints = size(constrainedSurfaceDefinition.points);
+
+            for (var i = 0; i < sizePoints; i += 1)
+            {
+                addDebugPoint(context, constrainedSurfaceDefinition.points[i].point, DebugColor.MAGENTA);
+            }
+
+            constrainedSurfaceDefinition.tolerance = definition.tolerance;
+            constrainedSurfaceDefinition.smooth = definition.smooth;
+            // constrainedSurfaceDefinition.references = definition.faces;
+
+            opConstrainedSurface(context, id + "constrainedSurface1", constrainedSurfaceDefinition);
+            const constrainedSurface = qCreatedBy(id + "constrainedSurface1", EntityType.BODY);
+            const constrainedFaces = qCreatedBy(id + "constrainedSurface1", EntityType.FACE);
+
+            toColor = qUnion([toColor, constrainedSurface]);
+
+            if (definition.trimToBoundary)
+            {
+                opSplitFace(context, id + "splitFace1", {
+                            "faceTargets" : qOwnedByBody(constrainedSurface, EntityType.FACE),
+                            "edgeTools" : externalBoundaryEdges,
+                        // "projectionType" : ProjectionType.
+                        });
+
+
+                // Find inner face
+                const face = qNthElement(allFaces, 0);
+                const centerPlane = evFaceTangentPlane(context, {
+                            "face" : face,
+                            "parameter" : vector(0.5, 0.5)
+                        });
+
+                const innerFace = qClosestTo(constrainedFaces, centerPlane.origin);
+                const outerFaces = qSubtraction(constrainedFaces, innerFace);
+
+                opDeleteFace(context, id + "deleteFace1", {
+                            "deleteFaces" : outerFaces,
+                            "includeFillet" : false,
+                            "capVoid" : false,
+                            "leaveOpen" : true
+                        });
+
+            }
+        }
+
+        if (!isQueryEmpty(context, toColor))
+        {
+            setProperty(context, {
+                        "entities" : toColor,
+                        "propertyType" : PropertyType.APPEARANCE,
+                        "value" : color(192 / 256, 228 / 256, 49 / 256)
+                    });
+        }
+    });
+
+function mergeArrays(array1, array2) returns array
+{
+
+    const qty2 = size(array2);
+
+    for (var i = 0; i < qty2; i += 1)
+    {
+        array1 = append(array1, array2[i]);
+    }
+
+    return array1;
+}
+
+// function cullOverlappingVectors(context is Context, points is array, tolerance is ValueWithUnits) returns array
+// {
+//     const pointQty = size(points);
+//     var culledIndexes = [];
+
+//     for (var i = 0; i < pointQty; i += 1)
+//     {
+//         const thisPoint = points[i].point;
+
+//         for (var k = 0; k < pointQty; k += 1)
+//         {
+//             if (k == i)
+//                 continue;
+
+//             const otherPoint = points[k].point;
+
+//             if (tolerantEq(thisPoint[0], otherPoint[0], tolerance) && tolerantEq(thisPoint[1], otherPoint[1], tolerance) && tolerantEq(thisPoint[2], otherPoint[2], tolerance))
+//             {
+//                 // addDebugPoint(context, otherPoint, DebugColor.BLUE);
+//                 culledIndexes = append(culledIndexes, k);
+//             }
+//         }
+//     }
+
+//     const culledQty = size(culledIndexes);
+
+//     for (var i = 0; i < culledQty; i += 1)
+//     {
+//         try silent
+//         {
+//             const index = culledIndexes[i] - i;
+//             points = removeElementAt(points, index);
+//         }
+//     }
+
+//     return points;
+// }
+
+// function tolerantEq(value1, value2, tolerance)
+// {
+//     return abs(value1 - value2) < tolerance;
+// }
+
+
+// function cullOverlappingPoints(points is Query) returns Query
+// {
+//     const pointQty = size(points);
+//     var culledIndexes = [];
+
+//     for (var i = 0; i < pointQty; i += 1)
+//     {
+//         const thisPoint = points[i].point;
+
+//         for (var k = 0; k < pointQty; k += 1)
+//         {
+//             if (k == i)
+//                 continue;
+
+//             const otherPoint = points[k].point;
+
+//             if (tolerantEquals(thisPoint[0], otherPoint[0]) && tolerantEquals(thisPoint[1], otherPoint[1]) && tolerantEquals(thisPoint[2], otherPoint[2]))
+//             {
+//                 culledIndexes = append(culledIndexes, k);
+//             }
+//         }
+//     }
+
+//     const culledQty = size(culledIndexes);
+
+//     for (var i = 0; i < culledQty; i += 1)
+//     {
+//         const index = culledIndexes[i] - i;
+//         points = removeElementAt(points, index);
+//     }
+
+//     return points;
+// }
+
+
+
+function createUVPointGrid(context is Context, id is Id, face is Query, uCount is number, vCount is number, boundaryEdges is Query, b1, b2, b3, b4) returns Query
+{
+    const startParameterU = b1 / 100;
+    const endParameterU = 1 - b2 / 100;
+    const startParameterV = b3 / 100;
+    const endParameterV = 1 - b4 / 100;
+
+    var parameterArray = [];
+
+    for (var u = 0; u < uCount; u += 1)
+    {
+        for (var v = 0; v < vCount; v += 1)
+        {
+            var uNorm = startParameterU + (endParameterU - startParameterU) * (u / (uCount - 1));
+            var vNorm = startParameterV + (endParameterV - startParameterV) * (v / (vCount - 1));
+
+            parameterArray = append(parameterArray, vector(uNorm, vNorm));
+        }
+    }
+
+    const tangentPlanes = evFaceTangentPlanes(context, {
+                "face" : face,
+                "parameters" : parameterArray,
+                "returnUndefinedOutsideFace" : true
+            });
+
+    var vectors = [];
+
+    for (var p in tangentPlanes)
+    {
+        if (p == undefined)
+            continue;
+
+        var isOnBoundary = false;
+        if (!isQueryEmpty(context, boundaryEdges))
+        {
+            isOnBoundary = !isQueryEmpty(context, qContainsPoint(boundaryEdges, p.origin));
+        }
+
+        if (!isOnBoundary)
+        {
+            vectors = append(vectors, p.origin);
+            addDebugPoint(context, p.origin, DebugColor.MAGENTA);
+        }
+    }
+
+    opPolyline(context, id + "polyline1", {
+                "points" : vectors
+            });
+
+    const points = qCreatedBy(id + "polyline1", EntityType.VERTEX);
+
+    return points;
+}
+
+function createConstrainedSurfacePointDefinition(context is Context, id is Id, face is Query, uCount is number, vCount is number, b1, b2, b3, b4) returns map
+{
+    // var parameterMatrix = zeroMatrix(uCount, vCount);
+    const startParameterU = b1 / 100;
+    const endParameterU = 1 - b2 / 100;
+    const startParameterV = b3 / 100;
+    const endParameterV = 1 - b4 / 100;
+    var edgeParameterArray = [];
+    var parameterArray = [];
+
+    for (var u = 0; u < uCount; u += 1)
+    {
+        for (var v = 0; v < vCount; v += 1)
+        {
+            // Map uNorm and vNorm to range [startParameter, endParameter]
+            // parameterMatrix[u][v] = vector(uNorm, vNorm);
+            var uNorm = startParameterU + (endParameterU - startParameterU) * (u / (uCount - 1));
+            var vNorm = startParameterV + (endParameterV - startParameterV) * (v / (vCount - 1));
+
+            parameterArray = append(parameterArray, vector(uNorm, vNorm));
+            edgeParameterArray = append(edgeParameterArray, uNorm);
+        }
+    }
+
+    var tangentPlanes = evFaceTangentPlanes(context, {
+            "face" : face,
+            "parameters" : parameterArray,
+            "returnUndefinedOutsideFace" : true
+        });
+
+    // const boundaryEdges = qAdjacent(face, AdjacencyType.EDGE, EntityType.EDGE);
+    // const evBoundaryEdges = evaluateQuery(context, boundaryEdges);
+    // const qtyEdges = size(evBoundaryEdges);
+    // for (var i = 0; i < qtyEdges; i += 1)
+    // {
+    //     const thisEdge = evBoundaryEdges[i];
+    //     const tanPlanesOnEdge = evFaceTangentPlanesAtEdge(context, {
+    //                 "edge" : thisEdge,
+    //                 "face" : face,
+    //                 "parameters" : edgeParameterArray
+    //             });
+
+    //     tangentPlanes = mergeArrays(tangentPlanes, tanPlanesOnEdge);
+    // }
+
+    var constrainedSurfaceDefinition = { "points" : [] };
+
+    for (var p in tangentPlanes)
+    {
+        if (p == undefined)
+            continue;
+
+        var point = {};
+        point.point = p.origin;
+        point.normal = p.normal;
+        constrainedSurfaceDefinition.points = append(constrainedSurfaceDefinition.points, point);
+    }
+
+    return constrainedSurfaceDefinition;
+}
+
+function createConstrainedSurfacePointDefinitionAlongEdge(context is Context, id is Id, uCount is number, vCount is number, edgeClearance, edges, faces) returns map
+{
+    const startParameter = edgeClearance / 100;
+    const endParameter = 1 - edgeClearance / 100; // End at 1 so that in the end, all vertices of edges will be included
+    var edgeParameterArray = [];
+
+    for (var u = 0; u < uCount; u += 1)
+    {
+        for (var v = 0; v < vCount; v += 1)
+        {
+            var uNorm = uCount == 1 ? 0.5 : startParameter + (endParameter - startParameter) * (u / (uCount - 1));
+            edgeParameterArray = append(edgeParameterArray, uNorm);
+        }
+    }
+
+    var tangentPlanes = [];
+
+    const boundaryEdges = edges;
+    const evBoundaryEdges = evaluateQuery(context, boundaryEdges);
+    const qtyEdges = size(evBoundaryEdges);
+    for (var i = 0; i < qtyEdges; i += 1)
+    {
+        const thisEdge = evBoundaryEdges[i];
+        const origin = evEdgeCurvature(context, {
+                        "edge" : thisEdge,
+                        "parameter" : 0.5
+                    }).frame.origin;
+        const closestFace = qClosestTo(faces, origin);
+
+        const tanPlanesOnEdge = evFaceTangentPlanesAtEdge(context, {
+                    "edge" : thisEdge,
+                    "face" : closestFace,
+                    "parameters" : edgeParameterArray
+                });
+
+        tangentPlanes = mergeArrays(tangentPlanes, tanPlanesOnEdge);
+    }
+
+    var constrainedSurfaceDefinition = { "points" : [] };
+
+    for (var p in tangentPlanes)
+    {
+        if (p == undefined)
+            continue;
+
+        var point = {};
+        point.point = p.origin;
+        // point.normal = p.normal;
+        constrainedSurfaceDefinition.points = append(constrainedSurfaceDefinition.points, point);
+    }
+
+    return constrainedSurfaceDefinition;
+}
+
+function createConstrainedSurfacePointDefinitionAtVertices(context is Context, id is Id, vertices) returns map
+{
+
+    var tangentPlanes = [];
+
+    const evVertices = evaluateQuery(context, vertices);
+    const qtyVertices = size(evVertices);
+    var constrainedSurfaceDefinition = { "points" : [] };
+
+    for (var i = 0; i < qtyVertices; i += 1)
+    {
+        const thisVertex = evVertices[i];
+
+        const origin = evVertexPoint(context, {
+                    "vertex" : thisVertex
+                });
+
+        var point = {};
+        point.point = origin;
+        // point.normal = p.normal;
+        constrainedSurfaceDefinition.points = append(constrainedSurfaceDefinition.points, point);
+    }
+
+    return constrainedSurfaceDefinition;
+}
