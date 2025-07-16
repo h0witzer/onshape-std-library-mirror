@@ -9,7 +9,7 @@
 - Pay strong attention to the values and types used in Featurescript, there are many differences from other C-like languages that are optimized for parametric CAD to be aware of https://cad.onshape.com/FsDoc/variables.html
 - These .fs files are not F Sharp or Javascript, Featurescript is a custom language developed for Onshape
 - Naming convention for the features we are working with should be more explicit and less shorthand. Match the level of readability seen in the Onshape Standard Library functions
-- Don't use abbreviated naming convention for functions or counters, I can't read that shit, name things with clarity and relation to application like the Standard Library does
+- Don't use abbreviated naming convention for functions or counters, I can't read that shit, name things with clarity and relation to application like the Standard Library does. We can afford the extra vowels, we don't need to name variables "ctrl" when "evalutatedSurfaceControlPoints" is way more descriptive of what that thing is.
 - Function nesting is not a thing in featurescript
 - Put the functions below the feature definition, I hate having to scroll to find my feature
 - Bitshifting and bitmasking operations are not a thing in featurescript
