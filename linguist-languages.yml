@@ -3,7 +3,5 @@ FeatureScript:
   color: "#F29E39"
   extensions:
     - ".fs"
-  tm_scope: source.fs
   ace_mode: text
-  aliases:
-    - featurescript
+  tm_scope: source.featurescript
