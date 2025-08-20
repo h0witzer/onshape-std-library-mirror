@@ -1,3 +1,5 @@
 FeatureScript:
   type: programming
+  extensions:
+    - ".fs"
   color: "#F29E39"
