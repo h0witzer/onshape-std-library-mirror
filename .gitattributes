@@ -1,3 +1,2 @@
 # Override GitHub Linguist language detection for FeatureScript
 *.fs linguist-language=FeatureScript
-*.fs linguist-detectable
