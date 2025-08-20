@@ -1,7 +1,3 @@
 FeatureScript:
   type: programming
   color: "#FF00FF"
-  extensions:
-    - ".fs"
-  ace_mode: text
-  tm_scope: source.featurescript
