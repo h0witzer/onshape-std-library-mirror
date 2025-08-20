@@ -1,5 +1,6 @@
 # Override GitHub Linguist language detection for FeatureScript
 *.fs linguist-language=FeatureScript
+*.fs linguist-detectable
 
 # Exclude Python reference script from language statistics
 non-featurescript-functions-reference/*.py linguist-vendored
