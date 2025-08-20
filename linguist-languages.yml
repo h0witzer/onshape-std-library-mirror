@@ -1,6 +1,6 @@
 FeatureScript:
   type: programming
-  color: "#F29E39"
+  color: "#FF00FF"
   extensions:
     - ".fs"
   ace_mode: text
