@@ -1,5 +1,7 @@
 FeatureScript 2752;
 import(path : "onshape/std/geometry.fs", version : "2752.0");
+import(path : "onshape/std/splitoperationkeeptype.gen.fs", version : "2752.0");
+import(path : "onshape/std/evaluate.fs", version : "2752.0");
 
 annotation { "Feature Type Name" : "Normalized Tube End" }
 export const normalizedTubeEnd = defineFeature(function(context is Context, id is Id, definition is map)
@@ -25,15 +27,7 @@ export const normalizedTubeEnd = defineFeature(function(context is Context, id i
         // Get all edges of the end face
         const endEdges = qAdjacent(definition.endFace, AdjacencyType.EDGE);
 
-        // Inner edge = edge(s) adjacent to both endFace and innerFace
-        const innerEdge = qIntersection([endEdges, qAdjacent(definition.innerFace, AdjacencyType.EDGE)]);
-
-        // Outer edge = edge(s) adjacent to both endFace and outerFace
-        const outerEdge = qIntersection([endEdges, qAdjacent(definition.outerFace, AdjacencyType.EDGE)]);
-
-        // Compute wall thickness using measureDistance
-        const distanceResult = measureDistance(context, {
-                    entities : qUnion([definition.innerFace, definition.outerFace])
+@@ -37,48 +39,58 @@ export const normalizedTubeEnd = defineFeature(function(context is Context, id i
                 });
         const thickness = distanceResult.distance;
         const offset = 1.5 * thickness;
@@ -59,26 +53,36 @@ export const normalizedTubeEnd = defineFeature(function(context is Context, id i
                 });
 
         // Debug highlight ruled surfaces
-        const innerRuledQuery = qCreatedBy(id + "innerRuled");
-        const outerRuledQuery = qCreatedBy(id + "outerRuled");
+        const innerRuledQuery = qCreatedBy(id + "innerRuled", EntityType.BODY);
+        const outerRuledQuery = qCreatedBy(id + "outerRuled", EntityType.BODY);
         debug(context, innerRuledQuery, DebugColor.MAGENTA);
         debug(context, outerRuledQuery, DebugColor.GREEN);
 
-        const innerTool = qCreatedBy(id + "innerRuled");
-        const outerTool = qCreatedBy(id + "outerRuled");
+        // Determine which side of the split to keep by comparing normals
+        const endFacePlane = evFaceTangentPlane(context, { "face" : definition.endFace, "parameter" : vector(0.5, 0.5) });
+        const endFaceNormal = endFacePlane.normal;
+        const outerKeepType = determineKeepType(context, outerRuledQuery, endFaceNormal);
+        const innerKeepType = determineKeepType(context, innerRuledQuery, endFaceNormal);
 
-        // Split part using ruled surfaces
+        // Split part using ruled surfaces and discard pieces outside the keep region
         opSplitPart(context, id + "splitOuter", {
                     targets : definition.framePart,
-                    tool : outerRuledQuery
-
+                    tool : outerRuledQuery,
+                    keepType : outerKeepType
                 });
 
         opSplitPart(context, id + "splitInner", {
                     targets : definition.framePart,
-                    tool : innerRuledQuery
+                    tool : innerRuledQuery,
+                    keepType : innerKeepType
                 });
-                
-        // Delete extra bodies created by split
 
     }, {});
+
+function determineKeepType(context is Context, toolBody is Query, endFaceNormal is Vector) returns SplitOperationKeepType
+{
+    const toolFace = qOwnedByBody(toolBody, EntityType.FACE);
+    const tangentPlane = evFaceTangentPlane(context, { "face" : toolFace, "parameter" : vector(0.5, 0.5) });
+    return dot(tangentPlane.normal, endFaceNormal) > 0 ?
+            SplitOperationKeepType.KEEP_BACK : SplitOperationKeepType.KEEP_FRONT;
+}
