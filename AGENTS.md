@@ -2,8 +2,8 @@
 
 ## Dev Environment Tips
 - All functions in this github are a mirror of the Onshape Standard Library functions with version numbers stripped from the imports
-- The current version number of the Onshape standard library is 2752, replace the stars in the header with this
-- For example "FeatureScript ✨;" should become "FeatureScript 2752;" and "import(path : "onshape/std/feature.fs", version : "✨");" should become "import(path : "onshape/std/feature.fs", version : "2752.0");"
+- The current version number of the Onshape standard library is 2770, replace the stars in the header with this
+- For example "FeatureScript ✨;" should become "FeatureScript 2770;" and "import(path : "onshape/std/feature.fs", version : "✨");" should become "import(path : "onshape/std/feature.fs", version : "2770.0");"
 - Look at the Onshape Standard Library documentation at https://cad.onshape.com/FsDoc/library.html for function applications, expected inputs and outputs, and general reference
 - Browse https://cad.onshape.com/FsDoc/ for general Featurescript knowledge and in particular lexical reference
 - Pay strong attention to the values and types used in Featurescript, there are many differences from other C-like languages that are optimized for parametric CAD to be aware of https://cad.onshape.com/FsDoc/variables.html
