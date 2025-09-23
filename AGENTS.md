@@ -13,6 +13,7 @@
 - Function nesting is not a thing in featurescript. It isn't possible to declare a function inside of the body of another function.
 - Put the functions below the feature definition, I hate having to scroll to find my feature
 - Bitshifting and bitmasking operations are not a thing in featurescript
+- Pay attention to the way qAdjacent works with the modern adjacency types when used
 
 ## Testing Instructions
 - Since there is no way to run Onshape in a localized environment here we will rely mostly on comparing code samples with existing functions in the standard library and against the reference docs to ensure consistency with the code base
