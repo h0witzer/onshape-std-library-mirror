@@ -14,6 +14,8 @@
 - Put the functions below the feature definition, I hate having to scroll to find my feature
 - Bitshifting and bitmasking operations are not a thing in featurescript
 - Pay attention to the way qAdjacent works with the modern adjacency types when used
+- If you encounter a feature labeled "Under development, not for general use" in the header assume that the code is non-functional and does not represent valid featurescript development practice
+- Add clear comments above functions explaining their function and intended purpose and defining inputs and outputs, make it easy for me to read what blocks of code perform a job and what that job is
 
 ## Testing Instructions
 - Since there is no way to run Onshape in a localized environment here we will rely mostly on comparing code samples with existing functions in the standard library and against the reference docs to ensure consistency with the code base
