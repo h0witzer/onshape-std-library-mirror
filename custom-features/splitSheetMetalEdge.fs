@@ -26,7 +26,7 @@ annotation { "Feature Type Name" : "SM edge partition" }
 export const smEdgePartition = defineFeature(function(context is Context, id is Id, definition is map)
     precondition
     {
-        annotation { "Name" : "Edge face", "Filter" : SheetMetalDefinitionEntityType.EDGE && AllowFlattenedGeometry.YES && ModifiableEntityOnly.YES, "MaxNumberOfPicks" : 1 }
+        annotation { "Name" : "Edge face", "Filter" : SheetMetalDefinitionEntityType.EDGE && AllowFlattenedGeometry.YES && ModifiableEntityOnly.YES }
         definition.edgeFace is Query;
 
         annotation { "Name" : "Partition count" }
@@ -90,12 +90,35 @@ export const smEdgePartition = defineFeature(function(context is Context, id is 
 
         showAlternatingCyanMagentaSegments(context, trackedEdge);
 
-        const toUpdate = assignSMAttributesToNewOrSplitEntities(context, qUnion([trackedBodies, sheetMetalBodies]), initialData, id);
-        println(toUpdate);
+        // const toUpdate = assignSMAttributesToNewOrSplitEntities(context, qUnion([trackedBodies, sheetMetalBodies]), initialData, id);
+        // println(toUpdate);
+        
+        // Simplified assignSMAttributesToNewOrSplitEntities
+        var deletedAttributes = [];    
+        for (var splitEdge in evaluateQuery(context, trackedEdge))
+        {
+            const edgeAttributes = getSMAssociationAttributes(context, splitEdge);
+            if (edgeAttributes != []) {
+                removeAttributes(context, { entities : splitEdge, 
+                                attributePattern : smAssociationAttributePattern
+                    });
+                deletedAttributes = concatenateArrays(deletedAttributes, edgeAttributes);
+            }
+        }
+        assignSMAssociationAttributes(context, trackedEdge);
+        for (var vertex in evaluateQuery(context, qAdjacent(trackedEdge, AdjacencyType.VERTEX, EntityType.VERTEX)))
+        {
+            if (getSMAssociationAttributes(context, vertex) == [])
+                assignSMAssociationAttributes(context, vertex);
+        }
 
+        // updateSheetMetalGeometry(context, id + "smUpdate", {
+        //             "entities" : qUnion([toUpdate.modifiedEntities, trackedBodies]),
+        //             "deletedAttributes" : toUpdate.deletedAttributes
+        //         });
         updateSheetMetalGeometry(context, id + "smUpdate", {
-                    "entities" : qUnion([toUpdate.modifiedEntities, trackedBodies]),
-                    "deletedAttributes" : toUpdate.deletedAttributes
+                    "entities" : qAdjacent(trackedEdge, AdjacencyType.EDGE, EntityType.FACE),
+                    "deletedAttributes" : deletedAttributes
                 });
     });
 
