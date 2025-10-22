@@ -42,8 +42,6 @@ export enum SelectionType
     BOUNDED_FACES,
     annotation { "Name" : "Loop/chain connected" }
     LOOP_CHAIN_CONNECTED,
-    annotation { "Name" : "Adjacent" }
-    ADJACENT,
     annotation { "Name" : "Parallel" }
     PARALLEL,
     annotation { "Name" : "Tangent(ish) connected" }
@@ -71,7 +69,6 @@ const SelectionTypeToLowercaseName = {
         SelectionType.FILLETS : "fillets",
         SelectionType.BOUNDED_FACES : "bounded faces",
         SelectionType.LOOP_CHAIN_CONNECTED : "loop/chain connected",
-        SelectionType.ADJACENT : "adjacent",
         SelectionType.PARALLEL : "parallel",
         SelectionType.TANGENT_CONNECTED : "tangent connected",
         SelectionType.MATCHING : "matching",
@@ -458,7 +455,7 @@ function qMatchingBodies(context is Context, seedBodies is Query) returns Query
         clusters = clusterBodies(context, {
                     "bodies" : candidateBodiesUnion,
                     "relativeTolerance" : MATCHING_BODY_CLUSTER_RELATIVE_TOLERANCE
-                });
+            });
     }
     catch
     {
