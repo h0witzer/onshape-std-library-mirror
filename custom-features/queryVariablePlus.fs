@@ -50,6 +50,8 @@ export enum SelectionType
     MATCHING,
     annotation { "Name" : "Matching bodies" }
     MATCHING_BODIES,
+    annotation { "Name" : "Adjacent" }
+    ADJACENT,
     annotation { "Name" : "All solid bodies" }
     ALL_SOLID_BODIES,
     annotation { "Name" : "Edge convexity" }
@@ -73,12 +75,34 @@ const SelectionTypeToLowercaseName = {
         SelectionType.TANGENT_CONNECTED : "tangent connected",
         SelectionType.MATCHING : "matching",
         SelectionType.MATCHING_BODIES : "matching bodies",
+        SelectionType.ADJACENT : "adjacent",
         SelectionType.ALL_SOLID_BODIES : "all solid bodies",
         SelectionType.EDGE_CONVEXITY : "edge convexity"
     };
 
 const MATCHING_BODY_CLUSTER_RELATIVE_TOLERANCE = 1e-4;
 
+/**
+ * Determines the type of entities returned by the adjacency selection.
+ */
+export enum AdjacentResultType
+{
+    annotation { "Name" : "Same as seed" }
+    SAME_AS_SEED,
+    annotation { "Name" : "Faces" }
+    FACES,
+    annotation { "Name" : "Edges" }
+    EDGES,
+    annotation { "Name" : "Vertices" }
+    VERTICES
+}
+
+const adjacentResultTypeToEntityType =
+{
+        AdjacentResultType.FACES : EntityType.FACE,
+        AdjacentResultType.EDGES : EntityType.EDGE,
+        AdjacentResultType.VERTICES : EntityType.VERTEX
+    };
 
 /**
  * Some selection types accept either faces or edges, not both.
@@ -146,6 +170,17 @@ export predicate initialQueryPredicate(definition is map)
     {
         annotation { "Name" : "Faces", "Filter" : EntityType.FACE }
         definition.seedFaces is Query;
+    }
+    else if (definition.selectionType == SelectionType.ADJACENT)
+    {
+        annotation { "Name" : "Seed entities", "Filter" : (EntityType.FACE || EntityType.EDGE || EntityType.VERTEX) && AllowFlattenedGeometry.YES && AllowMeshGeometry.YES }
+        definition.adjacentSeedEntities is Query;
+
+        annotation { "Name" : "Adjacency type" }
+        definition.adjacencyType is AdjacencyType;
+
+        annotation { "Name" : "Result entities", "Default" : AdjacentResultType.SAME_AS_SEED }
+        definition.adjacentResultType is AdjacentResultType;
     }
     if (definition.selectionType == SelectionType.TANGENT_CONNECTED && definition.seedType == SeedType.FACE)
     {
@@ -235,6 +270,17 @@ export predicate additionalQueryPredicate(addQ is map)
         annotation { "Name" : "Face", "Filter" : EntityType.FACE }
         addQ.addQseedFaces is Query;
     }
+    else if (addQ.addQselectionType == SelectionType.ADJACENT)
+    {
+        annotation { "Name" : "Seed entities", "Filter" : (EntityType.FACE || EntityType.EDGE || EntityType.VERTEX) && AllowFlattenedGeometry.YES && AllowMeshGeometry.YES }
+        addQ.addQadjacentSeedEntities is Query;
+
+        annotation { "Name" : "Adjacency type" }
+        addQ.addQadjacencyType is AdjacencyType;
+
+        annotation { "Name" : "Result entities", "Default" : AdjacentResultType.SAME_AS_SEED }
+        addQ.addQadjacentResultType is AdjacentResultType;
+    }
     if (addQ.addQselectionType == SelectionType.TANGENT_CONNECTED && addQ.addQseedType == SeedType.FACE)
     {
         annotation { "Name" : "Angle tolerance", "Default" : 0 * degree }
@@ -297,6 +343,9 @@ export predicate additionalQueryPredicate(addQ is map)
  *          If selectionType is MATCHING_BODIES, bodies from which the selection is created.
  *      @field seedFaces {Query} : If selectionType is PROTRUSION or POCKET or HOLE or FILLETS or BOUNDED_FACES, or TANGENT_CONNECTED or MATCHING and seedType is FACE,
  *          faces from which the selection is created.
+ *      @field adjacentSeedEntities {Query} : If selectionType is ADJACENT, entities whose neighbors will be collected.
+ *      @field adjacencyType {AdjacencyType} : If selectionType is ADJACENT, determines whether adjacency is computed by shared vertices or shared edges.
+ *      @field adjacentResultType {AdjacentResultType} : If selectionType is ADJACENT, determines the type of adjacent entities to return.
  *      @field angleTolerance {ValueWithUnits} : If selectionType is TANGENT_CONNECTED and seedType is FACE,
  *          maximum angular deviation for considering faces tangent. Defaults to `0` degrees.
  *      @field seedEdgesOrFaces {Query} : If selectionType is LOOP_CHAIN_CONNECTED, faces or edges from which the loops are computed.
@@ -425,11 +474,38 @@ function mapSelectionTypeToQuery(context is Context, definition is map) returns 
                 qTangentConnectedEdges(definition.seedEdges),
                 SelectionType.MATCHING : definition.seedType == SeedType.FACE ? qMatching(definition.seedFaces) : qMatching(definition.seedEdges),
                 SelectionType.MATCHING_BODIES : qMatchingBodies(context, definition.seedBodies),
+                SelectionType.ADJACENT : adjacencySelection(definition),
 
                 SelectionType.ALL_SOLID_BODIES : qAllSolidBodies(),
                 SelectionType.EDGE_CONVEXITY : qEdgeConvexityTypeFilter(qOwnedByBody(definition.seedBodies, EntityType.EDGE), definition.edgeConvexityType)
             };
 }
+
+/**
+ * Builds a qAdjacent query using the provided adjacency parameters.
+ * @param definition {map} : Parameters that describe the adjacency query selection.
+ *      Expected keys: `adjacentSeedEntities`, `adjacencyType`, `adjacentResultType`.
+ */
+function adjacencySelection(definition is map) returns Query
+{
+    const adjacencyType = definition.adjacencyType as AdjacencyType;
+    const seedEntities = definition.adjacentSeedEntities as Query;
+    const resultSelection = definition.adjacentResultType as AdjacentResultType;
+
+    if (resultSelection == AdjacentResultType.SAME_AS_SEED)
+    {
+        return qAdjacent(seedEntities, adjacencyType);
+    }
+
+    const resultEntityType = adjacentResultTypeToEntityType[resultSelection];
+    if (adjacencyType == AdjacencyType.EDGE && resultEntityType == EntityType.VERTEX)
+    {
+        throw regenError(ErrorStringEnum.INVALID_INPUT, ["adjacentResultType"]);
+    }
+
+    return qAdjacent(seedEntities, adjacencyType, resultEntityType);
+}
+
 
 function qMatchingBodies(context is Context, seedBodies is Query) returns Query
 {
@@ -455,7 +531,7 @@ function qMatchingBodies(context is Context, seedBodies is Query) returns Query
         clusters = clusterBodies(context, {
                     "bodies" : candidateBodiesUnion,
                     "relativeTolerance" : MATCHING_BODY_CLUSTER_RELATIVE_TOLERANCE
-            });
+                });
     }
     catch
     {
