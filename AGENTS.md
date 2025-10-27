@@ -18,6 +18,7 @@
 - Pay attention to the way qAdjacent works with the modern adjacency types when used
 - If you encounter a feature labeled "Under development, not for general use" in the header assume that the code is non-functional and does not represent valid featurescript development practice
 - Add clear comments above functions explaining their function and intended purpose and defining inputs and outputs, make it easy for me to read what blocks of code perform a job and what that job is
+- Prioritize solutions to problems that apply to more than the most trivial cases, for example when working on a feature that interacts with surface geometry don't assume a planar constraint unless it's explicitly clear that the function will only be called on planar geometry when another solution exists that would generalize to cylinders and cones
 
 ## Testing Instructions
 - Since there is no way to run Onshape in a localized environment here we will rely mostly on comparing code samples with existing functions in the standard library and against the reference docs to ensure consistency with the code base
