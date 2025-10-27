@@ -5,6 +5,8 @@
 - The current version number of the Onshape standard library is 2780, replace the stars in the header with this
 - For example "FeatureScript ✨;" should become "FeatureScript 2780;" and "import(path : "onshape/std/feature.fs", version : "✨");" should become "import(path : "onshape/std/feature.fs", version : "2780.0");"
 - Look at the Onshape Standard Library documentation at https://cad.onshape.com/FsDoc/library.html for function applications, expected inputs and outputs, and general reference
+- Verify every `op*` or `ev*` function against the mirrored library (for example by searching `geomOperations.fs` or `evaluate.fs`) before using it, and to avoid adding code that references functions that cannot be found in this repository or the official documentation
+- Functions that exist in the custom features folder are by definition non-standard and will need to be noted explicitly where these references are being pulled from in the header of the code when they are used
 - Browse https://cad.onshape.com/FsDoc/ for general Featurescript knowledge and in particular lexical reference
 - Pay strong attention to the values and types used in Featurescript, there are many differences from other C-like languages that are optimized for parametric CAD to be aware of https://cad.onshape.com/FsDoc/variables.html
 - These .fs files are not F Sharp or Javascript, Featurescript is a custom language developed for Onshape
