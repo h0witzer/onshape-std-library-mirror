@@ -52,6 +52,8 @@ export enum SelectionType
     MATCHING_BODIES,
     annotation { "Name" : "Adjacent" }
     ADJACENT,
+    annotation { "Name" : "Geometry type" }
+    GEOMETRY,
     annotation { "Name" : "All solid bodies" }
     ALL_SOLID_BODIES,
     annotation { "Name" : "Edge convexity" }
@@ -76,6 +78,7 @@ const SelectionTypeToLowercaseName = {
         SelectionType.MATCHING : "matching",
         SelectionType.MATCHING_BODIES : "matching bodies",
         SelectionType.ADJACENT : "adjacent",
+        SelectionType.GEOMETRY : "geometry type",
         SelectionType.ALL_SOLID_BODIES : "all solid bodies",
         SelectionType.EDGE_CONVEXITY : "edge convexity"
     };
@@ -182,6 +185,14 @@ export predicate initialQueryPredicate(definition is map)
         annotation { "Name" : "Result entities", "Default" : AdjacentResultType.SAME_AS_SEED }
         definition.adjacentResultType is AdjacentResultType;
     }
+    else if (definition.selectionType == SelectionType.GEOMETRY)
+    {
+        annotation { "Name" : "Seed entities", "Filter" : AllowMeshGeometry.YES && AllowFlattenedGeometry.YES }
+        definition.geometrySeedEntities is Query;
+
+        annotation { "Name" : "Geometry type" }
+        definition.geometryType is GeometryType;
+    }
     if (definition.selectionType == SelectionType.TANGENT_CONNECTED && definition.seedType == SeedType.FACE)
     {
         annotation { "Name" : "Angle tolerance", "Default" : 0 * degree }
@@ -281,6 +292,14 @@ export predicate additionalQueryPredicate(addQ is map)
         annotation { "Name" : "Result entities", "Default" : AdjacentResultType.SAME_AS_SEED }
         addQ.addQadjacentResultType is AdjacentResultType;
     }
+    else if (addQ.addQselectionType == SelectionType.GEOMETRY)
+    {
+        annotation { "Name" : "Seed entities", "Filter" : AllowMeshGeometry.YES && AllowFlattenedGeometry.YES }
+        addQ.addQgeometrySeedEntities is Query;
+
+        annotation { "Name" : "Geometry type" }
+        addQ.addQgeometryType is GeometryType;
+    }
     if (addQ.addQselectionType == SelectionType.TANGENT_CONNECTED && addQ.addQseedType == SeedType.FACE)
     {
         annotation { "Name" : "Angle tolerance", "Default" : 0 * degree }
@@ -346,6 +365,8 @@ export predicate additionalQueryPredicate(addQ is map)
  *      @field adjacentSeedEntities {Query} : If selectionType is ADJACENT, entities whose neighbors will be collected.
  *      @field adjacencyType {AdjacencyType} : If selectionType is ADJACENT, determines whether adjacency is computed by shared vertices or shared edges.
  *      @field adjacentResultType {AdjacentResultType} : If selectionType is ADJACENT, determines the type of adjacent entities to return.
+ *      @field geometrySeedEntities {Query} : If selectionType is GEOMETRY, entities that will be filtered by geometry type.
+ *      @field geometryType {GeometryType} : If selectionType is GEOMETRY, geometry category used to filter the seed entities.
  *      @field angleTolerance {ValueWithUnits} : If selectionType is TANGENT_CONNECTED and seedType is FACE,
  *          maximum angular deviation for considering faces tangent. Defaults to `0` degrees.
  *      @field seedEdgesOrFaces {Query} : If selectionType is LOOP_CHAIN_CONNECTED, faces or edges from which the loops are computed.
@@ -475,7 +496,7 @@ function mapSelectionTypeToQuery(context is Context, definition is map) returns 
                 SelectionType.MATCHING : definition.seedType == SeedType.FACE ? qMatching(definition.seedFaces) : qMatching(definition.seedEdges),
                 SelectionType.MATCHING_BODIES : qMatchingBodies(context, definition.seedBodies),
                 SelectionType.ADJACENT : adjacencySelection(definition),
-
+                SelectionType.GEOMETRY : qGeometry(definition.geometrySeedEntities, definition.geometryType),
                 SelectionType.ALL_SOLID_BODIES : qAllSolidBodies(),
                 SelectionType.EDGE_CONVEXITY : qEdgeConvexityTypeFilter(qOwnedByBody(definition.seedBodies, EntityType.EDGE), definition.edgeConvexityType)
             };
