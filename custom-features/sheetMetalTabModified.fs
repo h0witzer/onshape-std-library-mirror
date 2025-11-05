@@ -122,9 +122,10 @@ function applyTab(context is Context, id is Id, definition is map, tabQuery is Q
     {
         const tabBodyQuery = qUnion([tabBody]);
         const trackedTabBody = qUnion([tabBodyQuery, startTracking(context, tabBodyQuery)]);
-        const coincidentWalls = findCoincidentSheetMetalWalls(context, trackedTabBody, unionQuery);
+        const tabIndexComponent = unstableIdComponent(index);
+        const coincidentWalls = findCoincidentSheetMetalWalls(context, id + tabIndexComponent + "align", trackedTabBody, unionQuery);
         const coincidentGrouping = { "tabBody" : trackedTabBody, "walls" : coincidentWalls };
-        const status = booleanOneTabGroup(context, id + unstableIdComponent(index) + "group", definition, coincidentGrouping, separatedSubtractQueries, rootId);
+        const status = booleanOneTabGroup(context, id + tabIndexComponent + "group", definition, coincidentGrouping, separatedSubtractQueries, rootId);
         if (status.statusEnum != ErrorStringEnum.BOOLEAN_UNION_NO_OP)
         {
             oneSuccess = true;
@@ -161,7 +162,32 @@ function partitionSheetMetalQueriesByModel(context is Context, selections is arr
 /**
  * Locate the sheet metal walls that are coincident with the supplied tab body.
  */
-function findCoincidentSheetMetalWalls(context is Context, tabBody is Query, unionQuery is Query) returns Query
+function findCoincidentSheetMetalWalls(context is Context, id is Id, tabBody is Query, unionQuery is Query) returns Query
+{
+    var coincidentFaces = collectCoincidentFaces(context, tabBody, unionQuery);
+
+    if (size(coincidentFaces) == 0)
+    {
+        const aligned = tryAlignTabBodyWithOppositeWall(context, id + "offset", tabBody, unionQuery);
+        if (aligned)
+        {
+            coincidentFaces = collectCoincidentFaces(context, tabBody, unionQuery);
+        }
+    }
+
+    if (size(coincidentFaces) == 0)
+    {
+        throw regenError(ErrorStringEnum.SHEET_METAL_TAB_NO_PARALLEL_WALL, ["tabFaces"], qOwnedByBody(tabBody, EntityType.FACE));
+    }
+
+    const coincidentQuery = qUnion(coincidentFaces);
+    return qUnion([coincidentQuery, startTracking(context, coincidentQuery)]);
+}
+
+/**
+ * Collects all sheet metal wall faces that are currently coincident with the supplied tab body.
+ */
+function collectCoincidentFaces(context is Context, tabBody is Query, unionQuery is Query) returns array
 {
     const collisions = evCollision(context, {
                 "tools" : qOwnedByBody(tabBody, EntityType.FACE),
@@ -177,14 +203,73 @@ function findCoincidentSheetMetalWalls(context is Context, tabBody is Query, uni
         }
         coincidentFaces = append(coincidentFaces, collision.target);
     }
+    return coincidentFaces;
+}
 
-    if (size(coincidentFaces) == 0)
+/**
+ * Offsets the supplied tab body if it is located on the opposite side of the sheet metal by exactly one thickness.
+ */
+function tryAlignTabBodyWithOppositeWall(context is Context, id is Id, tabBody is Query, unionQuery is Query) returns boolean
+{
+    const tabFaces = qOwnedByBody(tabBody, EntityType.FACE);
+    var distanceResult = try silent(evDistance(context, { "side0" : tabFaces, "side1" : unionQuery }));
+    if (!(distanceResult is DistanceResult))
     {
-        throw regenError(ErrorStringEnum.SHEET_METAL_TAB_NO_PARALLEL_WALL, ["tabFaces"], qOwnedByBody(tabBody, EntityType.FACE));
+        return false;
     }
 
-    const coincidentQuery = qUnion(coincidentFaces);
-    return qUnion([coincidentQuery, startTracking(context, coincidentQuery)]);
+    if (distanceResult.distance <= TOLERANCE.zeroLength * meter)
+    {
+        return false;
+    }
+
+    const modelParameters = try silent(getModelParameters(context, qOwnerBody(unionQuery)));
+    if (modelParameters is undefined)
+    {
+        return false;
+    }
+
+    const totalThickness = modelParameters.frontThickness + modelParameters.backThickness;
+    if (abs(distanceResult.distance - totalThickness) > TOLERANCE.zeroLength * meter)
+    {
+        return false;
+    }
+
+    const tabFaceArray = evaluateQuery(context, tabFaces);
+    if (distanceResult.sides[0].index >= size(tabFaceArray))
+    {
+        return false;
+    }
+
+    const referenceFace = tabFaceArray[distanceResult.sides[0].index];
+    const tangentPlane = evFaceTangentPlane(context, {
+                "face" : referenceFace,
+                "parameter" : distanceResult.sides[0].parameter
+            });
+    if (tangentPlane is undefined)
+    {
+        return false;
+    }
+
+    var directionVector = distanceResult.sides[1].point - distanceResult.sides[0].point;
+    const directionMagnitude = norm(directionVector);
+    if (directionMagnitude <= TOLERANCE.zeroLength * meter)
+    {
+        return false;
+    }
+    directionVector = directionVector / directionMagnitude;
+
+    const offsetSign = (dot(directionVector, tangentPlane.normal) >= 0) ? 1 : -1;
+    const offsetDistance = offsetSign * totalThickness;
+
+    opOffsetFace(context, id, {
+                "moveFaces" : tabFaces,
+                "offsetDistance" : offsetDistance,
+                "mergeFaces" : true,
+                "reFillet" : false
+            });
+
+    return true;
 }
 
 /**
