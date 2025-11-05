@@ -105,6 +105,104 @@ export const sheetMetalTab = defineSheetMetalFeature(function(context is Context
                     "associatedChanges" : associateChanges });
     }, { booleanSubtractScope : qNothing() });
 
+/**
+ * Aligns a tab surface with the sheet metal wall by offsetting if necessary.
+ * Handles two cases:
+ * 1. Surface is already fully coincident with the sheet metal body - returns as-is
+ * 2. Surface is on the opposite face - offsets by sheet metal thickness and returns offset surface
+ *
+ * @param context : The context
+ * @param id : The operation ID
+ * @param tabBody : Query for a single tab body to align
+ * @param unionQuery : Query for the sheet metal walls to align with
+ * @returns Query for the aligned tab body (either original or offset version)
+ */
+function getAlignedTabBody(context is Context, id is Id, tabBody is Query, unionQuery is Query) returns Query
+{
+    const tabBodyQuery = qUnion([tabBody]);
+
+    // Check if the surface is already coincident with the union walls
+    const initialCollisions = evCollision(context, {
+                "tools" : qOwnedByBody(tabBodyQuery, EntityType.FACE),
+                "targets" : unionQuery
+            });
+
+    var hasCoincidence = false;
+    for (var collision in initialCollisions)
+    {
+        if (collision["type"] != ClashType.NONE)
+        {
+            hasCoincidence = true;
+            break;
+        }
+    }
+
+    // Case 1: Already fully coincident - return original
+    if (hasCoincidence)
+    {
+        return tabBodyQuery;
+    }
+
+    // Case 2: Not coincident - surface may be on opposite face, try offsetting by sheet metal thickness
+    // Get the sheet metal model parameters to determine thickness
+    const unionBodies = evaluateQuery(context, qOwnerBody(unionQuery));
+    if (size(unionBodies) == 0)
+    {
+        return tabBodyQuery;
+    }
+
+    const modelParameters = try silent(getModelParameters(context, unionBodies[0]));
+    if (modelParameters is undefined)
+    {
+        return tabBodyQuery;
+    }
+
+    // Calculate the total thickness of the sheet metal
+    const totalThickness = modelParameters.frontThickness + modelParameters.backThickness;
+
+    // Offset the surface by the sheet metal thickness
+    opOffsetSurface(context, id + "offset", {
+                "faces" : qOwnedByBody(tabBodyQuery, EntityType.FACE),
+                "offset" : totalThickness
+            });
+
+    // Check if the offset surface is now coincident
+    const offsetBody = qCreatedBy(id + "offset", EntityType.BODY);
+    const offsetCollisions = evCollision(context, {
+                "tools" : qOwnedByBody(offsetBody, EntityType.FACE),
+                "targets" : unionQuery
+            });
+
+    var offsetHasCoincidence = false;
+    for (var collision in offsetCollisions)
+    {
+        if (collision["type"] != ClashType.NONE)
+        {
+            offsetHasCoincidence = true;
+            break;
+        }
+    }
+
+    if (offsetHasCoincidence)
+    {
+        // The offset worked - surface was on opposite face
+        // Delete the original body and return the offset one
+        opDeleteBodies(context, id + "deleteOriginal", {
+                    "entities" : tabBodyQuery
+                });
+        return offsetBody;
+    }
+    else
+    {
+        // The offset didn't create alignment - delete offset and return original
+        // (Surface may not need alignment or alignment issue is more complex)
+        opDeleteBodies(context, id + "deleteOffset", {
+                    "entities" : offsetBody
+                });
+        return tabBodyQuery;
+    }
+}
+
 function applyTab(context is Context, id is Id, definition is map, tabQuery is Query, unionEntities is array, rootId is Id) returns boolean
 {
     const tabBodies = evaluateQuery(context, qOwnerBody(tabQuery));
@@ -120,8 +218,8 @@ function applyTab(context is Context, id is Id, definition is map, tabQuery is Q
     var index = 0;
     for (var tabBody in tabBodies)
     {
-        const tabBodyQuery = qUnion([tabBody]);
-        const trackedTabBody = qUnion([tabBodyQuery, startTracking(context, tabBodyQuery)]);
+        const alignedTabBodyQuery = getAlignedTabBody(context, id + unstableIdComponent(index) + "align", tabBody, unionQuery);
+        const trackedTabBody = qUnion([alignedTabBodyQuery, startTracking(context, alignedTabBodyQuery)]);
         const coincidentWalls = findCoincidentSheetMetalWalls(context, trackedTabBody, unionQuery);
         const coincidentGrouping = { "tabBody" : trackedTabBody, "walls" : coincidentWalls };
         const status = booleanOneTabGroup(context, id + unstableIdComponent(index) + "group", definition, coincidentGrouping, separatedSubtractQueries, rootId);
