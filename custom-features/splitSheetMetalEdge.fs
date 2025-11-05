@@ -89,7 +89,7 @@ export const smEdgePartition = defineFeature(function(context is Context, id is 
         }
 
         showAlternatingCyanMagentaSegments(context, trackedEdge);
-        
+
         // Simplified assignSMAttributesToNewOrSplitEntities
         var deletedAttributes = [];    
         for (var splitEdge in evaluateQuery(context, trackedEdge))
@@ -108,7 +108,6 @@ export const smEdgePartition = defineFeature(function(context is Context, id is 
             if (getSMAssociationAttributes(context, vertex) == [])
                 assignSMAssociationAttributes(context, vertex);
         }
-
         updateSheetMetalGeometry(context, id + "smUpdate", {
                     "entities" : qAdjacent(trackedEdge, AdjacencyType.EDGE, EntityType.FACE),
                     "deletedAttributes" : deletedAttributes
