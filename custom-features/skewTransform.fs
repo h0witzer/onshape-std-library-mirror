@@ -10,6 +10,7 @@ import(path : "onshape/std/manipulator.fs", version : "2796.0");
 import(path : "onshape/std/matrix.fs", version : "2796.0");
 import(path : "onshape/std/math.fs", version : "2796.0");
 import(path : "onshape/std/query.fs", version : "2796.0");
+import(path : "onshape/std/sheetMetalUtils.fs", version : "2796.0");
 import(path : "onshape/std/transform.fs", version : "2796.0");
 import(path : "onshape/std/units.fs", version : "2796.0");
 import(path : "onshape/std/valueBounds.fs", version : "2796.0");
@@ -43,7 +44,7 @@ annotation { "Feature Type Name" : "Skew transform",
         "Manipulator Change Function" : "skewTransformManipulatorChange",
         "Editing Logic Function" : "skewTransformEditLogic",
         "Filter Selector" : "allparts" }
-export const skewTransform = defineFeature(function(context is Context, id is Id, definition is map)
+export const skewTransform = defineSheetMetalFeature(function(context is Context, id is Id, definition is map)
     precondition
     {
         annotation { "Name" : "Entities", "Filter" : EntityType.BODY && ModifiableEntityOnly.YES && AllowMeshGeometry.YES && SketchObject.NO }
@@ -83,14 +84,16 @@ export const skewTransform = defineFeature(function(context is Context, id is Id
         isButton(definition.resetSkews);
     }
     {
-        const bodiesToTransform = qOwnerBody(definition.targets);
-        if (isQueryEmpty(context, bodiesToTransform))
+        const targetInfo = getSkewTransformTargets(context, definition);
+        const transformBodies = targetInfo.transformBodies;
+
+        if (isQueryEmpty(context, transformBodies))
         {
             throw regenError("Select at least one body to transform", ["targets"]);
         }
 
-        const anchorSystem = resolveAnchorCoordinateSystem(context, definition, bodiesToTransform);
-        const boundingBox = evBox3d(context, { "topology" : bodiesToTransform, "cSys" : anchorSystem, "tight" : false });
+        const anchorSystem = resolveAnchorCoordinateSystem(context, definition, transformBodies);
+        const boundingBox = evBox3d(context, { "topology" : transformBodies, "cSys" : anchorSystem, "tight" : false });
         const transformExtents = boundingBox.maxCorner - boundingBox.minCorner;
 
         const localLinear = matrix([
@@ -107,10 +110,38 @@ export const skewTransform = defineFeature(function(context is Context, id is Id
 
         const worldTransform = toWorld(anchorSystem) * localTransform * fromWorld(anchorSystem);
 
-        opTransform(context, id + "transform", {
-                    "bodies" : bodiesToTransform,
-                    "transform" : worldTransform
-                });
+        if (!isQueryEmpty(context, targetInfo.nonSheetMetalBodies))
+        {
+            opTransform(context, id + "transform_non_sm", {
+                        "bodies" : targetInfo.nonSheetMetalBodies,
+                        "transform" : worldTransform
+                    });
+        }
+
+        if (!isQueryEmpty(context, targetInfo.sheetMetalModels))
+        {
+            const sheetMetalModelsToTransform = targetInfo.sheetMetalModels;
+            const initialData = getInitialEntitiesAndAttributes(context, sheetMetalModelsToTransform);
+            const smEntitiesToTrack = qUnion([
+                        qOwnedByBody(sheetMetalModelsToTransform, EntityType.EDGE),
+                        qOwnedByBody(sheetMetalModelsToTransform, EntityType.FACE),
+                        sheetMetalModelsToTransform
+                    ]);
+            const tracking = startTracking(context, smEntitiesToTrack);
+
+            opTransform(context, id + "transform_sm", {
+                        "bodies" : sheetMetalModelsToTransform,
+                        "transform" : worldTransform
+                    });
+
+            const toUpdate = assignSMAttributesToNewOrSplitEntities(context, sheetMetalModelsToTransform, initialData, id);
+
+            callSubfeatureAndProcessStatus(id, updateSheetMetalGeometry, context, id + "smUpdate", {
+                        "entities" : qUnion([toUpdate.modifiedEntities, qCreatedBy(id + "transform_sm"), tracking]),
+                        "deletedAttributes" : toUpdate.deletedAttributes,
+                        "associatedChanges" : tracking
+                    });
+        }
     }, {
             "targets" : qNothing(),
             "anchor" : qNothing(),
@@ -130,14 +161,14 @@ export const skewTransform = defineFeature(function(context is Context, id is Id
  */
 export function skewTransformManipulatorChange(context is Context, definition is map, newManipulators is map) returns map
 {
-    const bodiesToTransform = qOwnerBody(definition.targets);
-    if (isQueryEmpty(context, bodiesToTransform))
+    const transformBodies = getSkewTransformTargets(context, definition).transformBodies;
+    if (isQueryEmpty(context, transformBodies))
     {
         return definition;
     }
 
-    const anchorSystem = resolveAnchorCoordinateSystem(context, definition, bodiesToTransform);
-    const boundingBox = evBox3d(context, { "topology" : bodiesToTransform, "cSys" : anchorSystem, "tight" : false });
+    const anchorSystem = resolveAnchorCoordinateSystem(context, definition, transformBodies);
+    const boundingBox = evBox3d(context, { "topology" : transformBodies, "cSys" : anchorSystem, "tight" : false });
     const transformExtents = boundingBox.maxCorner - boundingBox.minCorner;
 
     for (var descriptor in SHEAR_MANIPULATOR_DATA)
@@ -205,6 +236,30 @@ function resolveAnchorCoordinateSystem(context is Context, definition is map, bo
     const fallbackOrigin = evApproximateCentroid(context, { "entities" : bodiesToTransform });
     return coordSystem(fallbackOrigin, vector(1, 0, 0), vector(0, 1, 0));
 }
+
+/**
+ * Collect the sheet metal and non-sheet metal bodies targeted by the feature and provide
+ * the queries required for downstream processing and visualization.
+ */
+function getSkewTransformTargets(context is Context, definition is map) returns map
+{
+    const bodiesToTransform = qOwnerBody(definition.targets);
+    const separated = separateSheetMetalQueries(context, bodiesToTransform);
+    const nonSheetMetalBodies = separated.nonSheetMetalQueries;
+
+    var sheetMetalModels = qNothing();
+    if (!isQueryEmpty(context, separated.sheetMetalQueries))
+    {
+        sheetMetalModels = getSheetMetalModelForPart(context, separated.sheetMetalQueries);
+    }
+
+    return {
+                "transformBodies" : qUnion([nonSheetMetalBodies, sheetMetalModels]),
+                "nonSheetMetalBodies" : nonSheetMetalBodies,
+                "sheetMetalModels" : sheetMetalModels
+            };
+}
+
 
 /**
  * Place shear manipulators on the transformed bounding box faces and align them with the skewed axes.
