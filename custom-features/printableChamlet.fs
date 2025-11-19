@@ -127,8 +127,9 @@ export const printableChamlet = defineFeature(function(context is Context, id is
         const copiedBodyQuery = copyBodyForChamlet(context, id, definition.targetBody);
 
         // Step 2: Find the corresponding entities in the copied body using the attribute
-        const trackedEntitiesInCopy = qHasAttribute(trackingAttribute, EntityType.EDGE) 
-                                       ->qOwnedByBody(copiedBodyQuery);
+        // First get all entities with the tracking attribute, then filter by copied body
+        const trackedEntitiesInCopy = qOwnedByBody(copiedBodyQuery, EntityType.EDGE)
+                                       ->qHasAttribute(trackingAttribute);
         
         // Step 3: Determine faces to move based on geometry of tracked entities
         // Find faces adjacent to tracked edges that should translate to create the draft
