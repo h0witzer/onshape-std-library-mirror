@@ -1,8 +1,34 @@
 FeatureScript 2796;
 
-// Custom feature for creating printable chamfer/fillet hybrid features (chamlets)
-// Automates the workflow of creating truncated fillets optimized for 3D printing
-// with a specified draft angle and printer orientation
+/*
+    Printable Chamlet (Chamfer/Fillet Hybrid)
+    
+    This custom feature automates the creation of printable chamfer/fillet hybrid features
+    (chamlets) with draft angles optimized for 3D printing orientation. It implements a 
+    workflow that creates truncated fillets with controlled draft angles.
+    
+    Workflow:
+    1. Copy the target body
+    2. Translate selected faces on the copy in the printer Z direction by a calculated offset
+    3. Apply fillet to the specified edges on the modified copy
+    4. Boolean subtract the modified copy from the original body
+    
+    The offset distance is calculated as: offset = radius * tan(draftAngle)
+    This ensures the resulting fillet surface has the specified draft angle relative to
+    the printer Z direction, making it more printable without support material.
+    
+    Usage:
+    - Select the body to modify
+    - Select edges where the chamlet will be applied
+    - Select faces that need to translate to create the draft
+    - Specify printer Z direction (build plate normal)
+    - Set draft angle (typical: 30-60 degrees)
+    - Set fillet radius
+    
+    Version: 1.0
+    Author: Custom implementation for onshape-std-library-mirror
+    Date: 2025
+*/
 
 import(path : "onshape/std/common.fs", version : "2796.0");
 import(path : "onshape/std/query.fs", version : "2796.0");
@@ -299,8 +325,16 @@ function applyFilletToCopy(context is Context, id is Id, filletEntities is Query
     }
     catch (error)
     {
-        // If fillet fails, report error but continue - the boolean might still work
-        reportFeatureWarning(context, id + "fillet", "Fillet operation failed: " ~ error.message);
+        // If fillet fails, report warning but continue - the boolean might still work
+        const message = try(error.message as ErrorStringEnum);
+        if (message != undefined)
+        {
+            reportFeatureWarning(context, id + "fillet", message);
+        }
+        else
+        {
+            reportFeatureWarning(context, id + "fillet", "Fillet operation failed");
+        }
     }
 }
 
