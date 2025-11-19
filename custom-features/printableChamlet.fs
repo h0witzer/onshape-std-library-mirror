@@ -261,7 +261,11 @@ function determineFacesToMove(context is Context, selectedEntities is Query, cop
             // Direction depends on which side of the fillet they're on
             if (abs(dotProduct) < 0.9) // Not too parallel to printer Z
             {
-                const moveDir = if (dotProduct > 0) printerZVector else -printerZVector;
+                var moveDir = printerZVector;
+                if (dotProduct < 0)
+                {
+                    moveDir = -printerZVector;
+                }
                 faceMoveData = append(faceMoveData, { "face" : face, "direction" : moveDir });
             }
         }
