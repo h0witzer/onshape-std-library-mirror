@@ -119,24 +119,31 @@ export const printableChamlet = defineFeature(function(context is Context, id is
 
         // Step 2: Map the user-selected faces to the copied body
         // Since we copied the body, corresponding faces exist in the copy
+        // NOTE: Current implementation uses simplified mapping (all faces from copy)
+        // This works when user selects all relevant faces, but production code
+        // should implement proper topological tracking for precise mapping
         var facesToMove = mapFacesToCopy(context, definition.facesToTranslate, copiedBodyQuery);
 
         // Step 3: Calculate the offset distance for face translation
         // The offset is calculated so that the fillet will start at the correct draft angle
-        // offset = radius * tan(draftAngle)
+        // Geometric relationship: offset = radius * tan(draftAngle)
         const offsetDistance = calculateOffsetDistance(definition.draftAngle, definition.filletRadius);
 
         // Step 4: Perform move face operation to translate faces in printer Z direction
+        // This creates the "draft" or "ramp" that will result in the angled fillet surface
         moveFacesForChamlet(context, id, facesToMove, printerZVector, offsetDistance);
 
         // Step 5: Map the user-selected edges to the copied body for filleting
+        // NOTE: Current implementation uses simplified mapping (all edges from copy)
         var filletEntities = mapEdgesToCopy(context, definition.edges, copiedBodyQuery);
 
         // Step 6: Apply fillet operation to the modified copy
+        // The fillet is applied AFTER the face translation, so the fillet follows the ramped surface
         applyFilletToCopy(context, id, filletEntities, definition.filletRadius, definition.tangentPropagation);
 
         // Step 7: Perform boolean subtraction (subtract complement) with original body as target
-        // and modified copy as tool - this creates the chamlet effect
+        // and modified copy as tool - this removes the filleted ramp from the original body,
+        // creating the truncated fillet (chamlet) effect
         performChamletBoolean(context, id, definition.targetBody, copiedBodyQuery);
     },
     {
