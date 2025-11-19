@@ -45,6 +45,7 @@ import(path : "onshape/std/vector.fs", version : "2796.0");
 import(path : "onshape/std/math.fs", version : "2796.0");
 import(path : "onshape/std/error.fs", version : "2796.0");
 import(path : "onshape/std/topologyUtils.fs", version : "2796.0");
+import(path : "onshape/std/attributes.fs", version : "2796.0");
 
 // Bounds for draft angle parameter - typical 3D printing draft angles
 const DRAFT_ANGLE_BOUNDS = {
@@ -114,33 +115,46 @@ export const printableChamlet = defineFeature(function(context is Context, id is
         // Get printer Z direction vector
         var printerZVector = getPrinterZDirectionVector(context, definition);
 
+        // Step 0: Mark the selected entities with an attribute so we can track them after copying
+        const trackingAttribute = "chamletSelectedEntities_" ~ toAttributeId(id);
+        setAttribute(context, {
+            "entities" : definition.entities,
+            "name" : trackingAttribute,
+            "attribute" : { "selected" : true }
+        });
+
         // Step 1: Create a copy of the target body using opPattern with identity transform
         const copiedBodyQuery = copyBodyForChamlet(context, id, definition.targetBody);
 
-        // Step 2: Determine faces to move based on geometry
-        // Find faces adjacent to selected edges that should translate to create the draft
-        // These are faces that will move in the printer Z direction (or opposite for bottom-side chamlets)
-        var facesToMove = determineFacesToMove(context, definition.entities, copiedBodyQuery, printerZVector);
+        // Step 2: Find the corresponding entities in the copied body using the attribute
+        const trackedEntitiesInCopy = qHasAttribute(trackingAttribute, EntityType.EDGE) 
+                                       ->qOwnedByBody(copiedBodyQuery);
+        
+        // Step 3: Determine faces to move based on geometry of tracked entities
+        // Find faces adjacent to tracked edges that should translate to create the draft
+        var facesToMove = determineFacesToMove(context, trackedEntitiesInCopy, copiedBodyQuery, printerZVector);
 
-        // Step 3: Calculate the offset distance for face translation
+        // Step 4: Calculate the offset distance for face translation
         // The offset creates the ramp for the fillet to follow
         // For a chamlet effect: offset = radius / tan(draftAngle)
         const offsetDistance = calculateOffsetDistance(definition.draftAngle, definition.filletRadius);
 
-        // Step 4: Perform move face operation to translate faces
+        // Step 5: Perform move face operation to translate faces
         // Faces move in direction determined by their orientation relative to printer Z
         moveFacesForChamlet(context, id, facesToMove, offsetDistance);
 
-        // Step 5: Map the user-selected edges to the copied body for filleting
-        var filletEntities = mapEntitiesToCopy(context, definition.entities, copiedBodyQuery);
-
-        // Step 6: Apply fillet operation to the modified copy
-        // The fillet is applied AFTER the face translation, so the fillet follows the ramped surface
-        applyFilletToCopy(context, id, filletEntities, definition.filletRadius, definition.tangentPropagation);
+        // Step 6: Apply fillet operation to the tracked entities in the modified copy
+        applyFilletToCopy(context, id, trackedEntitiesInCopy, definition.filletRadius, definition.tangentPropagation);
 
         // Step 7: Perform boolean subtraction (SUBTRACT_COMPLEMENT) to preserve original body identity
         // This removes the filleted ramp from the original body, creating the chamlet effect
         performChamletBoolean(context, id, definition.targetBody, copiedBodyQuery);
+        
+        // Clean up: Remove the tracking attribute
+        removeAttributes(context, {
+            "entities" : qHasAttribute(trackingAttribute),
+            "name" : trackingAttribute
+        });
     },
     {
         flipPrinterZ : false,
@@ -219,55 +233,55 @@ function copyBodyForChamlet(context is Context, id is Id, targetBody is Query) r
 
 /**
  * Determines which faces should be translated to create the chamlet effect.
- * Automatically identifies faces adjacent to the selected edges that need to move
+ * Automatically identifies faces adjacent to the tracked edges that need to move
  * based on their orientation relative to the printer Z direction.
  *
  * @param context : The context object
- * @param selectedEntities : Query for edges/faces selected by user
+ * @param trackedEdges : Query for tracked edges in the copied body
  * @param copiedBody : Query for the copied body
  * @param printerZVector : The printer Z direction vector
- * @returns {map} : Map with "facesToMove" query and "moveDirection" vector for each face
+ * @returns {map} : Map with "faceMoveData" array containing face and direction for each face
  */
-function determineFacesToMove(context is Context, selectedEntities is Query, copiedBody is Query, printerZVector is Vector) returns map
+function determineFacesToMove(context is Context, trackedEdges is Query, copiedBody is Query, printerZVector is Vector) returns map
 {
-    // Get edges from the selection (could be edges or faces)
-    var edges = qEntityFilter(selectedEntities, EntityType.EDGE);
-    
-    // If faces were selected, get their edges
-    if (isQueryEmpty(context, edges))
-    {
-        const faces = qEntityFilter(selectedEntities, EntityType.FACE);
-        edges = qAdjacent(faces, AdjacencyType.EDGE, EntityType.EDGE);
-    }
-    
-    // For each edge in the copied body, find adjacent faces and determine which should move
-    const copiedEdges = qOwnedByBody(copiedBody, EntityType.EDGE);
-    const adjacentFaces = qAdjacent(copiedEdges, AdjacencyType.EDGE, EntityType.FACE);
+    // Find faces adjacent to the tracked edges
+    const adjacentFaces = qAdjacent(trackedEdges, AdjacencyType.EDGE, EntityType.FACE);
     
     // We need to determine which faces move based on their normal direction relative to printer Z
-    // Faces that are more perpendicular to the printer Z should move
-    // This is a simplified approach - returning the adjacent faces
     var faceMoveData = [];
     
     for (var face in evaluateQuery(context, adjacentFaces))
     {
-        const facePlane = try(evPlane(context, { "face" : face }));
+        // Try to get face normal - use evFaceTangentPlane for non-planar faces
+        var faceNormal;
+        const facePlane = try silent(evPlane(context, { "face" : face }));
         if (facePlane != undefined)
         {
-            // Determine if face should move up or down based on its normal vs printer Z
-            const dotProduct = dot(facePlane.normal, printerZVector);
-            
-            // Faces roughly perpendicular to printer Z (small dot product) should move
-            // Direction depends on which side of the fillet they're on
-            if (abs(dotProduct) < 0.9) // Not too parallel to printer Z
+            faceNormal = facePlane.normal;
+        }
+        else
+        {
+            // For non-planar faces, use tangent plane at center
+            const tangentPlane = evFaceTangentPlane(context, {
+                "face" : face,
+                "parameter" : vector(0.5, 0.5)
+            });
+            faceNormal = tangentPlane.normal;
+        }
+        
+        // Determine if face should move up or down based on its normal vs printer Z
+        const dotProduct = dot(faceNormal, printerZVector);
+        
+        // Faces roughly perpendicular to printer Z (small dot product) should move
+        // Direction depends on which side of the fillet they're on
+        if (abs(dotProduct) < 0.9) // Not too parallel to printer Z
+        {
+            var moveDir = printerZVector;
+            if (dotProduct < 0)
             {
-                var moveDir = printerZVector;
-                if (dotProduct < 0)
-                {
-                    moveDir = -printerZVector;
-                }
-                faceMoveData = append(faceMoveData, { "face" : face, "direction" : moveDir });
+                moveDir = -printerZVector;
             }
+            faceMoveData = append(faceMoveData, { "face" : face, "direction" : moveDir });
         }
     }
     
@@ -327,38 +341,6 @@ function moveFacesForChamlet(context is Context, id is Id, faceMoveData is map, 
         });
         faceIndex += 1;
     }
-}
-
-/**
- * Maps user-selected entities from the original body to their corresponding entities in the copied body.
- * Uses pattern correspondence to map edges/faces from original to copy.
- *
- * @param context : The context object
- * @param originalEntities : Query for entities selected on the original body
- * @param copiedBody : Query for the copied body
- * @returns {Query} : Query for corresponding entities in the copied body
- */
-function mapEntitiesToCopy(context is Context, originalEntities is Query, copiedBody is Query) returns Query
-{
-    // After opPattern creates the copy with identity transform, corresponding entities
-    // should exist at the same locations. We use the copied body to filter entities.
-    // This is a simplified approach that returns entities from the copied body.
-    // In production, would use qCorrespondingInFlat or pattern tracking for precise mapping.
-    
-    // Determine entity type from selection
-    const isEdge = !isQueryEmpty(context, qEntityFilter(originalEntities, EntityType.EDGE));
-    const isFace = !isQueryEmpty(context, qEntityFilter(originalEntities, EntityType.FACE));
-    
-    if (isEdge)
-    {
-        return qOwnedByBody(copiedBody, EntityType.EDGE);
-    }
-    else if (isFace)
-    {
-        return qOwnedByBody(copiedBody, EntityType.FACE);
-    }
-    
-    return qNothing();
 }
 
 /**
