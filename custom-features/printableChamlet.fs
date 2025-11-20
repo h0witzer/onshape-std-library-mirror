@@ -10,11 +10,11 @@ FeatureScript 2796;
     Workflow:
     1. Copy the target body
     2. Automatically determine which faces adjacent to selected edges need to translate
-    3. Translate those faces in appropriate directions by offset = radius * tan(draftAngle)
+    3. Translate those faces in appropriate directions by offset = radius * (1 - cos(draftAngle))
     4. Apply fillet to the specified edges on the modified copy
     5. Boolean SUBTRACT_COMPLEMENT to preserve original body identity
     
-    The offset distance is calculated as: offset = radius * tan(draftAngle)
+    The offset distance is calculated as: offset = radius * (1 - cos(draftAngle))
     This ensures the resulting fillet surface has the specified draft angle relative to
     the printer Z direction, making it more printable without support material.
     
@@ -372,7 +372,7 @@ function determineFacesToMove(context is Context, trackedEntities is Query, copi
  * The geometry requires that the face move by an amount such that the resulting fillet
  * surface has the desired draft angle from the printer Z direction.
  * 
- * For a printable chamlet, offset = radius * tan(draftAngle)
+ * For a printable chamlet, offset = radius * (1 - cos(draftAngle))
  * This creates a truncated fillet where the fillet surface has the specified draft angle.
  *
  * @param draftAngle : The desired draft angle for the chamlet
@@ -386,9 +386,9 @@ precondition
     isLength(filletRadius);
 }
 {
-    // offset = radius * tan(draftAngle)
+    // offset = radius * (1 - cos(draftAngle))
     // This ensures the fillet surface has the specified draft angle
-    const offsetDistance = filletRadius * tan(draftAngle);
+    const offsetDistance = filletRadius * (1 - cos(draftAngle));
     return offsetDistance;
 }
 
