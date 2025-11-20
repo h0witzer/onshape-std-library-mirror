@@ -105,85 +105,74 @@ export const printableChamlet = defineFeature(function(context is Context, id is
         // Get reference Z direction vector
         var printerZVector = getPrinterZDirectionVector(context, definition);
 
+        // Step 0: Mark the selected entities with an attribute so we can track them after copying
+        const trackingAttribute = "chamletSelectedEntities";
+        setAttribute(context, {
+            "entities" : definition.entities,
+            "name" : trackingAttribute,
+            "attribute" : { "selected" : true }
+        });
+
         // Automatically determine target bodies from selected entities
         const targetBodies = qOwnerBody(definition.entities);
+
+        // Step 1: Create a copy of the target bodies using opPattern with identity transform
+        const copiedBodyQuery = copyBodyForChamlet(context, id, targetBodies);
+
+        // Step 2: Find the corresponding entities in the copied body using the attribute
+        // Support both edges and faces - check what was selected
+        var trackedEntitiesInCopy;
+        const hasEdges = !isQueryEmpty(context, qEntityFilter(definition.entities, EntityType.EDGE));
+        const hasFaces = !isQueryEmpty(context, qEntityFilter(definition.entities, EntityType.FACE));
         
-        // Process each body individually to support multiple bodies
-        const targetBodyArray = evaluateQuery(context, targetBodies);
-        for (var bodyIndex = 0; bodyIndex < size(targetBodyArray); bodyIndex += 1)
+        if (hasEdges && hasFaces)
         {
-            const targetBody = targetBodyArray[bodyIndex];
-            const bodyId = id + unstableIdComponent(bodyIndex);
-            
-            // Step 0: Mark the selected entities with an attribute so we can track them after copying
-            // Only mark entities that belong to this specific body
-            const trackingAttribute = "chamletSelectedEntities_" ~ toAttributeId(bodyId);
-            const entitiesInThisBody = qOwnedByBody(targetBody) intersection definition.entities;
-            
-            setAttribute(context, {
-                "entities" : entitiesInThisBody,
-                "name" : trackingAttribute,
-                "attribute" : { "selected" : true }
-            });
-
-            // Step 1: Create a copy of the target body using opPattern with identity transform
-            const copiedBodyQuery = copyBodyForChamlet(context, bodyId, targetBody);
-
-            // Step 2: Find the corresponding entities in the copied body using the attribute
-            // Support both edges and faces - check what was selected
-            var trackedEntitiesInCopy;
-            const hasEdges = !isQueryEmpty(context, qEntityFilter(entitiesInThisBody, EntityType.EDGE));
-            const hasFaces = !isQueryEmpty(context, qEntityFilter(entitiesInThisBody, EntityType.FACE));
-            
-            if (hasEdges && hasFaces)
-            {
-                // Both edges and faces selected
-                trackedEntitiesInCopy = qUnion([
-                    qOwnedByBody(copiedBodyQuery, EntityType.EDGE)->qHasAttribute(trackingAttribute),
-                    qOwnedByBody(copiedBodyQuery, EntityType.FACE)->qHasAttribute(trackingAttribute)
-                ]);
-            }
-            else if (hasEdges)
-            {
-                // Only edges
-                trackedEntitiesInCopy = qOwnedByBody(copiedBodyQuery, EntityType.EDGE)
-                                       ->qHasAttribute(trackingAttribute);
-            }
-            else
-            {
-                // Only faces
-                trackedEntitiesInCopy = qOwnedByBody(copiedBodyQuery, EntityType.FACE)
-                                       ->qHasAttribute(trackingAttribute);
-            }
-            
-            // Step 3: Determine faces to move based on geometry of tracked entities
-            // Find faces adjacent to tracked edges/faces that should translate to create the draft
-            var facesToMove = determineFacesToMove(context, trackedEntitiesInCopy, copiedBodyQuery, printerZVector, hasEdges, hasFaces);
-
-            // Step 4: Calculate the offset distance for face translation
-            // The offset is optimized for a global Z shift irrespective of local face geometry
-            //This means in non-90 degree cases the chamlet will be more aggressive at shifting than necessary but this is an easier and more performant implementation than a locally sensitive one.
-            // For a chamlet effect: radius * (1 - cos(draftAngle))
-            // Flipped the 90 to match the nomenclature of printer overhangs as well as usual draft conventions
-            const offsetDistance = calculateOffsetDistance(90*degree-definition.draftAngle, definition.filletRadius);
-
-            // Step 5: Perform move face operation to translate faces
-            // Faces move in direction determined by their orientation relative to reference Z
-            moveFacesForChamlet(context, bodyId, facesToMove, offsetDistance);
-
-            // Step 6: Apply fillet operation to the tracked entities in the modified copy
-            applyFilletToCopy(context, bodyId, trackedEntitiesInCopy, definition.filletRadius, definition.tangentPropagation);
-
-            // Step 7: Perform boolean subtraction (SUBTRACT_COMPLEMENT) to preserve original body identity
-            // This removes the filleted ramp from the original body, creating the chamlet effect
-            performChamletBoolean(context, bodyId, targetBody, copiedBodyQuery);
-            
-            // Clean up: Remove the tracking attribute for this body
-            removeAttributes(context, {
-                "entities" : qHasAttribute(trackingAttribute),
-                "name" : trackingAttribute
-            });
+            // Both edges and faces selected
+            trackedEntitiesInCopy = qUnion([
+                qOwnedByBody(copiedBodyQuery, EntityType.EDGE)->qHasAttribute(trackingAttribute),
+                qOwnedByBody(copiedBodyQuery, EntityType.FACE)->qHasAttribute(trackingAttribute)
+            ]);
         }
+        else if (hasEdges)
+        {
+            // Only edges
+            trackedEntitiesInCopy = qOwnedByBody(copiedBodyQuery, EntityType.EDGE)
+                                   ->qHasAttribute(trackingAttribute);
+        }
+        else
+        {
+            // Only faces
+            trackedEntitiesInCopy = qOwnedByBody(copiedBodyQuery, EntityType.FACE)
+                                   ->qHasAttribute(trackingAttribute);
+        }
+        
+        // Step 3: Determine faces to move based on geometry of tracked entities
+        // Find faces adjacent to tracked edges/faces that should translate to create the draft
+        var facesToMove = determineFacesToMove(context, trackedEntitiesInCopy, copiedBodyQuery, printerZVector, hasEdges, hasFaces);
+
+        // Step 4: Calculate the offset distance for face translation
+        // The offset is optimized for a global Z shift irrespective of local face geometry
+        //This means in non-90 degree cases the chamlet will be more aggressive at shifting than necessary but this is an easier and more performant implementation than a locally sensitive one.
+        // For a chamlet effect: radius * (1 - cos(draftAngle))
+        // Flipped the 90 to match the nomenclature of printer overhangs as well as usual draft conventions
+        const offsetDistance = calculateOffsetDistance(90*degree-definition.draftAngle, definition.filletRadius);
+
+        // Step 5: Perform move face operation to translate faces
+        // Faces move in direction determined by their orientation relative to reference Z
+        moveFacesForChamlet(context, id, facesToMove, offsetDistance);
+
+        // Step 6: Apply fillet operation to the tracked entities in the modified copy
+        applyFilletToCopy(context, id, trackedEntitiesInCopy, definition.filletRadius, definition.tangentPropagation);
+
+        // Step 7: Perform boolean subtraction (SUBTRACT_COMPLEMENT) to preserve original body identity
+        // This removes the filleted ramp from the original body, creating the chamlet effect
+        performChamletBoolean(context, id, targetBodies, copiedBodyQuery);
+        
+        // Clean up: Remove the tracking attribute
+        removeAttributes(context, {
+            "entities" : qHasAttribute(trackingAttribute),
+            "name" : trackingAttribute
+        });
     },
     {
         tangentPropagation : true
@@ -242,23 +231,23 @@ function getPrinterZDirectionVector(context is Context, definition is map) retur
 }
 
 /**
- * Creates a copy of the target body using opPattern with identity transform.
+ * Creates a copy of the target bodies using opPattern with identity transform.
  * This copy will be modified and used as the tool for the final boolean operation.
  *
  * @param context : The context object
  * @param id : The feature id
- * @param targetBody : Query for the body to copy
- * @returns {Query} : Query for the copied body
+ * @param targetBodies : Query for the bodies to copy
+ * @returns {Query} : Query for the copied bodies
  */
-function copyBodyForChamlet(context is Context, id is Id, targetBody is Query) returns Query
+function copyBodyForChamlet(context is Context, id is Id, targetBodies is Query) returns Query
 {
     opPattern(context, id + "copyBody", {
-        "entities" : targetBody,
+        "entities" : targetBodies,
         "transforms" : [identityTransform()],
         "instanceNames" : ["chamletCopy"]
     });
     
-    // Return a query for the copied body using qCreatedBy
+    // Return a query for the copied bodies using qCreatedBy
     return qCreatedBy(id + "copyBody", EntityType.BODY);
 }
 
@@ -473,19 +462,19 @@ function applyFilletToCopy(context is Context, id is Id, filletEntities is Query
 
 /**
  * Performs the final boolean operation to create the chamlet.
- * Uses SUBTRACT_COMPLEMENT to preserve the original body's identity while removing
+ * Uses SUBTRACT_COMPLEMENT to preserve the original bodies' identity while removing
  * the filleted material. This is important for maintaining part references.
  *
  * @param context : The context object
  * @param id : The feature id
- * @param targetBody : Query for the original target body
- * @param copiedBody : Query for the modified copy body (tool)
+ * @param targetBodies : Query for the original target bodies
+ * @param copiedBodies : Query for the modified copied bodies (tool)
  */
-function performChamletBoolean(context is Context, id is Id, targetBody is Query, copiedBody is Query)
+function performChamletBoolean(context is Context, id is Id, targetBodies is Query, copiedBodies is Query)
 {
     opBoolean(context, id + "boolean", {
-        "tools" : copiedBody,
-        "targets" : targetBody,
+        "tools" : copiedBodies,
+        "targets" : targetBodies,
         "operationType" : BooleanOperationType.SUBTRACT_COMPLEMENT,
         "keepTools" : false
     });
