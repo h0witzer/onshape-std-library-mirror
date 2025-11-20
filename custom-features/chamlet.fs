@@ -47,9 +47,9 @@ import(path : "onshape/std/error.fs", version : "2796.0");
 import(path : "onshape/std/topologyUtils.fs", version : "2796.0");
 import(path : "onshape/std/attributes.fs", version : "2796.0");
 
-// Bounds for draft angle parameter - typical 3D printing draft angles
+// Bounds for draft angle parameter - typical 3D printing draft angles expressed as overhang capability
 const DRAFT_ANGLE_BOUNDS = {
-    (degree) : [0.1, 45, 89]
+    (degree) : [0.1, 60, 89]
 } as AngleBoundSpec;
 
 // Bounds for fillet radius parameter
@@ -64,8 +64,8 @@ const FILLET_RADIUS_BOUNDS = {
 
 /**
  * Feature that creates printable chamfer/fillet hybrid features (chamlets).
- * This feature automates the process of creating truncated fillets with a specified
- * draft angle optimized for 3D printing orientation.
+ * This feature automates the process of creating truncated fillets with a specified overhang
+ * draft angle optimized for 3D printing orientation or for partial depth router cuts.
  */
 annotation { "Feature Type Name" : "Chamlet",
              "Feature Type Description" : "Creates truncated fillets with draft angles optimized for 3D printing, or for fancy router profiles on furniture",
@@ -73,11 +73,6 @@ annotation { "Feature Type Name" : "Chamlet",
 export const printableChamlet = defineFeature(function(context is Context, id is Id, definition is map)
     precondition
     {
-        annotation { "Name" : "Body to modify",
-                     "Filter" : EntityType.BODY && BodyType.SOLID && ModifiableEntityOnly.YES,
-                     "MaxNumberOfPicks" : 1 }
-        definition.targetBody is Query;
-
         annotation { "Name" : "Entities to fillet",
                      "Filter" : ((ActiveSheetMetal.NO && ((EntityType.EDGE && EdgeTopology.TWO_SIDED) || EntityType.FACE))
                                  || (EntityType.EDGE && SheetMetalDefinitionEntityType.VERTEX))
@@ -85,14 +80,10 @@ export const printableChamlet = defineFeature(function(context is Context, id is
                      "AdditionalBoxSelectFilter" : EntityType.EDGE }
         definition.entities is Query;
 
-        annotation { "Name" : "Printer Z direction",
+        annotation { "Name" : "Reference Z direction",
                      "Filter" : QueryFilterCompound.ALLOWS_DIRECTION || BodyType.MATE_CONNECTOR || (ConstructionObject.YES && SketchObject.NO && EntityType.FACE),
                      "MaxNumberOfPicks" : 1 }
         definition.printerZDirection is Query;
-
-        annotation { "Name" : "Flip printer Z direction",
-                     "UIHint" : UIHint.OPPOSITE_DIRECTION }
-        definition.flipPrinterZ is boolean;
 
         annotation { "Name" : "Draft angle",
                      "UIHint" : UIHint.REMEMBER_PREVIOUS_VALUE }
@@ -108,24 +99,25 @@ export const printableChamlet = defineFeature(function(context is Context, id is
     }
     {
         // Validate inputs
-        verifyNonemptyQuery(context, definition, "targetBody", ErrorStringEnum.CANNOT_RESOLVE_ENTITIES);
         verifyNonemptyQuery(context, definition, "entities", ErrorStringEnum.CANNOT_RESOLVE_ENTITIES);
         verifyNonemptyQuery(context, definition, "printerZDirection", ErrorStringEnum.CANNOT_RESOLVE_ENTITIES);
 
-        // Get printer Z direction vector
+        // Get reference Z direction vector
         var printerZVector = getPrinterZDirectionVector(context, definition);
 
         // Step 0: Mark the selected entities with an attribute so we can track them after copying
-        // There are probably better ways to do tracking but this is the one that was easiest to describe to the AI
-        const trackingAttribute = "chamletSelectedEntities_" ~ toAttributeId(id);
+        const trackingAttribute = "chamletSelectedEntities";
         setAttribute(context, {
             "entities" : definition.entities,
             "name" : trackingAttribute,
             "attribute" : { "selected" : true }
         });
 
-        // Step 1: Create a copy of the target body using opPattern with identity transform
-        const copiedBodyQuery = copyBodyForChamlet(context, id, definition.targetBody);
+        // Automatically determine target bodies from selected entities
+        const targetBodies = qOwnerBody(definition.entities);
+
+        // Step 1: Create a copy of the target bodies using opPattern with identity transform
+        const copiedBodyQuery = copyBodyForChamlet(context, id, targetBodies);
 
         // Step 2: Find the corresponding entities in the copied body using the attribute
         // Support both edges and faces - check what was selected
@@ -160,13 +152,13 @@ export const printableChamlet = defineFeature(function(context is Context, id is
 
         // Step 4: Calculate the offset distance for face translation
         // The offset is optimized for a global Z shift irrespective of local face geometry
-        //This means in non-90 degree cases the chamlet will be more aggressive at shifting than necessary but this is an easier and more performant implementation than a locally sensitive one.
+        // This means in non-90 degree cases the chamlet will be more aggressive at shifting than necessary but this is an easier and more performant implementation than a locally sensitive one.
         // For a chamlet effect: radius * (1 - cos(draftAngle))
         // Flipped the 90 to match the nomenclature of printer overhangs as well as usual draft conventions
         const offsetDistance = calculateOffsetDistance(90*degree-definition.draftAngle, definition.filletRadius);
 
         // Step 5: Perform move face operation to translate faces
-        // Faces move in direction determined by their orientation relative to printer Z
+        // Faces move in direction determined by their orientation relative to reference Z
         moveFacesForChamlet(context, id, facesToMove, offsetDistance);
 
         // Step 6: Apply fillet operation to the tracked entities in the modified copy
@@ -174,7 +166,7 @@ export const printableChamlet = defineFeature(function(context is Context, id is
 
         // Step 7: Perform boolean subtraction (SUBTRACT_COMPLEMENT) to preserve original body identity
         // This removes the filleted ramp from the original body, creating the chamlet effect
-        performChamletBoolean(context, id, definition.targetBody, copiedBodyQuery);
+        performChamletBoolean(context, id, targetBodies, copiedBodyQuery);
         
         // Clean up: Remove the tracking attribute
         removeAttributes(context, {
@@ -183,7 +175,6 @@ export const printableChamlet = defineFeature(function(context is Context, id is
         });
     },
     {
-        flipPrinterZ : false,
         tangentPropagation : true
     });
 
@@ -194,6 +185,14 @@ export const printableChamlet = defineFeature(function(context is Context, id is
  * @param context : The context object
  * @param definition : The feature definition containing printerZDirection and flipPrinterZ
  * @returns {Vector} : The normalized printer Z direction vector
+ */
+/**
+ * Extracts the reference Z direction vector from the user's selection.
+ * Supports mate connectors, construction planes, lines, axes, and edges.
+ *
+ * @param context : The context object
+ * @param definition : The feature definition map
+ * @returns {Vector} : Normalized direction vector for the reference Z direction
  */
 function getPrinterZDirectionVector(context is Context, definition is map) returns Vector
 {
@@ -221,39 +220,34 @@ function getPrinterZDirectionVector(context is Context, definition is map) retur
         }
         if (direction == undefined)
         {
-            throw regenError("Could not determine printer Z direction from selection");
+            throw regenError("Could not determine reference Z direction from selection");
         }
         directionVector = direction.direction;
     }
     
     directionVector = normalize(directionVector);
     
-    if (definition.flipPrinterZ)
-    {
-        directionVector = -directionVector;
-    }
-    
     return directionVector;
 }
 
 /**
- * Creates a copy of the target body using opPattern with identity transform.
+ * Creates a copy of the target bodies using opPattern with identity transform.
  * This copy will be modified and used as the tool for the final boolean operation.
  *
  * @param context : The context object
  * @param id : The feature id
- * @param targetBody : Query for the body to copy
- * @returns {Query} : Query for the copied body
+ * @param targetBodies : Query for the bodies to copy
+ * @returns {Query} : Query for the copied bodies
  */
-function copyBodyForChamlet(context is Context, id is Id, targetBody is Query) returns Query
+function copyBodyForChamlet(context is Context, id is Id, targetBodies is Query) returns Query
 {
     opPattern(context, id + "copyBody", {
-        "entities" : targetBody,
+        "entities" : targetBodies,
         "transforms" : [identityTransform()],
         "instanceNames" : ["chamletCopy"]
     });
     
-    // Return a query for the copied body using qCreatedBy
+    // Return a query for the copied bodies using qCreatedBy
     return qCreatedBy(id + "copyBody", EntityType.BODY);
 }
 
@@ -356,11 +350,21 @@ function determineFacesToMove(context is Context, trackedEntities is Query, copi
             const faceString = transientQueriesToStrings(faceToMove);
             if (processedFaces[faceString] == undefined)
             {
-                // The face should move in its normal direction (outward from the edge)
-                // to create space for the fillet ramp
+                // Determine movement direction based on face normal relative to reference Z
+                // If face normal points in same general direction as reference Z, move in +Z
+                // If face normal points opposite to reference Z, move in -Z
+                const faceZAlignment = dot(faceNormalToUse, printerZVector);
+                var moveDirection = printerZVector;
+                if (faceZAlignment < 0)
+                {
+                    moveDirection = -printerZVector;
+                }
+                
+                // The face should move in the reference Z direction
+                // to create the correct draft angle for the chamlet
                 faceMoveData = append(faceMoveData, { 
                     "face" : faceToMove, 
-                    "direction" : faceNormalToUse 
+                    "direction" : moveDirection 
                 });
                 processedFaces[faceString] = true;
             }
@@ -468,19 +472,19 @@ function applyFilletToCopy(context is Context, id is Id, filletEntities is Query
 
 /**
  * Performs the final boolean operation to create the chamlet.
- * Uses SUBTRACT_COMPLEMENT to preserve the original body's identity while removing
+ * Uses SUBTRACT_COMPLEMENT to preserve the original bodies' identity while removing
  * the filleted material. This is important for maintaining part references.
  *
  * @param context : The context object
  * @param id : The feature id
- * @param targetBody : Query for the original target body
- * @param copiedBody : Query for the modified copy body (tool)
+ * @param targetBodies : Query for the original target bodies
+ * @param copiedBodies : Query for the modified copied bodies (tool)
  */
-function performChamletBoolean(context is Context, id is Id, targetBody is Query, copiedBody is Query)
+function performChamletBoolean(context is Context, id is Id, targetBodies is Query, copiedBodies is Query)
 {
     opBoolean(context, id + "boolean", {
-        "tools" : copiedBody,
-        "targets" : targetBody,
+        "tools" : copiedBodies,
+        "targets" : targetBodies,
         "operationType" : BooleanOperationType.SUBTRACT_COMPLEMENT,
         "keepTools" : false
     });
