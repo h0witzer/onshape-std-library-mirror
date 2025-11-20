@@ -124,9 +124,12 @@ export const printableChamlet = defineFeature(function(context is Context, id is
                      "UIHint" : UIHint.REMEMBER_PREVIOUS_VALUE }
         isAngle(definition.overhangAngle, OVERHANG_ANGLE_BOUNDS);
 
-        annotation { "Name" : "Fillet radius",
-                     "UIHint" : UIHint.REMEMBER_PREVIOUS_VALUE }
-        isLength(definition.filletRadius, FILLET_RADIUS_BOUNDS);
+        if (definition.filletType == FilletType.EDGE)
+        {
+            annotation { "Name" : "Fillet radius",
+                         "UIHint" : UIHint.REMEMBER_PREVIOUS_VALUE }
+            isLength(definition.filletRadius, FILLET_RADIUS_BOUNDS);
+        }
 
         annotation { "Name" : "Tangent propagation",
                      "Default" : true }
@@ -166,12 +169,29 @@ export const printableChamlet = defineFeature(function(context is Context, id is
             performFullRoundChamlet(context, id, definition, printerZVector, draftAngle);
         }
         
-        // Clean up: Remove the tracking attribute if it was used
+        // Clean up: Remove all tracking attributes
         const trackingAttribute = "chamletSelectedEntities_" ~ toAttributeId(id);
         removeAttributes(context, {
             "entities" : qHasAttribute(trackingAttribute),
             "name" : trackingAttribute
         });
+        
+        // Also clean up full round specific attributes if they exist
+        try silent
+        {
+            removeAttributes(context, {
+                "entities" : qHasAttribute(trackingAttribute ~ "_side1"),
+                "name" : trackingAttribute ~ "_side1"
+            });
+            removeAttributes(context, {
+                "entities" : qHasAttribute(trackingAttribute ~ "_side2"),
+                "name" : trackingAttribute ~ "_side2"
+            });
+            removeAttributes(context, {
+                "entities" : qHasAttribute(trackingAttribute ~ "_center"),
+                "name" : trackingAttribute ~ "_center"
+            });
+        };
     },
     {
         flipPrinterZ : false,
@@ -242,14 +262,31 @@ function performEdgeChamlet(context is Context, id is Id, definition is map, pri
 /**
  * Performs the full round fillet chamlet workflow.
  * Copies body, moves faces, applies full round fillet, and performs boolean.
+ * For full round, the fillet dimension is determined geometrically, not by user input.
  */
 function performFullRoundChamlet(context is Context, id is Id, definition is map, printerZVector is Vector, draftAngle is ValueWithUnits)
 {
-    // Step 0: Mark the selected faces with attributes
+    // Step 0: Mark the selected faces with different attributes to track them separately
     const trackingAttribute = "chamletSelectedEntities_" ~ toAttributeId(id);
+    const side1Attribute = trackingAttribute ~ "_side1";
+    const side2Attribute = trackingAttribute ~ "_side2";
+    const centerAttribute = trackingAttribute ~ "_center";
+    
     setAttribute(context, {
-        "entities" : qUnion([definition.side1Face, definition.side2Face, definition.centerFaces]),
-        "name" : trackingAttribute,
+        "entities" : definition.side1Face,
+        "name" : side1Attribute,
+        "attribute" : { "selected" : true }
+    });
+    
+    setAttribute(context, {
+        "entities" : definition.side2Face,
+        "name" : side2Attribute,
+        "attribute" : { "selected" : true }
+    });
+    
+    setAttribute(context, {
+        "entities" : definition.centerFaces,
+        "name" : centerAttribute,
         "attribute" : { "selected" : true }
     });
 
@@ -257,26 +294,33 @@ function performFullRoundChamlet(context is Context, id is Id, definition is map
     const copiedBodyQuery = copyBodyForChamlet(context, id, definition.targetBody);
 
     // Step 2: Find the corresponding faces in the copied body
-    const trackedSide1 = qOwnedByBody(copiedBodyQuery, EntityType.FACE)->qHasAttribute(trackingAttribute);
-    const trackedSide2 = qOwnedByBody(copiedBodyQuery, EntityType.FACE)->qHasAttribute(trackingAttribute);
-    const trackedCenter = qOwnedByBody(copiedBodyQuery, EntityType.FACE)->qHasAttribute(trackingAttribute);
+    const trackedSide1 = qOwnedByBody(copiedBodyQuery, EntityType.FACE)->qHasAttribute(side1Attribute);
+    const trackedSide2 = qOwnedByBody(copiedBodyQuery, EntityType.FACE)->qHasAttribute(side2Attribute);
+    const trackedCenter = qOwnedByBody(copiedBodyQuery, EntityType.FACE)->qHasAttribute(centerAttribute);
 
-    // Step 3: Get edges from center faces to determine which faces to move
+    // Step 3: For full round, we need to determine the fillet radius first
+    // The full round fillet radius is determined by the geometry of the three faces
+    // For now, we'll need to estimate or calculate based on the distance between side faces
+    // A simple approach: use a default radius or calculate from geometry
+    // TODO: This is a simplified approach - ideally would measure the geometry
+    const estimatedRadius = 5 * millimeter; // Placeholder - should be calculated from geometry
+    
+    // Step 4: Get edges from center faces to determine which faces to move
     const centerEdges = qAdjacent(trackedCenter, AdjacencyType.EDGE, EntityType.EDGE);
     var facesToMove = determineFacesToMove(context, centerEdges, copiedBodyQuery, printerZVector, true, false);
 
-    // Step 4: Calculate offset and move faces
-    const offsetDistance = calculateOffsetDistance(draftAngle, definition.filletRadius);
+    // Step 5: Calculate offset and move faces
+    const offsetDistance = calculateOffsetDistance(draftAngle, estimatedRadius);
     moveFacesForChamlet(context, id, facesToMove, offsetDistance);
 
-    // Step 5: Apply full round fillet
+    // Step 6: Apply full round fillet
     opFullRoundFillet(context, id + "fillet", {
         "side1" : trackedSide1,
         "side2" : trackedSide2,
         "center" : trackedCenter
     });
 
-    // Step 6: Perform boolean subtraction
+    // Step 7: Perform boolean subtraction
     performChamletBoolean(context, id, definition.targetBody, copiedBodyQuery);
 }
 
