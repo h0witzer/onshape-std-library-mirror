@@ -12,7 +12,7 @@ FeatureScript 2796;
     2. Automatically determine which faces adjacent to selected edges need to translate
     3. Translate those faces in appropriate directions by offset = radius * (1 - cos(draftAngle))
     4. Apply fillet to the specified edges on the modified copy
-    5. Boolean SUBTRACT_COMPLEMENT to preserve original body identity
+    5. Boolean SUBTRACTION to remove filleted material from original body (works for both convex and concave)
     
     The offset distance is calculated as: offset = radius * (1 - cos(draftAngle))
     This ensures the resulting fillet surface has the specified draft angle relative to
@@ -164,8 +164,8 @@ export const printableChamlet = defineFeature(function(context is Context, id is
         // Step 6: Apply fillet operation to the tracked entities in the modified copy
         applyFilletToCopy(context, id, trackedEntitiesInCopy, definition.filletRadius, definition.tangentPropagation);
 
-        // Step 7: Perform boolean subtraction (SUBTRACT_COMPLEMENT) to preserve original body identity
-        // This removes the filleted ramp from the original body, creating the chamlet effect
+        // Step 7: Perform boolean subtraction to remove filleted material from original body
+        // This creates the chamlet effect and works for both convex and concave geometry
         performChamletBoolean(context, id, targetBodies, copiedBodyQuery);
         
         // Clean up: Remove the tracking attribute
@@ -472,8 +472,8 @@ function applyFilletToCopy(context is Context, id is Id, filletEntities is Query
 
 /**
  * Performs the final boolean operation to create the chamlet.
- * Uses SUBTRACT_COMPLEMENT to preserve the original bodies' identity while removing
- * the filleted material. This is important for maintaining part references.
+ * Uses SUBTRACTION to remove the filleted material from the original bodies.
+ * This works for both convex and concave geometry, preserving the original body identity.
  *
  * @param context : The context object
  * @param id : The feature id
@@ -485,7 +485,7 @@ function performChamletBoolean(context is Context, id is Id, targetBodies is Que
     opBoolean(context, id + "boolean", {
         "tools" : copiedBodies,
         "targets" : targetBodies,
-        "operationType" : BooleanOperationType.SUBTRACT_COMPLEMENT,
+        "operationType" : BooleanOperationType.SUBTRACTION,
         "keepTools" : false
     });
 }
