@@ -234,8 +234,9 @@ function copyBodyForChamlet(context is Context, id is Id, targetBody is Query) r
 
 /**
  * Determines which faces should be translated to create the chamlet effect.
- * Automatically identifies faces adjacent to the tracked edges that need to move
- * based on their orientation relative to the printer Z direction.
+ * For each tracked edge, finds adjacent faces and determines which ones need to move.
+ * The faces that are more parallel to the printer Z (vertical walls) should move,
+ * creating a ramp for the fillet.
  *
  * @param context : The context object
  * @param trackedEdges : Query for tracked edges in the copied body
@@ -245,44 +246,68 @@ function copyBodyForChamlet(context is Context, id is Id, targetBody is Query) r
  */
 function determineFacesToMove(context is Context, trackedEdges is Query, copiedBody is Query, printerZVector is Vector) returns map
 {
-    // Find faces adjacent to the tracked edges
-    const adjacentFaces = qAdjacent(trackedEdges, AdjacencyType.EDGE, EntityType.FACE);
-    
-    // We need to determine which faces move based on their normal direction relative to printer Z
     var faceMoveData = [];
     
-    for (var face in evaluateQuery(context, adjacentFaces))
+    // Process each tracked edge individually
+    for (var edge in evaluateQuery(context, trackedEdges))
     {
-        // Try to get face normal - use evFaceTangentPlane for non-planar faces
-        var faceNormal;
-        const facePlane = try silent(evPlane(context, { "face" : face }));
-        if (facePlane != undefined)
-        {
-            faceNormal = facePlane.normal;
-        }
-        else
-        {
-            // For non-planar faces, use tangent plane at center
-            const tangentPlane = evFaceTangentPlane(context, {
-                "face" : face,
-                "parameter" : vector(0.5, 0.5)
-            });
-            faceNormal = tangentPlane.normal;
-        }
+        // Get the two faces adjacent to this edge
+        const adjacentFaces = evaluateQuery(context, qAdjacent(edge, AdjacencyType.EDGE, EntityType.FACE));
         
-        // Determine if face should move up or down based on its normal vs printer Z
-        const dotProduct = dot(faceNormal, printerZVector);
-        
-        // Faces roughly perpendicular to printer Z (small dot product) should move
-        // Direction depends on which side of the fillet they're on
-        if (abs(dotProduct) < 0.9) // Not too parallel to printer Z
+        if (size(adjacentFaces) == 2)
         {
-            var moveDir = printerZVector;
-            if (dotProduct < 0)
+            // Get normals for both faces
+            var faceNormals = [];
+            var faces = [];
+            
+            for (var face in adjacentFaces)
             {
-                moveDir = -printerZVector;
+                var faceNormal;
+                const facePlane = try silent(evPlane(context, { "face" : face }));
+                if (facePlane != undefined)
+                {
+                    faceNormal = facePlane.normal;
+                }
+                else
+                {
+                    // For non-planar faces, use tangent plane at center
+                    const tangentPlane = evFaceTangentPlane(context, {
+                        "face" : face,
+                        "parameter" : vector(0.5, 0.5)
+                    });
+                    faceNormal = tangentPlane.normal;
+                }
+                
+                faces = append(faces, face);
+                faceNormals = append(faceNormals, faceNormal);
             }
-            faceMoveData = append(faceMoveData, { "face" : face, "direction" : moveDir });
+            
+            // Determine which face is more vertical (parallel to printer Z)
+            const dotProduct0 = abs(dot(faceNormals[0], printerZVector));
+            const dotProduct1 = abs(dot(faceNormals[1], printerZVector));
+            
+            // The face with higher abs(dot product) is more vertical (more parallel to Z)
+            // This is the face that should move to create the chamlet
+            var faceToMove;
+            var faceNormalToUse;
+            
+            if (dotProduct0 > dotProduct1)
+            {
+                faceToMove = faces[0];
+                faceNormalToUse = faceNormals[0];
+            }
+            else
+            {
+                faceToMove = faces[1];
+                faceNormalToUse = faceNormals[1];
+            }
+            
+            // The face should move in its normal direction (outward from the edge)
+            // to create space for the fillet ramp
+            faceMoveData = append(faceMoveData, { 
+                "face" : faceToMove, 
+                "direction" : faceNormalToUse 
+            });
         }
     }
     
