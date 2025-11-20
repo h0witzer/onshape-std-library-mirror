@@ -10,11 +10,11 @@ FeatureScript 2796;
     Workflow:
     1. Copy the target body
     2. Automatically determine which faces adjacent to selected edges need to translate
-    3. Translate those faces in appropriate directions by offset = radius / tan(draftAngle)
+    3. Translate those faces in appropriate directions by offset = radius * tan(draftAngle)
     4. Apply fillet to the specified edges on the modified copy
     5. Boolean SUBTRACT_COMPLEMENT to preserve original body identity
     
-    The offset distance is calculated as: offset = radius / tan(draftAngle)
+    The offset distance is calculated as: offset = radius * tan(draftAngle)
     This ensures the resulting fillet surface has the specified draft angle relative to
     the printer Z direction, making it more printable without support material.
     
@@ -127,13 +127,35 @@ export const printableChamlet = defineFeature(function(context is Context, id is
         const copiedBodyQuery = copyBodyForChamlet(context, id, definition.targetBody);
 
         // Step 2: Find the corresponding entities in the copied body using the attribute
-        // First get all entities with the tracking attribute, then filter by copied body
-        const trackedEntitiesInCopy = qOwnedByBody(copiedBodyQuery, EntityType.EDGE)
-                                       ->qHasAttribute(trackingAttribute);
+        // Support both edges and faces - check what was selected
+        var trackedEntitiesInCopy;
+        const hasEdges = !isQueryEmpty(context, qEntityFilter(definition.entities, EntityType.EDGE));
+        const hasFaces = !isQueryEmpty(context, qEntityFilter(definition.entities, EntityType.FACE));
+        
+        if (hasEdges && hasFaces)
+        {
+            // Both edges and faces selected
+            trackedEntitiesInCopy = qUnion([
+                qOwnedByBody(copiedBodyQuery, EntityType.EDGE)->qHasAttribute(trackingAttribute),
+                qOwnedByBody(copiedBodyQuery, EntityType.FACE)->qHasAttribute(trackingAttribute)
+            ]);
+        }
+        else if (hasEdges)
+        {
+            // Only edges
+            trackedEntitiesInCopy = qOwnedByBody(copiedBodyQuery, EntityType.EDGE)
+                                   ->qHasAttribute(trackingAttribute);
+        }
+        else
+        {
+            // Only faces
+            trackedEntitiesInCopy = qOwnedByBody(copiedBodyQuery, EntityType.FACE)
+                                   ->qHasAttribute(trackingAttribute);
+        }
         
         // Step 3: Determine faces to move based on geometry of tracked entities
-        // Find faces adjacent to tracked edges that should translate to create the draft
-        var facesToMove = determineFacesToMove(context, trackedEntitiesInCopy, copiedBodyQuery, printerZVector);
+        // Find faces adjacent to tracked edges/faces that should translate to create the draft
+        var facesToMove = determineFacesToMove(context, trackedEntitiesInCopy, copiedBodyQuery, printerZVector, hasEdges, hasFaces);
 
         // Step 4: Calculate the offset distance for face translation
         // The offset creates the ramp for the fillet to follow
@@ -234,22 +256,46 @@ function copyBodyForChamlet(context is Context, id is Id, targetBody is Query) r
 
 /**
  * Determines which faces should be translated to create the chamlet effect.
- * For each tracked edge, finds adjacent faces and determines which ones need to move.
+ * For tracked edges, finds adjacent faces and determines which ones need to move.
+ * For tracked faces, finds their edges and determines adjacent faces to move.
  * The faces that are more parallel to the printer Z (vertical walls) should move,
  * creating a ramp for the fillet.
  *
  * @param context : The context object
- * @param trackedEdges : Query for tracked edges in the copied body
+ * @param trackedEntities : Query for tracked edges/faces in the copied body
  * @param copiedBody : Query for the copied body
  * @param printerZVector : The printer Z direction vector
+ * @param hasEdges : Whether edges were selected
+ * @param hasFaces : Whether faces were selected
  * @returns {map} : Map with "faceMoveData" array containing face and direction for each face
  */
-function determineFacesToMove(context is Context, trackedEdges is Query, copiedBody is Query, printerZVector is Vector) returns map
+function determineFacesToMove(context is Context, trackedEntities is Query, copiedBody is Query, printerZVector is Vector, hasEdges is boolean, hasFaces is boolean) returns map
 {
     var faceMoveData = [];
+    var processedFaces = {}; // Track faces we've already processed to avoid duplicates
     
-    // Process each tracked edge individually
-    for (var edge in evaluateQuery(context, trackedEdges))
+    // Get edges to process - either directly selected or from selected faces
+    var edgesToProcess;
+    if (hasEdges && hasFaces)
+    {
+        // Both selected - get edges from both
+        const directEdges = qEntityFilter(trackedEntities, EntityType.EDGE);
+        const facesSelected = qEntityFilter(trackedEntities, EntityType.FACE);
+        const edgesFromFaces = qAdjacent(facesSelected, AdjacencyType.EDGE, EntityType.EDGE);
+        edgesToProcess = qUnion([directEdges, edgesFromFaces]);
+    }
+    else if (hasEdges)
+    {
+        edgesToProcess = trackedEntities;
+    }
+    else
+    {
+        // Only faces - get their edges
+        edgesToProcess = qAdjacent(trackedEntities, AdjacencyType.EDGE, EntityType.EDGE);
+    }
+    
+    // Process each edge individually
+    for (var edge in evaluateQuery(context, edgesToProcess))
     {
         // Get the two faces adjacent to this edge
         const adjacentFaces = evaluateQuery(context, qAdjacent(edge, AdjacencyType.EDGE, EntityType.FACE));
@@ -302,12 +348,18 @@ function determineFacesToMove(context is Context, trackedEdges is Query, copiedB
                 faceNormalToUse = faceNormals[1];
             }
             
-            // The face should move in its normal direction (outward from the edge)
-            // to create space for the fillet ramp
-            faceMoveData = append(faceMoveData, { 
-                "face" : faceToMove, 
-                "direction" : faceNormalToUse 
-            });
+            // Check if we've already processed this face
+            const faceId = toAttributeId(faceToMove);
+            if (processedFaces[faceId] == undefined)
+            {
+                // The face should move in its normal direction (outward from the edge)
+                // to create space for the fillet ramp
+                faceMoveData = append(faceMoveData, { 
+                    "face" : faceToMove, 
+                    "direction" : faceNormalToUse 
+                });
+                processedFaces[faceId] = true;
+            }
         }
     }
     
@@ -319,7 +371,7 @@ function determineFacesToMove(context is Context, trackedEdges is Query, copiedB
  * The geometry requires that the face move by an amount such that the resulting fillet
  * surface has the desired draft angle from the printer Z direction.
  * 
- * For a printable chamlet, offset = radius / tan(draftAngle)
+ * For a printable chamlet, offset = radius * tan(draftAngle)
  * This creates a truncated fillet where the fillet surface has the specified draft angle.
  *
  * @param draftAngle : The desired draft angle for the chamlet
@@ -333,9 +385,9 @@ precondition
     isLength(filletRadius);
 }
 {
-    // offset = radius / tan(draftAngle)
+    // offset = radius * tan(draftAngle)
     // This ensures the fillet surface has the specified draft angle
-    const offsetDistance = filletRadius / tan(draftAngle);
+    const offsetDistance = filletRadius * tan(draftAngle);
     return offsetDistance;
 }
 
