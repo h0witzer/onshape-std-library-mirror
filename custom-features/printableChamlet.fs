@@ -349,8 +349,9 @@ function determineFacesToMove(context is Context, trackedEntities is Query, copi
             }
             
             // Check if we've already processed this face
-            const faceId = toAttributeId(faceToMove);
-            if (processedFaces[faceId] == undefined)
+            // Use transient query string representation for tracking
+            const faceString = transientQueriesToStrings(faceToMove);
+            if (processedFaces[faceString] == undefined)
             {
                 // The face should move in its normal direction (outward from the edge)
                 // to create space for the fillet ramp
@@ -358,7 +359,7 @@ function determineFacesToMove(context is Context, trackedEntities is Query, copi
                     "face" : faceToMove, 
                     "direction" : faceNormalToUse 
                 });
-                processedFaces[faceId] = true;
+                processedFaces[faceString] = true;
             }
         }
     }
