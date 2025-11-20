@@ -350,11 +350,21 @@ function determineFacesToMove(context is Context, trackedEntities is Query, copi
             const faceString = transientQueriesToStrings(faceToMove);
             if (processedFaces[faceString] == undefined)
             {
-                // The face should move in its normal direction (outward from the edge)
-                // to create space for the fillet ramp
+                // Determine movement direction based on face normal relative to reference Z
+                // If face normal points in same general direction as reference Z, move in +Z
+                // If face normal points opposite to reference Z, move in -Z
+                const faceZAlignment = dot(faceNormalToUse, printerZVector);
+                var moveDirection = printerZVector;
+                if (faceZAlignment < 0)
+                {
+                    moveDirection = -printerZVector;
+                }
+                
+                // The face should move in the reference Z direction
+                // to create the correct draft angle for the chamlet
                 faceMoveData = append(faceMoveData, { 
                     "face" : faceToMove, 
-                    "direction" : faceNormalToUse 
+                    "direction" : moveDirection 
                 });
                 processedFaces[faceString] = true;
             }
