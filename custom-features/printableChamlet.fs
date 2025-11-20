@@ -10,11 +10,13 @@ FeatureScript 2796;
     Workflow:
     1. Copy the target body
     2. Automatically determine which faces adjacent to selected edges need to translate
-    3. Translate those faces in appropriate directions by offset = radius * (1 - cos(draftAngle))
-    4. Apply fillet to the specified edges on the modified copy
+    3. Translate those faces in appropriate directions by offset = radius * (1 - cos(90° - overhangAngle))
+    4. Apply fillet (edge or full round) to the specified entities on the modified copy
     5. Boolean SUBTRACT_COMPLEMENT to preserve original body identity
     
-    The offset distance is calculated as: offset = radius * (1 - cos(draftAngle))
+    The offset distance is calculated from the overhang angle (measured from vertical):
+    overhangAngle: 0° = vertical wall, 90° = horizontal surface
+    offset = radius * (1 - cos(90° - overhangAngle))
     This ensures the resulting fillet surface has the specified draft angle relative to
     the printer Z direction, making it more printable without support material.
     
@@ -46,9 +48,11 @@ import(path : "onshape/std/math.fs", version : "2796.0");
 import(path : "onshape/std/error.fs", version : "2796.0");
 import(path : "onshape/std/topologyUtils.fs", version : "2796.0");
 import(path : "onshape/std/attributes.fs", version : "2796.0");
+import(path : "onshape/std/fillet.fs", version : "2796.0");
 
-// Bounds for draft angle parameter - typical 3D printing draft angles
-const DRAFT_ANGLE_BOUNDS = {
+// Bounds for overhang angle parameter - angle from vertical (0° = vertical, 90° = horizontal)
+// Typical 3D printing overhang angles: 30-60° from vertical
+const OVERHANG_ANGLE_BOUNDS = {
     (degree) : [0.1, 45, 89]
 } as AngleBoundSpec;
 
@@ -78,12 +82,34 @@ export const printableChamlet = defineFeature(function(context is Context, id is
                      "MaxNumberOfPicks" : 1 }
         definition.targetBody is Query;
 
-        annotation { "Name" : "Entities to fillet",
-                     "Filter" : ((ActiveSheetMetal.NO && ((EntityType.EDGE && EdgeTopology.TWO_SIDED) || EntityType.FACE))
-                                 || (EntityType.EDGE && SheetMetalDefinitionEntityType.VERTEX))
-                                 && ConstructionObject.NO && SketchObject.NO && ModifiableEntityOnly.YES,
-                     "AdditionalBoxSelectFilter" : EntityType.EDGE }
-        definition.entities is Query;
+        annotation { "Name" : "Fillet type", "UIHint" : UIHint.HORIZONTAL_ENUM }
+        definition.filletType is FilletType;
+
+        if (definition.filletType == FilletType.EDGE)
+        {
+            annotation { "Name" : "Entities to fillet",
+                         "Filter" : ((ActiveSheetMetal.NO && ((EntityType.EDGE && EdgeTopology.TWO_SIDED) || EntityType.FACE))
+                                     || (EntityType.EDGE && SheetMetalDefinitionEntityType.VERTEX))
+                                     && ConstructionObject.NO && SketchObject.NO && ModifiableEntityOnly.YES,
+                         "AdditionalBoxSelectFilter" : EntityType.EDGE }
+            definition.entities is Query;
+        }
+        else if (definition.filletType == FilletType.FULL_ROUND)
+        {
+            annotation { "Name" : "First side face",
+                        "Filter" : EntityType.FACE && ConstructionObject.NO && SketchObject.NO && ModifiableEntityOnly.YES && ActiveSheetMetal.NO, 
+                        "MaxNumberOfPicks" : 1 }
+            definition.side1Face is Query;
+
+            annotation { "Name" : "Second side face",
+                        "Filter" : EntityType.FACE && ConstructionObject.NO && SketchObject.NO && ModifiableEntityOnly.YES && ActiveSheetMetal.NO, 
+                        "MaxNumberOfPicks" : 1 }
+            definition.side2Face is Query;
+
+            annotation { "Name" : "Faces to round",
+                        "Filter" : EntityType.FACE && ConstructionObject.NO && SketchObject.NO && ModifiableEntityOnly.YES && ActiveSheetMetal.NO }
+            definition.centerFaces is Query;
+        }
 
         annotation { "Name" : "Printer Z direction",
                      "Filter" : QueryFilterCompound.ALLOWS_DIRECTION || BodyType.MATE_CONNECTOR || (ConstructionObject.YES && SketchObject.NO && EntityType.FACE),
@@ -94,9 +120,9 @@ export const printableChamlet = defineFeature(function(context is Context, id is
                      "UIHint" : UIHint.OPPOSITE_DIRECTION }
         definition.flipPrinterZ is boolean;
 
-        annotation { "Name" : "Draft angle",
+        annotation { "Name" : "Overhang angle (from vertical)",
                      "UIHint" : UIHint.REMEMBER_PREVIOUS_VALUE }
-        isAngle(definition.draftAngle, DRAFT_ANGLE_BOUNDS);
+        isAngle(definition.overhangAngle, OVERHANG_ANGLE_BOUNDS);
 
         annotation { "Name" : "Fillet radius",
                      "UIHint" : UIHint.REMEMBER_PREVIOUS_VALUE }
@@ -109,71 +135,39 @@ export const printableChamlet = defineFeature(function(context is Context, id is
     {
         // Validate inputs
         verifyNonemptyQuery(context, definition, "targetBody", ErrorStringEnum.CANNOT_RESOLVE_ENTITIES);
-        verifyNonemptyQuery(context, definition, "entities", ErrorStringEnum.CANNOT_RESOLVE_ENTITIES);
         verifyNonemptyQuery(context, definition, "printerZDirection", ErrorStringEnum.CANNOT_RESOLVE_ENTITIES);
-
-        // Get printer Z direction vector
-        var printerZVector = getPrinterZDirectionVector(context, definition);
-
-        // Step 0: Mark the selected entities with an attribute so we can track them after copying
-        const trackingAttribute = "chamletSelectedEntities_" ~ toAttributeId(id);
-        setAttribute(context, {
-            "entities" : definition.entities,
-            "name" : trackingAttribute,
-            "attribute" : { "selected" : true }
-        });
-
-        // Step 1: Create a copy of the target body using opPattern with identity transform
-        const copiedBodyQuery = copyBodyForChamlet(context, id, definition.targetBody);
-
-        // Step 2: Find the corresponding entities in the copied body using the attribute
-        // Support both edges and faces - check what was selected
-        var trackedEntitiesInCopy;
-        const hasEdges = !isQueryEmpty(context, qEntityFilter(definition.entities, EntityType.EDGE));
-        const hasFaces = !isQueryEmpty(context, qEntityFilter(definition.entities, EntityType.FACE));
         
-        if (hasEdges && hasFaces)
+        if (definition.filletType == FilletType.EDGE)
         {
-            // Both edges and faces selected
-            trackedEntitiesInCopy = qUnion([
-                qOwnedByBody(copiedBodyQuery, EntityType.EDGE)->qHasAttribute(trackingAttribute),
-                qOwnedByBody(copiedBodyQuery, EntityType.FACE)->qHasAttribute(trackingAttribute)
-            ]);
-        }
-        else if (hasEdges)
-        {
-            // Only edges
-            trackedEntitiesInCopy = qOwnedByBody(copiedBodyQuery, EntityType.EDGE)
-                                   ->qHasAttribute(trackingAttribute);
+            verifyNonemptyQuery(context, definition, "entities", ErrorStringEnum.CANNOT_RESOLVE_ENTITIES);
         }
         else
         {
-            // Only faces
-            trackedEntitiesInCopy = qOwnedByBody(copiedBodyQuery, EntityType.FACE)
-                                   ->qHasAttribute(trackingAttribute);
+            verifyNonemptyQuery(context, definition, "side1Face", ErrorStringEnum.CANNOT_RESOLVE_ENTITIES);
+            verifyNonemptyQuery(context, definition, "side2Face", ErrorStringEnum.CANNOT_RESOLVE_ENTITIES);
+            verifyNonemptyQuery(context, definition, "centerFaces", ErrorStringEnum.CANNOT_RESOLVE_ENTITIES);
+        }
+
+        // Get printer Z direction vector
+        var printerZVector = getPrinterZDirectionVector(context, definition);
+        
+        // Convert overhang angle from vertical to draft angle from horizontal
+        // Overhang from vertical = 90° - draft from horizontal
+        const draftAngle = 90 * degree - definition.overhangAngle;
+
+        if (definition.filletType == FilletType.EDGE)
+        {
+            // Edge fillet workflow
+            performEdgeChamlet(context, id, definition, printerZVector, draftAngle);
+        }
+        else
+        {
+            // Full round fillet workflow
+            performFullRoundChamlet(context, id, definition, printerZVector, draftAngle);
         }
         
-        // Step 3: Determine faces to move based on geometry of tracked entities
-        // Find faces adjacent to tracked edges/faces that should translate to create the draft
-        var facesToMove = determineFacesToMove(context, trackedEntitiesInCopy, copiedBodyQuery, printerZVector, hasEdges, hasFaces);
-
-        // Step 4: Calculate the offset distance for face translation
-        // The offset creates the ramp for the fillet to follow
-        // For a chamlet effect: offset = radius / tan(draftAngle)
-        const offsetDistance = calculateOffsetDistance(definition.draftAngle, definition.filletRadius);
-
-        // Step 5: Perform move face operation to translate faces
-        // Faces move in direction determined by their orientation relative to printer Z
-        moveFacesForChamlet(context, id, facesToMove, offsetDistance);
-
-        // Step 6: Apply fillet operation to the tracked entities in the modified copy
-        applyFilletToCopy(context, id, trackedEntitiesInCopy, definition.filletRadius, definition.tangentPropagation);
-
-        // Step 7: Perform boolean subtraction (SUBTRACT_COMPLEMENT) to preserve original body identity
-        // This removes the filleted ramp from the original body, creating the chamlet effect
-        performChamletBoolean(context, id, definition.targetBody, copiedBodyQuery);
-        
-        // Clean up: Remove the tracking attribute
+        // Clean up: Remove the tracking attribute if it was used
+        const trackingAttribute = "chamletSelectedEntities_" ~ toAttributeId(id);
         removeAttributes(context, {
             "entities" : qHasAttribute(trackingAttribute),
             "name" : trackingAttribute
@@ -181,8 +175,111 @@ export const printableChamlet = defineFeature(function(context is Context, id is
     },
     {
         flipPrinterZ : false,
-        tangentPropagation : true
+        tangentPropagation : true,
+        filletType : FilletType.EDGE
     });
+
+/**
+ * Performs the edge fillet chamlet workflow.
+ * Copies body, moves faces, fillets edges, and performs boolean.
+ */
+function performEdgeChamlet(context is Context, id is Id, definition is map, printerZVector is Vector, draftAngle is ValueWithUnits)
+{
+    // Step 0: Mark the selected entities with an attribute so we can track them after copying
+    const trackingAttribute = "chamletSelectedEntities_" ~ toAttributeId(id);
+    setAttribute(context, {
+        "entities" : definition.entities,
+        "name" : trackingAttribute,
+        "attribute" : { "selected" : true }
+    });
+
+    // Step 1: Create a copy of the target body using opPattern with identity transform
+    const copiedBodyQuery = copyBodyForChamlet(context, id, definition.targetBody);
+
+    // Step 2: Find the corresponding entities in the copied body using the attribute
+    // Support both edges and faces - check what was selected
+    var trackedEntitiesInCopy;
+    const hasEdges = !isQueryEmpty(context, qEntityFilter(definition.entities, EntityType.EDGE));
+    const hasFaces = !isQueryEmpty(context, qEntityFilter(definition.entities, EntityType.FACE));
+    
+    if (hasEdges && hasFaces)
+    {
+        // Both edges and faces selected
+        trackedEntitiesInCopy = qUnion([
+            qOwnedByBody(copiedBodyQuery, EntityType.EDGE)->qHasAttribute(trackingAttribute),
+            qOwnedByBody(copiedBodyQuery, EntityType.FACE)->qHasAttribute(trackingAttribute)
+        ]);
+    }
+    else if (hasEdges)
+    {
+        // Only edges
+        trackedEntitiesInCopy = qOwnedByBody(copiedBodyQuery, EntityType.EDGE)
+                               ->qHasAttribute(trackingAttribute);
+    }
+    else
+    {
+        // Only faces
+        trackedEntitiesInCopy = qOwnedByBody(copiedBodyQuery, EntityType.FACE)
+                               ->qHasAttribute(trackingAttribute);
+    }
+    
+    // Step 3: Determine faces to move based on geometry of tracked entities
+    var facesToMove = determineFacesToMove(context, trackedEntitiesInCopy, copiedBodyQuery, printerZVector, hasEdges, hasFaces);
+
+    // Step 4: Calculate the offset distance for face translation
+    const offsetDistance = calculateOffsetDistance(draftAngle, definition.filletRadius);
+
+    // Step 5: Perform move face operation to translate faces
+    moveFacesForChamlet(context, id, facesToMove, offsetDistance);
+
+    // Step 6: Apply fillet operation to the tracked entities in the modified copy
+    applyFilletToCopy(context, id, trackedEntitiesInCopy, definition.filletRadius, definition.tangentPropagation);
+
+    // Step 7: Perform boolean subtraction to create the chamlet effect
+    performChamletBoolean(context, id, definition.targetBody, copiedBodyQuery);
+}
+
+/**
+ * Performs the full round fillet chamlet workflow.
+ * Copies body, moves faces, applies full round fillet, and performs boolean.
+ */
+function performFullRoundChamlet(context is Context, id is Id, definition is map, printerZVector is Vector, draftAngle is ValueWithUnits)
+{
+    // Step 0: Mark the selected faces with attributes
+    const trackingAttribute = "chamletSelectedEntities_" ~ toAttributeId(id);
+    setAttribute(context, {
+        "entities" : qUnion([definition.side1Face, definition.side2Face, definition.centerFaces]),
+        "name" : trackingAttribute,
+        "attribute" : { "selected" : true }
+    });
+
+    // Step 1: Create a copy of the target body
+    const copiedBodyQuery = copyBodyForChamlet(context, id, definition.targetBody);
+
+    // Step 2: Find the corresponding faces in the copied body
+    const trackedSide1 = qOwnedByBody(copiedBodyQuery, EntityType.FACE)->qHasAttribute(trackingAttribute);
+    const trackedSide2 = qOwnedByBody(copiedBodyQuery, EntityType.FACE)->qHasAttribute(trackingAttribute);
+    const trackedCenter = qOwnedByBody(copiedBodyQuery, EntityType.FACE)->qHasAttribute(trackingAttribute);
+
+    // Step 3: Get edges from center faces to determine which faces to move
+    const centerEdges = qAdjacent(trackedCenter, AdjacencyType.EDGE, EntityType.EDGE);
+    var facesToMove = determineFacesToMove(context, centerEdges, copiedBodyQuery, printerZVector, true, false);
+
+    // Step 4: Calculate offset and move faces
+    const offsetDistance = calculateOffsetDistance(draftAngle, definition.filletRadius);
+    moveFacesForChamlet(context, id, facesToMove, offsetDistance);
+
+    // Step 5: Apply full round fillet
+    opFullRoundFillet(context, id + "fillet", {
+        "side1" : trackedSide1,
+        "side2" : trackedSide2,
+        "center" : trackedCenter
+    });
+
+    // Step 6: Perform boolean subtraction
+    performChamletBoolean(context, id, definition.targetBody, copiedBodyQuery);
+}
+
 
 /**
  * Extracts and normalizes the printer Z direction vector from the user selection.
@@ -370,12 +467,13 @@ function determineFacesToMove(context is Context, trackedEntities is Query, copi
 /**
  * Calculates the offset distance for face translation based on draft angle and fillet radius.
  * The geometry requires that the face move by an amount such that the resulting fillet
- * surface has the desired draft angle from the printer Z direction.
+ * surface has the desired draft angle.
  * 
  * For a printable chamlet, offset = radius * (1 - cos(draftAngle))
+ * where draftAngle is the angle from horizontal (complementary to overhang angle from vertical)
  * This creates a truncated fillet where the fillet surface has the specified draft angle.
  *
- * @param draftAngle : The desired draft angle for the chamlet
+ * @param draftAngle : The draft angle from horizontal (90° - overhang angle)
  * @param filletRadius : The radius of the fillet
  * @returns {ValueWithUnits} : The offset distance for face translation
  */
