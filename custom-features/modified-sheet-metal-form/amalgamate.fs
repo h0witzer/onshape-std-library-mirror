@@ -1,24 +1,24 @@
-FeatureScript 2796;
+FeatureScript 2815;
 /* Automatically generated version */
 // This module is part of the FeatureScript Standard Library and is distributed under the MIT License.
 // See the LICENSE tab for the license text.
 // Copyright (c) 2013-Present PTC Inc.
 
-import(path : "onshape/std/common.fs", version : "2796.0");
-import(path : "onshape/std/coordSystem.fs", version : "2796.0");
-import(path : "onshape/std/evaluate.fs", version : "2796.0");
-import(path : "onshape/std/feature.fs", version : "2796.0");
-// import(path : "onshape/std/formedUtils.fs", version : "2796.0");
-import(path : "5418313fd7f629d9c7f1ac10", version : "b97acafda22e3375bf349519"); //modifiedFormedUtils.fs
-import(path : "onshape/std/instantiator.fs", version : "2796.0");
-import(path : "onshape/std/vector.fs", version : "2796.0");
+import(path : "onshape/std/common.fs", version : "2815.0");
+import(path : "onshape/std/coordSystem.fs", version : "2815.0");
+import(path : "onshape/std/evaluate.fs", version : "2815.0");
+import(path : "onshape/std/feature.fs", version : "2815.0");
+standardFormed::import(path : "onshape/std/formedUtils.fs", version : "2815.0");
+modifiedFormed::import(path : "5418313fd7f629d9c7f1ac10", version : "b97acafda22e3375bf349519"); //modifiedFormedUtils.fs
+import(path : "onshape/std/instantiator.fs", version : "2815.0");
+import(path : "onshape/std/vector.fs", version : "2815.0");
 
 /**
- * Creates a form using bodies authored in a form Part Studio and applies it to standard solid parts.
+ * Abuses the Sheet Metal Formed functionality to tag part studios as new, additive, and subtractive bodies for non-sheet metal parts
  * This feature mirrors the Sheet Metal Form tool but performs traditional boolean operations so it can be used outside sheet metal.
  */
-annotation { "Feature Type Name" : "Form (part)" }
-export const formedPart = defineFeature(function(context is Context, id is Id, definition is map)
+annotation { "Feature Type Name" : "Amalgamate" }
+export const amalgamate = defineFeature(function(context is Context, id is Id, definition is map)
     precondition
     {
         annotation {
@@ -39,7 +39,7 @@ export const formedPart = defineFeature(function(context is Context, id is Id, d
         annotation { "Name" : "Target body/bodies", "Filter" : BodyType.SOLID && ModifiableEntityOnly.YES }
         definition.targets is Query;
 
-        annotation { "Name" : "Form thickness", "Default" : millimeter }
+        annotation { "Name" : "Form thickness (only needed for sheet metal tagged form tools)", "Default" : millimeter }
         isLength(definition.thickness, LENGTH_BOUNDS);
 
     }
@@ -64,7 +64,7 @@ export const formedPart = defineFeature(function(context is Context, id is Id, d
         }
         catch
         {
-            // throw regenError(ErrorStringEnum.FORMED_FAILED_TO_DERIVE, ["formPartStudio"]);
+            throw regenError(ErrorStringEnum.FORMED_FAILED_TO_DERIVE, ["formPartStudio"]);
         }
 
         performFormBooleans(context, id, targetSolids, allFormedBodies);
@@ -92,7 +92,7 @@ function addFormInstances(context is Context, id is Id, definition is map, insta
                     "transform" : toWorld(cSys),
                     "identity" : location,
                     "configurationOverride" : configurationOverride,
-                    "mateConnector" : qBodiesWithFormAttribute(FORM_BODY_CSYS_MATE_CONNECTOR)
+                    "mateConnector" : qBodiesWithAnyFormAttribute(modifiedFormed::FORM_BODY_CSYS_MATE_CONNECTOR)
                 });
         allFormedBodies = qUnion(allFormedBodies, formedBodies);
     }
@@ -105,9 +105,9 @@ function addFormInstances(context is Context, id is Id, definition is map, insta
  */
 function performFormBooleans(context is Context, id is Id, targetSolids is Query, allFormedBodies is Query)
 {
-    const positiveBodies = qBodiesWithFormAttribute(allFormedBodies, FORM_BODY_POSITIVE_PART);
-    const negativeBodies = qBodiesWithFormAttribute(allFormedBodies, FORM_BODY_NEGATIVE_PART);
-    const newBodies = qBodiesWithFormAttribute(allFormedBodies, FORM_BODY_NEW_PART);
+    const positiveBodies = qBodiesWithAnyFormAttribute(allFormedBodies, modifiedFormed::FORM_BODY_POSITIVE_PART);
+    const negativeBodies = qBodiesWithAnyFormAttribute(allFormedBodies, modifiedFormed::FORM_BODY_NEGATIVE_PART);
+    const newBodies = qBodiesWithAnyFormAttribute(allFormedBodies, modifiedFormed::FORM_BODY_NEW_PART);
 
     if (!isQueryEmpty(context, negativeBodies))
     {
@@ -134,7 +134,7 @@ function performFormBooleans(context is Context, id is Id, targetSolids is Query
 
     }
 
-    const cleanupBodies = qBodiesWithFormAttributes(allFormedBodies, [FORM_BODY_SKETCH_FOR_FLAT_VIEW, FORM_BODY_CSYS_MATE_CONNECTOR]);
+    const cleanupBodies = qBodiesWithAnyFormAttributes(allFormedBodies, [modifiedFormed::FORM_BODY_SKETCH_FOR_FLAT_VIEW, modifiedFormed::FORM_BODY_CSYS_MATE_CONNECTOR]);
     const unusedBodies = qSubtraction(allFormedBodies, qUnion([positiveBodies, negativeBodies, newBodies]));
     const deleteCandidates = qUnion([cleanupBodies, unusedBodies]);
 
@@ -157,4 +157,31 @@ function evaluateCSys(context is Context, location is Query) returns CoordSystem
     }
 
     return evMateConnector(context, { "mateConnector" : location });
+}
+
+/**
+ * Query helper that returns bodies tagged with the requested form attribute in either the standard or modified form utilities.
+ */
+function qBodiesWithAnyFormAttribute(attribute is string) returns Query
+{
+    return qUnion([modifiedFormed::qBodiesWithFormAttribute(attribute),
+                standardFormed::qBodiesWithFormAttribute(attribute)]);
+}
+
+/**
+ * Filter a provided query for bodies tagged with the requested form attribute across both tag formats.
+ */
+function qBodiesWithAnyFormAttribute(queryToFilter is Query, attribute is string) returns Query
+{
+    return qUnion([modifiedFormed::qBodiesWithFormAttribute(queryToFilter, attribute),
+                standardFormed::qBodiesWithFormAttribute(queryToFilter, attribute)]);
+}
+
+/**
+ * Filter a provided query for any of the given form attributes using either attribute definition.
+ */
+function qBodiesWithAnyFormAttributes(queryToFilter is Query, attributes is array) returns Query
+{
+    return qUnion([modifiedFormed::qBodiesWithFormAttributes(queryToFilter, attributes),
+                standardFormed::qBodiesWithFormAttributes(queryToFilter, attributes)]);
 }
