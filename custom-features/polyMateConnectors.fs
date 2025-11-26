@@ -58,7 +58,7 @@ export const duplicateMateConnectors = defineFeature(function(context is Context
 
         if (definition.createQueryVariable)
         {
-            // verifyVariableNameIsValid(definition.queryVariableName, "queryVariableName");
+            verifyVariableNameIsValid(definition.queryVariableName, "queryVariableName");
             // Expose the created mate connectors through a reusable query variable when requested.
             const createdMateConnectors = qCreatedBy(id, EntityType.BODY);
             setQueryVariable(context, definition.queryVariableName, createdMateConnectors);
