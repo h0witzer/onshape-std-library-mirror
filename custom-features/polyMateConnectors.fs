@@ -9,7 +9,7 @@ import(path : "onshape/std/queryVariable.fs", version : "2815.0");
 
 annotation { "Feature Type Name" : "Poly-Mate Connectors",
         "Feature Type Description" : "Adds multiple explicit mate connectors on the locations of implicit mate connectors",
-        "Feature Name Template" : "#featureName" }
+        "Feature Name Template" : "Poly-Mate Connectors#featureName" }
 // Promoting them
 // King me
 export const duplicateMateConnectors = defineFeature(function(context is Context, id is Id, definition is map)
@@ -59,14 +59,26 @@ export const duplicateMateConnectors = defineFeature(function(context is Context
         if (definition.createQueryVariable)
         {
             verifyVariableNameIsValid(definition.queryVariableName, "queryVariableName");
+            // Ensure the query variable name does not collide with an existing variable.
+            var variableExists = false;
+            try silent
+            {
+                getVariable(context, definition.queryVariableName);
+                variableExists = true;
+            }
+            if (variableExists)
+            {
+                throw regenError(ErrorStringEnum.QUERY_VARIABLE_NAME_ALREADY_USED_IN_NON_QUERY_VARIABLE,
+                        ["queryVariableName"]);
+            }
             // Expose the created mate connectors through a reusable query variable when requested.
             const createdMateConnectors = qCreatedBy(id, EntityType.BODY);
             setQueryVariable(context, definition.queryVariableName, createdMateConnectors);
         }
 
         const featureName = definition.createQueryVariable ?
-            "Poly-Mate Connectors [QV: " ~ definition.queryVariableName ~ "]" :
-            "Poly-Mate Connectors";
+            " [QV: " ~ definition.queryVariableName ~ "]" :
+            "";
         // Surface the relevant query variable name in the feature tree when requested.
         setFeatureComputedParameter(context, id, { "name" : "featureName", "value" : featureName });
     },
