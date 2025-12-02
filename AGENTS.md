@@ -2,8 +2,8 @@
 
 ## Dev Environment Tips
 - All functions in this github are a mirror of the Onshape Standard Library functions with version numbers stripped from the imports
-- The current version number of the Onshape standard library is 2796, replace the stars in the header with this
-- For example "FeatureScript ✨;" should become "FeatureScript 2796;" and "import(path : "onshape/std/feature.fs", version : "✨");" should become "import(path : "onshape/std/feature.fs", version : "2796.0");"
+- The current version number of the Onshape standard library is 2815, replace the stars in the header with this
+- For example "FeatureScript ✨;" should become "FeatureScript 2815;" and "import(path : "onshape/std/feature.fs", version : "✨");" should become "import(path : "onshape/std/feature.fs", version : "2815.0");"
 - Look at the Onshape Standard Library documentation at https://cad.onshape.com/FsDoc/library.html for function applications, expected inputs and outputs, and general reference
 - Verify every `op*` or `ev*` function against the mirrored library (for example by searching `geomOperations.fs` or `evaluate.fs`) before using it, and to avoid adding code that references functions that cannot be found in this repository or the official documentation
 - Functions that exist in the custom features folder are by definition non-standard and will need to be noted explicitly where these references are being pulled from in the header of the code when they are used
