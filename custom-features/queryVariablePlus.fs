@@ -1,9 +1,9 @@
 FeatureScript 2815;
 /** Modified version of the standard query variable feature that has been extended to allow more query options
- * 
+ *
  * The goal of this feature is to eventually allow all query types defined by the standard library or at least
  * the options available in the older Query Explorer feature to enable more advanced procedural workflows
- * 
+ *
  * Maintained by Derek Van Allen, to request updates message me on the forums in this thread:
  * https://forum.onshape.com/discussion/29012/custom-feature-query-variable
  */
@@ -34,6 +34,8 @@ export enum SelectionType
     CREATED_BY,
     annotation { "Name" : "Cap entities" }
     CAP_ENTITY,
+    annotation { "Name" : "Non-cap entities" }
+    NON_CAP_ENTITY,
     annotation { "Name" : "Owned by" }
     OWNED_BY,
     annotation { "Name" : "Protrusion" }
@@ -73,6 +75,7 @@ const SelectionTypeToLowercaseName = {
         SelectionType.SELECTION : "selection",
         SelectionType.CREATED_BY : "created by",
         SelectionType.CAP_ENTITY : "cap entities",
+        SelectionType.NON_CAP_ENTITY : "non-cap entities",
         SelectionType.OWNED_BY : "owned by",
         SelectionType.PROTRUSION : "protrusion",
         SelectionType.POCKET : "pocket",
@@ -189,6 +192,11 @@ export predicate initialQueryPredicate(definition is map)
         annotation { "Name" : "Created by features", "UIHint" : UIHint.ALLOW_FEATURE_SELECTION }
         definition.capEntityCreatedByFeatures is FeatureList;
     }
+    else if (definition.selectionType == SelectionType.NON_CAP_ENTITY)
+    {
+        annotation { "Name" : "Created by features", "UIHint" : UIHint.ALLOW_FEATURE_SELECTION }
+        definition.nonCapEntityCreatedByFeatures is FeatureList;
+    }
 
     else if (definition.selectionType == SelectionType.OWNED_BY || definition.selectionType == SelectionType.EDGE_CONVEXITY || definition.selectionType == SelectionType.MATCHING_BODIES)
     {
@@ -242,7 +250,10 @@ export predicate initialQueryPredicate(definition is map)
         annotation { "Name" : "Edges", "Filter" : EntityType.EDGE }
         definition.seedEdges is Query;
     }
-    if (definition.selectionType == SelectionType.CREATED_BY || definition.selectionType == SelectionType.CAP_ENTITY || definition.selectionType == SelectionType.OWNED_BY)
+    if (definition.selectionType == SelectionType.CREATED_BY
+        || definition.selectionType == SelectionType.CAP_ENTITY
+        || definition.selectionType == SelectionType.NON_CAP_ENTITY
+        || definition.selectionType == SelectionType.OWNED_BY)
     {
         annotation { "Name" : "Entity type" }
         definition.entityType is EntityType;
@@ -317,6 +328,11 @@ export predicate additionalQueryPredicate(addQ is map)
         annotation { "Name" : "Created by features", "UIHint" : UIHint.ALLOW_FEATURE_SELECTION }
         addQ.addQcapEntityCreatedByFeatures is FeatureList;
     }
+    else if (addQ.addQselectionType == SelectionType.NON_CAP_ENTITY)
+    {
+        annotation { "Name" : "Created by features", "UIHint" : UIHint.ALLOW_FEATURE_SELECTION }
+        addQ.addQnonCapEntityCreatedByFeatures is FeatureList;
+    }
     else if (addQ.addQselectionType == SelectionType.OWNED_BY || addQ.addQselectionType == SelectionType.EDGE_CONVEXITY || addQ.addQselectionType == SelectionType.MATCHING_BODIES)
     {
         annotation { "Name" : "Entities", "Filter" : EntityType.BODY && AllowFlattenedGeometry.YES && AllowMeshGeometry.YES }
@@ -369,7 +385,10 @@ export predicate additionalQueryPredicate(addQ is map)
         annotation { "Name" : "Edge", "Filter" : EntityType.EDGE }
         addQ.addQseedEdges is Query;
     }
-    if (addQ.addQselectionType == SelectionType.CREATED_BY || addQ.addQselectionType == SelectionType.CAP_ENTITY || addQ.addQselectionType == SelectionType.OWNED_BY)
+    if (addQ.addQselectionType == SelectionType.CREATED_BY
+        || addQ.addQselectionType == SelectionType.CAP_ENTITY
+        || addQ.addQselectionType == SelectionType.NON_CAP_ENTITY
+        || addQ.addQselectionType == SelectionType.OWNED_BY)
     {
         annotation { "Name" : "Entity type" }
         addQ.addQentityType is EntityType;
@@ -426,6 +445,7 @@ export predicate additionalQueryPredicate(addQ is map)
  *      @field selectionQuery {Query} : If selectionType is SELECTION, query that will be contained in the variable.
  *      @field createdByFeatures {FeatureList} : If selectionType is CREATED_BY, features whose created entities will be contained in the variable.
  *      @field capEntityCreatedByFeatures {FeatureList} : If selectionType is CAP_ENTITY, features whose cap entities will be contained in the variable.
+ *      @field nonCapEntityCreatedByFeatures {FeatureList} : If selectionType is NON_CAP_ENTITY, features whose non-cap entities will be contained in the variable.
  *      @field filterConstruction {boolean} : If selectionType is CREATED_BY, whether to exclude construction geometry.
  *      @field filterByBodyType {boolean} : If selectionType is CREATED_BY, whether to filter results by body type.
  *      @field createdByBodyType {BodyTypeOptions} : If selectionType is CREATED_BY and filterByBodyType is true, body type to include in the variable.
@@ -443,7 +463,7 @@ export predicate additionalQueryPredicate(addQ is map)
  *          maximum angular deviation for considering faces tangent. Defaults to `0` degrees.
  *      @field seedEdgesOrFaces {Query} : If selectionType is LOOP_CHAIN_CONNECTED, faces or edges from which the loops are computed.
  *      @field seedEdgesOrFaces {Query} : If selectionType is PARALLEL, or TANGENT_CONNECTED or MATCHING and seedType is EDGE, edges from which the selection is created.
- *      @field entityType {EntityType} : If selectionType is CREATED_BY or CAP_ENTITY or OWNED_BY, the entity type to include in the variable.
+ *      @field entityType {EntityType} : If selectionType is CREATED_BY or CAP_ENTITY or NON_CAP_ENTITY or OWNED_BY, the entity type to include in the variable.
  *      @field filletCompareType {FilletCompare} : If selectionType is FILLETS, the type of fillets to include in the variable.
  *      @field boundedFacesBounds {Query} : If selectionType is BOUNDED_FACES, the faces or edges bounding the selection.
  *      @field edgeConvexityType {EdgeConvexityType} : If selectionType is EDGE_CONVEXITY, the convexity type of edges to include in the variable.
@@ -554,6 +574,7 @@ function mapSelectionTypeToQuery(context is Context, definition is map) returns 
                 SelectionType.SELECTION : definition.selectionQuery,
                 SelectionType.CREATED_BY : createdBySelection(context, definition),
                 SelectionType.CAP_ENTITY : capEntitiesCreatedBy(context, definition),
+                SelectionType.NON_CAP_ENTITY : nonCapEntitiesCreatedBy(definition),
                 SelectionType.OWNED_BY : qOwnedByBody(definition.seedBodies, definition.entityType),
                 SelectionType.PROTRUSION : qConvexConnectedFaces(definition.seedFaces),
                 SelectionType.POCKET : qConcaveConnectedFaces(definition.seedFaces),
@@ -741,6 +762,25 @@ function capEntitiesCreatedBy(context is Context, definition is map) returns Que
     }
 
     return capEntitiesQuery;
+}
+
+/**
+ * Builds a query for non-cap entities created by the specified features.
+ */
+function nonCapEntitiesCreatedBy(definition is map) returns Query
+{
+    if (definition.entityType == EntityType.BODY)
+    {
+        throw regenError("Non-cap queries cannot resolve bodies.", ["entityType"]);
+    }
+
+    var nonCapEntitiesQuery = qNothing();
+    for (var featureId, _ in definition.nonCapEntityCreatedByFeatures)
+    {
+        nonCapEntitiesQuery = qUnion(nonCapEntitiesQuery, qNonCapEntity(featureId, definition.entityType));
+    }
+
+    return nonCapEntitiesQuery;
 }
 
 function remapAdditionalQuery(definition is map) returns map
