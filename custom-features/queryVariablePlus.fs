@@ -60,6 +60,8 @@ export enum SelectionType
     MATCHING_BODIES,
     annotation { "Name" : "Adjacent" }
     ADJACENT,
+    annotation { "Name" : "Size comparison" }
+    SIZE_COMPARISON,
     annotation { "Name" : "Geometry type" }
     GEOMETRY,
     annotation { "Name" : "All solid bodies" }
@@ -88,6 +90,7 @@ const SelectionTypeToLowercaseName = {
         SelectionType.MATCHING : "matching",
         SelectionType.MATCHING_BODIES : "matching bodies",
         SelectionType.ADJACENT : "adjacent",
+        SelectionType.SIZE_COMPARISON : "size comparison",
         SelectionType.GEOMETRY : "geometry type",
         SelectionType.ALL_SOLID_BODIES : "all solid bodies",
         SelectionType.EDGE_CONVEXITY : "edge convexity"
@@ -163,6 +166,21 @@ export enum BodyTypeOptions
 }
 
 /**
+ * Defines the type of size-based comparison to perform on a set of entities.
+ */
+export enum SizeComparisonType
+{
+    annotation { "Name" : "Largest" }
+    LARGEST,
+    annotation { "Name" : "Smallest" }
+    SMALLEST,
+    annotation { "Name" : "Larger than selection" }
+    LARGER_THAN_SELECTION,
+    annotation { "Name" : "Smaller than selection" }
+    SMALLER_THAN_SELECTION
+}
+
+/**
  * Predicate showing the selection type and the relevant queries/enum allowed by this type.
  */
 export predicate initialQueryPredicate(definition is map)
@@ -224,6 +242,24 @@ export predicate initialQueryPredicate(definition is map)
 
         annotation { "Name" : "Result entities", "Default" : AdjacentResultType.SAME_AS_SEED }
         definition.adjacentResultType is AdjacentResultType;
+    }
+    else if (definition.selectionType == SelectionType.SIZE_COMPARISON)
+    {
+        annotation { "Name" : "Entities", "Filter" : AllowMeshGeometry.YES && AllowFlattenedGeometry.YES }
+        definition.sizeComparisonEntities is Query;
+
+        annotation { "Name" : "Comparison type", "Default" : SizeComparisonType.LARGEST }
+        definition.sizeComparisonType is SizeComparisonType;
+
+        if (definition.sizeComparisonType == SizeComparisonType.LARGER_THAN_SELECTION
+            || definition.sizeComparisonType == SizeComparisonType.SMALLER_THAN_SELECTION)
+        {
+            annotation { "Name" : "Reference selection", "Filter" : AllowMeshGeometry.YES && AllowFlattenedGeometry.YES }
+            definition.sizeComparisonReference is Query;
+
+            annotation { "Name" : "Or equal to selection", "Default" : false }
+            definition.sizeComparisonAllowEqual is boolean;
+        }
     }
     else if (definition.selectionType == SelectionType.GEOMETRY)
     {
@@ -360,6 +396,24 @@ export predicate additionalQueryPredicate(addQ is map)
         annotation { "Name" : "Result entities", "Default" : AdjacentResultType.SAME_AS_SEED }
         addQ.addQadjacentResultType is AdjacentResultType;
     }
+    else if (addQ.addQselectionType == SelectionType.SIZE_COMPARISON)
+    {
+        annotation { "Name" : "Entities", "Filter" : AllowMeshGeometry.YES && AllowFlattenedGeometry.YES }
+        addQ.addQsizeComparisonEntities is Query;
+
+        annotation { "Name" : "Comparison type", "Default" : SizeComparisonType.LARGEST }
+        addQ.addQsizeComparisonType is SizeComparisonType;
+
+        if (addQ.addQsizeComparisonType == SizeComparisonType.LARGER_THAN_SELECTION
+            || addQ.addQsizeComparisonType == SizeComparisonType.SMALLER_THAN_SELECTION)
+        {
+            annotation { "Name" : "Reference selection", "Filter" : AllowMeshGeometry.YES && AllowFlattenedGeometry.YES }
+            addQ.addQsizeComparisonReference is Query;
+
+            annotation { "Name" : "Or equal to selection", "Default" : false }
+            addQ.addQsizeComparisonAllowEqual is boolean;
+        }
+    }
     else if (addQ.addQselectionType == SelectionType.GEOMETRY)
     {
         annotation { "Name" : "Seed entities", "Filter" : AllowMeshGeometry.YES && AllowFlattenedGeometry.YES }
@@ -457,6 +511,10 @@ export predicate additionalQueryPredicate(addQ is map)
  *      @field adjacentSeedEntities {Query} : If selectionType is ADJACENT, entities whose neighbors will be collected.
  *      @field adjacencyType {AdjacencyType} : If selectionType is ADJACENT, determines whether adjacency is computed by shared vertices or shared edges.
  *      @field adjacentResultType {AdjacentResultType} : If selectionType is ADJACENT, determines the type of adjacent entities to return.
+ *      @field sizeComparisonEntities {Query} : If selectionType is SIZE_COMPARISON, entities to compare by size.
+ *      @field sizeComparisonType {SizeComparisonType} : If selectionType is SIZE_COMPARISON, the size comparison to apply.
+ *      @field sizeComparisonReference {Query} : If sizeComparisonType compares against a reference selection, the reference entity to compare against.
+ *      @field sizeComparisonAllowEqual {boolean} : If sizeComparisonType compares against a reference selection, whether entities equal in size qualify.
  *      @field geometrySeedEntities {Query} : If selectionType is GEOMETRY, entities that will be filtered by geometry type.
  *      @field geometryType {GeometryType} : If selectionType is GEOMETRY, geometry category used to filter the seed entities.
  *      @field angleTolerance {ValueWithUnits} : If selectionType is TANGENT_CONNECTED and seedType is FACE,
@@ -590,6 +648,7 @@ function mapSelectionTypeToQuery(context is Context, definition is map) returns 
                 SelectionType.MATCHING : definition.seedType == SeedType.FACE ? qMatching(definition.seedFaces) : qMatching(definition.seedEdges),
                 SelectionType.MATCHING_BODIES : qMatchingBodies(context, definition.seedBodies),
                 SelectionType.ADJACENT : adjacencySelection(definition),
+                SelectionType.SIZE_COMPARISON : sizeComparisonSelection(context, definition),
                 SelectionType.GEOMETRY : qGeometry(definition.geometrySeedEntities, definition.geometryType),
                 SelectionType.ALL_SOLID_BODIES : qAllSolidBodies(),
                 SelectionType.EDGE_CONVEXITY : qEdgeConvexityTypeFilter(qOwnedByBody(definition.seedBodies, EntityType.EDGE), definition.edgeConvexityType)
@@ -621,6 +680,122 @@ function adjacencySelection(definition is map) returns Query
     return qAdjacent(seedEntities, adjacencyType, resultEntityType);
 }
 
+/**
+ * Determines the highest-dimensional entity type present in a query, preferring bodies, then faces, then edges, and finally vertices.
+ */
+function inferHighestEntityType(context is Context, entities is Query)
+{
+    const bodyQuery = qEntityFilter(entities, EntityType.BODY);
+    if (!isQueryEmpty(context, bodyQuery))
+    {
+        return EntityType.BODY;
+    }
+
+    const faceQuery = qEntityFilter(entities, EntityType.FACE);
+    if (!isQueryEmpty(context, faceQuery))
+    {
+        return EntityType.FACE;
+    }
+
+    const edgeQuery = qEntityFilter(entities, EntityType.EDGE);
+    if (!isQueryEmpty(context, edgeQuery))
+    {
+        return EntityType.EDGE;
+    }
+
+    const vertexQuery = qEntityFilter(entities, EntityType.VERTEX);
+    if (!isQueryEmpty(context, vertexQuery))
+    {
+        return EntityType.VERTEX;
+    }
+
+    return undefined;
+}
+
+/**
+ * Measures a single entity's size using volume, area, or length depending on its type.
+ */
+function measureEntitySize(context is Context, entity is Query, entityType is EntityType)
+{
+    if (entityType == EntityType.BODY)
+    {
+        return evVolume(context, { "entities" : entity });
+    }
+
+    if (entityType == EntityType.FACE)
+    {
+        return evArea(context, { "entities" : entity });
+    }
+
+    if (entityType == EntityType.EDGE)
+    {
+        return evLength(context, { "entities" : entity });
+    }
+
+    return 0 * meter;
+}
+
+/**
+ * Builds a size-comparison query using either extremum queries or explicit size filtering against a reference selection.
+ */
+function sizeComparisonSelection(context is Context, definition is map) returns Query
+{
+    const comparisonType = definition.sizeComparisonType as SizeComparisonType;
+    const comparisonEntities = definition.sizeComparisonEntities as Query;
+    const allowEqualSize = definition.sizeComparisonAllowEqual == true;
+
+    if (comparisonType == SizeComparisonType.LARGEST)
+    {
+        return qLargest(comparisonEntities);
+    }
+
+    if (comparisonType == SizeComparisonType.SMALLEST)
+    {
+        return qSmallest(comparisonEntities);
+    }
+
+    const referenceEntities = definition.sizeComparisonReference as Query;
+    const candidateEntityType = inferHighestEntityType(context, comparisonEntities);
+    const referenceEntityType = inferHighestEntityType(context, referenceEntities);
+
+    if (candidateEntityType == undefined || referenceEntityType == undefined)
+    {
+        return qNothing();
+    }
+
+    if (candidateEntityType != referenceEntityType)
+    {
+        throw regenError(ErrorStringEnum.INVALID_INPUT, ["sizeComparisonReference"]);
+    }
+
+    const filteredCandidates = qEntityFilter(comparisonEntities, candidateEntityType);
+    const filteredReference = qEntityFilter(referenceEntities, referenceEntityType);
+
+    const referenceEntitiesArray = evaluateQuery(context, filteredReference);
+    if (size(referenceEntitiesArray) != 1)
+    {
+        throw regenError(ErrorStringEnum.INVALID_INPUT, ["sizeComparisonReference"]);
+    }
+
+    const referenceSize = measureEntitySize(context, qUnion([referenceEntitiesArray[0]]), referenceEntityType);
+    var qualifyingEntities = [];
+    for (var entity in evaluateQuery(context, filteredCandidates))
+    {
+        const entitySize = measureEntitySize(context, qUnion([entity]), candidateEntityType);
+        const sizeDifference = entitySize - referenceSize;
+        const isEqual = tolerantEquals(entitySize, referenceSize);
+        const isLarger = sizeDifference > 0 && !isEqual;
+        const isSmaller = sizeDifference < 0 && !isEqual;
+
+        if ((comparisonType == SizeComparisonType.LARGER_THAN_SELECTION && (isLarger || (allowEqualSize && isEqual)))
+            || (comparisonType == SizeComparisonType.SMALLER_THAN_SELECTION && (isSmaller || (allowEqualSize && isEqual))))
+        {
+            qualifyingEntities = append(qualifyingEntities, entity);
+        }
+    }
+
+    return size(qualifyingEntities) == 0 ? qNothing() : qUnion(qualifyingEntities);
+}
 
 function qMatchingBodies(context is Context, seedBodies is Query) returns Query
 {
