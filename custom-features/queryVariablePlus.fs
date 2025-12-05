@@ -62,6 +62,8 @@ export enum SelectionType
     ADJACENT,
     annotation { "Name" : "Size comparison" }
     SIZE_COMPARISON,
+    annotation { "Name" : "Positional/directional" }
+    POSITIONAL_DIRECTIONAL,
     annotation { "Name" : "Geometry type" }
     GEOMETRY,
     annotation { "Name" : "All solid bodies" }
@@ -91,6 +93,7 @@ const SelectionTypeToLowercaseName = {
         SelectionType.MATCHING_BODIES : "matching bodies",
         SelectionType.ADJACENT : "adjacent",
         SelectionType.SIZE_COMPARISON : "size comparison",
+        SelectionType.POSITIONAL_DIRECTIONAL : "positional/directional",
         SelectionType.GEOMETRY : "geometry type",
         SelectionType.ALL_SOLID_BODIES : "all solid bodies",
         SelectionType.EDGE_CONVEXITY : "edge convexity"
@@ -181,6 +184,33 @@ export enum SizeComparisonType
 }
 
 /**
+ * Defines positional or directional queries that relate entities to reference geometry.
+ */
+export enum PositionalDirectionalType
+{
+    annotation { "Name" : "Plane normal" }
+    PLANE_NORMAL,
+    annotation { "Name" : "Intersects line" }
+    INTERSECTS_LINE,
+    annotation { "Name" : "Intersects plane" }
+    INTERSECTS_PLANE,
+    annotation { "Name" : "Intersects ball" }
+    INTERSECTS_BALL,
+    annotation { "Name" : "Contains point" }
+    CONTAINS_POINT,
+    annotation { "Name" : "Closest to" }
+    CLOSEST_TO,
+    annotation { "Name" : "Farthest along direction" }
+    FARTHEST_ALONG,
+    annotation { "Name" : "Coincides with plane" }
+    COINCIDES_WITH_PLANE,
+    annotation { "Name" : "Plane parallel to direction" }
+    PLANE_PARALLEL_DIRECTION,
+    annotation { "Name" : "Face parallel to direction" }
+    FACE_PARALLEL_DIRECTION
+}
+
+/**
  * Predicate showing the selection type and the relevant queries/enum allowed by this type.
  */
 export predicate initialQueryPredicate(definition is map)
@@ -259,6 +289,47 @@ export predicate initialQueryPredicate(definition is map)
 
             annotation { "Name" : "Or equal to selection", "Default" : false }
             definition.sizeComparisonAllowEqual is boolean;
+        }
+    }
+    else if (definition.selectionType == SelectionType.POSITIONAL_DIRECTIONAL)
+    {
+        annotation { "Name" : "Entities", "Filter" : AllowMeshGeometry.YES && AllowFlattenedGeometry.YES }
+        definition.positionalEntities is Query;
+
+        annotation { "Name" : "Positional query", "Default" : PositionalDirectionalType.PLANE_NORMAL }
+        definition.positionalMetricType is PositionalDirectionalType;
+
+        if (definition.positionalMetricType == PositionalDirectionalType.PLANE_NORMAL
+            || definition.positionalMetricType == PositionalDirectionalType.INTERSECTS_PLANE
+            || definition.positionalMetricType == PositionalDirectionalType.COINCIDES_WITH_PLANE)
+        {
+            annotation { "Name" : "Reference plane", "Filter" : EntityType.FACE && GeometryType.PLANE, "MaxNumberOfPicks" : 1 }
+            definition.positionalPlane is Query;
+        }
+        else if (definition.positionalMetricType == PositionalDirectionalType.INTERSECTS_LINE)
+        {
+            annotation { "Name" : "Reference line", "Filter" : EntityType.EDGE && GeometryType.LINE, "MaxNumberOfPicks" : 1 }
+            definition.positionalLine is Query;
+        }
+        else if (definition.positionalMetricType == PositionalDirectionalType.CONTAINS_POINT
+            || definition.positionalMetricType == PositionalDirectionalType.CLOSEST_TO
+            || definition.positionalMetricType == PositionalDirectionalType.INTERSECTS_BALL)
+        {
+            annotation { "Name" : "Reference point", "Filter" : EntityType.VERTEX, "MaxNumberOfPicks" : 1 }
+            definition.positionalVertex is Query;
+
+            if (definition.positionalMetricType == PositionalDirectionalType.INTERSECTS_BALL)
+            {
+                annotation { "Name" : "Radius", "Default" : 0 * meter }
+                isLength(definition.positionalRadius, NONNEGATIVE_LENGTH_BOUNDS);
+            }
+        }
+        else if (definition.positionalMetricType == PositionalDirectionalType.FARTHEST_ALONG
+            || definition.positionalMetricType == PositionalDirectionalType.PLANE_PARALLEL_DIRECTION
+            || definition.positionalMetricType == PositionalDirectionalType.FACE_PARALLEL_DIRECTION)
+        {
+            annotation { "Name" : "Direction", "Filter" : EntityType.EDGE || QueryFilterCompound.ALLOWS_DIRECTION, "MaxNumberOfPicks" : 1 }
+            definition.positionalDirection is Query;
         }
     }
     else if (definition.selectionType == SelectionType.GEOMETRY)
@@ -414,6 +485,47 @@ export predicate additionalQueryPredicate(addQ is map)
             addQ.addQsizeComparisonAllowEqual is boolean;
         }
     }
+    else if (addQ.addQselectionType == SelectionType.POSITIONAL_DIRECTIONAL)
+    {
+        annotation { "Name" : "Entities", "Filter" : AllowMeshGeometry.YES && AllowFlattenedGeometry.YES }
+        addQ.addQpositionalEntities is Query;
+
+        annotation { "Name" : "Positional query", "Default" : PositionalDirectionalType.PLANE_NORMAL }
+        addQ.addQpositionalMetricType is PositionalDirectionalType;
+
+        if (addQ.addQpositionalMetricType == PositionalDirectionalType.PLANE_NORMAL
+            || addQ.addQpositionalMetricType == PositionalDirectionalType.INTERSECTS_PLANE
+            || addQ.addQpositionalMetricType == PositionalDirectionalType.COINCIDES_WITH_PLANE)
+        {
+            annotation { "Name" : "Reference plane", "Filter" : EntityType.FACE && GeometryType.PLANE, "MaxNumberOfPicks" : 1 }
+            addQ.addQpositionalPlane is Query;
+        }
+        else if (addQ.addQpositionalMetricType == PositionalDirectionalType.INTERSECTS_LINE)
+        {
+            annotation { "Name" : "Reference line", "Filter" : EntityType.EDGE && GeometryType.LINE, "MaxNumberOfPicks" : 1 }
+            addQ.addQpositionalLine is Query;
+        }
+        else if (addQ.addQpositionalMetricType == PositionalDirectionalType.CONTAINS_POINT
+            || addQ.addQpositionalMetricType == PositionalDirectionalType.CLOSEST_TO
+            || addQ.addQpositionalMetricType == PositionalDirectionalType.INTERSECTS_BALL)
+        {
+            annotation { "Name" : "Reference point", "Filter" : EntityType.VERTEX, "MaxNumberOfPicks" : 1 }
+            addQ.addQpositionalVertex is Query;
+
+            if (addQ.addQpositionalMetricType == PositionalDirectionalType.INTERSECTS_BALL)
+            {
+                annotation { "Name" : "Radius", "Default" : 0 * meter }
+                isLength(addQ.addQpositionalRadius, NONNEGATIVE_LENGTH_BOUNDS);
+            }
+        }
+        else if (addQ.addQpositionalMetricType == PositionalDirectionalType.FARTHEST_ALONG
+            || addQ.addQpositionalMetricType == PositionalDirectionalType.PLANE_PARALLEL_DIRECTION
+            || addQ.addQpositionalMetricType == PositionalDirectionalType.FACE_PARALLEL_DIRECTION)
+        {
+            annotation { "Name" : "Direction", "Filter" : EntityType.EDGE || QueryFilterCompound.ALLOWS_DIRECTION, "MaxNumberOfPicks" : 1 }
+            addQ.addQpositionalDirection is Query;
+        }
+    }
     else if (addQ.addQselectionType == SelectionType.GEOMETRY)
     {
         annotation { "Name" : "Seed entities", "Filter" : AllowMeshGeometry.YES && AllowFlattenedGeometry.YES }
@@ -515,6 +627,13 @@ export predicate additionalQueryPredicate(addQ is map)
  *      @field sizeComparisonType {SizeComparisonType} : If selectionType is SIZE_COMPARISON, the size comparison to apply.
  *      @field sizeComparisonReference {Query} : If sizeComparisonType compares against a reference selection, the reference entity to compare against.
  *      @field sizeComparisonAllowEqual {boolean} : If sizeComparisonType compares against a reference selection, whether entities equal in size qualify.
+ *      @field positionalEntities {Query} : If selectionType is POSITIONAL_DIRECTIONAL, entities filtered by positional or directional relationships.
+ *      @field positionalMetricType {PositionalDirectionalType} : If selectionType is POSITIONAL_DIRECTIONAL, the positional or directional query to apply.
+ *      @field positionalPlane {Query} : If positionalMetricType references a plane, the plane face used in the comparison.
+ *      @field positionalLine {Query} : If positionalMetricType is INTERSECTS_LINE, the line entity used for intersection.
+ *      @field positionalVertex {Query} : If positionalMetricType requires a point reference, the vertex used for evaluation.
+ *      @field positionalRadius {ValueWithUnits} : If positionalMetricType is INTERSECTS_BALL, the sphere radius used for filtering.
+ *      @field positionalDirection {Query} : If positionalMetricType requires a direction, the entity defining the direction.
  *      @field geometrySeedEntities {Query} : If selectionType is GEOMETRY, entities that will be filtered by geometry type.
  *      @field geometryType {GeometryType} : If selectionType is GEOMETRY, geometry category used to filter the seed entities.
  *      @field angleTolerance {ValueWithUnits} : If selectionType is TANGENT_CONNECTED and seedType is FACE,
@@ -649,6 +768,7 @@ function mapSelectionTypeToQuery(context is Context, definition is map) returns 
                 SelectionType.MATCHING_BODIES : qMatchingBodies(context, definition.seedBodies),
                 SelectionType.ADJACENT : adjacencySelection(definition),
                 SelectionType.SIZE_COMPARISON : sizeComparisonSelection(context, definition),
+                SelectionType.POSITIONAL_DIRECTIONAL : positionalDirectionalSelection(context, definition),
                 SelectionType.GEOMETRY : qGeometry(definition.geometrySeedEntities, definition.geometryType),
                 SelectionType.ALL_SOLID_BODIES : qAllSolidBodies(),
                 SelectionType.EDGE_CONVEXITY : qEdgeConvexityTypeFilter(qOwnedByBody(definition.seedBodies, EntityType.EDGE), definition.edgeConvexityType)
@@ -786,6 +906,124 @@ function sizeComparisonSelection(context is Context, definition is map) returns 
     }
 
     return size(qualifyingEntities) == 0 ? qNothing() : qUnion(qualifyingEntities);
+}
+
+/**
+ * Reads a plane from a face query, failing with a clear regen error when no reference is provided.
+ */
+function evaluatePlaneReference(context is Context, planeQuery is Query, errorField is string)
+{
+    if (isQueryEmpty(context, planeQuery))
+    {
+        throw regenError(ErrorStringEnum.INVALID_INPUT, [errorField]);
+    }
+
+    return evPlane(context, { "face" : planeQuery });
+}
+
+/**
+ * Reads a line from an edge query, validating that the selection is present.
+ */
+function evaluateLineReference(context is Context, lineQuery is Query, errorField is string)
+{
+    if (isQueryEmpty(context, lineQuery))
+    {
+        throw regenError(ErrorStringEnum.INVALID_INPUT, [errorField]);
+    }
+
+    return evLine(context, { "edge" : lineQuery });
+}
+
+/**
+ * Reads a point from a vertex query, validating that the selection is present.
+ */
+function evaluatePointReference(context is Context, pointQuery is Query, errorField is string)
+{
+    if (isQueryEmpty(context, pointQuery))
+    {
+        throw regenError(ErrorStringEnum.INVALID_INPUT, [errorField]);
+    }
+
+    return evVertexPoint(context, { "vertex" : pointQuery });
+}
+
+/**
+ * Extracts a direction vector from the provided reference, failing on invalid inputs.
+ */
+function evaluateDirectionReference(context is Context, directionQuery is Query, errorField is string)
+{
+    const directionResult = extractDirection(context, directionQuery);
+    if (directionResult == undefined)
+    {
+        throw regenError(ErrorStringEnum.INVALID_INPUT, [errorField]);
+    }
+
+    return directionResult;
+}
+
+/**
+ * Builds positional and directional queries that relate a seed selection to reference geometry.
+ */
+function positionalDirectionalSelection(context is Context, definition is map) returns Query
+{
+    const positionalType = definition.positionalMetricType as PositionalDirectionalType;
+    const candidateEntities = definition.positionalEntities as Query;
+
+    if (positionalType == PositionalDirectionalType.PLANE_NORMAL
+        || positionalType == PositionalDirectionalType.INTERSECTS_PLANE
+        || positionalType == PositionalDirectionalType.COINCIDES_WITH_PLANE)
+    {
+        const referencePlane = evaluatePlaneReference(context, definition.positionalPlane as Query, "positionalPlane");
+        if (positionalType == PositionalDirectionalType.PLANE_NORMAL)
+        {
+            return qParallelPlanes(candidateEntities, referencePlane);
+        }
+
+        if (positionalType == PositionalDirectionalType.INTERSECTS_PLANE)
+        {
+            return qIntersectsPlane(candidateEntities, referencePlane);
+        }
+
+        return qCoincidesWithPlane(candidateEntities, referencePlane);
+    }
+
+    if (positionalType == PositionalDirectionalType.INTERSECTS_LINE)
+    {
+        const referenceLine = evaluateLineReference(context, definition.positionalLine as Query, "positionalLine");
+        return qIntersectsLine(candidateEntities, referenceLine);
+    }
+
+    if (positionalType == PositionalDirectionalType.CONTAINS_POINT
+        || positionalType == PositionalDirectionalType.CLOSEST_TO
+        || positionalType == PositionalDirectionalType.INTERSECTS_BALL)
+    {
+        const referencePoint = evaluatePointReference(context, definition.positionalVertex as Query, "positionalVertex");
+        if (positionalType == PositionalDirectionalType.CONTAINS_POINT)
+        {
+            return qContainsPoint(candidateEntities, referencePoint);
+        }
+
+        if (positionalType == PositionalDirectionalType.CLOSEST_TO)
+        {
+            return qClosestTo(candidateEntities, referencePoint);
+        }
+
+        const radius = definition.positionalRadius as ValueWithUnits;
+        return qWithinRadius(candidateEntities, referencePoint, radius);
+    }
+
+    const referenceDirection = evaluateDirectionReference(context, definition.positionalDirection as Query, "positionalDirection");
+    if (positionalType == PositionalDirectionalType.FARTHEST_ALONG)
+    {
+        return qFarthestAlong(candidateEntities, referenceDirection);
+    }
+
+    if (positionalType == PositionalDirectionalType.PLANE_PARALLEL_DIRECTION)
+    {
+        return qPlanesParallelToDirection(candidateEntities, referenceDirection);
+    }
+
+    return qFacesParallelToDirection(candidateEntities, referenceDirection);
 }
 
 function qMatchingBodies(context is Context, seedBodies is Query) returns Query
