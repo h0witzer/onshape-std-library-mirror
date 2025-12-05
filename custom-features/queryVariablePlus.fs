@@ -254,7 +254,7 @@ export predicate initialQueryPredicate(definition is map)
         if (definition.sizeComparisonType == SizeComparisonType.LARGER_THAN_SELECTION
             || definition.sizeComparisonType == SizeComparisonType.SMALLER_THAN_SELECTION)
         {
-            annotation { "Name" : "Reference selection", "Filter" : AllowMeshGeometry.YES && AllowFlattenedGeometry.YES }
+            annotation { "Name" : "Reference selection", "Filter" : AllowMeshGeometry.YES && AllowFlattenedGeometry.YES, "MaxNumberOfPicks" : 1 }
             definition.sizeComparisonReference is Query;
 
             annotation { "Name" : "Or equal to selection", "Default" : false }
@@ -407,7 +407,7 @@ export predicate additionalQueryPredicate(addQ is map)
         if (addQ.addQsizeComparisonType == SizeComparisonType.LARGER_THAN_SELECTION
             || addQ.addQsizeComparisonType == SizeComparisonType.SMALLER_THAN_SELECTION)
         {
-            annotation { "Name" : "Reference selection", "Filter" : AllowMeshGeometry.YES && AllowFlattenedGeometry.YES }
+            annotation { "Name" : "Reference selection", "Filter" : AllowMeshGeometry.YES && AllowFlattenedGeometry.YES, "MaxNumberOfPicks" : 1 }
             addQ.addQsizeComparisonReference is Query;
 
             annotation { "Name" : "Or equal to selection", "Default" : false }
@@ -681,35 +681,30 @@ function adjacencySelection(definition is map) returns Query
 }
 
 /**
- * Determines the highest-dimensional entity type present in a query, preferring bodies, then faces, then edges, and finally vertices.
+ * Ensures that all entities in a query share a single size-comparable entity type.
+ * Returns the detected entity type and a filtered query containing only that type.
  */
-function inferHighestEntityType(context is Context, entities is Query)
+function enforceUniformSizeEntityType(context is Context, entities is Query, errorField is string)
 {
-    const bodyQuery = qEntityFilter(entities, EntityType.BODY);
-    if (!isQueryEmpty(context, bodyQuery))
+    const supportedTypes = [EntityType.BODY, EntityType.FACE, EntityType.EDGE];
+    var presentTypes = [];
+
+    for (var supportedType in supportedTypes)
     {
-        return EntityType.BODY;
+        const concreteType = supportedType as EntityType;
+        if (!isQueryEmpty(context, qEntityFilter(entities, concreteType)))
+        {
+            presentTypes = append(presentTypes, concreteType);
+        }
     }
 
-    const faceQuery = qEntityFilter(entities, EntityType.FACE);
-    if (!isQueryEmpty(context, faceQuery))
+    if (size(presentTypes) != 1)
     {
-        return EntityType.FACE;
+        throw regenError(ErrorStringEnum.INVALID_INPUT, [errorField]);
     }
 
-    const edgeQuery = qEntityFilter(entities, EntityType.EDGE);
-    if (!isQueryEmpty(context, edgeQuery))
-    {
-        return EntityType.EDGE;
-    }
-
-    const vertexQuery = qEntityFilter(entities, EntityType.VERTEX);
-    if (!isQueryEmpty(context, vertexQuery))
-    {
-        return EntityType.VERTEX;
-    }
-
-    return undefined;
+    const selectedType = presentTypes[0] as EntityType;
+    return { "entityType" : selectedType, "filteredQuery" : qEntityFilter(entities, selectedType) };
 }
 
 /**
@@ -744,32 +739,28 @@ function sizeComparisonSelection(context is Context, definition is map) returns 
     const comparisonEntities = definition.sizeComparisonEntities as Query;
     const allowEqualSize = definition.sizeComparisonAllowEqual == true;
 
+    const candidateSelection = enforceUniformSizeEntityType(context, comparisonEntities, "sizeComparisonEntities");
+
     if (comparisonType == SizeComparisonType.LARGEST)
     {
-        return qLargest(comparisonEntities);
+        return qLargest(candidateSelection.filteredQuery);
     }
 
     if (comparisonType == SizeComparisonType.SMALLEST)
     {
-        return qSmallest(comparisonEntities);
+        return qSmallest(candidateSelection.filteredQuery);
     }
 
     const referenceEntities = definition.sizeComparisonReference as Query;
-    const candidateEntityType = inferHighestEntityType(context, comparisonEntities);
-    const referenceEntityType = inferHighestEntityType(context, referenceEntities);
+    const referenceSelection = enforceUniformSizeEntityType(context, referenceEntities, "sizeComparisonReference");
 
-    if (candidateEntityType == undefined || referenceEntityType == undefined)
-    {
-        return qNothing();
-    }
-
-    if (candidateEntityType != referenceEntityType)
+    if (candidateSelection.entityType != referenceSelection.entityType)
     {
         throw regenError(ErrorStringEnum.INVALID_INPUT, ["sizeComparisonReference"]);
     }
 
-    const filteredCandidates = qEntityFilter(comparisonEntities, candidateEntityType);
-    const filteredReference = qEntityFilter(referenceEntities, referenceEntityType);
+    const filteredCandidates = candidateSelection.filteredQuery;
+    const filteredReference = referenceSelection.filteredQuery;
 
     const referenceEntitiesArray = evaluateQuery(context, filteredReference);
     if (size(referenceEntitiesArray) != 1)
@@ -777,11 +768,11 @@ function sizeComparisonSelection(context is Context, definition is map) returns 
         throw regenError(ErrorStringEnum.INVALID_INPUT, ["sizeComparisonReference"]);
     }
 
-    const referenceSize = measureEntitySize(context, qUnion([referenceEntitiesArray[0]]), referenceEntityType);
+    const referenceSize = measureEntitySize(context, qUnion([referenceEntitiesArray[0]]), referenceSelection.entityType);
     var qualifyingEntities = [];
     for (var entity in evaluateQuery(context, filteredCandidates))
     {
-        const entitySize = measureEntitySize(context, qUnion([entity]), candidateEntityType);
+        const entitySize = measureEntitySize(context, qUnion([entity]), candidateSelection.entityType);
         const sizeDifference = entitySize - referenceSize;
         const isEqual = tolerantEquals(entitySize, referenceSize);
         const isLarger = sizeDifference > 0 && !isEqual;
