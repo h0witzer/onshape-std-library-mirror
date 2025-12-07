@@ -9,6 +9,7 @@
 //  - referenceFrame : Mate connector query when defRefFrame is true
 FeatureScript 2815;
 import(path : "onshape/std/geometry.fs", version : "2815.0");
+import(path : "onshape/std/query.fs", version : "2815.0");
 import(path : "onshape/std/box.fs", version : "2815.0");
 
 annotation { "Feature Type Name" : "Laser It" }
@@ -81,26 +82,26 @@ export const laserIt = defineFeature(function(context is Context, id is Id, defi
 
         var numberOfXPlanes = (orientedBoundingBox.maxCorner[0] - orientedBoundingBox.minCorner[0]) / definition.planeSpacing;
         var numberOfYPlanes = (orientedBoundingBox.maxCorner[1] - orientedBoundingBox.minCorner[1]) / definition.planeSpacing;
-        var bodiesToDelete = qNothing();
+        var cleanupBodies = [] as array;
 
         // Build a stack of slicing planes perpendicular to X, then Y, that span the oriented bounding box of the target body.
         // Each loop: create a sketch-sized rectangle around the body, extrude it to the material thickness, and retain the raw
         // sheets for a later trimming pass against the selected part.
-        var xSliceResult = generateSheets(context, id, "X", numberOfXPlanes, orientedBoundingBox, xOffsetDistance, definition.planeSpacing, referenceFrameToWorldTransform, definition.matThick, bodiesToDelete);
-        bodiesToDelete = xSliceResult.bodiesToDelete;
+        var xSliceResult = generateSheets(context, id, "X", numberOfXPlanes, orientedBoundingBox, xOffsetDistance, definition.planeSpacing, referenceFrameToWorldTransform, definition.matThick, cleanupBodies);
+        cleanupBodies = xSliceResult.cleanupBodies;
 
-        var ySliceResult = generateSheets(context, id, "Y", numberOfYPlanes, orientedBoundingBox, yOffsetDistance, definition.planeSpacing, referenceFrameToWorldTransform, definition.matThick, bodiesToDelete);
-        bodiesToDelete = ySliceResult.bodiesToDelete;
+        var ySliceResult = generateSheets(context, id, "Y", numberOfYPlanes, orientedBoundingBox, yOffsetDistance, definition.planeSpacing, referenceFrameToWorldTransform, definition.matThick, cleanupBodies);
+        cleanupBodies = ySliceResult.cleanupBodies;
 
         // Intersect each sheet with the target solid to retain only in-bounds material before generating cross-slot geometry.
-        var trimmedSheetsResult = trimSheetsToSolid(context, id, xSliceResult.sliceIds, ySliceResult.sliceIds, definition.selectedBody, bodiesToDelete);
-        bodiesToDelete = trimmedSheetsResult.bodiesToDelete;
+        var trimmedSheetsResult = trimSheetsToSolid(context, id, xSliceResult.sliceIds, ySliceResult.sliceIds, definition.selectedBody, cleanupBodies);
+        cleanupBodies = trimmedSheetsResult.cleanupBodies;
 
         // The XY nested loop takes every X slice and intersects it with every Y slice to form individual grid cells.
         // For each cell, it resolves all intersecting bodies, averages aligned edges to infer a mid-surface, and splits the
         // cell into two halves so the original X and Y slice sets can be trimmed against each other.
-        var intersectionResult = generateCrossSlotGeometryForSlices(context, id, trimmedSheetsResult.xIntersectionIds, trimmedSheetsResult.yIntersectionIds, referenceFrame, bodiesToDelete);
-        bodiesToDelete = intersectionResult.bodiesToDelete;
+        var intersectionResult = generateCrossSlotGeometryForSlices(context, id, trimmedSheetsResult.xIntersectionIds, trimmedSheetsResult.yIntersectionIds, referenceFrame, cleanupBodies);
+        cleanupBodies = intersectionResult.cleanupBodies;
 
         // After trimming the intersecting grid, thicken every face that lies on an X-oriented plane to create individual
         // ribs aligned with the X direction.
@@ -119,9 +120,12 @@ export const laserIt = defineFeature(function(context is Context, id is Id, defi
         }
 
         // Clean up intermediate construction geometry and sketch bodies
-        opDeleteBodies(context, id + "deleteBodies1", {
-                    "entities" : bodiesToDelete
-                });
+        if (size(cleanupBodies) > 0)
+        {
+            opDeleteBodies(context, id + "deleteBodies1", {
+                        "entities" : qUnion(cleanupBodies)
+                    });
+        }
 
     });
 
@@ -135,9 +139,9 @@ export const laserIt = defineFeature(function(context is Context, id is Id, defi
 //  - planeSpacing : Distance between slices
 //  - referenceFrameToWorldTransform : Transform aligning the local slice planes with world coordinates
 //  - materialThickness : Extrusion depth for the raw sheet
-//  - bodiesToDelete : Accumulated query of cleanup bodies to extend
-// Returns: map containing the updated bodiesToDelete query and the ordered list of slice planes
-export function generateSheets(context is Context, featureIdPrefix is Id, axisLabel is string, numberOfPlanes is number, orientedBoundingBox is Box3d, offsetDistance is ValueWithUnits, planeSpacing is ValueWithUnits, referenceFrameToWorldTransform is Transform, materialThickness is ValueWithUnits, bodiesToDelete is Query)
+//  - cleanupBodies : Accumulated array of cleanup queries to extend
+// Returns: map containing the updated cleanupBodies array and the ordered list of slice planes
+export function generateSheets(context is Context, featureIdPrefix is Id, axisLabel is string, numberOfPlanes is number, orientedBoundingBox is Box3d, offsetDistance is ValueWithUnits, planeSpacing is ValueWithUnits, referenceFrameToWorldTransform is Transform, materialThickness is ValueWithUnits, cleanupBodies is array)
 {
     var slicePlanes = [] as array;
     var sliceIds = [] as array;
@@ -172,13 +176,13 @@ export function generateSheets(context is Context, featureIdPrefix is Id, axisLa
 
         var slicePlane = referenceFrameToWorldTransform * plane(sliceOrigin, planeNormal, planeUpVector);
         var sliceId = featureIdPrefix + axisLabel + planeIndex;
-        var sliceResult = generateSliceSheet(context, sliceId, slicePlane, rectangleWidth, rectangleHeight, planeNormal, materialThickness, bodiesToDelete);
-        bodiesToDelete = sliceResult.bodiesToDelete;
+        var sliceResult = generateSliceSheet(context, sliceId, slicePlane, rectangleWidth, rectangleHeight, planeNormal, materialThickness, cleanupBodies);
+        cleanupBodies = sliceResult.cleanupBodies;
         slicePlanes = append(slicePlanes, slicePlane);
         sliceIds = append(sliceIds, sliceId);
     }
 
-    return { "bodiesToDelete" : bodiesToDelete, "slicePlanes" : slicePlanes, "sliceIds" : sliceIds };
+    return { "cleanupBodies" : cleanupBodies, "slicePlanes" : slicePlanes, "sliceIds" : sliceIds };
 }
 
 // Intersect every raw sheet with the target body to keep only the in-bounds material for follow-on trimming.
@@ -186,9 +190,9 @@ export function generateSheets(context is Context, featureIdPrefix is Id, axisLa
 //  - featureIdPrefix : Base id used to regenerate the X/Y identifiers for each slice
 //  - xSliceIds, ySliceIds : Ordered identifiers for X- and Y-oriented slice bodies
 //  - targetBody : Body query representing the part being sliced
-//  - bodiesToDelete : Accumulated query of cleanup bodies to extend
-// Returns: map containing the updated bodiesToDelete query and intersection ids
-export function trimSheetsToSolid(context is Context, featureIdPrefix is Id, xSliceIds is array, ySliceIds is array, targetBody is Query, bodiesToDelete is Query)
+//  - cleanupBodies : Accumulated array of cleanup queries to extend
+// Returns: map containing the updated cleanupBodies array and intersection ids
+export function trimSheetsToSolid(context is Context, featureIdPrefix is Id, xSliceIds is array, ySliceIds is array, targetBody is Query, cleanupBodies is array)
 {
     var xIntersectionIds = [] as array;
     var yIntersectionIds = [] as array;
@@ -203,7 +207,6 @@ export function trimSheetsToSolid(context is Context, featureIdPrefix is Id, xSl
                     "keepTools" : true
                 });
 
-        bodiesToDelete = qUnion([bodiesToDelete, qCreatedBy(xIntersectionId)]);
         xIntersectionIds = append(xIntersectionIds, xIntersectionId);
     }
 
@@ -217,104 +220,152 @@ export function trimSheetsToSolid(context is Context, featureIdPrefix is Id, xSl
                     "keepTools" : true
                 });
 
-        bodiesToDelete = qUnion([bodiesToDelete, qCreatedBy(yIntersectionId)]);
         yIntersectionIds = append(yIntersectionIds, yIntersectionId);
     }
 
-    return { "bodiesToDelete" : bodiesToDelete, "xIntersectionIds" : xIntersectionIds, "yIntersectionIds" : yIntersectionIds };
+    return { "cleanupBodies" : cleanupBodies, "xIntersectionIds" : xIntersectionIds, "yIntersectionIds" : yIntersectionIds };
 }
 
-// Intersect every X and Y slice pairing, derive mid-planes through overlapping solids, and trim the orthogonal slice sets.
+// Copy all trimmed slices, then perform a single subtract-complement boolean using the copied X slices as tools and the copied Y slices as targets.
+// This trims the Y slice set against all X slices in one operation to reduce the number of booleans required for slot generation.
 // Inputs:
 //  - featureIdPrefix : Base id used to regenerate the X/Y boolean identifiers for each intersection cell
 //  - xIntersectionIds, yIntersectionIds : Ordered identifiers for the trimmed X and Y slice bodies
-//  - referenceFrame : Coordinate system establishing the Z axis for mid-plane evaluation
-//  - bodiesToDelete : Accumulated query of cleanup bodies to extend
-// Returns: map containing the updated bodiesToDelete query
-export function generateCrossSlotGeometryForSlices(context is Context, featureIdPrefix is Id, xIntersectionIds is array, yIntersectionIds is array, referenceFrame is CoordSystem, bodiesToDelete is Query)
+//  - referenceFrame : Coordinate system establishing the Z axis for mid-plane evaluation (retained for compatibility)
+//  - cleanupBodies : Accumulated array of cleanup queries to extend
+// Returns: map containing the updated cleanupBodies array and the copied slot ids used downstream
+export function generateCrossSlotGeometryForSlices(context is Context, featureIdPrefix is Id, xIntersectionIds is array, yIntersectionIds is array, referenceFrame is CoordSystem, cleanupBodies is array)
 {
+    var xSlotIds = [] as array;
+    var ySlotIds = [] as array;
+
+    // 1. Create Copies
     for (var xPlaneIndex = 0; xPlaneIndex < size(xIntersectionIds); xPlaneIndex += 1)
     {
-        for (var yPlaneIndex = 0; yPlaneIndex < size(yIntersectionIds); yPlaneIndex += 1)
+        const xCopyId = featureIdPrefix + "XCopy" + xPlaneIndex;
+        opPattern(context, xCopyId, {
+                    "entities" : qCreatedBy(xIntersectionIds[xPlaneIndex], EntityType.BODY),
+                    "transforms" : [identityTransform()],
+                    "instanceNames" : ["1"]
+                });
+        xSlotIds = append(xSlotIds, xCopyId);
+    }
+
+    for (var yPlaneIndex = 0; yPlaneIndex < size(yIntersectionIds); yPlaneIndex += 1)
+    {
+        const yCopyId = featureIdPrefix + "YCopy" + yPlaneIndex;
+        opPattern(context, yCopyId, {
+                    "entities" : qCreatedBy(yIntersectionIds[yPlaneIndex], EntityType.BODY),
+                    "transforms" : [identityTransform()],
+                    "instanceNames" : ["1"]
+                });
+        ySlotIds = append(ySlotIds, yCopyId);
+    }
+
+    const copiedXSlices = qUnion(mapArray(xSlotIds, function(slotId)
+            {
+                return qCreatedBy(slotId, EntityType.BODY);
+            }));
+    const copiedYSlices = qUnion(mapArray(ySlotIds, function(slotId)
+            {
+                return qCreatedBy(slotId, EntityType.BODY);
+            }));
+
+    // 2. Generate Intersection Geometry (Subtract Complement)
+    opBoolean(context, featureIdPrefix + "BatchCrossSlots", {
+                "tools" : copiedXSlices,
+                "targets" : copiedYSlices,
+                "operationType" : BooleanOperationType.SUBTRACT_COMPLEMENT,
+                "keepTargets" : true
+            });
+
+    var splitToolsForX = [] as array;
+    var splitToolsForY = [] as array;
+
+    // 3. Evaluate Intersections and Split them
+    var intersectionCells = evaluateQuery(context, copiedYSlices);
+    var cellIndex = 0;
+    for (var intersectionCell in intersectionCells)
+    {
+        var allIntersectionEdges = evaluateQuery(context, qOwnedByBody(intersectionCell, EntityType.EDGE));
+        var zCoordinateAccumulator = 0 * millimeter;
+        var numberOfAlignedEdges = 0;
+
+        for (var intersectionEdge in allIntersectionEdges)
         {
             try
             {
-                // For a given X/Y plane pairing, step through every intersection body produced by earlier booleans so that
-                // each overlapping solid gets intersected independently. This keeps disjoint islands from being skipped.
-                var xIntersectionIndex = 0;
-                var yIntersectionIndex = 0;
-                for (var xIntersectionSlice in evaluateQuery(context, qCreatedBy(xIntersectionIds[xPlaneIndex], EntityType.BODY)))
+                var evaluatedEdgeLine = evLine(context, {
+                        "edge" : intersectionEdge
+                    });
+                if (abs(dot(evaluatedEdgeLine.direction, referenceFrame.zAxis)) > .9999)
                 {
-
-                    for (var yIntersectionSlice in evaluateQuery(context, qCreatedBy(yIntersectionIds[yPlaneIndex], EntityType.BODY)))
-                    {
-                        try
-                        {
-
-                            opBoolean(context, featureIdPrefix + "XY" + xPlaneIndex + yPlaneIndex + "boolean1" + xIntersectionIndex + yIntersectionIndex + "Subunit", {
-                                        "tools" : qUnion([xIntersectionSlice, yIntersectionSlice]),
-                                        "operationType" : BooleanOperationType.INTERSECTION,
-                                        "keepTools" : true
-                                    });
-                        }
-                        xIntersectionIndex = xIntersectionIndex + 1;
-                    }
-                    yIntersectionIndex = yIntersectionIndex + 1;
-                }
-
-                var allIntersectionEdges = evaluateQuery(context, qOwnedByBody(qCreatedBy(featureIdPrefix + "XY" + xPlaneIndex + yPlaneIndex + "boolean1", EntityType.BODY), EntityType.EDGE));
-                var zCoordinateAccumulator = 0 * millimeter;
-                var numberOfAlignedEdges = 0;
-                // Measure every edge and average the ones parallel to the reference Z axis to find a reliable mid-plane
-                // through the slice that can split it into mirrored halves.
-                for (var intersectionEdge in allIntersectionEdges)
-                {
-                    try
-                    {
-                        var evaluatedEdgeLine = evLine(context, {
-                                "edge" : intersectionEdge
-                            });
-                        if (abs(dot(evaluatedEdgeLine.direction, referenceFrame.zAxis)) > .9999) // Normal tolerance of ParallelVectors is too tight for some reason after error accumulates
-                        {
-                            // Find the midpoint of the edge and add to average
-                            var edgeTangentLine = evEdgeTangentLine(context, {
-                                    "edge" : intersectionEdge,
-                                    "parameter" : .5
-                                });
-                            numberOfAlignedEdges += 1;
-                            zCoordinateAccumulator += dot(edgeTangentLine.origin, referenceFrame.zAxis);
-                        }
-                    }
-                }
-                if (numberOfAlignedEdges > 0)
-                {
-                    var slicePlaneOrigin = (referenceFrame.zAxis * zCoordinateAccumulator / numberOfAlignedEdges) / squaredNorm(referenceFrame.zAxis);
-                    var slicePlane = plane(slicePlaneOrigin, referenceFrame.zAxis);
-                    opPlane(context, featureIdPrefix + "XY" + xPlaneIndex + yPlaneIndex + "plane1", {
-                                "plane" : slicePlane
-                            });
-                    opSplitPart(context, featureIdPrefix + "XY" + xPlaneIndex + yPlaneIndex + "splitPart1", {
-                                "targets" : qCreatedBy(featureIdPrefix + "XY" + xPlaneIndex + yPlaneIndex + "boolean1", EntityType.BODY),
-                                "tool" : qCreatedBy(featureIdPrefix + "XY" + xPlaneIndex + yPlaneIndex + "plane1", EntityType.BODY)
-                            });
-                    opBoolean(context, featureIdPrefix + "XY" + xPlaneIndex + yPlaneIndex + "boolean2", {
-                                "tools" : qFarthestAlong(qOwnerBody(qCreatedBy(featureIdPrefix + "XY" + xPlaneIndex + yPlaneIndex + "splitPart1")), referenceFrame.zAxis),
-                                "targets" : qCreatedBy(xIntersectionIds[xPlaneIndex], EntityType.BODY),
-                                "operationType" : BooleanOperationType.SUBTRACTION
-                            });
-
-                    opBoolean(context, featureIdPrefix + "XY" + xPlaneIndex + yPlaneIndex + "boolean3", {
-                                "tools" : qFarthestAlong(qOwnerBody(qCreatedBy(featureIdPrefix + "XY" + xPlaneIndex + yPlaneIndex + "splitPart1")), -referenceFrame.zAxis),
-                                "targets" : qCreatedBy(yIntersectionIds[yPlaneIndex], EntityType.BODY),
-                                "operationType" : BooleanOperationType.SUBTRACTION
-                            });
-                    bodiesToDelete = qUnion([bodiesToDelete, qCreatedBy(featureIdPrefix + "XY" + xPlaneIndex + yPlaneIndex + "plane1")]);
+                    var edgeTangentLine = evEdgeTangentLine(context, {
+                            "edge" : intersectionEdge,
+                            "parameter" : .5
+                        });
+                    numberOfAlignedEdges += 1;
+                    zCoordinateAccumulator += dot(edgeTangentLine.origin, referenceFrame.zAxis);
                 }
             }
         }
+
+        if (numberOfAlignedEdges == 0)
+        {
+            cellIndex += 1;
+            continue;
+        }
+
+        var slicePlaneOrigin = (referenceFrame.zAxis * zCoordinateAccumulator / numberOfAlignedEdges) / squaredNorm(referenceFrame.zAxis);
+        var slicePlane = plane(slicePlaneOrigin, referenceFrame.zAxis);
+        const planeId = featureIdPrefix + "XY" + cellIndex + "plane1";
+        opPlane(context, planeId, {
+                    "plane" : slicePlane
+                });
+        const splitId = featureIdPrefix + "XY" + cellIndex + "splitPart1";
+        opSplitPart(context, splitId, {
+                    "targets" : intersectionCell,
+                    "tool" : qCreatedBy(planeId, EntityType.BODY)
+                });
+
+        splitToolsForX = append(splitToolsForX, qFarthestAlong(qOwnerBody(qCreatedBy(splitId)), referenceFrame.zAxis));
+        splitToolsForY = append(splitToolsForY, qFarthestAlong(qOwnerBody(qCreatedBy(splitId)), -referenceFrame.zAxis));
+
+        cellIndex += 1;
     }
 
-    return { "bodiesToDelete" : bodiesToDelete };
+    // 4. Perform Final Subtraction on Original Slices
+
+    // Helper to resolve original IDs to Body queries
+    const originalXSlices = qUnion(mapArray(xIntersectionIds, function(id)
+            {
+                return qCreatedBy(id, EntityType.BODY);
+            }));
+
+    const originalYSlices = qUnion(mapArray(yIntersectionIds, function(id)
+            {
+                return qCreatedBy(id, EntityType.BODY);
+            }));
+
+    if (size(splitToolsForX) > 0)
+    {
+        opBoolean(context, featureIdPrefix + "booleanXSlots", {
+                    "tools" : qUnion(splitToolsForX),
+                    "targets" : originalXSlices, // Target the original X slices
+                    "operationType" : BooleanOperationType.SUBTRACTION
+                });
+    }
+
+    if (size(splitToolsForY) > 0)
+    {
+        opBoolean(context, featureIdPrefix + "booleanYSlots", {
+                    "tools" : qUnion(splitToolsForY),
+                    "targets" : originalYSlices, // Target the original Y slices
+                    "operationType" : BooleanOperationType.SUBTRACTION
+                });
+    }
+
+    return { "cleanupBodies" : cleanupBodies, "xSlotIds" : xSlotIds, "ySlotIds" : ySlotIds };
 }
 
 // Sketch and extrude a rectangular slice at the provided plane, retaining the untrimmed sheet for a later boolean against the target body.
@@ -324,13 +375,13 @@ export function generateCrossSlotGeometryForSlices(context is Context, featureId
 //  - rectangleWidth, rectangleHeight : Dimensions of the rectangle sketched on the plane
 //  - extrusionDirection : Direction vector for the slice thickening
 //  - materialThickness : Extrusion depth matching the stock thickness
-//  - bodiesToDelete : Accumulated query of cleanup bodies to extend
-// Returns: map containing the updated bodiesToDelete query and the slice plane
-export function generateSliceSheet(context is Context, sliceId is Id, slicePlane is Plane, rectangleWidth is ValueWithUnits, rectangleHeight is ValueWithUnits, extrusionDirection is Vector, materialThickness is ValueWithUnits, bodiesToDelete is Query)
+//  - cleanupBodies : Accumulated array of cleanup queries to extend
+// Returns: map containing the updated cleanupBodies array and the slice plane
+export function generateSliceSheet(context is Context, sliceId is Id, slicePlane is Plane, rectangleWidth is ValueWithUnits, rectangleHeight is ValueWithUnits, extrusionDirection is Vector, materialThickness is ValueWithUnits, cleanupBodies is array)
 {
     var sliceSketch = newSketchOnPlane(context, sliceId + "sketch", {
-                "sketchPlane" : slicePlane
-            });
+            "sketchPlane" : slicePlane
+        });
 
     skRectangle(sliceSketch, "rectangle1", {
                 "firstCorner" : -vector([rectangleWidth, rectangleHeight]) / 2,
@@ -339,7 +390,7 @@ export function generateSliceSheet(context is Context, sliceId is Id, slicePlane
 
     skSolve(sliceSketch);
 
-    bodiesToDelete = qUnion([bodiesToDelete, qCreatedBy(sliceId + "sketch")]);
+    cleanupBodies = append(cleanupBodies, qCreatedBy(sliceId + "sketch"));
 
     // Extrude a rectangular slice surrounding the object
     opExtrude(context, sliceId + "extrudeRectangle", {
@@ -349,32 +400,78 @@ export function generateSliceSheet(context is Context, sliceId is Id, slicePlane
                 "endDepth" : materialThickness
             });
 
-    bodiesToDelete = qUnion([bodiesToDelete, qCreatedBy(sliceId + "extrudeRectangle", EntityType.BODY)]);
+    cleanupBodies = append(cleanupBodies, qCreatedBy(sliceId + "extrudeRectangle", EntityType.BODY));
 
-    return { "bodiesToDelete" : bodiesToDelete, "slicePlane" : slicePlane };
+    return { "cleanupBodies" : cleanupBodies, "slicePlane" : slicePlane };
 }
 
-// Extrude every face coincident with the given plane from the provided boolean intersection into ribs along the supplied direction.
+// Project any faces on the trimmed slice bodies that are not normal to the slicing plane and remove their projections to clean
+// up irregular geometry.
 // Inputs:
-//  - extrudeIdPrefix : Id prefix used for created ribs
-//  - slicingPlane : Plane the faces must coincide with
+//  - extrudeIdPrefix : Id prefix used for created helper operations
+//  - slicingPlane : Plane used to evaluate face normals and target for projection
 //  - intersectionBooleanId : Id of the prior trimmed intersection operation for this slice
-//  - materialThickness : Extrusion depth used for rib generation
-//  - ribDirection : Direction vector for the rib extrusion
+//  - materialThickness : Thickness used when removing projected material
+//  - ribDirection : Direction vector for ribs (retained for compatibility; not used by this cleaner)
 export function normalizeSliceGeometryForLasercutting(context is Context, extrudeIdPrefix is Id, slicingPlane is Plane, intersectionBooleanId is Id, materialThickness is ValueWithUnits, ribDirection is Vector)
 {
-    var subunitIndex = 0;
-    for (var sliceFace in evaluateQuery(context, qCoincidesWithPlane(qOwnedByBody(qOwnerBody(qCreatedBy(intersectionBooleanId)), EntityType.FACE), slicingPlane)))
+    // 1. Define queries
+    const trimmedSliceBodies = qCreatedBy(intersectionBooleanId, EntityType.BODY);
+    const sliceFaces = qOwnedByBody(trimmedSliceBodies, EntityType.FACE);
+
+    // 2. Identify "Good" faces (don't need normalization)
+    // - Top/Bottom caps (Parallel to the slice plane itself)
+    const topBottomFaces = qParallelPlanes(sliceFaces, slicingPlane);
+    // - Vertical cut walls (Parallel to the slice plane's NORMAL vector)
+    const verticalWallFaces = qFacesParallelToDirection(sliceFaces, slicingPlane.normal);
+    
+    // Combine them into a "skip list"
+    const validFaces = qUnion([topBottomFaces, verticalWallFaces]);
+
+    // 3. Subtract valid faces from all faces to find the "Bad" (slanted/chamfered) ones
+    const nonNormalFaces = qSubtraction(sliceFaces, validFaces);
+
+    // 4. Check for null case (nothing to normalize)
+    if (isQueryEmpty(context, nonNormalFaces))
     {
-        try
-        {
-            opExtrude(context, extrudeIdPrefix + subunitIndex + "subUnitOp", {
-                        "entities" : sliceFace,
-                        "direction" : ribDirection,
-                        "endBound" : BoundingType.BLIND,
-                        "endDepth" : materialThickness
-                    });
-        }
-        subunitIndex = subunitIndex + 1;
+        return;
     }
+
+    // 5. Proceed with Normalization
+    const projectionPlaneId = extrudeIdPrefix + "projectionPlane";
+    opPlane(context, projectionPlaneId, { "plane" : slicingPlane });
+    const projectionTarget = qCreatedBy(projectionPlaneId, EntityType.FACE);
+
+    const extractedOutlineToolsId = extrudeIdPrefix + "projectionExtract";
+    opExtractSurface(context, extractedOutlineToolsId, {
+                "faces" : nonNormalFaces,
+                "offset" : 0 * meter
+            });
+
+    const extractedOutlineTools = qCreatedBy(extractedOutlineToolsId, EntityType.BODY);
+    const outlineId = extrudeIdPrefix + "outline";
+    opCreateOutline(context, outlineId, {
+                "tools" : extractedOutlineTools,
+                "target" : projectionTarget
+            });
+
+    const projectionFaces = qCreatedBy(outlineId, EntityType.FACE);
+    const thickenId = extrudeIdPrefix + "projectionThicken";
+    opThicken(context, thickenId, {
+                "entities" : projectionFaces,
+                "thickness1" : materialThickness,
+                "thickness2" : 0 * meter,
+                "keepTools" : true
+            });
+
+    opBoolean(context, extrudeIdPrefix + "projectionCleanup", {
+                "tools" : qCreatedBy(thickenId, EntityType.BODY),
+                "targets" : trimmedSliceBodies,
+                "operationType" : BooleanOperationType.SUBTRACTION,
+                "keepTools" : false
+            });
+
+    opDeleteBodies(context, extrudeIdPrefix + "projectionHelpersCleanup", {
+                "entities" : qUnion([projectionTarget, extractedOutlineTools, qCreatedBy(outlineId, EntityType.BODY)])
+            });
 }
