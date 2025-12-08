@@ -47,7 +47,7 @@ export const laserIt = defineFeature(function(context is Context, id is Id, defi
         }
 
         // Use the coordinate system to define the bounding box (start and end of planes).
-        // The reference frame origin is used as-is; the planes are positioned relative to the bounding box extents.
+        // The reference frame position directly controls where the slicing grid is placed.
         var orientedBoundingBox = evBox3d(context, {
                 "topology" : definition.selectedBody,
                 "cSys" : referenceFrame,
@@ -111,6 +111,8 @@ export function generateSheets(context is Context, featureIdPrefix is Id, axisLa
     var rectangleWidth = orientedBoundingBox.maxCorner[1] - orientedBoundingBox.minCorner[1];
     var rectangleHeight = orientedBoundingBox.maxCorner[2] - orientedBoundingBox.minCorner[2];
     var boundingMin = orientedBoundingBox.minCorner[0];
+    var rectangleCenterY = (orientedBoundingBox.maxCorner[1] + orientedBoundingBox.minCorner[1]) / 2;
+    var rectangleCenterZ = (orientedBoundingBox.maxCorner[2] + orientedBoundingBox.minCorner[2]) / 2;
 
     if (axisLabel == "Y")
     {
@@ -119,6 +121,8 @@ export function generateSheets(context is Context, featureIdPrefix is Id, axisLa
         rectangleWidth = orientedBoundingBox.maxCorner[2] - orientedBoundingBox.minCorner[2];
         rectangleHeight = orientedBoundingBox.maxCorner[0] - orientedBoundingBox.minCorner[0];
         boundingMin = orientedBoundingBox.minCorner[1];
+        rectangleCenterY = (orientedBoundingBox.maxCorner[0] + orientedBoundingBox.minCorner[0]) / 2;
+        rectangleCenterZ = (orientedBoundingBox.maxCorner[2] + orientedBoundingBox.minCorner[2]) / 2;
     }
 
     for (var planeIndex = 0; planeIndex < numberOfPlanes; planeIndex += 1)
@@ -128,16 +132,18 @@ export function generateSheets(context is Context, featureIdPrefix is Id, axisLa
 
         if (axisLabel == "X")
         {
-            sliceOrigin = vector([planeLocation, 0 * millimeter, 0 * millimeter]);
+            sliceOrigin = vector([planeLocation, rectangleCenterY, rectangleCenterZ]);
         }
         else
         {
-            sliceOrigin = vector([0 * millimeter, planeLocation, 0 * millimeter]);
+            sliceOrigin = vector([rectangleCenterY, planeLocation, rectangleCenterZ]);
         }
 
         var slicePlane = referenceFrameToWorldTransform * plane(sliceOrigin, planeNormal, planeUpVector);
         var sliceId = featureIdPrefix + axisLabel + planeIndex;
-        generateSliceSheet(context, sliceId, slicePlane, rectangleWidth, rectangleHeight, planeNormal, materialThickness);
+        // Transform the extrusion direction from local to world coordinates
+        var extrusionDirectionWorld = referenceFrameToWorldTransform.linear * planeNormal;
+        generateSliceSheet(context, sliceId, slicePlane, rectangleWidth, rectangleHeight, extrusionDirectionWorld, materialThickness);
         slicePlanes = append(slicePlanes, slicePlane);
         sliceIds = append(sliceIds, sliceId);
     }
