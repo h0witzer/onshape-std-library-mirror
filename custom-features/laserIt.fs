@@ -640,56 +640,54 @@ export function normalizeSliceGeometryForLasercutting(context is Context, idPref
         // is not centered on the slices and face normals point outward
         const thickenId = bodyId + "thicken";
         println("About to thicken projection faces in thickness2 direction");
-        opThicken(context, thickenId, {
-            "entities" : projectionFaces,
-            "thickness1" : 0 * meter,
-            "thickness2" : materialThickness,
-            "keepTools" : true
-        });
-        println("Thicken operation succeeded");
+        
+        try
+        {
+            opThicken(context, thickenId, {
+                "entities" : projectionFaces,
+                "thickness1" : 0 * meter,
+                "thickness2" : materialThickness,
+                "keepTools" : true
+            });
+            println("Thicken operation succeeded");
+        }
+        catch (error)
+        {
+            println("Thicken operation FAILED with error: " ~ error);
+            println("Skipping normalization for this body and continuing");
+            // Clean up helper geometry and continue to next body
+            opDeleteBodies(context, bodyId + "cleanup1", {
+                "entities" : qUnion([projectionTarget, extractedOutlineTools, qCreatedBy(outlineId, EntityType.BODY)])
+            });
+            bodyCounter += 1;
+            continue;
+        }
         
         const thickenedBodies = qCreatedBy(thickenId, EntityType.BODY);
         println("Thickened bodies count: " ~ size(evaluateQuery(context, thickenedBodies)));
         
-        // Create a copy of the current body to protect the original from failed boolean operations
-        // If the boolean fails, the copy will be destroyed but the original body remains intact
-        const bodyCopyId = bodyId + "bodyCopy";
-        opPattern(context, bodyCopyId, {
-            "entities" : body,
-            "transforms" : [identityTransform()],
-            "instanceNames" : ["1"]
-        });
-        const bodyCopy = qCreatedBy(bodyCopyId, EntityType.BODY);
-        
-        // Subtract the thickened projection from the copied body
-        // Target only the copy, preserving the original in case of failure
-        println("About to subtract thickened bodies from copied body");
+        // Subtract the thickened projection from the current body being normalized
+        // Target only the specific body being processed, not all slice bodies
+        println("About to subtract thickened bodies from current body");
         
         try
         {
             opBoolean(context, bodyId + "subtract", {
                 "tools" : thickenedBodies,
-                "targets" : bodyCopy,
+                "targets" : body,
                 "operationType" : BooleanOperationType.SUBTRACTION,
                 "keepTools" : false
             });
             println("Boolean subtraction succeeded");
-            
-            // Delete the original body since the boolean succeeded
-            opDeleteBodies(context, bodyId + "deleteOriginal", {
-                "entities" : body
-            });
             println("=== Normalization complete for this body ===");
         }
         catch (error)
         {
             println("Boolean subtraction FAILED with error: " ~ error);
             println("Skipping normalization for this body and continuing");
-            
-            // Clean up the thickened bodies and the copied body
-            // The original body remains intact
+            // Clean up the thickened bodies if boolean failed
             opDeleteBodies(context, bodyId + "cleanupFailedBoolean", {
-                "entities" : qUnion([thickenedBodies, bodyCopy])
+                "entities" : thickenedBodies
             });
         }
         
