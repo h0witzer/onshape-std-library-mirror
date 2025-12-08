@@ -503,6 +503,13 @@ export function normalizeSliceGeometryForLasercutting(context is Context, idPref
         opPlane(context, projectionPlaneId, { "plane" : targetPlane });
         const projectionTarget = qCreatedBy(projectionPlaneId, EntityType.FACE);
         
+        println("=== opCreateOutline Entry Diagnostics ===");
+        println("Body counter: " ~ bodyCounter);
+        println("Target plane origin: " ~ targetPlane.origin);
+        println("Target plane normal: " ~ targetPlane.normal);
+        println("Projection target query empty: " ~ isQueryEmpty(context, projectionTarget));
+        println("Projection target count: " ~ size(evaluateQuery(context, projectionTarget)));
+        
         // Extract surfaces from faces to normalize
         const extractedOutlineToolsId = bodyId + "extract";
         opExtractSurface(context, extractedOutlineToolsId, {
@@ -512,12 +519,34 @@ export function normalizeSliceGeometryForLasercutting(context is Context, idPref
         
         const extractedOutlineTools = qCreatedBy(extractedOutlineToolsId, EntityType.BODY);
         
+        println("Extracted outline tools query empty: " ~ isQueryEmpty(context, extractedOutlineTools));
+        println("Extracted outline tools count: " ~ size(evaluateQuery(context, extractedOutlineTools)));
+        
         // Project onto the construction plane
         const outlineId = bodyId + "outline";
-        opCreateOutline(context, outlineId, {
-            "tools" : extractedOutlineTools,
-            "target" : projectionTarget
-        });
+        println("About to call opCreateOutline with ID: " ~ outlineId);
+        
+        try
+        {
+            opCreateOutline(context, outlineId, {
+                "tools" : extractedOutlineTools,
+                "target" : projectionTarget
+            });
+            println("opCreateOutline succeeded");
+        }
+        catch (error)
+        {
+            println("opCreateOutline FAILED with error: " ~ error);
+            println("=== opCreateOutline Exit Diagnostics (FAILED) ===");
+            // Clean up and continue to next body
+            opDeleteBodies(context, bodyId + "cleanupFailed", {
+                "entities" : qUnion([projectionTarget, extractedOutlineTools])
+            });
+            bodyCounter += 1;
+            continue;
+        }
+        
+        println("=== opCreateOutline Exit Diagnostics (SUCCESS) ===");
         
         const projectionFaces = qCreatedBy(outlineId, EntityType.FACE);
         
