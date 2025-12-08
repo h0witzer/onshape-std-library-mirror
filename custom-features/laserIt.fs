@@ -180,6 +180,25 @@ export function trimSheetsToSolid(context is Context, featureIdPrefix is Id, xSl
                     "operationType" : BooleanOperationType.INTERSECTION,
                     "keepTools" : true
                 });
+        
+        // Check if the intersection removed all cap faces - if so, delete the body to skip slot generation
+        const intersectionBodies = qCreatedBy(xIntersectionId, EntityType.BODY);
+        if (!isQueryEmpty(context, intersectionBodies))
+        {
+            const intersectionBodyFaces = qOwnedByBody(intersectionBodies, EntityType.FACE);
+            const capFaces = qParallelPlanes(intersectionBodyFaces, evPlane(context, {
+                "face" : qNthElement(intersectionBodyFaces, 0)
+            }));
+            
+            if (isQueryEmpty(context, capFaces))
+            {
+                // No cap faces remain - delete this body and skip adding to the list
+                opDeleteBodies(context, xIntersectionId + "deleteNoCapBody", {
+                    "entities" : intersectionBodies
+                });
+                continue;
+            }
+        }
 
         xIntersectionIds = append(xIntersectionIds, xIntersectionId);
     }
@@ -193,6 +212,25 @@ export function trimSheetsToSolid(context is Context, featureIdPrefix is Id, xSl
                     "operationType" : BooleanOperationType.INTERSECTION,
                     "keepTools" : true
                 });
+        
+        // Check if the intersection removed all cap faces - if so, delete the body to skip slot generation
+        const intersectionBodies = qCreatedBy(yIntersectionId, EntityType.BODY);
+        if (!isQueryEmpty(context, intersectionBodies))
+        {
+            const intersectionBodyFaces = qOwnedByBody(intersectionBodies, EntityType.FACE);
+            const capFaces = qParallelPlanes(intersectionBodyFaces, evPlane(context, {
+                "face" : qNthElement(intersectionBodyFaces, 0)
+            }));
+            
+            if (isQueryEmpty(context, capFaces))
+            {
+                // No cap faces remain - delete this body and skip adding to the list
+                opDeleteBodies(context, yIntersectionId + "deleteNoCapBody", {
+                    "entities" : intersectionBodies
+                });
+                continue;
+            }
+        }
 
         yIntersectionIds = append(yIntersectionIds, yIntersectionId);
     }
