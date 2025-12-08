@@ -2,11 +2,9 @@
 // Inputs:
 //  - selectedBody : Body query to slice
 //  - planeSpacing : Distance between slicing planes along the X and Y axes of the reference frame
-//  - offset : Boolean to enable XY offsets
-//  - xOffset, yOffset : Offsets applied when offset is enabled
 //  - matThick : Material thickness that controls extrusion depth
 //  - defRefFrame : Boolean to select a mate connector as the slicing reference frame
-//  - referenceFrame : Mate connector query when defRefFrame is true
+//  - referenceFrame : Mate connector query when defRefFrame is true, defines the placement of the slicing grid
 FeatureScript 2815;
 import(path : "onshape/std/geometry.fs", version : "2815.0");
 import(path : "onshape/std/query.fs", version : "2815.0");
@@ -21,19 +19,6 @@ export const laserIt = defineFeature(function(context is Context, id is Id, defi
 
         annotation { "Name" : "Plane Spacing" }
         isLength(definition.planeSpacing, LENGTH_BOUNDS);
-
-        annotation { "Name" : "Offset" }
-        definition.offset is boolean;
-
-        if (definition.offset)
-        {
-            annotation { "Name" : "X Offset" }
-            isLength(definition.xOffset, LENGTH_BOUNDS);
-
-            annotation { "Name" : "Y Offset" }
-            isLength(definition.yOffset, LENGTH_BOUNDS);
-
-        }
 
         annotation { "Name" : "Material Thickness" }
         isLength(definition.matThick, LENGTH_BOUNDS);
@@ -53,8 +38,6 @@ export const laserIt = defineFeature(function(context is Context, id is Id, defi
     {
         // Establish the coordinate system used for slicing
         var referenceFrame = WORLD_COORD_SYSTEM;
-        var xOffsetDistance = 0 * millimeter;
-        var yOffsetDistance = 0 * millimeter;
 
         if (definition.defRefFrame == true)
         {
@@ -63,20 +46,13 @@ export const laserIt = defineFeature(function(context is Context, id is Id, defi
                     });
         }
 
-        if (definition.offset)
-        {
-            xOffsetDistance = definition.xOffset;
-            yOffsetDistance = definition.yOffset;
-        }
-
-        // Use the coordinate system if provided to define the bounding box (start and end of planes)
+        // Use the coordinate system to define the bounding box (start and end of planes).
+        // The reference frame origin is used as-is; the planes are positioned relative to the bounding box extents.
         var orientedBoundingBox = evBox3d(context, {
                 "topology" : definition.selectedBody,
                 "cSys" : referenceFrame,
                 "tight" : true
             });
-
-        referenceFrame.origin = toWorld(referenceFrame, box3dCenter(orientedBoundingBox));
 
         var referenceFrameToWorldTransform = toWorld(referenceFrame);
 
@@ -86,9 +62,9 @@ export const laserIt = defineFeature(function(context is Context, id is Id, defi
         // Build a stack of slicing planes perpendicular to X, then Y, that span the oriented bounding box of the target body.
         // Each loop: create a sketch-sized rectangle around the body, extrude it to the material thickness, and retain the raw
         // sheets for a later trimming pass against the selected part.
-        var xSliceResult = generateSheets(context, id, "X", numberOfXPlanes, orientedBoundingBox, xOffsetDistance, definition.planeSpacing, referenceFrameToWorldTransform, definition.matThick);
+        var xSliceResult = generateSheets(context, id, "X", numberOfXPlanes, orientedBoundingBox, definition.planeSpacing, referenceFrameToWorldTransform, definition.matThick);
 
-        var ySliceResult = generateSheets(context, id, "Y", numberOfYPlanes, orientedBoundingBox, yOffsetDistance, definition.planeSpacing, referenceFrameToWorldTransform, definition.matThick);
+        var ySliceResult = generateSheets(context, id, "Y", numberOfYPlanes, orientedBoundingBox, definition.planeSpacing, referenceFrameToWorldTransform, definition.matThick);
 
         // Intersect each sheet with the target solid to retain only in-bounds material before generating cross-slot geometry.
         var trimmedSheetsResult = trimSheetsToSolid(context, id, xSliceResult.sliceIds, ySliceResult.sliceIds, definition.selectedBody);
@@ -122,12 +98,11 @@ export const laserIt = defineFeature(function(context is Context, id is Id, defi
 //  - axisLabel : Either "X" or "Y" to select the normal and sketch dimensions for the slicing plane
 //  - numberOfPlanes : Loop bound describing how many slices exist along the specified axis
 //  - orientedBoundingBox : Tight bounding box for the selected body in the reference frame
-//  - offsetDistance : Optional offset distance used to shift the slice origins
 //  - planeSpacing : Distance between slices
 //  - referenceFrameToWorldTransform : Transform aligning the local slice planes with world coordinates
 //  - materialThickness : Extrusion depth for the raw sheet
 // Returns: map containing the ordered list of slice planes
-export function generateSheets(context is Context, featureIdPrefix is Id, axisLabel is string, numberOfPlanes is number, orientedBoundingBox is Box3d, offsetDistance is ValueWithUnits, planeSpacing is ValueWithUnits, referenceFrameToWorldTransform is Transform, materialThickness is ValueWithUnits)
+export function generateSheets(context is Context, featureIdPrefix is Id, axisLabel is string, numberOfPlanes is number, orientedBoundingBox is Box3d, planeSpacing is ValueWithUnits, referenceFrameToWorldTransform is Transform, materialThickness is ValueWithUnits)
 {
     var slicePlanes = [] as array;
     var sliceIds = [] as array;
@@ -135,7 +110,7 @@ export function generateSheets(context is Context, featureIdPrefix is Id, axisLa
     var planeUpVector = vector([0, 1, 0]);
     var rectangleWidth = orientedBoundingBox.maxCorner[1] - orientedBoundingBox.minCorner[1];
     var rectangleHeight = orientedBoundingBox.maxCorner[2] - orientedBoundingBox.minCorner[2];
-    var boundingSpan = orientedBoundingBox.maxCorner[0] - orientedBoundingBox.minCorner[0];
+    var boundingMin = orientedBoundingBox.minCorner[0];
 
     if (axisLabel == "Y")
     {
@@ -143,12 +118,12 @@ export function generateSheets(context is Context, featureIdPrefix is Id, axisLa
         planeUpVector = vector([0, 0, 1]);
         rectangleWidth = orientedBoundingBox.maxCorner[2] - orientedBoundingBox.minCorner[2];
         rectangleHeight = orientedBoundingBox.maxCorner[0] - orientedBoundingBox.minCorner[0];
-        boundingSpan = orientedBoundingBox.maxCorner[1] - orientedBoundingBox.minCorner[1];
+        boundingMin = orientedBoundingBox.minCorner[1];
     }
 
     for (var planeIndex = 0; planeIndex < numberOfPlanes; planeIndex += 1)
     {
-        var planeLocation = -(boundingSpan) / 2 + offsetDistance + planeIndex * planeSpacing;
+        var planeLocation = boundingMin + planeIndex * planeSpacing;
         var sliceOrigin = vector([0 * millimeter, 0 * millimeter, 0 * millimeter]);
 
         if (axisLabel == "X")
