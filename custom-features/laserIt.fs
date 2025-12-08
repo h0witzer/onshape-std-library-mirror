@@ -186,17 +186,36 @@ export function trimSheetsToSolid(context is Context, featureIdPrefix is Id, xSl
         if (!isQueryEmpty(context, intersectionBodies))
         {
             const intersectionBodyFaces = qOwnedByBody(intersectionBodies, EntityType.FACE);
-            const capFaces = qParallelPlanes(intersectionBodyFaces, evPlane(context, {
-                "face" : qNthElement(intersectionBodyFaces, 0)
-            }));
             
-            if (isQueryEmpty(context, capFaces))
+            // Find a planar face to use as reference for checking cap faces
+            var referencePlane = undefined;
+            for (var face in evaluateQuery(context, intersectionBodyFaces))
             {
-                // No cap faces remain - delete this body and skip adding to the list
-                opDeleteBodies(context, xIntersectionId + "deleteNoCapBody", {
-                    "entities" : intersectionBodies
-                });
-                continue;
+                try
+                {
+                    var surfaceDefinition = evSurfaceDefinition(context, { "face" : face });
+                    if (surfaceDefinition is Plane)
+                    {
+                        referencePlane = evPlane(context, { "face" : face });
+                        break;
+                    }
+                }
+                catch {}
+            }
+            
+            // If we found a planar face, check if there are parallel cap faces
+            if (referencePlane != undefined)
+            {
+                const capFaces = qParallelPlanes(intersectionBodyFaces, referencePlane);
+                
+                if (isQueryEmpty(context, capFaces))
+                {
+                    // No cap faces remain - delete this body and skip adding to the list
+                    opDeleteBodies(context, xIntersectionId + "deleteNoCapBody", {
+                        "entities" : intersectionBodies
+                    });
+                    continue;
+                }
             }
         }
 
@@ -218,17 +237,36 @@ export function trimSheetsToSolid(context is Context, featureIdPrefix is Id, xSl
         if (!isQueryEmpty(context, intersectionBodies))
         {
             const intersectionBodyFaces = qOwnedByBody(intersectionBodies, EntityType.FACE);
-            const capFaces = qParallelPlanes(intersectionBodyFaces, evPlane(context, {
-                "face" : qNthElement(intersectionBodyFaces, 0)
-            }));
             
-            if (isQueryEmpty(context, capFaces))
+            // Find a planar face to use as reference for checking cap faces
+            var referencePlane = undefined;
+            for (var face in evaluateQuery(context, intersectionBodyFaces))
             {
-                // No cap faces remain - delete this body and skip adding to the list
-                opDeleteBodies(context, yIntersectionId + "deleteNoCapBody", {
-                    "entities" : intersectionBodies
-                });
-                continue;
+                try
+                {
+                    var surfaceDefinition = evSurfaceDefinition(context, { "face" : face });
+                    if (surfaceDefinition is Plane)
+                    {
+                        referencePlane = evPlane(context, { "face" : face });
+                        break;
+                    }
+                }
+                catch {}
+            }
+            
+            // If we found a planar face, check if there are parallel cap faces
+            if (referencePlane != undefined)
+            {
+                const capFaces = qParallelPlanes(intersectionBodyFaces, referencePlane);
+                
+                if (isQueryEmpty(context, capFaces))
+                {
+                    // No cap faces remain - delete this body and skip adding to the list
+                    opDeleteBodies(context, yIntersectionId + "deleteNoCapBody", {
+                        "entities" : intersectionBodies
+                    });
+                    continue;
+                }
             }
         }
 
