@@ -479,56 +479,24 @@ export function normalizeSliceGeometryForLasercutting(context is Context, idPref
             "face" : largestPlanarFace
         });
         
-        // Identify faces that need normalization (non-planar or not parallel to target plane)
-        var facesToNormalize = [] as array;
+        // Identify "Good" faces (don't need normalization) using robust query-based approach
+        // - Top/Bottom caps (Parallel to the target plane itself)
+        const topBottomFaces = qParallelPlanes(bodyFaces, targetPlane);
+        // - Vertical cut walls (Parallel to the target plane's NORMAL vector)
+        const verticalWallFaces = qFacesParallelToDirection(bodyFaces, targetPlane.normal);
         
-        for (var face in faceArray)
-        {
-            // Skip the target face itself
-            if (face == largestPlanarFace)
-                continue;
-                
-            try
-            {
-                var surfaceDefinition = evSurfaceDefinition(context, {
-                    "face" : face
-                });
-                
-                // If not planar, needs normalization
-                if (!(surfaceDefinition is Plane))
-                {
-                    facesToNormalize = append(facesToNormalize, face);
-                }
-                else
-                {
-                    // If planar but not parallel to target plane, needs normalization
-                    var facePlane = evPlane(context, {
-                        "face" : face
-                    });
-                    
-                    // Check if parallel (dot product of normals should be close to 1 or -1)
-                    var dotProduct = abs(dot(facePlane.normal, targetPlane.normal));
-                    if (dotProduct < 0.9999)
-                    {
-                        facesToNormalize = append(facesToNormalize, face);
-                    }
-                }
-            }
-            catch
-            {
-                // Skip faces that can't be evaluated
-            }
-        }
+        // Combine them into a "skip list"
+        const validFaces = qUnion([topBottomFaces, verticalWallFaces]);
         
-        // If no faces need normalization, skip this body
-        if (size(facesToNormalize) == 0)
+        // Subtract valid faces from all faces to find the "Bad" (slanted/chamfered) ones
+        const nonNormalFaces = qSubtraction(bodyFaces, validFaces);
+        
+        // Check for null case (nothing to normalize)
+        if (isQueryEmpty(context, nonNormalFaces))
         {
             bodyCounter += 1;
             continue;
         }
-        
-        // Convert face array to query
-        const nonNormalFaces = qUnion(facesToNormalize);
         
         // Extract surfaces from faces to normalize
         const extractedOutlineToolsId = bodyId + "extract";
