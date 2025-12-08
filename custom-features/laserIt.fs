@@ -110,7 +110,6 @@ export function generateSheets(context is Context, featureIdPrefix is Id, axisLa
     var planeUpVector = vector([0, 1, 0]);
     var rectangleWidth = orientedBoundingBox.maxCorner[1] - orientedBoundingBox.minCorner[1];
     var rectangleHeight = orientedBoundingBox.maxCorner[2] - orientedBoundingBox.minCorner[2];
-    var boundingMin = orientedBoundingBox.minCorner[0];
     var rectangleCenterY = (orientedBoundingBox.maxCorner[1] + orientedBoundingBox.minCorner[1]) / 2;
     var rectangleCenterZ = (orientedBoundingBox.maxCorner[2] + orientedBoundingBox.minCorner[2]) / 2;
 
@@ -120,14 +119,15 @@ export function generateSheets(context is Context, featureIdPrefix is Id, axisLa
         planeUpVector = vector([0, 0, 1]);
         rectangleWidth = orientedBoundingBox.maxCorner[2] - orientedBoundingBox.minCorner[2];
         rectangleHeight = orientedBoundingBox.maxCorner[0] - orientedBoundingBox.minCorner[0];
-        boundingMin = orientedBoundingBox.minCorner[1];
         rectangleCenterY = (orientedBoundingBox.maxCorner[0] + orientedBoundingBox.minCorner[0]) / 2;
         rectangleCenterZ = (orientedBoundingBox.maxCorner[2] + orientedBoundingBox.minCorner[2]) / 2;
     }
 
     for (var planeIndex = 0; planeIndex < numberOfPlanes; planeIndex += 1)
     {
-        var planeLocation = boundingMin + planeIndex * planeSpacing;
+        // Position planes relative to the reference frame origin (0 in reference frame coordinates)
+        // Pattern outward in the positive direction with the specified spacing
+        var planeLocation = planeIndex * planeSpacing;
         var sliceOrigin = vector([0 * millimeter, 0 * millimeter, 0 * millimeter]);
 
         if (axisLabel == "X")
