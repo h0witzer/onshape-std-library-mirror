@@ -399,11 +399,11 @@ export function generateSliceSheet(context is Context, sliceId is Id, slicePlane
 
     skSolve(sliceSketch);
 
-    // Extrude a rectangular slice surrounding the object
+    // Extrude a rectangular slice surrounding the object symmetrically
     opExtrude(context, sliceId + "extrudeRectangle", {
                 "entities" : qSketchRegion(sliceId + "sketch", false),
                 "direction" : extrusionDirection,
-                "endBound" : BoundingType.BLIND,
+                "endBound" : BoundingType.SYMMETRIC,
                 "endDepth" : materialThickness
             });
 
@@ -565,13 +565,13 @@ export function normalizeSliceGeometryForLasercutting(context is Context, idPref
         }
         
         // Thicken the projected outlines
-        // Thicken in both directions to ensure overlap with body geometry regardless of which side it's on
+        // Thicken symmetrically (half thickness in each direction) to center the thickened geometry
         const thickenId = bodyId + "thicken";
-        println("About to thicken projection faces in both directions");
+        println("About to thicken projection faces symmetrically");
         opThicken(context, thickenId, {
             "entities" : projectionFaces,
-            "thickness1" : materialThickness,
-            "thickness2" : materialThickness,
+            "thickness1" : materialThickness / 2,
+            "thickness2" : materialThickness / 2,
             "keepTools" : true
         });
         println("Thicken operation succeeded");
