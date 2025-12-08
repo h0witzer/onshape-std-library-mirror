@@ -400,11 +400,14 @@ export function generateSliceSheet(context is Context, sliceId is Id, slicePlane
     skSolve(sliceSketch);
 
     // Extrude a rectangular slice surrounding the object symmetrically
+    // Use startBound and endBound with equal depths to achieve symmetric extrusion
     opExtrude(context, sliceId + "extrudeRectangle", {
                 "entities" : qSketchRegion(sliceId + "sketch", false),
                 "direction" : extrusionDirection,
-                "endBound" : BoundingType.SYMMETRIC,
-                "endDepth" : materialThickness
+                "endBound" : BoundingType.BLIND,
+                "endDepth" : materialThickness / 2,
+                "startBound" : BoundingType.BLIND,
+                "startDepth" : materialThickness / 2
             });
 
     opDeleteBodies(context, sliceId + "deleteSketch", {
