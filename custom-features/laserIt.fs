@@ -651,28 +651,45 @@ export function normalizeSliceGeometryForLasercutting(context is Context, idPref
         const thickenedBodies = qCreatedBy(thickenId, EntityType.BODY);
         println("Thickened bodies count: " ~ size(evaluateQuery(context, thickenedBodies)));
         
-        // Subtract the thickened projection from the current body being normalized
-        // Target only the specific body being processed, not all slice bodies
-        println("About to subtract thickened bodies from current body");
+        // Create a copy of the current body to protect the original from failed boolean operations
+        // If the boolean fails, the copy will be destroyed but the original body remains intact
+        const bodyCopyId = bodyId + "bodyCopy";
+        opPattern(context, bodyCopyId, {
+            "entities" : body,
+            "transforms" : [identityTransform()],
+            "instanceNames" : ["1"]
+        });
+        const bodyCopy = qCreatedBy(bodyCopyId, EntityType.BODY);
+        
+        // Subtract the thickened projection from the copied body
+        // Target only the copy, preserving the original in case of failure
+        println("About to subtract thickened bodies from copied body");
         
         try
         {
             opBoolean(context, bodyId + "subtract", {
                 "tools" : thickenedBodies,
-                "targets" : body,
+                "targets" : bodyCopy,
                 "operationType" : BooleanOperationType.SUBTRACTION,
                 "keepTools" : false
             });
             println("Boolean subtraction succeeded");
+            
+            // Delete the original body since the boolean succeeded
+            opDeleteBodies(context, bodyId + "deleteOriginal", {
+                "entities" : body
+            });
             println("=== Normalization complete for this body ===");
         }
         catch (error)
         {
             println("Boolean subtraction FAILED with error: " ~ error);
             println("Skipping normalization for this body and continuing");
-            // Clean up the thickened bodies if boolean failed
+            
+            // Clean up the thickened bodies and the copied body
+            // The original body remains intact
             opDeleteBodies(context, bodyId + "cleanupFailedBoolean", {
-                "entities" : thickenedBodies
+                "entities" : qUnion([thickenedBodies, bodyCopy])
             });
         }
         
