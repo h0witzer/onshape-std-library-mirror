@@ -77,15 +77,15 @@ export const laserIt = defineFeature(function(context is Context, id is Id, defi
         // This subtractive operation guarantees the slices lie inside of the original target volume, where additive methods wouldn't.
         for (var xPlaneIndex = 0; xPlaneIndex < size(xSliceResult.slicePlanes); xPlaneIndex += 1)
         {
-            normalizeSliceGeometryForLasercutting(context, id + "XExtrude" + xPlaneIndex + "extrudeIntersection", xSliceResult.slicePlanes[xPlaneIndex], trimmedSheetsResult.xIntersectionIds[xPlaneIndex], definition.matThick, xSliceResult.slicePlanes[xPlaneIndex].normal);
-
+            var xSliceBodies = qCreatedBy(trimmedSheetsResult.xIntersectionIds[xPlaneIndex], EntityType.BODY);
+            normalizeSliceGeometryForLasercutting(context, id + "XNormalize" + xPlaneIndex, xSliceBodies, definition.matThick);
         }
 
         // Repeat the normalizing pass for faces lying on Y-oriented planes to generate the second directional rib set.
         for (var yPlaneIndex = 0; yPlaneIndex < size(ySliceResult.slicePlanes); yPlaneIndex += 1)
         {
-            normalizeSliceGeometryForLasercutting(context, id + "YExtrude" + yPlaneIndex + "extrudeIntersection", ySliceResult.slicePlanes[yPlaneIndex], trimmedSheetsResult.yIntersectionIds[yPlaneIndex], definition.matThick, ySliceResult.slicePlanes[yPlaneIndex].normal);
-
+            var ySliceBodies = qCreatedBy(trimmedSheetsResult.yIntersectionIds[yPlaneIndex], EntityType.BODY);
+            normalizeSliceGeometryForLasercutting(context, id + "YNormalize" + yPlaneIndex, ySliceBodies, definition.matThick);
         }
 
     });
@@ -412,73 +412,166 @@ export function generateSliceSheet(context is Context, sliceId is Id, slicePlane
             });
 }
 
-// Project any faces on the trimmed slice bodies that are not normal to the slicing plane and remove their projections to clean
-// up irregular geometry.
+// Normalize slice geometry for laser cutting by projecting non-planar faces onto the largest planar face and subtracting.
+// This function processes each body independently, finding the largest flat planar face on the body to use as the
+// projection target, then projects any slanted/chamfered faces onto it and subtracts the thickened projection.
+// This ensures all output geometry can be laser cut flat without overhangs.
 // Inputs:
-//  - extrudeIdPrefix : Id prefix used for created helper operations
-//  - slicingPlane : Plane used to evaluate face normals and target for projection
-//  - intersectionBooleanId : Id of the prior trimmed intersection operation for this slice
+//  - idPrefix : Id prefix used for created helper operations
+//  - sliceBodies : Query for bodies to normalize
 //  - materialThickness : Thickness used when removing projected material
-//  - ribDirection : Direction vector for ribs (retained for compatibility; not used by this cleaner)
-export function normalizeSliceGeometryForLasercutting(context is Context, extrudeIdPrefix is Id, slicingPlane is Plane, intersectionBooleanId is Id, materialThickness is ValueWithUnits, ribDirection is Vector)
+// Returns: none
+export function normalizeSliceGeometryForLasercutting(context is Context, idPrefix is Id, sliceBodies is Query, materialThickness is ValueWithUnits)
 {
-    // 1. Define queries
-    const trimmedSliceBodies = qCreatedBy(intersectionBooleanId, EntityType.BODY);
-    const sliceFaces = qOwnedByBody(trimmedSliceBodies, EntityType.FACE);
-
-    // 2. Identify "Good" faces (don't need normalization)
-    // - Top/Bottom caps (Parallel to the slice plane itself)
-    const topBottomFaces = qParallelPlanes(sliceFaces, slicingPlane);
-    // - Vertical cut walls (Parallel to the slice plane's NORMAL vector)
-    const verticalWallFaces = qFacesParallelToDirection(sliceFaces, slicingPlane.normal);
-
-    // Combine them into a "skip list"
-    const validFaces = qUnion([topBottomFaces, verticalWallFaces]);
-
-    // 3. Subtract valid faces from all faces to find the "Bad" (slanted/chamfered) ones
-    const nonNormalFaces = qSubtraction(sliceFaces, validFaces);
-
-    // 4. Check for null case (nothing to normalize)
-    if (isQueryEmpty(context, nonNormalFaces))
+    // Process each body independently
+    var bodyArray = evaluateQuery(context, sliceBodies);
+    var bodyCounter = 0;
+    
+    for (var body in bodyArray)
     {
-        return;
+        const bodyId = idPrefix + "Body" + bodyCounter;
+        
+        // Find all faces on this body
+        const bodyFaces = qOwnedByBody(body, EntityType.FACE);
+        
+        // Find the largest planar face to use as projection target
+        var largestPlanarFace = undefined;
+        var largestArea = 0 * meter^2;
+        
+        var faceArray = evaluateQuery(context, bodyFaces);
+        for (var face in faceArray)
+        {
+            try
+            {
+                // Check if face is planar
+                var surfaceDefinition = evSurfaceDefinition(context, {
+                    "face" : face
+                });
+                
+                if (surfaceDefinition is Plane)
+                {
+                    var faceArea = evArea(context, {
+                        "entities" : face
+                    });
+                    
+                    if (faceArea > largestArea)
+                    {
+                        largestArea = faceArea;
+                        largestPlanarFace = face;
+                    }
+                }
+            }
+        }
+        
+        // If no planar face found, skip this body
+        if (largestPlanarFace == undefined)
+        {
+            bodyCounter += 1;
+            continue;
+        }
+        
+        // Get the plane definition from the largest planar face
+        var targetPlane = evPlane(context, {
+            "face" : largestPlanarFace
+        });
+        
+        // Identify faces that need normalization (non-planar or not parallel to target plane)
+        var facesToNormalize = [] as array;
+        
+        for (var face in faceArray)
+        {
+            // Skip the target face itself
+            if (face == largestPlanarFace)
+                continue;
+                
+            try
+            {
+                var surfaceDefinition = evSurfaceDefinition(context, {
+                    "face" : face
+                });
+                
+                // If not planar, needs normalization
+                if (!(surfaceDefinition is Plane))
+                {
+                    facesToNormalize = append(facesToNormalize, face);
+                }
+                else
+                {
+                    // If planar but not parallel to target plane, needs normalization
+                    var facePlane = evPlane(context, {
+                        "face" : face
+                    });
+                    
+                    // Check if parallel (dot product of normals should be close to 1 or -1)
+                    var dotProduct = abs(dot(facePlane.normal, targetPlane.normal));
+                    if (dotProduct < 0.9999)
+                    {
+                        facesToNormalize = append(facesToNormalize, face);
+                    }
+                }
+            }
+        }
+        
+        // If no faces need normalization, skip this body
+        if (size(facesToNormalize) == 0)
+        {
+            bodyCounter += 1;
+            continue;
+        }
+        
+        // Convert face array to query
+        const nonNormalFaces = qUnion(facesToNormalize);
+        
+        // Extract surfaces from faces to normalize
+        const extractedOutlineToolsId = bodyId + "extract";
+        opExtractSurface(context, extractedOutlineToolsId, {
+            "faces" : nonNormalFaces,
+            "offset" : 0 * meter
+        });
+        
+        const extractedOutlineTools = qCreatedBy(extractedOutlineToolsId, EntityType.BODY);
+        
+        // Project onto the largest planar face
+        const outlineId = bodyId + "outline";
+        opCreateOutline(context, outlineId, {
+            "tools" : extractedOutlineTools,
+            "target" : largestPlanarFace
+        });
+        
+        const projectionFaces = qCreatedBy(outlineId, EntityType.FACE);
+        
+        // Check if any projection was created
+        if (isQueryEmpty(context, projectionFaces))
+        {
+            opDeleteBodies(context, bodyId + "cleanup1", {
+                "entities" : extractedOutlineTools
+            });
+            bodyCounter += 1;
+            continue;
+        }
+        
+        // Thicken the projected outlines
+        const thickenId = bodyId + "thicken";
+        opThicken(context, thickenId, {
+            "entities" : projectionFaces,
+            "thickness1" : materialThickness,
+            "thickness2" : 0 * meter,
+            "keepTools" : true
+        });
+        
+        // Subtract the thickened projection from the body
+        opBoolean(context, bodyId + "subtract", {
+            "tools" : qCreatedBy(thickenId, EntityType.BODY),
+            "targets" : body,
+            "operationType" : BooleanOperationType.SUBTRACTION,
+            "keepTools" : false
+        });
+        
+        // Clean up helper geometry
+        opDeleteBodies(context, bodyId + "cleanup2", {
+            "entities" : qUnion([extractedOutlineTools, qCreatedBy(outlineId, EntityType.BODY)])
+        });
+        
+        bodyCounter += 1;
     }
-
-    // 5. Proceed with Normalization
-    const projectionPlaneId = extrudeIdPrefix + "projectionPlane";
-    opPlane(context, projectionPlaneId, { "plane" : slicingPlane });
-    const projectionTarget = qCreatedBy(projectionPlaneId, EntityType.FACE);
-
-    const extractedOutlineToolsId = extrudeIdPrefix + "projectionExtract";
-    opExtractSurface(context, extractedOutlineToolsId, {
-                "faces" : nonNormalFaces,
-                "offset" : 0 * meter
-            });
-
-    const extractedOutlineTools = qCreatedBy(extractedOutlineToolsId, EntityType.BODY);
-    const outlineId = extrudeIdPrefix + "outline";
-    opCreateOutline(context, outlineId, {
-                "tools" : extractedOutlineTools,
-                "target" : projectionTarget
-            });
-
-    const projectionFaces = qCreatedBy(outlineId, EntityType.FACE);
-    const thickenId = extrudeIdPrefix + "projectionThicken";
-    opThicken(context, thickenId, {
-                "entities" : projectionFaces,
-                "thickness1" : materialThickness,
-                "thickness2" : 0 * meter,
-                "keepTools" : true
-            });
-
-    opBoolean(context, extrudeIdPrefix + "projectionCleanup", {
-                "tools" : qCreatedBy(thickenId, EntityType.BODY),
-                "targets" : trimmedSliceBodies,
-                "operationType" : BooleanOperationType.SUBTRACTION,
-                "keepTools" : false
-            });
-
-    opDeleteBodies(context, extrudeIdPrefix + "projectionHelpersCleanup", {
-                "entities" : qUnion([projectionTarget, extractedOutlineTools, qCreatedBy(outlineId, EntityType.BODY)])
-            });
 }
