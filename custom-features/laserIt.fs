@@ -56,15 +56,13 @@ export const laserIt = defineFeature(function(context is Context, id is Id, defi
 
         var referenceFrameToWorldTransform = toWorld(referenceFrame);
 
-        var numberOfXPlanes = (orientedBoundingBox.maxCorner[0] - orientedBoundingBox.minCorner[0]) / definition.planeSpacing;
-        var numberOfYPlanes = (orientedBoundingBox.maxCorner[1] - orientedBoundingBox.minCorner[1]) / definition.planeSpacing;
-
         // Build a stack of slicing planes perpendicular to X, then Y, that span the oriented bounding box of the target body.
+        // The function calculates which planes are needed based on the bounding box and spacing.
         // Each loop: create a sketch-sized rectangle around the body, extrude it to the material thickness, and retain the raw
         // sheets for a later trimming pass against the selected part.
-        var xSliceResult = generateSheets(context, id, "X", numberOfXPlanes, orientedBoundingBox, definition.planeSpacing, referenceFrameToWorldTransform, definition.matThick);
+        var xSliceResult = generateSheets(context, id, "X", orientedBoundingBox, definition.planeSpacing, referenceFrameToWorldTransform, definition.matThick);
 
-        var ySliceResult = generateSheets(context, id, "Y", numberOfYPlanes, orientedBoundingBox, definition.planeSpacing, referenceFrameToWorldTransform, definition.matThick);
+        var ySliceResult = generateSheets(context, id, "Y", orientedBoundingBox, definition.planeSpacing, referenceFrameToWorldTransform, definition.matThick);
 
         // Intersect each sheet with the target solid to retain only in-bounds material before generating cross-slot geometry.
         var trimmedSheetsResult = trimSheetsToSolid(context, id, xSliceResult.sliceIds, ySliceResult.sliceIds, definition.selectedBody);
@@ -96,13 +94,12 @@ export const laserIt = defineFeature(function(context is Context, id is Id, defi
 // Inputs:
 //  - featureIdPrefix : Base id used when naming all geometry created in this helper
 //  - axisLabel : Either "X" or "Y" to select the normal and sketch dimensions for the slicing plane
-//  - numberOfPlanes : Loop bound describing how many slices exist along the specified axis
 //  - orientedBoundingBox : Tight bounding box for the selected body in the reference frame
 //  - planeSpacing : Distance between slices
 //  - referenceFrameToWorldTransform : Transform aligning the local slice planes with world coordinates
 //  - materialThickness : Extrusion depth for the raw sheet
 // Returns: map containing the ordered list of slice planes
-export function generateSheets(context is Context, featureIdPrefix is Id, axisLabel is string, numberOfPlanes is number, orientedBoundingBox is Box3d, planeSpacing is ValueWithUnits, referenceFrameToWorldTransform is Transform, materialThickness is ValueWithUnits)
+export function generateSheets(context is Context, featureIdPrefix is Id, axisLabel is string, orientedBoundingBox is Box3d, planeSpacing is ValueWithUnits, referenceFrameToWorldTransform is Transform, materialThickness is ValueWithUnits)
 {
     var slicePlanes = [] as array;
     var sliceIds = [] as array;
