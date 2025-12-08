@@ -565,12 +565,13 @@ export function normalizeSliceGeometryForLasercutting(context is Context, idPref
         }
         
         // Thicken the projected outlines
+        // Thicken in both directions to ensure overlap with body geometry regardless of which side it's on
         const thickenId = bodyId + "thicken";
-        println("About to thicken projection faces");
+        println("About to thicken projection faces in both directions");
         opThicken(context, thickenId, {
             "entities" : projectionFaces,
             "thickness1" : materialThickness,
-            "thickness2" : 0 * meter,
+            "thickness2" : materialThickness,
             "keepTools" : true
         });
         println("Thicken operation succeeded");
