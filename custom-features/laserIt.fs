@@ -98,16 +98,16 @@ export const laserIt = defineFeature(function(context is Context, id is Id, defi
         // cell into two halves so the original X and Y slice sets can be trimmed against each other.
         var intersectionResult = generateCrossSlotGeometryForSlices(context, id, trimmedSheetsResult.xIntersectionIds, trimmedSheetsResult.yIntersectionIds, referenceFrame);
 
-        // After trimming the intersecting grid, thicken every face that lies on an X-oriented plane to create individual
-        // ribs aligned with the X direction.
+        // After trimming the intersecting grid, find all non-normal cut faces on a given slice and project their geometry to
+        // the surface of the slice. Thicken the flattened projections and remove the results from the slice.
+        // This subtractive operation guarantees the slices lie inside of the original target volume, where additive methods wouldn't.
         for (var xPlaneIndex = 0; xPlaneIndex < size(xSliceResult.slicePlanes); xPlaneIndex += 1)
         {
             normalizeSliceGeometryForLasercutting(context, id + "XExtrude" + xPlaneIndex + "extrudeIntersection", xSliceResult.slicePlanes[xPlaneIndex], trimmedSheetsResult.xIntersectionIds[xPlaneIndex], definition.matThick, xSliceResult.slicePlanes[xPlaneIndex].normal);
 
         }
 
-
-        // Repeat the thickening pass for faces lying on Y-oriented planes to generate the orthogonal rib set.
+        // Repeat the normalizing pass for faces lying on Y-oriented planes to generate the second directional rib set.
         for (var yPlaneIndex = 0; yPlaneIndex < size(ySliceResult.slicePlanes); yPlaneIndex += 1)
         {
             normalizeSliceGeometryForLasercutting(context, id + "YExtrude" + yPlaneIndex + "extrudeIntersection", ySliceResult.slicePlanes[yPlaneIndex], trimmedSheetsResult.yIntersectionIds[yPlaneIndex], definition.matThick, ySliceResult.slicePlanes[yPlaneIndex].normal);
@@ -225,6 +225,8 @@ export function trimSheetsToSolid(context is Context, featureIdPrefix is Id, xSl
 
 // Copy all trimmed slices, then perform a single subtract-complement boolean using the copied X slices as tools and the copied Y slices as targets.
 // This trims the Y slice set against all X slices in one operation to reduce the number of booleans required for slot generation.
+// Then split the resultant slot intersection cells in half by a length averaging heuristic to determine placement and assign
+// each split cell half to a slice set for boolean subtraction. Finally remove the slot geometry from the slices in one subtraction operation per slice set.
 // Inputs:
 //  - featureIdPrefix : Base id used to regenerate the X/Y boolean identifiers for each intersection cell
 //  - xIntersectionIds, yIntersectionIds : Ordered identifiers for the trimmed X and Y slice bodies
@@ -358,6 +360,7 @@ export function generateCrossSlotGeometryForSlices(context is Context, featureId
                     "operationType" : BooleanOperationType.SUBTRACTION
                 });
     }
+    // const xSlotFaces = qCreatedBy(featureIdPrefix + "booleanXSlots", EntityType.FACE); // Potential future clearance support
 
     if (size(splitToolsForY) > 0)
     {
@@ -367,6 +370,7 @@ export function generateCrossSlotGeometryForSlices(context is Context, featureId
                     "operationType" : BooleanOperationType.SUBTRACTION
                 });
     }
+    // const ySlotFaces = qCreatedBy(featureIdPrefix + "booleanYSlots", EntityType.FACE); // Potential future clearance support
 
     const splitPlanes = qUnion(mapArray(splitPlaneIds, function(splitPlaneId)
             {
