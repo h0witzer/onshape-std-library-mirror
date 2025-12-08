@@ -579,12 +579,11 @@ export function normalizeSliceGeometryForLasercutting(context is Context, idPref
         println("Thickened bodies count: " ~ size(evaluateQuery(context, thickenedBodies)));
         
         // Subtract the thickened projection from the body
-        // Use qNthElement to get the specific body from the original slice bodies query
-        const targetBody = qNthElement(sliceBodies, bodyCounter);
-        println("About to subtract thickened bodies from body at index: " ~ bodyCounter);
+        // Use the original slice bodies query - operations modify bodies in place
+        println("About to subtract thickened bodies from slice bodies");
         opBoolean(context, bodyId + "subtract", {
             "tools" : thickenedBodies,
-            "targets" : targetBody,
+            "targets" : sliceBodies,
             "operationType" : BooleanOperationType.SUBTRACTION,
             "keepTools" : false
         });
