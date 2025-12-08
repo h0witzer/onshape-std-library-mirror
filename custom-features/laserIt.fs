@@ -181,21 +181,26 @@ export function trimSheetsToSolid(context is Context, featureIdPrefix is Id, xSl
         var xSliceId = xSliceIds[xPlaneIndex];
         var xSlicePlane = xSlicePlanes[xPlaneIndex];
         var xIntersectionId = featureIdPrefix + "XIntersection" + xPlaneIndex;
+        
+        // Start tracking the cap faces before the intersection operation
+        const originalSheetBody = qCreatedBy(xSliceId + "extrudeRectangle", EntityType.BODY);
+        const originalSheetFaces = qOwnedByBody(originalSheetBody, EntityType.FACE);
+        const originalCapFaces = qParallelPlanes(originalSheetFaces, xSlicePlane);
+        const trackingCapFaces = startTracking(context, originalCapFaces);
+        
         opBoolean(context, xIntersectionId, {
-                    "tools" : qUnion([qCreatedBy(xSliceId + "extrudeRectangle", EntityType.BODY), targetBody]),
+                    "tools" : qUnion([originalSheetBody, targetBody]),
                     "operationType" : BooleanOperationType.INTERSECTION,
                     "keepTools" : true
                 });
         
-        // Check if the intersection removed all cap faces - if so, delete the body to skip slot generation
-        // Cap faces are those parallel to the original slicing plane
+        // Check if any of the tracked cap faces still exist after intersection
         const intersectionBodies = qCreatedBy(xIntersectionId, EntityType.BODY);
         if (!isQueryEmpty(context, intersectionBodies))
         {
-            const intersectionBodyFaces = qOwnedByBody(intersectionBodies, EntityType.FACE);
-            const remainingCapFaces = qParallelPlanes(intersectionBodyFaces, xSlicePlane);
+            const remainingCapFaces = evaluateQuery(context, trackingCapFaces);
             
-            if (isQueryEmpty(context, remainingCapFaces))
+            if (size(remainingCapFaces) == 0)
             {
                 // No cap faces remain - delete this body and skip adding to the list
                 opDeleteBodies(context, xIntersectionId + "deleteNoCapBody", {
@@ -213,21 +218,26 @@ export function trimSheetsToSolid(context is Context, featureIdPrefix is Id, xSl
         var ySliceId = ySliceIds[yPlaneIndex];
         var ySlicePlane = ySlicePlanes[yPlaneIndex];
         var yIntersectionId = featureIdPrefix + "YIntersection" + yPlaneIndex;
+        
+        // Start tracking the cap faces before the intersection operation
+        const originalSheetBody = qCreatedBy(ySliceId + "extrudeRectangle", EntityType.BODY);
+        const originalSheetFaces = qOwnedByBody(originalSheetBody, EntityType.FACE);
+        const originalCapFaces = qParallelPlanes(originalSheetFaces, ySlicePlane);
+        const trackingCapFaces = startTracking(context, originalCapFaces);
+        
         opBoolean(context, yIntersectionId, {
-                    "tools" : qUnion([qCreatedBy(ySliceId + "extrudeRectangle", EntityType.BODY), targetBody]),
+                    "tools" : qUnion([originalSheetBody, targetBody]),
                     "operationType" : BooleanOperationType.INTERSECTION,
                     "keepTools" : true
                 });
         
-        // Check if the intersection removed all cap faces - if so, delete the body to skip slot generation
-        // Cap faces are those parallel to the original slicing plane
+        // Check if any of the tracked cap faces still exist after intersection
         const intersectionBodies = qCreatedBy(yIntersectionId, EntityType.BODY);
         if (!isQueryEmpty(context, intersectionBodies))
         {
-            const intersectionBodyFaces = qOwnedByBody(intersectionBodies, EntityType.FACE);
-            const remainingCapFaces = qParallelPlanes(intersectionBodyFaces, ySlicePlane);
+            const remainingCapFaces = evaluateQuery(context, trackingCapFaces);
             
-            if (isQueryEmpty(context, remainingCapFaces))
+            if (size(remainingCapFaces) == 0)
             {
                 // No cap faces remain - delete this body and skip adding to the list
                 opDeleteBodies(context, yIntersectionId + "deleteNoCapBody", {
