@@ -65,7 +65,7 @@ export const laserIt = defineFeature(function(context is Context, id is Id, defi
         var ySliceResult = generateSheets(context, id, "Y", orientedBoundingBox, definition.planeSpacing, referenceFrameToWorldTransform, definition.matThick);
 
         // Intersect each sheet with the target solid to retain only in-bounds material before generating cross-slot geometry.
-        var trimmedSheetsResult = trimSheetsToSolid(context, id, xSliceResult.sliceIds, ySliceResult.sliceIds, definition.selectedBody);
+        var trimmedSheetsResult = trimSheetsToSolid(context, id, xSliceResult, ySliceResult, definition.selectedBody);
 
         // The XY nested loop takes every X slice and intersects it with every Y slice to form individual grid cells.
         // For each cell, it resolves all intersecting bodies, averages aligned edges to infer a mid-surface, and splits the
@@ -163,17 +163,23 @@ export function generateSheets(context is Context, featureIdPrefix is Id, axisLa
 // Intersect every raw sheet with the target body to keep only the in-bounds material for follow-on trimming.
 // Inputs:
 //  - featureIdPrefix : Base id used to regenerate the X/Y identifiers for each slice
-//  - xSliceIds, ySliceIds : Ordered identifiers for X- and Y-oriented slice bodies
+//  - xSliceResult, ySliceResult : Maps containing sliceIds and slicePlanes arrays for X- and Y-oriented slices
 //  - targetBody : Body query representing the part being sliced
 // Returns: map containing the intersection ids
-export function trimSheetsToSolid(context is Context, featureIdPrefix is Id, xSliceIds is array, ySliceIds is array, targetBody is Query)
+export function trimSheetsToSolid(context is Context, featureIdPrefix is Id, xSliceResult is map, ySliceResult is map, targetBody is Query)
 {
     var xIntersectionIds = [] as array;
     var yIntersectionIds = [] as array;
+    
+    const xSliceIds = xSliceResult.sliceIds;
+    const xSlicePlanes = xSliceResult.slicePlanes;
+    const ySliceIds = ySliceResult.sliceIds;
+    const ySlicePlanes = ySliceResult.slicePlanes;
 
     for (var xPlaneIndex = 0; xPlaneIndex < size(xSliceIds); xPlaneIndex += 1)
     {
         var xSliceId = xSliceIds[xPlaneIndex];
+        var xSlicePlane = xSlicePlanes[xPlaneIndex];
         var xIntersectionId = featureIdPrefix + "XIntersection" + xPlaneIndex;
         opBoolean(context, xIntersectionId, {
                     "tools" : qUnion([qCreatedBy(xSliceId + "extrudeRectangle", EntityType.BODY), targetBody]),
@@ -182,40 +188,20 @@ export function trimSheetsToSolid(context is Context, featureIdPrefix is Id, xSl
                 });
         
         // Check if the intersection removed all cap faces - if so, delete the body to skip slot generation
+        // Cap faces are those parallel to the original slicing plane
         const intersectionBodies = qCreatedBy(xIntersectionId, EntityType.BODY);
         if (!isQueryEmpty(context, intersectionBodies))
         {
             const intersectionBodyFaces = qOwnedByBody(intersectionBodies, EntityType.FACE);
+            const remainingCapFaces = qParallelPlanes(intersectionBodyFaces, xSlicePlane);
             
-            // Find a planar face to use as reference for checking cap faces
-            var referencePlane = undefined;
-            for (var face in evaluateQuery(context, intersectionBodyFaces))
+            if (isQueryEmpty(context, remainingCapFaces))
             {
-                try
-                {
-                    var surfaceDefinition = evSurfaceDefinition(context, { "face" : face });
-                    if (surfaceDefinition is Plane)
-                    {
-                        referencePlane = evPlane(context, { "face" : face });
-                        break;
-                    }
-                }
-                catch {}
-            }
-            
-            // If we found a planar face, check if there are parallel cap faces
-            if (referencePlane != undefined)
-            {
-                const capFaces = qParallelPlanes(intersectionBodyFaces, referencePlane);
-                
-                if (isQueryEmpty(context, capFaces))
-                {
-                    // No cap faces remain - delete this body and skip adding to the list
-                    opDeleteBodies(context, xIntersectionId + "deleteNoCapBody", {
-                        "entities" : intersectionBodies
-                    });
-                    continue;
-                }
+                // No cap faces remain - delete this body and skip adding to the list
+                opDeleteBodies(context, xIntersectionId + "deleteNoCapBody", {
+                    "entities" : intersectionBodies
+                });
+                continue;
             }
         }
 
@@ -225,6 +211,7 @@ export function trimSheetsToSolid(context is Context, featureIdPrefix is Id, xSl
     for (var yPlaneIndex = 0; yPlaneIndex < size(ySliceIds); yPlaneIndex += 1)
     {
         var ySliceId = ySliceIds[yPlaneIndex];
+        var ySlicePlane = ySlicePlanes[yPlaneIndex];
         var yIntersectionId = featureIdPrefix + "YIntersection" + yPlaneIndex;
         opBoolean(context, yIntersectionId, {
                     "tools" : qUnion([qCreatedBy(ySliceId + "extrudeRectangle", EntityType.BODY), targetBody]),
@@ -233,40 +220,20 @@ export function trimSheetsToSolid(context is Context, featureIdPrefix is Id, xSl
                 });
         
         // Check if the intersection removed all cap faces - if so, delete the body to skip slot generation
+        // Cap faces are those parallel to the original slicing plane
         const intersectionBodies = qCreatedBy(yIntersectionId, EntityType.BODY);
         if (!isQueryEmpty(context, intersectionBodies))
         {
             const intersectionBodyFaces = qOwnedByBody(intersectionBodies, EntityType.FACE);
+            const remainingCapFaces = qParallelPlanes(intersectionBodyFaces, ySlicePlane);
             
-            // Find a planar face to use as reference for checking cap faces
-            var referencePlane = undefined;
-            for (var face in evaluateQuery(context, intersectionBodyFaces))
+            if (isQueryEmpty(context, remainingCapFaces))
             {
-                try
-                {
-                    var surfaceDefinition = evSurfaceDefinition(context, { "face" : face });
-                    if (surfaceDefinition is Plane)
-                    {
-                        referencePlane = evPlane(context, { "face" : face });
-                        break;
-                    }
-                }
-                catch {}
-            }
-            
-            // If we found a planar face, check if there are parallel cap faces
-            if (referencePlane != undefined)
-            {
-                const capFaces = qParallelPlanes(intersectionBodyFaces, referencePlane);
-                
-                if (isQueryEmpty(context, capFaces))
-                {
-                    // No cap faces remain - delete this body and skip adding to the list
-                    opDeleteBodies(context, yIntersectionId + "deleteNoCapBody", {
-                        "entities" : intersectionBodies
-                    });
-                    continue;
-                }
+                // No cap faces remain - delete this body and skip adding to the list
+                opDeleteBodies(context, yIntersectionId + "deleteNoCapBody", {
+                    "entities" : intersectionBodies
+                });
+                continue;
             }
         }
 
@@ -475,6 +442,8 @@ export function generateSliceSheet(context is Context, sliceId is Id, slicePlane
 
     skSolve(sliceSketch);
 
+    // Extrude a rectangular slice surrounding the object symmetrically
+    // Use startBound and endBound with equal depths to achieve symmetric extrusion
     // Extrude a rectangular slice surrounding the object symmetrically
     // Use startBound and endBound with equal depths to achieve symmetric extrusion
     opExtrude(context, sliceId + "extrudeRectangle", {
