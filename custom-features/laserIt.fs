@@ -2,11 +2,9 @@
 // Inputs:
 //  - selectedBody : Body query to slice
 //  - planeSpacing : Distance between slicing planes along the X and Y axes of the reference frame
-//  - offset : Boolean to enable XY offsets
-//  - xOffset, yOffset : Offsets applied when offset is enabled
 //  - matThick : Material thickness that controls extrusion depth
 //  - defRefFrame : Boolean to select a mate connector as the slicing reference frame
-//  - referenceFrame : Mate connector query when defRefFrame is true
+//  - referenceFrame : Mate connector query when defRefFrame is true, defines the placement of the slicing grid
 FeatureScript 2815;
 import(path : "onshape/std/geometry.fs", version : "2815.0");
 import(path : "onshape/std/query.fs", version : "2815.0");
@@ -21,19 +19,6 @@ export const laserIt = defineFeature(function(context is Context, id is Id, defi
 
         annotation { "Name" : "Plane Spacing" }
         isLength(definition.planeSpacing, LENGTH_BOUNDS);
-
-        annotation { "Name" : "Offset" }
-        definition.offset is boolean;
-
-        if (definition.offset)
-        {
-            annotation { "Name" : "X Offset" }
-            isLength(definition.xOffset, LENGTH_BOUNDS);
-
-            annotation { "Name" : "Y Offset" }
-            isLength(definition.yOffset, LENGTH_BOUNDS);
-
-        }
 
         annotation { "Name" : "Material Thickness" }
         isLength(definition.matThick, LENGTH_BOUNDS);
@@ -53,8 +38,6 @@ export const laserIt = defineFeature(function(context is Context, id is Id, defi
     {
         // Establish the coordinate system used for slicing
         var referenceFrame = WORLD_COORD_SYSTEM;
-        var xOffsetDistance = 0 * millimeter;
-        var yOffsetDistance = 0 * millimeter;
 
         if (definition.defRefFrame == true)
         {
@@ -63,35 +46,26 @@ export const laserIt = defineFeature(function(context is Context, id is Id, defi
                     });
         }
 
-        if (definition.offset)
-        {
-            xOffsetDistance = definition.xOffset;
-            yOffsetDistance = definition.yOffset;
-        }
-
-        // Use the coordinate system if provided to define the bounding box (start and end of planes)
+        // Use the coordinate system to define the bounding box (start and end of planes).
+        // The reference frame position directly controls where the slicing grid is placed.
         var orientedBoundingBox = evBox3d(context, {
                 "topology" : definition.selectedBody,
                 "cSys" : referenceFrame,
                 "tight" : true
             });
 
-        referenceFrame.origin = toWorld(referenceFrame, box3dCenter(orientedBoundingBox));
-
         var referenceFrameToWorldTransform = toWorld(referenceFrame);
 
-        var numberOfXPlanes = (orientedBoundingBox.maxCorner[0] - orientedBoundingBox.minCorner[0]) / definition.planeSpacing;
-        var numberOfYPlanes = (orientedBoundingBox.maxCorner[1] - orientedBoundingBox.minCorner[1]) / definition.planeSpacing;
-
         // Build a stack of slicing planes perpendicular to X, then Y, that span the oriented bounding box of the target body.
+        // The function calculates which planes are needed based on the bounding box and spacing.
         // Each loop: create a sketch-sized rectangle around the body, extrude it to the material thickness, and retain the raw
         // sheets for a later trimming pass against the selected part.
-        var xSliceResult = generateSheets(context, id, "X", numberOfXPlanes, orientedBoundingBox, xOffsetDistance, definition.planeSpacing, referenceFrameToWorldTransform, definition.matThick);
+        var xSliceResult = generateSheets(context, id, "X", orientedBoundingBox, definition.planeSpacing, referenceFrameToWorldTransform, definition.matThick);
 
-        var ySliceResult = generateSheets(context, id, "Y", numberOfYPlanes, orientedBoundingBox, yOffsetDistance, definition.planeSpacing, referenceFrameToWorldTransform, definition.matThick);
+        var ySliceResult = generateSheets(context, id, "Y", orientedBoundingBox, definition.planeSpacing, referenceFrameToWorldTransform, definition.matThick);
 
         // Intersect each sheet with the target solid to retain only in-bounds material before generating cross-slot geometry.
-        var trimmedSheetsResult = trimSheetsToSolid(context, id, xSliceResult.sliceIds, ySliceResult.sliceIds, definition.selectedBody);
+        var trimmedSheetsResult = trimSheetsToSolid(context, id, xSliceResult, ySliceResult, definition.selectedBody);
 
         // The XY nested loop takes every X slice and intersects it with every Y slice to form individual grid cells.
         // For each cell, it resolves all intersecting bodies, averages aligned edges to infer a mid-surface, and splits the
@@ -101,18 +75,19 @@ export const laserIt = defineFeature(function(context is Context, id is Id, defi
         // After trimming the intersecting grid, find all non-normal cut faces on a given slice and project their geometry to
         // the surface of the slice. Thicken the flattened projections and remove the results from the slice.
         // This subtractive operation guarantees the slices lie inside of the original target volume, where additive methods wouldn't.
-        for (var xPlaneIndex = 0; xPlaneIndex < size(xSliceResult.slicePlanes); xPlaneIndex += 1)
-        {
-            normalizeSliceGeometryForLasercutting(context, id + "XExtrude" + xPlaneIndex + "extrudeIntersection", xSliceResult.slicePlanes[xPlaneIndex], trimmedSheetsResult.xIntersectionIds[xPlaneIndex], definition.matThick, xSliceResult.slicePlanes[xPlaneIndex].normal);
+        // Process all X slice bodies together
+        const allXSliceBodies = qUnion(mapArray(trimmedSheetsResult.xIntersectionIds, function(xIntersectionId)
+            {
+                return qCreatedBy(xIntersectionId, EntityType.BODY);
+            }));
+        normalizeSliceGeometryForLasercutting(context, id + "XNormalize", allXSliceBodies, definition.matThick);
 
-        }
-
-        // Repeat the normalizing pass for faces lying on Y-oriented planes to generate the second directional rib set.
-        for (var yPlaneIndex = 0; yPlaneIndex < size(ySliceResult.slicePlanes); yPlaneIndex += 1)
-        {
-            normalizeSliceGeometryForLasercutting(context, id + "YExtrude" + yPlaneIndex + "extrudeIntersection", ySliceResult.slicePlanes[yPlaneIndex], trimmedSheetsResult.yIntersectionIds[yPlaneIndex], definition.matThick, ySliceResult.slicePlanes[yPlaneIndex].normal);
-
-        }
+        // Process all Y slice bodies together
+        const allYSliceBodies = qUnion(mapArray(trimmedSheetsResult.yIntersectionIds, function(yIntersectionId)
+            {
+                return qCreatedBy(yIntersectionId, EntityType.BODY);
+            }));
+        normalizeSliceGeometryForLasercutting(context, id + "YNormalize", allYSliceBodies, definition.matThick);
 
     });
 
@@ -120,14 +95,12 @@ export const laserIt = defineFeature(function(context is Context, id is Id, defi
 // Inputs:
 //  - featureIdPrefix : Base id used when naming all geometry created in this helper
 //  - axisLabel : Either "X" or "Y" to select the normal and sketch dimensions for the slicing plane
-//  - numberOfPlanes : Loop bound describing how many slices exist along the specified axis
 //  - orientedBoundingBox : Tight bounding box for the selected body in the reference frame
-//  - offsetDistance : Optional offset distance used to shift the slice origins
 //  - planeSpacing : Distance between slices
 //  - referenceFrameToWorldTransform : Transform aligning the local slice planes with world coordinates
 //  - materialThickness : Extrusion depth for the raw sheet
 // Returns: map containing the ordered list of slice planes
-export function generateSheets(context is Context, featureIdPrefix is Id, axisLabel is string, numberOfPlanes is number, orientedBoundingBox is Box3d, offsetDistance is ValueWithUnits, planeSpacing is ValueWithUnits, referenceFrameToWorldTransform is Transform, materialThickness is ValueWithUnits)
+export function generateSheets(context is Context, featureIdPrefix is Id, axisLabel is string, orientedBoundingBox is Box3d, planeSpacing is ValueWithUnits, referenceFrameToWorldTransform is Transform, materialThickness is ValueWithUnits)
 {
     var slicePlanes = [] as array;
     var sliceIds = [] as array;
@@ -135,7 +108,10 @@ export function generateSheets(context is Context, featureIdPrefix is Id, axisLa
     var planeUpVector = vector([0, 1, 0]);
     var rectangleWidth = orientedBoundingBox.maxCorner[1] - orientedBoundingBox.minCorner[1];
     var rectangleHeight = orientedBoundingBox.maxCorner[2] - orientedBoundingBox.minCorner[2];
-    var boundingSpan = orientedBoundingBox.maxCorner[0] - orientedBoundingBox.minCorner[0];
+    var rectangleCenterY = (orientedBoundingBox.maxCorner[1] + orientedBoundingBox.minCorner[1]) / 2;
+    var rectangleCenterZ = (orientedBoundingBox.maxCorner[2] + orientedBoundingBox.minCorner[2]) / 2;
+    var boundingMin = orientedBoundingBox.minCorner[0];
+    var boundingMax = orientedBoundingBox.maxCorner[0];
 
     if (axisLabel == "Y")
     {
@@ -143,28 +119,43 @@ export function generateSheets(context is Context, featureIdPrefix is Id, axisLa
         planeUpVector = vector([0, 0, 1]);
         rectangleWidth = orientedBoundingBox.maxCorner[2] - orientedBoundingBox.minCorner[2];
         rectangleHeight = orientedBoundingBox.maxCorner[0] - orientedBoundingBox.minCorner[0];
-        boundingSpan = orientedBoundingBox.maxCorner[1] - orientedBoundingBox.minCorner[1];
+        rectangleCenterY = (orientedBoundingBox.maxCorner[0] + orientedBoundingBox.minCorner[0]) / 2;
+        rectangleCenterZ = (orientedBoundingBox.maxCorner[2] + orientedBoundingBox.minCorner[2]) / 2;
+        boundingMin = orientedBoundingBox.minCorner[1];
+        boundingMax = orientedBoundingBox.maxCorner[1];
     }
 
-    for (var planeIndex = 0; planeIndex < numberOfPlanes; planeIndex += 1)
+    // Calculate which plane indices are needed to cover the bounding box
+    // Reference frame origin is at position 0, planes are at positions index * spacing
+    // We need planes from the first one >= boundingMin to the last one <= boundingMax
+    var firstPlaneIndex = ceil(boundingMin / planeSpacing);
+    var lastPlaneIndex = floor(boundingMax / planeSpacing);
+    
+    var planeCounter = 0;
+    for (var planeIndex = firstPlaneIndex; planeIndex <= lastPlaneIndex; planeIndex += 1)
     {
-        var planeLocation = -(boundingSpan) / 2 + offsetDistance + planeIndex * planeSpacing;
+        // Position planes relative to the reference frame origin (0 in reference frame coordinates)
+        // Planes can be at negative, zero, or positive positions depending on bounding box
+        var planeLocation = planeIndex * planeSpacing;
         var sliceOrigin = vector([0 * millimeter, 0 * millimeter, 0 * millimeter]);
 
         if (axisLabel == "X")
         {
-            sliceOrigin = vector([planeLocation, 0 * millimeter, 0 * millimeter]);
+            sliceOrigin = vector([planeLocation, rectangleCenterY, rectangleCenterZ]);
         }
         else
         {
-            sliceOrigin = vector([0 * millimeter, planeLocation, 0 * millimeter]);
+            sliceOrigin = vector([rectangleCenterY, planeLocation, rectangleCenterZ]);
         }
 
         var slicePlane = referenceFrameToWorldTransform * plane(sliceOrigin, planeNormal, planeUpVector);
-        var sliceId = featureIdPrefix + axisLabel + planeIndex;
-        generateSliceSheet(context, sliceId, slicePlane, rectangleWidth, rectangleHeight, planeNormal, materialThickness);
+        var sliceId = featureIdPrefix + axisLabel + planeCounter;
+        // Transform the extrusion direction from local to world coordinates
+        var extrusionDirectionWorld = referenceFrameToWorldTransform.linear * planeNormal;
+        generateSliceSheet(context, sliceId, slicePlane, rectangleWidth, rectangleHeight, extrusionDirectionWorld, materialThickness);
         slicePlanes = append(slicePlanes, slicePlane);
         sliceIds = append(sliceIds, sliceId);
+        planeCounter += 1;
     }
 
     return { "slicePlanes" : slicePlanes, "sliceIds" : sliceIds };
@@ -173,23 +164,58 @@ export function generateSheets(context is Context, featureIdPrefix is Id, axisLa
 // Intersect every raw sheet with the target body to keep only the in-bounds material for follow-on trimming.
 // Inputs:
 //  - featureIdPrefix : Base id used to regenerate the X/Y identifiers for each slice
-//  - xSliceIds, ySliceIds : Ordered identifiers for X- and Y-oriented slice bodies
+//  - xSliceResult, ySliceResult : Maps containing sliceIds and slicePlanes arrays for X- and Y-oriented slices
 //  - targetBody : Body query representing the part being sliced
 // Returns: map containing the intersection ids
-export function trimSheetsToSolid(context is Context, featureIdPrefix is Id, xSliceIds is array, ySliceIds is array, targetBody is Query)
+export function trimSheetsToSolid(context is Context, featureIdPrefix is Id, xSliceResult is map, ySliceResult is map, targetBody is Query)
 {
     var xIntersectionIds = [] as array;
     var yIntersectionIds = [] as array;
+    
+    const xSliceIds = xSliceResult.sliceIds;
+    const xSlicePlanes = xSliceResult.slicePlanes;
+    const ySliceIds = ySliceResult.sliceIds;
+    const ySlicePlanes = ySliceResult.slicePlanes;
 
     for (var xPlaneIndex = 0; xPlaneIndex < size(xSliceIds); xPlaneIndex += 1)
     {
         var xSliceId = xSliceIds[xPlaneIndex];
+        var xSlicePlane = xSlicePlanes[xPlaneIndex];
         var xIntersectionId = featureIdPrefix + "XIntersection" + xPlaneIndex;
+        
+        // Start tracking the start and end cap faces separately before the intersection operation
+        const originalSheetBody = qCreatedBy(xSliceId + "extrudeRectangle", EntityType.BODY);
+        const originalSheetFaces = qOwnedByBody(originalSheetBody, EntityType.FACE);
+        const originalCapFaces = qParallelPlanes(originalSheetFaces, xSlicePlane);
+        
+        // Track each cap separately (there should be exactly 2 cap faces)
+        const startCapFace = qNthElement(originalCapFaces, 0);
+        const endCapFace = qNthElement(originalCapFaces, 1);
+        const trackingStartCap = startTracking(context, startCapFace);
+        const trackingEndCap = startTracking(context, endCapFace);
+        
         opBoolean(context, xIntersectionId, {
-                    "tools" : qUnion([qCreatedBy(xSliceId + "extrudeRectangle", EntityType.BODY), targetBody]),
+                    "tools" : qUnion([originalSheetBody, targetBody]),
                     "operationType" : BooleanOperationType.INTERSECTION,
                     "keepTools" : true
                 });
+        
+        // Check if EITHER cap has been completely destroyed after intersection
+        const intersectionBodies = qCreatedBy(xIntersectionId, EntityType.BODY);
+        if (!isQueryEmpty(context, intersectionBodies))
+        {
+            const remainingStartCapFaces = evaluateQuery(context, trackingStartCap);
+            const remainingEndCapFaces = evaluateQuery(context, trackingEndCap);
+            
+            // Delete body if EITHER the start cap OR the end cap is completely gone
+            if (size(remainingStartCapFaces) == 0 || size(remainingEndCapFaces) == 0)
+            {
+                opDeleteBodies(context, xIntersectionId + "deleteNoCapBody", {
+                    "entities" : intersectionBodies
+                });
+                continue;
+            }
+        }
 
         xIntersectionIds = append(xIntersectionIds, xIntersectionId);
     }
@@ -197,12 +223,42 @@ export function trimSheetsToSolid(context is Context, featureIdPrefix is Id, xSl
     for (var yPlaneIndex = 0; yPlaneIndex < size(ySliceIds); yPlaneIndex += 1)
     {
         var ySliceId = ySliceIds[yPlaneIndex];
+        var ySlicePlane = ySlicePlanes[yPlaneIndex];
         var yIntersectionId = featureIdPrefix + "YIntersection" + yPlaneIndex;
+        
+        // Start tracking the start and end cap faces separately before the intersection operation
+        const originalSheetBody = qCreatedBy(ySliceId + "extrudeRectangle", EntityType.BODY);
+        const originalSheetFaces = qOwnedByBody(originalSheetBody, EntityType.FACE);
+        const originalCapFaces = qParallelPlanes(originalSheetFaces, ySlicePlane);
+        
+        // Track each cap separately (there should be exactly 2 cap faces)
+        const startCapFace = qNthElement(originalCapFaces, 0);
+        const endCapFace = qNthElement(originalCapFaces, 1);
+        const trackingStartCap = startTracking(context, startCapFace);
+        const trackingEndCap = startTracking(context, endCapFace);
+        
         opBoolean(context, yIntersectionId, {
-                    "tools" : qUnion([qCreatedBy(ySliceId + "extrudeRectangle", EntityType.BODY), targetBody]),
+                    "tools" : qUnion([originalSheetBody, targetBody]),
                     "operationType" : BooleanOperationType.INTERSECTION,
                     "keepTools" : true
                 });
+        
+        // Check if EITHER cap has been completely destroyed after intersection
+        const intersectionBodies = qCreatedBy(yIntersectionId, EntityType.BODY);
+        if (!isQueryEmpty(context, intersectionBodies))
+        {
+            const remainingStartCapFaces = evaluateQuery(context, trackingStartCap);
+            const remainingEndCapFaces = evaluateQuery(context, trackingEndCap);
+            
+            // Delete body if EITHER the start cap OR the end cap is completely gone
+            if (size(remainingStartCapFaces) == 0 || size(remainingEndCapFaces) == 0)
+            {
+                opDeleteBodies(context, yIntersectionId + "deleteNoCapBody", {
+                    "entities" : intersectionBodies
+                });
+                continue;
+            }
+        }
 
         yIntersectionIds = append(yIntersectionIds, yIntersectionId);
     }
@@ -409,12 +465,17 @@ export function generateSliceSheet(context is Context, sliceId is Id, slicePlane
 
     skSolve(sliceSketch);
 
-    // Extrude a rectangular slice surrounding the object
+    // Extrude a rectangular slice surrounding the object symmetrically
+    // Use startBound and endBound with equal depths to achieve symmetric extrusion
+    // Extrude a rectangular slice surrounding the object symmetrically
+    // Use startBound and endBound with equal depths to achieve symmetric extrusion
     opExtrude(context, sliceId + "extrudeRectangle", {
                 "entities" : qSketchRegion(sliceId + "sketch", false),
                 "direction" : extrusionDirection,
                 "endBound" : BoundingType.BLIND,
-                "endDepth" : materialThickness
+                "endDepth" : materialThickness / 2,
+                "startBound" : BoundingType.BLIND,
+                "startDepth" : materialThickness / 2
             });
 
     opDeleteBodies(context, sliceId + "deleteSketch", {
@@ -422,73 +483,191 @@ export function generateSliceSheet(context is Context, sliceId is Id, slicePlane
             });
 }
 
-// Project any faces on the trimmed slice bodies that are not normal to the slicing plane and remove their projections to clean
-// up irregular geometry.
+// Normalize slice geometry for laser cutting by projecting non-planar faces onto the largest planar face and subtracting.
+// This function processes each body independently, finding the largest flat planar face on the body to use as the
+// projection target, then projects any slanted/chamfered faces onto it and subtracts the thickened projection.
+// This ensures all output geometry can be laser cut flat without overhangs.
 // Inputs:
-//  - extrudeIdPrefix : Id prefix used for created helper operations
-//  - slicingPlane : Plane used to evaluate face normals and target for projection
-//  - intersectionBooleanId : Id of the prior trimmed intersection operation for this slice
+//  - idPrefix : Id prefix used for created helper operations
+//  - sliceBodies : Query for bodies to normalize
 //  - materialThickness : Thickness used when removing projected material
-//  - ribDirection : Direction vector for ribs (retained for compatibility; not used by this cleaner)
-export function normalizeSliceGeometryForLasercutting(context is Context, extrudeIdPrefix is Id, slicingPlane is Plane, intersectionBooleanId is Id, materialThickness is ValueWithUnits, ribDirection is Vector)
+// Returns: none
+export function normalizeSliceGeometryForLasercutting(context is Context, idPrefix is Id, sliceBodies is Query, materialThickness is ValueWithUnits)
 {
-    // 1. Define queries
-    const trimmedSliceBodies = qCreatedBy(intersectionBooleanId, EntityType.BODY);
-    const sliceFaces = qOwnedByBody(trimmedSliceBodies, EntityType.FACE);
-
-    // 2. Identify "Good" faces (don't need normalization)
-    // - Top/Bottom caps (Parallel to the slice plane itself)
-    const topBottomFaces = qParallelPlanes(sliceFaces, slicingPlane);
-    // - Vertical cut walls (Parallel to the slice plane's NORMAL vector)
-    const verticalWallFaces = qFacesParallelToDirection(sliceFaces, slicingPlane.normal);
-
-    // Combine them into a "skip list"
-    const validFaces = qUnion([topBottomFaces, verticalWallFaces]);
-
-    // 3. Subtract valid faces from all faces to find the "Bad" (slanted/chamfered) ones
-    const nonNormalFaces = qSubtraction(sliceFaces, validFaces);
-
-    // 4. Check for null case (nothing to normalize)
-    if (isQueryEmpty(context, nonNormalFaces))
+    // Process each body independently
+    var bodyArray = evaluateQuery(context, sliceBodies);
+    var bodyCounter = 0;
+    
+    for (var body in bodyArray)
     {
-        return;
-    }
-
-    // 5. Proceed with Normalization
-    const projectionPlaneId = extrudeIdPrefix + "projectionPlane";
-    opPlane(context, projectionPlaneId, { "plane" : slicingPlane });
-    const projectionTarget = qCreatedBy(projectionPlaneId, EntityType.FACE);
-
-    const extractedOutlineToolsId = extrudeIdPrefix + "projectionExtract";
-    opExtractSurface(context, extractedOutlineToolsId, {
-                "faces" : nonNormalFaces,
-                "offset" : 0 * meter
-            });
-
-    const extractedOutlineTools = qCreatedBy(extractedOutlineToolsId, EntityType.BODY);
-    const outlineId = extrudeIdPrefix + "outline";
-    opCreateOutline(context, outlineId, {
+        const bodyId = idPrefix + "Body" + bodyCounter;
+        
+        // Find all faces on this body
+        const bodyFaces = qOwnedByBody(body, EntityType.FACE);
+        
+        // Find the largest planar face to use as projection target
+        var largestPlanarFace = undefined;
+        var largestArea = 0 * meter^2;
+        
+        var faceArray = evaluateQuery(context, bodyFaces);
+        for (var face in faceArray)
+        {
+            try
+            {
+                // Check if face is planar
+                var surfaceDefinition = evSurfaceDefinition(context, {
+                    "face" : face
+                });
+                
+                if (surfaceDefinition is Plane)
+                {
+                    var faceArea = evArea(context, {
+                        "entities" : face
+                    });
+                    
+                    if (faceArea > largestArea)
+                    {
+                        largestArea = faceArea;
+                        largestPlanarFace = face;
+                    }
+                }
+            }
+            catch
+            {
+                // Skip faces that can't be evaluated
+            }
+        }
+        
+        // If no planar face found, skip this body
+        if (largestPlanarFace == undefined)
+        {
+            bodyCounter += 1;
+            continue;
+        }
+        
+        // Get the plane definition from the largest planar face
+        var targetPlane = evPlane(context, {
+            "face" : largestPlanarFace
+        });
+        
+        // Identify "Good" faces (don't need normalization) using robust query-based approach
+        // - Top/Bottom caps (Parallel to the target plane itself)
+        const topBottomFaces = qParallelPlanes(bodyFaces, targetPlane);
+        // - Vertical cut walls (Parallel to the target plane's NORMAL vector)
+        const verticalWallFaces = qFacesParallelToDirection(bodyFaces, targetPlane.normal);
+        
+        // Combine them into a "skip list"
+        const validFaces = qUnion([topBottomFaces, verticalWallFaces]);
+        
+        // Subtract valid faces from all faces to find the "Bad" (slanted/chamfered) ones
+        const nonNormalFaces = qSubtraction(bodyFaces, validFaces);
+        
+        // Check for null case (nothing to normalize)
+        if (isQueryEmpty(context, nonNormalFaces))
+        {
+            bodyCounter += 1;
+            continue;
+        }
+        
+        // Create a construction plane at the target plane location for projection
+        const projectionPlaneId = bodyId + "projectionPlane";
+        opPlane(context, projectionPlaneId, { "plane" : targetPlane });
+        const projectionTarget = qCreatedBy(projectionPlaneId, EntityType.FACE);
+        
+        println("=== opCreateOutline Entry Diagnostics ===");
+        println("Body counter: " ~ bodyCounter);
+        println("Target plane origin: " ~ targetPlane.origin);
+        println("Target plane normal: " ~ targetPlane.normal);
+        println("Projection target query empty: " ~ isQueryEmpty(context, projectionTarget));
+        println("Projection target count: " ~ size(evaluateQuery(context, projectionTarget)));
+        
+        // Extract surfaces from faces to normalize
+        const extractedOutlineToolsId = bodyId + "extract";
+        opExtractSurface(context, extractedOutlineToolsId, {
+            "faces" : nonNormalFaces,
+            "offset" : 0 * meter
+        });
+        
+        const extractedOutlineTools = qCreatedBy(extractedOutlineToolsId, EntityType.BODY);
+        
+        println("Extracted outline tools query empty: " ~ isQueryEmpty(context, extractedOutlineTools));
+        println("Extracted outline tools count: " ~ size(evaluateQuery(context, extractedOutlineTools)));
+        
+        // Project onto the construction plane
+        const outlineId = bodyId + "outline";
+        println("About to call opCreateOutline with ID: " ~ outlineId);
+        
+        try
+        {
+            opCreateOutline(context, outlineId, {
                 "tools" : extractedOutlineTools,
                 "target" : projectionTarget
             });
-
-    const projectionFaces = qCreatedBy(outlineId, EntityType.FACE);
-    const thickenId = extrudeIdPrefix + "projectionThicken";
-    opThicken(context, thickenId, {
-                "entities" : projectionFaces,
-                "thickness1" : materialThickness,
-                "thickness2" : 0 * meter,
-                "keepTools" : true
+            println("opCreateOutline succeeded");
+        }
+        catch (error)
+        {
+            println("opCreateOutline FAILED with error: " ~ error);
+            println("=== opCreateOutline Exit Diagnostics (FAILED) ===");
+            // Clean up and continue to next body
+            opDeleteBodies(context, bodyId + "cleanupFailed", {
+                "entities" : qUnion([projectionTarget, extractedOutlineTools])
             });
-
-    opBoolean(context, extrudeIdPrefix + "projectionCleanup", {
-                "tools" : qCreatedBy(thickenId, EntityType.BODY),
-                "targets" : trimmedSliceBodies,
-                "operationType" : BooleanOperationType.SUBTRACTION,
-                "keepTools" : false
+            bodyCounter += 1;
+            continue;
+        }
+        
+        println("=== opCreateOutline Exit Diagnostics (SUCCESS) ===");
+        
+        const projectionFaces = qCreatedBy(outlineId, EntityType.FACE);
+        
+        println("Projection faces query empty: " ~ isQueryEmpty(context, projectionFaces));
+        println("Projection faces count: " ~ size(evaluateQuery(context, projectionFaces)));
+        
+        // Check if any projection was created
+        if (isQueryEmpty(context, projectionFaces))
+        {
+            println("No projection faces created, skipping normalization for this body");
+            opDeleteBodies(context, bodyId + "cleanup1", {
+                "entities" : qUnion([projectionTarget, extractedOutlineTools])
             });
-
-    opDeleteBodies(context, extrudeIdPrefix + "projectionHelpersCleanup", {
-                "entities" : qUnion([projectionTarget, extractedOutlineTools, qCreatedBy(outlineId, EntityType.BODY)])
-            });
+            bodyCounter += 1;
+            continue;
+        }
+        
+        // Thicken the projected outlines
+        // Thicken only in thickness2 direction (away from the face normal) since the projection plane
+        // is not centered on the slices and face normals point outward
+        const thickenId = bodyId + "thicken";
+        println("About to thicken projection faces in thickness2 direction");
+        opThicken(context, thickenId, {
+            "entities" : projectionFaces,
+            "thickness1" : 0 * meter,
+            "thickness2" : materialThickness,
+            "keepTools" : true
+        });
+        println("Thicken operation succeeded");
+        
+        const thickenedBodies = qCreatedBy(thickenId, EntityType.BODY);
+        println("Thickened bodies count: " ~ size(evaluateQuery(context, thickenedBodies)));
+        
+        // Subtract the thickened projection from the body
+        // Use the original slice bodies query - operations modify bodies in place
+        println("About to subtract thickened bodies from slice bodies");
+        opBoolean(context, bodyId + "subtract", {
+            "tools" : thickenedBodies,
+            "targets" : sliceBodies,
+            "operationType" : BooleanOperationType.SUBTRACTION,
+            "keepTools" : false
+        });
+        println("Boolean subtraction succeeded");
+        println("=== Normalization complete for this body ===");
+        
+        // Clean up helper geometry
+        opDeleteBodies(context, bodyId + "cleanup2", {
+            "entities" : qUnion([projectionTarget, extractedOutlineTools, qCreatedBy(outlineId, EntityType.BODY)])
+        });
+        
+        bodyCounter += 1;
+    }
 }
