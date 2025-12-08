@@ -75,18 +75,19 @@ export const laserIt = defineFeature(function(context is Context, id is Id, defi
         // After trimming the intersecting grid, find all non-normal cut faces on a given slice and project their geometry to
         // the surface of the slice. Thicken the flattened projections and remove the results from the slice.
         // This subtractive operation guarantees the slices lie inside of the original target volume, where additive methods wouldn't.
-        for (var xPlaneIndex = 0; xPlaneIndex < size(xSliceResult.slicePlanes); xPlaneIndex += 1)
-        {
-            var xSliceBodies = qCreatedBy(trimmedSheetsResult.xIntersectionIds[xPlaneIndex], EntityType.BODY);
-            normalizeSliceGeometryForLasercutting(context, id + "XNormalize" + xPlaneIndex, xSliceBodies, definition.matThick);
-        }
+        // Process all X slice bodies together
+        const allXSliceBodies = qUnion(mapArray(trimmedSheetsResult.xIntersectionIds, function(xIntersectionId)
+            {
+                return qCreatedBy(xIntersectionId, EntityType.BODY);
+            }));
+        normalizeSliceGeometryForLasercutting(context, id + "XNormalize", allXSliceBodies, definition.matThick);
 
-        // Repeat the normalizing pass for faces lying on Y-oriented planes to generate the second directional rib set.
-        for (var yPlaneIndex = 0; yPlaneIndex < size(ySliceResult.slicePlanes); yPlaneIndex += 1)
-        {
-            var ySliceBodies = qCreatedBy(trimmedSheetsResult.yIntersectionIds[yPlaneIndex], EntityType.BODY);
-            normalizeSliceGeometryForLasercutting(context, id + "YNormalize" + yPlaneIndex, ySliceBodies, definition.matThick);
-        }
+        // Process all Y slice bodies together
+        const allYSliceBodies = qUnion(mapArray(trimmedSheetsResult.yIntersectionIds, function(yIntersectionId)
+            {
+                return qCreatedBy(yIntersectionId, EntityType.BODY);
+            }));
+        normalizeSliceGeometryForLasercutting(context, id + "YNormalize", allYSliceBodies, definition.matThick);
 
     });
 
