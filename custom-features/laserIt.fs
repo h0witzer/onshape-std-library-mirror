@@ -182,11 +182,16 @@ export function trimSheetsToSolid(context is Context, featureIdPrefix is Id, xSl
         var xSlicePlane = xSlicePlanes[xPlaneIndex];
         var xIntersectionId = featureIdPrefix + "XIntersection" + xPlaneIndex;
         
-        // Start tracking the cap faces before the intersection operation
+        // Start tracking the start and end cap faces separately before the intersection operation
         const originalSheetBody = qCreatedBy(xSliceId + "extrudeRectangle", EntityType.BODY);
         const originalSheetFaces = qOwnedByBody(originalSheetBody, EntityType.FACE);
         const originalCapFaces = qParallelPlanes(originalSheetFaces, xSlicePlane);
-        const trackingCapFaces = startTracking(context, originalCapFaces);
+        
+        // Track each cap separately (there should be exactly 2 cap faces)
+        const startCapFace = qNthElement(originalCapFaces, 0);
+        const endCapFace = qNthElement(originalCapFaces, 1);
+        const trackingStartCap = startTracking(context, startCapFace);
+        const trackingEndCap = startTracking(context, endCapFace);
         
         opBoolean(context, xIntersectionId, {
                     "tools" : qUnion([originalSheetBody, targetBody]),
@@ -194,15 +199,16 @@ export function trimSheetsToSolid(context is Context, featureIdPrefix is Id, xSl
                     "keepTools" : true
                 });
         
-        // Check if any of the tracked cap faces still exist after intersection
+        // Check if EITHER cap has been completely destroyed after intersection
         const intersectionBodies = qCreatedBy(xIntersectionId, EntityType.BODY);
         if (!isQueryEmpty(context, intersectionBodies))
         {
-            const remainingCapFaces = evaluateQuery(context, trackingCapFaces);
+            const remainingStartCapFaces = evaluateQuery(context, trackingStartCap);
+            const remainingEndCapFaces = evaluateQuery(context, trackingEndCap);
             
-            if (size(remainingCapFaces) == 0)
+            // Delete body if EITHER the start cap OR the end cap is completely gone
+            if (size(remainingStartCapFaces) == 0 || size(remainingEndCapFaces) == 0)
             {
-                // No cap faces remain - delete this body and skip adding to the list
                 opDeleteBodies(context, xIntersectionId + "deleteNoCapBody", {
                     "entities" : intersectionBodies
                 });
@@ -219,11 +225,16 @@ export function trimSheetsToSolid(context is Context, featureIdPrefix is Id, xSl
         var ySlicePlane = ySlicePlanes[yPlaneIndex];
         var yIntersectionId = featureIdPrefix + "YIntersection" + yPlaneIndex;
         
-        // Start tracking the cap faces before the intersection operation
+        // Start tracking the start and end cap faces separately before the intersection operation
         const originalSheetBody = qCreatedBy(ySliceId + "extrudeRectangle", EntityType.BODY);
         const originalSheetFaces = qOwnedByBody(originalSheetBody, EntityType.FACE);
         const originalCapFaces = qParallelPlanes(originalSheetFaces, ySlicePlane);
-        const trackingCapFaces = startTracking(context, originalCapFaces);
+        
+        // Track each cap separately (there should be exactly 2 cap faces)
+        const startCapFace = qNthElement(originalCapFaces, 0);
+        const endCapFace = qNthElement(originalCapFaces, 1);
+        const trackingStartCap = startTracking(context, startCapFace);
+        const trackingEndCap = startTracking(context, endCapFace);
         
         opBoolean(context, yIntersectionId, {
                     "tools" : qUnion([originalSheetBody, targetBody]),
@@ -231,15 +242,16 @@ export function trimSheetsToSolid(context is Context, featureIdPrefix is Id, xSl
                     "keepTools" : true
                 });
         
-        // Check if any of the tracked cap faces still exist after intersection
+        // Check if EITHER cap has been completely destroyed after intersection
         const intersectionBodies = qCreatedBy(yIntersectionId, EntityType.BODY);
         if (!isQueryEmpty(context, intersectionBodies))
         {
-            const remainingCapFaces = evaluateQuery(context, trackingCapFaces);
+            const remainingStartCapFaces = evaluateQuery(context, trackingStartCap);
+            const remainingEndCapFaces = evaluateQuery(context, trackingEndCap);
             
-            if (size(remainingCapFaces) == 0)
+            // Delete body if EITHER the start cap OR the end cap is completely gone
+            if (size(remainingStartCapFaces) == 0 || size(remainingEndCapFaces) == 0)
             {
-                // No cap faces remain - delete this body and skip adding to the list
                 opDeleteBodies(context, yIntersectionId + "deleteNoCapBody", {
                     "entities" : intersectionBodies
                 });
