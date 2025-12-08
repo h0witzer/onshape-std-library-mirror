@@ -498,6 +498,11 @@ export function normalizeSliceGeometryForLasercutting(context is Context, idPref
             continue;
         }
         
+        // Create a construction plane at the target plane location for projection
+        const projectionPlaneId = bodyId + "projectionPlane";
+        opPlane(context, projectionPlaneId, { "plane" : targetPlane });
+        const projectionTarget = qCreatedBy(projectionPlaneId, EntityType.FACE);
+        
         // Extract surfaces from faces to normalize
         const extractedOutlineToolsId = bodyId + "extract";
         opExtractSurface(context, extractedOutlineToolsId, {
@@ -507,11 +512,11 @@ export function normalizeSliceGeometryForLasercutting(context is Context, idPref
         
         const extractedOutlineTools = qCreatedBy(extractedOutlineToolsId, EntityType.BODY);
         
-        // Project onto the largest planar face
+        // Project onto the construction plane
         const outlineId = bodyId + "outline";
         opCreateOutline(context, outlineId, {
             "tools" : extractedOutlineTools,
-            "target" : largestPlanarFace
+            "target" : projectionTarget
         });
         
         const projectionFaces = qCreatedBy(outlineId, EntityType.FACE);
@@ -520,7 +525,7 @@ export function normalizeSliceGeometryForLasercutting(context is Context, idPref
         if (isQueryEmpty(context, projectionFaces))
         {
             opDeleteBodies(context, bodyId + "cleanup1", {
-                "entities" : extractedOutlineTools
+                "entities" : qUnion([projectionTarget, extractedOutlineTools])
             });
             bodyCounter += 1;
             continue;
@@ -545,7 +550,7 @@ export function normalizeSliceGeometryForLasercutting(context is Context, idPref
         
         // Clean up helper geometry
         opDeleteBodies(context, bodyId + "cleanup2", {
-            "entities" : qUnion([extractedOutlineTools, qCreatedBy(outlineId, EntityType.BODY)])
+            "entities" : qUnion([projectionTarget, extractedOutlineTools, qCreatedBy(outlineId, EntityType.BODY)])
         });
         
         bodyCounter += 1;
