@@ -550,9 +550,13 @@ export function normalizeSliceGeometryForLasercutting(context is Context, idPref
         
         const projectionFaces = qCreatedBy(outlineId, EntityType.FACE);
         
+        println("Projection faces query empty: " ~ isQueryEmpty(context, projectionFaces));
+        println("Projection faces count: " ~ size(evaluateQuery(context, projectionFaces)));
+        
         // Check if any projection was created
         if (isQueryEmpty(context, projectionFaces))
         {
+            println("No projection faces created, skipping normalization for this body");
             opDeleteBodies(context, bodyId + "cleanup1", {
                 "entities" : qUnion([projectionTarget, extractedOutlineTools])
             });
@@ -562,20 +566,28 @@ export function normalizeSliceGeometryForLasercutting(context is Context, idPref
         
         // Thicken the projected outlines
         const thickenId = bodyId + "thicken";
+        println("About to thicken projection faces");
         opThicken(context, thickenId, {
             "entities" : projectionFaces,
             "thickness1" : materialThickness,
             "thickness2" : 0 * meter,
             "keepTools" : true
         });
+        println("Thicken operation succeeded");
+        
+        const thickenedBodies = qCreatedBy(thickenId, EntityType.BODY);
+        println("Thickened bodies count: " ~ size(evaluateQuery(context, thickenedBodies)));
         
         // Subtract the thickened projection from the body
+        println("About to subtract thickened bodies from original body");
         opBoolean(context, bodyId + "subtract", {
-            "tools" : qCreatedBy(thickenId, EntityType.BODY),
+            "tools" : thickenedBodies,
             "targets" : body,
             "operationType" : BooleanOperationType.SUBTRACTION,
             "keepTools" : false
         });
+        println("Boolean subtraction succeeded");
+        println("=== Normalization complete for this body ===");
         
         // Clean up helper geometry
         opDeleteBodies(context, bodyId + "cleanup2", {
