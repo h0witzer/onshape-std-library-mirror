@@ -461,6 +461,10 @@ export function normalizeSliceGeometryForLasercutting(context is Context, idPref
                     }
                 }
             }
+            catch
+            {
+                // Skip faces that can't be evaluated
+            }
         }
         
         // If no planar face found, skip this body
@@ -509,6 +513,10 @@ export function normalizeSliceGeometryForLasercutting(context is Context, idPref
                         facesToNormalize = append(facesToNormalize, face);
                     }
                 }
+            }
+            catch
+            {
+                // Skip faces that can't be evaluated
             }
         }
         
