@@ -568,13 +568,14 @@ export function normalizeSliceGeometryForLasercutting(context is Context, idPref
         }
         
         // Thicken the projected outlines
-        // Thicken symmetrically (half thickness in each direction) to center the thickened geometry
+        // Thicken only in thickness2 direction (away from the face normal) since the projection plane
+        // is not centered on the slices and face normals point outward
         const thickenId = bodyId + "thicken";
-        println("About to thicken projection faces symmetrically");
+        println("About to thicken projection faces in thickness2 direction");
         opThicken(context, thickenId, {
             "entities" : projectionFaces,
-            "thickness1" : materialThickness / 2,
-            "thickness2" : materialThickness / 2,
+            "thickness1" : 0 * meter,
+            "thickness2" : materialThickness,
             "keepTools" : true
         });
         println("Thicken operation succeeded");
