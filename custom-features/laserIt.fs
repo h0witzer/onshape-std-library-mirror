@@ -640,28 +640,56 @@ export function normalizeSliceGeometryForLasercutting(context is Context, idPref
         // is not centered on the slices and face normals point outward
         const thickenId = bodyId + "thicken";
         println("About to thicken projection faces in thickness2 direction");
-        opThicken(context, thickenId, {
-            "entities" : projectionFaces,
-            "thickness1" : 0 * meter,
-            "thickness2" : materialThickness,
-            "keepTools" : true
-        });
-        println("Thicken operation succeeded");
+        
+        try
+        {
+            opThicken(context, thickenId, {
+                "entities" : projectionFaces,
+                "thickness1" : 0 * meter,
+                "thickness2" : materialThickness,
+                "keepTools" : true
+            });
+            println("Thicken operation succeeded");
+        }
+        catch (error)
+        {
+            println("Thicken operation FAILED with error: " ~ error);
+            println("Skipping normalization for this body and continuing");
+            // Clean up helper geometry and continue to next body
+            opDeleteBodies(context, bodyId + "cleanup1", {
+                "entities" : qUnion([projectionTarget, extractedOutlineTools, qCreatedBy(outlineId, EntityType.BODY)])
+            });
+            bodyCounter += 1;
+            continue;
+        }
         
         const thickenedBodies = qCreatedBy(thickenId, EntityType.BODY);
         println("Thickened bodies count: " ~ size(evaluateQuery(context, thickenedBodies)));
         
-        // Subtract the thickened projection from the body
-        // Use the original slice bodies query - operations modify bodies in place
-        println("About to subtract thickened bodies from slice bodies");
-        opBoolean(context, bodyId + "subtract", {
-            "tools" : thickenedBodies,
-            "targets" : sliceBodies,
-            "operationType" : BooleanOperationType.SUBTRACTION,
-            "keepTools" : false
-        });
-        println("Boolean subtraction succeeded");
-        println("=== Normalization complete for this body ===");
+        // Subtract the thickened projection from the current body being normalized
+        // Target only the specific body being processed, not all slice bodies
+        println("About to subtract thickened bodies from current body");
+        
+        try
+        {
+            opBoolean(context, bodyId + "subtract", {
+                "tools" : thickenedBodies,
+                "targets" : body,
+                "operationType" : BooleanOperationType.SUBTRACTION,
+                "keepTools" : false
+            });
+            println("Boolean subtraction succeeded");
+            println("=== Normalization complete for this body ===");
+        }
+        catch (error)
+        {
+            println("Boolean subtraction FAILED with error: " ~ error);
+            println("Skipping normalization for this body and continuing");
+            // Clean up the thickened bodies if boolean failed
+            opDeleteBodies(context, bodyId + "cleanupFailedBoolean", {
+                "entities" : thickenedBodies
+            });
+        }
         
         // Clean up helper geometry
         opDeleteBodies(context, bodyId + "cleanup2", {
