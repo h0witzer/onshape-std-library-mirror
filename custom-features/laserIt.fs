@@ -835,6 +835,12 @@ function generateSheetsFromSketch(context is Context, featureIdPrefix is Id, ske
         var lineDirection = lineGeometry.direction;
         var sliceNormal = cross(sketchPlane.normal, lineDirection);
         
+        // Check that the cross product is non-zero (line is not parallel to sketch normal)
+        if (squaredNorm(sliceNormal) < TOLERANCE.zeroLength * TOLERANCE.zeroLength)
+        {
+            throw regenError("Sketch lines cannot be perpendicular to the sketch plane.", ["sketchLines"]);
+        }
+        
         // Normalize the slice normal
         sliceNormal = normalize(sliceNormal);
 
@@ -977,7 +983,7 @@ function generateCrossSlotGeometryGeneric(context is Context, featureIdPrefix is
             const normalAlignment = abs(dot(planeI.normal, planeJ.normal));
             
             // Skip if planes are too parallel (within 5 degrees)
-            if (normalAlignment > PARALLEL_THRESHOLD_COS)
+            if (normalAlignment >= PARALLEL_THRESHOLD_COS)
             {
                 continue;
             }
@@ -1006,7 +1012,21 @@ function generateCrossSlotGeometryGeneric(context is Context, featureIdPrefix is
                     for (var intersectionCell in intersectionBodyArray)
                     {
                         // Find a splitting plane - use the average of the two normals as the split direction
-                        var splitDirection = normalize(planeI.normal + planeJ.normal);
+                        var splitDirection = planeI.normal + planeJ.normal;
+                        
+                        // Check that the sum is non-zero (normals are not exactly opposite)
+                        // This should not happen given the parallel check above, but we verify for safety
+                        if (squaredNorm(splitDirection) < TOLERANCE.zeroLength * TOLERANCE.zeroLength)
+                        {
+                            // Fallback: use a direction perpendicular to both normals
+                            splitDirection = cross(planeI.normal, vector(1, 0, 0));
+                            if (squaredNorm(splitDirection) < TOLERANCE.zeroLength * TOLERANCE.zeroLength)
+                            {
+                                splitDirection = cross(planeI.normal, vector(0, 1, 0));
+                            }
+                        }
+                        
+                        splitDirection = normalize(splitDirection);
                         
                         // Find the centroid of the intersection cell
                         var cellCentroid = evApproximateCentroid(context, {
