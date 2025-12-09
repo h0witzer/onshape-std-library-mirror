@@ -847,7 +847,7 @@ function generateSheetsFromSketch(context is Context, featureIdPrefix is Id, ske
                     "wallShape" : lineEdge,
                     "direction" : lineDirection,
                     "endBound" : BoundingType.BLIND,
-                    "endDepth" : lineLength,
+                    "depth" : lineLength,
                     "thickness1" : materialThickness / 2,
                     "thickness2" : materialThickness / 2
                 });
