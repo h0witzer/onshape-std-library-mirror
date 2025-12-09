@@ -8,10 +8,12 @@
 //  - referenceFrame : Mate connector query when defRefFrame is true, defines the placement of the slicing grid (Waffle Mode only)
 //  - sketchLines : Sketch edges to extrude as slices (Rib Mode only)
 FeatureScript 2815;
-import(path : "onshape/std/feature.fs", version : "2815.0");
 import(path : "onshape/std/geometry.fs", version : "2815.0");
 import(path : "onshape/std/query.fs", version : "2815.0");
 import(path : "onshape/std/box.fs", version : "2815.0");
+
+const MINIMUM_RECTANGLE_SIZE = 1 * meter;
+const PARALLEL_THRESHOLD_COS = cos(5 * degree); // Approximately 0.996
 
 export enum LaserItGenerationMode
 {
@@ -153,7 +155,8 @@ function processRibMode(context is Context, id is Id, definition is map)
     {
         try
         {
-            const edgeGeometry = evLine(context, {
+            // Validate that the edge is a straight line
+            evLine(context, {
                     "edge" : edge
                 });
         }
@@ -812,7 +815,7 @@ function generateSheetsFromSketch(context is Context, featureIdPrefix is Id, ske
     // Calculate rectangle dimensions - make them large enough to cover the bounding box
     var rectangleSize = max(
         norm(boundingBox.maxCorner - boundingBox.minCorner),
-        1 * meter
+        MINIMUM_RECTANGLE_SIZE
     );
 
     // Process each sketch line
@@ -974,7 +977,7 @@ function generateCrossSlotGeometryGeneric(context is Context, featureIdPrefix is
             const normalAlignment = abs(dot(planeI.normal, planeJ.normal));
             
             // Skip if planes are too parallel (within 5 degrees)
-            if (normalAlignment > 0.996) // cos(5 degrees) ≈ 0.996
+            if (normalAlignment > PARALLEL_THRESHOLD_COS)
             {
                 continue;
             }
