@@ -8,6 +8,7 @@
 //  - referenceFrame : Mate connector query when defRefFrame is true, defines the placement of the slicing grid (Waffle Mode only)
 //  - sketchLines : Sketch edges to extrude as slices (Rib Mode only)
 FeatureScript 2815;
+import(path : "onshape/std/feature.fs", version : "2815.0");
 import(path : "onshape/std/geometry.fs", version : "2815.0");
 import(path : "onshape/std/query.fs", version : "2815.0");
 import(path : "onshape/std/box.fs", version : "2815.0");
@@ -150,10 +151,13 @@ function processRibMode(context is Context, id is Id, definition is map)
     const selectedEdges = evaluateQuery(context, definition.sketchLines);
     for (var edge in selectedEdges)
     {
-        const edgeGeometry = evLine(context, {
-                "edge" : edge
-            });
-        if (edgeGeometry == undefined)
+        try
+        {
+            const edgeGeometry = evLine(context, {
+                    "edge" : edge
+                });
+        }
+        catch
         {
             throw regenError("All sketch edges must be straight lines.", ["sketchLines"]);
         }
@@ -994,6 +998,7 @@ function generateCrossSlotGeometryGeneric(context is Context, featureIdPrefix is
                 if (!isQueryEmpty(context, intersectionBodies))
                 {
                     var intersectionBodyArray = evaluateQuery(context, intersectionBodies);
+                    var cellCounter = 0;
                     
                     for (var intersectionCell in intersectionBodyArray)
                     {
@@ -1008,8 +1013,8 @@ function generateCrossSlotGeometryGeneric(context is Context, featureIdPrefix is
                         // Create a split plane through the centroid
                         var splitPlane = plane(cellCentroid, splitDirection);
                         
-                        const splitPlaneId = intersectionId + "SplitPlane";
-                        const splitId = intersectionId + "Split";
+                        const splitPlaneId = intersectionId + "SplitPlane" + cellCounter;
+                        const splitId = intersectionId + "Split" + cellCounter;
                         
                         try silent
                         {
@@ -1034,6 +1039,8 @@ function generateCrossSlotGeometryGeneric(context is Context, featureIdPrefix is
                                         "entities" : qCreatedBy(splitPlaneId, EntityType.BODY)
                                     });
                         }
+                        
+                        cellCounter += 1;
                     }
                 }
             }
