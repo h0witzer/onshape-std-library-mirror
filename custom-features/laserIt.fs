@@ -877,6 +877,7 @@ function generateSliceSheetFromLine(context is Context, sliceId is Id, lineEdge 
 
     // Draw a line segment representing the material thickness
     // Centered on the sketch plane, extending perpendicular to it
+    // X=0 because we're on the profile plane, Y is perpendicular to sketch plane
     skLineSegment(profileSketch, "line", {
                 "start" : vector(0 * meter, materialThickness / 2),
                 "end" : vector(0 * meter, -materialThickness / 2)
@@ -1039,25 +1040,8 @@ function generateCrossSlotGeometryGeneric(context is Context, featureIdPrefix is
                 if (!isQueryEmpty(context, intersectionBodies))
                 {
                     // Find a splitting plane - use the average of the two normals as the split direction
-                    var splitDirection = planeI.normal + planeJ.normal;
-                    
-                    // Check that the sum is non-zero (normals are not exactly opposite)
-                    if (squaredNorm(splitDirection) < TOLERANCE.zeroLength * TOLERANCE.zeroLength)
-                    {
-                        // Fallback: use the cross product of the two normals
-                        splitDirection = cross(planeI.normal, planeJ.normal);
-                        if (squaredNorm(splitDirection) < TOLERANCE.zeroLength * TOLERANCE.zeroLength)
-                        {
-                            // If still zero, use an arbitrary perpendicular direction
-                            splitDirection = cross(planeI.normal, vector(1, 0, 0));
-                            if (squaredNorm(splitDirection) < TOLERANCE.zeroLength * TOLERANCE.zeroLength)
-                            {
-                                splitDirection = cross(planeI.normal, vector(0, 1, 0));
-                            }
-                        }
-                    }
-                    
-                    splitDirection = normalize(splitDirection);
+                    // This bisects the angle between the two slice planes
+                    var splitDirection = normalize(planeI.normal + planeJ.normal);
                     
                     // Find the centroid of the intersection
                     var intersectionCentroid = evApproximateCentroid(context, {
@@ -1082,8 +1066,8 @@ function generateCrossSlotGeometryGeneric(context is Context, featureIdPrefix is
                                 });
                         
                         // Assign one half to slice I and the other to slice J
-                        const splitHalfI = qFarthestAlong(qOwnerBody(qCreatedBy(splitId)), splitDirection);
-                        const splitHalfJ = qFarthestAlong(qOwnerBody(qCreatedBy(splitId)), -splitDirection);
+                        const splitHalfI = qFarthestAlong(qCreatedBy(splitId), splitDirection);
+                        const splitHalfJ = qFarthestAlong(qCreatedBy(splitId), -splitDirection);
                         
                         // Subtract the halves from the original slices
                         try silent
