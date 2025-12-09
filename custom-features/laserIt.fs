@@ -969,7 +969,7 @@ function trimSheetsToSolidGeneric(context is Context, featureIdPrefix is Id, sli
 
 // Generate cross-slot geometry for arbitrary slice orientations (Rib Mode)
 // This handles slices that don't follow a simple X/Y grid pattern
-// For each pair of non-parallel slices, find their intersection and create notches
+// For each pair of non-parallel slices that actually intersect, create notches
 // Inputs:
 //  - context : Context for geometry operations
 //  - featureIdPrefix : Base id used for boolean operations
@@ -978,132 +978,184 @@ function trimSheetsToSolidGeneric(context is Context, featureIdPrefix is Id, sli
 // Returns: none (modifies slices in place)
 function generateCrossSlotGeometryGeneric(context is Context, featureIdPrefix is Id, sliceIntersectionIds is array, slicePlanes is array)
 {
-    // For each pair of slices, check if they intersect and generate slot geometry
-    // The approach: for each pair of intersecting slices, subtract half of the intersection from each
-    
+    // Build a map of which slices actually touch using collision detection
+    // This avoids O(n²) boolean operations on all pairs
     var sliceCount = size(sliceIntersectionIds);
     
-    // Process each pair of slices
-    for (var sliceIndexI = 0; sliceIndexI < sliceCount; sliceIndexI += 1)
+    // Create array of slice body queries for collision detection
+    var sliceBodies = [] as array;
+    for (var sliceIndex = 0; sliceIndex < sliceCount; sliceIndex += 1)
     {
-        for (var sliceIndexJ = sliceIndexI + 1; sliceIndexJ < sliceCount; sliceIndexJ += 1)
+        sliceBodies = append(sliceBodies, qCreatedBy(sliceIntersectionIds[sliceIndex], EntityType.BODY));
+    }
+    
+    // Use evCollision to efficiently find which slices actually interfere
+    const allSlices = qUnion(sliceBodies);
+    const collisions = evCollision(context, {
+                "tools" : allSlices,
+                "targets" : allSlices
+            });
+    
+    // Build a map of slice pairs that interfere
+    var touchingPairs = [] as array;
+    for (var collision in collisions)
+    {
+        // Skip self-collisions
+        if (collision.toolBody == collision.targetBody)
+            continue;
+        
+        const clashType = collision['type'];
+        // Only process slices that interfere (overlap), not just touch
+        if (clashType == ClashType.INTERFERE ||
+            clashType == ClashType.TARGET_IN_TOOL ||
+            clashType == ClashType.TOOL_IN_TARGET)
         {
-            // Check if the planes are significantly different (not parallel)
-            const planeI = slicePlanes[sliceIndexI];
-            const planeJ = slicePlanes[sliceIndexJ];
-            const normalAlignment = abs(dot(planeI.normal, planeJ.normal));
-            
-            // Skip if planes are too parallel (within 5 degrees)
-            if (normalAlignment >= PARALLEL_THRESHOLD_COS)
+            // Find the indices of the interfering slices
+            var indexI = -1;
+            var indexJ = -1;
+            for (var idx = 0; idx < sliceCount; idx += 1)
             {
-                continue;
-            }
-
-            // Get the actual slice bodies
-            const sliceBodyI = qCreatedBy(sliceIntersectionIds[sliceIndexI], EntityType.BODY);
-            const sliceBodyJ = qCreatedBy(sliceIntersectionIds[sliceIndexJ], EntityType.BODY);
-            
-            // Create copies to find intersection without modifying originals yet
-            const copyIdI = featureIdPrefix + "TestCopy" + sliceIndexI + "_" + sliceIndexJ + "I";
-            const copyIdJ = featureIdPrefix + "TestCopy" + sliceIndexI + "_" + sliceIndexJ + "J";
-            
-            opPattern(context, copyIdI, {
-                        "entities" : sliceBodyI,
-                        "transforms" : [identityTransform()],
-                        "instanceNames" : ["1"]
-                    });
-            opPattern(context, copyIdJ, {
-                        "entities" : sliceBodyJ,
-                        "transforms" : [identityTransform()],
-                        "instanceNames" : ["1"]
-                    });
-            
-            const copyBodyI = qCreatedBy(copyIdI, EntityType.BODY);
-            const copyBodyJ = qCreatedBy(copyIdJ, EntityType.BODY);
-            
-            // Find the intersection between the two slices
-            const intersectionId = featureIdPrefix + "Intersect" + sliceIndexI + "_" + sliceIndexJ;
-            
-            try silent
-            {
-                opBoolean(context, intersectionId, {
-                            "tools" : copyBodyI,
-                            "targets" : copyBodyJ,
-                            "operationType" : BooleanOperationType.INTERSECTION,
-                            "keepTools" : false,
-                            "keepTargets" : false
-                        });
-                
-                const intersectionBodies = qCreatedBy(intersectionId, EntityType.BODY);
-                
-                // If intersection exists, split it and subtract from each slice
-                if (!isQueryEmpty(context, intersectionBodies))
+                const bodyQuery = sliceBodies[idx];
+                const bodyArray = evaluateQuery(context, bodyQuery);
+                if (size(bodyArray) > 0 && bodyArray[0] == collision.toolBody)
                 {
-                    // Find a splitting plane - use the average of the two normals as the split direction
-                    // This bisects the angle between the two slice planes
-                    var splitDirection = planeI.normal + planeJ.normal;
+                    indexI = idx;
+                }
+                if (size(bodyArray) > 0 && bodyArray[0] == collision.targetBody)
+                {
+                    indexJ = idx;
+                }
+            }
+            
+            // Only add each pair once (i < j)
+            if (indexI >= 0 && indexJ >= 0 && indexI < indexJ)
+            {
+                touchingPairs = append(touchingPairs, { "i" : indexI, "j" : indexJ });
+            }
+        }
+    }
+    
+    // Process only the pairs that actually interfere
+    for (var pair in touchingPairs)
+    {
+        const sliceIndexI = pair.i;
+        const sliceIndexJ = pair.j;
+        
+        // Check if the planes are significantly different (not parallel)
+        const planeI = slicePlanes[sliceIndexI];
+        const planeJ = slicePlanes[sliceIndexJ];
+        const normalAlignment = abs(dot(planeI.normal, planeJ.normal));
+        
+        // Skip if planes are too parallel (within 5 degrees)
+        if (normalAlignment >= PARALLEL_THRESHOLD_COS)
+        {
+            continue;
+        }
+
+        // Get the actual slice bodies
+        const sliceBodyI = sliceBodies[sliceIndexI];
+        const sliceBodyJ = sliceBodies[sliceIndexJ];
+        
+        // Create copies to find intersection without modifying originals yet
+        const copyIdI = featureIdPrefix + "TestCopy" + sliceIndexI + "_" + sliceIndexJ + "I";
+        const copyIdJ = featureIdPrefix + "TestCopy" + sliceIndexI + "_" + sliceIndexJ + "J";
+        
+        opPattern(context, copyIdI, {
+                    "entities" : sliceBodyI,
+                    "transforms" : [identityTransform()],
+                    "instanceNames" : ["1"]
+                });
+        opPattern(context, copyIdJ, {
+                    "entities" : sliceBodyJ,
+                    "transforms" : [identityTransform()],
+                    "instanceNames" : ["1"]
+                });
+        
+        const copyBodyI = qCreatedBy(copyIdI, EntityType.BODY);
+        const copyBodyJ = qCreatedBy(copyIdJ, EntityType.BODY);
+        
+        // Find the intersection between the two slices
+        const intersectionId = featureIdPrefix + "Intersect" + sliceIndexI + "_" + sliceIndexJ;
+        
+        try silent
+        {
+            opBoolean(context, intersectionId, {
+                        "tools" : copyBodyI,
+                        "targets" : copyBodyJ,
+                        "operationType" : BooleanOperationType.INTERSECTION,
+                        "keepTools" : false,
+                        "keepTargets" : false
+                    });
+            
+            const intersectionBodies = qCreatedBy(intersectionId, EntityType.BODY);
+            
+            // If intersection exists, split it and subtract from each slice
+            if (!isQueryEmpty(context, intersectionBodies))
+            {
+                // Find a splitting plane - use the average of the two normals as the split direction
+                // This bisects the angle between the two slice planes
+                var splitDirection = planeI.normal + planeJ.normal;
+                
+                // Safety check: if normals are nearly opposite, sum could be close to zero
+                if (squaredNorm(splitDirection) < 0.01) // Less than ~6 degree angle between them
+                {
+                    // Use cross product instead to get a perpendicular direction
+                    splitDirection = cross(planeI.normal, planeJ.normal);
+                }
+                
+                splitDirection = normalize(splitDirection);
+                
+                // Find the centroid of the intersection
+                var intersectionCentroid = evApproximateCentroid(context, {
+                        "entities" : intersectionBodies
+                    });
+                
+                // Create a split plane through the centroid
+                var splitPlane = plane(intersectionCentroid, splitDirection);
+                
+                const splitPlaneId = intersectionId + "SplitPlane";
+                const splitId = intersectionId + "Split";
+                
+                try silent
+                {
+                    opPlane(context, splitPlaneId, {
+                                "plane" : splitPlane
+                            });
                     
-                    // Safety check: if normals are nearly opposite, sum could be close to zero
-                    if (squaredNorm(splitDirection) < 0.01) // Less than ~6 degree angle between them
+                    opSplitPart(context, splitId, {
+                                "targets" : intersectionBodies,
+                                "tool" : qCreatedBy(splitPlaneId, EntityType.BODY)
+                            });
+                    
+                    // Assign one half to slice I and the other to slice J
+                    const splitHalfI = qFarthestAlong(qCreatedBy(splitId), splitDirection);
+                    const splitHalfJ = qFarthestAlong(qCreatedBy(splitId), -splitDirection);
+                    
+                    // Subtract the halves from the original slices
+                    try silent
                     {
-                        // Use cross product instead to get a perpendicular direction
-                        splitDirection = cross(planeI.normal, planeJ.normal);
+                        opBoolean(context, intersectionId + "SubtractI", {
+                                    "tools" : splitHalfI,
+                                    "targets" : sliceBodyI,
+                                    "operationType" : BooleanOperationType.SUBTRACTION,
+                                    "keepTools" : false
+                                });
                     }
-                    
-                    splitDirection = normalize(splitDirection);
-                    
-                    // Find the centroid of the intersection
-                    var intersectionCentroid = evApproximateCentroid(context, {
-                            "entities" : intersectionBodies
-                        });
-                    
-                    // Create a split plane through the centroid
-                    var splitPlane = plane(intersectionCentroid, splitDirection);
-                    
-                    const splitPlaneId = intersectionId + "SplitPlane";
-                    const splitId = intersectionId + "Split";
                     
                     try silent
                     {
-                        opPlane(context, splitPlaneId, {
-                                    "plane" : splitPlane
-                                });
-                        
-                        opSplitPart(context, splitId, {
-                                    "targets" : intersectionBodies,
-                                    "tool" : qCreatedBy(splitPlaneId, EntityType.BODY)
-                                });
-                        
-                        // Assign one half to slice I and the other to slice J
-                        const splitHalfI = qFarthestAlong(qCreatedBy(splitId), splitDirection);
-                        const splitHalfJ = qFarthestAlong(qCreatedBy(splitId), -splitDirection);
-                        
-                        // Subtract the halves from the original slices
-                        try silent
-                        {
-                            opBoolean(context, intersectionId + "SubtractI", {
-                                        "tools" : splitHalfI,
-                                        "targets" : sliceBodyI,
-                                        "operationType" : BooleanOperationType.SUBTRACTION,
-                                        "keepTools" : false
-                                    });
-                        }
-                        
-                        try silent
-                        {
-                            opBoolean(context, intersectionId + "SubtractJ", {
-                                        "tools" : splitHalfJ,
-                                        "targets" : sliceBodyJ,
-                                        "operationType" : BooleanOperationType.SUBTRACTION,
-                                        "keepTools" : false
-                                    });
-                        }
-                        
-                        // Clean up split plane
-                        opDeleteBodies(context, splitPlaneId + "delete", {
-                                    "entities" : qCreatedBy(splitPlaneId, EntityType.BODY)
+                        opBoolean(context, intersectionId + "SubtractJ", {
+                                    "tools" : splitHalfJ,
+                                    "targets" : sliceBodyJ,
+                                    "operationType" : BooleanOperationType.SUBTRACTION,
+                                    "keepTools" : false
                                 });
                     }
+                    
+                    // Clean up split plane
+                    opDeleteBodies(context, splitPlaneId + "delete", {
+                                "entities" : qCreatedBy(splitPlaneId, EntityType.BODY)
+                            });
                 }
             }
         }
