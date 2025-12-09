@@ -12,8 +12,7 @@ import(path : "onshape/std/geometry.fs", version : "2815.0");
 import(path : "onshape/std/query.fs", version : "2815.0");
 import(path : "onshape/std/box.fs", version : "2815.0");
 import(path : "onshape/std/tool.fs", version : "2815.0");
-
-const PARALLEL_THRESHOLD_COS = cos(5 * degree); // Approximately 0.996
+import(path : "onshape/std/extrude.fs", version : "2815.0");
 
 export enum LaserItGenerationMode
 {
@@ -838,14 +837,17 @@ function generateSheetsFromSketch(context is Context, featureIdPrefix is Id, ske
         var sliceId = featureIdPrefix + "Rib" + lineCounter;
         
         // Use thin extrude to create the slice directly from the line edge
-        opExtrude(context, sliceId + "extrude", {
-                    "entities" : lineEdge,
-                    "direction" : sketchPlane.normal,
-                    "endBound" : BoundingType.BLIND,
-                    "endDepth" : 0 * meter, // No extrusion in sketch normal direction
-                    "startBound" : BoundingType.BLIND,
-                    "startDepth" : 0 * meter,
+        // Extrude along the line to create a thin wall solid body
+        const lineLength = evLength(context, {
+                    "entities" : lineEdge
+                });
+        
+        extrude(context, sliceId + "extrude", {
                     "bodyType" : ExtendedToolBodyType.THIN,
+                    "wallShape" : lineEdge,
+                    "direction" : lineDirection,
+                    "endBound" : BoundingType.BLIND,
+                    "endDepth" : lineLength,
                     "thickness1" : materialThickness / 2,
                     "thickness2" : materialThickness / 2
                 });
@@ -1005,10 +1007,9 @@ function generateCrossSlotGeometryGeneric(context is Context, featureIdPrefix is
         // Check if the planes are significantly different (not parallel)
         const planeI = slicePlanes[sliceIndexI];
         const planeJ = slicePlanes[sliceIndexJ];
-        const normalAlignment = abs(dot(planeI.normal, planeJ.normal));
         
-        // Skip if planes are too parallel (within 5 degrees)
-        if (normalAlignment >= PARALLEL_THRESHOLD_COS)
+        // Skip if planes are parallel using standard library function
+        if (parallelVectors(planeI.normal, planeJ.normal))
         {
             continue;
         }
