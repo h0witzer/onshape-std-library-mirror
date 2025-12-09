@@ -968,6 +968,7 @@ function trimSheetsToSolidGeneric(context is Context, featureIdPrefix is Id, sli
 
 // Generate cross-slot geometry for arbitrary slice orientations (Rib Mode)
 // This handles slices that don't follow a simple X/Y grid pattern
+// For each pair of non-parallel slices, find their intersection and create notches
 // Inputs:
 //  - context : Context for geometry operations
 //  - featureIdPrefix : Base id used for boolean operations
@@ -977,39 +978,15 @@ function trimSheetsToSolidGeneric(context is Context, featureIdPrefix is Id, sli
 function generateCrossSlotGeometryGeneric(context is Context, featureIdPrefix is Id, sliceIntersectionIds is array, slicePlanes is array)
 {
     // For each pair of slices, check if they intersect and generate slot geometry
-    // This is similar to the waffle mode approach but works for arbitrary orientations
+    // The approach: for each pair of intersecting slices, subtract half of the intersection from each
     
     var sliceCount = size(sliceIntersectionIds);
     
-    // Create copies of all slices for intersection processing
-    var sliceCopyIds = [] as array;
-    for (var sliceIndex = 0; sliceIndex < sliceCount; sliceIndex += 1)
-    {
-        const copyId = featureIdPrefix + "Copy" + sliceIndex;
-        opPattern(context, copyId, {
-                    "entities" : qCreatedBy(sliceIntersectionIds[sliceIndex], EntityType.BODY),
-                    "transforms" : [identityTransform()],
-                    "instanceNames" : ["1"]
-                });
-        sliceCopyIds = append(sliceCopyIds, copyId);
-    }
-
-    // For each pair of slices (i, j where i < j), perform intersection
-    var splitToolsMap = {} as map; // Map from slice index to array of split tools to subtract
-    
-    for (var sliceIndexI = 0; sliceIndexI < sliceCount; sliceIndexI += 1)
-    {
-        splitToolsMap[sliceIndexI] = [] as array;
-    }
-
+    // Process each pair of slices
     for (var sliceIndexI = 0; sliceIndexI < sliceCount; sliceIndexI += 1)
     {
         for (var sliceIndexJ = sliceIndexI + 1; sliceIndexJ < sliceCount; sliceIndexJ += 1)
         {
-            // Get the two slice copies
-            const sliceBodyI = qCreatedBy(sliceCopyIds[sliceIndexI], EntityType.BODY);
-            const sliceBodyJ = qCreatedBy(sliceCopyIds[sliceIndexJ], EntityType.BODY);
-            
             // Check if the planes are significantly different (not parallel)
             const planeI = slicePlanes[sliceIndexI];
             const planeJ = slicePlanes[sliceIndexJ];
@@ -1021,112 +998,121 @@ function generateCrossSlotGeometryGeneric(context is Context, featureIdPrefix is
                 continue;
             }
 
-            // Create intersection between the two slice copies
+            // Get the actual slice bodies
+            const sliceBodyI = qCreatedBy(sliceIntersectionIds[sliceIndexI], EntityType.BODY);
+            const sliceBodyJ = qCreatedBy(sliceIntersectionIds[sliceIndexJ], EntityType.BODY);
+            
+            // Create copies to find intersection without modifying originals yet
+            const copyIdI = featureIdPrefix + "TestCopy" + sliceIndexI + "_" + sliceIndexJ + "I";
+            const copyIdJ = featureIdPrefix + "TestCopy" + sliceIndexI + "_" + sliceIndexJ + "J";
+            
+            opPattern(context, copyIdI, {
+                        "entities" : sliceBodyI,
+                        "transforms" : [identityTransform()],
+                        "instanceNames" : ["1"]
+                    });
+            opPattern(context, copyIdJ, {
+                        "entities" : sliceBodyJ,
+                        "transforms" : [identityTransform()],
+                        "instanceNames" : ["1"]
+                    });
+            
+            const copyBodyI = qCreatedBy(copyIdI, EntityType.BODY);
+            const copyBodyJ = qCreatedBy(copyIdJ, EntityType.BODY);
+            
+            // Find the intersection between the two slices
             const intersectionId = featureIdPrefix + "Intersect" + sliceIndexI + "_" + sliceIndexJ;
             
             try silent
             {
                 opBoolean(context, intersectionId, {
-                            "tools" : sliceBodyI,
-                            "targets" : sliceBodyJ,
+                            "tools" : copyBodyI,
+                            "targets" : copyBodyJ,
                             "operationType" : BooleanOperationType.INTERSECTION,
-                            "keepTools" : true,
-                            "keepTargets" : true
+                            "keepTools" : false,
+                            "keepTargets" : false
                         });
                 
                 const intersectionBodies = qCreatedBy(intersectionId, EntityType.BODY);
                 
-                // If intersection exists, split it and assign halves
+                // If intersection exists, split it and subtract from each slice
                 if (!isQueryEmpty(context, intersectionBodies))
                 {
-                    var intersectionBodyArray = evaluateQuery(context, intersectionBodies);
-                    var cellCounter = 0;
+                    // Find a splitting plane - use the average of the two normals as the split direction
+                    var splitDirection = planeI.normal + planeJ.normal;
                     
-                    for (var intersectionCell in intersectionBodyArray)
+                    // Check that the sum is non-zero (normals are not exactly opposite)
+                    if (squaredNorm(splitDirection) < TOLERANCE.zeroLength * TOLERANCE.zeroLength)
                     {
-                        // Find a splitting plane - use the average of the two normals as the split direction
-                        var splitDirection = planeI.normal + planeJ.normal;
-                        
-                        // Check that the sum is non-zero (normals are not exactly opposite)
-                        // This should not happen given the parallel check above, but we verify for safety
+                        // Fallback: use the cross product of the two normals
+                        splitDirection = cross(planeI.normal, planeJ.normal);
                         if (squaredNorm(splitDirection) < TOLERANCE.zeroLength * TOLERANCE.zeroLength)
                         {
-                            // Fallback: use a direction perpendicular to both normals
+                            // If still zero, use an arbitrary perpendicular direction
                             splitDirection = cross(planeI.normal, vector(1, 0, 0));
                             if (squaredNorm(splitDirection) < TOLERANCE.zeroLength * TOLERANCE.zeroLength)
                             {
                                 splitDirection = cross(planeI.normal, vector(0, 1, 0));
                             }
                         }
+                    }
+                    
+                    splitDirection = normalize(splitDirection);
+                    
+                    // Find the centroid of the intersection
+                    var intersectionCentroid = evApproximateCentroid(context, {
+                            "entities" : intersectionBodies
+                        });
+                    
+                    // Create a split plane through the centroid
+                    var splitPlane = plane(intersectionCentroid, splitDirection);
+                    
+                    const splitPlaneId = intersectionId + "SplitPlane";
+                    const splitId = intersectionId + "Split";
+                    
+                    try silent
+                    {
+                        opPlane(context, splitPlaneId, {
+                                    "plane" : splitPlane
+                                });
                         
-                        splitDirection = normalize(splitDirection);
+                        opSplitPart(context, splitId, {
+                                    "targets" : intersectionBodies,
+                                    "tool" : qCreatedBy(splitPlaneId, EntityType.BODY)
+                                });
                         
-                        // Find the centroid of the intersection cell
-                        var cellCentroid = evApproximateCentroid(context, {
-                                "entities" : intersectionCell
-                            });
+                        // Assign one half to slice I and the other to slice J
+                        const splitHalfI = qFarthestAlong(qOwnerBody(qCreatedBy(splitId)), splitDirection);
+                        const splitHalfJ = qFarthestAlong(qOwnerBody(qCreatedBy(splitId)), -splitDirection);
                         
-                        // Create a split plane through the centroid
-                        var splitPlane = plane(cellCentroid, splitDirection);
-                        
-                        const splitPlaneId = intersectionId + "SplitPlane" + cellCounter;
-                        const splitId = intersectionId + "Split" + cellCounter;
-                        
+                        // Subtract the halves from the original slices
                         try silent
                         {
-                            opPlane(context, splitPlaneId, {
-                                        "plane" : splitPlane
-                                    });
-                            
-                            opSplitPart(context, splitId, {
-                                        "targets" : intersectionCell,
-                                        "tool" : qCreatedBy(splitPlaneId, EntityType.BODY)
-                                    });
-                            
-                            // Assign one half to slice I and the other to slice J
-                            const splitHalfI = qFarthestAlong(qOwnerBody(qCreatedBy(splitId)), splitDirection);
-                            const splitHalfJ = qFarthestAlong(qOwnerBody(qCreatedBy(splitId)), -splitDirection);
-                            
-                            splitToolsMap[sliceIndexI] = append(splitToolsMap[sliceIndexI], splitHalfI);
-                            splitToolsMap[sliceIndexJ] = append(splitToolsMap[sliceIndexJ], splitHalfJ);
-                            
-                            // Clean up split plane
-                            opDeleteBodies(context, splitPlaneId + "delete", {
-                                        "entities" : qCreatedBy(splitPlaneId, EntityType.BODY)
+                            opBoolean(context, intersectionId + "SubtractI", {
+                                        "tools" : splitHalfI,
+                                        "targets" : sliceBodyI,
+                                        "operationType" : BooleanOperationType.SUBTRACTION,
+                                        "keepTools" : false
                                     });
                         }
                         
-                        cellCounter += 1;
+                        try silent
+                        {
+                            opBoolean(context, intersectionId + "SubtractJ", {
+                                        "tools" : splitHalfJ,
+                                        "targets" : sliceBodyJ,
+                                        "operationType" : BooleanOperationType.SUBTRACTION,
+                                        "keepTools" : false
+                                    });
+                        }
+                        
+                        // Clean up split plane
+                        opDeleteBodies(context, splitPlaneId + "delete", {
+                                    "entities" : qCreatedBy(splitPlaneId, EntityType.BODY)
+                                });
                     }
                 }
             }
         }
     }
-
-    // Now subtract the collected split tools from each original slice
-    for (var sliceIndex = 0; sliceIndex < sliceCount; sliceIndex += 1)
-    {
-        const toolsToSubtract = splitToolsMap[sliceIndex];
-        
-        if (size(toolsToSubtract) > 0)
-        {
-            const originalSlice = qCreatedBy(sliceIntersectionIds[sliceIndex], EntityType.BODY);
-            
-            opBoolean(context, featureIdPrefix + "SubtractSlots" + sliceIndex, {
-                        "tools" : qUnion(toolsToSubtract),
-                        "targets" : originalSlice,
-                        "operationType" : BooleanOperationType.SUBTRACTION
-                    });
-        }
-    }
-
-    // Clean up all copies
-    const allCopies = qUnion(mapArray(sliceCopyIds, function(copyId)
-            {
-                return qCreatedBy(copyId, EntityType.BODY);
-            }));
-    
-    opDeleteBodies(context, featureIdPrefix + "deleteCopies", {
-                "entities" : allCopies
-            });
 }
