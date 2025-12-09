@@ -12,7 +12,6 @@ import(path : "onshape/std/geometry.fs", version : "2815.0");
 import(path : "onshape/std/query.fs", version : "2815.0");
 import(path : "onshape/std/box.fs", version : "2815.0");
 
-const MINIMUM_RECTANGLE_SIZE = 1 * meter;
 const PARALLEL_THRESHOLD_COS = cos(5 * degree); // Approximately 0.996
 
 export enum LaserItGenerationMode
@@ -167,7 +166,7 @@ function processRibMode(context is Context, id is Id, definition is map)
     }
 
     // Generate sheets from sketch lines
-    var sliceResults = generateSheetsFromSketch(context, id, definition.sketchLines, sketchPlane, definition.selectedBody, definition.matThick);
+    var sliceResults = generateSheetsFromSketch(context, id, definition.sketchLines, sketchPlane, definition.matThick);
 
     // Trim sheets to the target solid
     var trimmedSliceIds = trimSheetsToSolidGeneric(context, id, sliceResults, definition.selectedBody);
@@ -798,25 +797,12 @@ export function normalizeSliceGeometryForLasercutting(context is Context, idPref
 //  - featureIdPrefix : Base id used when naming all geometry created
 //  - sketchLines : Query for sketch line edges to extrude as slices
 //  - sketchPlane : Plane that all sketch lines lie in
-//  - targetBody : Body to use for determining bounding rectangle size
 //  - materialThickness : Extrusion depth for the raw sheet
 // Returns: map containing slicePlanes array and sliceIds array
-function generateSheetsFromSketch(context is Context, featureIdPrefix is Id, sketchLines is Query, sketchPlane is Plane, targetBody is Query, materialThickness is ValueWithUnits)
+function generateSheetsFromSketch(context is Context, featureIdPrefix is Id, sketchLines is Query, sketchPlane is Plane, materialThickness is ValueWithUnits)
 {
     var slicePlanes = [] as array;
     var sliceIds = [] as array;
-
-    // Get bounding box of target body to determine rectangle size
-    var boundingBox = evBox3d(context, {
-            "topology" : targetBody,
-            "tight" : false
-        });
-    
-    // Calculate rectangle dimensions - make them large enough to cover the bounding box
-    var rectangleSize = max(
-        norm(boundingBox.maxCorner - boundingBox.minCorner),
-        MINIMUM_RECTANGLE_SIZE
-    );
 
     // Process each sketch line
     var lineEdges = evaluateQuery(context, sketchLines);
@@ -852,8 +838,8 @@ function generateSheetsFromSketch(context is Context, featureIdPrefix is Id, ske
         
         var sliceId = featureIdPrefix + "Rib" + lineCounter;
         
-        // Generate the slice sheet at this plane
-        generateSliceSheet(context, sliceId, slicePlane, rectangleSize, rectangleSize, sliceNormal, materialThickness);
+        // Generate the slice sheet by sweeping a profile along the line
+        generateSliceSheetFromLine(context, sliceId, lineEdge, sketchPlane, materialThickness);
         
         slicePlanes = append(slicePlanes, slicePlane);
         sliceIds = append(sliceIds, sliceId);
@@ -861,6 +847,53 @@ function generateSheetsFromSketch(context is Context, featureIdPrefix is Id, ske
     }
 
     return { "slicePlanes" : slicePlanes, "sliceIds" : sliceIds };
+}
+
+// Create a slice sheet by sweeping a profile along a sketch line
+// This creates a slice only where the line is, not a large rectangle
+// Inputs:
+//  - context : Context for geometry operations
+//  - sliceId : Unique Id prefix used for sketch and sweep operations
+//  - lineEdge : The sketch line edge to sweep along
+//  - sketchPlane : The plane containing the sketch line
+//  - materialThickness : Thickness of the slice material
+// Returns: none
+function generateSliceSheetFromLine(context is Context, sliceId is Id, lineEdge is Query, sketchPlane is Plane, materialThickness is ValueWithUnits)
+{
+    // Get a point on the line to establish the sweep profile plane
+    const edgeVector = evEdgeTangentLine(context, {
+                "edge" : lineEdge,
+                "parameter" : 0
+            });
+
+    // Create a plane perpendicular to the sketch plane, through the line
+    // The profile will be a line segment perpendicular to the sketch plane
+    const profilePlane = plane(edgeVector.origin, sketchPlane.normal, edgeVector.direction);
+
+    // Create a sketch on this plane for the sweep profile
+    const profileSketch = newSketchOnPlane(context, sliceId + "sketch", {
+                "sketchPlane" : profilePlane
+            });
+
+    // Draw a line segment representing the material thickness
+    // Centered on the sketch plane, extending perpendicular to it
+    skLineSegment(profileSketch, "line", {
+                "start" : vector(0 * meter, materialThickness / 2),
+                "end" : vector(0 * meter, -materialThickness / 2)
+            });
+
+    skSolve(profileSketch);
+
+    // Sweep the profile along the line edge
+    opSweep(context, sliceId + "sweep", {
+                "profiles" : qCreatedBy(sliceId + "sketch", EntityType.EDGE),
+                "path" : lineEdge
+            });
+    
+    // Delete the sketch
+    opDeleteBodies(context, sliceId + "deleteSketch", {
+                "entities" : qCreatedBy(sliceId + "sketch")
+            });
 }
 
 // Trim sheets to solid for generic/arbitrary orientations (Rib Mode)
@@ -884,7 +917,7 @@ function trimSheetsToSolidGeneric(context is Context, featureIdPrefix is Id, sli
         var intersectionId = featureIdPrefix + "Intersection" + sliceIndex;
         
         // Start tracking the start and end cap faces separately before the intersection operation
-        const originalSheetBody = qCreatedBy(sliceId + "extrudeRectangle", EntityType.BODY);
+        const originalSheetBody = qCreatedBy(sliceId + "sweep", EntityType.BODY);
         const originalSheetFaces = qOwnedByBody(originalSheetBody, EntityType.FACE);
         const originalCapFaces = qParallelPlanes(originalSheetFaces, slicePlane);
         
@@ -923,7 +956,7 @@ function trimSheetsToSolidGeneric(context is Context, featureIdPrefix is Id, sli
     // Delete all raw slices
     const rawSlices = qUnion(mapArray(sliceIds, function(sliceId)
             {
-                return qCreatedBy(sliceId + "extrudeRectangle", EntityType.BODY);
+                return qCreatedBy(sliceId + "sweep", EntityType.BODY);
             }));
 
     opDeleteBodies(context, featureIdPrefix + "deleteRawSlices", {
