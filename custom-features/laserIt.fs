@@ -1041,7 +1041,16 @@ function generateCrossSlotGeometryGeneric(context is Context, featureIdPrefix is
                 {
                     // Find a splitting plane - use the average of the two normals as the split direction
                     // This bisects the angle between the two slice planes
-                    var splitDirection = normalize(planeI.normal + planeJ.normal);
+                    var splitDirection = planeI.normal + planeJ.normal;
+                    
+                    // Safety check: if normals are nearly opposite, sum could be close to zero
+                    if (squaredNorm(splitDirection) < 0.01) // Less than ~6 degree angle between them
+                    {
+                        // Use cross product instead to get a perpendicular direction
+                        splitDirection = cross(planeI.normal, planeJ.normal);
+                    }
+                    
+                    splitDirection = normalize(splitDirection);
                     
                     // Find the centroid of the intersection
                     var intersectionCentroid = evApproximateCentroid(context, {
