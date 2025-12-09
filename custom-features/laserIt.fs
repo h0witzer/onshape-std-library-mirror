@@ -1,14 +1,24 @@
 // Laser It slices a selected body into a grid of extruded rectangles to prepare geometry for laser cutting.
 // Inputs:
 //  - selectedBody : Body query to slice
-//  - planeSpacing : Distance between slicing planes along the X and Y axes of the reference frame
+//  - generationMode : Selection between Waffle Mode (grid-based) and Rib Mode (sketch-based)
+//  - planeSpacing : Distance between slicing planes along the X and Y axes of the reference frame (Waffle Mode only)
 //  - matThick : Material thickness that controls extrusion depth
-//  - defRefFrame : Boolean to select a mate connector as the slicing reference frame
-//  - referenceFrame : Mate connector query when defRefFrame is true, defines the placement of the slicing grid
+//  - defRefFrame : Boolean to select a mate connector as the slicing reference frame (Waffle Mode only)
+//  - referenceFrame : Mate connector query when defRefFrame is true, defines the placement of the slicing grid (Waffle Mode only)
+//  - sketchLines : Sketch edges to extrude as slices (Rib Mode only)
 FeatureScript 2815;
 import(path : "onshape/std/geometry.fs", version : "2815.0");
 import(path : "onshape/std/query.fs", version : "2815.0");
 import(path : "onshape/std/box.fs", version : "2815.0");
+
+export enum LaserItGenerationMode
+{
+    annotation { "Name" : "Waffle Mode" }
+    WAFFLE,
+    annotation { "Name" : "Rib Mode" }
+    RIB
+}
 
 annotation { "Feature Type Name" : "Laser It" }
 export const laserIt = defineFeature(function(context is Context, id is Id, definition is map)
@@ -17,79 +27,154 @@ export const laserIt = defineFeature(function(context is Context, id is Id, defi
         annotation { "Name" : "Body", "Filter" : EntityType.BODY, "MaxNumberOfPicks" : 1 }
         definition.selectedBody is Query;
 
-        annotation { "Name" : "Plane Spacing" }
-        isLength(definition.planeSpacing, LENGTH_BOUNDS);
+        annotation { "Name" : "Generation Mode" }
+        definition.generationMode is LaserItGenerationMode;
 
         annotation { "Name" : "Material Thickness" }
         isLength(definition.matThick, LENGTH_BOUNDS);
 
-
-        annotation { "Name" : "Define Reference Frame" }
-        definition.defRefFrame is boolean;
-
-
-        if (definition.defRefFrame)
+        if (definition.generationMode == LaserItGenerationMode.WAFFLE)
         {
-            annotation { "Name" : "Reference Frame", "Filter" : BodyType.MATE_CONNECTOR, "MaxNumberOfPicks" : 1 }
-            definition.referenceFrame is Query;
+            annotation { "Name" : "Plane Spacing" }
+            isLength(definition.planeSpacing, LENGTH_BOUNDS);
+
+            annotation { "Name" : "Define Reference Frame" }
+            definition.defRefFrame is boolean;
+
+            if (definition.defRefFrame)
+            {
+                annotation { "Name" : "Reference Frame", "Filter" : BodyType.MATE_CONNECTOR, "MaxNumberOfPicks" : 1 }
+                definition.referenceFrame is Query;
+            }
+        }
+
+        if (definition.generationMode == LaserItGenerationMode.RIB)
+        {
+            annotation { "Name" : "Sketch Lines", "Filter" : EntityType.EDGE && SketchObject.YES && ConstructionObject.NO && GeometryType.LINE }
+            definition.sketchLines is Query;
         }
 
     }
     {
-        // Establish the coordinate system used for slicing
-        var referenceFrame = WORLD_COORD_SYSTEM;
-
-        if (definition.defRefFrame == true)
+        if (definition.generationMode == LaserItGenerationMode.WAFFLE)
         {
-            referenceFrame = evMateConnector(context, {
-                        "mateConnector" : definition.referenceFrame
-                    });
+            // Waffle Mode: Grid-based slicing with X and Y planes
+            processWaffleMode(context, id, definition);
         }
+        else if (definition.generationMode == LaserItGenerationMode.RIB)
+        {
+            // Rib Mode: Sketch-based slicing with arbitrary line orientations
+            processRibMode(context, id, definition);
+        }
+    });
 
-        // Use the coordinate system to define the bounding box (start and end of planes).
-        // The reference frame position directly controls where the slicing grid is placed.
-        var orientedBoundingBox = evBox3d(context, {
-                "topology" : definition.selectedBody,
-                "cSys" : referenceFrame,
-                "tight" : true
+// Process Waffle Mode: Grid-based slicing with X and Y planes
+// Inputs:
+//  - context : Context for geometry operations
+//  - id : Feature ID
+//  - definition : Feature definition map containing all user inputs
+// Returns: none
+function processWaffleMode(context is Context, id is Id, definition is map)
+{
+    // Establish the coordinate system used for slicing
+    var referenceFrame = WORLD_COORD_SYSTEM;
+
+    if (definition.defRefFrame == true)
+    {
+        referenceFrame = evMateConnector(context, {
+                    "mateConnector" : definition.referenceFrame
+                });
+    }
+
+    // Use the coordinate system to define the bounding box (start and end of planes).
+    // The reference frame position directly controls where the slicing grid is placed.
+    var orientedBoundingBox = evBox3d(context, {
+            "topology" : definition.selectedBody,
+            "cSys" : referenceFrame,
+            "tight" : true
+        });
+
+    var referenceFrameToWorldTransform = toWorld(referenceFrame);
+
+    // Build a stack of slicing planes perpendicular to X, then Y, that span the oriented bounding box of the target body.
+    // The function calculates which planes are needed based on the bounding box and spacing.
+    // Each loop: create a sketch-sized rectangle around the body, extrude it to the material thickness, and retain the raw
+    // sheets for a later trimming pass against the selected part.
+    var xSliceResult = generateSheets(context, id, "X", orientedBoundingBox, definition.planeSpacing, referenceFrameToWorldTransform, definition.matThick);
+
+    var ySliceResult = generateSheets(context, id, "Y", orientedBoundingBox, definition.planeSpacing, referenceFrameToWorldTransform, definition.matThick);
+
+    // Intersect each sheet with the target solid to retain only in-bounds material before generating cross-slot geometry.
+    var trimmedSheetsResult = trimSheetsToSolid(context, id, xSliceResult, ySliceResult, definition.selectedBody);
+
+    // The XY nested loop takes every X slice and intersects it with every Y slice to form individual grid cells.
+    // For each cell, it resolves all intersecting bodies, averages aligned edges to infer a mid-surface, and splits the
+    // cell into two halves so the original X and Y slice sets can be trimmed against each other.
+    var intersectionResult = generateCrossSlotGeometryForSlices(context, id, trimmedSheetsResult.xIntersectionIds, trimmedSheetsResult.yIntersectionIds, referenceFrame);
+
+    // After trimming the intersecting grid, find all non-normal cut faces on a given slice and project their geometry to
+    // the surface of the slice. Thicken the flattened projections and remove the results from the slice.
+    // This subtractive operation guarantees the slices lie inside of the original target volume, where additive methods wouldn't.
+    // Process all X slice bodies together
+    const allXSliceBodies = qUnion(mapArray(trimmedSheetsResult.xIntersectionIds, function(xIntersectionId)
+        {
+            return qCreatedBy(xIntersectionId, EntityType.BODY);
+        }));
+    normalizeSliceGeometryForLasercutting(context, id + "XNormalize", allXSliceBodies, definition.matThick);
+
+    // Process all Y slice bodies together
+    const allYSliceBodies = qUnion(mapArray(trimmedSheetsResult.yIntersectionIds, function(yIntersectionId)
+        {
+            return qCreatedBy(yIntersectionId, EntityType.BODY);
+        }));
+    normalizeSliceGeometryForLasercutting(context, id + "YNormalize", allYSliceBodies, definition.matThick);
+}
+
+// Process Rib Mode: Sketch-based slicing with arbitrary line orientations
+// Inputs:
+//  - context : Context for geometry operations
+//  - id : Feature ID
+//  - definition : Feature definition map containing all user inputs
+// Returns: none
+function processRibMode(context is Context, id is Id, definition is map)
+{
+    // Verify sketch lines were selected
+    verifyNonemptyQuery(context, definition, "sketchLines", "Select sketch lines to extrude as slices.");
+
+    // Get the sketch plane that all lines should lie in
+    const sketchPlane = evOwnerSketchPlane(context, {
+                "entity" : definition.sketchLines
             });
 
-        var referenceFrameToWorldTransform = toWorld(referenceFrame);
+    // Verify all selected edges are lines in the same plane
+    const selectedEdges = evaluateQuery(context, definition.sketchLines);
+    for (var edge in selectedEdges)
+    {
+        const edgeGeometry = evLine(context, {
+                "edge" : edge
+            });
+        if (edgeGeometry == undefined)
+        {
+            throw regenError("All sketch edges must be straight lines.", ["sketchLines"]);
+        }
+    }
 
-        // Build a stack of slicing planes perpendicular to X, then Y, that span the oriented bounding box of the target body.
-        // The function calculates which planes are needed based on the bounding box and spacing.
-        // Each loop: create a sketch-sized rectangle around the body, extrude it to the material thickness, and retain the raw
-        // sheets for a later trimming pass against the selected part.
-        var xSliceResult = generateSheets(context, id, "X", orientedBoundingBox, definition.planeSpacing, referenceFrameToWorldTransform, definition.matThick);
+    // Generate sheets from sketch lines
+    var sliceResults = generateSheetsFromSketch(context, id, definition.sketchLines, sketchPlane, definition.selectedBody, definition.matThick);
 
-        var ySliceResult = generateSheets(context, id, "Y", orientedBoundingBox, definition.planeSpacing, referenceFrameToWorldTransform, definition.matThick);
+    // Trim sheets to the target solid
+    var trimmedSliceIds = trimSheetsToSolidGeneric(context, id, sliceResults, definition.selectedBody);
 
-        // Intersect each sheet with the target solid to retain only in-bounds material before generating cross-slot geometry.
-        var trimmedSheetsResult = trimSheetsToSolid(context, id, xSliceResult, ySliceResult, definition.selectedBody);
+    // Generate cross-slot geometry for arbitrary slice orientations
+    generateCrossSlotGeometryGeneric(context, id, trimmedSliceIds, sliceResults.slicePlanes);
 
-        // The XY nested loop takes every X slice and intersects it with every Y slice to form individual grid cells.
-        // For each cell, it resolves all intersecting bodies, averages aligned edges to infer a mid-surface, and splits the
-        // cell into two halves so the original X and Y slice sets can be trimmed against each other.
-        var intersectionResult = generateCrossSlotGeometryForSlices(context, id, trimmedSheetsResult.xIntersectionIds, trimmedSheetsResult.yIntersectionIds, referenceFrame);
-
-        // After trimming the intersecting grid, find all non-normal cut faces on a given slice and project their geometry to
-        // the surface of the slice. Thicken the flattened projections and remove the results from the slice.
-        // This subtractive operation guarantees the slices lie inside of the original target volume, where additive methods wouldn't.
-        // Process all X slice bodies together
-        const allXSliceBodies = qUnion(mapArray(trimmedSheetsResult.xIntersectionIds, function(xIntersectionId)
-            {
-                return qCreatedBy(xIntersectionId, EntityType.BODY);
-            }));
-        normalizeSliceGeometryForLasercutting(context, id + "XNormalize", allXSliceBodies, definition.matThick);
-
-        // Process all Y slice bodies together
-        const allYSliceBodies = qUnion(mapArray(trimmedSheetsResult.yIntersectionIds, function(yIntersectionId)
-            {
-                return qCreatedBy(yIntersectionId, EntityType.BODY);
-            }));
-        normalizeSliceGeometryForLasercutting(context, id + "YNormalize", allYSliceBodies, definition.matThick);
-
-    });
+    // Normalize all slices for laser cutting
+    const allSliceBodies = qUnion(mapArray(trimmedSliceIds, function(sliceId)
+        {
+            return qCreatedBy(sliceId, EntityType.BODY);
+        }));
+    normalizeSliceGeometryForLasercutting(context, id + "Normalize", allSliceBodies, definition.matThick);
+}
 
 // Create rectangular sheets along a specified axis, returning plane definitions for downstream trimming and rib generation.
 // Inputs:
@@ -698,4 +783,287 @@ export function normalizeSliceGeometryForLasercutting(context is Context, idPref
         
         bodyCounter += 1;
     }
+}
+
+// Generate sheets from sketch lines for Rib Mode
+// Inputs:
+//  - context : Context for geometry operations
+//  - featureIdPrefix : Base id used when naming all geometry created
+//  - sketchLines : Query for sketch line edges to extrude as slices
+//  - sketchPlane : Plane that all sketch lines lie in
+//  - targetBody : Body to use for determining bounding rectangle size
+//  - materialThickness : Extrusion depth for the raw sheet
+// Returns: map containing slicePlanes array and sliceIds array
+function generateSheetsFromSketch(context is Context, featureIdPrefix is Id, sketchLines is Query, sketchPlane is Plane, targetBody is Query, materialThickness is ValueWithUnits)
+{
+    var slicePlanes = [] as array;
+    var sliceIds = [] as array;
+
+    // Get bounding box of target body to determine rectangle size
+    var boundingBox = evBox3d(context, {
+            "topology" : targetBody,
+            "tight" : false
+        });
+    
+    // Calculate rectangle dimensions - make them large enough to cover the bounding box
+    var rectangleSize = max(
+        norm(boundingBox.maxCorner - boundingBox.minCorner),
+        1 * meter
+    );
+
+    // Process each sketch line
+    var lineEdges = evaluateQuery(context, sketchLines);
+    var lineCounter = 0;
+    
+    for (var lineEdge in lineEdges)
+    {
+        // Get the line geometry
+        var lineGeometry = evLine(context, {
+                "edge" : lineEdge
+            });
+
+        // Calculate the plane perpendicular to the sketch plane, containing the line
+        // The line direction becomes the "up" vector of the slice plane
+        // The cross product of sketch normal and line direction becomes the slice normal
+        var lineDirection = lineGeometry.direction;
+        var sliceNormal = cross(sketchPlane.normal, lineDirection);
+        
+        // Normalize the slice normal
+        sliceNormal = normalize(sliceNormal);
+
+        // Get a point on the line to use as origin
+        var lineMidpoint = lineGeometry.origin;
+
+        // Create the slice plane perpendicular to the sketch plane, through the line
+        var slicePlane = plane(lineMidpoint, sliceNormal, lineDirection);
+        
+        var sliceId = featureIdPrefix + "Rib" + lineCounter;
+        
+        // Generate the slice sheet at this plane
+        generateSliceSheet(context, sliceId, slicePlane, rectangleSize, rectangleSize, sliceNormal, materialThickness);
+        
+        slicePlanes = append(slicePlanes, slicePlane);
+        sliceIds = append(sliceIds, sliceId);
+        lineCounter += 1;
+    }
+
+    return { "slicePlanes" : slicePlanes, "sliceIds" : sliceIds };
+}
+
+// Trim sheets to solid for generic/arbitrary orientations (Rib Mode)
+// Inputs:
+//  - context : Context for geometry operations
+//  - featureIdPrefix : Base id used for intersection operations
+//  - sliceResults : Map containing slicePlanes and sliceIds arrays
+//  - targetBody : Body query representing the part being sliced
+// Returns: array of intersection IDs for successfully trimmed slices
+function trimSheetsToSolidGeneric(context is Context, featureIdPrefix is Id, sliceResults is map, targetBody is Query)
+{
+    var intersectionIds = [] as array;
+    
+    const sliceIds = sliceResults.sliceIds;
+    const slicePlanes = sliceResults.slicePlanes;
+
+    for (var sliceIndex = 0; sliceIndex < size(sliceIds); sliceIndex += 1)
+    {
+        var sliceId = sliceIds[sliceIndex];
+        var slicePlane = slicePlanes[sliceIndex];
+        var intersectionId = featureIdPrefix + "Intersection" + sliceIndex;
+        
+        // Start tracking the start and end cap faces separately before the intersection operation
+        const originalSheetBody = qCreatedBy(sliceId + "extrudeRectangle", EntityType.BODY);
+        const originalSheetFaces = qOwnedByBody(originalSheetBody, EntityType.FACE);
+        const originalCapFaces = qParallelPlanes(originalSheetFaces, slicePlane);
+        
+        // Track each cap separately (there should be exactly 2 cap faces)
+        const startCapFace = qNthElement(originalCapFaces, 0);
+        const endCapFace = qNthElement(originalCapFaces, 1);
+        const trackingStartCap = startTracking(context, startCapFace);
+        const trackingEndCap = startTracking(context, endCapFace);
+        
+        opBoolean(context, intersectionId, {
+                    "tools" : qUnion([originalSheetBody, targetBody]),
+                    "operationType" : BooleanOperationType.INTERSECTION,
+                    "keepTools" : true
+                });
+        
+        // Check if EITHER cap has been completely destroyed after intersection
+        const intersectionBodies = qCreatedBy(intersectionId, EntityType.BODY);
+        if (!isQueryEmpty(context, intersectionBodies))
+        {
+            const remainingStartCapFaces = evaluateQuery(context, trackingStartCap);
+            const remainingEndCapFaces = evaluateQuery(context, trackingEndCap);
+            
+            // Delete body if EITHER the start cap OR the end cap is completely gone
+            if (size(remainingStartCapFaces) == 0 || size(remainingEndCapFaces) == 0)
+            {
+                opDeleteBodies(context, intersectionId + "deleteNoCapBody", {
+                    "entities" : intersectionBodies
+                });
+                continue;
+            }
+        }
+
+        intersectionIds = append(intersectionIds, intersectionId);
+    }
+
+    // Delete all raw slices
+    const rawSlices = qUnion(mapArray(sliceIds, function(sliceId)
+            {
+                return qCreatedBy(sliceId + "extrudeRectangle", EntityType.BODY);
+            }));
+
+    opDeleteBodies(context, featureIdPrefix + "deleteRawSlices", {
+                "entities" : rawSlices
+            });
+
+    return intersectionIds;
+}
+
+// Generate cross-slot geometry for arbitrary slice orientations (Rib Mode)
+// This handles slices that don't follow a simple X/Y grid pattern
+// Inputs:
+//  - context : Context for geometry operations
+//  - featureIdPrefix : Base id used for boolean operations
+//  - sliceIntersectionIds : Array of IDs for trimmed slice bodies
+//  - slicePlanes : Array of planes corresponding to each slice
+// Returns: none (modifies slices in place)
+function generateCrossSlotGeometryGeneric(context is Context, featureIdPrefix is Id, sliceIntersectionIds is array, slicePlanes is array)
+{
+    // For each pair of slices, check if they intersect and generate slot geometry
+    // This is similar to the waffle mode approach but works for arbitrary orientations
+    
+    var sliceCount = size(sliceIntersectionIds);
+    
+    // Create copies of all slices for intersection processing
+    var sliceCopyIds = [] as array;
+    for (var sliceIndex = 0; sliceIndex < sliceCount; sliceIndex += 1)
+    {
+        const copyId = featureIdPrefix + "Copy" + sliceIndex;
+        opPattern(context, copyId, {
+                    "entities" : qCreatedBy(sliceIntersectionIds[sliceIndex], EntityType.BODY),
+                    "transforms" : [identityTransform()],
+                    "instanceNames" : ["1"]
+                });
+        sliceCopyIds = append(sliceCopyIds, copyId);
+    }
+
+    // For each pair of slices (i, j where i < j), perform intersection
+    var splitToolsMap = {} as map; // Map from slice index to array of split tools to subtract
+    
+    for (var sliceIndexI = 0; sliceIndexI < sliceCount; sliceIndexI += 1)
+    {
+        splitToolsMap[sliceIndexI] = [] as array;
+    }
+
+    for (var sliceIndexI = 0; sliceIndexI < sliceCount; sliceIndexI += 1)
+    {
+        for (var sliceIndexJ = sliceIndexI + 1; sliceIndexJ < sliceCount; sliceIndexJ += 1)
+        {
+            // Get the two slice copies
+            const sliceBodyI = qCreatedBy(sliceCopyIds[sliceIndexI], EntityType.BODY);
+            const sliceBodyJ = qCreatedBy(sliceCopyIds[sliceIndexJ], EntityType.BODY);
+            
+            // Check if the planes are significantly different (not parallel)
+            const planeI = slicePlanes[sliceIndexI];
+            const planeJ = slicePlanes[sliceIndexJ];
+            const normalAlignment = abs(dot(planeI.normal, planeJ.normal));
+            
+            // Skip if planes are too parallel (within 5 degrees)
+            if (normalAlignment > 0.996) // cos(5 degrees) ≈ 0.996
+            {
+                continue;
+            }
+
+            // Create intersection between the two slice copies
+            const intersectionId = featureIdPrefix + "Intersect" + sliceIndexI + "_" + sliceIndexJ;
+            
+            try silent
+            {
+                opBoolean(context, intersectionId, {
+                            "tools" : sliceBodyI,
+                            "targets" : sliceBodyJ,
+                            "operationType" : BooleanOperationType.INTERSECTION,
+                            "keepTools" : true,
+                            "keepTargets" : true
+                        });
+                
+                const intersectionBodies = qCreatedBy(intersectionId, EntityType.BODY);
+                
+                // If intersection exists, split it and assign halves
+                if (!isQueryEmpty(context, intersectionBodies))
+                {
+                    var intersectionBodyArray = evaluateQuery(context, intersectionBodies);
+                    
+                    for (var intersectionCell in intersectionBodyArray)
+                    {
+                        // Find a splitting plane - use the average of the two normals as the split direction
+                        var splitDirection = normalize(planeI.normal + planeJ.normal);
+                        
+                        // Find the centroid of the intersection cell
+                        var cellCentroid = evApproximateCentroid(context, {
+                                "entities" : intersectionCell
+                            });
+                        
+                        // Create a split plane through the centroid
+                        var splitPlane = plane(cellCentroid, splitDirection);
+                        
+                        const splitPlaneId = intersectionId + "SplitPlane";
+                        const splitId = intersectionId + "Split";
+                        
+                        try silent
+                        {
+                            opPlane(context, splitPlaneId, {
+                                        "plane" : splitPlane
+                                    });
+                            
+                            opSplitPart(context, splitId, {
+                                        "targets" : intersectionCell,
+                                        "tool" : qCreatedBy(splitPlaneId, EntityType.BODY)
+                                    });
+                            
+                            // Assign one half to slice I and the other to slice J
+                            const splitHalfI = qFarthestAlong(qOwnerBody(qCreatedBy(splitId)), splitDirection);
+                            const splitHalfJ = qFarthestAlong(qOwnerBody(qCreatedBy(splitId)), -splitDirection);
+                            
+                            splitToolsMap[sliceIndexI] = append(splitToolsMap[sliceIndexI], splitHalfI);
+                            splitToolsMap[sliceIndexJ] = append(splitToolsMap[sliceIndexJ], splitHalfJ);
+                            
+                            // Clean up split plane
+                            opDeleteBodies(context, splitPlaneId + "delete", {
+                                        "entities" : qCreatedBy(splitPlaneId, EntityType.BODY)
+                                    });
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Now subtract the collected split tools from each original slice
+    for (var sliceIndex = 0; sliceIndex < sliceCount; sliceIndex += 1)
+    {
+        const toolsToSubtract = splitToolsMap[sliceIndex];
+        
+        if (size(toolsToSubtract) > 0)
+        {
+            const originalSlice = qCreatedBy(sliceIntersectionIds[sliceIndex], EntityType.BODY);
+            
+            opBoolean(context, featureIdPrefix + "SubtractSlots" + sliceIndex, {
+                        "tools" : qUnion(toolsToSubtract),
+                        "targets" : originalSlice,
+                        "operationType" : BooleanOperationType.SUBTRACTION
+                    });
+        }
+    }
+
+    // Clean up all copies
+    const allCopies = qUnion(mapArray(sliceCopyIds, function(copyId)
+            {
+                return qCreatedBy(copyId, EntityType.BODY);
+            }));
+    
+    opDeleteBodies(context, featureIdPrefix + "deleteCopies", {
+                "entities" : allCopies
+            });
 }
