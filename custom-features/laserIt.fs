@@ -867,7 +867,7 @@ function generateSliceSheetFromLine(context is Context, sliceId is Id, lineEdge 
             });
 
     // Create a plane perpendicular to the sketch plane, through the line
-    // The profile will be a line segment perpendicular to the sketch plane
+    // The profile will be a rectangle perpendicular to the sketch plane
     const profilePlane = plane(edgeVector.origin, sketchPlane.normal, edgeVector.direction);
 
     // Create a sketch on this plane for the sweep profile
@@ -875,19 +875,21 @@ function generateSliceSheetFromLine(context is Context, sliceId is Id, lineEdge 
                 "sketchPlane" : profilePlane
             });
 
-    // Draw a line segment representing the material thickness
-    // Centered on the sketch plane, extending perpendicular to it
-    // X=0 because we're on the profile plane, Y is perpendicular to sketch plane
-    skLineSegment(profileSketch, "line", {
-                "start" : vector(0 * meter, materialThickness / 2),
-                "end" : vector(0 * meter, -materialThickness / 2)
+    // Draw a rectangle representing the material thickness
+    // We need a 2D region to sweep into a 3D solid body
+    // The rectangle is centered on the sketch plane, extending perpendicular to it
+    // Make it very small in X direction (along the path) and materialThickness in Y (perpendicular to sketch)
+    const tinyWidth = 0.001 * millimeter; // Small dimension along sweep path
+    skRectangle(profileSketch, "rectangle", {
+                "firstCorner" : vector(-tinyWidth / 2, -materialThickness / 2),
+                "secondCorner" : vector(tinyWidth / 2, materialThickness / 2)
             });
 
     skSolve(profileSketch);
 
-    // Sweep the profile along the line edge
+    // Sweep the profile region along the line edge to create a solid body
     opSweep(context, sliceId + "sweep", {
-                "profiles" : qCreatedBy(sliceId + "sketch", EntityType.EDGE),
+                "profiles" : qSketchRegion(sliceId + "sketch", false),
                 "path" : lineEdge
             });
     
