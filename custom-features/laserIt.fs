@@ -11,6 +11,7 @@ FeatureScript 2815;
 import(path : "onshape/std/geometry.fs", version : "2815.0");
 import(path : "onshape/std/query.fs", version : "2815.0");
 import(path : "onshape/std/box.fs", version : "2815.0");
+import(path : "onshape/std/tool.fs", version : "2815.0");
 
 const PARALLEL_THRESHOLD_COS = cos(5 * degree); // Approximately 0.996
 
@@ -791,7 +792,7 @@ export function normalizeSliceGeometryForLasercutting(context is Context, idPref
     }
 }
 
-// Generate sheets from sketch lines for Rib Mode
+// Generate sheets from sketch lines for Rib Mode using thin extrude
 // Inputs:
 //  - context : Context for geometry operations
 //  - featureIdPrefix : Base id used when naming all geometry created
@@ -816,8 +817,6 @@ function generateSheetsFromSketch(context is Context, featureIdPrefix is Id, ske
             });
 
         // Calculate the plane perpendicular to the sketch plane, containing the line
-        // The line direction becomes the "up" vector of the slice plane
-        // The cross product of sketch normal and line direction becomes the slice normal
         var lineDirection = lineGeometry.direction;
         var sliceNormal = cross(sketchPlane.normal, lineDirection);
         
@@ -838,8 +837,18 @@ function generateSheetsFromSketch(context is Context, featureIdPrefix is Id, ske
         
         var sliceId = featureIdPrefix + "Rib" + lineCounter;
         
-        // Generate the slice sheet by sweeping a profile along the line
-        generateSliceSheetFromLine(context, sliceId, lineEdge, sketchPlane, materialThickness);
+        // Use thin extrude to create the slice directly from the line edge
+        opExtrude(context, sliceId + "extrude", {
+                    "entities" : lineEdge,
+                    "direction" : sketchPlane.normal,
+                    "endBound" : BoundingType.BLIND,
+                    "endDepth" : 0 * meter, // No extrusion in sketch normal direction
+                    "startBound" : BoundingType.BLIND,
+                    "startDepth" : 0 * meter,
+                    "bodyType" : ExtendedToolBodyType.THIN,
+                    "thickness1" : materialThickness / 2,
+                    "thickness2" : materialThickness / 2
+                });
         
         slicePlanes = append(slicePlanes, slicePlane);
         sliceIds = append(sliceIds, sliceId);
@@ -847,56 +856,6 @@ function generateSheetsFromSketch(context is Context, featureIdPrefix is Id, ske
     }
 
     return { "slicePlanes" : slicePlanes, "sliceIds" : sliceIds };
-}
-
-// Create a slice sheet by sweeping a profile along a sketch line
-// This creates a slice only where the line is, not a large rectangle
-// Inputs:
-//  - context : Context for geometry operations
-//  - sliceId : Unique Id prefix used for sketch and sweep operations
-//  - lineEdge : The sketch line edge to sweep along
-//  - sketchPlane : The plane containing the sketch line
-//  - materialThickness : Thickness of the slice material
-// Returns: none
-function generateSliceSheetFromLine(context is Context, sliceId is Id, lineEdge is Query, sketchPlane is Plane, materialThickness is ValueWithUnits)
-{
-    // Get a point on the line to establish the sweep profile plane
-    const edgeVector = evEdgeTangentLine(context, {
-                "edge" : lineEdge,
-                "parameter" : 0
-            });
-
-    // Create a plane perpendicular to the sketch plane, through the line
-    // The profile will be a rectangle perpendicular to the sketch plane
-    const profilePlane = plane(edgeVector.origin, sketchPlane.normal, edgeVector.direction);
-
-    // Create a sketch on this plane for the sweep profile
-    const profileSketch = newSketchOnPlane(context, sliceId + "sketch", {
-                "sketchPlane" : profilePlane
-            });
-
-    // Draw a rectangle representing the material thickness
-    // We need a 2D region to sweep into a 3D solid body
-    // The rectangle is centered on the sketch plane, extending perpendicular to it
-    // Make it very small in X direction (along the path) and materialThickness in Y (perpendicular to sketch)
-    const tinyWidth = 0.001 * millimeter; // Small dimension along sweep path
-    skRectangle(profileSketch, "rectangle", {
-                "firstCorner" : vector(-tinyWidth / 2, -materialThickness / 2),
-                "secondCorner" : vector(tinyWidth / 2, materialThickness / 2)
-            });
-
-    skSolve(profileSketch);
-
-    // Sweep the profile region along the line edge to create a solid body
-    opSweep(context, sliceId + "sweep", {
-                "profiles" : qSketchRegion(sliceId + "sketch", false),
-                "path" : lineEdge
-            });
-    
-    // Delete the sketch
-    opDeleteBodies(context, sliceId + "deleteSketch", {
-                "entities" : qCreatedBy(sliceId + "sketch")
-            });
 }
 
 // Trim sheets to solid for generic/arbitrary orientations (Rib Mode)
@@ -920,7 +879,7 @@ function trimSheetsToSolidGeneric(context is Context, featureIdPrefix is Id, sli
         var intersectionId = featureIdPrefix + "Intersection" + sliceIndex;
         
         // Start tracking the start and end cap faces separately before the intersection operation
-        const originalSheetBody = qCreatedBy(sliceId + "sweep", EntityType.BODY);
+        const originalSheetBody = qCreatedBy(sliceId + "extrude", EntityType.BODY);
         const originalSheetFaces = qOwnedByBody(originalSheetBody, EntityType.FACE);
         const originalCapFaces = qParallelPlanes(originalSheetFaces, slicePlane);
         
@@ -959,7 +918,7 @@ function trimSheetsToSolidGeneric(context is Context, featureIdPrefix is Id, sli
     // Delete all raw slices
     const rawSlices = qUnion(mapArray(sliceIds, function(sliceId)
             {
-                return qCreatedBy(sliceId + "sweep", EntityType.BODY);
+                return qCreatedBy(sliceId + "extrude", EntityType.BODY);
             }));
 
     opDeleteBodies(context, featureIdPrefix + "deleteRawSlices", {
