@@ -24,57 +24,37 @@ import(path : "onshape/std/math.fs", version : "2679.0");
 import(path : "onshape/std/units.fs", version : "2679.0");
 
 const TRIAD_MANIPULATOR = "triadManipulator";
-const POINT_MANIPULATOR = "pointManipulator";
-const GROUP_INDEX_BOUNDS = { (unitless) : [0, 0, 50] } as IntegerBoundSpec;
-
-predicate transformGroupPredicate(group is map)
-{
-    annotation { "Name" : "Group index", "UIHint" : UIHint.ALWAYS_HIDDEN }
-    isInteger(group.index, GROUP_INDEX_BOUNDS);
-
-    annotation { "Name" : "Entities to transform", "Filter" : EntityType.BODY && ModifiableEntityOnly.YES && AllowMeshGeometry.YES && SketchObject.NO }
-    group.entities is Query;
-
-    annotation { "Name" : "X translation", "Group Name" : "Transform", "Collapsed By Default" : true }
-    isLength(group.dx, ZERO_DEFAULT_LENGTH_BOUNDS);
-
-    annotation { "Name" : "Y translation", "Group Name" : "Transform" }
-    isLength(group.dy, ZERO_DEFAULT_LENGTH_BOUNDS);
-
-    annotation { "Name" : "Z translation", "Group Name" : "Transform" }
-    isLength(group.dz, ZERO_DEFAULT_LENGTH_BOUNDS);
-
-    annotation { "Name" : "X rotation", "Group Name" : "Transform" }
-    isAngle(group.rx, ANGLE_360_ZERO_DEFAULT_BOUNDS);
-
-    annotation { "Name" : "Y rotation", "Group Name" : "Transform" }
-    isAngle(group.ry, ANGLE_360_ZERO_DEFAULT_BOUNDS);
-
-    annotation { "Name" : "Z rotation", "Group Name" : "Transform" }
-    isAngle(group.rz, ANGLE_360_ZERO_DEFAULT_BOUNDS);
-}
-
-predicate transformGroupsPredicate(definition is map)
-{
-    annotation { "Name" : "Transforms", "Item name" : "group", "Item label template" : "Group #index", "UIHint" : UIHint.COLLAPSE_ARRAY_ITEMS }
-    definition.groups is array;
-    for (var group in definition.groups)
-    {
-        transformGroupPredicate(group);
-    }
-}
 
 predicate triadTransformPredicate(definition is map)
 {
-    annotation { "Name" : "Selected group", "UIHint" : UIHint.ALWAYS_HIDDEN }
-    isInteger(definition.selectedGroup, GROUP_INDEX_BOUNDS);
+    annotation { "Name" : "Entities to transform", "Filter" : EntityType.BODY && ModifiableEntityOnly.YES && AllowMeshGeometry.YES && SketchObject.NO }
+    definition.entities is Query;
 
-    transformGroupsPredicate(definition);
+    annotation { "Name" : "Copy parts", "Default" : false }
+    definition.copyParts is boolean;
+
+    annotation { "Name" : "X translation", "Group Name" : "Transform", "Collapsed By Default" : true }
+    isLength(definition.dx, ZERO_DEFAULT_LENGTH_BOUNDS);
+
+    annotation { "Name" : "Y translation", "Group Name" : "Transform" }
+    isLength(definition.dy, ZERO_DEFAULT_LENGTH_BOUNDS);
+
+    annotation { "Name" : "Z translation", "Group Name" : "Transform" }
+    isLength(definition.dz, ZERO_DEFAULT_LENGTH_BOUNDS);
+
+    annotation { "Name" : "X rotation", "Group Name" : "Transform" }
+    isAngle(definition.rx, ANGLE_360_ZERO_DEFAULT_BOUNDS);
+
+    annotation { "Name" : "Y rotation", "Group Name" : "Transform" }
+    isAngle(definition.ry, ANGLE_360_ZERO_DEFAULT_BOUNDS);
+
+    annotation { "Name" : "Z rotation", "Group Name" : "Transform" }
+    isAngle(definition.rz, ANGLE_360_ZERO_DEFAULT_BOUNDS);
 }
 
 /** Add a triad manipulator centered on the given coordinate system. */
 function addTriadManipulator(context is Context, id is Id,
-        baseCSys is CoordSystem, definition is map, index is number)
+        baseCSys is CoordSystem, definition is map)
 {
     const rotation = composeRotation(baseCSys,
             definition.rx, definition.ry, definition.rz);
@@ -87,18 +67,9 @@ function addTriadManipulator(context is Context, id is Id,
                 "displayEditView" : true
             });
     addManipulators(context, id, { (TRIAD_MANIPULATOR) : triadManip });
-    const manipName = TRIAD_MANIPULATOR ~ toString(index);
+    // Also add with indexed name for compatibility with sphere drag
+    const manipName = TRIAD_MANIPULATOR ~ "0";
     addManipulators(context, id, { (manipName) : triadManip });
-}
-
-function addPointManipulator(context is Context, id is Id, positions is array, index is number)
-{
-    const pointManip = pointsManipulator({
-                "points" : positions,
-                "index" : index,
-                "primaryParameterId" : "selectedGroup"
-            });
-    addManipulators(context, id, { (POINT_MANIPULATOR) : pointManip });
 }
 
 /**
@@ -115,65 +86,41 @@ export const triadTransform = defineFeature(function(context is Context, id is I
         triadTransformPredicate(definition);
     }
     {
-        var positions = [];
-        var cSysArray = [];
-        for (var i = 0; i < size(definition.groups); i += 1)
-        {
-            const group = definition.groups[i];
-            const subId = id + unstableIdComponent(i);
-            const baseCSys = getBaseCoordinateSystem(context, subId, group);
-            cSysArray = append(cSysArray, baseCSys);
+        const baseCSys = getBaseCoordinateSystem(context, id, definition);
+        
+        addTriadManipulator(context, id, baseCSys, definition);
 
-            const rotationMatrix = composeRotation(baseCSys,
-                    group.rx, group.ry, group.rz);
-            const localTransform = transform(rotationMatrix,
-                    vector(group.dx, group.dy, group.dz));
-            const worldTransform = toWorld(baseCSys) * localTransform * fromWorld(baseCSys);
-            const finalCSys = worldTransform * baseCSys;
-            positions = append(positions, finalCSys.origin);
+        const rotationMatrix = composeRotation(baseCSys,
+                definition.rx, definition.ry, definition.rz);
+        const localTransform = transform(rotationMatrix,
+                vector(definition.dx, definition.dy, definition.dz));
+
+        const worldTransform = toWorld(baseCSys) * localTransform * fromWorld(baseCSys);
+        
+        if (definition.copyParts)
+        {
+            opPattern(context, id, {
+                        "entities" : qOwnerBody(definition.entities),
+                        "transforms" : [worldTransform],
+                        "instanceNames" : ["copy"]
+                    });
         }
-
-        if (size(positions) > 0)
+        else
         {
-            addPointManipulator(context, id, positions, definition.selectedGroup);
-        }
-
-        if (definition.selectedGroup < size(definition.groups))
-        {
-            const selectedCSys = cSysArray[definition.selectedGroup];
-            const selectedGroup = definition.groups[definition.selectedGroup];
-            addTriadManipulator(context, id, selectedCSys, selectedGroup, definition.selectedGroup);
-        }
-
-        for (var i = 0; i < size(definition.groups); i += 1)
-        {
-            const group = definition.groups[i];
-            const baseCSys = cSysArray[i];
-            const subId = id + unstableIdComponent(i);
-
-            const rotationMatrix = composeRotation(baseCSys,
-                    group.rx, group.ry, group.rz);
-            const localTransform = transform(rotationMatrix,
-                    vector(group.dx, group.dy, group.dz));
-
-            const worldTransform = toWorld(baseCSys) * localTransform * fromWorld(baseCSys);
-            opTransform(context, subId, {
-                        "bodies" : qOwnerBody(group.entities),
+            opTransform(context, id, {
+                        "bodies" : qOwnerBody(definition.entities),
                         "transform" : worldTransform
                     });
         }
     }, {
-            "selectedGroup" : 0,
-            "groups" : [{
-                    "index" : 0,
-                    "entities" : qNothing(),
-                    "dx" : 0 * millimeter,
-                    "dy" : 0 * millimeter,
-                    "dz" : 0 * millimeter,
-                    "rx" : 0 * degree,
-                    "ry" : 0 * degree,
-                    "rz" : 0 * degree
-                }]
+            "entities" : qNothing(),
+            "copyParts" : false,
+            "dx" : 0 * millimeter,
+            "dy" : 0 * millimeter,
+            "dz" : 0 * millimeter,
+            "rx" : 0 * degree,
+            "ry" : 0 * degree,
+            "rz" : 0 * degree
         });
 
 /**
@@ -181,31 +128,31 @@ export const triadTransform = defineFeature(function(context is Context, id is I
  */
 export function triadTransformManipulatorChange(context is Context, definition is map, newManipulators is map) returns map
 {
-
-    var groups = definition.groups;
-
-    if (newManipulators[POINT_MANIPULATOR] is map)
-    {
-        definition.selectedGroup = newManipulators[POINT_MANIPULATOR].index;
-    }
-
+    // Iterate through all manipulators to find the triad manipulator
+    // (this handles potential key variations for different drag types)
     for (var key, manipulator in newManipulators)
     {
-        if (startsWith(key, TRIAD_MANIPULATOR))
+        if (key == TRIAD_MANIPULATOR || startsWith(key, TRIAD_MANIPULATOR))
         {
-            const index = stringToNumber(replace(key, TRIAD_MANIPULATOR, ""));
-            const triadTransform = manipulator.transform;
-            const rotation = transpose(triadTransform.linear);
-            const angles = matrixToXYZAngles(rotation);
-            groups[index].dx = triadTransform.translation[0];
-            groups[index].dy = triadTransform.translation[1];
-            groups[index].dz = triadTransform.translation[2];
-            groups[index].rx = angles[0];
-            groups[index].ry = angles[1];
-            groups[index].rz = angles[2];
+            // Check if transform exists
+            if (manipulator.transform is Transform)
+            {
+                const triadTransform = manipulator.transform;
+                
+                // Update translation - handles all drag types including REPOSITION
+                definition.dx = triadTransform.translation[0];
+                definition.dy = triadTransform.translation[1];
+                definition.dz = triadTransform.translation[2];
+                
+                // Update rotation - extract angles from the rotation matrix
+                const rotation = transpose(triadTransform.linear);
+                const angles = matrixToXYZAngles(rotation);
+                definition.rx = angles[0];
+                definition.ry = angles[1];
+                definition.rz = angles[2];
+            }
         }
     }
-    definition.groups = groups;
     return definition;
 }
 
