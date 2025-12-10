@@ -99,7 +99,7 @@ export const triadTransform = defineFeature(function(context is Context, id is I
             opPattern(context, id, {
                         "entities" : qOwnerBody(definition.entities),
                         "transforms" : [worldTransform],
-                        "instanceNames" : ["1"]
+                        "instanceNames" : ["copy"]
                     });
         }
         else
