@@ -134,23 +134,27 @@ export function triadTransformManipulatorChange(context is Context, definition i
     {
         if (key == TRIAD_MANIPULATOR || startsWith(key, TRIAD_MANIPULATOR))
         {
-            // Check if transform exists
-            if (manipulator.transform is Transform)
-            {
-                const triadTransform = manipulator.transform;
-                
-                // Update translation - handles all drag types including REPOSITION
-                definition.dx = triadTransform.translation[0];
-                definition.dy = triadTransform.translation[1];
-                definition.dz = triadTransform.translation[2];
-                
-                // Update rotation - extract angles from the rotation matrix
-                const rotation = transpose(triadTransform.linear);
-                const angles = matrixToXYZAngles(rotation);
-                definition.rx = angles[0];
-                definition.ry = angles[1];
-                definition.rz = angles[2];
-            }
+            const triadTransform = manipulator.transform;
+            
+            // Update translation - handles all drag types including REPOSITION
+            const dx = triadTransform.translation[0];
+            const dy = triadTransform.translation[1];
+            const dz = triadTransform.translation[2];
+            
+            // Update rotation - extract angles from the rotation matrix
+            const rotation = transpose(triadTransform.linear);
+            const angles = matrixToXYZAngles(rotation);
+            const rx = angles[0];
+            const ry = angles[1];
+            const rz = angles[2];
+            
+            // Assign all values to definition
+            definition.dx = dx;
+            definition.dy = dy;
+            definition.dz = dz;
+            definition.rx = rx;
+            definition.ry = ry;
+            definition.rz = rz;
         }
     }
     return definition;
