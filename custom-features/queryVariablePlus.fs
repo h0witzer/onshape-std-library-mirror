@@ -351,6 +351,7 @@ export predicate initialQueryPredicate(definition is map)
         definition.seedEdgesOrFaces is Query;
     }
     else if (definition.selectionType == SelectionType.PARALLEL
+        || definition.selectionType == SelectionType.TOLERANT_PARALLEL
         || (definition.selectionType == SelectionType.TANGENT_CONNECTED && definition.seedType == SeedType.EDGE)
         || (definition.selectionType == SelectionType.MATCHING && definition.seedType == SeedType.EDGE))
     {
@@ -384,9 +385,6 @@ export predicate initialQueryPredicate(definition is map)
     {
         annotation { "Name" : "Direction", "Filter" : QueryFilterCompound.ALLOWS_DIRECTION }
         definition.direction is Query;
-        
-        annotation { "Name" : "Filter construction entities", "Default" : true }
-        definition.filterConstructionParallel is boolean;
     }
     if (definition.selectionType == SelectionType.TANGENT_CONNECTED && definition.seedType == SeedType.FACE
         || definition.selectionType == SelectionType.TOLERANT_PARALLEL)
@@ -554,6 +552,7 @@ export predicate additionalQueryPredicate(addQ is map)
         addQ.addQseedEdgesOrFaces is Query;
     }
     else if (addQ.addQselectionType == SelectionType.PARALLEL
+        || addQ.addQselectionType == SelectionType.TOLERANT_PARALLEL
         || (addQ.addQselectionType == SelectionType.TANGENT_CONNECTED && addQ.addQseedType == SeedType.EDGE)
         || (addQ.addQselectionType == SelectionType.MATCHING && addQ.addQseedType == SeedType.EDGE))
     {
@@ -587,9 +586,6 @@ export predicate additionalQueryPredicate(addQ is map)
     {
         annotation { "Name" : "Direction", "Filter" : QueryFilterCompound.ALLOWS_DIRECTION }
         addQ.addQdirection is Query;
-        
-        annotation { "Name" : "Filter construction entities", "Default" : true }
-        addQ.addQfilterConstructionParallel is boolean;
     }
     if (addQ.addQselectionType == SelectionType.TANGENT_CONNECTED && addQ.addQseedType == SeedType.FACE
         || addQ.addQselectionType == SelectionType.TOLERANT_PARALLEL)
@@ -663,9 +659,8 @@ export predicate additionalQueryPredicate(addQ is map)
  *          maximum angular deviation for considering faces tangent. Defaults to `0` degrees.
  *          If selectionType is TOLERANT_PARALLEL, maximum angular deviation from parallel for edge selection.
  *      @field direction {Query} : If selectionType is TOLERANT_PARALLEL, reference direction for parallel comparison.
- *      @field filterConstructionParallel {boolean} : If selectionType is TOLERANT_PARALLEL, whether to exclude construction geometry.
  *      @field seedEdgesOrFaces {Query} : If selectionType is LOOP_CHAIN_CONNECTED, faces or edges from which the loops are computed.
- *      @field seedEdgesOrFaces {Query} : If selectionType is PARALLEL, or TANGENT_CONNECTED or MATCHING and seedType is EDGE, edges from which the selection is created.
+ *      @field seedEdges {Query} : If selectionType is PARALLEL or TOLERANT_PARALLEL, or TANGENT_CONNECTED or MATCHING and seedType is EDGE, edges from which the selection is created.
  *      @field entityType {EntityType} : If selectionType is CREATED_BY or CAP_ENTITY or NON_CAP_ENTITY or OWNED_BY, the entity type to include in the variable.
  *      @field filletCompareType {FilletCompare} : If selectionType is FILLETS, the type of fillets to include in the variable.
  *      @field boundedFacesBounds {Query} : If selectionType is BOUNDED_FACES, the faces or edges bounding the selection.
@@ -1231,15 +1226,15 @@ function remapAdditionalQuery(definition is map) returns map
 }
 
 /**
- * Filters all straight edges in the context by angle tolerance to a reference direction.
+ * Filters input edges by angle tolerance to a reference direction.
  * This function enables "parallelish" edge selection with an angular tolerance.
  * 
  * @param context {Context} : The context in which the query is evaluated.
  * @param definition {map} : Map containing:
+ *      - seedEdges {Query} : Input edges to filter
  *      - direction {Query} : Reference direction for parallel comparison
  *      - angleTolerance {ValueWithUnits} : Maximum angular deviation from parallel
- *      - filterConstructionParallel {boolean} : Whether to exclude construction geometry
- * @returns {Query} : Query containing all edges within the angular tolerance of the direction
+ * @returns {Query} : Query containing edges within the angular tolerance of the direction
  */
 function qTolerantParallelEdges(context is Context, definition is map) returns Query
 {
@@ -1247,16 +1242,12 @@ function qTolerantParallelEdges(context is Context, definition is map) returns Q
     
     const direction = extractDirection(context, definition.direction);
 
-    var allStraightEdges = qEverything(EntityType.EDGE)->qGeometry(GeometryType.LINE);
-    
-    if (definition.filterConstructionParallel)
-    {
-        allStraightEdges = allStraightEdges->qConstructionFilter(ConstructionObject.NO);
-    }
+    // Filter input edges to only straight lines
+    var straightEdges = definition.seedEdges->qGeometry(GeometryType.LINE);
     
     const angleTolerance = definition.angleTolerance;
     
-    for (var edge in evaluateQuery(context, allStraightEdges))
+    for (var edge in evaluateQuery(context, straightEdges))
     {
         const edgeDirection = evLine(context, { "edge" : edge }).direction;
         
