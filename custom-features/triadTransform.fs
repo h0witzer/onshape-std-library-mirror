@@ -30,6 +30,9 @@ predicate triadTransformPredicate(definition is map)
     annotation { "Name" : "Entities to transform", "Filter" : EntityType.BODY && ModifiableEntityOnly.YES && AllowMeshGeometry.YES && SketchObject.NO }
     definition.entities is Query;
 
+    annotation { "Name" : "Copy parts", "Default" : false }
+    definition.copyParts is boolean;
+
     annotation { "Name" : "X translation", "Group Name" : "Transform", "Collapsed By Default" : true }
     isLength(definition.dx, ZERO_DEFAULT_LENGTH_BOUNDS);
 
@@ -90,12 +93,25 @@ export const triadTransform = defineFeature(function(context is Context, id is I
                 vector(definition.dx, definition.dy, definition.dz));
 
         const worldTransform = toWorld(baseCSys) * localTransform * fromWorld(baseCSys);
-        opTransform(context, id, {
-                    "bodies" : qOwnerBody(definition.entities),
-                    "transform" : worldTransform
-                });
+        
+        if (definition.copyParts)
+        {
+            opPattern(context, id, {
+                        "entities" : qOwnerBody(definition.entities),
+                        "transforms" : [worldTransform],
+                        "instanceNames" : ["1"]
+                    });
+        }
+        else
+        {
+            opTransform(context, id, {
+                        "bodies" : qOwnerBody(definition.entities),
+                        "transform" : worldTransform
+                    });
+        }
     }, {
             "entities" : qNothing(),
+            "copyParts" : false,
             "dx" : 0 * millimeter,
             "dy" : 0 * millimeter,
             "dz" : 0 * millimeter,
