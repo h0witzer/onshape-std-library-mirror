@@ -6,6 +6,8 @@ FeatureScript 2815;
  *
  * Maintained by Derek Van Allen, to request updates message me on the forums in this thread:
  * https://forum.onshape.com/discussion/29012/custom-feature-query-variable
+ *
+ * Parallelish selection and cap entities features contributed by Jelte
  */
 
 export import(path : "onshape/std/query.fs", version : "2815.0");
@@ -52,6 +54,8 @@ export enum SelectionType
     LOOP_CHAIN_CONNECTED,
     annotation { "Name" : "Parallel" }
     PARALLEL,
+    annotation { "Name" : "Parallelish edges" }
+    TOLERANT_PARALLEL,
     annotation { "Name" : "Tangent(ish) connected" }
     TANGENT_CONNECTED,
     annotation { "Name" : "Matching" }
@@ -88,6 +92,7 @@ const SelectionTypeToLowercaseName = {
         SelectionType.BOUNDED_FACES : "bounded faces",
         SelectionType.LOOP_CHAIN_CONNECTED : "loop/chain connected",
         SelectionType.PARALLEL : "parallel",
+        SelectionType.TOLERANT_PARALLEL : "parallelish edges",
         SelectionType.TANGENT_CONNECTED : "tangent connected",
         SelectionType.MATCHING : "matching",
         SelectionType.MATCHING_BODIES : "matching bodies",
@@ -380,6 +385,17 @@ export predicate initialQueryPredicate(definition is map)
         annotation { "Name" : "Edge convexity type" }
         definition.edgeConvexityType is EdgeConvexityType;
     }
+    if (definition.selectionType == SelectionType.TOLERANT_PARALLEL)
+    {
+        annotation { "Name" : "Direction", "Filter" : QueryFilterCompound.ALLOWS_DIRECTION }
+        definition.direction is Query;
+        
+        annotation { "Name" : "Angle tolerance", "Default" : 0 * degree }
+        isAngle(definition.angleTolerance, ANGLE_STRICT_90_BOUNDS);
+        
+        annotation { "Name" : "Filter construction entities", "Default" : true }
+        definition.filterConstructionParallel is boolean;
+    }
     if (definition.selectionType == SelectionType.CREATED_BY)
     {
         annotation { "Name" : "Filter construction entities", "Default" : true }
@@ -574,6 +590,17 @@ export predicate additionalQueryPredicate(addQ is map)
         annotation { "Name" : "Edge convexity type" }
         addQ.addQedgeConvexityType is EdgeConvexityType;
     }
+    if (addQ.addQselectionType == SelectionType.TOLERANT_PARALLEL)
+    {
+        annotation { "Name" : "Direction", "Filter" : QueryFilterCompound.ALLOWS_DIRECTION }
+        addQ.addQdirection is Query;
+        
+        annotation { "Name" : "Angle tolerance", "Default" : 0 * degree }
+        isAngle(addQ.addQangleTolerance, ANGLE_STRICT_90_BOUNDS);
+        
+        annotation { "Name" : "Filter construction entities", "Default" : true }
+        addQ.addQfilterConstructionParallel is boolean;
+    }
     if (addQ.addQselectionType == SelectionType.CREATED_BY)
     {
         annotation { "Name" : "Filter construction entities", "Default" : true }
@@ -760,6 +787,7 @@ function mapSelectionTypeToQuery(context is Context, definition is map) returns 
                 SelectionType.BOUNDED_FACES : qFaceOrEdgeBoundedFaces(qUnion([definition.seedFaces, definition.boundedFacesBounds])),
                 SelectionType.LOOP_CHAIN_CONNECTED : qLoopEdges(definition.seedEdgesOrFaces),
                 SelectionType.PARALLEL : qParallelEdges(definition.seedEdges),
+                SelectionType.TOLERANT_PARALLEL : qTolerantParallelEdges(context, definition),
                 SelectionType.TANGENT_CONNECTED : definition.seedType == SeedType.FACE ?
                 // Include faces within the given angular deviation
                 qTangentConnectedFaces(definition.seedFaces, definition.angleTolerance) :
@@ -1201,6 +1229,52 @@ function remapAdditionalQuery(definition is map) returns map
         remapped[substring(key, offset)] = value;
     }
     return remapped;
+}
+
+/**
+ * Filters all straight edges in the context by angle tolerance to a reference direction.
+ * This function enables "parallelish" edge selection with an angular tolerance.
+ * 
+ * @param context {Context} : The context in which the query is evaluated.
+ * @param definition {map} : Map containing:
+ *      - direction {Query} : Reference direction for parallel comparison
+ *      - angleTolerance {ValueWithUnits} : Maximum angular deviation from parallel
+ *      - filterConstructionParallel {boolean} : Whether to exclude construction geometry
+ * @returns {Query} : Query containing all edges within the angular tolerance of the direction
+ */
+function qTolerantParallelEdges(context is Context, definition is map) returns Query
+{
+    var tolerantParallelQuery = new box(qNothing());
+    
+    const direction = extractDirection(context, definition.direction);
+
+    var allStraightEdges = qEverything(EntityType.EDGE)->qGeometry(GeometryType.LINE);
+    
+    if (definition.filterConstructionParallel)
+    {
+        allStraightEdges = allStraightEdges->qConstructionFilter(ConstructionObject.NO);
+    }
+    
+    const angleTolerance = definition.angleTolerance;
+    
+    for (var edge in evaluateQuery(context, allStraightEdges))
+    {
+        const edgeDirection = evLine(context, { "edge" : edge }).direction;
+        
+        var angle = angleBetween(direction, edgeDirection);
+        
+        if (angle > 90 * degree)
+        {
+            angle = abs(angle - 180 * degree);
+        }
+
+        if (angle <= angleTolerance)
+        {
+            tolerantParallelQuery[] = qUnion(tolerantParallelQuery[], edge);
+        }
+    }
+    
+    return tolerantParallelQuery[];
 }
 
 function checkQueryVariableName(context is Context, name is string)
