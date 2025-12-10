@@ -125,22 +125,30 @@ export const triadTransform = defineFeature(function(context is Context, id is I
  */
 export function triadTransformManipulatorChange(context is Context, definition is map, newManipulators is map) returns map
 {
-    if (newManipulators[TRIAD_MANIPULATOR] is map)
+    // Iterate through all manipulators to find the triad manipulator
+    // (this handles potential key variations for different drag types)
+    for (var key, manipulator in newManipulators)
     {
-        const manipulator = newManipulators[TRIAD_MANIPULATOR];
-        const triadTransform = manipulator.transform;
-        
-        // Always update translation - this handles all drag types including REPOSITION
-        definition.dx = triadTransform.translation[0];
-        definition.dy = triadTransform.translation[1];
-        definition.dz = triadTransform.translation[2];
-        
-        // Always update rotation - extract angles from the rotation matrix
-        const rotation = transpose(triadTransform.linear);
-        const angles = matrixToXYZAngles(rotation);
-        definition.rx = angles[0];
-        definition.ry = angles[1];
-        definition.rz = angles[2];
+        if (key == TRIAD_MANIPULATOR || startsWith(key, TRIAD_MANIPULATOR))
+        {
+            // Check if transform exists
+            if (manipulator.transform is Transform)
+            {
+                const triadTransform = manipulator.transform;
+                
+                // Update translation - handles all drag types including REPOSITION
+                definition.dx = triadTransform.translation[0];
+                definition.dy = triadTransform.translation[1];
+                definition.dz = triadTransform.translation[2];
+                
+                // Update rotation - extract angles from the rotation matrix
+                const rotation = transpose(triadTransform.linear);
+                const angles = matrixToXYZAngles(rotation);
+                definition.rx = angles[0];
+                definition.ry = angles[1];
+                definition.rz = angles[2];
+            }
+        }
     }
     return definition;
 }
