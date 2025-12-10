@@ -129,11 +129,15 @@ export function triadTransformManipulatorChange(context is Context, definition i
     {
         const manipulator = newManipulators[TRIAD_MANIPULATOR];
         const triadTransform = manipulator.transform;
-        const rotation = transpose(triadTransform.linear);
-        const angles = matrixToXYZAngles(rotation);
+        
+        // Always update translation - this handles all drag types including REPOSITION
         definition.dx = triadTransform.translation[0];
         definition.dy = triadTransform.translation[1];
         definition.dz = triadTransform.translation[2];
+        
+        // Always update rotation - extract angles from the rotation matrix
+        const rotation = transpose(triadTransform.linear);
+        const angles = matrixToXYZAngles(rotation);
         definition.rx = angles[0];
         definition.ry = angles[1];
         definition.rz = angles[2];
