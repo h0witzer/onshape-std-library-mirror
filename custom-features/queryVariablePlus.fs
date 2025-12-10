@@ -345,11 +345,6 @@ export predicate initialQueryPredicate(definition is map)
         annotation { "Name" : "Geometry type" }
         definition.geometryType is GeometryType;
     }
-    if (definition.selectionType == SelectionType.TANGENT_CONNECTED && definition.seedType == SeedType.FACE)
-    {
-        annotation { "Name" : "Angle tolerance", "Default" : 0 * degree }
-        isAngle(definition.angleTolerance, ANGLE_STRICT_180_BOUNDS);
-    }
     else if (definition.selectionType == SelectionType.LOOP_CHAIN_CONNECTED)
     {
         annotation { "Name" : "Edges or faces", "Filter" : EntityType.EDGE || EntityType.FACE }
@@ -390,11 +385,14 @@ export predicate initialQueryPredicate(definition is map)
         annotation { "Name" : "Direction", "Filter" : QueryFilterCompound.ALLOWS_DIRECTION }
         definition.direction is Query;
         
-        annotation { "Name" : "Angle tolerance", "Default" : 0 * degree }
-        isAngle(definition.angleTolerance, ANGLE_STRICT_90_BOUNDS);
-        
         annotation { "Name" : "Filter construction entities", "Default" : true }
         definition.filterConstructionParallel is boolean;
+    }
+    if (definition.selectionType == SelectionType.TANGENT_CONNECTED && definition.seedType == SeedType.FACE
+        || definition.selectionType == SelectionType.TOLERANT_PARALLEL)
+    {
+        annotation { "Name" : "Angle tolerance", "Default" : 0 * degree }
+        isAngle(definition.angleTolerance, definition.selectionType == SelectionType.TOLERANT_PARALLEL ? ANGLE_STRICT_90_BOUNDS : ANGLE_STRICT_180_BOUNDS);
     }
     if (definition.selectionType == SelectionType.CREATED_BY)
     {
@@ -550,11 +548,6 @@ export predicate additionalQueryPredicate(addQ is map)
         annotation { "Name" : "Geometry type" }
         addQ.addQgeometryType is GeometryType;
     }
-    if (addQ.addQselectionType == SelectionType.TANGENT_CONNECTED && addQ.addQseedType == SeedType.FACE)
-    {
-        annotation { "Name" : "Angle tolerance", "Default" : 0 * degree }
-        isAngle(addQ.addQangleTolerance, ANGLE_STRICT_180_BOUNDS);
-    }
     else if (addQ.addQselectionType == SelectionType.LOOP_CHAIN_CONNECTED)
     {
         annotation { "Name" : "Edge or face", "Filter" : EntityType.EDGE || EntityType.FACE }
@@ -595,11 +588,14 @@ export predicate additionalQueryPredicate(addQ is map)
         annotation { "Name" : "Direction", "Filter" : QueryFilterCompound.ALLOWS_DIRECTION }
         addQ.addQdirection is Query;
         
-        annotation { "Name" : "Angle tolerance", "Default" : 0 * degree }
-        isAngle(addQ.addQangleTolerance, ANGLE_STRICT_90_BOUNDS);
-        
         annotation { "Name" : "Filter construction entities", "Default" : true }
         addQ.addQfilterConstructionParallel is boolean;
+    }
+    if (addQ.addQselectionType == SelectionType.TANGENT_CONNECTED && addQ.addQseedType == SeedType.FACE
+        || addQ.addQselectionType == SelectionType.TOLERANT_PARALLEL)
+    {
+        annotation { "Name" : "Angle tolerance", "Default" : 0 * degree }
+        isAngle(addQ.addQangleTolerance, addQ.addQselectionType == SelectionType.TOLERANT_PARALLEL ? ANGLE_STRICT_90_BOUNDS : ANGLE_STRICT_180_BOUNDS);
     }
     if (addQ.addQselectionType == SelectionType.CREATED_BY)
     {
@@ -639,9 +635,9 @@ export predicate additionalQueryPredicate(addQ is map)
  *      @field createdByFeatures {FeatureList} : If selectionType is CREATED_BY, features whose created entities will be contained in the variable.
  *      @field capEntityCreatedByFeatures {FeatureList} : If selectionType is CAP_ENTITY, features whose cap entities will be contained in the variable.
  *      @field nonCapEntityCreatedByFeatures {FeatureList} : If selectionType is NON_CAP_ENTITY, features whose non-cap entities will be contained in the variable.
- *      @field filterConstruction {boolean} : If selectionType is CREATED_BY or CAP_ENTITY, whether to exclude construction geometry.
- *      @field filterByBodyType {boolean} : If selectionType is CREATED_BY or CAP_ENTITY, whether to filter results by body type.
- *      @field createdByBodyType {BodyTypeOptions} : If selectionType is CREATED_BY or CAP_ENTITY and filterByBodyType is true, body type to include in the variable.
+ *      @field filterConstruction {boolean} : If selectionType is CREATED_BY, whether to exclude construction geometry.
+ *      @field filterByBodyType {boolean} : If selectionType is CREATED_BY, whether to filter results by body type.
+ *      @field createdByBodyType {BodyTypeOptions} : If selectionType is CREATED_BY and filterByBodyType is true, body type to include in the variable.
  *      @field capType {CapType} : If selectionType is CAP_ENTITY, selects which cap entities (start, end, or either) are included.
  *      @field seedBodies {Query} : If selectionType is OWNED_BY or EDGE_CONVEXITY, bodies owning the entities that will be contained in the variable.
  *          If selectionType is MATCHING_BODIES, bodies from which the selection is created.
@@ -1194,15 +1190,6 @@ function capEntitiesCreatedBy(context is Context, definition is map) returns Que
     if (isQueryEmpty(context, capEntitiesQuery))
     {
         throw regenError("No cap entities found for the selected features and entity type. Only extrude, revolve, sweep, loft and thicken features produce cap entities.");
-    }
-
-    if (definition.filterConstruction)
-    {
-        capEntitiesQuery = capEntitiesQuery->qConstructionFilter(ConstructionObject.NO);
-    }
-    if (definition.filterByBodyType)
-    {
-        capEntitiesQuery = capEntitiesQuery->qBodyType(definition.createdByBodyType as BodyType);
     }
 
     return capEntitiesQuery;
