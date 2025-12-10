@@ -1193,6 +1193,15 @@ function capEntitiesCreatedBy(context is Context, definition is map) returns Que
         throw regenError("No cap entities found for the selected features and entity type. Only extrude, revolve, sweep, loft and thicken features produce cap entities.");
     }
 
+    if (definition.filterConstruction)
+    {
+        capEntitiesQuery = capEntitiesQuery->qConstructionFilter(ConstructionObject.NO);
+    }
+    if (definition.filterByBodyType)
+    {
+        capEntitiesQuery = capEntitiesQuery->qBodyType(definition.createdByBodyType as BodyType);
+    }
+
     return capEntitiesQuery;
 }
 
