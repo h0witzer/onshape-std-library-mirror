@@ -639,9 +639,9 @@ export predicate additionalQueryPredicate(addQ is map)
  *      @field createdByFeatures {FeatureList} : If selectionType is CREATED_BY, features whose created entities will be contained in the variable.
  *      @field capEntityCreatedByFeatures {FeatureList} : If selectionType is CAP_ENTITY, features whose cap entities will be contained in the variable.
  *      @field nonCapEntityCreatedByFeatures {FeatureList} : If selectionType is NON_CAP_ENTITY, features whose non-cap entities will be contained in the variable.
- *      @field filterConstruction {boolean} : If selectionType is CREATED_BY, whether to exclude construction geometry.
- *      @field filterByBodyType {boolean} : If selectionType is CREATED_BY, whether to filter results by body type.
- *      @field createdByBodyType {BodyTypeOptions} : If selectionType is CREATED_BY and filterByBodyType is true, body type to include in the variable.
+ *      @field filterConstruction {boolean} : If selectionType is CREATED_BY or CAP_ENTITY, whether to exclude construction geometry.
+ *      @field filterByBodyType {boolean} : If selectionType is CREATED_BY or CAP_ENTITY, whether to filter results by body type.
+ *      @field createdByBodyType {BodyTypeOptions} : If selectionType is CREATED_BY or CAP_ENTITY and filterByBodyType is true, body type to include in the variable.
  *      @field capType {CapType} : If selectionType is CAP_ENTITY, selects which cap entities (start, end, or either) are included.
  *      @field seedBodies {Query} : If selectionType is OWNED_BY or EDGE_CONVEXITY, bodies owning the entities that will be contained in the variable.
  *          If selectionType is MATCHING_BODIES, bodies from which the selection is created.
@@ -665,6 +665,9 @@ export predicate additionalQueryPredicate(addQ is map)
  *      @field geometryType {GeometryType} : If selectionType is GEOMETRY, geometry category used to filter the seed entities.
  *      @field angleTolerance {ValueWithUnits} : If selectionType is TANGENT_CONNECTED and seedType is FACE,
  *          maximum angular deviation for considering faces tangent. Defaults to `0` degrees.
+ *          If selectionType is TOLERANT_PARALLEL, maximum angular deviation from parallel for edge selection.
+ *      @field direction {Query} : If selectionType is TOLERANT_PARALLEL, reference direction for parallel comparison.
+ *      @field filterConstructionParallel {boolean} : If selectionType is TOLERANT_PARALLEL, whether to exclude construction geometry.
  *      @field seedEdgesOrFaces {Query} : If selectionType is LOOP_CHAIN_CONNECTED, faces or edges from which the loops are computed.
  *      @field seedEdgesOrFaces {Query} : If selectionType is PARALLEL, or TANGENT_CONNECTED or MATCHING and seedType is EDGE, edges from which the selection is created.
  *      @field entityType {EntityType} : If selectionType is CREATED_BY or CAP_ENTITY or NON_CAP_ENTITY or OWNED_BY, the entity type to include in the variable.
