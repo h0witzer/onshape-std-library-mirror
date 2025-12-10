@@ -23,6 +23,44 @@
 - Before working with Arrays in preconditions, look up the correct fields for implementation. isArray() is not a function that exists in the standard library
 - Validate all other precondition examples with the standard library
 
+## Shared Parameters in Custom Features (Query Variable Plus Pattern)
+- **CRITICAL**: Never declare the same parameter twice in a precondition. Feature parameters can only be declared once.
+- When multiple selection types need the same input parameter, use OR conditions (`||`) to combine them in a single declaration
+- Example of CORRECT shared parameter usage:
+  ```featurescript
+  if (definition.selectionType == SelectionType.CREATED_BY
+      || definition.selectionType == SelectionType.OWNED_BY
+      || definition.selectionType == SelectionType.EVERYTHING)
+  {
+      annotation { "Name" : "Entity type" }
+      definition.entityType is EntityType;
+  }
+  ```
+- Example of INCORRECT duplicate declaration (will cause "Duplicate feature parameter" error):
+  ```featurescript
+  if (definition.selectionType == SelectionType.CREATED_BY)
+  {
+      annotation { "Name" : "Entity type" }
+      definition.entityType is EntityType;
+  }
+  if (definition.selectionType == SelectionType.EVERYTHING)
+  {
+      annotation { "Name" : "Entity type" }  // ERROR: Duplicate!
+      definition.entityType is EntityType;
+  }
+  ```
+- When adding new selection types or features, always check if the parameters you need are already declared for other types
+- Look for existing OR conditions that you can extend rather than creating new parameter declarations
+- Common shared parameters in Query Variable Plus:
+  - `entityType`: Shared by CREATED_BY, CAP_ENTITY, NON_CAP_ENTITY, OWNED_BY, EVERYTHING
+  - `filterConstruction` and `filterByBodyType`: Shared by CREATED_BY, EVERYTHING
+  - `seedEdges`: Shared by PARALLEL, TOLERANT_PARALLEL, TANGENT_CONNECTED, MATCHING
+  - `seedBodies`: Shared by OWNED_BY, EDGE_CONVEXITY, MATCHING_BODIES
+  - `angleTolerance`: Shared by TANGENT_CONNECTED and TOLERANT_PARALLEL (with different bounds acceptable if using wider bounds)
+- When parameters need different bounds/constraints for different types, you can either:
+  1. Use the wider bounds that accommodate all types (e.g., ANGLE_STRICT_180_BOUNDS covers both 0-180° and 0-90° ranges)
+  2. Handle validation in the implementation function if strict bounds are needed per type
+
 ## Testing Instructions
 - Since there is no way to run Onshape in a localized environment here we will rely mostly on comparing code samples with existing functions in the standard library and against the reference docs to ensure consistency with the code base
 - Debugging will be done largely via reports delivered via console log
