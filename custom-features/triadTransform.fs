@@ -67,6 +67,9 @@ function addTriadManipulator(context is Context, id is Id,
                 "displayEditView" : true
             });
     addManipulators(context, id, { (TRIAD_MANIPULATOR) : triadManip });
+    // Also add with indexed name for compatibility with sphere drag
+    const manipName = TRIAD_MANIPULATOR ~ "0";
+    addManipulators(context, id, { (manipName) : triadManip });
 }
 
 /**
