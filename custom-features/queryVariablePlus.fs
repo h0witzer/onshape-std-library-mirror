@@ -383,7 +383,7 @@ export predicate initialQueryPredicate(definition is map)
     }
     if (definition.selectionType == SelectionType.TOLERANT_PARALLEL)
     {
-        annotation { "Name" : "Direction", "Filter" : QueryFilterCompound.ALLOWS_DIRECTION }
+        annotation { "Name" : "Direction", "Filter" : QueryFilterCompound.ALLOWS_DIRECTION, "MaxNumberOfPicks" : 1 }
         definition.direction is Query;
     }
     if (definition.selectionType == SelectionType.TANGENT_CONNECTED && definition.seedType == SeedType.FACE
@@ -584,7 +584,7 @@ export predicate additionalQueryPredicate(addQ is map)
     }
     if (addQ.addQselectionType == SelectionType.TOLERANT_PARALLEL)
     {
-        annotation { "Name" : "Direction", "Filter" : QueryFilterCompound.ALLOWS_DIRECTION }
+        annotation { "Name" : "Direction", "Filter" : QueryFilterCompound.ALLOWS_DIRECTION, "MaxNumberOfPicks" : 1 }
         addQ.addQdirection is Query;
     }
     if (addQ.addQselectionType == SelectionType.TANGENT_CONNECTED && addQ.addQseedType == SeedType.FACE
