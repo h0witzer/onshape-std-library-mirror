@@ -388,11 +388,15 @@ export predicate initialQueryPredicate(definition is map)
         annotation { "Name" : "Filter construction entities", "Default" : true }
         definition.filterConstructionParallel is boolean;
     }
-    if (definition.selectionType == SelectionType.TANGENT_CONNECTED && definition.seedType == SeedType.FACE
-        || definition.selectionType == SelectionType.TOLERANT_PARALLEL)
+    if (definition.selectionType == SelectionType.TANGENT_CONNECTED && definition.seedType == SeedType.FACE)
     {
         annotation { "Name" : "Angle tolerance", "Default" : 0 * degree }
-        isAngle(definition.angleTolerance, definition.selectionType == SelectionType.TOLERANT_PARALLEL ? ANGLE_STRICT_90_BOUNDS : ANGLE_STRICT_180_BOUNDS);
+        isAngle(definition.angleTolerance, ANGLE_STRICT_180_BOUNDS);
+    }
+    if (definition.selectionType == SelectionType.TOLERANT_PARALLEL)
+    {
+        annotation { "Name" : "Angle tolerance", "Default" : 0 * degree }
+        isAngle(definition.angleTolerance, ANGLE_STRICT_90_BOUNDS);
     }
     if (definition.selectionType == SelectionType.CREATED_BY)
     {
@@ -591,11 +595,15 @@ export predicate additionalQueryPredicate(addQ is map)
         annotation { "Name" : "Filter construction entities", "Default" : true }
         addQ.addQfilterConstructionParallel is boolean;
     }
-    if (addQ.addQselectionType == SelectionType.TANGENT_CONNECTED && addQ.addQseedType == SeedType.FACE
-        || addQ.addQselectionType == SelectionType.TOLERANT_PARALLEL)
+    if (addQ.addQselectionType == SelectionType.TANGENT_CONNECTED && addQ.addQseedType == SeedType.FACE)
     {
         annotation { "Name" : "Angle tolerance", "Default" : 0 * degree }
-        isAngle(addQ.addQangleTolerance, addQ.addQselectionType == SelectionType.TOLERANT_PARALLEL ? ANGLE_STRICT_90_BOUNDS : ANGLE_STRICT_180_BOUNDS);
+        isAngle(addQ.addQangleTolerance, ANGLE_STRICT_180_BOUNDS);
+    }
+    if (addQ.addQselectionType == SelectionType.TOLERANT_PARALLEL)
+    {
+        annotation { "Name" : "Angle tolerance", "Default" : 0 * degree }
+        isAngle(addQ.addQangleTolerance, ANGLE_STRICT_90_BOUNDS);
     }
     if (addQ.addQselectionType == SelectionType.CREATED_BY)
     {
