@@ -72,6 +72,8 @@ export enum SelectionType
     GEOMETRY,
     annotation { "Name" : "All solid bodies" }
     ALL_SOLID_BODIES,
+    annotation { "Name" : "Everything" }
+    EVERYTHING,
     annotation { "Name" : "Edge convexity" }
     EDGE_CONVEXITY
 }
@@ -101,6 +103,7 @@ const SelectionTypeToLowercaseName = {
         SelectionType.POSITIONAL_DIRECTIONAL : "positional/directional",
         SelectionType.GEOMETRY : "geometry type",
         SelectionType.ALL_SOLID_BODIES : "all solid bodies",
+        SelectionType.EVERYTHING : "everything",
         SelectionType.EDGE_CONVEXITY : "edge convexity"
     };
 
@@ -412,6 +415,24 @@ export predicate initialQueryPredicate(definition is map)
         annotation { "Name" : "Cap type", "Default" : CapType.EITHER }
         definition.capType is CapType;
     }
+    
+    if (definition.selectionType == SelectionType.EVERYTHING)
+    {
+        annotation { "Name" : "Entity type" }
+        definition.entityType is EntityType;
+        
+        annotation { "Name" : "Filter construction entities", "Default" : true }
+        definition.filterConstruction is boolean;
+        
+        annotation { "Name" : "Filter by body type", "Default" : false }
+        definition.filterByBodyType is boolean;
+        
+        if (definition.filterByBodyType)
+        {
+            annotation { "Name" : "Body type" }
+            definition.everythingBodyType is BodyTypeOptions;
+        }
+    }
 }
 
 /**
@@ -613,6 +634,24 @@ export predicate additionalQueryPredicate(addQ is map)
         annotation { "Name" : "Cap type", "Default" : CapType.EITHER }
         addQ.addQcapType is CapType;
     }
+    
+    if (addQ.addQselectionType == SelectionType.EVERYTHING)
+    {
+        annotation { "Name" : "Entity type" }
+        addQ.addQentityType is EntityType;
+        
+        annotation { "Name" : "Filter construction entities", "Default" : true }
+        addQ.addQfilterConstruction is boolean;
+        
+        annotation { "Name" : "Filter by body type", "Default" : false }
+        addQ.addQfilterByBodyType is boolean;
+        
+        if (addQ.addQfilterByBodyType)
+        {
+            annotation { "Name" : "Body type" }
+            addQ.addQeverythingBodyType is BodyTypeOptions;
+        }
+    }
 }
 
 /**
@@ -661,7 +700,8 @@ export predicate additionalQueryPredicate(addQ is map)
  *      @field direction {Query} : If selectionType is TOLERANT_PARALLEL, reference direction for parallel comparison.
  *      @field seedEdgesOrFaces {Query} : If selectionType is LOOP_CHAIN_CONNECTED, faces or edges from which the loops are computed.
  *      @field seedEdges {Query} : If selectionType is PARALLEL or TOLERANT_PARALLEL, or TANGENT_CONNECTED or MATCHING and seedType is EDGE, edges from which the selection is created.
- *      @field entityType {EntityType} : If selectionType is CREATED_BY or CAP_ENTITY or NON_CAP_ENTITY or OWNED_BY, the entity type to include in the variable.
+ *      @field entityType {EntityType} : If selectionType is CREATED_BY or CAP_ENTITY or NON_CAP_ENTITY or OWNED_BY or EVERYTHING, the entity type to include in the variable.
+ *      @field everythingBodyType {BodyTypeOptions} : If selectionType is EVERYTHING and filterByBodyType is true, body type to include in the variable.
  *      @field filletCompareType {FilletCompare} : If selectionType is FILLETS, the type of fillets to include in the variable.
  *      @field boundedFacesBounds {Query} : If selectionType is BOUNDED_FACES, the faces or edges bounding the selection.
  *      @field edgeConvexityType {EdgeConvexityType} : If selectionType is EDGE_CONVEXITY, the convexity type of edges to include in the variable.
@@ -793,6 +833,7 @@ function mapSelectionTypeToQuery(context is Context, definition is map) returns 
                 SelectionType.POSITIONAL_DIRECTIONAL : positionalDirectionalSelection(context, definition),
                 SelectionType.GEOMETRY : qGeometry(definition.geometrySeedEntities, definition.geometryType),
                 SelectionType.ALL_SOLID_BODIES : qAllSolidBodies(),
+                SelectionType.EVERYTHING : everythingSelection(context, definition),
                 SelectionType.EDGE_CONVEXITY : qEdgeConvexityTypeFilter(qOwnedByBody(definition.seedBodies, EntityType.EDGE), definition.edgeConvexityType)
             };
 }
@@ -1265,6 +1306,35 @@ function qTolerantParallelEdges(context is Context, definition is map) returns Q
     }
     
     return tolerantParallelQuery[];
+}
+
+/**
+ * Builds a query for all entities of a specified type with optional filtering.
+ * This enables selecting everything in the context with construction and body type filters.
+ * 
+ * @param context {Context} : The context in which the query is evaluated.
+ * @param definition {map} : Map containing:
+ *      - entityType {EntityType} : Type of entities to query
+ *      - filterConstruction {boolean} : Whether to exclude construction geometry
+ *      - filterByBodyType {boolean} : Whether to filter by body type
+ *      - everythingBodyType {BodyTypeOptions} : Body type to filter by if filterByBodyType is true
+ * @returns {Query} : Query containing all entities matching the specified filters
+ */
+function everythingSelection(context is Context, definition is map) returns Query
+{
+    var everythingQuery = qEverything(definition.entityType);
+    
+    if (definition.filterConstruction)
+    {
+        everythingQuery = everythingQuery->qConstructionFilter(ConstructionObject.NO);
+    }
+    
+    if (definition.filterByBodyType)
+    {
+        everythingQuery = everythingQuery->qBodyType(definition.everythingBodyType as BodyType);
+    }
+    
+    return everythingQuery;
 }
 
 function checkQueryVariableName(context is Context, name is string)
