@@ -225,21 +225,24 @@ export function triadTransformManipulatorChange(context is Context, definition i
                                 "parameter" : faceParameter
                             });
                             
-                            // We want to align the manipulator's current Z-axis to the surface normal
-                            // First, get the manipulator's current Z-axis in world space
-                            const manipulatorWorldRotation = toWorld(baseCSys).linear * triadTransform.linear;
-                            const currentManipulatorZInWorld = manipulatorWorldRotation * vector(0, 0, 1);
+                            // Build a coordinate system aligned with the surface
+                            // Z-axis is the normal, X and Y are tangent to the surface
+                            const alignedZ = tangentPlane.normal;
+                            const alignedX = tangentPlane.x;
+                            const alignedY = cross(alignedZ, alignedX);
                             
-                            // Compute the rotation needed to align the manipulator's current Z to the surface normal
-                            const alignmentRotation = rotationMatrix3d(currentManipulatorZInWorld, tangentPlane.normal);
+                            // Create the aligned rotation matrix (world space)
+                            // Each column is one of the axis vectors
+                            const alignedWorldRotation = matrix([
+                                [alignedX[0], alignedY[0], alignedZ[0]],
+                                [alignedX[1], alignedY[1], alignedZ[1]],
+                                [alignedX[2], alignedY[2], alignedZ[2]]
+                            ]);
                             
-                            // Apply this alignment rotation to the manipulator's world rotation
-                            const newWorldRotation = alignmentRotation * manipulatorWorldRotation;
+                            // Convert to local space relative to base coordinate system
+                            const alignedLocalRotation = fromWorld(baseCSys).linear * alignedWorldRotation;
                             
-                            // Convert back to local space relative to base coordinate system
-                            const newLocalRotation = fromWorld(baseCSys).linear * newWorldRotation;
-                            
-                            triadTransform = transform(newLocalRotation, localSnappedPoint);
+                            triadTransform = transform(alignedLocalRotation, localSnappedPoint);
                         }
                         catch
                         {
