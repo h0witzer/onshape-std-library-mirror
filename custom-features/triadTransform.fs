@@ -66,7 +66,7 @@ predicate triadTransformPredicate(definition is map)
 
             if (definition.enableGeometrySnapping)
             {
-                annotation { "Name" : "Reference entities", "Filter" : EntityType.FACE || EntityType.EDGE }
+                annotation { "Name" : "Reference entities", "Filter" : EntityType.BODY || EntityType.FACE || EntityType.EDGE }
                 definition.referenceEntities is Query;
 
                 annotation { "Name" : "Align to surface normal", "Default" : false }
@@ -115,7 +115,7 @@ export const triadTransform = defineFeature(function(context is Context, id is I
         triadTransformPredicate(definition);
     }
     {
-        const baseCSys = getBaseCoordinateSystem(context, id, definition);
+        const baseCSys = getBaseCoordinateSystem(context, definition);
 
         addTriadManipulator(context, id, baseCSys, definition);
 
@@ -185,7 +185,7 @@ export function triadTransformManipulatorChange(context is Context, definition i
             if (@size(referenceEntitiesResolved) > 0)
             {
                 // Get the base coordinate system
-                const baseCSys = getBaseCoordinateSystem(context, undefined, definition);
+                const baseCSys = getBaseCoordinateSystem(context, definition);
                 
                 // Calculate the world position of the manipulator
                 const worldTransform = toWorld(baseCSys) * triadTransform;
@@ -318,12 +318,11 @@ function matrixToXYZAngles(linear is Matrix) returns Vector
  * uses that. Otherwise, defaults to the centroid of the selected entities with standard axes.
  * 
  * @param context {Context} : The context for the feature
- * @param id {Id} : The feature identifier
  * @param definition {map} : The feature definition map containing entity selection and optional reference coordinate system
  * 
  * @returns {CoordSystem} : The coordinate system to use as the base for transformation
  */
-function getBaseCoordinateSystem(context is Context, id is Id, definition is map) returns CoordSystem
+function getBaseCoordinateSystem(context is Context, definition is map) returns CoordSystem
 {
     const bodies = evaluateQuery(context, definition.entities);
     if (@size(bodies) == 0)
@@ -357,7 +356,7 @@ function getBaseCoordinateSystem(context is Context, id is Id, definition is map
     }
     
     // Default behavior: use centroid of selected entities
-    const origin = findCenter(context, id, definition.entities);
+    const origin = findCenter(context, definition.entities);
     return coordSystem(origin, vector(1, 0, 0), vector(0, 0, 1));
 }
 
@@ -365,12 +364,11 @@ function getBaseCoordinateSystem(context is Context, id is Id, definition is map
  * Calculates the center point (centroid) of the bounding box for the given entities.
  * 
  * @param context {Context} : The context for the feature
- * @param id {Id} : The feature identifier
  * @param entities {Query} : The entities to find the center of
  * 
  * @returns {Vector} : The center point as a 3D vector with units
  */
-function findCenter(context is Context, id is Id, entities is Query) returns Vector
+function findCenter(context is Context, entities is Query) returns Vector
 {
     const boxResult = evBox3d(context, { 'topology' : entities, 'tight' : false });
     return box3dCenter(boxResult);
