@@ -69,14 +69,8 @@ predicate triadTransformPredicate(definition is map)
                 annotation { "Name" : "Reference entities", "Filter" : EntityType.BODY || EntityType.FACE || EntityType.EDGE }
                 definition.referenceEntities is Query;
 
-                annotation { "Name" : "Align to surface normal", "Default" : false }
-                definition.alignToSurfaceNormal is boolean;
-                
-                if (definition.alignToSurfaceNormal)
-                {
-                    annotation { "Name" : "Apply surface alignment", "UIHint" : UIHint.REMEMBER_PREVIOUS_VALUE }
-                    definition.applyAlignment is boolean;
-                }
+                annotation { "Name" : "Snap to surface" }
+                isButton(definition.snapToSurface);
             }
         }
     }
@@ -123,16 +117,13 @@ export const triadTransform = defineFeature(function(context is Context, id is I
     {
         const baseCSys = getBaseCoordinateSystem(context, definition);
 
-        // Handle manual alignment button press
+        // Handle snap to surface button press
         if (definition.useAdvancedPlacement &&
             definition.enableGeometrySnapping &&
-            definition.alignToSurfaceNormal &&
-            definition.applyAlignment)
+            definition.snapToSurface)
         {
-            // Apply surface normal alignment and update rotation values
-            definition = applyManualSurfaceAlignment(context, definition, baseCSys);
-            // Reset the button
-            definition.applyAlignment = false;
+            // Snap to surface and align rotation to surface normal
+            definition = snapToSurface(context, definition, baseCSys);
         }
 
         addTriadManipulator(context, id, baseCSys, definition);
@@ -171,9 +162,7 @@ export const triadTransform = defineFeature(function(context is Context, id is I
             "useAdvancedPlacement" : false,
             "referenceCoordSystem" : qNothing(),
             "enableGeometrySnapping" : false,
-            "referenceEntities" : qNothing(),
-            "alignToSurfaceNormal" : false,
-            "applyAlignment" : false
+            "referenceEntities" : qNothing()
         });
 
 /**
@@ -351,18 +340,18 @@ function findCenter(context is Context, entities is Query) returns Vector
 }
 
 /**
- * Applies surface normal alignment when the user presses the alignment button.
+ * Snaps the transform to the surface when the user presses the snap button.
  * Finds the closest point on reference entities to the current manipulator position,
- * gets the surface normal at that point, and updates the rotation values to align
- * the part with the surface normal.
+ * snaps the position to that point, and for faces also aligns the rotation so
+ * the Z-axis aligns with the surface normal.
  * 
  * @param context {Context} : The context for the feature
  * @param definition {map} : The current feature definition
  * @param baseCSys {CoordSystem} : The base coordinate system for the transform
  * 
- * @returns {map} : Updated definition with new rotation values
+ * @returns {map} : Updated definition with new position and rotation values
  */
-function applyManualSurfaceAlignment(context is Context, definition is map, baseCSys is CoordSystem) returns map
+function snapToSurface(context is Context, definition is map, baseCSys is CoordSystem) returns map
 {
     const referenceEntitiesResolved = evaluateQuery(context, definition.referenceEntities);
     if (@size(referenceEntitiesResolved) == 0)
