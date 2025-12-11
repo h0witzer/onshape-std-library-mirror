@@ -178,8 +178,7 @@ export function triadTransformManipulatorChange(context is Context, definition i
         
         // If geometry snapping is enabled, snap the transform origin to reference entities
         if (definition.useAdvancedPlacement && 
-            definition.enableGeometrySnapping && 
-            definition.referenceEntities != undefined)
+            definition.enableGeometrySnapping)
         {
             const referenceEntitiesResolved = evaluateQuery(context, definition.referenceEntities);
             if (@size(referenceEntitiesResolved) > 0)
@@ -225,13 +224,13 @@ export function triadTransformManipulatorChange(context is Context, definition i
                                 "parameter" : faceParameter
                             });
                             
-                            // Build a coordinate system aligned with the surface
+                            // Build a coordinate system aligned with the surface (in world space)
                             // Z-axis is the normal, X and Y are tangent to the surface
                             const alignedX = tangentPlane.x;
                             const alignedZ = tangentPlane.normal;
                             const alignedY = cross(alignedZ, alignedX);
                             
-                            // Create the aligned rotation matrix (world space)
+                            // Create the aligned rotation matrix in world space
                             // Build matrix with axes as rows, then transpose to get axes as columns
                             const alignedWorldRotation = transpose(matrix([
                                 alignedX,
@@ -239,7 +238,9 @@ export function triadTransformManipulatorChange(context is Context, definition i
                                 alignedZ
                             ]));
                             
-                            // Convert to local space relative to base coordinate system
+                            // Now we need to express this world rotation as a local transform relative to baseCSys
+                            // The relationship is: worldRot = toWorld(baseCSys).linear * localRot
+                            // So: localRot = fromWorld(baseCSys).linear * worldRot
                             const alignedLocalRotation = fromWorld(baseCSys).linear * alignedWorldRotation;
                             
                             triadTransform = transform(alignedLocalRotation, localSnappedPoint);
