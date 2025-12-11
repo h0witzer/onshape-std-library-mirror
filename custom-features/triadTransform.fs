@@ -71,6 +71,12 @@ predicate triadTransformPredicate(definition is map)
 
                 annotation { "Name" : "Align to surface normal", "Default" : false }
                 definition.alignToSurfaceNormal is boolean;
+                
+                if (definition.alignToSurfaceNormal)
+                {
+                    annotation { "Name" : "Apply surface alignment", "UIHint" : UIHint.REMEMBER_PREVIOUS_VALUE }
+                    definition.applyAlignment is boolean;
+                }
             }
         }
     }
@@ -117,6 +123,18 @@ export const triadTransform = defineFeature(function(context is Context, id is I
     {
         const baseCSys = getBaseCoordinateSystem(context, definition);
 
+        // Handle manual alignment button press
+        if (definition.useAdvancedPlacement &&
+            definition.enableGeometrySnapping &&
+            definition.alignToSurfaceNormal &&
+            definition.applyAlignment)
+        {
+            // Apply surface normal alignment and update rotation values
+            definition = applyManualSurfaceAlignment(context, definition, baseCSys);
+            // Reset the button
+            definition.applyAlignment = false;
+        }
+
         addTriadManipulator(context, id, baseCSys, definition);
 
         const rotationMatrix = composeRotation(baseCSys,
@@ -154,7 +172,8 @@ export const triadTransform = defineFeature(function(context is Context, id is I
             "referenceCoordSystem" : qNothing(),
             "enableGeometrySnapping" : false,
             "referenceEntities" : qNothing(),
-            "alignToSurfaceNormal" : false
+            "alignToSurfaceNormal" : false,
+            "applyAlignment" : false
         });
 
 /**
@@ -204,81 +223,19 @@ export function triadTransformManipulatorChange(context is Context, definition i
                 
                 // Update the translation to snap to reference
                 triadTransform = transform(triadTransform.linear, localSnappedPoint);
-                
-                // Optionally align to surface normal
-                if (definition.alignToSurfaceNormal)
-                {
-                    const referenceEntityIndex = distanceResult.sides[1].index;
-                    const referenceEntity = qNthElement(definition.referenceEntities, referenceEntityIndex);
-                    
-                    // Check if it's a face
-                    const faceQuery = qEntityFilter(referenceEntity, EntityType.FACE);
-                    if (!isQueryEmpty(context, faceQuery))
-                    {
-                        // Get the tangent plane at the closest point
-                        const faceParameter = distanceResult.sides[1].parameter;
-                        try
-                        {
-                            const tangentPlane = evFaceTangentPlane(context, {
-                                "face" : referenceEntity,
-                                "parameter" : faceParameter
-                            });
-                            
-                            // Build a coordinate system aligned with the surface (in world space)
-                            const worldAlignedX = tangentPlane.x;
-                            const worldAlignedZ = tangentPlane.normal;
-                            
-                            // When surface alignment is enabled, we show surface-aligned orientation
-                            // as the default, but user can override by rotating
-                            // The extraction will capture the absolute rotation in rx, ry, rz
-                            const surfaceAlignedCSys = coordSystem(snappedWorldPoint, worldAlignedX, worldAlignedZ);
-                            const surfaceAlignmentLocal = (fromWorld(baseCSys) * toWorld(surfaceAlignedCSys)).linear;
-                            
-                            // Show the surface-aligned orientation in the manipulator
-                            // User's rotation values will be updated to match this when they drag translation
-                            triadTransform = transform(surfaceAlignmentLocal, localSnappedPoint);
-                        }
-                        catch
-                        {
-                            // If tangent plane evaluation fails, just use the snapped position
-                        }
-                    }
-                }
             }
         }
         
         // Extract rotation and translation from the transform
-        if (definition.useAdvancedPlacement && 
-            definition.enableGeometrySnapping && 
-            definition.alignToSurfaceNormal)
-        {
-            // Surface alignment mode: extract absolute rotation
-            definition.dx = triadTransform.translation[0];
-            definition.dy = triadTransform.translation[1];
-            definition.dz = triadTransform.translation[2];
-            
-            // Extract ABSOLUTE rotation angles (relative to baseCSys)
-            // The manipulator shows surface-aligned orientation, but we store absolute angles
-            const manipulatorLocalRotation = triadTransform.linear;
-            const rotationTransposed = transpose(manipulatorLocalRotation);
-            const absoluteAngles = matrixToXYZAngles(rotationTransposed);
-            
-            definition.rx = absoluteAngles[0];
-            definition.ry = absoluteAngles[1];
-            definition.rz = absoluteAngles[2];
-        }
-        else
-        {
-            // Normal behavior: extract both translation and rotation
-            const rotation = transpose(triadTransform.linear);
-            const angles = matrixToXYZAngles(rotation);
-            definition.dx = triadTransform.translation[0];
-            definition.dy = triadTransform.translation[1];
-            definition.dz = triadTransform.translation[2];
-            definition.rx = angles[0];
-            definition.ry = angles[1];
-            definition.rz = angles[2];
-        }
+        // Normal behavior: extract both translation and rotation
+        const rotation = transpose(triadTransform.linear);
+        const angles = matrixToXYZAngles(rotation);
+        definition.dx = triadTransform.translation[0];
+        definition.dy = triadTransform.translation[1];
+        definition.dz = triadTransform.translation[2];
+        definition.rx = angles[0];
+        definition.ry = angles[1];
+        definition.rz = angles[2];
     }
     return definition;
 }
@@ -391,4 +348,82 @@ function findCenter(context is Context, entities is Query) returns Vector
 {
     const boxResult = evBox3d(context, { 'topology' : entities, 'tight' : false });
     return box3dCenter(boxResult);
+}
+
+/**
+ * Applies surface normal alignment when the user presses the alignment button.
+ * Finds the closest point on reference entities to the current manipulator position,
+ * gets the surface normal at that point, and updates the rotation values to align
+ * the part with the surface normal.
+ * 
+ * @param context {Context} : The context for the feature
+ * @param definition {map} : The current feature definition
+ * @param baseCSys {CoordSystem} : The base coordinate system for the transform
+ * 
+ * @returns {map} : Updated definition with new rotation values
+ */
+function applyManualSurfaceAlignment(context is Context, definition is map, baseCSys is CoordSystem) returns map
+{
+    const referenceEntitiesResolved = evaluateQuery(context, definition.referenceEntities);
+    if (@size(referenceEntitiesResolved) == 0)
+    {
+        return definition;
+    }
+    
+    // Calculate current world position of the transformed origin
+    const rotationMatrix = composeRotation(baseCSys, definition.rx, definition.ry, definition.rz);
+    const localTransform = transform(rotationMatrix, vector(definition.dx, definition.dy, definition.dz));
+    const worldTransform = toWorld(baseCSys) * localTransform;
+    const currentWorldOrigin = worldTransform.translation;
+    
+    // Find the closest point on reference entities
+    const distanceResult = evDistance(context, {
+        "side0" : currentWorldOrigin,
+        "side1" : definition.referenceEntities
+    });
+    
+    const snappedWorldPoint = distanceResult.sides[1].point;
+    const referenceEntityIndex = distanceResult.sides[1].index;
+    const referenceEntity = qNthElement(definition.referenceEntities, referenceEntityIndex);
+    
+    // Check if it's a face
+    const faceQuery = qEntityFilter(referenceEntity, EntityType.FACE);
+    if (!isQueryEmpty(context, faceQuery))
+    {
+        // Get the tangent plane at the closest point
+        const faceParameter = distanceResult.sides[1].parameter;
+        try
+        {
+            const tangentPlane = evFaceTangentPlane(context, {
+                "face" : referenceEntity,
+                "parameter" : faceParameter
+            });
+            
+            // Build a coordinate system aligned with the surface (in world space)
+            const worldAlignedX = tangentPlane.x;
+            const worldAlignedZ = tangentPlane.normal;
+            const surfaceAlignedCSys = coordSystem(snappedWorldPoint, worldAlignedX, worldAlignedZ);
+            
+            // Convert to local space and extract rotation
+            const localAlignedTransform = fromWorld(baseCSys) * toWorld(surfaceAlignedCSys);
+            const rotationTransposed = transpose(localAlignedTransform.linear);
+            const alignedAngles = matrixToXYZAngles(rotationTransposed);
+            
+            // Update the definition with the aligned rotation values
+            definition.rx = alignedAngles[0];
+            definition.ry = alignedAngles[1];
+            definition.rz = alignedAngles[2];
+            
+            // Also update position to snap to surface
+            definition.dx = localAlignedTransform.translation[0];
+            definition.dy = localAlignedTransform.translation[1];
+            definition.dz = localAlignedTransform.translation[2];
+        }
+        catch
+        {
+            // If tangent plane evaluation fails, just continue with current values
+        }
+    }
+    
+    return definition;
 }
