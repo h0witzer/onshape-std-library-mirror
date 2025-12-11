@@ -728,11 +728,10 @@ export function normalizeSliceGeometryForLasercutting(context is Context, idPref
     }
 }
 
-// Convert normalized slice bodies to sheet metal bodies by extracting their primary faces and adding sheet metal attributes.
-// This function extracts the largest planar face from each slice body as a surface body (the sheet metal definition),
-// adds sheet metal attributes (bend radius, k-factor, thickness, etc.), and finalizes to create the 3D solid representation.
-// All surface bodies are created first, then annotated with a single shared context, and finally the 3D solids are generated.
-// The surface bodies remain as the sheet metal definition (hidden context bodies), while the original solid slice bodies are deleted.
+// Convert normalized slice bodies to sheet metal bodies by converting their primary faces directly using sheet metal thicken operation.
+// This function identifies the largest planar face from each slice body, extracts them as surface bodies, and converts them to sheet metal.
+// The approach follows the pattern from sheetMetalStart's thickenToSheetMetal function.
+// Surface bodies remain as hidden sheet metal definition (context) bodies, while the original solid slice bodies are deleted.
 // Inputs:
 //  - idPrefix : Id prefix used for sheet metal operations
 //  - sliceBodies : Query for all slice bodies to convert to sheet metal
@@ -741,10 +740,9 @@ export function normalizeSliceGeometryForLasercutting(context is Context, idPref
 export function convertSlicesToSheetMetal(context is Context, idPrefix is Id, sliceBodies is Query, definition is map)
 {
     var sliceBodyArray = evaluateQuery(context, sliceBodies);
-    var extractedSurfaceBodies = [] as array;
-    var bodyCounter = 0;
+    var facesToConvert = [] as array;
     
-    // Step 1: Extract the largest planar face from each slice body to create surface bodies
+    // Step 1: Identify the largest planar face from each slice body
     for (var sliceBody in sliceBodyArray)
     {
         // Find all faces on this body
@@ -783,63 +781,50 @@ export function convertSlicesToSheetMetal(context is Context, idPrefix is Id, sl
             }
         }
         
-        // If no planar face found, skip this body
-        if (largestPlanarFace == undefined)
+        // Add the largest planar face to the list
+        if (largestPlanarFace != undefined)
         {
-            bodyCounter += 1;
-            continue;
+            facesToConvert = append(facesToConvert, largestPlanarFace);
         }
-        
-        // Extract the largest planar face as a surface body (this will be the sheet metal definition)
-        const extractId = idPrefix + "extract" + bodyCounter;
-        try
-        {
-            opExtractSurface(context, extractId, {
-                "faces" : largestPlanarFace,
-                "offset" : 0 * meter
-            });
-        }
-        catch
-        {
-            bodyCounter += 1;
-            continue;
-        }
-        
-        const extractedSurfaceBody = qCreatedBy(extractId, EntityType.BODY);
-        
-        // Check that we created exactly one surface body
-        if (size(evaluateQuery(context, extractedSurfaceBody)) != 1)
-        {
-            bodyCounter += 1;
-            continue;
-        }
-        
-        extractedSurfaceBodies = append(extractedSurfaceBodies, extractedSurfaceBody);
-        bodyCounter += 1;
     }
     
-    // If no surface bodies were successfully extracted, return
-    if (size(extractedSurfaceBodies) == 0)
+    // If no faces were found, just delete the original bodies and return
+    if (size(facesToConvert) == 0)
     {
-        // Delete the original solid slice bodies
         opDeleteBodies(context, idPrefix + "deleteOriginalSlices", {
             "entities" : sliceBodies
         });
         return;
     }
     
-    // Step 2: Annotate all extracted surface bodies with sheet metal attributes using a single shared context
+    // Step 2: Extract surfaces from all faces using a single operation ID
+    // This follows the pattern from sheetMetalStart's convertFaces function
     const sheetMetalId = idPrefix + "sheetMetal";
-    const allExtractedSurfaces = qUnion(extractedSurfaceBodies);
+    const allFacesToConvert = qUnion(facesToConvert);
     
+    try
+    {
+        opExtractSurface(context, sheetMetalId + "extractSurface", {
+            "faces" : allFacesToConvert,
+            "offset" : 0 * meter
+        });
+    }
+    catch
+    {
+        opDeleteBodies(context, idPrefix + "deleteOriginalSlices", {
+            "entities" : sliceBodies
+        });
+        throw regenError(ErrorStringEnum.SHEET_METAL_CANNOT_THICKEN);
+    }
+    
+    // Step 3: Annotate the extracted surface bodies with sheet metal attributes
     // Use BACK direction (material grows in negative normal direction)
-    // This is the inverse of the default FRONT direction, which the user indicated was always wrong
     const thicknessDirection = SMThicknessDirection.BACK;
     
     try
     {
         annotateSmSurfaceBodies(context, sheetMetalId, {
-            "surfaceBodies" : allExtractedSurfaces,
+            "surfaceBodies" : qCreatedBy(sheetMetalId + "extractSurface", EntityType.BODY),
             "bendEdgesAndFaces" : qNothing(),
             "specialRadiiBends" : [],
             "defaultRadius" : definition.bendRadius,
@@ -859,38 +844,27 @@ export function convertSlicesToSheetMetal(context is Context, idPrefix is Id, sl
             "defaultBendReliefScale" : 1.0625,
             "bendCalculationType" : SMBendCalculationType.K_FACTOR
         }, 0);
-    }
-    catch
-    {
-        // If annotation fails, clean up and return
-        opDeleteBodies(context, idPrefix + "cleanupSurfaces", {
-            "entities" : allExtractedSurfaces
-        });
-        opDeleteBodies(context, idPrefix + "deleteOriginalSlices", {
-            "entities" : sliceBodies
-        });
-        return;
-    }
-    
-    // Step 3: Finalize the sheet metal geometry to create the 3D solid body representations and hide the surface bodies
-    // Note: Do NOT delete the surface bodies - they are the sheet metal definition bodies and must remain as hidden bodies
-    try
-    {
-        updateSheetMetalGeometry(context, sheetMetalId, {
-            "entities" : qUnion([allExtractedSurfaces, qOwnedByBody(allExtractedSurfaces, EntityType.FACE), qOwnedByBody(allExtractedSurfaces, EntityType.EDGE)])
-        });
+        
+        if (getFeatureError(context, sheetMetalId) != undefined)
+        {
+            opDeleteBodies(context, idPrefix + "cleanupSurfaces", {
+                "entities" : qCreatedBy(sheetMetalId + "extractSurface", EntityType.BODY)
+            });
+            opDeleteBodies(context, idPrefix + "deleteOriginalSlices", {
+                "entities" : sliceBodies
+            });
+            return;
+        }
     }
     catch (thrownError)
     {
-        // If finalization fails, clean up and return
-        opDeleteBodies(context, idPrefix + "cleanupSurfaces2", {
-            "entities" : allExtractedSurfaces
+        opDeleteBodies(context, idPrefix + "cleanupSurfaces", {
+            "entities" : qCreatedBy(sheetMetalId + "extractSurface", EntityType.BODY)
         });
         opDeleteBodies(context, idPrefix + "deleteOriginalSlices", {
             "entities" : sliceBodies
         });
         
-        // Rethrow sheet metal specific errors
         if (thrownError is map && thrownError.message is ErrorStringEnum)
         {
             throw thrownError;
@@ -898,8 +872,32 @@ export function convertSlicesToSheetMetal(context is Context, idPrefix is Id, sl
         throw regenError(ErrorStringEnum.SHEET_METAL_REBUILD_ERROR);
     }
     
-    // Step 4: Delete only the original solid slice bodies
-    // The surface bodies must remain as they are the sheet metal definition (context) bodies
+    // Step 4: Finalize the sheet metal geometry - this creates the 3D solid bodies and hides the surface bodies
+    // Following the pattern from sheetMetalStart's annotateConvertedFaces function
+    try
+    {
+        updateSheetMetalGeometry(context, sheetMetalId, {
+            "entities" : qUnion([qCreatedBy(sheetMetalId + "extractSurface", EntityType.FACE), qCreatedBy(sheetMetalId + "extractSurface", EntityType.EDGE)])
+        });
+    }
+    catch (thrownError)
+    {
+        opDeleteBodies(context, idPrefix + "cleanupSurfaces2", {
+            "entities" : qCreatedBy(sheetMetalId + "extractSurface", EntityType.BODY)
+        });
+        opDeleteBodies(context, idPrefix + "deleteOriginalSlices", {
+            "entities" : sliceBodies
+        });
+        
+        if (thrownError is map && thrownError.message is ErrorStringEnum)
+        {
+            throw thrownError;
+        }
+        throw regenError(ErrorStringEnum.SHEET_METAL_REBUILD_ERROR);
+    }
+    
+    // Step 5: Delete only the original solid slice bodies
+    // The surface bodies created by opExtractSurface are now hidden and serve as the sheet metal definition
     opDeleteBodies(context, idPrefix + "deleteOriginalSlices", {
         "entities" : sliceBodies
     });
