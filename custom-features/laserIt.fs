@@ -54,9 +54,6 @@ export const laserIt = defineFeature(function(context is Context, id is Id, defi
 
             annotation { "Name" : "Minimal Clearance" }
             isLength(definition.minimalClearance, SM_MINIMAL_CLEARANCE_BOUNDS);
-
-            annotation { "Name" : "Opposite direction", "UIHint" : UIHint.OPPOSITE_DIRECTION }
-            definition.oppositeDirection is boolean;
         }
 
     }
@@ -835,9 +832,9 @@ export function convertSlicesToSheetMetal(context is Context, idPrefix is Id, sl
     const sheetMetalId = idPrefix + "sheetMetal";
     const allExtractedSurfaces = qUnion(extractedSurfaceBodies);
     
-    // Determine thickness direction based on oppositeDirection parameter
-    // Modern sheet metal features use FRONT or BACK, not BOTH
-    const thicknessDirection = definition.oppositeDirection ? SMThicknessDirection.BACK : SMThicknessDirection.FRONT;
+    // Use BACK direction (material grows in negative normal direction)
+    // This is the inverse of the default FRONT direction, which the user indicated was always wrong
+    const thicknessDirection = SMThicknessDirection.BACK;
     
     try
     {
