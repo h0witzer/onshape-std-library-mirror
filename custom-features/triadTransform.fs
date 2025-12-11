@@ -264,14 +264,14 @@ export function triadTransformManipulatorChange(context is Context, definition i
             definition.enableGeometrySnapping && 
             definition.alignToSurfaceNormal)
         {
-            // Surface alignment mode: extract translation and check if rotation changed
+            // Surface alignment mode: always extract translation and rotation
             definition.dx = triadTransform.translation[0];
             definition.dy = triadTransform.translation[1];
             definition.dz = triadTransform.translation[2];
             
-            // Check if the user actually rotated (vs just translating)
-            // We do this by comparing the manipulator's rotation with what we expect
-            // based on surface alignment + current rx,ry,rz values
+            // Extract rotation relative to current surface alignment
+            // This allows both translation (which reorients to surface) and rotation
+            // (which pivots around centroid) to update the rotation values
             
             try
             {
@@ -307,46 +307,21 @@ export function triadTransformManipulatorChange(context is Context, definition i
                         // Surface alignment rotation in local space
                         const surfaceAlignmentLocal = (fromWorld(baseCSys) * toWorld(surfaceAlignedCSys)).linear;
                         
-                        // Compute what the rotation SHOULD be based on current rx,ry,rz
-                        const expectedUserRotation = composeRotation(surfaceAlignedCSys, 
-                            definition.rx, definition.ry, definition.rz);
-                        const expectedWorldRotation = toWorld(surfaceAlignedCSys).linear * expectedUserRotation;
-                        const expectedLocalRotation = fromWorld(baseCSys).linear * expectedWorldRotation;
-                        
-                        // Compare with actual manipulator rotation
+                        // The manipulator's actual rotation in local space
                         const manipulatorLocalRotation = triadTransform.linear;
                         
-                        // Check if they're significantly different (user rotated)
-                        // Compare by checking if the matrices are approximately equal
-                        var rotationChanged = false;
-                        for (var i = 0; i < 3; i += 1)
-                        {
-                            for (var j = 0; j < 3; j += 1)
-                            {
-                                const diff = abs(manipulatorLocalRotation[i][j] - expectedLocalRotation[i][j]);
-                                if (diff > 0.001) // tolerance for rotation detection
-                                {
-                                    rotationChanged = true;
-                                }
-                            }
-                        }
+                        // Extract user's rotation relative to surface: inverse(surfaceAlignment) * manipulator
+                        // For rotation matrices, inverse = transpose
+                        const userRelativeRotation = transpose(surfaceAlignmentLocal) * manipulatorLocalRotation;
                         
-                        // Only update rotation fields if user actually rotated
-                        if (rotationChanged)
-                        {
-                            // User's rotation relative to surface: inverse(surfaceAlignment) * manipulator
-                            // For rotation matrices, inverse = transpose
-                            const userRelativeRotation = transpose(surfaceAlignmentLocal) * manipulatorLocalRotation;
-                            
-                            // Extract angles from user's relative rotation
-                            const relativeRotationTransposed = transpose(userRelativeRotation);
-                            const relativeAngles = matrixToXYZAngles(relativeRotationTransposed);
-                            
-                            definition.rx = relativeAngles[0];
-                            definition.ry = relativeAngles[1];
-                            definition.rz = relativeAngles[2];
-                        }
-                        // else: rotation unchanged, keep existing rx,ry,rz values
+                        // Extract angles from user's relative rotation
+                        // These represent the rotation relative to the surface-aligned orientation
+                        const relativeRotationTransposed = transpose(userRelativeRotation);
+                        const relativeAngles = matrixToXYZAngles(relativeRotationTransposed);
+                        
+                        definition.rx = relativeAngles[0];
+                        definition.ry = relativeAngles[1];
+                        definition.rz = relativeAngles[2];
                     }
                 }
             }
