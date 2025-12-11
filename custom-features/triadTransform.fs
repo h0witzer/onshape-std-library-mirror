@@ -225,30 +225,18 @@ export function triadTransformManipulatorChange(context is Context, definition i
                             });
                             
                             // Build a coordinate system aligned with the surface (in world space)
-                            // This will be the base alignment - user rotations will be applied on top of this
                             const worldAlignedX = tangentPlane.x;
                             const worldAlignedZ = tangentPlane.normal;
-                            const worldAlignedY = cross(worldAlignedZ, worldAlignedX);
                             
-                            // Create a coordinate system from these aligned axes
+                            // When surface alignment is enabled, we show surface-aligned orientation
+                            // as the default, but user can override by rotating
+                            // The extraction will capture the absolute rotation in rx, ry, rz
                             const surfaceAlignedCSys = coordSystem(snappedWorldPoint, worldAlignedX, worldAlignedZ);
+                            const surfaceAlignmentLocal = (fromWorld(baseCSys) * toWorld(surfaceAlignedCSys)).linear;
                             
-                            // Compute the base alignment transform (relative to baseCSys)
-                            // This is the transform that aligns to the surface with zero user rotation
-                            const surfaceAlignmentTransform = fromWorld(baseCSys) * toWorld(surfaceAlignedCSys);
-                            
-                            // Now apply user's rotation on top of this alignment
-                            // The user's rotation intent is in definition.rx, ry, rz
-                            const userRotation = composeRotation(surfaceAlignedCSys, 
-                                definition.rx, definition.ry, definition.rz);
-                            
-                            // Combine: first apply surface alignment, then user rotation
-                            // In world space: finalWorld = surfaceAligned * userRotation
-                            // In local space relative to baseCSys:
-                            const finalWorldRotation = toWorld(surfaceAlignedCSys).linear * userRotation;
-                            const finalLocalRotation = fromWorld(baseCSys).linear * finalWorldRotation;
-                            
-                            triadTransform = transform(finalLocalRotation, localSnappedPoint);
+                            // Show the surface-aligned orientation in the manipulator
+                            // User's rotation values will be updated to match this when they drag translation
+                            triadTransform = transform(surfaceAlignmentLocal, localSnappedPoint);
                         }
                         catch
                         {
@@ -264,71 +252,20 @@ export function triadTransformManipulatorChange(context is Context, definition i
             definition.enableGeometrySnapping && 
             definition.alignToSurfaceNormal)
         {
-            // Surface alignment mode: always extract translation and rotation
+            // Surface alignment mode: extract absolute rotation
             definition.dx = triadTransform.translation[0];
             definition.dy = triadTransform.translation[1];
             definition.dz = triadTransform.translation[2];
             
-            // Extract rotation relative to current surface alignment
-            // This allows both translation (which reorients to surface) and rotation
-            // (which pivots around centroid) to update the rotation values
+            // Extract ABSOLUTE rotation angles (relative to baseCSys)
+            // The manipulator shows surface-aligned orientation, but we store absolute angles
+            const manipulatorLocalRotation = triadTransform.linear;
+            const rotationTransposed = transpose(manipulatorLocalRotation);
+            const absoluteAngles = matrixToXYZAngles(rotationTransposed);
             
-            try
-            {
-                const baseCSys = getBaseCoordinateSystem(context, definition);
-                const referenceEntitiesResolved = evaluateQuery(context, definition.referenceEntities);
-                if (@size(referenceEntitiesResolved) > 0)
-                {
-                    const worldTransform = toWorld(baseCSys) * triadTransform;
-                    const manipulatorOrigin = worldTransform.translation;
-                    
-                    const distanceResult = evDistance(context, {
-                        "side0" : manipulatorOrigin,
-                        "side1" : definition.referenceEntities
-                    });
-                    
-                    const referenceEntityIndex = distanceResult.sides[1].index;
-                    const referenceEntity = qNthElement(definition.referenceEntities, referenceEntityIndex);
-                    const faceQuery = qEntityFilter(referenceEntity, EntityType.FACE);
-                    
-                    if (!isQueryEmpty(context, faceQuery))
-                    {
-                        const faceParameter = distanceResult.sides[1].parameter;
-                        const tangentPlane = evFaceTangentPlane(context, {
-                            "face" : referenceEntity,
-                            "parameter" : faceParameter
-                        });
-                        
-                        const snappedWorldPoint = distanceResult.sides[1].point;
-                        const worldAlignedX = tangentPlane.x;
-                        const worldAlignedZ = tangentPlane.normal;
-                        const surfaceAlignedCSys = coordSystem(snappedWorldPoint, worldAlignedX, worldAlignedZ);
-                        
-                        // Surface alignment rotation in local space
-                        const surfaceAlignmentLocal = (fromWorld(baseCSys) * toWorld(surfaceAlignedCSys)).linear;
-                        
-                        // The manipulator's actual rotation in local space
-                        const manipulatorLocalRotation = triadTransform.linear;
-                        
-                        // Extract user's rotation relative to surface: inverse(surfaceAlignment) * manipulator
-                        // For rotation matrices, inverse = transpose
-                        const userRelativeRotation = transpose(surfaceAlignmentLocal) * manipulatorLocalRotation;
-                        
-                        // Extract angles from user's relative rotation
-                        // These represent the rotation relative to the surface-aligned orientation
-                        const relativeRotationTransposed = transpose(userRelativeRotation);
-                        const relativeAngles = matrixToXYZAngles(relativeRotationTransposed);
-                        
-                        definition.rx = relativeAngles[0];
-                        definition.ry = relativeAngles[1];
-                        definition.rz = relativeAngles[2];
-                    }
-                }
-            }
-            catch
-            {
-                // If extraction fails, keep existing values
-            }
+            definition.rx = absoluteAngles[0];
+            definition.ry = absoluteAngles[1];
+            definition.rz = absoluteAngles[2];
         }
         else
         {
