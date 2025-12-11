@@ -260,14 +260,30 @@ export function triadTransformManipulatorChange(context is Context, definition i
         }
         
         // Extract rotation and translation from the transform
-        const rotation = transpose(triadTransform.linear);
-        const angles = matrixToXYZAngles(rotation);
-        definition.dx = triadTransform.translation[0];
-        definition.dy = triadTransform.translation[1];
-        definition.dz = triadTransform.translation[2];
-        definition.rx = angles[0];
-        definition.ry = angles[1];
-        definition.rz = angles[2];
+        // When surface alignment is enabled, we don't update rotation fields
+        // because they represent user intent relative to the surface
+        if (definition.useAdvancedPlacement && 
+            definition.enableGeometrySnapping && 
+            definition.alignToSurfaceNormal)
+        {
+            // Only extract translation - keep rotation fields as user intent
+            definition.dx = triadTransform.translation[0];
+            definition.dy = triadTransform.translation[1];
+            definition.dz = triadTransform.translation[2];
+            // Don't update rx, ry, rz - they stay as user's relative rotation intent
+        }
+        else
+        {
+            // Normal behavior: extract both translation and rotation
+            const rotation = transpose(triadTransform.linear);
+            const angles = matrixToXYZAngles(rotation);
+            definition.dx = triadTransform.translation[0];
+            definition.dy = triadTransform.translation[1];
+            definition.dz = triadTransform.translation[2];
+            definition.rx = angles[0];
+            definition.ry = angles[1];
+            definition.rz = angles[2];
+        }
     }
     return definition;
 }
