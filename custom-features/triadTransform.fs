@@ -120,10 +120,12 @@ export const triadTransform = defineFeature(function(context is Context, id is I
         // Handle snap to surface button press
         if (definition.useAdvancedPlacement &&
             definition.enableGeometrySnapping &&
-            definition.snapToSurface)
+            definition.snapToSurface == true)
         {
             // Snap to surface and align rotation to surface normal
             definition = snapToSurface(context, definition, baseCSys);
+            // Reset button state after processing
+            definition.snapToSurface = undefined;
         }
 
         addTriadManipulator(context, id, baseCSys, definition);
