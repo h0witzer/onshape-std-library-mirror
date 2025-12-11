@@ -227,17 +227,17 @@ export function triadTransformManipulatorChange(context is Context, definition i
                             
                             // Build a coordinate system aligned with the surface
                             // Z-axis is the normal, X and Y are tangent to the surface
-                            const alignedZ = tangentPlane.normal;
                             const alignedX = tangentPlane.x;
+                            const alignedZ = tangentPlane.normal;
                             const alignedY = cross(alignedZ, alignedX);
                             
                             // Create the aligned rotation matrix (world space)
-                            // Each column is one of the axis vectors
-                            const alignedWorldRotation = matrix([
-                                [alignedX[0], alignedY[0], alignedZ[0]],
-                                [alignedX[1], alignedY[1], alignedZ[1]],
-                                [alignedX[2], alignedY[2], alignedZ[2]]
-                            ]);
+                            // Build matrix with axes as rows, then transpose to get axes as columns
+                            const alignedWorldRotation = transpose(matrix([
+                                alignedX,
+                                alignedY,
+                                alignedZ
+                            ]));
                             
                             // Convert to local space relative to base coordinate system
                             const alignedLocalRotation = fromWorld(baseCSys).linear * alignedWorldRotation;
