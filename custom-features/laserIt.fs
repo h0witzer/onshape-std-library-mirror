@@ -732,7 +732,7 @@ export function normalizeSliceGeometryForLasercutting(context is Context, idPref
 // This function extracts the largest planar face from each slice body as a surface body (the sheet metal definition),
 // adds sheet metal attributes (bend radius, k-factor, thickness, etc.), and finalizes to create the 3D solid representation.
 // All surface bodies are created first, then annotated with a single shared context, and finally the 3D solids are generated.
-// The original solid slice bodies and intermediate surface bodies are deleted after conversion.
+// The surface bodies remain as the sheet metal definition (hidden context bodies), while the original solid slice bodies are deleted.
 // Inputs:
 //  - idPrefix : Id prefix used for sheet metal operations
 //  - sliceBodies : Query for all slice bodies to convert to sheet metal
@@ -869,6 +869,7 @@ export function convertSlicesToSheetMetal(context is Context, idPrefix is Id, sl
     }
     
     // Step 3: Finalize the sheet metal geometry to create the 3D solid body representations
+    // Note: Do NOT delete the surface bodies - they are the sheet metal definition bodies and must remain
     try
     {
         updateSheetMetalGeometry(context, sheetMetalId, {
@@ -887,15 +888,10 @@ export function convertSlicesToSheetMetal(context is Context, idPrefix is Id, sl
         return;
     }
     
-    // Step 4: Delete all the original solid slice bodies and the intermediate surface bodies
+    // Step 4: Delete only the original solid slice bodies
+    // The surface bodies must remain as they are the sheet metal definition (context) bodies
     opDeleteBodies(context, idPrefix + "deleteOriginalSlices", {
         "entities" : sliceBodies
-    });
-    
-    // Delete the surface bodies that were used as the sheet metal definition
-    // The updateSheetMetalGeometry has created the 3D solid representations
-    opDeleteBodies(context, idPrefix + "deleteSurfaceBodies", {
-        "entities" : allExtractedSurfaces
     });
 }
 
