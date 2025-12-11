@@ -54,6 +54,9 @@ export const laserIt = defineFeature(function(context is Context, id is Id, defi
 
             annotation { "Name" : "Minimal Clearance" }
             isLength(definition.minimalClearance, SM_MINIMAL_CLEARANCE_BOUNDS);
+
+            annotation { "Name" : "Opposite direction", "UIHint" : UIHint.OPPOSITE_DIRECTION }
+            definition.oppositeDirection is boolean;
         }
 
     }
@@ -832,6 +835,10 @@ export function convertSlicesToSheetMetal(context is Context, idPrefix is Id, sl
     const sheetMetalId = idPrefix + "sheetMetal";
     const allExtractedSurfaces = qUnion(extractedSurfaceBodies);
     
+    // Determine thickness direction based on oppositeDirection parameter
+    // Modern sheet metal features use FRONT or BACK, not BOTH
+    const thicknessDirection = definition.oppositeDirection ? SMThicknessDirection.BACK : SMThicknessDirection.FRONT;
+    
     try
     {
         annotateSmSurfaceBodies(context, sheetMetalId, {
@@ -841,7 +848,7 @@ export function convertSlicesToSheetMetal(context is Context, idPrefix is Id, sl
             "defaultRadius" : definition.bendRadius,
             "controlsThickness" : true,
             "thickness" : definition.matThick,
-            "thicknessDirection" : SMThicknessDirection.BOTH,
+            "thicknessDirection" : thicknessDirection,
             "minimalClearance" : definition.minimalClearance,
             "kFactor" : definition.kFactor,
             "flipDirectionUp" : false,
@@ -868,15 +875,15 @@ export function convertSlicesToSheetMetal(context is Context, idPrefix is Id, sl
         return;
     }
     
-    // Step 3: Finalize the sheet metal geometry to create the 3D solid body representations
-    // Note: Do NOT delete the surface bodies - they are the sheet metal definition bodies and must remain
+    // Step 3: Finalize the sheet metal geometry to create the 3D solid body representations and hide the surface bodies
+    // Note: Do NOT delete the surface bodies - they are the sheet metal definition bodies and must remain as hidden bodies
     try
     {
         updateSheetMetalGeometry(context, sheetMetalId, {
             "entities" : qUnion([allExtractedSurfaces, qOwnedByBody(allExtractedSurfaces, EntityType.FACE), qOwnedByBody(allExtractedSurfaces, EntityType.EDGE)])
         });
     }
-    catch
+    catch (thrownError)
     {
         // If finalization fails, clean up and return
         opDeleteBodies(context, idPrefix + "cleanupSurfaces2", {
@@ -885,7 +892,13 @@ export function convertSlicesToSheetMetal(context is Context, idPrefix is Id, sl
         opDeleteBodies(context, idPrefix + "deleteOriginalSlices", {
             "entities" : sliceBodies
         });
-        return;
+        
+        // Rethrow sheet metal specific errors
+        if (thrownError is map && thrownError.message is ErrorStringEnum)
+        {
+            throw thrownError;
+        }
+        throw regenError(ErrorStringEnum.SHEET_METAL_REBUILD_ERROR);
     }
     
     // Step 4: Delete only the original solid slice bodies
