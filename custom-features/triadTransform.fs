@@ -226,24 +226,25 @@ export function triadTransformManipulatorChange(context is Context, definition i
                             
                             // Build a coordinate system aligned with the surface (in world space)
                             // Z-axis is the normal, X and Y are tangent to the surface
-                            const alignedX = tangentPlane.x;
-                            const alignedZ = tangentPlane.normal;
-                            const alignedY = cross(alignedZ, alignedX);
+                            const worldAlignedX = tangentPlane.x;
+                            const worldAlignedZ = tangentPlane.normal;
+                            const worldAlignedY = cross(worldAlignedZ, worldAlignedX);
                             
-                            // Create the aligned rotation matrix in world space
-                            // Build matrix with axes as rows, then transpose to get axes as columns
-                            const alignedWorldRotation = transpose(matrix([
-                                alignedX,
-                                alignedY,
-                                alignedZ
-                            ]));
+                            // Create a coordinate system from these aligned axes
+                            const alignedWorldCSys = coordSystem(snappedWorldPoint, worldAlignedX, worldAlignedZ);
                             
-                            // Now we need to express this world rotation as a local transform relative to baseCSys
-                            // The relationship is: worldRot = toWorld(baseCSys).linear * localRot
-                            // So: localRot = fromWorld(baseCSys).linear * worldRot
-                            const alignedLocalRotation = fromWorld(baseCSys).linear * alignedWorldRotation;
+                            // The manipulator transform is relative to baseCSys
+                            // We want: toWorld(baseCSys) * triadTransform = toWorld(alignedWorldCSys)
+                            // Therefore: triadTransform = fromWorld(baseCSys) * toWorld(alignedWorldCSys)
+                            const desiredWorldTransform = toWorld(alignedWorldCSys);
+                            const baseToWorld = toWorld(baseCSys);
                             
-                            triadTransform = transform(alignedLocalRotation, localSnappedPoint);
+                            // Compute the relative transform
+                            // Since Transform doesn't have division, we use: A * B^-1 = A * inverse(B)
+                            // For transforms: inverse(toWorld(baseCSys)) = fromWorld(baseCSys)
+                            const relativeTransform = fromWorld(baseCSys) * desiredWorldTransform;
+                            
+                            triadTransform = relativeTransform;
                         }
                         catch
                         {
