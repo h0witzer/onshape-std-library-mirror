@@ -5,10 +5,14 @@
 //  - matThick : Material thickness that controls extrusion depth
 //  - defRefFrame : Boolean to select a mate connector as the slicing reference frame
 //  - referenceFrame : Mate connector query when defRefFrame is true, defines the placement of the slicing grid
+//  - outputSheetMetal : Boolean to output results as sheet metal bodies
 FeatureScript 2815;
 import(path : "onshape/std/geometry.fs", version : "2815.0");
 import(path : "onshape/std/query.fs", version : "2815.0");
 import(path : "onshape/std/box.fs", version : "2815.0");
+import(path : "onshape/std/sheetMetalAttribute.fs", version : "2815.0");
+import(path : "onshape/std/sheetMetalUtils.fs", version : "2815.0");
+import(path : "onshape/std/evaluate.fs", version : "2815.0");
 
 annotation { "Feature Type Name" : "Laser It" }
 export const laserIt = defineFeature(function(context is Context, id is Id, definition is map)
@@ -32,6 +36,21 @@ export const laserIt = defineFeature(function(context is Context, id is Id, defi
         {
             annotation { "Name" : "Reference Frame", "Filter" : BodyType.MATE_CONNECTOR, "MaxNumberOfPicks" : 1 }
             definition.referenceFrame is Query;
+        }
+
+        annotation { "Name" : "Output as Sheet Metal" }
+        definition.outputSheetMetal is boolean;
+
+        if (definition.outputSheetMetal)
+        {
+            annotation { "Name" : "Bend Radius" }
+            isLength(definition.bendRadius, SM_BEND_RADIUS_BOUNDS);
+
+            annotation { "Name" : "K Factor" }
+            isReal(definition.kFactor, K_FACTOR_BOUNDS);
+
+            annotation { "Name" : "Minimal Clearance" }
+            isLength(definition.minimalClearance, SM_MINIMAL_CLEARANCE_BOUNDS);
         }
 
     }
@@ -88,6 +107,12 @@ export const laserIt = defineFeature(function(context is Context, id is Id, defi
                 return qCreatedBy(yIntersectionId, EntityType.BODY);
             }));
         normalizeSliceGeometryForLasercutting(context, id + "YNormalize", allYSliceBodies, definition.matThick);
+
+        // Convert to sheet metal if requested
+        if (definition.outputSheetMetal == true)
+        {
+            convertSlicesToSheetMetal(context, id, qUnion([allXSliceBodies, allYSliceBodies]), definition);
+        }
 
     });
 
@@ -699,3 +724,195 @@ export function normalizeSliceGeometryForLasercutting(context is Context, idPref
         bodyCounter += 1;
     }
 }
+
+// Convert normalized slice bodies to sheet metal bodies by thickening their primary faces and adding sheet metal attributes.
+// This function extracts the largest planar face from each slice body, thickens it to create a sheet metal part,
+// adds sheet metal attributes (bend radius, k-factor, thickness, etc.), and deletes the original solid bodies.
+// Inputs:
+//  - idPrefix : Id prefix used for sheet metal operations
+//  - sliceBodies : Query for all slice bodies to convert to sheet metal
+//  - definition : Feature definition map containing sheet metal parameters (bendRadius, kFactor, minimalClearance, matThick)
+// Returns: none
+export function convertSlicesToSheetMetal(context is Context, idPrefix is Id, sliceBodies is Query, definition is map)
+{
+    var sliceBodyArray = evaluateQuery(context, sliceBodies);
+    var sheetMetalBodyCounter = 0;
+    var createdSheetMetalBodies = [] as array;
+    
+    for (var sliceBody in sliceBodyArray)
+    {
+        const operationId = idPrefix + "sheetMetal" + sheetMetalBodyCounter;
+        
+        // Find all faces on this body
+        const bodyFaces = qOwnedByBody(sliceBody, EntityType.FACE);
+        
+        // Find the largest planar face to use as the primary sheet metal face
+        var largestPlanarFace = undefined;
+        var largestArea = 0 * meter^2;
+        
+        var faceArray = evaluateQuery(context, bodyFaces);
+        for (var face in faceArray)
+        {
+            try
+            {
+                // Check if face is planar
+                var surfaceDefinition = evSurfaceDefinition(context, {
+                    "face" : face
+                });
+                
+                if (surfaceDefinition is Plane)
+                {
+                    var faceArea = evArea(context, {
+                        "entities" : face
+                    });
+                    
+                    if (faceArea > largestArea)
+                    {
+                        largestArea = faceArea;
+                        largestPlanarFace = face;
+                    }
+                }
+            }
+            catch
+            {
+                // Skip faces that can't be evaluated
+            }
+        }
+        
+        // If no planar face found, skip this body
+        if (largestPlanarFace == undefined)
+        {
+            sheetMetalBodyCounter += 1;
+            continue;
+        }
+        
+        // Extract the largest planar face as a surface body
+        const extractId = operationId + "extract";
+        try
+        {
+            opExtractSurface(context, extractId, {
+                "faces" : largestPlanarFace,
+                "offset" : 0 * meter
+            });
+        }
+        catch
+        {
+            sheetMetalBodyCounter += 1;
+            continue;
+        }
+        
+        const extractedSurfaceBody = qCreatedBy(extractId, EntityType.BODY);
+        
+        // Check that we created exactly one surface body
+        if (size(evaluateQuery(context, extractedSurfaceBody)) != 1)
+        {
+            sheetMetalBodyCounter += 1;
+            continue;
+        }
+        
+        // Get the extracted face to thicken
+        const extractedFace = qOwnedByBody(extractedSurfaceBody, EntityType.FACE);
+        
+        // Thicken the extracted surface symmetrically by the material thickness
+        const thickenId = operationId + "thicken";
+        try
+        {
+            opThicken(context, thickenId, {
+                "entities" : extractedFace,
+                "thickness1" : definition.matThick / 2,
+                "thickness2" : definition.matThick / 2
+            });
+        }
+        catch
+        {
+            // If thicken fails, clean up and continue
+            opDeleteBodies(context, operationId + "cleanupFailed", {
+                "entities" : extractedSurfaceBody
+            });
+            sheetMetalBodyCounter += 1;
+            continue;
+        }
+        
+        // The thickened body should be the extracted surface body (modified in place)
+        const thickenedBody = extractedSurfaceBody;
+        
+        // Add sheet metal attributes to the surface body (which is still a sheet)
+        var featureIdString = toAttributeId(operationId);
+        
+        // Create thickness data - using BOTH direction for symmetric thickening
+        var thicknessData = {
+            "value" : definition.matThick / 2,
+            "canBeEdited" : false
+        };
+        
+        var kFactorData = {
+            "value" : definition.kFactor,
+            "canBeEdited" : true,
+            "controllingFeatureId" : featureIdString,
+            "parameterIdInFeature" : "kFactor"
+        };
+        
+        var minimalClearanceData = {
+            "value" : definition.minimalClearance,
+            "canBeEdited" : true,
+            "controllingFeatureId" : featureIdString,
+            "parameterIdInFeature" : "minimalClearance"
+        };
+        
+        var modelAttribute = asSMAttribute({
+            "attributeId" : featureIdString,
+            "objectType" : SMObjectType.MODEL,
+            "active" : true,
+            "k-factor" : kFactorData,
+            "minimalClearance" : minimalClearanceData,
+            "flipDirectionUp" : false,
+            "defaultBendRadius" : {"value" : definition.bendRadius},
+            "frontThickness" : thicknessData,
+            "backThickness" : thicknessData
+        });
+        
+        // Set the model attribute on the sheet body
+        setAttribute(context, {
+            "entities" : thickenedBody,
+            "attribute" : modelAttribute
+        });
+        
+        // Get all faces from the sheet body and mark them as walls
+        const sheetFaces = qOwnedByBody(thickenedBody, EntityType.FACE);
+        var wallCounter = 0;
+        for (var sheetFace in evaluateQuery(context, sheetFaces))
+        {
+            setAttribute(context, {
+                "entities" : sheetFace,
+                "attribute" : makeSMWallAttribute(toAttributeId(operationId + "wall" + wallCounter))
+            });
+            wallCounter += 1;
+        }
+        
+        // Assign SM association attributes to all entities of the sheet body
+        assignSMAssociationAttributes(context, qOwnedByBody(thickenedBody));
+        
+        // Finalize the sheet metal geometry to create the 3D solid body
+        try
+        {
+            updateSheetMetalGeometry(context, operationId, {
+                "entities" : qUnion([thickenedBody, qOwnedByBody(thickenedBody, EntityType.FACE), qOwnedByBody(thickenedBody, EntityType.EDGE)])
+            });
+        }
+        catch
+        {
+            // If finalization fails, continue to next body
+            sheetMetalBodyCounter += 1;
+            continue;
+        }
+        
+        createdSheetMetalBodies = append(createdSheetMetalBodies, thickenedBody);
+        sheetMetalBodyCounter += 1;
+    }
+    
+    // Delete all the original solid slice bodies
+    opDeleteBodies(context, idPrefix + "deleteOriginalSlices", {
+        "entities" : sliceBodies
+    });
+}
+
