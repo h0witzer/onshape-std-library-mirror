@@ -114,7 +114,7 @@ export const laserIt = defineFeature(function(context is Context, id is Id, defi
         // Convert to sheet metal if requested
         if (definition.outputSheetMetal == true)
         {
-            convertSlicesToSheetMetal(context, id, qUnion([allXSliceBodies, allYSliceBodies]), definition);
+            convertSlicesToSheetMetal(context, id, trimmedSheetsResult, xSliceResult, ySliceResult, definition);
         }
 
     });
@@ -728,76 +728,97 @@ export function normalizeSliceGeometryForLasercutting(context is Context, idPref
     }
 }
 
-// Convert normalized slice bodies to sheet metal bodies by converting their primary faces directly using sheet metal thicken operation.
-// This function identifies the largest planar face from each slice body, extracts them as surface bodies, and converts them to sheet metal.
+// Convert normalized slice bodies to sheet metal bodies by using the tracked cap faces (faces parallel to slice planes).
+// This function uses qParallelPlanes to find the primary planar faces that were tracked during slice creation.
+// Using the tracked faces (instead of searching for "largest") automatically filters out unwanted wedgelet parts from normalization.
 // The approach follows the pattern from sheetMetalStart's thickenToSheetMetal function.
 // Surface bodies remain as hidden sheet metal definition (context) bodies, while the original solid slice bodies are deleted.
 // Inputs:
 //  - idPrefix : Id prefix used for sheet metal operations
-//  - sliceBodies : Query for all slice bodies to convert to sheet metal
+//  - trimmedSheetsResult : Map containing xIntersectionIds and yIntersectionIds arrays
+//  - xSliceResult : Map containing slicePlanes for X slices
+//  - ySliceResult : Map containing slicePlanes for Y slices
 //  - definition : Feature definition map containing sheet metal parameters (bendRadius, kFactor, minimalClearance, matThick)
 // Returns: none
-export function convertSlicesToSheetMetal(context is Context, idPrefix is Id, sliceBodies is Query, definition is map)
+export function convertSlicesToSheetMetal(context is Context, idPrefix is Id, trimmedSheetsResult is map, xSliceResult is map, ySliceResult is map, definition is map)
 {
-    var sliceBodyArray = evaluateQuery(context, sliceBodies);
     var facesToConvert = [] as array;
     
-    // Step 1: Identify the largest planar face from each slice body
-    for (var sliceBody in sliceBodyArray)
+    // Step 1: Collect cap faces from X slices using qParallelPlanes (same approach as tracking queries)
+    const xIntersectionIds = trimmedSheetsResult.xIntersectionIds;
+    const xSlicePlanes = xSliceResult.slicePlanes;
+    
+    for (var xIndex = 0; xIndex < size(xIntersectionIds); xIndex += 1)
     {
-        // Find all faces on this body
-        const bodyFaces = qOwnedByBody(sliceBody, EntityType.FACE);
+        const xIntersectionId = xIntersectionIds[xIndex];
+        const xSlicePlane = xSlicePlanes[xIndex];
         
-        // Find the largest planar face to use as the primary sheet metal face
-        var largestPlanarFace = undefined;
-        var largestArea = 0 * meter^2;
+        // Get bodies created by this intersection
+        const sliceBodies = qCreatedBy(xIntersectionId, EntityType.BODY);
         
-        var faceArray = evaluateQuery(context, bodyFaces);
-        for (var face in faceArray)
+        // For each body, find faces parallel to the slice plane (these are the tracked cap faces)
+        var bodyArray = evaluateQuery(context, sliceBodies);
+        for (var body in bodyArray)
         {
-            try
+            const bodyFaces = qOwnedByBody(body, EntityType.FACE);
+            const capFaces = qParallelPlanes(bodyFaces, xSlicePlane);
+            
+            // Add all cap faces to the list (typically 2 per body - start and end caps)
+            var capFaceArray = evaluateQuery(context, capFaces);
+            for (var capFace in capFaceArray)
             {
-                // Check if face is planar
-                var surfaceDefinition = evSurfaceDefinition(context, {
-                    "face" : face
-                });
-                
-                if (surfaceDefinition is Plane)
-                {
-                    var faceArea = evArea(context, {
-                        "entities" : face
-                    });
-                    
-                    if (faceArea > largestArea)
-                    {
-                        largestArea = faceArea;
-                        largestPlanarFace = face;
-                    }
-                }
-            }
-            catch
-            {
-                // Skip faces that can't be evaluated
+                facesToConvert = append(facesToConvert, capFace);
             }
         }
+    }
+    
+    // Step 2: Collect cap faces from Y slices using qParallelPlanes
+    const yIntersectionIds = trimmedSheetsResult.yIntersectionIds;
+    const ySlicePlanes = ySliceResult.slicePlanes;
+    
+    for (var yIndex = 0; yIndex < size(yIntersectionIds); yIndex += 1)
+    {
+        const yIntersectionId = yIntersectionIds[yIndex];
+        const ySlicePlane = ySlicePlanes[yIndex];
         
-        // Add the largest planar face to the list
-        if (largestPlanarFace != undefined)
+        // Get bodies created by this intersection
+        const sliceBodies = qCreatedBy(yIntersectionId, EntityType.BODY);
+        
+        // For each body, find faces parallel to the slice plane (these are the tracked cap faces)
+        var bodyArray = evaluateQuery(context, sliceBodies);
+        for (var body in bodyArray)
         {
-            facesToConvert = append(facesToConvert, largestPlanarFace);
+            const bodyFaces = qOwnedByBody(body, EntityType.FACE);
+            const capFaces = qParallelPlanes(bodyFaces, ySlicePlane);
+            
+            // Add all cap faces to the list (typically 2 per body - start and end caps)
+            var capFaceArray = evaluateQuery(context, capFaces);
+            for (var capFace in capFaceArray)
+            {
+                facesToConvert = append(facesToConvert, capFace);
+            }
         }
     }
     
     // If no faces were found, just delete the original bodies and return
     if (size(facesToConvert) == 0)
     {
+        const allXSliceBodies = qUnion(mapArray(xIntersectionIds, function(xIntersectionId)
+            {
+                return qCreatedBy(xIntersectionId, EntityType.BODY);
+            }));
+        const allYSliceBodies = qUnion(mapArray(yIntersectionIds, function(yIntersectionId)
+            {
+                return qCreatedBy(yIntersectionId, EntityType.BODY);
+            }));
+        
         opDeleteBodies(context, idPrefix + "deleteOriginalSlices", {
-            "entities" : sliceBodies
+            "entities" : qUnion([allXSliceBodies, allYSliceBodies])
         });
         return;
     }
     
-    // Step 2: Extract surfaces from all faces using a single operation ID
+    // Step 3: Extract surfaces from all collected cap faces using a single operation ID
     // This follows the pattern from sheetMetalStart's convertFaces function
     const sheetMetalId = idPrefix + "sheetMetal";
     const allFacesToConvert = qUnion(facesToConvert);
@@ -811,13 +832,22 @@ export function convertSlicesToSheetMetal(context is Context, idPrefix is Id, sl
     }
     catch
     {
+        const allXSliceBodies = qUnion(mapArray(xIntersectionIds, function(xIntersectionId)
+            {
+                return qCreatedBy(xIntersectionId, EntityType.BODY);
+            }));
+        const allYSliceBodies = qUnion(mapArray(yIntersectionIds, function(yIntersectionId)
+            {
+                return qCreatedBy(yIntersectionId, EntityType.BODY);
+            }));
+        
         opDeleteBodies(context, idPrefix + "deleteOriginalSlices", {
-            "entities" : sliceBodies
+            "entities" : qUnion([allXSliceBodies, allYSliceBodies])
         });
         throw regenError(ErrorStringEnum.SHEET_METAL_CANNOT_THICKEN);
     }
     
-    // Step 3: Annotate the extracted surface bodies with sheet metal attributes
+    // Step 4: Annotate the extracted surface bodies with sheet metal attributes
     // Use BACK direction (material grows in negative normal direction)
     const thicknessDirection = SMThicknessDirection.BACK;
     
@@ -847,22 +877,40 @@ export function convertSlicesToSheetMetal(context is Context, idPrefix is Id, sl
         
         if (getFeatureError(context, sheetMetalId) != undefined)
         {
+            const allXSliceBodies = qUnion(mapArray(xIntersectionIds, function(xIntersectionId)
+                {
+                    return qCreatedBy(xIntersectionId, EntityType.BODY);
+                }));
+            const allYSliceBodies = qUnion(mapArray(yIntersectionIds, function(yIntersectionId)
+                {
+                    return qCreatedBy(yIntersectionId, EntityType.BODY);
+                }));
+            
             opDeleteBodies(context, idPrefix + "cleanupSurfaces", {
                 "entities" : qCreatedBy(sheetMetalId + "extractSurface", EntityType.BODY)
             });
             opDeleteBodies(context, idPrefix + "deleteOriginalSlices", {
-                "entities" : sliceBodies
+                "entities" : qUnion([allXSliceBodies, allYSliceBodies])
             });
             return;
         }
     }
     catch (thrownError)
     {
+        const allXSliceBodies = qUnion(mapArray(xIntersectionIds, function(xIntersectionId)
+            {
+                return qCreatedBy(xIntersectionId, EntityType.BODY);
+            }));
+        const allYSliceBodies = qUnion(mapArray(yIntersectionIds, function(yIntersectionId)
+            {
+                return qCreatedBy(yIntersectionId, EntityType.BODY);
+            }));
+        
         opDeleteBodies(context, idPrefix + "cleanupSurfaces", {
             "entities" : qCreatedBy(sheetMetalId + "extractSurface", EntityType.BODY)
         });
         opDeleteBodies(context, idPrefix + "deleteOriginalSlices", {
-            "entities" : sliceBodies
+            "entities" : qUnion([allXSliceBodies, allYSliceBodies])
         });
         
         if (thrownError is map && thrownError.message is ErrorStringEnum)
@@ -872,7 +920,7 @@ export function convertSlicesToSheetMetal(context is Context, idPrefix is Id, sl
         throw regenError(ErrorStringEnum.SHEET_METAL_REBUILD_ERROR);
     }
     
-    // Step 4: Finalize the sheet metal geometry - this creates the 3D solid bodies and hides the surface bodies
+    // Step 5: Finalize the sheet metal geometry - this creates the 3D solid bodies and hides the surface bodies
     // Following the pattern from sheetMetalStart's annotateConvertedFaces function
     try
     {
@@ -882,11 +930,20 @@ export function convertSlicesToSheetMetal(context is Context, idPrefix is Id, sl
     }
     catch (thrownError)
     {
+        const allXSliceBodies = qUnion(mapArray(xIntersectionIds, function(xIntersectionId)
+            {
+                return qCreatedBy(xIntersectionId, EntityType.BODY);
+            }));
+        const allYSliceBodies = qUnion(mapArray(yIntersectionIds, function(yIntersectionId)
+            {
+                return qCreatedBy(yIntersectionId, EntityType.BODY);
+            }));
+        
         opDeleteBodies(context, idPrefix + "cleanupSurfaces2", {
             "entities" : qCreatedBy(sheetMetalId + "extractSurface", EntityType.BODY)
         });
         opDeleteBodies(context, idPrefix + "deleteOriginalSlices", {
-            "entities" : sliceBodies
+            "entities" : qUnion([allXSliceBodies, allYSliceBodies])
         });
         
         if (thrownError is map && thrownError.message is ErrorStringEnum)
@@ -896,10 +953,19 @@ export function convertSlicesToSheetMetal(context is Context, idPrefix is Id, sl
         throw regenError(ErrorStringEnum.SHEET_METAL_REBUILD_ERROR);
     }
     
-    // Step 5: Delete only the original solid slice bodies
+    // Step 6: Delete only the original solid slice bodies
     // The surface bodies created by opExtractSurface are now hidden and serve as the sheet metal definition
+    const allXSliceBodies = qUnion(mapArray(xIntersectionIds, function(xIntersectionId)
+        {
+            return qCreatedBy(xIntersectionId, EntityType.BODY);
+        }));
+    const allYSliceBodies = qUnion(mapArray(yIntersectionIds, function(yIntersectionId)
+        {
+            return qCreatedBy(yIntersectionId, EntityType.BODY);
+        }));
+    
     opDeleteBodies(context, idPrefix + "deleteOriginalSlices", {
-        "entities" : sliceBodies
+        "entities" : qUnion([allXSliceBodies, allYSliceBodies])
     });
 }
 
