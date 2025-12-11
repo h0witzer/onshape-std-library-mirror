@@ -13,6 +13,8 @@ import(path : "onshape/std/box.fs", version : "2815.0");
 import(path : "onshape/std/sheetMetalAttribute.fs", version : "2815.0");
 import(path : "onshape/std/sheetMetalUtils.fs", version : "2815.0");
 import(path : "onshape/std/evaluate.fs", version : "2815.0");
+import(path : "onshape/std/topologyUtils.fs", version : "2815.0");
+import(path : "onshape/std/attributes.fs", version : "2815.0");
 
 annotation { "Feature Type Name" : "Laser It" }
 export const laserIt = defineFeature(function(context is Context, id is Id, definition is map)
@@ -725,9 +727,10 @@ export function normalizeSliceGeometryForLasercutting(context is Context, idPref
     }
 }
 
-// Convert normalized slice bodies to sheet metal bodies by thickening their primary faces and adding sheet metal attributes.
-// This function extracts the largest planar face from each slice body, thickens it to create a sheet metal part,
-// adds sheet metal attributes (bend radius, k-factor, thickness, etc.), and deletes the original solid bodies.
+// Convert normalized slice bodies to sheet metal bodies by extracting their primary faces and adding sheet metal attributes.
+// This function extracts the largest planar face from each slice body as a surface body (the sheet metal definition),
+// adds sheet metal attributes (bend radius, k-factor, thickness, etc.), and finalizes to create the 3D solid representation.
+// The original solid slice bodies are deleted after conversion.
 // Inputs:
 //  - idPrefix : Id prefix used for sheet metal operations
 //  - sliceBodies : Query for all slice bodies to convert to sheet metal
@@ -737,7 +740,6 @@ export function convertSlicesToSheetMetal(context is Context, idPrefix is Id, sl
 {
     var sliceBodyArray = evaluateQuery(context, sliceBodies);
     var sheetMetalBodyCounter = 0;
-    var createdSheetMetalBodies = [] as array;
     
     for (var sliceBody in sliceBodyArray)
     {
@@ -786,7 +788,7 @@ export function convertSlicesToSheetMetal(context is Context, idPrefix is Id, sl
             continue;
         }
         
-        // Extract the largest planar face as a surface body
+        // Extract the largest planar face as a surface body (this will be the sheet metal definition)
         const extractId = operationId + "extract";
         try
         {
@@ -810,36 +812,11 @@ export function convertSlicesToSheetMetal(context is Context, idPrefix is Id, sl
             continue;
         }
         
-        // Get the extracted face to thicken
-        const extractedFace = qOwnedByBody(extractedSurfaceBody, EntityType.FACE);
-        
-        // Thicken the extracted surface symmetrically by the material thickness
-        const thickenId = operationId + "thicken";
-        try
-        {
-            opThicken(context, thickenId, {
-                "entities" : extractedFace,
-                "thickness1" : definition.matThick / 2,
-                "thickness2" : definition.matThick / 2
-            });
-        }
-        catch
-        {
-            // If thicken fails, clean up and continue
-            opDeleteBodies(context, operationId + "cleanupFailed", {
-                "entities" : extractedSurfaceBody
-            });
-            sheetMetalBodyCounter += 1;
-            continue;
-        }
-        
-        // The thickened body should be the extracted surface body (modified in place)
-        const thickenedBody = extractedSurfaceBody;
-        
-        // Add sheet metal attributes to the surface body (which is still a sheet)
+        // Now add sheet metal attributes to the surface body
         var featureIdString = toAttributeId(operationId);
         
         // Create thickness data - using BOTH direction for symmetric thickening
+        // The value should be half the material thickness since BOTH direction applies thickness on both sides
         var thicknessData = {
             "value" : definition.matThick / 2,
             "canBeEdited" : false
@@ -871,14 +848,14 @@ export function convertSlicesToSheetMetal(context is Context, idPrefix is Id, sl
             "backThickness" : thicknessData
         });
         
-        // Set the model attribute on the sheet body
+        // Set the model attribute on the surface body
         setAttribute(context, {
-            "entities" : thickenedBody,
+            "entities" : extractedSurfaceBody,
             "attribute" : modelAttribute
         });
         
-        // Get all faces from the sheet body and mark them as walls
-        const sheetFaces = qOwnedByBody(thickenedBody, EntityType.FACE);
+        // Get all faces from the surface body and mark them as walls
+        const sheetFaces = qOwnedByBody(extractedSurfaceBody, EntityType.FACE);
         var wallCounter = 0;
         for (var sheetFace in evaluateQuery(context, sheetFaces))
         {
@@ -889,14 +866,32 @@ export function convertSlicesToSheetMetal(context is Context, idPrefix is Id, sl
             wallCounter += 1;
         }
         
-        // Assign SM association attributes to all entities of the sheet body
-        assignSMAssociationAttributes(context, qOwnedByBody(thickenedBody));
+        // Get all edges from the surface body and add rip attributes for laminar edges
+        const sheetEdges = qOwnedByBody(extractedSurfaceBody, EntityType.EDGE);
+        var edgeCounter = 0;
+        for (var sheetEdge in evaluateQuery(context, sheetEdges))
+        {
+            // Only add rip attributes to one-sided (laminar/free) edges
+            if (!edgeIsTwoSided(context, sheetEdge))
+            {
+                var ripAttribute = makeSMJointAttribute(toAttributeId(operationId + "rip" + edgeCounter));
+                ripAttribute.jointType = { "value" : SMJointType.RIP, "canBeEdited": false };
+                setAttribute(context, {
+                    "entities" : sheetEdge,
+                    "attribute" : ripAttribute
+                });
+                edgeCounter += 1;
+            }
+        }
         
-        // Finalize the sheet metal geometry to create the 3D solid body
+        // Assign SM association attributes to all entities of the surface body
+        assignSMAssociationAttributes(context, qOwnedByBody(extractedSurfaceBody));
+        
+        // Finalize the sheet metal geometry to create the 3D solid body representation
         try
         {
             updateSheetMetalGeometry(context, operationId, {
-                "entities" : qUnion([thickenedBody, qOwnedByBody(thickenedBody, EntityType.FACE), qOwnedByBody(thickenedBody, EntityType.EDGE)])
+                "entities" : qUnion([extractedSurfaceBody, sheetFaces, sheetEdges])
             });
         }
         catch
@@ -906,7 +901,6 @@ export function convertSlicesToSheetMetal(context is Context, idPrefix is Id, sl
             continue;
         }
         
-        createdSheetMetalBodies = append(createdSheetMetalBodies, thickenedBody);
         sheetMetalBodyCounter += 1;
     }
     
