@@ -1,27 +1,27 @@
-FeatureScript 2679;
-import(path : "onshape/std/common.fs", version : "2679.0");
+FeatureScript 2815;
+import(path : "onshape/std/common.fs", version : "2815.0");
 
 //This tool should be illegal. If you need to move objects around in this manner you should be doing it at the assembly level
 //Or you're dealing with some of my coworkers and need to prove a concept as fast and sloppy as possible
 //Break Glass In Case Of Evan
 
 // Imports used in interface
-export import(path : "onshape/std/query.fs", version : "2679.0");
-export import(path : "onshape/std/manipulator.fs", version : "2679.0");
-export import(path : "onshape/std/tool.fs", version : "2679.0");
+export import(path : "onshape/std/query.fs", version : "2815.0");
+export import(path : "onshape/std/manipulator.fs", version : "2815.0");
+export import(path : "onshape/std/tool.fs", version : "2815.0");
 
 // Imports used internally
-import(path : "onshape/std/box.fs", version : "2679.0");
-import(path : "onshape/std/coordSystem.fs", version : "2679.0");
-import(path : "onshape/std/evaluate.fs", version : "2679.0");
-import(path : "onshape/std/feature.fs", version : "2679.0");
-import(path : "onshape/std/topologyUtils.fs", version : "2679.0");
-import(path : "onshape/std/transform.fs", version : "2679.0");
-import(path : "onshape/std/valueBounds.fs", version : "2679.0");
-import(path : "onshape/std/vector.fs", version : "2679.0");
-import(path : "onshape/std/matrix.fs", version : "2679.0");
-import(path : "onshape/std/math.fs", version : "2679.0");
-import(path : "onshape/std/units.fs", version : "2679.0");
+import(path : "onshape/std/box.fs", version : "2815.0");
+import(path : "onshape/std/coordSystem.fs", version : "2815.0");
+import(path : "onshape/std/evaluate.fs", version : "2815.0");
+import(path : "onshape/std/feature.fs", version : "2815.0");
+import(path : "onshape/std/topologyUtils.fs", version : "2815.0");
+import(path : "onshape/std/transform.fs", version : "2815.0");
+import(path : "onshape/std/valueBounds.fs", version : "2815.0");
+import(path : "onshape/std/vector.fs", version : "2815.0");
+import(path : "onshape/std/matrix.fs", version : "2815.0");
+import(path : "onshape/std/math.fs", version : "2815.0");
+import(path : "onshape/std/units.fs", version : "2815.0");
 
 const TRIAD_MANIPULATOR = "triadManipulator";
 
@@ -50,9 +50,41 @@ predicate triadTransformPredicate(definition is map)
 
     annotation { "Name" : "Copy parts", "Default" : false }
     definition.copyParts is boolean;
+
+    annotation { "Name" : "Advanced placement", "Default" : false }
+    definition.useAdvancedPlacement is boolean;
+
+    annotation { "Group Name" : "Advanced placement options", "Driving Parameter" : "useAdvancedPlacement", "Collapsed By Default" : false }
+    {
+        if (definition.useAdvancedPlacement)
+        {
+            annotation { "Name" : "Reference coordinate system", "Filter" : BodyType.MATE_CONNECTOR || (EntityType.VERTEX && SketchObject.NO), "MaxNumberOfPicks" : 1 }
+            definition.referenceCoordSystem is Query;
+
+            annotation { "Name" : "Enable geometry snapping", "Default" : false }
+            definition.enableGeometrySnapping is boolean;
+
+            if (definition.enableGeometrySnapping)
+            {
+                annotation { "Name" : "Reference entities", "Filter" : EntityType.FACE || EntityType.EDGE }
+                definition.referenceEntities is Query;
+
+                annotation { "Name" : "Align to surface normal", "Default" : false }
+                definition.alignToSurfaceNormal is boolean;
+            }
+        }
+    }
 }
 
-/** Add a triad manipulator centered on the given coordinate system. */
+/**
+ * Adds a triad manipulator centered on the given coordinate system.
+ * The manipulator displays rotation and translation controls that the user can interact with.
+ * 
+ * @param context {Context} : The context for the feature
+ * @param id {Id} : The feature identifier
+ * @param baseCSys {CoordSystem} : The base coordinate system for the manipulator
+ * @param definition {map} : The feature definition containing current transform values
+ */
 function addTriadManipulator(context is Context, id is Id,
     baseCSys is CoordSystem, definition is map)
 {
@@ -117,18 +149,109 @@ export const triadTransform = defineFeature(function(context is Context, id is I
             "dz" : 0 * millimeter,
             "rx" : 0 * degree,
             "ry" : 0 * degree,
-            "rz" : 0 * degree
+            "rz" : 0 * degree,
+            "useAdvancedPlacement" : false,
+            "referenceCoordSystem" : qNothing(),
+            "enableGeometrySnapping" : false,
+            "referenceEntities" : qNothing(),
+            "alignToSurfaceNormal" : false
         });
 
 /**
  * Manipulator handler for triad transform feature.
+ * Updates the definition based on manipulator movement.
+ * When geometry snapping is enabled, snaps the manipulator origin to the closest point
+ * on reference entities and optionally aligns axes to surface normals.
+ * 
+ * @param context {Context} : The context for the feature
+ * @param definition {map} : The current feature definition
+ * @param newManipulators {map} : The new manipulator state after user interaction
+ * 
+ * @returns {map} : Updated definition with new transform values
  */
 export function triadTransformManipulatorChange(context is Context, definition is map, newManipulators is map) returns map
 {
     if (newManipulators[TRIAD_MANIPULATOR] is map)
     {
         const manipulator = newManipulators[TRIAD_MANIPULATOR];
-        const triadTransform = manipulator.transform;
+        var triadTransform = manipulator.transform;
+        
+        // If geometry snapping is enabled, snap the transform origin to reference entities
+        if (definition.useAdvancedPlacement && 
+            definition.enableGeometrySnapping && 
+            definition.referenceEntities != undefined)
+        {
+            const referenceEntitiesResolved = evaluateQuery(context, definition.referenceEntities);
+            if (@size(referenceEntitiesResolved) > 0)
+            {
+                // Get the base coordinate system
+                const baseCSys = getBaseCoordinateSystem(context, undefined, definition);
+                
+                // Calculate the world position of the manipulator
+                const worldTransform = toWorld(baseCSys) * triadTransform;
+                const manipulatorOrigin = worldTransform.translation;
+                
+                // Find the closest point on reference entities
+                const distanceResult = evDistance(context, {
+                    "side0" : manipulatorOrigin,
+                    "side1" : definition.referenceEntities
+                });
+                
+                // Snap to the closest point
+                const snappedWorldPoint = distanceResult.sides[1].point;
+                
+                // Convert back to local coordinates
+                const localSnappedPoint = fromWorld(baseCSys) * snappedWorldPoint;
+                
+                // Update the translation to snap to reference
+                triadTransform = transform(triadTransform.linear, localSnappedPoint);
+                
+                // Optionally align to surface normal
+                if (definition.alignToSurfaceNormal)
+                {
+                    const referenceEntityIndex = distanceResult.sides[1].index;
+                    const referenceEntity = qNthElement(definition.referenceEntities, referenceEntityIndex);
+                    
+                    // Check if it's a face
+                    const faceQuery = qEntityFilter(referenceEntity, EntityType.FACE);
+                    if (!isQueryEmpty(context, faceQuery))
+                    {
+                        // Get the tangent plane at the closest point
+                        const faceParameter = distanceResult.sides[1].parameter;
+                        try
+                        {
+                            const tangentPlane = evFaceTangentPlane(context, {
+                                "face" : referenceEntity,
+                                "parameter" : faceParameter
+                            });
+                            
+                            // Create a rotation matrix that aligns Z-axis with the normal
+                            const zAxis = tangentPlane.normal;
+                            const xAxis = tangentPlane.x;
+                            const yAxis = cross(zAxis, xAxis);
+                            
+                            // Build rotation matrix from axes
+                            const alignedRotation = matrix([
+                                [xAxis[0], yAxis[0], zAxis[0]],
+                                [xAxis[1], yAxis[1], zAxis[1]],
+                                [xAxis[2], yAxis[2], zAxis[2]]
+                            ]);
+                            
+                            // Convert from world to local space
+                            const localRotation = fromWorld(baseCSys).linear * alignedRotation * toWorld(baseCSys).linear;
+                            
+                            triadTransform = transform(localRotation, localSnappedPoint);
+                        }
+                        catch
+                        {
+                            // If tangent plane evaluation fails, just use the snapped position
+                        }
+                    }
+                }
+            }
+        }
+        
+        // Extract rotation and translation from the transform
         const rotation = transpose(triadTransform.linear);
         const angles = matrixToXYZAngles(rotation);
         definition.dx = triadTransform.translation[0];
@@ -141,6 +264,17 @@ export function triadTransformManipulatorChange(context is Context, definition i
     return definition;
 }
 
+/**
+ * Composes a 3D rotation matrix from individual X, Y, and Z rotations.
+ * Rotations are applied in the order: X, then Y, then Z.
+ * 
+ * @param baseCSys {CoordSystem} : The base coordinate system defining rotation axes
+ * @param rx {ValueWithUnits} : Rotation angle around the X-axis
+ * @param ry {ValueWithUnits} : Rotation angle around the Y-axis
+ * @param rz {ValueWithUnits} : Rotation angle around the Z-axis
+ * 
+ * @returns {Matrix} : The composed 3x3 rotation matrix
+ */
 function composeRotation(baseCSys is CoordSystem, rx is ValueWithUnits, ry is ValueWithUnits, rz is ValueWithUnits) returns Matrix
 {
     const rotX = rotationMatrix3d(baseCSys.xAxis, rx);
@@ -149,6 +283,14 @@ function composeRotation(baseCSys is CoordSystem, rx is ValueWithUnits, ry is Va
     return rotZ * rotY * rotX;
 }
 
+/**
+ * Converts a 3D rotation matrix to Euler angles (X-Y-Z convention).
+ * Extracts the individual rotation angles from a composed rotation matrix.
+ * 
+ * @param linear {Matrix} : The 3x3 rotation matrix to decompose
+ * 
+ * @returns {Vector} : A 3D vector containing the rotation angles [rx, ry, rz] in radians
+ */
 function matrixToXYZAngles(linear is Matrix) returns Vector
 {
     const sy = sqrt(linear[0][0] * linear[0][0] + linear[1][0] * linear[1][0]);
@@ -170,6 +312,17 @@ function matrixToXYZAngles(linear is Matrix) returns Vector
     return vector(x, y, z);
 }
 
+/**
+ * Determines the base coordinate system for the transform.
+ * If a custom reference coordinate system is specified in definition.referenceCoordSystem,
+ * uses that. Otherwise, defaults to the centroid of the selected entities with standard axes.
+ * 
+ * @param context {Context} : The context for the feature
+ * @param id {Id} : The feature identifier
+ * @param definition {map} : The feature definition map containing entity selection and optional reference coordinate system
+ * 
+ * @returns {CoordSystem} : The coordinate system to use as the base for transformation
+ */
 function getBaseCoordinateSystem(context is Context, id is Id, definition is map) returns CoordSystem
 {
     const bodies = evaluateQuery(context, definition.entities);
@@ -177,10 +330,46 @@ function getBaseCoordinateSystem(context is Context, id is Id, definition is map
     {
         throw regenError(ErrorStringEnum.CANNOT_RESOLVE_ENTITIES, ["entities"]);
     }
+    
+    // If advanced placement with custom reference coordinate system is specified, use that
+    if (definition.useAdvancedPlacement && definition.referenceCoordSystem != undefined)
+    {
+        const referenceEntities = evaluateQuery(context, definition.referenceCoordSystem);
+        if (@size(referenceEntities) > 0)
+        {
+            // Check if it's a mate connector
+            const mateConnectorQuery = qBodyType(definition.referenceCoordSystem, BodyType.MATE_CONNECTOR);
+            if (!isQueryEmpty(context, mateConnectorQuery))
+            {
+                return evMateConnector(context, {
+                    "mateConnector" : definition.referenceCoordSystem
+                });
+            }
+            else
+            {
+                // It's a vertex - create coordinate system at vertex location with standard axes
+                const vertexPoint = evVertexPoint(context, {
+                    "vertex" : definition.referenceCoordSystem
+                });
+                return coordSystem(vertexPoint, vector(1, 0, 0), vector(0, 0, 1));
+            }
+        }
+    }
+    
+    // Default behavior: use centroid of selected entities
     const origin = findCenter(context, id, definition.entities);
     return coordSystem(origin, vector(1, 0, 0), vector(0, 0, 1));
 }
 
+/**
+ * Calculates the center point (centroid) of the bounding box for the given entities.
+ * 
+ * @param context {Context} : The context for the feature
+ * @param id {Id} : The feature identifier
+ * @param entities {Query} : The entities to find the center of
+ * 
+ * @returns {Vector} : The center point as a 3D vector with units
+ */
 function findCenter(context is Context, id is Id, entities is Query) returns Vector
 {
     const boxResult = evBox3d(context, { 'topology' : entities, 'tight' : false });
