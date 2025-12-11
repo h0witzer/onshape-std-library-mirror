@@ -225,26 +225,30 @@ export function triadTransformManipulatorChange(context is Context, definition i
                             });
                             
                             // Build a coordinate system aligned with the surface (in world space)
-                            // Z-axis is the normal, X and Y are tangent to the surface
+                            // This will be the base alignment - user rotations will be applied on top of this
                             const worldAlignedX = tangentPlane.x;
                             const worldAlignedZ = tangentPlane.normal;
                             const worldAlignedY = cross(worldAlignedZ, worldAlignedX);
                             
                             // Create a coordinate system from these aligned axes
-                            const alignedWorldCSys = coordSystem(snappedWorldPoint, worldAlignedX, worldAlignedZ);
+                            const surfaceAlignedCSys = coordSystem(snappedWorldPoint, worldAlignedX, worldAlignedZ);
                             
-                            // The manipulator transform is relative to baseCSys
-                            // We want: toWorld(baseCSys) * triadTransform = toWorld(alignedWorldCSys)
-                            // Therefore: triadTransform = fromWorld(baseCSys) * toWorld(alignedWorldCSys)
-                            const desiredWorldTransform = toWorld(alignedWorldCSys);
-                            const baseToWorld = toWorld(baseCSys);
+                            // Compute the base alignment transform (relative to baseCSys)
+                            // This is the transform that aligns to the surface with zero user rotation
+                            const surfaceAlignmentTransform = fromWorld(baseCSys) * toWorld(surfaceAlignedCSys);
                             
-                            // Compute the relative transform
-                            // Since Transform doesn't have division, we use: A * B^-1 = A * inverse(B)
-                            // For transforms: inverse(toWorld(baseCSys)) = fromWorld(baseCSys)
-                            const relativeTransform = fromWorld(baseCSys) * desiredWorldTransform;
+                            // Now apply user's rotation on top of this alignment
+                            // The user's rotation intent is in definition.rx, ry, rz
+                            const userRotation = composeRotation(surfaceAlignedCSys, 
+                                definition.rx, definition.ry, definition.rz);
                             
-                            triadTransform = relativeTransform;
+                            // Combine: first apply surface alignment, then user rotation
+                            // In world space: finalWorld = surfaceAligned * userRotation
+                            // In local space relative to baseCSys:
+                            const finalWorldRotation = toWorld(surfaceAlignedCSys).linear * userRotation;
+                            const finalLocalRotation = fromWorld(baseCSys).linear * finalWorldRotation;
+                            
+                            triadTransform = transform(finalLocalRotation, localSnappedPoint);
                         }
                         catch
                         {
