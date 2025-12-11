@@ -260,17 +260,77 @@ export function triadTransformManipulatorChange(context is Context, definition i
         }
         
         // Extract rotation and translation from the transform
-        // When surface alignment is enabled, we don't update rotation fields
-        // because they represent user intent relative to the surface
         if (definition.useAdvancedPlacement && 
             definition.enableGeometrySnapping && 
             definition.alignToSurfaceNormal)
         {
-            // Only extract translation - keep rotation fields as user intent
+            // Surface alignment mode: extract translation and rotation relative to surface
             definition.dx = triadTransform.translation[0];
             definition.dy = triadTransform.translation[1];
             definition.dz = triadTransform.translation[2];
-            // Don't update rx, ry, rz - they stay as user's relative rotation intent
+            
+            // We need to decompose the manipulator's rotation into:
+            // manipulatorRotation = surfaceAlignment * userRelativeRotation
+            // Therefore: userRelativeRotation = inverse(surfaceAlignment) * manipulatorRotation
+            
+            // The manipulator's rotation in local space (relative to baseCSys)
+            const manipulatorLocalRotation = triadTransform.linear;
+            
+            // We need to find the surface alignment at the current snapped position
+            // Recompute it to get the current surface orientation
+            try
+            {
+                const baseCSys = getBaseCoordinateSystem(context, definition);
+                const referenceEntitiesResolved = evaluateQuery(context, definition.referenceEntities);
+                if (@size(referenceEntitiesResolved) > 0)
+                {
+                    const worldTransform = toWorld(baseCSys) * triadTransform;
+                    const manipulatorOrigin = worldTransform.translation;
+                    
+                    const distanceResult = evDistance(context, {
+                        "side0" : manipulatorOrigin,
+                        "side1" : definition.referenceEntities
+                    });
+                    
+                    const referenceEntityIndex = distanceResult.sides[1].index;
+                    const referenceEntity = qNthElement(definition.referenceEntities, referenceEntityIndex);
+                    const faceQuery = qEntityFilter(referenceEntity, EntityType.FACE);
+                    
+                    if (!isQueryEmpty(context, faceQuery))
+                    {
+                        const faceParameter = distanceResult.sides[1].parameter;
+                        const tangentPlane = evFaceTangentPlane(context, {
+                            "face" : referenceEntity,
+                            "parameter" : faceParameter
+                        });
+                        
+                        const snappedWorldPoint = distanceResult.sides[1].point;
+                        const worldAlignedX = tangentPlane.x;
+                        const worldAlignedZ = tangentPlane.normal;
+                        const surfaceAlignedCSys = coordSystem(snappedWorldPoint, worldAlignedX, worldAlignedZ);
+                        
+                        // Surface alignment rotation in local space
+                        const surfaceAlignmentLocal = (fromWorld(baseCSys) * toWorld(surfaceAlignedCSys)).linear;
+                        
+                        // User's rotation relative to surface: inverse(surfaceAlignment) * manipulator
+                        // For rotation matrices, inverse = transpose
+                        const userRelativeRotation = transpose(surfaceAlignmentLocal) * manipulatorLocalRotation;
+                        
+                        // Extract angles from user's relative rotation
+                        // These angles are relative to the surface-aligned coordinate system
+                        const relativeRotationTransposed = transpose(userRelativeRotation);
+                        const relativeAngles = matrixToXYZAngles(relativeRotationTransposed);
+                        
+                        definition.rx = relativeAngles[0];
+                        definition.ry = relativeAngles[1];
+                        definition.rz = relativeAngles[2];
+                    }
+                }
+            }
+            catch
+            {
+                // If extraction fails, keep existing values
+            }
         }
         else
         {
