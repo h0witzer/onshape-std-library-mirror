@@ -114,7 +114,7 @@ export const laserIt = defineFeature(function(context is Context, id is Id, defi
         // Convert to sheet metal if requested
         if (definition.outputSheetMetal == true)
         {
-            convertSlicesToSheetMetal(context, id, trimmedSheetsResult, xSliceResult, ySliceResult, definition);
+            convertSlicesToSheetMetal(context, id, trimmedSheetsResult, definition);
         }
 
     });
@@ -194,11 +194,13 @@ export function generateSheets(context is Context, featureIdPrefix is Id, axisLa
 //  - featureIdPrefix : Base id used to regenerate the X/Y identifiers for each slice
 //  - xSliceResult, ySliceResult : Maps containing sliceIds and slicePlanes arrays for X- and Y-oriented slices
 //  - targetBody : Body query representing the part being sliced
-// Returns: map containing the intersection ids
+// Returns: map containing the intersection ids and tracking queries for cap faces
 export function trimSheetsToSolid(context is Context, featureIdPrefix is Id, xSliceResult is map, ySliceResult is map, targetBody is Query)
 {
     var xIntersectionIds = [] as array;
     var yIntersectionIds = [] as array;
+    var xTrackedCapFaces = [] as array;
+    var yTrackedCapFaces = [] as array;
     
     const xSliceIds = xSliceResult.sliceIds;
     const xSlicePlanes = xSliceResult.slicePlanes;
@@ -243,6 +245,10 @@ export function trimSheetsToSolid(context is Context, featureIdPrefix is Id, xSl
                 });
                 continue;
             }
+            
+            // Store tracking queries for successful slices
+            // Use startCap as the primary face (could use either, just pick one consistently)
+            xTrackedCapFaces = append(xTrackedCapFaces, trackingStartCap);
         }
 
         xIntersectionIds = append(xIntersectionIds, xIntersectionId);
@@ -286,6 +292,10 @@ export function trimSheetsToSolid(context is Context, featureIdPrefix is Id, xSl
                 });
                 continue;
             }
+            
+            // Store tracking queries for successful slices
+            // Use startCap as the primary face (could use either, just pick one consistently)
+            yTrackedCapFaces = append(yTrackedCapFaces, trackingStartCap);
         }
 
         yIntersectionIds = append(yIntersectionIds, yIntersectionId);
@@ -304,7 +314,12 @@ export function trimSheetsToSolid(context is Context, featureIdPrefix is Id, xSl
                 "entities" : qUnion([rawXSlices, rawYSlices])
             });
 
-    return { "xIntersectionIds" : xIntersectionIds, "yIntersectionIds" : yIntersectionIds };
+    return { 
+        "xIntersectionIds" : xIntersectionIds, 
+        "yIntersectionIds" : yIntersectionIds,
+        "xTrackedCapFaces" : xTrackedCapFaces,
+        "yTrackedCapFaces" : yTrackedCapFaces
+    };
 }
 
 // Copy all trimmed slices, then perform a single subtract-complement boolean using the copied X slices as tools and the copied Y slices as targets.
@@ -739,55 +754,45 @@ export function normalizeSliceGeometryForLasercutting(context is Context, idPref
 //  - ySliceResult : Map containing slicePlanes for Y slices
 //  - definition : Feature definition map containing sheet metal parameters
 // Returns: none
-export function convertSlicesToSheetMetal(context is Context, id is Id, trimmedSheetsResult is map, xSliceResult is map, ySliceResult is map, definition is map)
+// Convert normalized slice bodies to sheet metal by thickening the primary tracked cap faces.
+// Uses the tracked face queries established in trimSheetsToSolid to ensure only valid slices
+// (not wedgelets) are converted. Follows exact pattern from sheetMetalStart's thickenToSheetMetal.
+// Inputs:
+//  - context : Execution context
+//  - id : Feature ID for sheet metal operations
+//  - trimmedSheetsResult : Map containing tracked cap faces for each valid slice
+//  - definition : Feature definition containing sheet metal parameters
+export function convertSlicesToSheetMetal(context is Context, id is Id, trimmedSheetsResult is map, definition is map)
 {
+    // Step 1: Collect the primary tracked cap face from each valid X slice
+    // These tracking queries were established in trimSheetsToSolid and automatically filter out wedgelets
+    const xTrackedCapFaces = trimmedSheetsResult.xTrackedCapFaces;
+    const yTrackedCapFaces = trimmedSheetsResult.yTrackedCapFaces;
+    
     var facesToConvert = [] as array;
     
-    // Step 1: Collect cap faces from X slices using qParallelPlanes
-    const xIntersectionIds = trimmedSheetsResult.xIntersectionIds;
-    const xSlicePlanes = xSliceResult.slicePlanes;
-    
-    for (var xIndex = 0; xIndex < size(xIntersectionIds); xIndex += 1)
+    // Add all X tracked cap faces
+    for (var xTrackedCap in xTrackedCapFaces)
     {
-        const xIntersectionId = xIntersectionIds[xIndex];
-        const xSlicePlane = xSlicePlanes[xIndex];
-        
-        const sliceBodies = qCreatedBy(xIntersectionId, EntityType.BODY);
-        var bodyArray = evaluateQuery(context, sliceBodies);
-        for (var body in bodyArray)
+        const trackedFaces = evaluateQuery(context, xTrackedCap);
+        // Each tracking query should resolve to exactly one face (the primary cap)
+        // If a slice has been further subdivided, the tracking query identifies the primary piece
+        if (size(trackedFaces) > 0)
         {
-            const bodyFaces = qOwnedByBody(body, EntityType.FACE);
-            const capFaces = qParallelPlanes(bodyFaces, xSlicePlane);
-            
-            var capFaceArray = evaluateQuery(context, capFaces);
-            for (var capFace in capFaceArray)
-            {
-                facesToConvert = append(facesToConvert, capFace);
-            }
+            // Take the first face if multiple exist (shouldn't happen normally)
+            facesToConvert = append(facesToConvert, trackedFaces[0]);
         }
     }
     
-    // Step 2: Collect cap faces from Y slices using qParallelPlanes
-    const yIntersectionIds = trimmedSheetsResult.yIntersectionIds;
-    const ySlicePlanes = ySliceResult.slicePlanes;
-    
-    for (var yIndex = 0; yIndex < size(yIntersectionIds); yIndex += 1)
+    // Add all Y tracked cap faces
+    for (var yTrackedCap in yTrackedCapFaces)
     {
-        const yIntersectionId = yIntersectionIds[yIndex];
-        const ySlicePlane = ySlicePlanes[yIndex];
-        
-        const sliceBodies = qCreatedBy(yIntersectionId, EntityType.BODY);
-        var bodyArray = evaluateQuery(context, sliceBodies);
-        for (var body in bodyArray)
+        const trackedFaces = evaluateQuery(context, yTrackedCap);
+        // Each tracking query should resolve to exactly one face (the primary cap)
+        if (size(trackedFaces) > 0)
         {
-            const bodyFaces = qOwnedByBody(body, EntityType.FACE);
-            const capFaces = qParallelPlanes(bodyFaces, ySlicePlane);
-            
-            var capFaceArray = evaluateQuery(context, capFaces);
-            for (var capFace in capFaceArray)
-            {
-                facesToConvert = append(facesToConvert, capFace);
-            }
+            // Take the first face if multiple exist (shouldn't happen normally)
+            facesToConvert = append(facesToConvert, trackedFaces[0]);
         }
     }
     
@@ -796,8 +801,8 @@ export function convertSlicesToSheetMetal(context is Context, id is Id, trimmedS
         return;
     }
     
-    // Step 3: Extract surfaces - FOLLOWING EXACT PATTERN FROM convertFaces in sheetMetalStart
-    // Key: use id + "extractSurface" but reference bodies with just id
+    // Step 2: Extract surfaces - FOLLOWING EXACT PATTERN FROM convertFaces in sheetMetalStart
+    // Key: use id + "extractSurface" for operation, but reference bodies with just id
     var surfaceId = id + "extractSurface";
     
     try
@@ -812,7 +817,7 @@ export function convertSlicesToSheetMetal(context is Context, id is Id, trimmedS
         throw regenError(ErrorStringEnum.SHEET_METAL_CANNOT_THICKEN);
     }
     
-    // Step 4: Annotate - FOLLOWING EXACT PATTERN FROM annotateConvertedFaces in sheetMetalStart
+    // Step 3: Annotate - FOLLOWING EXACT PATTERN FROM annotateConvertedFaces in sheetMetalStart
     // Key: reference with id, NOT id + "extractSurface"
     try
     {
@@ -853,7 +858,10 @@ export function convertSlicesToSheetMetal(context is Context, id is Id, trimmedS
         throw regenError(ErrorStringEnum.SHEET_METAL_REBUILD_ERROR);
     }
     
-    // Step 5: Delete original solid bodies BEFORE finalization
+    // Step 4: Delete original solid bodies BEFORE finalization
+    const xIntersectionIds = trimmedSheetsResult.xIntersectionIds;
+    const yIntersectionIds = trimmedSheetsResult.yIntersectionIds;
+    
     const allXSliceBodies = qUnion(mapArray(xIntersectionIds, function(xIntersectionId)
         {
             return qCreatedBy(xIntersectionId, EntityType.BODY);
@@ -874,7 +882,7 @@ export function convertSlicesToSheetMetal(context is Context, id is Id, trimmedS
         throw regenError(ErrorStringEnum.REGEN_ERROR);
     }
     
-    // Step 6: Finalize - FOLLOWING EXACT PATTERN FROM annotateConvertedFaces in sheetMetalStart
+    // Step 5: Finalize - FOLLOWING EXACT PATTERN FROM annotateConvertedFaces in sheetMetalStart
     // Key: reference with id, NOT id + "extractSurface"
     try
     {
