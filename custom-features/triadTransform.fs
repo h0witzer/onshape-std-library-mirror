@@ -108,6 +108,7 @@ function addTriadManipulator(context is Context, id is Id,
  */
 annotation { "Feature Type Name" : "Triad transform",
         "Manipulator Change Function" : "triadTransformManipulatorChange",
+        "Editing Logic Function" : "triadTransformEditLogic",
         "Filter Selector" : "allparts" }
 export const triadTransform = defineFeature(function(context is Context, id is Id, definition is map)
     precondition
@@ -116,17 +117,6 @@ export const triadTransform = defineFeature(function(context is Context, id is I
     }
     {
         const baseCSys = getBaseCoordinateSystem(context, definition);
-
-        // Handle snap to surface button press
-        if (definition.useAdvancedPlacement &&
-            definition.enableGeometrySnapping &&
-            definition.snapToSurface == true)
-        {
-            // Snap to surface and align rotation to surface normal
-            definition = snapToSurface(context, definition, baseCSys);
-            // Reset button state after processing
-            definition.snapToSurface = undefined;
-        }
 
         addTriadManipulator(context, id, baseCSys, definition);
 
@@ -228,6 +218,33 @@ export function triadTransformManipulatorChange(context is Context, definition i
         definition.ry = angles[1];
         definition.rz = angles[2];
     }
+    return definition;
+}
+
+/**
+ * Editing logic function for button support.
+ * Handles the "Snap to surface" button press by snapping position and aligning rotation.
+ * 
+ * @param context {Context} : The context for the feature
+ * @param id {Id} : The feature identifier
+ * @param oldDefinition {map} : The previous feature definition
+ * @param definition {map} : The current feature definition
+ * @param isCreating {boolean} : Whether the feature is being created
+ * @param specifiedParameters {map} : Parameters explicitly set by the user
+ * @param clickedButton {string} : The name of the button that was clicked (if any)
+ * 
+ * @returns {map} : Updated definition after processing button clicks
+ */
+export function triadTransformEditLogic(context is Context, id is Id, oldDefinition is map, 
+    definition is map, isCreating is boolean, specifiedParameters is map, clickedButton is string) returns map
+{
+    // Handle snap to surface button click
+    if (clickedButton == "snapToSurface")
+    {
+        const baseCSys = getBaseCoordinateSystem(context, definition);
+        definition = snapToSurface(context, definition, baseCSys);
+    }
+    
     return definition;
 }
 
