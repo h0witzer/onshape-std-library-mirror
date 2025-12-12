@@ -782,10 +782,11 @@ export function convertSlicesToSheetMetal(context is Context, id is Id, trimmedS
             "initEntities" : allFacesToConvert,
             "process" : SMProcessType.THICKEN,
             "regions" : allFacesToConvert,
-            "defaultRadius" : definition.bendRadius,
+            "bends" : qNothing(),
+            "radius" : definition.bendRadius,
             "minimalClearance" : definition.minimalClearance,
             "thickness" : definition.matThick,
-            "oppositeDirection" : false,  // Material grows in negative normal direction
+            "oppositeDirection" : false,
             "kFactor" : definition.kFactor
         });
     }
