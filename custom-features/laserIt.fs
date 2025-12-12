@@ -91,8 +91,6 @@ export const laserIt = defineFeature(function(context is Context, id is Id, defi
 
         // Intersect each sheet with the target solid to retain only in-bounds material before generating cross-slot geometry.
         var trimmedSheetsResult = trimSheetsToSolid(context, id, xSliceResult, ySliceResult, definition.selectedBody);
-        
-        println("After trimSheetsToSolid: xIntersectionIds count = " ~ size(trimmedSheetsResult.xIntersectionIds) ~ ", yIntersectionIds count = " ~ size(trimmedSheetsResult.yIntersectionIds));
 
         // The XY nested loop takes every X slice and intersects it with every Y slice to form individual grid cells.
         // For each cell, it resolves all intersecting bodies, averages aligned edges to infer a mid-surface, and splits the
@@ -204,44 +202,50 @@ export function generateSheets(context is Context, featureIdPrefix is Id, axisLa
 }
 
 // Intersect every raw sheet with the target body to keep only the in-bounds material for follow-on trimming.
+// Uses a single batch SUBTRACT_COMPLEMENT operation for all slices to preserve attributes and avoid iterative issues.
 // Inputs:
 //  - featureIdPrefix : Base id used to regenerate the X/Y identifiers for each slice
 //  - xSliceResult, ySliceResult : Maps containing sliceIds arrays for X- and Y-oriented slices
 //  - targetBody : Body query representing the part being sliced
-// Returns: map containing the intersection ids and slice IDs for robust cap querying
+// Returns: map containing the slice IDs for robust cap querying
 export function trimSheetsToSolid(context is Context, featureIdPrefix is Id, xSliceResult is map, ySliceResult is map, targetBody is Query)
 {
-    var xIntersectionIds = [] as array;
-    var yIntersectionIds = [] as array;
     var xSliceIds = [] as array;
     var ySliceIds = [] as array;
     
     const xOriginalSliceIds = xSliceResult.sliceIds;
     const yOriginalSliceIds = ySliceResult.sliceIds;
 
+    // Build queries for all X and Y slice bodies
+    const allXSliceBodies = qUnion(mapArray(xOriginalSliceIds, function(sliceId)
+        {
+            return qCreatedBy(sliceId + "extrudeRectangle", EntityType.BODY);
+        }));
+    const allYSliceBodies = qUnion(mapArray(yOriginalSliceIds, function(sliceId)
+        {
+            return qCreatedBy(sliceId + "extrudeRectangle", EntityType.BODY);
+        }));
+    const allSliceBodies = qUnion([allXSliceBodies, allYSliceBodies]);
+    
+    // Perform single batch SUBTRACT_COMPLEMENT operation for all slices at once
+    // This preserves attributes and is much more efficient than iterative operations
+    opBoolean(context, featureIdPrefix + "batchIntersection", {
+                "tools" : targetBody,
+                "targets" : allSliceBodies,
+                "operationType" : BooleanOperationType.SUBTRACT_COMPLEMENT,
+                "keepTools" : true
+            });
+    
+    // Now check each slice to see if it survived and has valid caps
     for (var xPlaneIndex = 0; xPlaneIndex < size(xOriginalSliceIds); xPlaneIndex += 1)
     {
         var xSliceId = xOriginalSliceIds[xPlaneIndex];
-        var xIntersectionId = featureIdPrefix + "XIntersection" + xPlaneIndex;
+        const sliceBody = qCreatedBy(xSliceId + "extrudeRectangle", EntityType.BODY);
         
-        const originalSheetBody = qCreatedBy(xSliceId + "extrudeRectangle", EntityType.BODY);
-        
-        // Use subtract-complement to preserve attributes (same technique as cross-slot generation)
-        // This modifies the target body in place while keeping attributes
-        opBoolean(context, xIntersectionId, {
-                    "tools" : targetBody,
-                    "targets" : originalSheetBody,
-                    "operationType" : BooleanOperationType.SUBTRACT_COMPLEMENT,
-                    "keepTools" : true
-                });
-        
-        // The result is the modified target body (originalSheetBody), not a new creation
-        // SUBTRACT_COMPLEMENT modifies targets in place, so we query the original body
-        const intersectionBodies = originalSheetBody;
-        if (!isQueryEmpty(context, intersectionBodies))
+        if (!isQueryEmpty(context, sliceBody))
         {
             // Check if attributes persisted (they should with SUBTRACT_COMPLEMENT)
-            const attributedStartCaps = evaluateQuery(context, qHasAttribute(qOwnedByBody(intersectionBodies, EntityType.FACE), "laserItStartCap"));
+            const attributedStartCaps = evaluateQuery(context, qHasAttribute(qOwnedByBody(sliceBody, EntityType.FACE), "laserItStartCap"));
             
             // Also verify START/END caps still exist using cap entity queries
             const startCapQuery = qCapEntity(xSliceId + "extrudeRectangle", CapType.START, EntityType.FACE);
@@ -255,8 +259,8 @@ export function trimSheetsToSolid(context is Context, featureIdPrefix is Id, xSl
             if (size(remainingStartCaps) == 0 || size(remainingEndCaps) == 0)
             {
                 println("  DELETING X slice " ~ xPlaneIndex ~ " - missing caps");
-                opDeleteBodies(context, xIntersectionId + "deleteNoCapBody", {
-                    "entities" : intersectionBodies
+                opDeleteBodies(context, featureIdPrefix + "deleteXSlice" + xPlaneIndex, {
+                    "entities" : sliceBody
                 });
                 continue;
             }
@@ -264,33 +268,17 @@ export function trimSheetsToSolid(context is Context, featureIdPrefix is Id, xSl
             // Store the slice ID for later robust cap querying
             xSliceIds = append(xSliceIds, xSliceId);
         }
-
-        xIntersectionIds = append(xIntersectionIds, xIntersectionId);
     }
 
     for (var yPlaneIndex = 0; yPlaneIndex < size(yOriginalSliceIds); yPlaneIndex += 1)
     {
         var ySliceId = yOriginalSliceIds[yPlaneIndex];
-        var yIntersectionId = featureIdPrefix + "YIntersection" + yPlaneIndex;
+        const sliceBody = qCreatedBy(ySliceId + "extrudeRectangle", EntityType.BODY);
         
-        const originalSheetBody = qCreatedBy(ySliceId + "extrudeRectangle", EntityType.BODY);
-        
-        // Use subtract-complement to preserve attributes (same technique as cross-slot generation)
-        // This modifies the target body in place while keeping attributes
-        opBoolean(context, yIntersectionId, {
-                    "tools" : targetBody,
-                    "targets" : originalSheetBody,
-                    "operationType" : BooleanOperationType.SUBTRACT_COMPLEMENT,
-                    "keepTools" : true
-                });
-        
-        // The result is the modified target body (originalSheetBody), not a new creation
-        // SUBTRACT_COMPLEMENT modifies targets in place, so we query the original body
-        const intersectionBodies = originalSheetBody;
-        if (!isQueryEmpty(context, intersectionBodies))
+        if (!isQueryEmpty(context, sliceBody))
         {
             // Check if attributes persisted (they should with SUBTRACT_COMPLEMENT)
-            const attributedStartCaps = evaluateQuery(context, qHasAttribute(qOwnedByBody(intersectionBodies, EntityType.FACE), "laserItStartCap"));
+            const attributedStartCaps = evaluateQuery(context, qHasAttribute(qOwnedByBody(sliceBody, EntityType.FACE), "laserItStartCap"));
             
             // Also verify START/END caps still exist using cap entity queries
             const startCapQuery = qCapEntity(ySliceId + "extrudeRectangle", CapType.START, EntityType.FACE);
@@ -304,8 +292,8 @@ export function trimSheetsToSolid(context is Context, featureIdPrefix is Id, xSl
             if (size(remainingStartCaps) == 0 || size(remainingEndCaps) == 0)
             {
                 println("  DELETING Y slice " ~ yPlaneIndex ~ " - missing caps");
-                opDeleteBodies(context, yIntersectionId + "deleteNoCapBody", {
-                    "entities" : intersectionBodies
+                opDeleteBodies(context, featureIdPrefix + "deleteYSlice" + yPlaneIndex, {
+                    "entities" : sliceBody
                 });
                 continue;
             }
@@ -313,23 +301,10 @@ export function trimSheetsToSolid(context is Context, featureIdPrefix is Id, xSl
             // Store the slice ID for later robust cap querying
             ySliceIds = append(ySliceIds, ySliceId);
         }
-
-        yIntersectionIds = append(yIntersectionIds, yIntersectionId);
     }
 
-    const rawXSlices = qUnion(mapArray(xOriginalSliceIds, function(xSliceId)
-            {
-                return qCreatedBy(xSliceId + "extrudeRectangle", EntityType.BODY);
-            }));
-    const rawYSlices = qUnion(mapArray(yOriginalSliceIds, function(ySliceId)
-            {
-                return qCreatedBy(ySliceId + "extrudeRectangle", EntityType.BODY);
-            }));
-
-    opDeleteBodies(context, featureIdPrefix + "deleteRawSlices", {
-                "entities" : qUnion([rawXSlices, rawYSlices])
-            });
-
+    println("After trimSheetsToSolid: xSliceIds count = " ~ size(xSliceIds) ~ ", ySliceIds count = " ~ size(ySliceIds));
+    
     // With SUBTRACT_COMPLEMENT, the bodies are the original extrusion bodies (modified in place)
     // So we return the slice IDs for querying the bodies, not the intersection operation IDs
     return { 
