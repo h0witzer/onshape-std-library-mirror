@@ -18,7 +18,7 @@ import(path : "onshape/std/topologyUtils.fs", version : "2815.0");
 import(path : "onshape/std/attributes.fs", version : "2815.0");
 
 annotation { "Feature Type Name" : "Laser It" }
-export const laserIt = defineFeature(function(context is Context, id is Id, definition is map)
+export const sheetMetalStart = defineSheetMetalFeature(function(context is Context, id is Id, definition is map)
     precondition
     {
         annotation { "Name" : "Body", "Filter" : EntityType.BODY, "MaxNumberOfPicks" : 1 }
