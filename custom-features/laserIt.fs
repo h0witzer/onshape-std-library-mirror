@@ -5,10 +5,17 @@
 //  - matThick : Material thickness that controls extrusion depth
 //  - defRefFrame : Boolean to select a mate connector as the slicing reference frame
 //  - referenceFrame : Mate connector query when defRefFrame is true, defines the placement of the slicing grid
+//  - outputSheetMetal : Boolean to output results as sheet metal bodies
 FeatureScript 2815;
 import(path : "onshape/std/geometry.fs", version : "2815.0");
 import(path : "onshape/std/query.fs", version : "2815.0");
 import(path : "onshape/std/box.fs", version : "2815.0");
+import(path : "onshape/std/sheetMetalAttribute.fs", version : "2815.0");
+import(path : "onshape/std/sheetMetalUtils.fs", version : "2815.0");
+import(path : "onshape/std/sheetMetalStart.fs", version : "2815.0");
+import(path : "onshape/std/evaluate.fs", version : "2815.0");
+import(path : "onshape/std/topologyUtils.fs", version : "2815.0");
+import(path : "onshape/std/attributes.fs", version : "2815.0");
 
 annotation { "Feature Type Name" : "Laser It" }
 export const laserIt = defineFeature(function(context is Context, id is Id, definition is map)
@@ -32,6 +39,21 @@ export const laserIt = defineFeature(function(context is Context, id is Id, defi
         {
             annotation { "Name" : "Reference Frame", "Filter" : BodyType.MATE_CONNECTOR, "MaxNumberOfPicks" : 1 }
             definition.referenceFrame is Query;
+        }
+
+        annotation { "Name" : "Output as Sheet Metal" }
+        definition.outputSheetMetal is boolean;
+
+        if (definition.outputSheetMetal)
+        {
+            annotation { "Name" : "Bend Radius" }
+            isLength(definition.bendRadius, SM_BEND_RADIUS_BOUNDS);
+
+            annotation { "Name" : "K Factor" }
+            isReal(definition.kFactor, K_FACTOR_BOUNDS);
+
+            annotation { "Name" : "Minimal Clearance" }
+            isLength(definition.minimalClearance, SM_MINIMAL_CLEARANCE_BOUNDS);
         }
 
     }
@@ -88,6 +110,12 @@ export const laserIt = defineFeature(function(context is Context, id is Id, defi
                 return qCreatedBy(yIntersectionId, EntityType.BODY);
             }));
         normalizeSliceGeometryForLasercutting(context, id + "YNormalize", allYSliceBodies, definition.matThick);
+
+        // Convert to sheet metal if requested
+        if (definition.outputSheetMetal == true)
+        {
+            convertSlicesToSheetMetal(context, id, trimmedSheetsResult, definition);
+        }
 
     });
 
@@ -166,11 +194,13 @@ export function generateSheets(context is Context, featureIdPrefix is Id, axisLa
 //  - featureIdPrefix : Base id used to regenerate the X/Y identifiers for each slice
 //  - xSliceResult, ySliceResult : Maps containing sliceIds and slicePlanes arrays for X- and Y-oriented slices
 //  - targetBody : Body query representing the part being sliced
-// Returns: map containing the intersection ids
+// Returns: map containing the intersection ids and tracking queries for cap faces
 export function trimSheetsToSolid(context is Context, featureIdPrefix is Id, xSliceResult is map, ySliceResult is map, targetBody is Query)
 {
     var xIntersectionIds = [] as array;
     var yIntersectionIds = [] as array;
+    var xTrackedCapFaces = [] as array;
+    var yTrackedCapFaces = [] as array;
     
     const xSliceIds = xSliceResult.sliceIds;
     const xSlicePlanes = xSliceResult.slicePlanes;
@@ -215,6 +245,10 @@ export function trimSheetsToSolid(context is Context, featureIdPrefix is Id, xSl
                 });
                 continue;
             }
+            
+            // Store tracking queries for successful slices
+            // Use startCap as the primary face (could use either, just pick one consistently)
+            xTrackedCapFaces = append(xTrackedCapFaces, trackingStartCap);
         }
 
         xIntersectionIds = append(xIntersectionIds, xIntersectionId);
@@ -258,6 +292,10 @@ export function trimSheetsToSolid(context is Context, featureIdPrefix is Id, xSl
                 });
                 continue;
             }
+            
+            // Store tracking queries for successful slices
+            // Use startCap as the primary face (could use either, just pick one consistently)
+            yTrackedCapFaces = append(yTrackedCapFaces, trackingStartCap);
         }
 
         yIntersectionIds = append(yIntersectionIds, yIntersectionId);
@@ -276,7 +314,12 @@ export function trimSheetsToSolid(context is Context, featureIdPrefix is Id, xSl
                 "entities" : qUnion([rawXSlices, rawYSlices])
             });
 
-    return { "xIntersectionIds" : xIntersectionIds, "yIntersectionIds" : yIntersectionIds };
+    return { 
+        "xIntersectionIds" : xIntersectionIds, 
+        "yIntersectionIds" : yIntersectionIds,
+        "xTrackedCapFaces" : xTrackedCapFaces,
+        "yTrackedCapFaces" : yTrackedCapFaces
+    };
 }
 
 // Copy all trimmed slices, then perform a single subtract-complement boolean using the copied X slices as tools and the copied Y slices as targets.
@@ -574,13 +617,6 @@ export function normalizeSliceGeometryForLasercutting(context is Context, idPref
         opPlane(context, projectionPlaneId, { "plane" : targetPlane });
         const projectionTarget = qCreatedBy(projectionPlaneId, EntityType.FACE);
         
-        println("=== opCreateOutline Entry Diagnostics ===");
-        println("Body counter: " ~ bodyCounter);
-        println("Target plane origin: " ~ targetPlane.origin);
-        println("Target plane normal: " ~ targetPlane.normal);
-        println("Projection target query empty: " ~ isQueryEmpty(context, projectionTarget));
-        println("Projection target count: " ~ size(evaluateQuery(context, projectionTarget)));
-        
         // Extract surfaces from faces to normalize
         const extractedOutlineToolsId = bodyId + "extract";
         opExtractSurface(context, extractedOutlineToolsId, {
@@ -590,12 +626,8 @@ export function normalizeSliceGeometryForLasercutting(context is Context, idPref
         
         const extractedOutlineTools = qCreatedBy(extractedOutlineToolsId, EntityType.BODY);
         
-        println("Extracted outline tools query empty: " ~ isQueryEmpty(context, extractedOutlineTools));
-        println("Extracted outline tools count: " ~ size(evaluateQuery(context, extractedOutlineTools)));
-        
         // Project onto the construction plane
         const outlineId = bodyId + "outline";
-        println("About to call opCreateOutline with ID: " ~ outlineId);
         
         try
         {
@@ -603,12 +635,9 @@ export function normalizeSliceGeometryForLasercutting(context is Context, idPref
                 "tools" : extractedOutlineTools,
                 "target" : projectionTarget
             });
-            println("opCreateOutline succeeded");
         }
         catch (error)
         {
-            println("opCreateOutline FAILED with error: " ~ error);
-            println("=== opCreateOutline Exit Diagnostics (FAILED) ===");
             // Clean up and continue to next body
             opDeleteBodies(context, bodyId + "cleanupFailed", {
                 "entities" : qUnion([projectionTarget, extractedOutlineTools])
@@ -617,17 +646,11 @@ export function normalizeSliceGeometryForLasercutting(context is Context, idPref
             continue;
         }
         
-        println("=== opCreateOutline Exit Diagnostics (SUCCESS) ===");
-        
         const projectionFaces = qCreatedBy(outlineId, EntityType.FACE);
-        
-        println("Projection faces query empty: " ~ isQueryEmpty(context, projectionFaces));
-        println("Projection faces count: " ~ size(evaluateQuery(context, projectionFaces)));
         
         // Check if any projection was created
         if (isQueryEmpty(context, projectionFaces))
         {
-            println("No projection faces created, skipping normalization for this body");
             opDeleteBodies(context, bodyId + "cleanup1", {
                 "entities" : qUnion([projectionTarget, extractedOutlineTools])
             });
@@ -639,7 +662,6 @@ export function normalizeSliceGeometryForLasercutting(context is Context, idPref
         // Thicken only in thickness2 direction (away from the face normal) since the projection plane
         // is not centered on the slices and face normals point outward
         const thickenId = bodyId + "thicken";
-        println("About to thicken projection faces in thickness2 direction");
         
         try
         {
@@ -649,12 +671,9 @@ export function normalizeSliceGeometryForLasercutting(context is Context, idPref
                 "thickness2" : materialThickness,
                 "keepTools" : true
             });
-            println("Thicken operation succeeded");
         }
         catch (error)
         {
-            println("Thicken operation FAILED with error: " ~ error);
-            println("Skipping normalization for this body and continuing");
             // Clean up helper geometry and continue to next body
             opDeleteBodies(context, bodyId + "cleanup1", {
                 "entities" : qUnion([projectionTarget, extractedOutlineTools, qCreatedBy(outlineId, EntityType.BODY)])
@@ -664,12 +683,9 @@ export function normalizeSliceGeometryForLasercutting(context is Context, idPref
         }
         
         const thickenedBodies = qCreatedBy(thickenId, EntityType.BODY);
-        println("Thickened bodies count: " ~ size(evaluateQuery(context, thickenedBodies)));
         
         // Subtract the thickened projection from the current body being normalized
         // Target only the specific body being processed, not all slice bodies
-        println("About to subtract thickened bodies from current body");
-        
         try
         {
             opBoolean(context, bodyId + "subtract", {
@@ -678,13 +694,9 @@ export function normalizeSliceGeometryForLasercutting(context is Context, idPref
                 "operationType" : BooleanOperationType.SUBTRACTION,
                 "keepTools" : false
             });
-            println("Boolean subtraction succeeded");
-            println("=== Normalization complete for this body ===");
         }
         catch (error)
         {
-            println("Boolean subtraction FAILED with error: " ~ error);
-            println("Skipping normalization for this body and continuing");
             // Clean up the thickened bodies if boolean failed
             opDeleteBodies(context, bodyId + "cleanupFailedBoolean", {
                 "entities" : thickenedBodies
@@ -699,3 +711,117 @@ export function normalizeSliceGeometryForLasercutting(context is Context, idPref
         bodyCounter += 1;
     }
 }
+
+// Convert normalized slice bodies to sheet metal by thickening their cap faces.
+// This is a simplified version stripped down from sheetMetalStart's thickenToSheetMetal function.
+// Takes face queries, extracts surfaces, annotates them with sheet metal attributes, and finalizes.
+// The original solid slice bodies are deleted.
+// Inputs:
+//  - id : Feature ID used for sheet metal operations
+//  - trimmedSheetsResult : Map containing xIntersectionIds and yIntersectionIds arrays
+//  - xSliceResult : Map containing slicePlanes for X slices
+//  - ySliceResult : Map containing slicePlanes for Y slices
+//  - definition : Feature definition map containing sheet metal parameters
+// Returns: none
+// Convert normalized slice bodies to sheet metal by thickening the primary tracked cap faces.
+// Uses the tracked face queries established in trimSheetsToSolid to ensure only valid slices
+// (not wedgelets) are converted. Follows exact pattern from sheetMetalStart's thickenToSheetMetal.
+// Inputs:
+//  - context : Execution context
+//  - id : Feature ID for sheet metal operations
+//  - trimmedSheetsResult : Map containing tracked cap faces for each valid slice
+//  - definition : Feature definition containing sheet metal parameters
+export function convertSlicesToSheetMetal(context is Context, id is Id, trimmedSheetsResult is map, definition is map)
+{
+    // Wrapper function that calls the standard library sheetMetalStart as subfeatures
+    // This allows us to leverage the full functionality of defineSheetMetalFeature
+    // including automatic surface hiding and proper context naming
+    
+    // Step 1: Collect the primary tracked cap face from each valid X slice
+    // These tracking queries were established in trimSheetsToSolid and automatically filter out wedgelets
+    const xTrackedCapFaces = trimmedSheetsResult.xTrackedCapFaces;
+    const yTrackedCapFaces = trimmedSheetsResult.yTrackedCapFaces;
+    
+    var faceQueries = [] as array;
+    
+    // Add all X tracked cap faces
+    for (var xTrackedCap in xTrackedCapFaces)
+    {
+        const trackedFaces = evaluateQuery(context, xTrackedCap);
+        // Each tracking query should resolve to exactly one face (the primary cap)
+        if (size(trackedFaces) > 0)
+        {
+            faceQueries = append(faceQueries, xTrackedCap);
+        }
+    }
+    
+    // Add all Y tracked cap faces
+    for (var yTrackedCap in yTrackedCapFaces)
+    {
+        const trackedFaces = evaluateQuery(context, yTrackedCap);
+        // Each tracking query should resolve to exactly one face (the primary cap)
+        if (size(trackedFaces) > 0)
+        {
+            faceQueries = append(faceQueries, yTrackedCap);
+        }
+    }
+    
+    if (size(faceQueries) == 0)
+    {
+        return;
+    }
+    
+    // Step 2: Collect all faces into a single query
+    var allFacesToConvert = qUnion(faceQueries);
+    
+    // Step 3: Call the standard library's sheetMetalStart with THICKEN process
+    // This gives us the benefits of defineSheetMetalFeature (surface hiding, proper context naming)
+    try
+    {
+        sheetMetalStart(context, id + "sheetMetal", {
+            "initEntities" : allFacesToConvert,
+            "process" : SMProcessType.THICKEN,
+            "regions" : allFacesToConvert,
+            "defaultRadius" : definition.bendRadius,
+            "minimalClearance" : definition.minimalClearance,
+            "thickness" : definition.matThick,
+            "oppositeDirection" : false,  // Material grows in negative normal direction
+            "kFactor" : definition.kFactor
+        });
+    }
+    catch (error)
+    {
+        // Propagate sheet metal errors appropriately
+        var messageAsEnum = try silent(error.message as ErrorStringEnum);
+        if (messageAsEnum != undefined)
+        {
+            throw error;
+        }
+        throw regenError(ErrorStringEnum.SHEET_METAL_REBUILD_ERROR);
+    }
+    
+    // Step 4: Delete original solid bodies after successful sheet metal creation
+    const xIntersectionIds = trimmedSheetsResult.xIntersectionIds;
+    const yIntersectionIds = trimmedSheetsResult.yIntersectionIds;
+    
+    const allXSliceBodies = qUnion(mapArray(xIntersectionIds, function(xIntersectionId)
+        {
+            return qCreatedBy(xIntersectionId, EntityType.BODY);
+        }));
+    const allYSliceBodies = qUnion(mapArray(yIntersectionIds, function(yIntersectionId)
+        {
+            return qCreatedBy(yIntersectionId, EntityType.BODY);
+        }));
+    
+    try
+    {
+        opDeleteBodies(context, id + "deleteBodies", {
+            "entities" : qUnion([allXSliceBodies, allYSliceBodies])
+        });
+    }
+    catch
+    {
+        // Non-critical if deletion fails - sheet metal bodies are already created
+    }
+}
+
