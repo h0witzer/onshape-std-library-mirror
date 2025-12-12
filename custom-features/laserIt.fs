@@ -801,9 +801,7 @@ export function convertSlicesToSheetMetal(context is Context, id is Id, trimmedS
     }
     
     // Step 4: Delete original solid bodies after successful sheet metal creation
-    const xIntersectionIds = trimmedSheetsResult.xIntersectionIds;
-    const yIntersectionIds = trimmedSheetsResult.yIntersectionIds;
-    
+    // Use the xIntersectionIds and yIntersectionIds already declared above
     const allXSliceBodies = qUnion(mapArray(xIntersectionIds, function(xIntersectionId)
         {
             return qCreatedBy(xIntersectionId, EntityType.BODY);
