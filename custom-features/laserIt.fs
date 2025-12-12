@@ -97,19 +97,19 @@ export const laserIt = defineFeature(function(context is Context, id is Id, defi
         // After trimming the intersecting grid, find all non-normal cut faces on a given slice and project their geometry to
         // the surface of the slice. Thicken the flattened projections and remove the results from the slice.
         // This subtractive operation guarantees the slices lie inside of the original target volume, where additive methods wouldn't.
-        // Process all X slice bodies together
+        // Process all X slice bodies together, using their tracked primary cap faces
         const allXSliceBodies = qUnion(mapArray(trimmedSheetsResult.xIntersectionIds, function(xIntersectionId)
             {
                 return qCreatedBy(xIntersectionId, EntityType.BODY);
             }));
-        normalizeSliceGeometryForLasercutting(context, id + "XNormalize", allXSliceBodies, definition.matThick);
+        normalizeSliceGeometryForLasercutting(context, id + "XNormalize", allXSliceBodies, trimmedSheetsResult.xTrackedCapFaces, definition.matThick);
 
-        // Process all Y slice bodies together
+        // Process all Y slice bodies together, using their tracked primary cap faces
         const allYSliceBodies = qUnion(mapArray(trimmedSheetsResult.yIntersectionIds, function(yIntersectionId)
             {
                 return qCreatedBy(yIntersectionId, EntityType.BODY);
             }));
-        normalizeSliceGeometryForLasercutting(context, id + "YNormalize", allYSliceBodies, definition.matThick);
+        normalizeSliceGeometryForLasercutting(context, id + "YNormalize", allYSliceBodies, trimmedSheetsResult.yTrackedCapFaces, definition.matThick);
 
         // Convert to sheet metal if requested
         if (definition.outputSheetMetal == true)
@@ -526,18 +526,19 @@ export function generateSliceSheet(context is Context, sliceId is Id, slicePlane
             });
 }
 
-// Normalize slice geometry for laser cutting by projecting non-planar faces onto the largest planar face and subtracting.
-// This function processes each body independently, finding the largest flat planar face on the body to use as the
-// projection target, then projects any slanted/chamfered faces onto it and subtracts the thickened projection.
+// Normalize slice geometry for laser cutting by projecting non-planar faces onto the primary tracked cap face and subtracting.
+// This function processes each body independently, using the tracked primary cap face from the original intersection
+// as the projection target, then projects any slanted/chamfered faces onto it and subtracts the thickened projection.
 // This ensures all output geometry can be laser cut flat without overhangs.
 // Inputs:
 //  - idPrefix : Id prefix used for created helper operations
 //  - sliceBodies : Query for bodies to normalize
+//  - trackedCapFaces : Array of tracking queries for the primary cap face of each body
 //  - materialThickness : Thickness used when removing projected material
 // Returns: none
-export function normalizeSliceGeometryForLasercutting(context is Context, idPrefix is Id, sliceBodies is Query, materialThickness is ValueWithUnits)
+export function normalizeSliceGeometryForLasercutting(context is Context, idPrefix is Id, sliceBodies is Query, trackedCapFaces is array, materialThickness is ValueWithUnits)
 {
-    // Process each body independently
+    // Process each body independently using its corresponding tracked primary cap face
     var bodyArray = evaluateQuery(context, sliceBodies);
     var bodyCounter = 0;
     
@@ -548,49 +549,31 @@ export function normalizeSliceGeometryForLasercutting(context is Context, idPref
         // Find all faces on this body
         const bodyFaces = qOwnedByBody(body, EntityType.FACE);
         
-        // Find the largest planar face to use as projection target
-        var largestPlanarFace = undefined;
-        var largestArea = 0 * meter^2;
-        
-        var faceArray = evaluateQuery(context, bodyFaces);
-        for (var face in faceArray)
+        // Use the tracked primary cap face for this body
+        // The tracked cap faces array corresponds 1:1 with the body array
+        if (bodyCounter >= size(trackedCapFaces))
         {
-            try
-            {
-                // Check if face is planar
-                var surfaceDefinition = evSurfaceDefinition(context, {
-                    "face" : face
-                });
-                
-                if (surfaceDefinition is Plane)
-                {
-                    var faceArea = evArea(context, {
-                        "entities" : face
-                    });
-                    
-                    if (faceArea > largestArea)
-                    {
-                        largestArea = faceArea;
-                        largestPlanarFace = face;
-                    }
-                }
-            }
-            catch
-            {
-                // Skip faces that can't be evaluated
-            }
+            // Safety check: if we don't have a tracked cap for this body, skip it
+            bodyCounter += 1;
+            continue;
         }
         
-        // If no planar face found, skip this body
-        if (largestPlanarFace == undefined)
+        const trackedCapQuery = trackedCapFaces[bodyCounter];
+        const primaryCapFaces = evaluateQuery(context, trackedCapQuery);
+        
+        // Verify the tracked cap face still exists and belongs to this body
+        if (size(primaryCapFaces) == 0)
         {
             bodyCounter += 1;
             continue;
         }
         
-        // Get the plane definition from the largest planar face
+        // Get the primary cap face (should be exactly one face)
+        const primaryCapFace = primaryCapFaces[0];
+        
+        // Get the plane definition from the tracked primary cap face
         var targetPlane = evPlane(context, {
-            "face" : largestPlanarFace
+            "face" : primaryCapFace
         });
         
         // Identify "Good" faces (don't need normalization) using robust query-based approach
