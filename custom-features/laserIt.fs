@@ -215,12 +215,10 @@ export function trimSheetsToSolid(context is Context, featureIdPrefix is Id, xSl
         
         // Start tracking the start and end cap faces separately before the intersection operation
         const originalSheetBody = qCreatedBy(xSliceId + "extrudeRectangle", EntityType.BODY);
-        const originalSheetFaces = qOwnedByBody(originalSheetBody, EntityType.FACE);
-        const originalCapFaces = qParallelPlanes(originalSheetFaces, xSlicePlane);
         
-        // Track each cap separately (there should be exactly 2 cap faces)
-        const startCapFace = qNthElement(originalCapFaces, 0);
-        const endCapFace = qNthElement(originalCapFaces, 1);
+        // Use qCapEntity to directly query the start and end cap faces from the extrude operation
+        const startCapFace = qCapEntity(xSliceId + "extrudeRectangle", CapType.START, EntityType.FACE);
+        const endCapFace = qCapEntity(xSliceId + "extrudeRectangle", CapType.END, EntityType.FACE);
         const trackingStartCap = startTracking(context, startCapFace);
         const trackingEndCap = startTracking(context, endCapFace);
         
@@ -262,12 +260,10 @@ export function trimSheetsToSolid(context is Context, featureIdPrefix is Id, xSl
         
         // Start tracking the start and end cap faces separately before the intersection operation
         const originalSheetBody = qCreatedBy(ySliceId + "extrudeRectangle", EntityType.BODY);
-        const originalSheetFaces = qOwnedByBody(originalSheetBody, EntityType.FACE);
-        const originalCapFaces = qParallelPlanes(originalSheetFaces, ySlicePlane);
         
-        // Track each cap separately (there should be exactly 2 cap faces)
-        const startCapFace = qNthElement(originalCapFaces, 0);
-        const endCapFace = qNthElement(originalCapFaces, 1);
+        // Use qCapEntity to directly query the start and end cap faces from the extrude operation
+        const startCapFace = qCapEntity(ySliceId + "extrudeRectangle", CapType.START, EntityType.FACE);
+        const endCapFace = qCapEntity(ySliceId + "extrudeRectangle", CapType.END, EntityType.FACE);
         const trackingStartCap = startTracking(context, startCapFace);
         const trackingEndCap = startTracking(context, endCapFace);
         
