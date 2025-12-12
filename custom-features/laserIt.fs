@@ -241,10 +241,6 @@ export function trimSheetsToSolid(context is Context, featureIdPrefix is Id, xSl
             const remainingStartCaps = evaluateQuery(context, startCapQuery);
             const remainingEndCaps = evaluateQuery(context, endCapQuery);
             
-            // Check if attributes persisted through intersection
-            const attributedStartCaps = evaluateQuery(context, qHasAttribute(qOwnedByBody(intersectionBodies, EntityType.FACE), "laserItStartCap"));
-            println("X slice " ~ xPlaneIndex ~ ": startCaps=" ~ size(remainingStartCaps) ~ ", endCaps=" ~ size(remainingEndCaps) ~ ", attributed=" ~ size(attributedStartCaps));
-            
             // Delete body if we don't have at least one face of each cap type
             if (size(remainingStartCaps) == 0 || size(remainingEndCaps) == 0)
             {
@@ -254,6 +250,18 @@ export function trimSheetsToSolid(context is Context, featureIdPrefix is Id, xSl
                 });
                 continue;
             }
+            
+            // Re-apply attribute to START cap faces after boolean operation (attributes don't persist through booleans)
+            const startCapsAfterIntersection = qIntersection([startCapQuery, qOwnedByBody(intersectionBodies, EntityType.FACE)]);
+            setAttribute(context, {
+                "entities" : startCapsAfterIntersection,
+                "name" : "laserItStartCap",
+                "attribute" : true
+            });
+            
+            // Check if attributes were successfully reapplied
+            const attributedStartCaps = evaluateQuery(context, qHasAttribute(qOwnedByBody(intersectionBodies, EntityType.FACE), "laserItStartCap"));
+            println("X slice " ~ xPlaneIndex ~ ": startCaps=" ~ size(remainingStartCaps) ~ ", endCaps=" ~ size(remainingEndCaps) ~ ", attributed=" ~ size(attributedStartCaps));
             
             // Store the slice ID for later robust cap querying
             xSliceIds = append(xSliceIds, xSliceId);
@@ -286,10 +294,6 @@ export function trimSheetsToSolid(context is Context, featureIdPrefix is Id, xSl
             const remainingStartCaps = evaluateQuery(context, startCapQuery);
             const remainingEndCaps = evaluateQuery(context, endCapQuery);
             
-            // Check if attributes persisted through intersection
-            const attributedStartCaps = evaluateQuery(context, qHasAttribute(qOwnedByBody(intersectionBodies, EntityType.FACE), "laserItStartCap"));
-            println("Y slice " ~ yPlaneIndex ~ ": startCaps=" ~ size(remainingStartCaps) ~ ", endCaps=" ~ size(remainingEndCaps) ~ ", attributed=" ~ size(attributedStartCaps));
-            
             // Delete body if we don't have at least one face of each cap type
             if (size(remainingStartCaps) == 0 || size(remainingEndCaps) == 0)
             {
@@ -299,6 +303,18 @@ export function trimSheetsToSolid(context is Context, featureIdPrefix is Id, xSl
                 });
                 continue;
             }
+            
+            // Re-apply attribute to START cap faces after boolean operation (attributes don't persist through booleans)
+            const startCapsAfterIntersection = qIntersection([startCapQuery, qOwnedByBody(intersectionBodies, EntityType.FACE)]);
+            setAttribute(context, {
+                "entities" : startCapsAfterIntersection,
+                "name" : "laserItStartCap",
+                "attribute" : true
+            });
+            
+            // Check if attributes were successfully reapplied
+            const attributedStartCaps = evaluateQuery(context, qHasAttribute(qOwnedByBody(intersectionBodies, EntityType.FACE), "laserItStartCap"));
+            println("Y slice " ~ yPlaneIndex ~ ": startCaps=" ~ size(remainingStartCaps) ~ ", endCaps=" ~ size(remainingEndCaps) ~ ", attributed=" ~ size(attributedStartCaps));
             
             // Store the slice ID for later robust cap querying
             ySliceIds = append(ySliceIds, ySliceId);
@@ -560,7 +576,7 @@ export function normalizeSliceGeometryForLasercutting(context is Context, idPref
     
     for (var body in bodyArray)
     {
-        const bodyId = idPrefix + "Body" ~ bodyCounter;
+        const bodyId = idPrefix + ("Body" ~ bodyCounter);
         
         // Find all faces on this body
         const bodyFaces = qOwnedByBody(body, EntityType.FACE);
@@ -612,12 +628,12 @@ export function normalizeSliceGeometryForLasercutting(context is Context, idPref
         }
         
         // Create a construction plane at the target plane location for projection
-        const projectionPlaneId = bodyId + "projectionPlane";
+        const projectionPlaneId = bodyId ~ "projectionPlane";
         opPlane(context, projectionPlaneId, { "plane" : targetPlane });
         const projectionTarget = qCreatedBy(projectionPlaneId, EntityType.FACE);
         
         // Extract surfaces from faces to normalize
-        const extractedOutlineToolsId = bodyId + "extract";
+        const extractedOutlineToolsId = bodyId ~ "extract";
         opExtractSurface(context, extractedOutlineToolsId, {
             "faces" : nonNormalFaces,
             "offset" : 0 * meter
