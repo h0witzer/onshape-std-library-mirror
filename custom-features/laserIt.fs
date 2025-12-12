@@ -18,7 +18,7 @@ import(path : "onshape/std/topologyUtils.fs", version : "2815.0");
 import(path : "onshape/std/attributes.fs", version : "2815.0");
 
 annotation { "Feature Type Name" : "Laser It" }
-export const sheetMetalStart = defineSheetMetalFeature(function(context is Context, id is Id, definition is map)
+export const laserIt = defineFeature(function(context is Context, id is Id, definition is map)
     precondition
     {
         annotation { "Name" : "Body", "Filter" : EntityType.BODY, "MaxNumberOfPicks" : 1 }
@@ -764,23 +764,25 @@ export function normalizeSliceGeometryForLasercutting(context is Context, idPref
 //  - definition : Feature definition containing sheet metal parameters
 export function convertSlicesToSheetMetal(context is Context, id is Id, trimmedSheetsResult is map, definition is map)
 {
+    // Wrapper function that calls the standard library sheetMetalStart as subfeatures
+    // This allows us to leverage the full functionality of defineSheetMetalFeature
+    // including automatic surface hiding and proper context naming
+    
     // Step 1: Collect the primary tracked cap face from each valid X slice
     // These tracking queries were established in trimSheetsToSolid and automatically filter out wedgelets
     const xTrackedCapFaces = trimmedSheetsResult.xTrackedCapFaces;
     const yTrackedCapFaces = trimmedSheetsResult.yTrackedCapFaces;
     
-    var facesToConvert = [] as array;
+    var faceQueries = [] as array;
     
     // Add all X tracked cap faces
     for (var xTrackedCap in xTrackedCapFaces)
     {
         const trackedFaces = evaluateQuery(context, xTrackedCap);
         // Each tracking query should resolve to exactly one face (the primary cap)
-        // If a slice has been further subdivided, the tracking query identifies the primary piece
         if (size(trackedFaces) > 0)
         {
-            // Take the first face if multiple exist (shouldn't happen normally)
-            facesToConvert = append(facesToConvert, trackedFaces[0]);
+            faceQueries = append(faceQueries, xTrackedCap);
         }
     }
     
@@ -791,74 +793,45 @@ export function convertSlicesToSheetMetal(context is Context, id is Id, trimmedS
         // Each tracking query should resolve to exactly one face (the primary cap)
         if (size(trackedFaces) > 0)
         {
-            // Take the first face if multiple exist (shouldn't happen normally)
-            facesToConvert = append(facesToConvert, trackedFaces[0]);
+            faceQueries = append(faceQueries, yTrackedCap);
         }
     }
     
-    if (size(facesToConvert) == 0)
+    if (size(faceQueries) == 0)
     {
         return;
     }
     
-    // Step 2: Extract surfaces - FOLLOWING EXACT PATTERN FROM convertFaces in sheetMetalStart
-    // Key: use id + "extractSurface" for operation, but reference bodies with just id
-    var surfaceId = id + "extractSurface";
+    // Step 2: Collect all faces into a single query
+    var allFacesToConvert = qUnion(faceQueries);
     
+    // Step 3: Call the standard library's sheetMetalStart with THICKEN process
+    // This gives us the benefits of defineSheetMetalFeature (surface hiding, proper context naming)
     try
     {
-        opExtractSurface(context, surfaceId, {
-            "faces" : qUnion(facesToConvert),
-            "offset" : 0 * meter
+        sheetMetalStart(context, id + "sheetMetal", {
+            "initEntities" : allFacesToConvert,
+            "process" : SMProcessType.THICKEN,
+            "entities" : allFacesToConvert,
+            "defaultRadius" : definition.bendRadius,
+            "minimalClearance" : definition.minimalClearance,
+            "thickness" : definition.matThick,
+            "oppositeDirection" : false,  // Material grows in negative normal direction
+            "kFactor" : definition.kFactor
         });
     }
-    catch
+    catch (error)
     {
-        throw regenError(ErrorStringEnum.SHEET_METAL_CANNOT_THICKEN);
-    }
-    
-    // Step 3: Annotate - FOLLOWING EXACT PATTERN FROM annotateConvertedFaces in sheetMetalStart
-    // Key: reference with id, NOT id + "extractSurface"
-    try
-    {
-        var thicknessDirection = SMThicknessDirection.BACK;
-        annotateSmSurfaceBodies(context, id, {
-            "surfaceBodies" : qCreatedBy(id, EntityType.BODY),
-            "bendEdgesAndFaces" : qNothing(),
-            "specialRadiiBends" : [],
-            "defaultRadius" : definition.bendRadius,
-            "controlsThickness" : true,
-            "thickness" : definition.matThick,
-            "thicknessDirection" : thicknessDirection,
-            "minimalClearance" : definition.minimalClearance,
-            "kFactor" : definition.kFactor,
-            "flipDirectionUp" : false,
-            "defaultTwoCornerStyle" : SMReliefStyle.SIMPLE,
-            "defaultThreeCornerStyle" : SMReliefStyle.SIMPLE,
-            "defaultBendReliefStyle" : SMReliefStyle.OBROUND,
-            "defaultCornerReliefScale" : 1.5,
-            "defaultRoundReliefDiameter" : 0 * meter,
-            "defaultSquareReliefWidth" : 0 * meter,
-            "defaultBendReliefDepthScale" : 2.0,
-            "defaultBendReliefScale" : 1.0625,
-            "bendCalculationType" : SMBendCalculationType.K_FACTOR
-        }, 0);
-        
-        if (getFeatureError(context, id) != undefined)
+        // Propagate sheet metal errors appropriately
+        var messageAsEnum = try silent(error.message as ErrorStringEnum);
+        if (messageAsEnum != undefined)
         {
-            return;
-        }
-    }
-    catch (thrownError)
-    {
-        if (thrownError is map && thrownError.message is ErrorStringEnum)
-        {
-            throw thrownError;
+            throw error;
         }
         throw regenError(ErrorStringEnum.SHEET_METAL_REBUILD_ERROR);
     }
     
-    // Step 4: Delete original solid bodies BEFORE finalization
+    // Step 4: Delete original solid bodies after successful sheet metal creation
     const xIntersectionIds = trimmedSheetsResult.xIntersectionIds;
     const yIntersectionIds = trimmedSheetsResult.yIntersectionIds;
     
@@ -879,33 +852,7 @@ export function convertSlicesToSheetMetal(context is Context, id is Id, trimmedS
     }
     catch
     {
-        throw regenError(ErrorStringEnum.REGEN_ERROR);
-    }
-    
-    // Step 5: Finalize - FOLLOWING EXACT PATTERN FROM annotateConvertedFaces in sheetMetalStart
-    // Key: reference with id, NOT id + "extractSurface"
-    try
-    {
-        updateSheetMetalGeometry(context, id, {
-            "entities" : qUnion([qCreatedBy(id, EntityType.FACE), qCreatedBy(id, EntityType.EDGE)])
-        });
-    }
-    catch (error)
-    {
-        var messageAsEnum = try silent(error.message as ErrorStringEnum);
-        if (messageAsEnum == ErrorStringEnum.BOOLEAN_INVALID)
-        {
-            throw regenError(ErrorStringEnum.SHEET_METAL_REBUILD_ERROR);
-        }
-        else if (messageAsEnum == ErrorStringEnum.BAD_GEOMETRY ||
-                messageAsEnum == ErrorStringEnum.THICKEN_FAILED)
-        {
-            throw regenError(ErrorStringEnum.SHEET_METAL_CANNOT_THICKEN);
-        }
-        else
-        {
-            throw regenError(ErrorStringEnum.SHEET_METAL_REBUILD_ERROR);
-        }
+        // Non-critical if deletion fails - sheet metal bodies are already created
     }
 }
 
