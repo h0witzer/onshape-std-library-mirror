@@ -533,6 +533,16 @@ export function generateSliceSheet(context is Context, sliceId is Id, slicePlane
         "attribute" : true
     });
 
+    // Tag the END cap face with an attribute so it can be reliably found after topology changes
+    const endCapFace = qCapEntity(sliceId + "extrudeRectangle", CapType.END, EntityType.FACE);
+    const endCapCount = size(evaluateQuery(context, endCapFace));
+    println("Setting attribute on " ~ sliceId ~ " END cap, face count = " ~ endCapCount);
+    setAttribute(context, {
+        "entities" : endCapFace,
+        "name" : "laserItEndCap",
+        "attribute" : true
+    });
+
     opDeleteBodies(context, sliceId + "deleteSketch", {
                 "entities" : qCreatedBy(sliceId + "sketch")
             });
@@ -589,12 +599,8 @@ export function normalizeSliceGeometryForLasercutting(context is Context, idPref
         // Identify "Good" faces (don't need normalization):
         // - START cap faces (identified by attribute)
         const startCapFaces = qHasAttribute(bodyFaces, "laserItStartCap");
-        // - END cap faces (opposite side of the extrusion, also valid geometry)
-        // Since we don't have END cap attributes, we need to infer them from plane parallelism
-        // END caps are parallel to START caps but face the opposite direction
-        const potentialEndCapFaces = qParallelPlanes(bodyFaces, targetPlane);
-        // Subtract START caps to get only END caps
-        const endCapFaces = qSubtraction(potentialEndCapFaces, startCapFaces);
+        // - END cap faces (identified by attribute)
+        const endCapFaces = qHasAttribute(bodyFaces, "laserItEndCap");
         // - Vertical cut walls (parallel to the START cap's normal vector)
         const verticalWallFaces = qFacesParallelToDirection(bodyFaces, targetPlane.normal);
         
