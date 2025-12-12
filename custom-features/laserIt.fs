@@ -810,7 +810,7 @@ export function convertSlicesToSheetMetal(context is Context, id is Id, trimmedS
         });
         
         // Update each model attribute to use "Laser It" as the controlling feature name
-        for (const existingAttribute in modelAttributes)
+        for (const existingAttribute of modelAttributes)
         {
             // Create a new attribute with modified controllingFeatureId fields
             // Start with a shallow copy
@@ -834,7 +834,7 @@ export function convertSlicesToSheetMetal(context is Context, id is Id, trimmedS
             for (const fieldName of fieldsToUpdate)
             {
                 const fieldValue = updatedAttribute[fieldName];
-                if (fieldValue != undefined && fieldValue.controllingFeatureId != undefined)
+                if (fieldValue !== undefined && fieldValue.controllingFeatureId !== undefined)
                 {
                     // Create a copy of the nested field map and update the controllingFeatureId
                     updatedAttribute[fieldName] = mergeMaps({}, fieldValue);
