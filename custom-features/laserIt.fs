@@ -92,24 +92,24 @@ export const laserIt = defineFeature(function(context is Context, id is Id, defi
         // The XY nested loop takes every X slice and intersects it with every Y slice to form individual grid cells.
         // For each cell, it resolves all intersecting bodies, averages aligned edges to infer a mid-surface, and splits the
         // cell into two halves so the original X and Y slice sets can be trimmed against each other.
-        var intersectionResult = generateCrossSlotGeometryForSlices(context, id, trimmedSheetsResult.xIntersectionIds, trimmedSheetsResult.yIntersectionIds, referenceFrame);
+        generateCrossSlotGeometryForSlices(context, id, trimmedSheetsResult.xIntersectionIds, trimmedSheetsResult.yIntersectionIds, referenceFrame);
 
-        // After trimming the intersecting grid, find all non-normal cut faces on a given slice and project their geometry to
-        // the surface of the slice. Thicken the flattened projections and remove the results from the slice.
-        // This subtractive operation guarantees the slices lie inside of the original target volume, where additive methods wouldn't.
-        // Process all X slice bodies together, using their tracked primary cap faces
+        // After trimming the intersecting grid, find all non-cap faces on each slice and project their geometry to
+        // the START cap face. Thicken the flattened projections and remove the results from the slice.
+        // This subtractive operation guarantees the slices lie inside of the original target volume.
+        // Process all X slice bodies together using their slice IDs for cap entity queries
         const allXSliceBodies = qUnion(mapArray(trimmedSheetsResult.xIntersectionIds, function(xIntersectionId)
             {
                 return qCreatedBy(xIntersectionId, EntityType.BODY);
             }));
-        normalizeSliceGeometryForLasercutting(context, id + "XNormalize", allXSliceBodies, trimmedSheetsResult.xTrackedCapFaces, definition.matThick);
+        normalizeSliceGeometryForLasercutting(context, id + "XNormalize", allXSliceBodies, trimmedSheetsResult.xSliceIds, definition.matThick);
 
-        // Process all Y slice bodies together, using their tracked primary cap faces
+        // Process all Y slice bodies together using their slice IDs for cap entity queries
         const allYSliceBodies = qUnion(mapArray(trimmedSheetsResult.yIntersectionIds, function(yIntersectionId)
             {
                 return qCreatedBy(yIntersectionId, EntityType.BODY);
             }));
-        normalizeSliceGeometryForLasercutting(context, id + "YNormalize", allYSliceBodies, trimmedSheetsResult.yTrackedCapFaces, definition.matThick);
+        normalizeSliceGeometryForLasercutting(context, id + "YNormalize", allYSliceBodies, trimmedSheetsResult.ySliceIds, definition.matThick);
 
         // Convert to sheet metal if requested
         if (definition.outputSheetMetal == true)
@@ -192,51 +192,45 @@ export function generateSheets(context is Context, featureIdPrefix is Id, axisLa
 // Intersect every raw sheet with the target body to keep only the in-bounds material for follow-on trimming.
 // Inputs:
 //  - featureIdPrefix : Base id used to regenerate the X/Y identifiers for each slice
-//  - xSliceResult, ySliceResult : Maps containing sliceIds and slicePlanes arrays for X- and Y-oriented slices
+//  - xSliceResult, ySliceResult : Maps containing sliceIds arrays for X- and Y-oriented slices
 //  - targetBody : Body query representing the part being sliced
-// Returns: map containing the intersection ids and tracking queries for cap faces
+// Returns: map containing the intersection ids and slice IDs for robust cap querying
 export function trimSheetsToSolid(context is Context, featureIdPrefix is Id, xSliceResult is map, ySliceResult is map, targetBody is Query)
 {
     var xIntersectionIds = [] as array;
     var yIntersectionIds = [] as array;
-    var xTrackedCapFaces = [] as array;
-    var yTrackedCapFaces = [] as array;
+    var xSliceIds = [] as array;
+    var ySliceIds = [] as array;
     
-    const xSliceIds = xSliceResult.sliceIds;
-    const xSlicePlanes = xSliceResult.slicePlanes;
-    const ySliceIds = ySliceResult.sliceIds;
-    const ySlicePlanes = ySliceResult.slicePlanes;
+    const xOriginalSliceIds = xSliceResult.sliceIds;
+    const yOriginalSliceIds = ySliceResult.sliceIds;
 
-    for (var xPlaneIndex = 0; xPlaneIndex < size(xSliceIds); xPlaneIndex += 1)
+    for (var xPlaneIndex = 0; xPlaneIndex < size(xOriginalSliceIds); xPlaneIndex += 1)
     {
-        var xSliceId = xSliceIds[xPlaneIndex];
-        var xSlicePlane = xSlicePlanes[xPlaneIndex];
+        var xSliceId = xOriginalSliceIds[xPlaneIndex];
         var xIntersectionId = featureIdPrefix + "XIntersection" + xPlaneIndex;
         
-        // Start tracking the start and end cap faces separately before the intersection operation
         const originalSheetBody = qCreatedBy(xSliceId + "extrudeRectangle", EntityType.BODY);
         
-        // Use qCapEntity to directly query the start and end cap faces from the extrude operation
-        const startCapFace = qCapEntity(xSliceId + "extrudeRectangle", CapType.START, EntityType.FACE);
-        const endCapFace = qCapEntity(xSliceId + "extrudeRectangle", CapType.END, EntityType.FACE);
-        const trackingStartCap = startTracking(context, startCapFace);
-        const trackingEndCap = startTracking(context, endCapFace);
-        
+        // Perform intersection with target body
         opBoolean(context, xIntersectionId, {
                     "tools" : qUnion([originalSheetBody, targetBody]),
                     "operationType" : BooleanOperationType.INTERSECTION,
                     "keepTools" : true
                 });
         
-        // Check if EITHER cap has been completely destroyed after intersection
+        // Check if at least one START and one END cap face still exist after intersection
         const intersectionBodies = qCreatedBy(xIntersectionId, EntityType.BODY);
         if (!isQueryEmpty(context, intersectionBodies))
         {
-            const remainingStartCapFaces = evaluateQuery(context, trackingStartCap);
-            const remainingEndCapFaces = evaluateQuery(context, trackingEndCap);
+            const startCapQuery = qCapEntity(xSliceId + "extrudeRectangle", CapType.START, EntityType.FACE);
+            const endCapQuery = qCapEntity(xSliceId + "extrudeRectangle", CapType.END, EntityType.FACE);
             
-            // Delete body if EITHER the start cap OR the end cap is completely gone
-            if (size(remainingStartCapFaces) == 0 || size(remainingEndCapFaces) == 0)
+            const remainingStartCaps = evaluateQuery(context, startCapQuery);
+            const remainingEndCaps = evaluateQuery(context, endCapQuery);
+            
+            // Delete body if we don't have at least one face of each cap type
+            if (size(remainingStartCaps) == 0 || size(remainingEndCaps) == 0)
             {
                 opDeleteBodies(context, xIntersectionId + "deleteNoCapBody", {
                     "entities" : intersectionBodies
@@ -244,44 +238,39 @@ export function trimSheetsToSolid(context is Context, featureIdPrefix is Id, xSl
                 continue;
             }
             
-            // Store tracking queries for successful slices
-            // Use startCap as the primary face (could use either, just pick one consistently)
-            xTrackedCapFaces = append(xTrackedCapFaces, trackingStartCap);
+            // Store the slice ID for later robust cap querying
+            xSliceIds = append(xSliceIds, xSliceId);
         }
 
         xIntersectionIds = append(xIntersectionIds, xIntersectionId);
     }
 
-    for (var yPlaneIndex = 0; yPlaneIndex < size(ySliceIds); yPlaneIndex += 1)
+    for (var yPlaneIndex = 0; yPlaneIndex < size(yOriginalSliceIds); yPlaneIndex += 1)
     {
-        var ySliceId = ySliceIds[yPlaneIndex];
-        var ySlicePlane = ySlicePlanes[yPlaneIndex];
+        var ySliceId = yOriginalSliceIds[yPlaneIndex];
         var yIntersectionId = featureIdPrefix + "YIntersection" + yPlaneIndex;
         
-        // Start tracking the start and end cap faces separately before the intersection operation
         const originalSheetBody = qCreatedBy(ySliceId + "extrudeRectangle", EntityType.BODY);
         
-        // Use qCapEntity to directly query the start and end cap faces from the extrude operation
-        const startCapFace = qCapEntity(ySliceId + "extrudeRectangle", CapType.START, EntityType.FACE);
-        const endCapFace = qCapEntity(ySliceId + "extrudeRectangle", CapType.END, EntityType.FACE);
-        const trackingStartCap = startTracking(context, startCapFace);
-        const trackingEndCap = startTracking(context, endCapFace);
-        
+        // Perform intersection with target body
         opBoolean(context, yIntersectionId, {
                     "tools" : qUnion([originalSheetBody, targetBody]),
                     "operationType" : BooleanOperationType.INTERSECTION,
                     "keepTools" : true
                 });
         
-        // Check if EITHER cap has been completely destroyed after intersection
+        // Check if at least one START and one END cap face still exist after intersection
         const intersectionBodies = qCreatedBy(yIntersectionId, EntityType.BODY);
         if (!isQueryEmpty(context, intersectionBodies))
         {
-            const remainingStartCapFaces = evaluateQuery(context, trackingStartCap);
-            const remainingEndCapFaces = evaluateQuery(context, trackingEndCap);
+            const startCapQuery = qCapEntity(ySliceId + "extrudeRectangle", CapType.START, EntityType.FACE);
+            const endCapQuery = qCapEntity(ySliceId + "extrudeRectangle", CapType.END, EntityType.FACE);
             
-            // Delete body if EITHER the start cap OR the end cap is completely gone
-            if (size(remainingStartCapFaces) == 0 || size(remainingEndCapFaces) == 0)
+            const remainingStartCaps = evaluateQuery(context, startCapQuery);
+            const remainingEndCaps = evaluateQuery(context, endCapQuery);
+            
+            // Delete body if we don't have at least one face of each cap type
+            if (size(remainingStartCaps) == 0 || size(remainingEndCaps) == 0)
             {
                 opDeleteBodies(context, yIntersectionId + "deleteNoCapBody", {
                     "entities" : intersectionBodies
@@ -289,19 +278,18 @@ export function trimSheetsToSolid(context is Context, featureIdPrefix is Id, xSl
                 continue;
             }
             
-            // Store tracking queries for successful slices
-            // Use startCap as the primary face (could use either, just pick one consistently)
-            yTrackedCapFaces = append(yTrackedCapFaces, trackingStartCap);
+            // Store the slice ID for later robust cap querying
+            ySliceIds = append(ySliceIds, ySliceId);
         }
 
         yIntersectionIds = append(yIntersectionIds, yIntersectionId);
     }
 
-    const rawXSlices = qUnion(mapArray(xSliceIds, function(xSliceId)
+    const rawXSlices = qUnion(mapArray(xOriginalSliceIds, function(xSliceId)
             {
                 return qCreatedBy(xSliceId + "extrudeRectangle", EntityType.BODY);
             }));
-    const rawYSlices = qUnion(mapArray(ySliceIds, function(ySliceId)
+    const rawYSlices = qUnion(mapArray(yOriginalSliceIds, function(ySliceId)
             {
                 return qCreatedBy(ySliceId + "extrudeRectangle", EntityType.BODY);
             }));
@@ -313,8 +301,8 @@ export function trimSheetsToSolid(context is Context, featureIdPrefix is Id, xSl
     return { 
         "xIntersectionIds" : xIntersectionIds, 
         "yIntersectionIds" : yIntersectionIds,
-        "xTrackedCapFaces" : xTrackedCapFaces,
-        "yTrackedCapFaces" : yTrackedCapFaces
+        "xSliceIds" : xSliceIds,
+        "ySliceIds" : ySliceIds
     };
 }
 
@@ -522,19 +510,20 @@ export function generateSliceSheet(context is Context, sliceId is Id, slicePlane
             });
 }
 
-// Normalize slice geometry for laser cutting by projecting non-planar faces onto the primary tracked cap face and subtracting.
-// This function processes each body independently, using the tracked primary cap face from the original intersection
-// as the projection target, then projects any slanted/chamfered faces onto it and subtracts the thickened projection.
+// Normalize slice geometry for laser cutting by projecting non-cap faces onto the START cap face and subtracting.
+// This function processes each body independently, using the START cap face from the original extrusion
+// as the projection target. Non-cap faces (excluding START/END caps and vertical walls) are projected
+// onto the START cap and the thickened projection is subtracted.
 // This ensures all output geometry can be laser cut flat without overhangs.
 // Inputs:
 //  - idPrefix : Id prefix used for created helper operations
 //  - sliceBodies : Query for bodies to normalize
-//  - trackedCapFaces : Array of tracking queries for the primary cap face of each body
+//  - sliceIds : Array of original slice IDs for querying cap entities
 //  - materialThickness : Thickness used when removing projected material
 // Returns: none
-export function normalizeSliceGeometryForLasercutting(context is Context, idPrefix is Id, sliceBodies is Query, trackedCapFaces is array, materialThickness is ValueWithUnits)
+export function normalizeSliceGeometryForLasercutting(context is Context, idPrefix is Id, sliceBodies is Query, sliceIds is array, materialThickness is ValueWithUnits)
 {
-    // Process each body independently using its corresponding tracked primary cap face
+    // Process each body independently using the START cap face from the original extrusion
     var bodyArray = evaluateQuery(context, sliceBodies);
     var bodyCounter = 0;
     
@@ -542,46 +531,51 @@ export function normalizeSliceGeometryForLasercutting(context is Context, idPref
     {
         const bodyId = idPrefix + "Body" + bodyCounter;
         
+        // Safety check: ensure we have a slice ID for this body
+        if (bodyCounter >= size(sliceIds))
+        {
+            bodyCounter += 1;
+            continue;
+        }
+        
+        const sliceId = sliceIds[bodyCounter];
+        
         // Find all faces on this body
         const bodyFaces = qOwnedByBody(body, EntityType.FACE);
         
-        // Use the tracked primary cap face for this body
-        // The tracked cap faces array corresponds 1:1 with the body array
-        if (bodyCounter >= size(trackedCapFaces))
-        {
-            // Safety check: if we don't have a tracked cap for this body, skip it
-            bodyCounter += 1;
-            continue;
-        }
+        // Get the START and END cap faces from the original extrusion
+        const startCapQuery = qCapEntity(sliceId + "extrudeRectangle", CapType.START, EntityType.FACE);
+        const endCapQuery = qCapEntity(sliceId + "extrudeRectangle", CapType.END, EntityType.FACE);
         
-        const trackedCapQuery = trackedCapFaces[bodyCounter];
-        const primaryCapFaces = evaluateQuery(context, trackedCapQuery);
+        // Get the START cap faces that belong to this body
+        const startCapFacesOnBody = qIntersection([startCapQuery, bodyFaces]);
+        const startCapFacesArray = evaluateQuery(context, startCapFacesOnBody);
         
-        // Verify the tracked cap face still exists and belongs to this body
-        if (size(primaryCapFaces) == 0)
+        // Verify we have at least one START cap face
+        if (size(startCapFacesArray) == 0)
         {
             bodyCounter += 1;
             continue;
         }
         
-        // Get the primary cap face (should be exactly one face)
-        const primaryCapFace = primaryCapFaces[0];
+        // Use the first START cap face as the projection target
+        const primaryCapFace = startCapFacesArray[0];
         
-        // Get the plane definition from the tracked primary cap face
+        // Get the plane definition from the START cap face
         var targetPlane = evPlane(context, {
             "face" : primaryCapFace
         });
         
-        // Identify "Good" faces (don't need normalization) using robust query-based approach
-        // - Top/Bottom caps (Parallel to the target plane itself)
-        const topBottomFaces = qParallelPlanes(bodyFaces, targetPlane);
-        // - Vertical cut walls (Parallel to the target plane's NORMAL vector)
+        // Identify "Good" faces (don't need normalization):
+        // - START and END cap faces from the original extrusion
+        const capFaces = qIntersection([qUnion([startCapQuery, endCapQuery]), bodyFaces]);
+        // - Vertical cut walls (parallel to the START cap's normal vector)
         const verticalWallFaces = qFacesParallelToDirection(bodyFaces, targetPlane.normal);
         
-        // Combine them into a "skip list"
-        const validFaces = qUnion([topBottomFaces, verticalWallFaces]);
+        // Combine cap faces and vertical walls into a "skip list"
+        const validFaces = qUnion([capFaces, verticalWallFaces]);
         
-        // Subtract valid faces from all faces to find the "Bad" (slanted/chamfered) ones
+        // Subtract valid faces from all faces to find non-cap, non-vertical faces that need projection
         const nonNormalFaces = qSubtraction(bodyFaces, validFaces);
         
         // Check for null case (nothing to normalize)
@@ -615,7 +609,7 @@ export function normalizeSliceGeometryForLasercutting(context is Context, idPref
                 "target" : projectionTarget
             });
         }
-        catch (error)
+        catch
         {
             // Clean up and continue to next body
             opDeleteBodies(context, bodyId + "cleanupFailed", {
@@ -651,7 +645,7 @@ export function normalizeSliceGeometryForLasercutting(context is Context, idPref
                 "keepTools" : true
             });
         }
-        catch (error)
+        catch
         {
             // Clean up helper geometry and continue to next body
             opDeleteBodies(context, bodyId + "cleanup1", {
@@ -674,7 +668,7 @@ export function normalizeSliceGeometryForLasercutting(context is Context, idPref
                 "keepTools" : false
             });
         }
-        catch (error)
+        catch
         {
             // Clean up the thickened bodies if boolean failed
             opDeleteBodies(context, bodyId + "cleanupFailedBoolean", {
@@ -702,56 +696,46 @@ export function normalizeSliceGeometryForLasercutting(context is Context, idPref
 //  - ySliceResult : Map containing slicePlanes for Y slices
 //  - definition : Feature definition map containing sheet metal parameters
 // Returns: none
-// Convert normalized slice bodies to sheet metal by thickening the primary tracked cap faces.
-// Uses the tracked face queries established in trimSheetsToSolid to ensure only valid slices
-// (not wedgelets) are converted. Follows exact pattern from sheetMetalStart's thickenToSheetMetal.
+// Convert normalized slice bodies to sheet metal by thickening the START cap faces.
+// Uses the START cap entity queries from the original extrusions to ensure correct faces are converted.
+// Each body will have exactly one START cap face to work with, even if prior operations split bodies.
 // Inputs:
 //  - context : Execution context
 //  - id : Feature ID for sheet metal operations
-//  - trimmedSheetsResult : Map containing tracked cap faces for each valid slice
+//  - trimmedSheetsResult : Map containing slice IDs for cap entity queries
 //  - definition : Feature definition containing sheet metal parameters
 export function convertSlicesToSheetMetal(context is Context, id is Id, trimmedSheetsResult is map, definition is map)
 {
-    // Wrapper function that calls the standard library sheetMetalStart as subfeatures
+    // Wrapper function that calls the standard library sheetMetalStart
     // This allows us to leverage the full functionality of defineSheetMetalFeature
-    // including automatic surface hiding and proper context naming
     
-    // Step 1: Collect the primary tracked cap face from each valid X slice
-    // These tracking queries were established in trimSheetsToSolid and automatically filter out wedgelets
-    const xTrackedCapFaces = trimmedSheetsResult.xTrackedCapFaces;
-    const yTrackedCapFaces = trimmedSheetsResult.yTrackedCapFaces;
+    // Step 1: Collect all START cap faces from all valid slices using cap entity queries
+    const xSliceIds = trimmedSheetsResult.xSliceIds;
+    const ySliceIds = trimmedSheetsResult.ySliceIds;
     
-    var faceQueries = [] as array;
+    var startCapQueries = [] as array;
     
-    // Add all X tracked cap faces
-    for (var xTrackedCap in xTrackedCapFaces)
+    // Add START cap faces from X slices
+    for (var xSliceId in xSliceIds)
     {
-        const trackedFaces = evaluateQuery(context, xTrackedCap);
-        // Each tracking query should resolve to exactly one face (the primary cap)
-        if (size(trackedFaces) > 0)
-        {
-            faceQueries = append(faceQueries, xTrackedCap);
-        }
+        const startCapQuery = qCapEntity(xSliceId + "extrudeRectangle", CapType.START, EntityType.FACE);
+        startCapQueries = append(startCapQueries, startCapQuery);
     }
     
-    // Add all Y tracked cap faces
-    for (var yTrackedCap in yTrackedCapFaces)
+    // Add START cap faces from Y slices
+    for (var ySliceId in ySliceIds)
     {
-        const trackedFaces = evaluateQuery(context, yTrackedCap);
-        // Each tracking query should resolve to exactly one face (the primary cap)
-        if (size(trackedFaces) > 0)
-        {
-            faceQueries = append(faceQueries, yTrackedCap);
-        }
+        const startCapQuery = qCapEntity(ySliceId + "extrudeRectangle", CapType.START, EntityType.FACE);
+        startCapQueries = append(startCapQueries, startCapQuery);
     }
     
-    if (size(faceQueries) == 0)
+    if (size(startCapQueries) == 0)
     {
         return;
     }
     
-    // Step 2: Collect all faces into a single query
-    var allFacesToConvert = qUnion(faceQueries);
+    // Step 2: Collect all START cap faces into a single query
+    var allFacesToConvert = qUnion(startCapQueries);
     
     // Step 3: Call the standard library's sheetMetalStart with THICKEN process
     // This gives us the benefits of defineSheetMetalFeature (surface hiding, proper context naming)
