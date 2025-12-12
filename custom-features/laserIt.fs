@@ -224,22 +224,29 @@ export function trimSheetsToSolid(context is Context, featureIdPrefix is Id, xSl
         
         const originalSheetBody = qCreatedBy(xSliceId + "extrudeRectangle", EntityType.BODY);
         
-        // Perform intersection with target body
+        // Use subtract-complement to preserve attributes (same technique as cross-slot generation)
+        // This creates the intersection while keeping attributes on the target body
         opBoolean(context, xIntersectionId, {
-                    "tools" : qUnion([originalSheetBody, targetBody]),
-                    "operationType" : BooleanOperationType.INTERSECTION,
+                    "tools" : targetBody,
+                    "targets" : originalSheetBody,
+                    "operationType" : BooleanOperationType.SUBTRACT_COMPLEMENT,
                     "keepTools" : true
                 });
         
-        // Check if at least one START and one END cap face still exist after intersection
+        // The result is in the target position - check if bodies were created
         const intersectionBodies = qCreatedBy(xIntersectionId, EntityType.BODY);
         if (!isQueryEmpty(context, intersectionBodies))
         {
+            // Check if attributes persisted (they should with SUBTRACT_COMPLEMENT)
+            const attributedStartCaps = evaluateQuery(context, qHasAttribute(qOwnedByBody(intersectionBodies, EntityType.FACE), "laserItStartCap"));
+            
+            // Also verify START/END caps still exist using cap entity queries
             const startCapQuery = qCapEntity(xSliceId + "extrudeRectangle", CapType.START, EntityType.FACE);
             const endCapQuery = qCapEntity(xSliceId + "extrudeRectangle", CapType.END, EntityType.FACE);
-            
             const remainingStartCaps = evaluateQuery(context, startCapQuery);
             const remainingEndCaps = evaluateQuery(context, endCapQuery);
+            
+            println("X slice " ~ xPlaneIndex ~ ": startCaps=" ~ size(remainingStartCaps) ~ ", endCaps=" ~ size(remainingEndCaps) ~ ", attributed=" ~ size(attributedStartCaps));
             
             // Delete body if we don't have at least one face of each cap type
             if (size(remainingStartCaps) == 0 || size(remainingEndCaps) == 0)
@@ -250,18 +257,6 @@ export function trimSheetsToSolid(context is Context, featureIdPrefix is Id, xSl
                 });
                 continue;
             }
-            
-            // Re-apply attribute to START cap faces after boolean operation (attributes don't persist through booleans)
-            const startCapsAfterIntersection = qIntersection([startCapQuery, qOwnedByBody(intersectionBodies, EntityType.FACE)]);
-            setAttribute(context, {
-                "entities" : startCapsAfterIntersection,
-                "name" : "laserItStartCap",
-                "attribute" : true
-            });
-            
-            // Check if attributes were successfully reapplied
-            const attributedStartCaps = evaluateQuery(context, qHasAttribute(qOwnedByBody(intersectionBodies, EntityType.FACE), "laserItStartCap"));
-            println("X slice " ~ xPlaneIndex ~ ": startCaps=" ~ size(remainingStartCaps) ~ ", endCaps=" ~ size(remainingEndCaps) ~ ", attributed=" ~ size(attributedStartCaps));
             
             // Store the slice ID for later robust cap querying
             xSliceIds = append(xSliceIds, xSliceId);
@@ -277,22 +272,29 @@ export function trimSheetsToSolid(context is Context, featureIdPrefix is Id, xSl
         
         const originalSheetBody = qCreatedBy(ySliceId + "extrudeRectangle", EntityType.BODY);
         
-        // Perform intersection with target body
+        // Use subtract-complement to preserve attributes (same technique as cross-slot generation)
+        // This creates the intersection while keeping attributes on the target body
         opBoolean(context, yIntersectionId, {
-                    "tools" : qUnion([originalSheetBody, targetBody]),
-                    "operationType" : BooleanOperationType.INTERSECTION,
+                    "tools" : targetBody,
+                    "targets" : originalSheetBody,
+                    "operationType" : BooleanOperationType.SUBTRACT_COMPLEMENT,
                     "keepTools" : true
                 });
         
-        // Check if at least one START and one END cap face still exist after intersection
+        // The result is in the target position - check if bodies were created
         const intersectionBodies = qCreatedBy(yIntersectionId, EntityType.BODY);
         if (!isQueryEmpty(context, intersectionBodies))
         {
+            // Check if attributes persisted (they should with SUBTRACT_COMPLEMENT)
+            const attributedStartCaps = evaluateQuery(context, qHasAttribute(qOwnedByBody(intersectionBodies, EntityType.FACE), "laserItStartCap"));
+            
+            // Also verify START/END caps still exist using cap entity queries
             const startCapQuery = qCapEntity(ySliceId + "extrudeRectangle", CapType.START, EntityType.FACE);
             const endCapQuery = qCapEntity(ySliceId + "extrudeRectangle", CapType.END, EntityType.FACE);
-            
             const remainingStartCaps = evaluateQuery(context, startCapQuery);
             const remainingEndCaps = evaluateQuery(context, endCapQuery);
+            
+            println("Y slice " ~ yPlaneIndex ~ ": startCaps=" ~ size(remainingStartCaps) ~ ", endCaps=" ~ size(remainingEndCaps) ~ ", attributed=" ~ size(attributedStartCaps));
             
             // Delete body if we don't have at least one face of each cap type
             if (size(remainingStartCaps) == 0 || size(remainingEndCaps) == 0)
@@ -303,18 +305,6 @@ export function trimSheetsToSolid(context is Context, featureIdPrefix is Id, xSl
                 });
                 continue;
             }
-            
-            // Re-apply attribute to START cap faces after boolean operation (attributes don't persist through booleans)
-            const startCapsAfterIntersection = qIntersection([startCapQuery, qOwnedByBody(intersectionBodies, EntityType.FACE)]);
-            setAttribute(context, {
-                "entities" : startCapsAfterIntersection,
-                "name" : "laserItStartCap",
-                "attribute" : true
-            });
-            
-            // Check if attributes were successfully reapplied
-            const attributedStartCaps = evaluateQuery(context, qHasAttribute(qOwnedByBody(intersectionBodies, EntityType.FACE), "laserItStartCap"));
-            println("Y slice " ~ yPlaneIndex ~ ": startCaps=" ~ size(remainingStartCaps) ~ ", endCaps=" ~ size(remainingEndCaps) ~ ", attributed=" ~ size(attributedStartCaps));
             
             // Store the slice ID for later robust cap querying
             ySliceIds = append(ySliceIds, ySliceId);
