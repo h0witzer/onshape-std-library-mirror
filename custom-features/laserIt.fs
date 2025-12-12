@@ -558,7 +558,7 @@ export function normalizeSliceGeometryForLasercutting(context is Context, idPref
     
     for (var body in bodyArray)
     {
-        const bodyId = idPrefix + ("Body" ~ bodyCounter);
+        const bodyId = idPrefix + "Body" + bodyCounter;
         
         // Find all faces on this body
         const bodyFaces = qOwnedByBody(body, EntityType.FACE);
@@ -610,12 +610,12 @@ export function normalizeSliceGeometryForLasercutting(context is Context, idPref
         }
         
         // Create a construction plane at the target plane location for projection
-        const projectionPlaneId = bodyId ~ "projectionPlane";
+        const projectionPlaneId = bodyId + "projectionPlane";
         opPlane(context, projectionPlaneId, { "plane" : targetPlane });
         const projectionTarget = qCreatedBy(projectionPlaneId, EntityType.FACE);
         
         // Extract surfaces from faces to normalize
-        const extractedOutlineToolsId = bodyId ~ "extract";
+        const extractedOutlineToolsId = bodyId + "extract";
         opExtractSurface(context, extractedOutlineToolsId, {
             "faces" : nonNormalFaces,
             "offset" : 0 * meter
