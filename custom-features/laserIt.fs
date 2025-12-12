@@ -107,17 +107,19 @@ export const laserIt = defineFeature(function(context is Context, id is Id, defi
         if (definition.normalizeGeometry == true)
         {
             // Process all X slice bodies together using attribute queries to find cap faces
-            const allXSliceBodies = qUnion(mapArray(trimmedSheetsResult.xIntersectionIds, function(xIntersectionId)
+            // After SUBTRACT_COMPLEMENT change, xIntersectionIds contains slice IDs (extrusion IDs)
+            const allXSliceBodies = qUnion(mapArray(trimmedSheetsResult.xIntersectionIds, function(xSliceId)
                 {
-                    return qCreatedBy(xIntersectionId, EntityType.BODY);
+                    return qCreatedBy(xSliceId + "extrudeRectangle", EntityType.BODY);
                 }));
             println("Starting normalization for X slices, body count = " ~ size(evaluateQuery(context, allXSliceBodies)));
             normalizeSliceGeometryForLasercutting(context, id + "XNormalize", allXSliceBodies, definition.matThick);
 
             // Process all Y slice bodies together using attribute queries to find cap faces
-            const allYSliceBodies = qUnion(mapArray(trimmedSheetsResult.yIntersectionIds, function(yIntersectionId)
+            // After SUBTRACT_COMPLEMENT change, yIntersectionIds contains slice IDs (extrusion IDs)
+            const allYSliceBodies = qUnion(mapArray(trimmedSheetsResult.yIntersectionIds, function(ySliceId)
                 {
-                    return qCreatedBy(yIntersectionId, EntityType.BODY);
+                    return qCreatedBy(ySliceId + "extrudeRectangle", EntityType.BODY);
                 }));
             println("Starting normalization for Y slices, body count = " ~ size(evaluateQuery(context, allYSliceBodies)));
             normalizeSliceGeometryForLasercutting(context, id + "YNormalize", allYSliceBodies, definition.matThick);
@@ -225,7 +227,7 @@ export function trimSheetsToSolid(context is Context, featureIdPrefix is Id, xSl
         const originalSheetBody = qCreatedBy(xSliceId + "extrudeRectangle", EntityType.BODY);
         
         // Use subtract-complement to preserve attributes (same technique as cross-slot generation)
-        // This creates the intersection while keeping attributes on the target body
+        // This modifies the target body in place while keeping attributes
         opBoolean(context, xIntersectionId, {
                     "tools" : targetBody,
                     "targets" : originalSheetBody,
@@ -233,8 +235,9 @@ export function trimSheetsToSolid(context is Context, featureIdPrefix is Id, xSl
                     "keepTools" : true
                 });
         
-        // The result is in the target position - check if bodies were created
-        const intersectionBodies = qCreatedBy(xIntersectionId, EntityType.BODY);
+        // The result is the modified target body (originalSheetBody), not a new creation
+        // SUBTRACT_COMPLEMENT modifies targets in place, so we query the original body
+        const intersectionBodies = originalSheetBody;
         if (!isQueryEmpty(context, intersectionBodies))
         {
             // Check if attributes persisted (they should with SUBTRACT_COMPLEMENT)
@@ -273,7 +276,7 @@ export function trimSheetsToSolid(context is Context, featureIdPrefix is Id, xSl
         const originalSheetBody = qCreatedBy(ySliceId + "extrudeRectangle", EntityType.BODY);
         
         // Use subtract-complement to preserve attributes (same technique as cross-slot generation)
-        // This creates the intersection while keeping attributes on the target body
+        // This modifies the target body in place while keeping attributes
         opBoolean(context, yIntersectionId, {
                     "tools" : targetBody,
                     "targets" : originalSheetBody,
@@ -281,8 +284,9 @@ export function trimSheetsToSolid(context is Context, featureIdPrefix is Id, xSl
                     "keepTools" : true
                 });
         
-        // The result is in the target position - check if bodies were created
-        const intersectionBodies = qCreatedBy(yIntersectionId, EntityType.BODY);
+        // The result is the modified target body (originalSheetBody), not a new creation
+        // SUBTRACT_COMPLEMENT modifies targets in place, so we query the original body
+        const intersectionBodies = originalSheetBody;
         if (!isQueryEmpty(context, intersectionBodies))
         {
             // Check if attributes persisted (they should with SUBTRACT_COMPLEMENT)
@@ -326,9 +330,11 @@ export function trimSheetsToSolid(context is Context, featureIdPrefix is Id, xSl
                 "entities" : qUnion([rawXSlices, rawYSlices])
             });
 
+    // With SUBTRACT_COMPLEMENT, the bodies are the original extrusion bodies (modified in place)
+    // So we return the slice IDs for querying the bodies, not the intersection operation IDs
     return { 
-        "xIntersectionIds" : xIntersectionIds, 
-        "yIntersectionIds" : yIntersectionIds,
+        "xIntersectionIds" : xSliceIds,  // These are now the extrusion slice IDs, not boolean operation IDs
+        "yIntersectionIds" : ySliceIds,
         "xSliceIds" : xSliceIds,
         "ySliceIds" : ySliceIds
     };
@@ -352,11 +358,12 @@ export function generateCrossSlotGeometryForSlices(context is Context, featureId
 
 
     // 1. Create Copies
+    // xIntersectionIds and yIntersectionIds now contain slice IDs (extrusion IDs) after SUBTRACT_COMPLEMENT change
     for (var xPlaneIndex = 0; xPlaneIndex < size(xIntersectionIds); xPlaneIndex += 1)
     {
         const xCopyId = featureIdPrefix + "XCopy" + xPlaneIndex;
         opPattern(context, xCopyId, {
-                    "entities" : qCreatedBy(xIntersectionIds[xPlaneIndex], EntityType.BODY),
+                    "entities" : qCreatedBy(xIntersectionIds[xPlaneIndex] + "extrudeRectangle", EntityType.BODY),
                     "transforms" : [identityTransform()],
                     "instanceNames" : ["1"]
                 });
@@ -367,7 +374,7 @@ export function generateCrossSlotGeometryForSlices(context is Context, featureId
     {
         const yCopyId = featureIdPrefix + "YCopy" + yPlaneIndex;
         opPattern(context, yCopyId, {
-                    "entities" : qCreatedBy(yIntersectionIds[yPlaneIndex], EntityType.BODY),
+                    "entities" : qCreatedBy(yIntersectionIds[yPlaneIndex] + "extrudeRectangle", EntityType.BODY),
                     "transforms" : [identityTransform()],
                     "instanceNames" : ["1"]
                 });
@@ -452,15 +459,15 @@ export function generateCrossSlotGeometryForSlices(context is Context, featureId
 
     // 4. Perform Final Subtraction on Original Slices
 
-    // Helper to resolve original IDs to Body queries
+    // Helper to resolve slice IDs to Body queries (after SUBTRACT_COMPLEMENT change, these are extrusion IDs)
     const originalXSlices = qUnion(mapArray(xIntersectionIds, function(id)
             {
-                return qCreatedBy(id, EntityType.BODY);
+                return qCreatedBy(id + "extrudeRectangle", EntityType.BODY);
             }));
 
     const originalYSlices = qUnion(mapArray(yIntersectionIds, function(id)
             {
-                return qCreatedBy(id, EntityType.BODY);
+                return qCreatedBy(id + "extrudeRectangle", EntityType.BODY);
             }));
 
     if (size(splitToolsForX) > 0)
@@ -749,14 +756,14 @@ export function convertSlicesToSheetMetal(context is Context, id is Id, trimmedS
     
     println("  xIntersectionIds count = " ~ size(xIntersectionIds) ~ ", yIntersectionIds count = " ~ size(yIntersectionIds));
     
-    // Get all bodies from X and Y slices
+    // Get all bodies from X and Y slices (after SUBTRACT_COMPLEMENT change, these are extrusion IDs)
     const allXBodies = qUnion(mapArray(xIntersectionIds, function(xId)
         {
-            return qCreatedBy(xId, EntityType.BODY);
+            return qCreatedBy(xId + "extrudeRectangle", EntityType.BODY);
         }));
     const allYBodies = qUnion(mapArray(yIntersectionIds, function(yId)
         {
-            return qCreatedBy(yId, EntityType.BODY);
+            return qCreatedBy(yId + "extrudeRectangle", EntityType.BODY);
         }));
     const allBodies = qUnion([allXBodies, allYBodies]);
     
@@ -807,14 +814,14 @@ export function convertSlicesToSheetMetal(context is Context, id is Id, trimmedS
     }
     
     // Step 4: Delete original solid bodies after successful sheet metal creation
-    // Use the xIntersectionIds and yIntersectionIds already declared above
-    const allXSliceBodies = qUnion(mapArray(xIntersectionIds, function(xIntersectionId)
+    // Use the xIntersectionIds and yIntersectionIds already declared above (now extrusion IDs)
+    const allXSliceBodies = qUnion(mapArray(xIntersectionIds, function(xSliceId)
         {
-            return qCreatedBy(xIntersectionId, EntityType.BODY);
+            return qCreatedBy(xSliceId + "extrudeRectangle", EntityType.BODY);
         }));
-    const allYSliceBodies = qUnion(mapArray(yIntersectionIds, function(yIntersectionId)
+    const allYSliceBodies = qUnion(mapArray(yIntersectionIds, function(ySliceId)
         {
-            return qCreatedBy(yIntersectionId, EntityType.BODY);
+            return qCreatedBy(ySliceId + "extrudeRectangle", EntityType.BODY);
         }));
     
     try
