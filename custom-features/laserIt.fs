@@ -798,6 +798,56 @@ export function convertSlicesToSheetMetal(context is Context, id is Id, trimmedS
             "oppositeDirection" : true,
             "kFactor" : definition.kFactor
         });
+        
+        // Step 3.5: Update the sheet metal model attributes to show "Laser It" as the controlling feature name
+        // Query all created sheet metal model bodies
+        const sheetMetalBodies = qCreatedBy(id + "sheetMetal", EntityType.BODY);
+        
+        // Get the sheet metal model attributes from the created bodies
+        const modelAttributes = getAttributes(context, {
+            "entities" : sheetMetalBodies,
+            "attributePattern" : asSMAttribute({ "objectType" : SMObjectType.MODEL })
+        });
+        
+        // Update each model attribute to use "Laser It" as the controlling feature name
+        for (const existingAttribute in modelAttributes)
+        {
+            // Create a new attribute with modified controllingFeatureId fields
+            // Start with a shallow copy
+            const updatedAttribute = mergeMaps({}, existingAttribute);
+            
+            // Helper array of field names that contain controllingFeatureId to update
+            const fieldsToUpdate = [
+                "frontThickness",
+                "backThickness",
+                "k-factor",
+                "minimalClearance",
+                "defaultCornerReliefScale",
+                "defaultRoundReliefDiameter",
+                "defaultSquareReliefWidth",
+                "defaultBendReliefScale",
+                "defaultBendReliefDepthScale"
+            ];
+            
+            // Update controllingFeatureId for each field that has it
+            // Need to create new nested maps to avoid modifying the original attribute
+            for (const fieldName of fieldsToUpdate)
+            {
+                const fieldValue = updatedAttribute[fieldName];
+                if (fieldValue != undefined && fieldValue.controllingFeatureId != undefined)
+                {
+                    // Create a copy of the nested field map and update the controllingFeatureId
+                    updatedAttribute[fieldName] = mergeMaps({}, fieldValue);
+                    updatedAttribute[fieldName].controllingFeatureId = "Laser It";
+                }
+            }
+            
+            // Update the attributeId to also reference "Laser It"
+            updatedAttribute.attributeId = "Laser It";
+            
+            // Use replaceSMAttribute to properly update the attribute
+            replaceSMAttribute(context, existingAttribute, updatedAttribute);
+        }
     }
     catch (error)
     {
