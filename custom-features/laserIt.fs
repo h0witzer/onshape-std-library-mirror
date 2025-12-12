@@ -833,10 +833,11 @@ export function convertSlicesToSheetMetal(context is Context, id is Id, trimmedS
             // Need to create new nested maps to avoid modifying the original attribute
             for (var fieldName of fieldsToUpdate)
             {
-                if (updatedAttribute[fieldName] != undefined && updatedAttribute[fieldName].controllingFeatureId != undefined)
+                const fieldValue = updatedAttribute[fieldName];
+                if (fieldValue != undefined && fieldValue.controllingFeatureId != undefined)
                 {
                     // Create a copy of the nested field map and update the controllingFeatureId
-                    updatedAttribute[fieldName] = mergeMaps({}, updatedAttribute[fieldName]);
+                    updatedAttribute[fieldName] = mergeMaps({}, fieldValue);
                     updatedAttribute[fieldName].controllingFeatureId = "Laser It";
                 }
             }
