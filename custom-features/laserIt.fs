@@ -589,11 +589,17 @@ export function normalizeSliceGeometryForLasercutting(context is Context, idPref
         // Identify "Good" faces (don't need normalization):
         // - START cap faces (identified by attribute)
         const startCapFaces = qHasAttribute(bodyFaces, "laserItStartCap");
+        // - END cap faces (opposite side of the extrusion, also valid geometry)
+        // Since we don't have END cap attributes, we need to infer them from plane parallelism
+        // END caps are parallel to START caps but face the opposite direction
+        const potentialEndCapFaces = qParallelPlanes(bodyFaces, targetPlane);
+        // Subtract START caps to get only END caps
+        const endCapFaces = qSubtraction(potentialEndCapFaces, startCapFaces);
         // - Vertical cut walls (parallel to the START cap's normal vector)
         const verticalWallFaces = qFacesParallelToDirection(bodyFaces, targetPlane.normal);
         
-        // Combine cap faces and vertical walls into a "skip list"
-        const validFaces = qUnion([startCapFaces, verticalWallFaces]);
+        // Combine START caps, END caps, and vertical walls into a "skip list"
+        const validFaces = qUnion([startCapFaces, endCapFaces, verticalWallFaces]);
         
         // Subtract valid faces from all faces to find non-cap, non-vertical faces that need projection
         const nonNormalFaces = qSubtraction(bodyFaces, validFaces);
@@ -783,7 +789,7 @@ export function convertSlicesToSheetMetal(context is Context, id is Id, trimmedS
             "radius" : definition.bendRadius,
             "minimalClearance" : definition.minimalClearance,
             "thickness" : definition.matThick,
-            "oppositeDirection" : false,
+            "oppositeDirection" : true,
             "kFactor" : definition.kFactor
         });
     }
