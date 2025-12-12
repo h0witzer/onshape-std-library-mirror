@@ -41,6 +41,9 @@ export const laserIt = defineFeature(function(context is Context, id is Id, defi
             definition.referenceFrame is Query;
         }
 
+        annotation { "Name" : "Normalize Geometry" }
+        definition.normalizeGeometry is boolean;
+
         annotation { "Name" : "Output as Sheet Metal" }
         definition.outputSheetMetal is boolean;
 
@@ -88,28 +91,37 @@ export const laserIt = defineFeature(function(context is Context, id is Id, defi
 
         // Intersect each sheet with the target solid to retain only in-bounds material before generating cross-slot geometry.
         var trimmedSheetsResult = trimSheetsToSolid(context, id, xSliceResult, ySliceResult, definition.selectedBody);
+        
+        println("After trimSheetsToSolid: xIntersectionIds count = " ~ size(trimmedSheetsResult.xIntersectionIds) ~ ", yIntersectionIds count = " ~ size(trimmedSheetsResult.yIntersectionIds));
 
         // The XY nested loop takes every X slice and intersects it with every Y slice to form individual grid cells.
         // For each cell, it resolves all intersecting bodies, averages aligned edges to infer a mid-surface, and splits the
         // cell into two halves so the original X and Y slice sets can be trimmed against each other.
         generateCrossSlotGeometryForSlices(context, id, trimmedSheetsResult.xIntersectionIds, trimmedSheetsResult.yIntersectionIds, referenceFrame);
+        
+        println("After generateCrossSlotGeometryForSlices");
 
         // After trimming the intersecting grid, find all non-cap faces on each slice and project their geometry to
         // the START cap face. Thicken the flattened projections and remove the results from the slice.
         // This subtractive operation guarantees the slices lie inside of the original target volume.
-        // Process all X slice bodies together using attribute queries to find cap faces
-        const allXSliceBodies = qUnion(mapArray(trimmedSheetsResult.xIntersectionIds, function(xIntersectionId)
-            {
-                return qCreatedBy(xIntersectionId, EntityType.BODY);
-            }));
-        normalizeSliceGeometryForLasercutting(context, id + "XNormalize", allXSliceBodies, definition.matThick);
+        if (definition.normalizeGeometry == true)
+        {
+            // Process all X slice bodies together using attribute queries to find cap faces
+            const allXSliceBodies = qUnion(mapArray(trimmedSheetsResult.xIntersectionIds, function(xIntersectionId)
+                {
+                    return qCreatedBy(xIntersectionId, EntityType.BODY);
+                }));
+            println("Starting normalization for X slices, body count = " ~ size(evaluateQuery(context, allXSliceBodies)));
+            normalizeSliceGeometryForLasercutting(context, id + "XNormalize", allXSliceBodies, definition.matThick);
 
-        // Process all Y slice bodies together using attribute queries to find cap faces
-        const allYSliceBodies = qUnion(mapArray(trimmedSheetsResult.yIntersectionIds, function(yIntersectionId)
-            {
-                return qCreatedBy(yIntersectionId, EntityType.BODY);
-            }));
-        normalizeSliceGeometryForLasercutting(context, id + "YNormalize", allYSliceBodies, definition.matThick);
+            // Process all Y slice bodies together using attribute queries to find cap faces
+            const allYSliceBodies = qUnion(mapArray(trimmedSheetsResult.yIntersectionIds, function(yIntersectionId)
+                {
+                    return qCreatedBy(yIntersectionId, EntityType.BODY);
+                }));
+            println("Starting normalization for Y slices, body count = " ~ size(evaluateQuery(context, allYSliceBodies)));
+            normalizeSliceGeometryForLasercutting(context, id + "YNormalize", allYSliceBodies, definition.matThick);
+        }
 
         // Convert to sheet metal if requested
         if (definition.outputSheetMetal == true)
@@ -229,9 +241,14 @@ export function trimSheetsToSolid(context is Context, featureIdPrefix is Id, xSl
             const remainingStartCaps = evaluateQuery(context, startCapQuery);
             const remainingEndCaps = evaluateQuery(context, endCapQuery);
             
+            // Check if attributes persisted through intersection
+            const attributedStartCaps = evaluateQuery(context, qHasAttribute(qOwnedByBody(intersectionBodies, EntityType.FACE), "laserItStartCap"));
+            println("X slice " ~ xPlaneIndex ~ ": startCaps=" ~ size(remainingStartCaps) ~ ", endCaps=" ~ size(remainingEndCaps) ~ ", attributed=" ~ size(attributedStartCaps));
+            
             // Delete body if we don't have at least one face of each cap type
             if (size(remainingStartCaps) == 0 || size(remainingEndCaps) == 0)
             {
+                println("  DELETING X slice " ~ xPlaneIndex ~ " - missing caps");
                 opDeleteBodies(context, xIntersectionId + "deleteNoCapBody", {
                     "entities" : intersectionBodies
                 });
@@ -269,9 +286,14 @@ export function trimSheetsToSolid(context is Context, featureIdPrefix is Id, xSl
             const remainingStartCaps = evaluateQuery(context, startCapQuery);
             const remainingEndCaps = evaluateQuery(context, endCapQuery);
             
+            // Check if attributes persisted through intersection
+            const attributedStartCaps = evaluateQuery(context, qHasAttribute(qOwnedByBody(intersectionBodies, EntityType.FACE), "laserItStartCap"));
+            println("Y slice " ~ yPlaneIndex ~ ": startCaps=" ~ size(remainingStartCaps) ~ ", endCaps=" ~ size(remainingEndCaps) ~ ", attributed=" ~ size(attributedStartCaps));
+            
             // Delete body if we don't have at least one face of each cap type
             if (size(remainingStartCaps) == 0 || size(remainingEndCaps) == 0)
             {
+                println("  DELETING Y slice " ~ yPlaneIndex ~ " - missing caps");
                 opDeleteBodies(context, yIntersectionId + "deleteNoCapBody", {
                     "entities" : intersectionBodies
                 });
@@ -505,6 +527,8 @@ export function generateSliceSheet(context is Context, sliceId is Id, slicePlane
 
     // Tag the START cap face with an attribute so it can be reliably found after topology changes
     const startCapFace = qCapEntity(sliceId + "extrudeRectangle", CapType.START, EntityType.FACE);
+    const startCapCount = size(evaluateQuery(context, startCapFace));
+    println("Setting attribute on " ~ sliceId ~ " START cap, face count = " ~ startCapCount);
     setAttribute(context, {
         "entities" : startCapFace,
         "name" : "laserItStartCap",
@@ -532,20 +556,26 @@ export function normalizeSliceGeometryForLasercutting(context is Context, idPref
     var bodyArray = evaluateQuery(context, sliceBodies);
     var bodyCounter = 0;
     
+    println("normalizeSliceGeometryForLasercutting: Processing " ~ size(bodyArray) ~ " bodies");
+    
     for (var body in bodyArray)
     {
-        const bodyId = idPrefix + "Body" + bodyCounter;
+        const bodyId = idPrefix + "Body" ~ bodyCounter;
         
         // Find all faces on this body
         const bodyFaces = qOwnedByBody(body, EntityType.FACE);
+        const totalFaces = size(evaluateQuery(context, bodyFaces));
         
         // Get the START cap faces on this body using the attribute
         const startCapFacesOnBody = qIntersection([qHasAttribute(bodyFaces, "laserItStartCap"), bodyFaces]);
         const startCapFacesArray = evaluateQuery(context, startCapFacesOnBody);
         
+        println("  Body " ~ bodyCounter ~ ": totalFaces=" ~ totalFaces ~ ", startCapFaces=" ~ size(startCapFacesArray));
+        
         // Verify we have at least one START cap face
         if (size(startCapFacesArray) == 0)
         {
+            println("  Body " ~ bodyCounter ~ ": SKIPPED - No START cap faces found");
             bodyCounter += 1;
             continue;
         }
@@ -570,9 +600,13 @@ export function normalizeSliceGeometryForLasercutting(context is Context, idPref
         // Subtract valid faces from all faces to find non-cap, non-vertical faces that need projection
         const nonNormalFaces = qSubtraction(bodyFaces, validFaces);
         
+        const nonNormalFacesCount = size(evaluateQuery(context, nonNormalFaces));
+        println("  Body " ~ bodyCounter ~ ": nonNormalFaces=" ~ nonNormalFacesCount);
+        
         // Check for null case (nothing to normalize)
         if (isQueryEmpty(context, nonNormalFaces))
         {
+            println("  Body " ~ bodyCounter ~ ": SKIPPED - No non-normal faces to normalize");
             bodyCounter += 1;
             continue;
         }
@@ -698,12 +732,16 @@ export function normalizeSliceGeometryForLasercutting(context is Context, idPref
 //  - definition : Feature definition containing sheet metal parameters
 export function convertSlicesToSheetMetal(context is Context, id is Id, trimmedSheetsResult is map, definition is map)
 {
+    println("convertSlicesToSheetMetal: Starting sheet metal conversion");
+    
     // Wrapper function that calls the standard library sheetMetalStart
     // This allows us to leverage the full functionality of defineSheetMetalFeature
     
     // Step 1: Collect all START cap faces from all slice bodies using attribute queries
     const xIntersectionIds = trimmedSheetsResult.xIntersectionIds;
     const yIntersectionIds = trimmedSheetsResult.yIntersectionIds;
+    
+    println("  xIntersectionIds count = " ~ size(xIntersectionIds) ~ ", yIntersectionIds count = " ~ size(yIntersectionIds));
     
     // Get all bodies from X and Y slices
     const allXBodies = qUnion(mapArray(xIntersectionIds, function(xId)
@@ -716,12 +754,19 @@ export function convertSlicesToSheetMetal(context is Context, id is Id, trimmedS
         }));
     const allBodies = qUnion([allXBodies, allYBodies]);
     
+    const totalBodies = size(evaluateQuery(context, allBodies));
+    println("  Total bodies = " ~ totalBodies);
+    
     // Query all START cap faces using the attribute across all bodies
     const allStartCapFaces = qHasAttribute(qOwnedByBody(allBodies, EntityType.FACE), "laserItStartCap");
+    
+    const startCapFacesCount = size(evaluateQuery(context, allStartCapFaces));
+    println("  START cap faces found = " ~ startCapFacesCount);
     
     // Verify we have faces to convert
     if (isQueryEmpty(context, allStartCapFaces))
     {
+        println("  ERROR: No START cap faces found - returning");
         return;
     }
     
