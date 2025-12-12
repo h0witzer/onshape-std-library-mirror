@@ -97,19 +97,19 @@ export const laserIt = defineFeature(function(context is Context, id is Id, defi
         // After trimming the intersecting grid, find all non-cap faces on each slice and project their geometry to
         // the START cap face. Thicken the flattened projections and remove the results from the slice.
         // This subtractive operation guarantees the slices lie inside of the original target volume.
-        // Process all X slice bodies together using their slice IDs for cap entity queries
+        // Process all X slice bodies together using attribute queries to find cap faces
         const allXSliceBodies = qUnion(mapArray(trimmedSheetsResult.xIntersectionIds, function(xIntersectionId)
             {
                 return qCreatedBy(xIntersectionId, EntityType.BODY);
             }));
-        normalizeSliceGeometryForLasercutting(context, id + "XNormalize", allXSliceBodies, trimmedSheetsResult.xSliceIds, definition.matThick);
+        normalizeSliceGeometryForLasercutting(context, id + "XNormalize", allXSliceBodies, definition.matThick);
 
-        // Process all Y slice bodies together using their slice IDs for cap entity queries
+        // Process all Y slice bodies together using attribute queries to find cap faces
         const allYSliceBodies = qUnion(mapArray(trimmedSheetsResult.yIntersectionIds, function(yIntersectionId)
             {
                 return qCreatedBy(yIntersectionId, EntityType.BODY);
             }));
-        normalizeSliceGeometryForLasercutting(context, id + "YNormalize", allYSliceBodies, trimmedSheetsResult.ySliceIds, definition.matThick);
+        normalizeSliceGeometryForLasercutting(context, id + "YNormalize", allYSliceBodies, definition.matThick);
 
         // Convert to sheet metal if requested
         if (definition.outputSheetMetal == true)
@@ -494,8 +494,6 @@ export function generateSliceSheet(context is Context, sliceId is Id, slicePlane
 
     // Extrude a rectangular slice surrounding the object symmetrically
     // Use startBound and endBound with equal depths to achieve symmetric extrusion
-    // Extrude a rectangular slice surrounding the object symmetrically
-    // Use startBound and endBound with equal depths to achieve symmetric extrusion
     opExtrude(context, sliceId + "extrudeRectangle", {
                 "entities" : qSketchRegion(sliceId + "sketch", false),
                 "direction" : extrusionDirection,
@@ -505,25 +503,32 @@ export function generateSliceSheet(context is Context, sliceId is Id, slicePlane
                 "startDepth" : materialThickness / 2
             });
 
+    // Tag the START cap face with an attribute so it can be reliably found after topology changes
+    const startCapFace = qCapEntity(sliceId + "extrudeRectangle", CapType.START, EntityType.FACE);
+    setAttribute(context, {
+        "entities" : startCapFace,
+        "name" : "laserItStartCap",
+        "attribute" : true
+    });
+
     opDeleteBodies(context, sliceId + "deleteSketch", {
                 "entities" : qCreatedBy(sliceId + "sketch")
             });
 }
 
 // Normalize slice geometry for laser cutting by projecting non-cap faces onto the START cap face and subtracting.
-// This function processes each body independently, using the START cap face from the original extrusion
+// This function processes each body independently, using the START cap face (identified by attribute)
 // as the projection target. Non-cap faces (excluding START/END caps and vertical walls) are projected
 // onto the START cap and the thickened projection is subtracted.
 // This ensures all output geometry can be laser cut flat without overhangs.
 // Inputs:
 //  - idPrefix : Id prefix used for created helper operations
 //  - sliceBodies : Query for bodies to normalize
-//  - sliceIds : Array of original slice IDs for querying cap entities
 //  - materialThickness : Thickness used when removing projected material
 // Returns: none
-export function normalizeSliceGeometryForLasercutting(context is Context, idPrefix is Id, sliceBodies is Query, sliceIds is array, materialThickness is ValueWithUnits)
+export function normalizeSliceGeometryForLasercutting(context is Context, idPrefix is Id, sliceBodies is Query, materialThickness is ValueWithUnits)
 {
-    // Process each body independently using the START cap face from the original extrusion
+    // Process each body independently using the START cap face marked with an attribute
     var bodyArray = evaluateQuery(context, sliceBodies);
     var bodyCounter = 0;
     
@@ -531,24 +536,11 @@ export function normalizeSliceGeometryForLasercutting(context is Context, idPref
     {
         const bodyId = idPrefix + "Body" + bodyCounter;
         
-        // Safety check: ensure we have a slice ID for this body
-        if (bodyCounter >= size(sliceIds))
-        {
-            bodyCounter += 1;
-            continue;
-        }
-        
-        const sliceId = sliceIds[bodyCounter];
-        
         // Find all faces on this body
         const bodyFaces = qOwnedByBody(body, EntityType.FACE);
         
-        // Get the START and END cap faces from the original extrusion
-        const startCapQuery = qCapEntity(sliceId + "extrudeRectangle", CapType.START, EntityType.FACE);
-        const endCapQuery = qCapEntity(sliceId + "extrudeRectangle", CapType.END, EntityType.FACE);
-        
-        // Get the START cap faces that belong to this body
-        const startCapFacesOnBody = qIntersection([startCapQuery, bodyFaces]);
+        // Get the START cap faces on this body using the attribute
+        const startCapFacesOnBody = qIntersection([qHasAttribute(bodyFaces, "laserItStartCap"), bodyFaces]);
         const startCapFacesArray = evaluateQuery(context, startCapFacesOnBody);
         
         // Verify we have at least one START cap face
@@ -567,13 +559,13 @@ export function normalizeSliceGeometryForLasercutting(context is Context, idPref
         });
         
         // Identify "Good" faces (don't need normalization):
-        // - START and END cap faces from the original extrusion
-        const capFaces = qIntersection([qUnion([startCapQuery, endCapQuery]), bodyFaces]);
+        // - START cap faces (identified by attribute)
+        const startCapFaces = qHasAttribute(bodyFaces, "laserItStartCap");
         // - Vertical cut walls (parallel to the START cap's normal vector)
         const verticalWallFaces = qFacesParallelToDirection(bodyFaces, targetPlane.normal);
         
         // Combine cap faces and vertical walls into a "skip list"
-        const validFaces = qUnion([capFaces, verticalWallFaces]);
+        const validFaces = qUnion([startCapFaces, verticalWallFaces]);
         
         // Subtract valid faces from all faces to find non-cap, non-vertical faces that need projection
         const nonNormalFaces = qSubtraction(bodyFaces, validFaces);
@@ -697,45 +689,44 @@ export function normalizeSliceGeometryForLasercutting(context is Context, idPref
 //  - definition : Feature definition map containing sheet metal parameters
 // Returns: none
 // Convert normalized slice bodies to sheet metal by thickening the START cap faces.
-// Uses the START cap entity queries from the original extrusions to ensure correct faces are converted.
+// Uses attribute queries to find START cap faces, which persist through topology changes.
 // Each body will have exactly one START cap face to work with, even if prior operations split bodies.
 // Inputs:
 //  - context : Execution context
 //  - id : Feature ID for sheet metal operations
-//  - trimmedSheetsResult : Map containing slice IDs for cap entity queries
+//  - trimmedSheetsResult : Map containing intersection IDs
 //  - definition : Feature definition containing sheet metal parameters
 export function convertSlicesToSheetMetal(context is Context, id is Id, trimmedSheetsResult is map, definition is map)
 {
     // Wrapper function that calls the standard library sheetMetalStart
     // This allows us to leverage the full functionality of defineSheetMetalFeature
     
-    // Step 1: Collect all START cap faces from all valid slices using cap entity queries
-    const xSliceIds = trimmedSheetsResult.xSliceIds;
-    const ySliceIds = trimmedSheetsResult.ySliceIds;
+    // Step 1: Collect all START cap faces from all slice bodies using attribute queries
+    const xIntersectionIds = trimmedSheetsResult.xIntersectionIds;
+    const yIntersectionIds = trimmedSheetsResult.yIntersectionIds;
     
-    var startCapQueries = [] as array;
+    // Get all bodies from X and Y slices
+    const allXBodies = qUnion(mapArray(xIntersectionIds, function(xId)
+        {
+            return qCreatedBy(xId, EntityType.BODY);
+        }));
+    const allYBodies = qUnion(mapArray(yIntersectionIds, function(yId)
+        {
+            return qCreatedBy(yId, EntityType.BODY);
+        }));
+    const allBodies = qUnion([allXBodies, allYBodies]);
     
-    // Add START cap faces from X slices
-    for (var xSliceId in xSliceIds)
-    {
-        const startCapQuery = qCapEntity(xSliceId + "extrudeRectangle", CapType.START, EntityType.FACE);
-        startCapQueries = append(startCapQueries, startCapQuery);
-    }
+    // Query all START cap faces using the attribute across all bodies
+    const allStartCapFaces = qHasAttribute(qOwnedByBody(allBodies, EntityType.FACE), "laserItStartCap");
     
-    // Add START cap faces from Y slices
-    for (var ySliceId in ySliceIds)
-    {
-        const startCapQuery = qCapEntity(ySliceId + "extrudeRectangle", CapType.START, EntityType.FACE);
-        startCapQueries = append(startCapQueries, startCapQuery);
-    }
-    
-    if (size(startCapQueries) == 0)
+    // Verify we have faces to convert
+    if (isQueryEmpty(context, allStartCapFaces))
     {
         return;
     }
     
-    // Step 2: Collect all START cap faces into a single query
-    var allFacesToConvert = qUnion(startCapQueries);
+    // Step 2: Use the attribute-identified START cap faces
+    var allFacesToConvert = allStartCapFaces;
     
     // Step 3: Call the standard library's sheetMetalStart with THICKEN process
     // This gives us the benefits of defineSheetMetalFeature (surface hiding, proper context naming)
