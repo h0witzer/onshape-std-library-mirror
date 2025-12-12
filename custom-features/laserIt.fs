@@ -798,6 +798,67 @@ export function convertSlicesToSheetMetal(context is Context, id is Id, trimmedS
             "oppositeDirection" : true,
             "kFactor" : definition.kFactor
         });
+        
+        // Step 3.5: Update the sheet metal model attributes to show "Laser It" as the controlling feature name
+        // Query all created sheet metal model bodies
+        const sheetMetalBodies = qCreatedBy(id + "sheetMetal", EntityType.BODY);
+        
+        // Get the sheet metal model attributes from the created bodies
+        const modelAttributes = getAttributes(context, {
+            "entities" : sheetMetalBodies,
+            "attributePattern" : asSMAttribute({ "objectType" : SMObjectType.MODEL })
+        });
+        
+        // Update each model attribute to use "Laser It" as the controlling feature name
+        for (var modelAttribute in modelAttributes)
+        {
+            // Modify the controllingFeatureId fields to reference "Laser It" instead of "laserIt.sheetMetal"
+            if (modelAttribute.frontThickness != undefined && modelAttribute.frontThickness.controllingFeatureId != undefined)
+            {
+                modelAttribute.frontThickness.controllingFeatureId = "Laser It";
+            }
+            if (modelAttribute.backThickness != undefined && modelAttribute.backThickness.controllingFeatureId != undefined)
+            {
+                modelAttribute.backThickness.controllingFeatureId = "Laser It";
+            }
+            if (modelAttribute["k-factor"] != undefined && modelAttribute["k-factor"].controllingFeatureId != undefined)
+            {
+                modelAttribute["k-factor"].controllingFeatureId = "Laser It";
+            }
+            if (modelAttribute.minimalClearance != undefined && modelAttribute.minimalClearance.controllingFeatureId != undefined)
+            {
+                modelAttribute.minimalClearance.controllingFeatureId = "Laser It";
+            }
+            if (modelAttribute.defaultCornerReliefScale != undefined && modelAttribute.defaultCornerReliefScale.controllingFeatureId != undefined)
+            {
+                modelAttribute.defaultCornerReliefScale.controllingFeatureId = "Laser It";
+            }
+            if (modelAttribute.defaultRoundReliefDiameter != undefined && modelAttribute.defaultRoundReliefDiameter.controllingFeatureId != undefined)
+            {
+                modelAttribute.defaultRoundReliefDiameter.controllingFeatureId = "Laser It";
+            }
+            if (modelAttribute.defaultSquareReliefWidth != undefined && modelAttribute.defaultSquareReliefWidth.controllingFeatureId != undefined)
+            {
+                modelAttribute.defaultSquareReliefWidth.controllingFeatureId = "Laser It";
+            }
+            if (modelAttribute.defaultBendReliefScale != undefined && modelAttribute.defaultBendReliefScale.controllingFeatureId != undefined)
+            {
+                modelAttribute.defaultBendReliefScale.controllingFeatureId = "Laser It";
+            }
+            if (modelAttribute.defaultBendReliefDepthScale != undefined && modelAttribute.defaultBendReliefDepthScale.controllingFeatureId != undefined)
+            {
+                modelAttribute.defaultBendReliefDepthScale.controllingFeatureId = "Laser It";
+            }
+            
+            // Update the attributeId to also reference "Laser It"
+            modelAttribute.attributeId = "Laser It";
+            
+            // Set the modified attribute back onto the sheet metal definition entity
+            setAttribute(context, {
+                "entities" : qAttributeQuery(modelAttribute),
+                "attribute" : modelAttribute
+            });
+        }
     }
     catch (error)
     {
