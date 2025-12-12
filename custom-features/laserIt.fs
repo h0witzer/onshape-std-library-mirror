@@ -361,24 +361,34 @@ export function generateCrossSlotGeometryForSlices(context is Context, featureId
     // xIntersectionIds and yIntersectionIds now contain slice IDs (extrusion IDs) after SUBTRACT_COMPLEMENT change
     for (var xPlaneIndex = 0; xPlaneIndex < size(xIntersectionIds); xPlaneIndex += 1)
     {
-        const xCopyId = featureIdPrefix + "XCopy" + xPlaneIndex;
-        opPattern(context, xCopyId, {
-                    "entities" : qCreatedBy(xIntersectionIds[xPlaneIndex] + "extrudeRectangle", EntityType.BODY),
-                    "transforms" : [identityTransform()],
-                    "instanceNames" : ["1"]
-                });
-        xSlotIds = append(xSlotIds, xCopyId);
+        const xSliceBody = qCreatedBy(xIntersectionIds[xPlaneIndex] + "extrudeRectangle", EntityType.BODY);
+        // Skip if body doesn't exist (was deleted during intersection)
+        if (!isQueryEmpty(context, xSliceBody))
+        {
+            const xCopyId = featureIdPrefix + "XCopy" + xPlaneIndex;
+            opPattern(context, xCopyId, {
+                        "entities" : xSliceBody,
+                        "transforms" : [identityTransform()],
+                        "instanceNames" : ["1"]
+                    });
+            xSlotIds = append(xSlotIds, xCopyId);
+        }
     }
 
     for (var yPlaneIndex = 0; yPlaneIndex < size(yIntersectionIds); yPlaneIndex += 1)
     {
-        const yCopyId = featureIdPrefix + "YCopy" + yPlaneIndex;
-        opPattern(context, yCopyId, {
-                    "entities" : qCreatedBy(yIntersectionIds[yPlaneIndex] + "extrudeRectangle", EntityType.BODY),
-                    "transforms" : [identityTransform()],
-                    "instanceNames" : ["1"]
-                });
-        ySlotIds = append(ySlotIds, yCopyId);
+        const ySliceBody = qCreatedBy(yIntersectionIds[yPlaneIndex] + "extrudeRectangle", EntityType.BODY);
+        // Skip if body doesn't exist (was deleted during intersection)
+        if (!isQueryEmpty(context, ySliceBody))
+        {
+            const yCopyId = featureIdPrefix + "YCopy" + yPlaneIndex;
+            opPattern(context, yCopyId, {
+                        "entities" : ySliceBody,
+                        "transforms" : [identityTransform()],
+                        "instanceNames" : ["1"]
+                    });
+            ySlotIds = append(ySlotIds, yCopyId);
+        }
     }
 
     const copiedXSlices = qUnion(mapArray(xSlotIds, function(slotId)
