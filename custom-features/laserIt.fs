@@ -7,18 +7,18 @@
 //  - referenceFrame : Mate connector query when defRefFrame is true, defines the placement of the slicing grid
 //  - outputSheetMetal : Boolean to output results as sheet metal bodies
 FeatureScript 2815;
-import(path : "onshape/std/geometry.fs", version : "2815.0");
+// import(path : "onshape/std/geometry.fs", version : "2815.0");
+ import(path : "onshape/std/common.fs", version : "2815.0");
 import(path : "onshape/std/query.fs", version : "2815.0");
 import(path : "onshape/std/box.fs", version : "2815.0");
 import(path : "onshape/std/sheetMetalAttribute.fs", version : "2815.0");
 import(path : "onshape/std/sheetMetalUtils.fs", version : "2815.0");
-import(path : "onshape/std/sheetMetalStart.fs", version : "2815.0");
 import(path : "onshape/std/evaluate.fs", version : "2815.0");
 import(path : "onshape/std/topologyUtils.fs", version : "2815.0");
 import(path : "onshape/std/attributes.fs", version : "2815.0");
 
 annotation { "Feature Type Name" : "Laser It" }
-export const laserIt = defineFeature(function(context is Context, id is Id, definition is map)
+export const sheetMetalStart = defineSheetMetalFeature(function(context is Context, id is Id, definition is map)
     precondition
     {
         annotation { "Name" : "Body", "Filter" : EntityType.BODY, "MaxNumberOfPicks" : 1 }
@@ -129,7 +129,7 @@ export const laserIt = defineFeature(function(context is Context, id is Id, defi
             convertSlicesToSheetMetal(context, id, trimmedSheetsResult, definition);
         }
 
-    });
+    },{});
 
 // Create rectangular sheets along a specified axis, returning plane definitions for downstream trimming and rib generation.
 // Inputs:
@@ -787,17 +787,66 @@ export function convertSlicesToSheetMetal(context is Context, id is Id, trimmedS
     // This gives us the benefits of defineSheetMetalFeature (surface hiding, proper context naming)
     try
     {
-        sheetMetalStart(context, id + "sheetMetal", {
-            "initEntities" : allFacesToConvert,
-            "process" : SMProcessType.THICKEN,
-            "regions" : allFacesToConvert,
-            "bends" : qNothing(),
-            "radius" : definition.bendRadius,
-            "minimalClearance" : definition.minimalClearance,
+        // annotateSmSurfaceBodies(context, id + "sheetMetal", {
+        //     "initEntities" : allFacesToConvert,
+        //     "process" : SMProcessType.THICKEN,
+        //     "regions" : allFacesToConvert,
+        //     "bends" : qNothing(),
+        //     "radius" : definition.bendRadius,
+        //     "minimalClearance" : definition.minimalClearance,
+        //     "thickness" : definition.matThick,
+        //     "oppositeDirection" : true,
+        //     "kFactor" : definition.kFactor
+        // },0);
+        
+        
+        
+
+
+// annotateSmSurfaceBodies (context is Context, id is Id, args is map, objectCount is number) returns number
+
+// Assign SMAttributes to topology of sheet metal definition sheet body
+
+// PARAMETER INFO
+
+// args is map
+// surfaceBodies is Query
+// bendEdgesAndFaces is Query
+// specialRadiiBends is array
+//      array of pairs "(edge, bendRadius)"
+
+// defaultRadius is ValueWithUnits
+//      bend radius to be applied to edges in bendEdgesAndFaces
+
+// controlsThickness is boolean
+// thickness is ValueWithUnits
+// defaultCornerReliefScale is number
+// defaultRoundReliefDiameter is ValueWithUnits
+// defaultSquareReliefWidth is ValueWithUnits
+// defaultBendReliefScale is number
+
+        
+                annotateSmSurfaceBodies(context, id + "sheetMetal", {
+            "surfaceBodies" :allFacesToConvert,
+            "bendEdgesAndFaces" : qNothing(),
+            "specialRadiiBends" : [],
+            "defaultRadius" : definition.bendRadius,
+            "controlsThickness" : true,
             "thickness" : definition.matThick,
-            "oppositeDirection" : true,
-            "kFactor" : definition.kFactor
-        });
+            // "thicknessDirection" : thicknessDirection,
+            "minimalClearance" : definition.minimalClearance,
+            "kFactor" : definition.kFactor,
+            "flipDirectionUp" : false,
+            "defaultTwoCornerStyle" : SMReliefStyle.SIMPLE,
+            "defaultThreeCornerStyle" : SMReliefStyle.SIMPLE,
+            "defaultBendReliefStyle" : SMReliefStyle.OBROUND,
+            "defaultCornerReliefScale" : 1.5,
+            "defaultRoundReliefDiameter" : 0 * meter,
+            "defaultSquareReliefWidth" : 0 * meter,
+            "defaultBendReliefDepthScale" : 2.0,
+            "defaultBendReliefScale" : 1.0625,
+            // "bendCalculationType" : SMBendCalculationType.K_FACTOR
+        }, 0);
     }
     catch (error)
     {
@@ -830,6 +879,32 @@ export function convertSlicesToSheetMetal(context is Context, id is Id, trimmedS
     catch
     {
         // Non-critical if deletion fails - sheet metal bodies are already created
+    }
+        // Step 5: Finalize - FOLLOWING EXACT PATTERN FROM annotateConvertedFaces in sheetMetalStart
+    // Key: reference with id, NOT id + "extractSurface"
+    try
+    {
+        println("made it");
+        updateSheetMetalGeometry(context, id, {
+            "entities" : qUnion([qCreatedBy(id, EntityType.FACE), qCreatedBy(id, EntityType.EDGE)])
+        });
+    }
+    catch (error)
+    {
+        var messageAsEnum = try silent(error.message as ErrorStringEnum);
+        if (messageAsEnum == ErrorStringEnum.BOOLEAN_INVALID)
+        {
+            throw regenError(ErrorStringEnum.SHEET_METAL_REBUILD_ERROR);
+        }
+        else if (messageAsEnum == ErrorStringEnum.BAD_GEOMETRY ||
+                messageAsEnum == ErrorStringEnum.THICKEN_FAILED)
+        {
+            throw regenError(ErrorStringEnum.SHEET_METAL_CANNOT_THICKEN);
+        }
+        else
+        {
+            throw regenError(ErrorStringEnum.SHEET_METAL_REBUILD_ERROR);
+        }
     }
 }
 
