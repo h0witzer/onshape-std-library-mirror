@@ -810,54 +810,38 @@ export function convertSlicesToSheetMetal(context is Context, id is Id, trimmedS
         });
         
         // Update each model attribute to use "Laser It" as the controlling feature name
-        for (var modelAttribute in modelAttributes)
+        for (var existingAttribute in modelAttributes)
         {
-            // Modify the controllingFeatureId fields to reference "Laser It" instead of "laserIt.sheetMetal"
-            if (modelAttribute.frontThickness != undefined && modelAttribute.frontThickness.controllingFeatureId != undefined)
+            // Create a copy of the attribute with modified controllingFeatureId fields
+            var updatedAttribute = existingAttribute;
+            
+            // Helper array of field names that contain controllingFeatureId to update
+            const fieldsToUpdate = [
+                "frontThickness",
+                "backThickness",
+                "k-factor",
+                "minimalClearance",
+                "defaultCornerReliefScale",
+                "defaultRoundReliefDiameter",
+                "defaultSquareReliefWidth",
+                "defaultBendReliefScale",
+                "defaultBendReliefDepthScale"
+            ];
+            
+            // Update controllingFeatureId for each field that has it
+            for (var fieldName in fieldsToUpdate)
             {
-                modelAttribute.frontThickness.controllingFeatureId = "Laser It";
-            }
-            if (modelAttribute.backThickness != undefined && modelAttribute.backThickness.controllingFeatureId != undefined)
-            {
-                modelAttribute.backThickness.controllingFeatureId = "Laser It";
-            }
-            if (modelAttribute["k-factor"] != undefined && modelAttribute["k-factor"].controllingFeatureId != undefined)
-            {
-                modelAttribute["k-factor"].controllingFeatureId = "Laser It";
-            }
-            if (modelAttribute.minimalClearance != undefined && modelAttribute.minimalClearance.controllingFeatureId != undefined)
-            {
-                modelAttribute.minimalClearance.controllingFeatureId = "Laser It";
-            }
-            if (modelAttribute.defaultCornerReliefScale != undefined && modelAttribute.defaultCornerReliefScale.controllingFeatureId != undefined)
-            {
-                modelAttribute.defaultCornerReliefScale.controllingFeatureId = "Laser It";
-            }
-            if (modelAttribute.defaultRoundReliefDiameter != undefined && modelAttribute.defaultRoundReliefDiameter.controllingFeatureId != undefined)
-            {
-                modelAttribute.defaultRoundReliefDiameter.controllingFeatureId = "Laser It";
-            }
-            if (modelAttribute.defaultSquareReliefWidth != undefined && modelAttribute.defaultSquareReliefWidth.controllingFeatureId != undefined)
-            {
-                modelAttribute.defaultSquareReliefWidth.controllingFeatureId = "Laser It";
-            }
-            if (modelAttribute.defaultBendReliefScale != undefined && modelAttribute.defaultBendReliefScale.controllingFeatureId != undefined)
-            {
-                modelAttribute.defaultBendReliefScale.controllingFeatureId = "Laser It";
-            }
-            if (modelAttribute.defaultBendReliefDepthScale != undefined && modelAttribute.defaultBendReliefDepthScale.controllingFeatureId != undefined)
-            {
-                modelAttribute.defaultBendReliefDepthScale.controllingFeatureId = "Laser It";
+                if (updatedAttribute[fieldName] != undefined && updatedAttribute[fieldName].controllingFeatureId != undefined)
+                {
+                    updatedAttribute[fieldName].controllingFeatureId = "Laser It";
+                }
             }
             
             // Update the attributeId to also reference "Laser It"
-            modelAttribute.attributeId = "Laser It";
+            updatedAttribute.attributeId = "Laser It";
             
-            // Set the modified attribute back onto the sheet metal definition entity
-            setAttribute(context, {
-                "entities" : qAttributeQuery(modelAttribute),
-                "attribute" : modelAttribute
-            });
+            // Use replaceSMAttribute to properly update the attribute
+            replaceSMAttribute(context, existingAttribute, updatedAttribute);
         }
     }
     catch (error)
