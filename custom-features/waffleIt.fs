@@ -382,17 +382,22 @@ export function generateSheetsAtAngle(context is Context, featureIdPrefix is Id,
         // Position along the slicing axis
         const planeLocation = planeIndex * planeSpacing;
         
-        // Create plane in slicing coordinate system
-        const planeOriginInSlicingCS = vector([planeLocation, 0 * meter, 0 * meter]);
-        const planeInSlicingCS = plane(planeOriginInSlicingCS, vector([1, 0, 0]), vector([0, 0, 1]));
-        const slicePlane = slicingCoordSystem * planeInSlicingCS;
+        // Transform to reference frame to get the plane position
+        const originInSlicingCS = vector([planeLocation, 0 * meter, 0 * meter]);
+        const sliceOrigin = vector([
+            originInSlicingCS[0] * cos(axisAngle) + originInSlicingCS[1] * sin(axisAngle),
+            -originInSlicingCS[0] * sin(axisAngle) + originInSlicingCS[1] * cos(axisAngle),
+            originInSlicingCS[2]
+        ]);
+        
+        const slicePlaneInRefFrame = referenceFrameToWorldTransform * plane(sliceOrigin, planeNormal, planeUpVector);
         
         // Create a plane surface to intersect with the bbox
         const intersectionId = featureIdPrefix + axisLabel + planeCounter + "intersection";
         try {
             // Create plane surface
             opPlane(context, intersectionId + "plane", {
-                "plane" : slicePlane,
+                "plane" : slicePlaneInRefFrame,
                 "width" : bboxSize[0] + bboxSize[1] + bboxSize[2],  // Large enough
                 "height" : bboxSize[0] + bboxSize[1] + bboxSize[2]
             });
@@ -426,20 +431,20 @@ export function generateSheetsAtAngle(context is Context, featureIdPrefix is Id,
                 rectangleWidth *= 1.05;
                 rectangleHeight *= 1.05;
                 
-                // Transform to reference frame
-                const originInSlicingCS = vector([planeLocation, rectangleCenterY, rectangleCenterZ]);
-                const sliceOrigin = vector([
-                    originInSlicingCS[0] * cos(axisAngle) + originInSlicingCS[1] * sin(axisAngle),
-                    -originInSlicingCS[0] * sin(axisAngle) + originInSlicingCS[1] * cos(axisAngle),
-                    originInSlicingCS[2]
+                // Transform center to reference frame
+                const centerOriginInSlicingCS = vector([planeLocation, rectangleCenterY, rectangleCenterZ]);
+                const centerSliceOrigin = vector([
+                    centerOriginInSlicingCS[0] * cos(axisAngle) + centerOriginInSlicingCS[1] * sin(axisAngle),
+                    -centerOriginInSlicingCS[0] * sin(axisAngle) + centerOriginInSlicingCS[1] * cos(axisAngle),
+                    centerOriginInSlicingCS[2]
                 ]);
                 
-                const slicePlaneInRefFrame = referenceFrameToWorldTransform * plane(sliceOrigin, planeNormal, planeUpVector);
+                const centeredSlicePlane = referenceFrameToWorldTransform * plane(centerSliceOrigin, planeNormal, planeUpVector);
                 const sliceId = featureIdPrefix + axisLabel + planeCounter;
                 const extrusionDirectionWorld = referenceFrameToWorldTransform.linear * planeNormal;
                 
-                generateSliceSheet(context, sliceId, slicePlaneInRefFrame, rectangleWidth, rectangleHeight, extrusionDirectionWorld, materialThickness);
-                slicePlanes = append(slicePlanes, slicePlaneInRefFrame);
+                generateSliceSheet(context, sliceId, centeredSlicePlane, rectangleWidth, rectangleHeight, extrusionDirectionWorld, materialThickness);
+                slicePlanes = append(slicePlanes, centeredSlicePlane);
                 sliceIds = append(sliceIds, sliceId);
             }
             
