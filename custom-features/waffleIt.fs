@@ -348,20 +348,30 @@ export function generateSheetsAtAngle(context is Context, featureIdPrefix is Id,
     const boundingMin = rotatedBoundingBox.minCorner[0];
     const boundingMax = rotatedBoundingBox.maxCorner[0];
     
-    // Rectangle dimensions are based on the full bounding box extents
+    // Rectangle dimensions - use diagonal to ensure coverage at any angle
     const rectangleWidth = orientedBoundingBox.maxCorner[1] - orientedBoundingBox.minCorner[1];
     const rectangleHeight = orientedBoundingBox.maxCorner[2] - orientedBoundingBox.minCorner[2];
-    const rectangleCenterY = (orientedBoundingBox.maxCorner[1] + orientedBoundingBox.minCorner[1]) / 2;
-    const rectangleCenterZ = (orientedBoundingBox.maxCorner[2] + orientedBoundingBox.minCorner[2]) / 2;
-    
-    // Calculate diagonal dimension to ensure rectangle covers body at any angle
     const diagonalSize = sqrt(rectangleWidth^2 + rectangleHeight^2);
     const rectangleWidthExpanded = diagonalSize;
     const rectangleHeightExpanded = diagonalSize;
     
-    // Calculate which plane indices are needed to cover the bounding box
+    // Calculate which plane indices are needed to cover the bounding box along the rotated axis
     const firstPlaneIndex = ceil(boundingMin / planeSpacing);
     const lastPlaneIndex = floor(boundingMax / planeSpacing);
+    
+    // Calculate the perpendicular direction to the axis (in XY plane)
+    const perpDirection = vector([cos(axisAngle + 90 * degree), sin(axisAngle + 90 * degree), 0]);
+    
+    // Project the bounding box center onto the perpendicular direction
+    // This ensures planes are centered on the body in the perpendicular direction
+    const bboxCenter = vector([
+        (orientedBoundingBox.maxCorner[0] + orientedBoundingBox.minCorner[0]) / 2,
+        (orientedBoundingBox.maxCorner[1] + orientedBoundingBox.minCorner[1]) / 2,
+        (orientedBoundingBox.maxCorner[2] + orientedBoundingBox.minCorner[2]) / 2
+    ]);
+    
+    // Distance from origin along the perpendicular direction to the bbox center
+    const perpOffset = dot(bboxCenter, perpDirection);
     
     var planeCounter = 0;
     for (var planeIndex = firstPlaneIndex; planeIndex <= lastPlaneIndex; planeIndex += 1)
@@ -369,10 +379,12 @@ export function generateSheetsAtAngle(context is Context, featureIdPrefix is Id,
         // Position along the axis direction
         const planeLocation = planeIndex * planeSpacing;
         
-        // Calculate origin in local reference frame coordinates
-        // The plane is at distance planeLocation along the axis direction
-        const sliceOrigin = planeLocation * localAxisDirection + 
-                          vector([0 * meter, 0 * meter, rectangleCenterZ]);
+        // Calculate slice origin in reference frame:
+        // Start at position planeLocation along the axis, offset by perpOffset along perpendicular,
+        // and centered in Z
+        const sliceOrigin = (planeLocation * localAxisDirection) + 
+                           (perpOffset * perpDirection) + 
+                           vector([0 * meter, 0 * meter, bboxCenter[2]]);
         
         const slicePlane = referenceFrameToWorldTransform * plane(sliceOrigin, planeNormal, planeUpVector);
         const sliceId = featureIdPrefix + axisLabel + planeCounter;
