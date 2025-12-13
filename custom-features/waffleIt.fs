@@ -359,19 +359,13 @@ export function generateSheetsAtAngle(context is Context, featureIdPrefix is Id,
     const firstPlaneIndex = ceil(boundingMin / planeSpacing);
     const lastPlaneIndex = floor(boundingMax / planeSpacing);
     
-    // Calculate the perpendicular direction to the axis (in XY plane)
+    // Get the center of the rotated bounding box in the Y and Z directions
+    // (perpendicular to the slicing axis)
+    const rotatedBboxCenterY = (rotatedBoundingBox.maxCorner[1] + rotatedBoundingBox.minCorner[1]) / 2;
+    const rotatedBboxCenterZ = (rotatedBoundingBox.maxCorner[2] + rotatedBoundingBox.minCorner[2]) / 2;
+    
+    // Calculate the perpendicular direction to the axis (in XY plane, perpendicular to localAxisDirection)
     const perpDirection = vector([cos(axisAngle + 90 * degree), sin(axisAngle + 90 * degree), 0]);
-    
-    // Project the bounding box center onto the perpendicular direction
-    // This ensures planes are centered on the body in the perpendicular direction
-    const bboxCenter = vector([
-        (orientedBoundingBox.maxCorner[0] + orientedBoundingBox.minCorner[0]) / 2,
-        (orientedBoundingBox.maxCorner[1] + orientedBoundingBox.minCorner[1]) / 2,
-        (orientedBoundingBox.maxCorner[2] + orientedBoundingBox.minCorner[2]) / 2
-    ]);
-    
-    // Distance from origin along the perpendicular direction to the bbox center
-    const perpOffset = dot(bboxCenter, perpDirection);
     
     var planeCounter = 0;
     for (var planeIndex = firstPlaneIndex; planeIndex <= lastPlaneIndex; planeIndex += 1)
@@ -379,12 +373,24 @@ export function generateSheetsAtAngle(context is Context, featureIdPrefix is Id,
         // Position along the axis direction
         const planeLocation = planeIndex * planeSpacing;
         
-        // Calculate slice origin in reference frame:
-        // Start at position planeLocation along the axis, offset by perpOffset along perpendicular,
-        // and centered in Z
-        const sliceOrigin = (planeLocation * localAxisDirection) + 
-                           (perpOffset * perpDirection) + 
-                           vector([0 * meter, 0 * meter, bboxCenter[2]]);
+        // In the rotated coordinate system, the plane origin is at:
+        // - X (along axis): planeLocation
+        // - Y (perpendicular): rotatedBboxCenterY
+        // - Z: rotatedBboxCenterZ
+        // 
+        // Transform from rotated coords back to reference frame coords:
+        // rotated_coords = [planeLocation, rotatedBboxCenterY, rotatedBboxCenterZ]
+        // reference_coords = rotate_by(-axisAngle) * rotated_coords
+        //
+        // Since we rotated by axisAngle around Z, to go back we rotate by -axisAngle:
+        // X_ref = X_rot * cos(-angle) - Y_rot * sin(-angle) = X_rot * cos(angle) + Y_rot * sin(angle)
+        // Y_ref = X_rot * sin(-angle) + Y_rot * cos(-angle) = -X_rot * sin(angle) + Y_rot * cos(angle)
+        // Z_ref = Z_rot
+        const sliceOrigin = vector([
+            planeLocation * cos(axisAngle) + rotatedBboxCenterY * sin(axisAngle),
+            -planeLocation * sin(axisAngle) + rotatedBboxCenterY * cos(axisAngle),
+            rotatedBboxCenterZ
+        ]);
         
         const slicePlane = referenceFrameToWorldTransform * plane(sliceOrigin, planeNormal, planeUpVector);
         const sliceId = featureIdPrefix + axisLabel + planeCounter;
