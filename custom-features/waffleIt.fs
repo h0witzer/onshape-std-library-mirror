@@ -27,10 +27,11 @@ export const SKEW_ANGLE_BOUNDS = { (degree) : [-SKEW_ANGLE_LIMIT, 0, SKEW_ANGLE_
 // Three-axis hexagonal pattern constants
 // In three-axis mode, the U and V axes are at fixed angles to create a hexagonal pattern:
 // - X-axis: 0 degrees (reference direction)
+// - V-axis: 60 degrees 
 // - U-axis: 120 degrees (30 degrees skew from Y-axis, which is at 90 degrees)
-// - V-axis: 60 degrees (creates 60 degrees angles between all three axes)
-const THREE_AXIS_U_SKEW_ANGLE = 30 * degree;  // Skew angle of U-axis relative to Y-axis
-const THREE_AXIS_V_ANGLE = 60 * degree;       // Absolute angle of V-axis in XY plane
+// This creates 60 degree spacing: X to V = 60°, V to U = 60°, U to X (backward) = 120°
+const THREE_AXIS_U_SKEW_ANGLE = 30 * degree;  // Skew angle of U-axis relative to Y-axis (results in 120° absolute)
+const THREE_AXIS_V_ANGLE = 60 * degree;        // Absolute angle of V-axis in XY plane
 
 // Callback function for feature changes to manage axis dependencies
 export function waffleItOnFeatureChange(context is Context, id is Id, oldDefinition is map, definition is map, isCreating is boolean) returns map
@@ -348,12 +349,15 @@ export function generateSheetsAtAngle(context is Context, featureIdPrefix is Id,
     const boundingMin = rotatedBoundingBox.minCorner[0];
     const boundingMax = rotatedBoundingBox.maxCorner[0];
     
-    // Rectangle dimensions - use diagonal to ensure coverage at any angle
-    const rectangleWidth = orientedBoundingBox.maxCorner[1] - orientedBoundingBox.minCorner[1];
-    const rectangleHeight = orientedBoundingBox.maxCorner[2] - orientedBoundingBox.minCorner[2];
-    const diagonalSize = sqrt(rectangleWidth^2 + rectangleHeight^2);
-    const rectangleWidthExpanded = diagonalSize;
-    const rectangleHeightExpanded = diagonalSize;
+    // Rectangle dimensions - use maximum extent to ensure coverage at any angle
+    // We need to cover the entire 3D bounding box, so use the diagonal of all three dimensions
+    const bboxSizeX = orientedBoundingBox.maxCorner[0] - orientedBoundingBox.minCorner[0];
+    const bboxSizeY = orientedBoundingBox.maxCorner[1] - orientedBoundingBox.minCorner[1];
+    const bboxSizeZ = orientedBoundingBox.maxCorner[2] - orientedBoundingBox.minCorner[2];
+    // Use the 3D diagonal to ensure rectangles are large enough regardless of rotation
+    const diagonalSize3D = sqrt(bboxSizeX^2 + bboxSizeY^2 + bboxSizeZ^2);
+    const rectangleWidthExpanded = diagonalSize3D;
+    const rectangleHeightExpanded = diagonalSize3D;
     
     // Calculate which plane indices are needed to cover the bounding box along the rotated axis
     const firstPlaneIndex = ceil(boundingMin / planeSpacing);
