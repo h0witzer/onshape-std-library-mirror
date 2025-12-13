@@ -328,25 +328,12 @@ export function generateSheetsAtAngle(context is Context, featureIdPrefix is Id,
     const planeNormal = vector([cos(axisAngle), sin(axisAngle), 0]);
     const planeUpVector = vector([0, 0, 1]);
     
-    // Create a coordinate system aligned with the slicing axis
-    const slicingCoordSystem = coordSystem(
-        referenceFrame.origin,
-        referenceFrameToWorldTransform.linear * planeNormal,
-        referenceFrame.zAxis
-    );
-    
-    // Get tight bounding box to determine plane positions
-    const slicingBbox = evBox3d(context, {
-        "topology" : targetBody,
-        "cSys" : slicingCoordSystem,
-        "tight" : true
-    });
-    
-    // Determine the range of planes along the slicing axis
-    const boundingMin = slicingBbox.minCorner[0];
-    const boundingMax = slicingBbox.maxCorner[0];
-    const firstPlaneIndex = ceil(boundingMin / planeSpacing);
-    const lastPlaneIndex = floor(boundingMax / planeSpacing);
+    // Get bbox center in reference frame to ensure coverage
+    const bboxCenterInRef = vector([
+        (orientedBoundingBox.maxCorner[0] + orientedBoundingBox.minCorner[0]) / 2,
+        (orientedBoundingBox.maxCorner[1] + orientedBoundingBox.minCorner[1]) / 2,
+        (orientedBoundingBox.maxCorner[2] + orientedBoundingBox.minCorner[2]) / 2
+    ]);
     
     // Rectangle size: use bounding box diagonal to ensure coverage
     const bboxSizeX = orientedBoundingBox.maxCorner[0] - orientedBoundingBox.minCorner[0];
@@ -356,23 +343,30 @@ export function generateSheetsAtAngle(context is Context, featureIdPrefix is Id,
     const rectangleWidth = bboxDiagonal * 1.5;
     const rectangleHeight = bboxDiagonal * 1.5;
     
-    // Center in the slicing coordinate system
-    const rectangleCenterY = (slicingBbox.maxCorner[1] + slicingBbox.minCorner[1]) / 2;
-    const rectangleCenterZ = (slicingBbox.maxCorner[2] + slicingBbox.minCorner[2]) / 2;
+    // Project bbox center onto plane normal to find starting position
+    const bboxCenterProjection = dot(bboxCenterInRef, planeNormal);
+    
+    // Calculate how far to extend in each direction from the center
+    const bboxExtentAlongNormal = (bboxSizeX * abs(planeNormal[0]) + bboxSizeY * abs(planeNormal[1]) + bboxSizeZ * abs(planeNormal[2])) / 2;
+    const boundingMin = bboxCenterProjection - bboxExtentAlongNormal;
+    const boundingMax = bboxCenterProjection + bboxExtentAlongNormal;
+    
+    // Determine plane positions: start from first position that covers the bbox
+    const firstPlaneIndex = floor(boundingMin / planeSpacing);
+    const lastPlaneIndex = ceil(boundingMax / planeSpacing);
+    
+    // Perpendicular direction vector (rotate normal 90 degrees in XY plane)
+    const perpVector = vector([-planeNormal[1], planeNormal[0], 0]);
+    const perpProjection = dot(bboxCenterInRef, perpVector);
     
     var planeCounter = 0;
     for (var planeIndex = firstPlaneIndex; planeIndex <= lastPlaneIndex; planeIndex += 1)
     {
-        // Position along the slicing axis
-        const planeLocation = planeIndex * planeSpacing;
+        // Position along the plane normal direction from origin
+        const distanceAlongNormal = planeIndex * planeSpacing;
         
-        // Transform to reference frame
-        const originInSlicingCS = vector([planeLocation, rectangleCenterY, rectangleCenterZ]);
-        const sliceOrigin = vector([
-            originInSlicingCS[0] * cos(axisAngle) + originInSlicingCS[1] * sin(axisAngle),
-            -originInSlicingCS[0] * sin(axisAngle) + originInSlicingCS[1] * cos(axisAngle),
-            originInSlicingCS[2]
-        ]);
+        // Build plane origin: positioned along normal, centered perpendicular, at bbox Z center
+        const sliceOrigin = planeNormal * distanceAlongNormal + perpVector * perpProjection + vector([0, 0, bboxCenterInRef[2]]);
         
         const slicePlane = referenceFrameToWorldTransform * plane(sliceOrigin, planeNormal, planeUpVector);
         const sliceId = featureIdPrefix + axisLabel + planeCounter;
