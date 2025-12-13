@@ -784,34 +784,12 @@ export function convertSlicesToSheetMetal(context is Context, id is Id, trimmedS
         throw regenError(ErrorStringEnum.SHEET_METAL_CANNOT_THICKEN);
     }
     
-    // Step 3: Delete original solid bodies BEFORE annotation
-    // This ensures qCreatedBy(id, EntityType.BODY) only finds the extracted surfaces
-    const allXSliceBodies = qUnion(mapArray(xIntersectionIds, function(xSliceId)
-        {
-            return qCreatedBy(xSliceId + "extrudeRectangle", EntityType.BODY);
-        }));
-    const allYSliceBodies = qUnion(mapArray(yIntersectionIds, function(ySliceId)
-        {
-            return qCreatedBy(ySliceId + "extrudeRectangle", EntityType.BODY);
-        }));
-    
+    // Step 3: Annotate the extracted surface bodies with sheet metal attributes
+    // Following the thickenToSheetMetal pattern which annotates BEFORE deleting original bodies
     try
     {
-        opDeleteBodies(context, id + "deleteBodies", {
-            "entities" : qUnion([allXSliceBodies, allYSliceBodies])
-        });
-    }
-    catch
-    {
-        // Non-critical if deletion fails
-    }
-    
-    // Step 4: Annotate the extracted surface bodies with sheet metal attributes
-    // CRITICAL: Use base id for queries, not extractSurfaceId (per SHEET_METAL_GOTCHAS.md)
-    // After deleting original bodies, qCreatedBy(id, ...) only finds the extracted surfaces
-    try
-    {
-        annotateSmSurfaceBodies(context, id, {
+        // Build annotation args similar to getSheetMetalModelAttributeArgsFromDialogParams
+        var annotationArgs = {
             "surfaceBodies" : qCreatedBy(id, EntityType.BODY),
             "bendEdgesAndFaces" : qNothing(),
             "specialRadiiBends" : [],
@@ -830,8 +808,10 @@ export function convertSlicesToSheetMetal(context is Context, id is Id, trimmedS
             "defaultSquareReliefWidth" : 0 * meter,
             "defaultBendReliefDepthScale" : 2.0,
             "defaultBendReliefScale" : 1.0625
-        }, 0);
-        // Check for errors after annotation (pattern from annotateConvertedFaces)
+        };
+        annotateSmSurfaceBodies(context, id, annotationArgs, 0);
+        
+        // Check for errors after annotation
         if (getFeatureError(context, id) != undefined)
         {
             return;
@@ -847,9 +827,30 @@ export function convertSlicesToSheetMetal(context is Context, id is Id, trimmedS
         throw regenError(ErrorStringEnum.SHEET_METAL_REBUILD_ERROR);
     }
     
-    // Step 5: Finalize sheet metal geometry with updateSheetMetalGeometry
-    // CRITICAL: Use base id for queries, not extractSurfaceId (per SHEET_METAL_GOTCHAS.md)
-    // This matches the pattern from annotateConvertedFaces in sheetMetalStart.fs
+    // Step 4: Delete original solid bodies AFTER successful annotation
+    // Following the pattern from annotateConvertedFaces
+    const allXSliceBodies = qUnion(mapArray(xIntersectionIds, function(xSliceId)
+        {
+            return qCreatedBy(xSliceId + "extrudeRectangle", EntityType.BODY);
+        }));
+    const allYSliceBodies = qUnion(mapArray(yIntersectionIds, function(ySliceId)
+        {
+            return qCreatedBy(ySliceId + "extrudeRectangle", EntityType.BODY);
+        }));
+    
+    try
+    {
+        opDeleteBodies(context, id + "deleteBodies", {
+            "entities" : qUnion([allXSliceBodies, allYSliceBodies])
+        });
+    }
+    catch
+    {
+        throw regenError(ErrorStringEnum.REGEN_ERROR);
+    }
+    
+    // Step 5: Finalize sheet metal geometry using finalizeSheetMetalGeometry pattern
+    // This wraps updateSheetMetalGeometry with proper error handling
     try
     {
         updateSheetMetalGeometry(context, id, {
