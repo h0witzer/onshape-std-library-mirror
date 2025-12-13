@@ -1,10 +1,13 @@
-// Laser It slices a selected body into a grid of extruded rectangles to prepare geometry for laser cutting.
+// Waffle It slices a selected body into a grid of extruded rectangles to prepare geometry for laser cutting.
 // Inputs:
 //  - selectedBody : Body query to slice
 //  - planeSpacing : Distance between slicing planes along the X and Y axes of the reference frame
 //  - matThick : Material thickness that controls extrusion depth
 //  - defRefFrame : Boolean to select a mate connector as the slicing reference frame
 //  - referenceFrame : Mate connector query when defRefFrame is true, defines the placement of the slicing grid
+//  - enableUAxis : Boolean to enable U-axis slicing with adjustable skew angle
+//  - uAxisSkewAngle : Angle of U-axis relative to Y-axis (only when enableUAxis is true)
+//  - enableVAxis : Boolean to enable V-axis for three-directional slicing (requires U-axis)
 //  - outputSheetMetal : Boolean to output results as sheet metal bodies
 FeatureScript 2815;
 // import(path : "onshape/std/geometry.fs", version : "2815.0");
@@ -17,7 +20,35 @@ import(path : "onshape/std/evaluate.fs", version : "2815.0");
 import(path : "onshape/std/topologyUtils.fs", version : "2815.0");
 import(path : "onshape/std/attributes.fs", version : "2815.0");
 
-annotation { "Feature Type Name" : "Waffle It" }
+// Bounds for angle parameters
+const SKEW_ANGLE_LIMIT = 89;
+export const SKEW_ANGLE_BOUNDS = { (degree) : [-SKEW_ANGLE_LIMIT, 0, SKEW_ANGLE_LIMIT] } as AngleBoundSpec;
+
+// Callback function for feature changes to manage axis dependencies
+export function waffleItOnFeatureChange(context is Context, id is Id, oldDefinition is map, definition is map, isCreating is boolean) returns map
+{
+    // If U-axis is disabled, also disable V-axis
+    if (!definition.enableUAxis)
+    {
+        definition.enableVAxis = false;
+    }
+    
+    // When enabling V-axis, enforce three-axis mode constraints
+    if (!oldDefinition.enableVAxis && definition.enableVAxis)
+    {
+        // In three-axis mode, U-axis skew angle is fixed to 30 degrees
+        definition.uAxisSkewAngle = 30 * degree;
+        // Section spacing must be at least 3x section width to avoid triple intersections
+        if (definition.planeSpacing < 3 * definition.matThick)
+        {
+            definition.planeSpacing = 3 * definition.matThick;
+        }
+    }
+    
+    return definition;
+}
+
+annotation { "Feature Type Name" : "Waffle It", "Editing Logic Function" : "waffleItOnFeatureChange" }
 export const sheetMetalStart = defineSheetMetalFeature(function(context is Context, id is Id, definition is map)
     precondition
     {
@@ -39,6 +70,18 @@ export const sheetMetalStart = defineSheetMetalFeature(function(context is Conte
         {
             annotation { "Name" : "Reference Frame", "Filter" : BodyType.MATE_CONNECTOR, "MaxNumberOfPicks" : 1 }
             definition.referenceFrame is Query;
+        }
+
+        annotation { "Name" : "Enable U-Axis Slicing" }
+        definition.enableUAxis is boolean;
+
+        if (definition.enableUAxis)
+        {
+            annotation { "Name" : "U-Axis Skew Angle", "Description" : "Angle between Y-axis and U-axis. Fixed to 30° in three-axis mode." }
+            isAngle(definition.uAxisSkewAngle, SKEW_ANGLE_BOUNDS);
+
+            annotation { "Name" : "Enable V-Axis (Three-Axis Mode)", "Description" : "Creates a third slicing direction at -30° for hexagonal waffle pattern" }
+            definition.enableVAxis is boolean;
         }
 
         annotation { "Name" : "Normalize Geometry" }
@@ -81,21 +124,62 @@ export const sheetMetalStart = defineSheetMetalFeature(function(context is Conte
 
         var referenceFrameToWorldTransform = toWorld(referenceFrame);
 
-        // Build a stack of slicing planes perpendicular to X, then Y, that span the oriented bounding box of the target body.
+        // Build a stack of slicing planes perpendicular to X, then Y (or U/V for alternate modes)
         // The function calculates which planes are needed based on the bounding box and spacing.
         // Each loop: create a sketch-sized rectangle around the body, extrude it to the material thickness, and retain the raw
         // sheets for a later trimming pass against the selected part.
         var xSliceResult = generateSheets(context, id, "X", orientedBoundingBox, definition.planeSpacing, referenceFrameToWorldTransform, definition.matThick);
 
-        var ySliceResult = generateSheets(context, id, "Y", orientedBoundingBox, definition.planeSpacing, referenceFrameToWorldTransform, definition.matThick);
+        var secondAxisResult = {};
+        var thirdAxisResult = {};
+        
+        if (definition.enableUAxis)
+        {
+            // U-axis is at an angle relative to Y-axis
+            // In three-axis mode, this is fixed at 30 degrees; otherwise it's user-adjustable
+            const uAxisAngle = definition.uAxisSkewAngle + 90 * degree;
+            secondAxisResult = generateSheetsAtAngle(context, id, "U", uAxisAngle, orientedBoundingBox, definition.planeSpacing, referenceFrame, referenceFrameToWorldTransform, definition.matThick, definition.selectedBody);
+            
+            if (definition.enableVAxis)
+            {
+                // V-axis is at -30 degrees (60 degrees from X-axis) for hexagonal pattern
+                const vAxisAngle = 60 * degree;
+                thirdAxisResult = generateSheetsAtAngle(context, id, "V", vAxisAngle, orientedBoundingBox, definition.planeSpacing, referenceFrame, referenceFrameToWorldTransform, definition.matThick, definition.selectedBody);
+            }
+        }
+        else
+        {
+            // Standard Y-axis (orthogonal to X)
+            secondAxisResult = generateSheets(context, id, "Y", orientedBoundingBox, definition.planeSpacing, referenceFrameToWorldTransform, definition.matThick);
+        }
 
         // Intersect each sheet with the target solid to retain only in-bounds material before generating cross-slot geometry.
-        var trimmedSheetsResult = trimSheetsToSolid(context, id, xSliceResult, ySliceResult, definition.selectedBody);
+        var trimmedSheetsResult = {};
+        if (definition.enableVAxis)
+        {
+            trimmedSheetsResult = trimSheetsToSolidThreeAxis(context, id, xSliceResult, secondAxisResult, thirdAxisResult, definition.selectedBody);
+        }
+        else
+        {
+            trimmedSheetsResult = trimSheetsToSolid(context, id, xSliceResult, secondAxisResult, definition.selectedBody);
+        }
 
-        // The XY nested loop takes every X slice and intersects it with every Y slice to form individual grid cells.
-        // For each cell, it resolves all intersecting bodies, averages aligned edges to infer a mid-surface, and splits the
-        // cell into two halves so the original X and Y slice sets can be trimmed against each other.
-        generateCrossSlotGeometryForSlices(context, id, trimmedSheetsResult.xIntersectionIds, trimmedSheetsResult.yIntersectionIds, referenceFrame);
+        // Generate cross-slot geometry for all axis pairs
+        if (definition.enableVAxis)
+        {
+            // Three-axis mode: cut slots between X-U, X-V, and U-V pairs
+            generateCrossSlotGeometryForSlicesThreeAxis(context, id, trimmedSheetsResult, referenceFrame, definition.uAxisSkewAngle);
+        }
+        else if (definition.enableUAxis)
+        {
+            // Two-axis mode with non-orthogonal angle
+            generateCrossSlotGeometryForSlicesNonOrthogonal(context, id, trimmedSheetsResult.xIntersectionIds, trimmedSheetsResult.yIntersectionIds, referenceFrame, 0 * degree, definition.uAxisSkewAngle + 90 * degree);
+        }
+        else
+        {
+            // Standard orthogonal two-axis mode
+            generateCrossSlotGeometryForSlices(context, id, trimmedSheetsResult.xIntersectionIds, trimmedSheetsResult.yIntersectionIds, referenceFrame);
+        }
 
         // After trimming the intersecting grid, find all non-cap faces on each slice and project their geometry to
         // the START cap face. Thicken the flattened projections and remove the results from the slice.
@@ -103,20 +187,28 @@ export const sheetMetalStart = defineSheetMetalFeature(function(context is Conte
         if (definition.normalizeGeometry == true)
         {
             // Process all X slice bodies together using attribute queries to find cap faces
-            // After SUBTRACT_COMPLEMENT change, xIntersectionIds contains slice IDs (extrusion IDs)
             const allXSliceBodies = qUnion(mapArray(trimmedSheetsResult.xIntersectionIds, function(xSliceId)
                     {
                         return qCreatedBy(xSliceId + "extrudeRectangle", EntityType.BODY);
                     }));
             normalizeSliceGeometryForLasercutting(context, id + "XNormalize", allXSliceBodies, definition.matThick);
 
-            // Process all Y slice bodies together using attribute queries to find cap faces
-            // After SUBTRACT_COMPLEMENT change, yIntersectionIds contains slice IDs (extrusion IDs)
-            const allYSliceBodies = qUnion(mapArray(trimmedSheetsResult.yIntersectionIds, function(ySliceId)
+            // Process all second axis slice bodies (Y, U, or U in three-axis mode)
+            const allSecondAxisBodies = qUnion(mapArray(trimmedSheetsResult.yIntersectionIds, function(ySliceId)
                     {
                         return qCreatedBy(ySliceId + "extrudeRectangle", EntityType.BODY);
                     }));
-            normalizeSliceGeometryForLasercutting(context, id + "YNormalize", allYSliceBodies, definition.matThick);
+            normalizeSliceGeometryForLasercutting(context, id + "YNormalize", allSecondAxisBodies, definition.matThick);
+            
+            // Process V-axis bodies if three-axis mode is enabled
+            if (definition.enableVAxis)
+            {
+                const allVSliceBodies = qUnion(mapArray(trimmedSheetsResult.vIntersectionIds, function(vSliceId)
+                        {
+                            return qCreatedBy(vSliceId + "extrudeRectangle", EntityType.BODY);
+                        }));
+                normalizeSliceGeometryForLasercutting(context, id + "VNormalize", allVSliceBodies, definition.matThick);
+            }
         }
 
         // Convert to sheet metal if requested
@@ -194,6 +286,90 @@ export function generateSheets(context is Context, featureIdPrefix is Id, axisLa
         planeCounter += 1;
     }
 
+    return { "slicePlanes" : slicePlanes, "sliceIds" : sliceIds };
+}
+
+// Create rectangular sheets along an axis at an arbitrary angle in the XY plane of the reference frame.
+// This generalized version supports non-orthogonal slicing directions for U-axis and V-axis.
+// Inputs:
+//  - featureIdPrefix : Base id used when naming all geometry created in this helper
+//  - axisLabel : Label for this axis (e.g., "U", "V") 
+//  - axisAngle : Angle in the XY plane (0° = +X direction, 90° = +Y direction)
+//  - orientedBoundingBox : Tight bounding box for the selected body in the reference frame
+//  - planeSpacing : Distance between slices
+//  - referenceFrame : Reference coordinate system
+//  - referenceFrameToWorldTransform : Transform aligning the local slice planes with world coordinates
+//  - materialThickness : Extrusion depth for the raw sheet
+//  - targetBody : Query for the body being sliced (used to compute rotated bounding box)
+// Returns: map containing the ordered list of slice planes and slice IDs
+export function generateSheetsAtAngle(context is Context, featureIdPrefix is Id, axisLabel is string, axisAngle is ValueWithUnits, orientedBoundingBox is Box3d, planeSpacing is ValueWithUnits, referenceFrame is CoordSystem, referenceFrameToWorldTransform is Transform, materialThickness is ValueWithUnits, targetBody is Query) returns map
+{
+    var slicePlanes = [] as array;
+    var sliceIds = [] as array;
+    
+    // Calculate the local axis direction in the XY plane
+    const localAxisDirection = vector([cos(axisAngle), sin(axisAngle), 0]);
+    
+    // The plane normal is perpendicular to the axis direction in the XY plane
+    const planeNormal = vector([-sin(axisAngle), cos(axisAngle), 0]);
+    const planeUpVector = vector([0, 0, 1]);
+    
+    // To determine the extent along this axis, we need to rotate the coordinate system
+    // and compute the bounding box in that rotated frame
+    const rotatedCoordSystem = coordSystem(
+        referenceFrame.origin,
+        referenceFrameToWorldTransform.linear * localAxisDirection,
+        referenceFrame.zAxis
+    );
+    
+    const rotatedBoundingBox = evBox3d(context, {
+        "topology" : targetBody,
+        "cSys" : rotatedCoordSystem,
+        "tight" : true
+    });
+    
+    // The extent along the rotated X-axis tells us how far we need to place slices
+    const boundingMin = rotatedBoundingBox.minCorner[0];
+    const boundingMax = rotatedBoundingBox.maxCorner[0];
+    
+    // Rectangle dimensions are based on the full bounding box extents
+    const rectangleWidth = orientedBoundingBox.maxCorner[1] - orientedBoundingBox.minCorner[1];
+    const rectangleHeight = orientedBoundingBox.maxCorner[2] - orientedBoundingBox.minCorner[2];
+    const rectangleCenterY = (orientedBoundingBox.maxCorner[1] + orientedBoundingBox.minCorner[1]) / 2;
+    const rectangleCenterZ = (orientedBoundingBox.maxCorner[2] + orientedBoundingBox.minCorner[2]) / 2;
+    
+    // Calculate diagonal dimension to ensure rectangle covers body at any angle
+    const diagonalSize = sqrt(rectangleWidth^2 + rectangleHeight^2);
+    const rectangleWidthExpanded = diagonalSize;
+    const rectangleHeightExpanded = diagonalSize;
+    
+    // Calculate which plane indices are needed to cover the bounding box
+    const firstPlaneIndex = ceil(boundingMin / planeSpacing);
+    const lastPlaneIndex = floor(boundingMax / planeSpacing);
+    
+    var planeCounter = 0;
+    for (var planeIndex = firstPlaneIndex; planeIndex <= lastPlaneIndex; planeIndex += 1)
+    {
+        // Position along the axis direction
+        const planeLocation = planeIndex * planeSpacing;
+        
+        // Calculate origin in local reference frame coordinates
+        // The plane is at distance planeLocation along the axis direction
+        const sliceOrigin = planeLocation * localAxisDirection + 
+                          vector([0, 0, rectangleCenterZ]);
+        
+        const slicePlane = referenceFrameToWorldTransform * plane(sliceOrigin, planeNormal, planeUpVector);
+        const sliceId = featureIdPrefix + axisLabel + planeCounter;
+        
+        // Transform the extrusion direction from local to world coordinates
+        const extrusionDirectionWorld = referenceFrameToWorldTransform.linear * planeNormal;
+        
+        generateSliceSheet(context, sliceId, slicePlane, rectangleWidthExpanded, rectangleHeightExpanded, extrusionDirectionWorld, materialThickness);
+        slicePlanes = append(slicePlanes, slicePlane);
+        sliceIds = append(sliceIds, sliceId);
+        planeCounter += 1;
+    }
+    
     return { "slicePlanes" : slicePlanes, "sliceIds" : sliceIds };
 }
 
@@ -300,6 +476,95 @@ export function trimSheetsToSolid(context is Context, featureIdPrefix is Id, xSl
             "yIntersectionIds" : ySliceIds,
             "xSliceIds" : xSliceIds,
             "ySliceIds" : ySliceIds
+        };
+}
+
+// Three-axis version of trimSheetsToSolid that handles X, U, and V axes
+// Uses the same efficient batch SUBTRACT_COMPLEMENT approach
+// Inputs:
+//  - featureIdPrefix : Base id used to regenerate the X/U/V identifiers for each slice
+//  - xSliceResult, uSliceResult, vSliceResult : Maps containing sliceIds arrays for X-, U-, and V-oriented slices
+//  - targetBody : Body query representing the part being sliced
+// Returns: map containing the slice IDs for all three axes
+export function trimSheetsToSolidThreeAxis(context is Context, featureIdPrefix is Id, xSliceResult is map, uSliceResult is map, vSliceResult is map, targetBody is Query) returns map
+{
+    var xSliceIds = [] as array;
+    var uSliceIds = [] as array;
+    var vSliceIds = [] as array;
+
+    const xOriginalSliceIds = xSliceResult.sliceIds;
+    const uOriginalSliceIds = uSliceResult.sliceIds;
+    const vOriginalSliceIds = vSliceResult.sliceIds;
+
+    // Build queries for all X, U, and V slice bodies
+    const allXSliceBodies = qUnion(mapArray(xOriginalSliceIds, function(sliceId)
+            {
+                return qCreatedBy(sliceId + "extrudeRectangle", EntityType.BODY);
+            }));
+    const allUSliceBodies = qUnion(mapArray(uOriginalSliceIds, function(sliceId)
+            {
+                return qCreatedBy(sliceId + "extrudeRectangle", EntityType.BODY);
+            }));
+    const allVSliceBodies = qUnion(mapArray(vOriginalSliceIds, function(sliceId)
+            {
+                return qCreatedBy(sliceId + "extrudeRectangle", EntityType.BODY);
+            }));
+    const allSliceBodies = qUnion([allXSliceBodies, allUSliceBodies, allVSliceBodies]);
+
+    // Perform single batch SUBTRACT_COMPLEMENT operation for all slices at once
+    opBoolean(context, featureIdPrefix + "batchIntersection", {
+                "tools" : targetBody,
+                "targets" : allSliceBodies,
+                "operationType" : BooleanOperationType.SUBTRACT_COMPLEMENT,
+                "keepTools" : true
+            });
+
+    // Helper function to process slices for one axis
+    function processAxisSlices(originalSliceIds is array, axisLabel is string) returns array
+    {
+        var validSliceIds = [] as array;
+        for (var sliceIndex = 0; sliceIndex < size(originalSliceIds); sliceIndex += 1)
+        {
+            var sliceId = originalSliceIds[sliceIndex];
+            const sliceBody = qCreatedBy(sliceId + "extrudeRectangle", EntityType.BODY);
+
+            if (!isQueryEmpty(context, sliceBody))
+            {
+                // Verify START/END caps still exist using cap entity queries
+                const startCapQuery = qCapEntity(sliceId + "extrudeRectangle", CapType.START, EntityType.FACE);
+                const endCapQuery = qCapEntity(sliceId + "extrudeRectangle", CapType.END, EntityType.FACE);
+                const remainingStartCaps = evaluateQuery(context, startCapQuery);
+                const remainingEndCaps = evaluateQuery(context, endCapQuery);
+
+                // Delete body if we don't have at least one face of each cap type
+                if (size(remainingStartCaps) == 0 || size(remainingEndCaps) == 0)
+                {
+                    opDeleteBodies(context, featureIdPrefix + "delete" + axisLabel + "Slice" + sliceIndex, {
+                                "entities" : sliceBody
+                            });
+                    continue;
+                }
+
+                // Store the slice ID for later robust cap querying
+                validSliceIds = append(validSliceIds, sliceId);
+            }
+        }
+        return validSliceIds;
+    }
+
+    xSliceIds = processAxisSlices(xOriginalSliceIds, "X");
+    uSliceIds = processAxisSlices(uOriginalSliceIds, "U");
+    vSliceIds = processAxisSlices(vOriginalSliceIds, "V");
+
+    return {
+            "xIntersectionIds" : xSliceIds,
+            "yIntersectionIds" : uSliceIds,  // Map U to Y for compatibility
+            "uIntersectionIds" : uSliceIds,
+            "vIntersectionIds" : vSliceIds,
+            "xSliceIds" : xSliceIds,
+            "ySliceIds" : uSliceIds,  // Map U to Y for compatibility
+            "uSliceIds" : uSliceIds,
+            "vSliceIds" : vSliceIds
         };
 }
 
@@ -477,6 +742,201 @@ export function generateCrossSlotGeometryForSlices(context is Context, featureId
             });
 
     return { "xSlotIds" : xSlotIds, "ySlotIds" : ySlotIds };
+}
+
+// Generate cross-slot geometry for non-orthogonal axes (e.g., X and U with skew angle)
+// Similar to generateCrossSlotGeometryForSlices but handles arbitrary angles between axes
+// Inputs:
+//  - featureIdPrefix : Base id used for operations
+//  - xIntersectionIds, yIntersectionIds : Slice IDs for the two axes
+//  - referenceFrame : Reference coordinate system
+//  - xAxisAngle, yAxisAngle : Angles of the two axes in the XY plane of reference frame
+// Returns: map containing slot information
+export function generateCrossSlotGeometryForSlicesNonOrthogonal(context is Context, featureIdPrefix is Id, xIntersectionIds is array, yIntersectionIds is array, referenceFrame is CoordSystem, xAxisAngle is ValueWithUnits, yAxisAngle is ValueWithUnits) returns map
+{
+    // For non-orthogonal angles, we use the same approach but the split plane calculation
+    // needs to account for the angle between the axes
+    // The midplane should be at the angle bisecting the two axes
+    
+    var xSlotIds = [] as array;
+    var ySlotIds = [] as array;
+    var splitPlaneIds = [] as array;
+    var splitIds = [] as array;
+
+    // 1. Create Copies
+    for (var xPlaneIndex = 0; xPlaneIndex < size(xIntersectionIds); xPlaneIndex += 1)
+    {
+        const xSliceBody = qCreatedBy(xIntersectionIds[xPlaneIndex] + "extrudeRectangle", EntityType.BODY);
+        if (!isQueryEmpty(context, xSliceBody))
+        {
+            const xCopyId = featureIdPrefix + "XCopy" + xPlaneIndex;
+            opPattern(context, xCopyId, {
+                        "entities" : xSliceBody,
+                        "transforms" : [identityTransform()],
+                        "instanceNames" : ["1"]
+                    });
+            xSlotIds = append(xSlotIds, xCopyId);
+        }
+    }
+
+    for (var yPlaneIndex = 0; yPlaneIndex < size(yIntersectionIds); yPlaneIndex += 1)
+    {
+        const ySliceBody = qCreatedBy(yIntersectionIds[yPlaneIndex] + "extrudeRectangle", EntityType.BODY);
+        if (!isQueryEmpty(context, ySliceBody))
+        {
+            const yCopyId = featureIdPrefix + "YCopy" + yPlaneIndex;
+            opPattern(context, yCopyId, {
+                        "entities" : ySliceBody,
+                        "transforms" : [identityTransform()],
+                        "instanceNames" : ["1"]
+                    });
+            ySlotIds = append(ySlotIds, yCopyId);
+        }
+    }
+
+    const copiedXSlices = qUnion(mapArray(xSlotIds, function(slotId)
+            {
+                return qCreatedBy(slotId, EntityType.BODY);
+            }));
+    const copiedYSlices = qUnion(mapArray(ySlotIds, function(slotId)
+            {
+                return qCreatedBy(slotId, EntityType.BODY);
+            }));
+
+    // 2. Generate Intersection Geometry
+    opBoolean(context, featureIdPrefix + "BatchCrossSlots", {
+                "tools" : copiedXSlices,
+                "targets" : copiedYSlices,
+                "operationType" : BooleanOperationType.SUBTRACT_COMPLEMENT,
+                "keepTargets" : true
+            });
+
+    var splitToolsForX = [] as array;
+    var splitToolsForY = [] as array;
+
+    // 3. Evaluate Intersections and Split them
+    // For non-orthogonal angles, the split plane is still horizontal (perpendicular to Z)
+    var intersectionCells = evaluateQuery(context, copiedYSlices);
+    var cellIndex = 0;
+    for (var intersectionCell in intersectionCells)
+    {
+        var allIntersectionEdges = evaluateQuery(context, qGeometry(qOwnedByBody(intersectionCell, EntityType.EDGE), GeometryType.LINE));
+        var zCoordinateAccumulator = 0 * millimeter;
+        var numberOfAlignedEdges = 0;
+
+        for (var intersectionEdge in allIntersectionEdges)
+        {
+            try
+            {
+                var evaluatedEdgeLine = evLine(context, {
+                        "edge" : intersectionEdge
+                    });
+                if (abs(dot(evaluatedEdgeLine.direction, referenceFrame.zAxis)) > .9999)
+                {
+                    var edgeTangentLine = evEdgeTangentLine(context, {
+                            "edge" : intersectionEdge,
+                            "parameter" : .5
+                        });
+                    numberOfAlignedEdges += 1;
+                    zCoordinateAccumulator += dot(edgeTangentLine.origin, referenceFrame.zAxis);
+                }
+            }
+        }
+
+        if (numberOfAlignedEdges == 0)
+        {
+            cellIndex += 1;
+            continue;
+        }
+
+        var slicePlaneOrigin = (referenceFrame.zAxis * zCoordinateAccumulator / numberOfAlignedEdges) / squaredNorm(referenceFrame.zAxis);
+        var slicePlane = plane(slicePlaneOrigin, referenceFrame.zAxis);
+        const planeId = featureIdPrefix + "XY" + cellIndex + "plane1";
+        opPlane(context, planeId, {
+                    "plane" : slicePlane
+                });
+        const splitId = featureIdPrefix + "XY" + cellIndex + "splitPart1";
+        opSplitPart(context, splitId, {
+                    "targets" : intersectionCell,
+                    "tool" : qCreatedBy(planeId, EntityType.BODY)
+                });
+
+        splitToolsForX = append(splitToolsForX, qFarthestAlong(qOwnerBody(qCreatedBy(splitId)), referenceFrame.zAxis));
+        splitToolsForY = append(splitToolsForY, qFarthestAlong(qOwnerBody(qCreatedBy(splitId)), -referenceFrame.zAxis));
+
+        splitPlaneIds = append(splitPlaneIds, planeId);
+        splitIds = append(splitIds, splitId);
+
+        cellIndex += 1;
+    }
+
+    // 4. Perform Final Subtraction on Original Slices
+    const originalXSlices = qUnion(mapArray(xIntersectionIds, function(id)
+            {
+                return qCreatedBy(id + "extrudeRectangle", EntityType.BODY);
+            }));
+
+    const originalYSlices = qUnion(mapArray(yIntersectionIds, function(id)
+            {
+                return qCreatedBy(id + "extrudeRectangle", EntityType.BODY);
+            }));
+
+    if (size(splitToolsForX) > 0)
+    {
+        opBoolean(context, featureIdPrefix + "booleanXSlots", {
+                    "tools" : qUnion(splitToolsForX),
+                    "targets" : originalXSlices,
+                    "operationType" : BooleanOperationType.SUBTRACTION
+                });
+    }
+
+    if (size(splitToolsForY) > 0)
+    {
+        opBoolean(context, featureIdPrefix + "booleanYSlots", {
+                    "tools" : qUnion(splitToolsForY),
+                    "targets" : originalYSlices,
+                    "operationType" : BooleanOperationType.SUBTRACTION
+                });
+    }
+
+    const splitPlanes = qUnion(mapArray(splitPlaneIds, function(splitPlaneId)
+            {
+                return qCreatedBy(splitPlaneId, EntityType.BODY);
+            }));
+    const splitBodies = qUnion(mapArray(splitIds, function(splitId)
+            {
+                return qCreatedBy(splitId, EntityType.BODY);
+            }));
+
+    opDeleteBodies(context, featureIdPrefix + "deleteCrossSlotHelpers", {
+                "entities" : qUnion([copiedXSlices, copiedYSlices, splitPlanes, splitBodies])
+            });
+
+    return { "xSlotIds" : xSlotIds, "ySlotIds" : ySlotIds };
+}
+
+// Generate cross-slot geometry for three axes (X, U, V) in hexagonal pattern
+// Cuts slots between all three pairs: X-U, X-V, and U-V
+// Inputs:
+//  - featureIdPrefix : Base id for operations
+//  - trimmedSheetsResult : Map containing xIntersectionIds, uIntersectionIds, vIntersectionIds
+//  - referenceFrame : Reference coordinate system
+//  - uAxisSkewAngle : Skew angle of U-axis (should be 30 degrees in three-axis mode)
+// Returns: none
+export function generateCrossSlotGeometryForSlicesThreeAxis(context is Context, featureIdPrefix is Id, trimmedSheetsResult is map, referenceFrame is CoordSystem, uAxisSkewAngle is ValueWithUnits)
+{
+    const xIntersectionIds = trimmedSheetsResult.xIntersectionIds;
+    const uIntersectionIds = trimmedSheetsResult.uIntersectionIds;
+    const vIntersectionIds = trimmedSheetsResult.vIntersectionIds;
+    
+    // Process X-U pair (0° and 120° angles)
+    generateCrossSlotGeometryForSlicesNonOrthogonal(context, featureIdPrefix + "XU", xIntersectionIds, uIntersectionIds, referenceFrame, 0 * degree, uAxisSkewAngle + 90 * degree);
+    
+    // Process X-V pair (0° and 60° angles)
+    generateCrossSlotGeometryForSlicesNonOrthogonal(context, featureIdPrefix + "XV", xIntersectionIds, vIntersectionIds, referenceFrame, 0 * degree, 60 * degree);
+    
+    // Process U-V pair (120° and 60° angles)
+    generateCrossSlotGeometryForSlicesNonOrthogonal(context, featureIdPrefix + "UV", uIntersectionIds, vIntersectionIds, referenceFrame, uAxisSkewAngle + 90 * degree, 60 * degree);
 }
 
 // Sketch and extrude a rectangular slice at the provided plane, retaining the untrimmed sheet for a later boolean against the target body.
@@ -717,7 +1177,7 @@ export function convertSlicesToSheetMetal(context is Context, id is Id, trimmedS
     const xIntersectionIds = trimmedSheetsResult.xIntersectionIds;
     const yIntersectionIds = trimmedSheetsResult.yIntersectionIds;
 
-    // Get all bodies from X and Y slices (after SUBTRACT_COMPLEMENT change, these are extrusion IDs)
+    // Get all bodies from X and second axis slices
     const allXBodies = qUnion(mapArray(xIntersectionIds, function(xId)
             {
                 return qCreatedBy(xId + "extrudeRectangle", EntityType.BODY);
@@ -726,7 +1186,17 @@ export function convertSlicesToSheetMetal(context is Context, id is Id, trimmedS
             {
                 return qCreatedBy(yId + "extrudeRectangle", EntityType.BODY);
             }));
-    const allBodies = qUnion([allXBodies, allYBodies]);
+    
+    // Add V-axis bodies if present
+    var allBodies = qUnion([allXBodies, allYBodies]);
+    if (trimmedSheetsResult.vIntersectionIds != undefined && size(trimmedSheetsResult.vIntersectionIds) > 0)
+    {
+        const allVBodies = qUnion(mapArray(trimmedSheetsResult.vIntersectionIds, function(vId)
+                {
+                    return qCreatedBy(vId + "extrudeRectangle", EntityType.BODY);
+                }));
+        allBodies = qUnion([allBodies, allVBodies]);
+    }
 
     const totalBodies = size(evaluateQuery(context, allBodies));
 
@@ -769,10 +1239,22 @@ export function convertSlicesToSheetMetal(context is Context, id is Id, trimmedS
                 return qCreatedBy(ySliceId + "extrudeRectangle", EntityType.BODY);
             }));
 
+    var bodiesToDelete = qUnion([allXSliceBodies, allYSliceBodies]);
+    
+    // Add V-axis bodies if present
+    if (trimmedSheetsResult.vIntersectionIds != undefined && size(trimmedSheetsResult.vIntersectionIds) > 0)
+    {
+        const allVSliceBodies = qUnion(mapArray(trimmedSheetsResult.vIntersectionIds, function(vSliceId)
+                {
+                    return qCreatedBy(vSliceId + "extrudeRectangle", EntityType.BODY);
+                }));
+        bodiesToDelete = qUnion([bodiesToDelete, allVSliceBodies]);
+    }
+
     try
     {
         opDeleteBodies(context, id + "deleteBodies", {
-                    "entities" : qUnion([allXSliceBodies, allYSliceBodies])
+                    "entities" : bodiesToDelete
                 });
     }
     catch
