@@ -276,14 +276,40 @@ export function generateSheets(context is Context, featureIdPrefix is Id, axisLa
     var firstPlaneIndex = ceil(boundingMin / planeSpacing);
     var lastPlaneIndex = floor(boundingMax / planeSpacing);
 
-    var planeCounter = 0;
-    for (var planeIndex = firstPlaneIndex; planeIndex <= lastPlaneIndex; planeIndex += 1)
+    // Create base slice at first plane position
+    var basePlaneLocation = firstPlaneIndex * planeSpacing;
+    var baseSliceOrigin = vector([0 * millimeter, 0 * millimeter, 0 * millimeter]);
+    
+    if (axisLabel == "X")
     {
-        // Position planes relative to the reference frame origin (0 in reference frame coordinates)
-        // Planes can be at negative, zero, or positive positions depending on bounding box
-        var planeLocation = planeIndex * planeSpacing;
+        baseSliceOrigin = vector([basePlaneLocation, rectangleCenterY, rectangleCenterZ]);
+    }
+    else
+    {
+        baseSliceOrigin = vector([rectangleCenterY, basePlaneLocation, rectangleCenterZ]);
+    }
+    
+    var baseSlicePlane = referenceFrameToWorldTransform * plane(baseSliceOrigin, planeNormal, planeUpVector);
+    var baseSliceId = featureIdPrefix + axisLabel + "base";
+    var extrusionDirectionWorld = referenceFrameToWorldTransform.linear * planeNormal;
+    generateSliceSheet(context, baseSliceId, baseSlicePlane, rectangleWidth, rectangleHeight, extrusionDirectionWorld, materialThickness);
+    
+    // Build pattern transforms for all positions
+    const numberOfPlanes = lastPlaneIndex - firstPlaneIndex + 1;
+    var patternTransforms = [] as array;
+    var instanceNames = [] as array;
+    
+    for (var i = 0; i < numberOfPlanes; i += 1)
+    {
+        const planeIndex = firstPlaneIndex + i;
+        const planeLocation = planeIndex * planeSpacing;
+        const translationOffset = (planeLocation - basePlaneLocation) * (referenceFrameToWorldTransform.linear * planeNormal);
+        
+        patternTransforms = append(patternTransforms, transform(translationOffset));
+        instanceNames = append(instanceNames, "" ~ i);
+        
+        // Track plane and ID for return
         var sliceOrigin = vector([0 * millimeter, 0 * millimeter, 0 * millimeter]);
-
         if (axisLabel == "X")
         {
             sliceOrigin = vector([planeLocation, rectangleCenterY, rectangleCenterZ]);
@@ -292,16 +318,18 @@ export function generateSheets(context is Context, featureIdPrefix is Id, axisLa
         {
             sliceOrigin = vector([rectangleCenterY, planeLocation, rectangleCenterZ]);
         }
-
         var slicePlane = referenceFrameToWorldTransform * plane(sliceOrigin, planeNormal, planeUpVector);
-        var sliceId = featureIdPrefix + axisLabel + planeCounter;
-        // Transform the extrusion direction from local to world coordinates
-        var extrusionDirectionWorld = referenceFrameToWorldTransform.linear * planeNormal;
-        generateSliceSheet(context, sliceId, slicePlane, rectangleWidth, rectangleHeight, extrusionDirectionWorld, materialThickness);
         slicePlanes = append(slicePlanes, slicePlane);
-        sliceIds = append(sliceIds, sliceId);
-        planeCounter += 1;
+        sliceIds = append(sliceIds, featureIdPrefix + axisLabel + i);
     }
+    
+    // Pattern the base slice to all positions
+    const baseSliceBody = qCreatedBy(baseSliceId + "extrudeRectangle", EntityType.BODY);
+    opPattern(context, featureIdPrefix + axisLabel + "pattern", {
+        "entities" : baseSliceBody,
+        "transforms" : patternTransforms,
+        "instanceNames" : instanceNames
+    });
 
     return { "slicePlanes" : slicePlanes, "sliceIds" : sliceIds };
 }
@@ -359,24 +387,43 @@ export function generateSheetsAtAngle(context is Context, featureIdPrefix is Id,
     const perpVector = vector([-planeNormal[1], planeNormal[0], 0]);
     const perpProjection = dot(bboxCenterInRef, perpVector);
     
-    var planeCounter = 0;
-    for (var planeIndex = firstPlaneIndex; planeIndex <= lastPlaneIndex; planeIndex += 1)
+    // Create base slice at first plane position
+    const baseDistanceAlongNormal = firstPlaneIndex * planeSpacing;
+    const baseSliceOrigin = planeNormal * baseDistanceAlongNormal + perpVector * perpProjection + vector([0, 0, bboxCenterInRef[2]]);
+    const baseSlicePlane = referenceFrameToWorldTransform * plane(baseSliceOrigin, planeNormal, planeUpVector);
+    const baseSliceId = featureIdPrefix + axisLabel + "base";
+    const extrusionDirectionWorld = referenceFrameToWorldTransform.linear * planeNormal;
+    
+    generateSliceSheet(context, baseSliceId, baseSlicePlane, rectangleWidth, rectangleHeight, extrusionDirectionWorld, materialThickness);
+    
+    // Build pattern transforms for all positions
+    const numberOfPlanes = lastPlaneIndex - firstPlaneIndex + 1;
+    var patternTransforms = [] as array;
+    var instanceNames = [] as array;
+    
+    for (var i = 0; i < numberOfPlanes; i += 1)
     {
-        // Position along the plane normal direction from origin
+        const planeIndex = firstPlaneIndex + i;
         const distanceAlongNormal = planeIndex * planeSpacing;
+        const translationOffset = (distanceAlongNormal - baseDistanceAlongNormal) * (referenceFrameToWorldTransform.linear * planeNormal);
         
-        // Build plane origin: positioned along normal, centered perpendicular, at bbox Z center
+        patternTransforms = append(patternTransforms, transform(translationOffset));
+        instanceNames = append(instanceNames, "" ~ i);
+        
+        // Track plane and ID for return
         const sliceOrigin = planeNormal * distanceAlongNormal + perpVector * perpProjection + vector([0, 0, bboxCenterInRef[2]]);
-        
         const slicePlane = referenceFrameToWorldTransform * plane(sliceOrigin, planeNormal, planeUpVector);
-        const sliceId = featureIdPrefix + axisLabel + planeCounter;
-        const extrusionDirectionWorld = referenceFrameToWorldTransform.linear * planeNormal;
-        
-        generateSliceSheet(context, sliceId, slicePlane, rectangleWidth, rectangleHeight, extrusionDirectionWorld, materialThickness);
         slicePlanes = append(slicePlanes, slicePlane);
-        sliceIds = append(sliceIds, sliceId);
-        planeCounter += 1;
+        sliceIds = append(sliceIds, featureIdPrefix + axisLabel + i);
     }
+    
+    // Pattern the base slice to all positions
+    const baseSliceBody = qCreatedBy(baseSliceId + "extrudeRectangle", EntityType.BODY);
+    opPattern(context, featureIdPrefix + axisLabel + "pattern", {
+        "entities" : baseSliceBody,
+        "transforms" : patternTransforms,
+        "instanceNames" : instanceNames
+    });
     
     return { "slicePlanes" : slicePlanes, "sliceIds" : sliceIds };
 }
