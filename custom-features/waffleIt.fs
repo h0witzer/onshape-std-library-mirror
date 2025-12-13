@@ -26,9 +26,9 @@ export const SKEW_ANGLE_BOUNDS = { (degree) : [-SKEW_ANGLE_LIMIT, 0, SKEW_ANGLE_
 
 // Three-axis hexagonal pattern constants
 // In three-axis mode, the U and V axes are at fixed angles to create a hexagonal pattern:
-// - X-axis: 0° (reference direction)
-// - U-axis: 120° (30° skew from Y-axis, which is at 90°)
-// - V-axis: 60° (creates 60° angles between all three axes)
+// - X-axis: 0 degrees (reference direction)
+// - U-axis: 120 degrees (30 degrees skew from Y-axis, which is at 90 degrees)
+// - V-axis: 60 degrees (creates 60 degrees angles between all three axes)
 const THREE_AXIS_U_SKEW_ANGLE = 30 * degree;  // Skew angle of U-axis relative to Y-axis
 const THREE_AXIS_V_ANGLE = 60 * degree;       // Absolute angle of V-axis in XY plane
 
@@ -93,10 +93,10 @@ export const sheetMetalStart = defineSheetMetalFeature(function(context is Conte
 
         if (definition.enableUAxis)
         {
-            annotation { "Name" : "U-Axis Skew Angle", "Description" : "Angle between Y-axis and U-axis. Fixed to 30° in three-axis mode." }
+            annotation { "Name" : "U-Axis Skew Angle", "Description" : "Angle between Y-axis and U-axis. Fixed to 30 degrees in three-axis mode." }
             isAngle(definition.uAxisSkewAngle, SKEW_ANGLE_BOUNDS);
 
-            annotation { "Name" : "Enable V-Axis (Three-Axis Mode)", "Description" : "Creates a third slicing direction at -30° for hexagonal waffle pattern" }
+            annotation { "Name" : "Enable V-Axis (Three-Axis Mode)", "Description" : "Creates a third slicing direction at -30 degrees for hexagonal waffle pattern" }
             definition.enableVAxis is boolean;
         }
 
@@ -152,14 +152,14 @@ export const sheetMetalStart = defineSheetMetalFeature(function(context is Conte
         if (definition.enableUAxis)
         {
             // U-axis is at an angle relative to Y-axis
-            // Convert skew angle (relative to Y-axis at 90°) to absolute angle in XY plane
-            // Example: 30° skew from Y-axis (90°) = 120° absolute angle in XY plane
+            // Convert skew angle (relative to Y-axis at 90 degrees) to absolute angle in XY plane
+            // Example: 30 degrees skew from Y-axis (90 degrees) = 120 degrees absolute angle in XY plane
             const uAxisAngle = definition.uAxisSkewAngle + 90 * degree;
             secondAxisResult = generateSheetsAtAngle(context, id, "U", uAxisAngle, orientedBoundingBox, definition.planeSpacing, referenceFrame, referenceFrameToWorldTransform, definition.matThick, definition.selectedBody);
             
             if (definition.enableVAxis)
             {
-                // V-axis angle creates hexagonal pattern with 60° between all axes
+                // V-axis angle creates hexagonal pattern with 60 degrees between all axes
                 thirdAxisResult = generateSheetsAtAngle(context, id, "V", THREE_AXIS_V_ANGLE, orientedBoundingBox, definition.planeSpacing, referenceFrame, referenceFrameToWorldTransform, definition.matThick, definition.selectedBody);
             }
         }
@@ -310,7 +310,7 @@ export function generateSheets(context is Context, featureIdPrefix is Id, axisLa
 // Inputs:
 //  - featureIdPrefix : Base id used when naming all geometry created in this helper
 //  - axisLabel : Label for this axis (e.g., "U", "V") 
-//  - axisAngle : Angle in the XY plane (0° = +X direction, 90° = +Y direction)
+//  - axisAngle : Angle in the XY plane (0 degrees = +X direction, 90 degrees = +Y direction)
 //  - orientedBoundingBox : Tight bounding box for the selected body in the reference frame
 //  - planeSpacing : Distance between slices
 //  - referenceFrame : Reference coordinate system
@@ -372,7 +372,7 @@ export function generateSheetsAtAngle(context is Context, featureIdPrefix is Id,
         // Calculate origin in local reference frame coordinates
         // The plane is at distance planeLocation along the axis direction
         const sliceOrigin = planeLocation * localAxisDirection + 
-                          vector([0, 0, rectangleCenterZ]);
+                          vector([0 * meter, 0 * meter, rectangleCenterZ]);
         
         const slicePlane = referenceFrameToWorldTransform * plane(sliceOrigin, planeNormal, planeUpVector);
         const sliceId = featureIdPrefix + axisLabel + planeCounter;
@@ -959,13 +959,13 @@ export function generateCrossSlotGeometryForSlicesThreeAxis(context is Context, 
     // Convert U-axis skew angle to absolute angle in XY plane
     const uAxisAbsoluteAngle = uAxisSkewAngle + 90 * degree;
     
-    // Process X-U pair (X at 0°, U at ~120° for 30° skew)
+    // Process X-U pair (X at 0 degrees, U at ~120 degrees for 30 degrees skew)
     generateCrossSlotGeometryForSlicesNonOrthogonal(context, featureIdPrefix + "XU", xIntersectionIds, uIntersectionIds, referenceFrame, 0 * degree, uAxisAbsoluteAngle);
     
-    // Process X-V pair (X at 0°, V at 60°)
+    // Process X-V pair (X at 0 degrees, V at 60 degrees)
     generateCrossSlotGeometryForSlicesNonOrthogonal(context, featureIdPrefix + "XV", xIntersectionIds, vIntersectionIds, referenceFrame, 0 * degree, THREE_AXIS_V_ANGLE);
     
-    // Process U-V pair (U at ~120°, V at 60°)
+    // Process U-V pair (U at ~120 degrees, V at 60 degrees)
     generateCrossSlotGeometryForSlicesNonOrthogonal(context, featureIdPrefix + "UV", uIntersectionIds, vIntersectionIds, referenceFrame, uAxisAbsoluteAngle, THREE_AXIS_V_ANGLE);
 }
 
