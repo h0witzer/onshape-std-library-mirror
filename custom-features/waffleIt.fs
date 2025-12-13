@@ -36,14 +36,15 @@ const THREE_AXIS_V_ANGLE = 60 * degree;       // Absolute angle of V-axis in XY 
 export function waffleItOnFeatureChange(context is Context, id is Id, oldDefinition is map, definition is map, isCreating is boolean) returns map
 {
     // If U-axis is disabled, also disable V-axis
-    if (!definition.enableUAxis)
+    // Handle undefined case: if enableUAxis is not defined or is false
+    if (definition.enableUAxis == undefined || definition.enableUAxis == false)
     {
         definition.enableVAxis = false;
     }
     
     // When enabling V-axis for the first time, enforce three-axis mode constraints
-    const wasVAxisDisabled = (oldDefinition.enableVAxis == undefined || !oldDefinition.enableVAxis);
-    if (wasVAxisDisabled && definition.enableVAxis)
+    const wasVAxisDisabled = (oldDefinition.enableVAxis == undefined || oldDefinition.enableVAxis == false);
+    if (wasVAxisDisabled && definition.enableVAxis == true)
     {
         // In three-axis mode, U-axis skew angle is fixed for hexagonal pattern
         definition.uAxisSkewAngle = THREE_AXIS_U_SKEW_ANGLE;
@@ -55,7 +56,7 @@ export function waffleItOnFeatureChange(context is Context, id is Id, oldDefinit
     }
     
     // Lock U-axis angle when V-axis is enabled to maintain hexagonal pattern
-    if (definition.enableVAxis)
+    if (definition.enableVAxis == true)
     {
         definition.uAxisSkewAngle = THREE_AXIS_U_SKEW_ANGLE;
     }
@@ -494,6 +495,46 @@ export function trimSheetsToSolid(context is Context, featureIdPrefix is Id, xSl
         };
 }
 
+// Helper function to process slices for one axis after batch intersection
+// Verifies that each slice has valid START and END cap faces
+// Inputs:
+//  - context : Execution context
+//  - featureIdPrefix : Base id used for delete operations
+//  - originalSliceIds : Array of slice IDs to process
+//  - axisLabel : Label for this axis (e.g., "X", "U", "V") used in operation IDs
+// Returns: array of valid slice IDs that survived the intersection
+function processAxisSlicesAfterIntersection(context is Context, featureIdPrefix is Id, originalSliceIds is array, axisLabel is string) returns array
+{
+    var validSliceIds = [] as array;
+    for (var sliceIndex = 0; sliceIndex < size(originalSliceIds); sliceIndex += 1)
+    {
+        var sliceId = originalSliceIds[sliceIndex];
+        const sliceBody = qCreatedBy(sliceId + "extrudeRectangle", EntityType.BODY);
+
+        if (!isQueryEmpty(context, sliceBody))
+        {
+            // Verify START/END caps still exist using cap entity queries
+            const startCapQuery = qCapEntity(sliceId + "extrudeRectangle", CapType.START, EntityType.FACE);
+            const endCapQuery = qCapEntity(sliceId + "extrudeRectangle", CapType.END, EntityType.FACE);
+            const remainingStartCaps = evaluateQuery(context, startCapQuery);
+            const remainingEndCaps = evaluateQuery(context, endCapQuery);
+
+            // Delete body if we don't have at least one face of each cap type
+            if (size(remainingStartCaps) == 0 || size(remainingEndCaps) == 0)
+            {
+                opDeleteBodies(context, featureIdPrefix + "delete" + axisLabel + "Slice" + sliceIndex, {
+                            "entities" : sliceBody
+                        });
+                continue;
+            }
+
+            // Store the slice ID for later robust cap querying
+            validSliceIds = append(validSliceIds, sliceId);
+        }
+    }
+    return validSliceIds;
+}
+
 // Three-axis version of trimSheetsToSolid that handles X, U, and V axes
 // Uses the same efficient batch SUBTRACT_COMPLEMENT approach
 // Inputs:
@@ -534,42 +575,10 @@ export function trimSheetsToSolidThreeAxis(context is Context, featureIdPrefix i
                 "keepTools" : true
             });
 
-    // Helper function to process slices for one axis
-    function processAxisSlices(originalSliceIds is array, axisLabel is string) returns array
-    {
-        var validSliceIds = [] as array;
-        for (var sliceIndex = 0; sliceIndex < size(originalSliceIds); sliceIndex += 1)
-        {
-            var sliceId = originalSliceIds[sliceIndex];
-            const sliceBody = qCreatedBy(sliceId + "extrudeRectangle", EntityType.BODY);
-
-            if (!isQueryEmpty(context, sliceBody))
-            {
-                // Verify START/END caps still exist using cap entity queries
-                const startCapQuery = qCapEntity(sliceId + "extrudeRectangle", CapType.START, EntityType.FACE);
-                const endCapQuery = qCapEntity(sliceId + "extrudeRectangle", CapType.END, EntityType.FACE);
-                const remainingStartCaps = evaluateQuery(context, startCapQuery);
-                const remainingEndCaps = evaluateQuery(context, endCapQuery);
-
-                // Delete body if we don't have at least one face of each cap type
-                if (size(remainingStartCaps) == 0 || size(remainingEndCaps) == 0)
-                {
-                    opDeleteBodies(context, featureIdPrefix + "delete" + axisLabel + "Slice" + sliceIndex, {
-                                "entities" : sliceBody
-                            });
-                    continue;
-                }
-
-                // Store the slice ID for later robust cap querying
-                validSliceIds = append(validSliceIds, sliceId);
-            }
-        }
-        return validSliceIds;
-    }
-
-    xSliceIds = processAxisSlices(xOriginalSliceIds, "X");
-    uSliceIds = processAxisSlices(uOriginalSliceIds, "U");
-    vSliceIds = processAxisSlices(vOriginalSliceIds, "V");
+    // Process each axis using the helper function
+    xSliceIds = processAxisSlicesAfterIntersection(context, featureIdPrefix, xOriginalSliceIds, "X");
+    uSliceIds = processAxisSlicesAfterIntersection(context, featureIdPrefix, uOriginalSliceIds, "U");
+    vSliceIds = processAxisSlicesAfterIntersection(context, featureIdPrefix, vOriginalSliceIds, "V");
 
     // Return both explicit axis names and Y-axis compatibility mapping
     // The Y-axis fields map to the U-axis for compatibility with existing two-axis functions
