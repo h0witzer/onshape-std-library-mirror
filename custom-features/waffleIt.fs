@@ -348,33 +348,17 @@ export function generateSheetsAtAngle(context is Context, featureIdPrefix is Id,
     const firstPlaneIndex = ceil(boundingMin / planeSpacing);
     const lastPlaneIndex = floor(boundingMax / planeSpacing);
     
-    // Create the bounding box cuboid as actual geometry for intersection
-    const bboxCuboidId = featureIdPrefix + "bboxCuboid";
-    const bboxMin = referenceFrameToWorldTransform * orientedBoundingBox.minCorner;
-    const bboxMax = referenceFrameToWorldTransform * orientedBoundingBox.maxCorner;
-    const bboxCenter = (bboxMin + bboxMax) / 2;
-    const bboxSize = bboxMax - bboxMin;
+    // Rectangle size: use bounding box diagonal to ensure coverage
+    const bboxSizeX = orientedBoundingBox.maxCorner[0] - orientedBoundingBox.minCorner[0];
+    const bboxSizeY = orientedBoundingBox.maxCorner[1] - orientedBoundingBox.minCorner[1];
+    const bboxSizeZ = orientedBoundingBox.maxCorner[2] - orientedBoundingBox.minCorner[2];
+    const bboxDiagonal = sqrt(bboxSizeX^2 + bboxSizeY^2 + bboxSizeZ^2);
+    const rectangleWidth = bboxDiagonal * 1.5;
+    const rectangleHeight = bboxDiagonal * 1.5;
     
-    // Create a box using sketch and extrude
-    const bboxSketchPlane = referenceFrameToWorldTransform * plane(orientedBoundingBox.minCorner, vector([0, 0, 1]), vector([1, 0, 0]));
-    var bboxSketch = newSketchOnPlane(context, bboxCuboidId + "sketch", {
-        "sketchPlane" : bboxSketchPlane
-    });
-    skRectangle(bboxSketch, "rect", {
-        "firstCorner" : vector(0 * meter, 0 * meter),
-        "secondCorner" : vector(orientedBoundingBox.maxCorner[0] - orientedBoundingBox.minCorner[0], 
-                                orientedBoundingBox.maxCorner[1] - orientedBoundingBox.minCorner[1])
-    });
-    skSolve(bboxSketch);
-    
-    opExtrude(context, bboxCuboidId + "extrude", {
-        "entities" : qSketchRegion(bboxCuboidId + "sketch"),
-        "direction" : referenceFrameToWorldTransform.linear * vector([0, 0, 1]),
-        "endBound" : BoundingType.BLIND,
-        "endDepth" : orientedBoundingBox.maxCorner[2] - orientedBoundingBox.minCorner[2]
-    });
-    
-    const bboxCuboid = qCreatedBy(bboxCuboidId + "extrude", EntityType.BODY);
+    // Center in the slicing coordinate system
+    const rectangleCenterY = (slicingBbox.maxCorner[1] + slicingBbox.minCorner[1]) / 2;
+    const rectangleCenterZ = (slicingBbox.maxCorner[2] + slicingBbox.minCorner[2]) / 2;
     
     var planeCounter = 0;
     for (var planeIndex = firstPlaneIndex; planeIndex <= lastPlaneIndex; planeIndex += 1)
@@ -382,87 +366,23 @@ export function generateSheetsAtAngle(context is Context, featureIdPrefix is Id,
         // Position along the slicing axis
         const planeLocation = planeIndex * planeSpacing;
         
-        // Transform to reference frame to get the plane position
-        const originInSlicingCS = vector([planeLocation, 0 * meter, 0 * meter]);
+        // Transform to reference frame
+        const originInSlicingCS = vector([planeLocation, rectangleCenterY, rectangleCenterZ]);
         const sliceOrigin = vector([
             originInSlicingCS[0] * cos(axisAngle) + originInSlicingCS[1] * sin(axisAngle),
             -originInSlicingCS[0] * sin(axisAngle) + originInSlicingCS[1] * cos(axisAngle),
             originInSlicingCS[2]
         ]);
         
-        const slicePlaneInRefFrame = referenceFrameToWorldTransform * plane(sliceOrigin, planeNormal, planeUpVector);
+        const slicePlane = referenceFrameToWorldTransform * plane(sliceOrigin, planeNormal, planeUpVector);
+        const sliceId = featureIdPrefix + axisLabel + planeCounter;
+        const extrusionDirectionWorld = referenceFrameToWorldTransform.linear * planeNormal;
         
-        // Create a plane surface to intersect with the bbox
-        const intersectionId = featureIdPrefix + axisLabel + planeCounter + "intersection";
-        try {
-            // Create plane surface
-            opPlane(context, intersectionId + "plane", {
-                "plane" : slicePlaneInRefFrame,
-                "width" : bboxSize[0] + bboxSize[1] + bboxSize[2],  // Large enough
-                "height" : bboxSize[0] + bboxSize[1] + bboxSize[2]
-            });
-            
-            const planeSurface = qCreatedBy(intersectionId + "plane", EntityType.BODY);
-            
-            // Intersect the plane surface with the bbox cuboid faces to get curves
-            opIntersectFaces(context, intersectionId, {
-                "tools" : planeSurface,
-                "targets" : qOwnedByBody(bboxCuboid, EntityType.FACE)
-            });
-            
-            // Get the intersection curves
-            const intersectionCurves = qCreatedBy(intersectionId, EntityType.EDGE);
-            
-            if (!isQueryEmpty(context, intersectionCurves))
-            {
-                // Get bounding box of the intersection curves to size the rectangle
-                const curveBbox = evBox3d(context, {
-                    "topology" : intersectionCurves,
-                    "cSys" : slicingCoordSystem,
-                    "tight" : true
-                });
-                
-                var rectangleWidth = curveBbox.maxCorner[1] - curveBbox.minCorner[1];
-                var rectangleHeight = curveBbox.maxCorner[2] - curveBbox.minCorner[2];
-                const rectangleCenterY = (curveBbox.maxCorner[1] + curveBbox.minCorner[1]) / 2;
-                const rectangleCenterZ = (curveBbox.maxCorner[2] + curveBbox.minCorner[2]) / 2;
-                
-                // Add small margin
-                rectangleWidth *= 1.05;
-                rectangleHeight *= 1.05;
-                
-                // Transform center to reference frame
-                const centerOriginInSlicingCS = vector([planeLocation, rectangleCenterY, rectangleCenterZ]);
-                const centerSliceOrigin = vector([
-                    centerOriginInSlicingCS[0] * cos(axisAngle) + centerOriginInSlicingCS[1] * sin(axisAngle),
-                    -centerOriginInSlicingCS[0] * sin(axisAngle) + centerOriginInSlicingCS[1] * cos(axisAngle),
-                    centerOriginInSlicingCS[2]
-                ]);
-                
-                const centeredSlicePlane = referenceFrameToWorldTransform * plane(centerSliceOrigin, planeNormal, planeUpVector);
-                const sliceId = featureIdPrefix + axisLabel + planeCounter;
-                const extrusionDirectionWorld = referenceFrameToWorldTransform.linear * planeNormal;
-                
-                generateSliceSheet(context, sliceId, centeredSlicePlane, rectangleWidth, rectangleHeight, extrusionDirectionWorld, materialThickness);
-                slicePlanes = append(slicePlanes, centeredSlicePlane);
-                sliceIds = append(sliceIds, sliceId);
-            }
-            
-            // Clean up plane surface and intersection curves
-            opDeleteBodies(context, intersectionId + "cleanup", {
-                "entities" : qUnion([planeSurface, intersectionCurves])
-            });
-        } catch {
-            // If intersection fails, skip this plane
-        }
-        
+        generateSliceSheet(context, sliceId, slicePlane, rectangleWidth, rectangleHeight, extrusionDirectionWorld, materialThickness);
+        slicePlanes = append(slicePlanes, slicePlane);
+        sliceIds = append(sliceIds, sliceId);
         planeCounter += 1;
     }
-    
-    // Clean up the bbox cuboid
-    opDeleteBodies(context, featureIdPrefix + "cleanupBbox", {
-        "entities" : bboxCuboid
-    });
     
     return { "slicePlanes" : slicePlanes, "sliceIds" : sliceIds };
 }
