@@ -784,9 +784,31 @@ export function convertSlicesToSheetMetal(context is Context, id is Id, trimmedS
         throw regenError(ErrorStringEnum.SHEET_METAL_CANNOT_THICKEN);
     }
     
-    // Step 3: Annotate the extracted surface bodies with sheet metal attributes
+    // Step 3: Delete original solid bodies BEFORE annotation
+    // This ensures qCreatedBy(id, EntityType.BODY) only finds the extracted surfaces
+    const allXSliceBodies = qUnion(mapArray(xIntersectionIds, function(xSliceId)
+        {
+            return qCreatedBy(xSliceId + "extrudeRectangle", EntityType.BODY);
+        }));
+    const allYSliceBodies = qUnion(mapArray(yIntersectionIds, function(ySliceId)
+        {
+            return qCreatedBy(ySliceId + "extrudeRectangle", EntityType.BODY);
+        }));
+    
+    try
+    {
+        opDeleteBodies(context, id + "deleteBodies", {
+            "entities" : qUnion([allXSliceBodies, allYSliceBodies])
+        });
+    }
+    catch
+    {
+        // Non-critical if deletion fails
+    }
+    
+    // Step 4: Annotate the extracted surface bodies with sheet metal attributes
     // CRITICAL: Use base id (not extractSurfaceId) for qCreatedBy to ensure proper tracking
-    // This follows the pattern documented in SHEET_METAL_GOTCHAS.md and annotateConvertedFaces
+    // After deleting original bodies, this query now only finds the extracted surfaces
     try
     {
         annotateSmSurfaceBodies(context, id, {
@@ -806,8 +828,7 @@ export function convertSlicesToSheetMetal(context is Context, id is Id, trimmedS
             "defaultRoundReliefDiameter" : 0 * meter,
             "defaultSquareReliefWidth" : 0 * meter,
             "defaultBendReliefDepthScale" : 2.0,
-            "defaultBendReliefScale" : 1.0625,
-            "bendCalculationType" : SMBendCalculationType.K_FACTOR
+            "defaultBendReliefScale" : 1.0625
         }, 0);
     }
     catch (error)
@@ -818,27 +839,6 @@ export function convertSlicesToSheetMetal(context is Context, id is Id, trimmedS
             throw error;
         }
         throw regenError(ErrorStringEnum.SHEET_METAL_REBUILD_ERROR);
-    }
-    
-    // Step 4: Delete original solid bodies after successful surface extraction
-    const allXSliceBodies = qUnion(mapArray(xIntersectionIds, function(xSliceId)
-        {
-            return qCreatedBy(xSliceId + "extrudeRectangle", EntityType.BODY);
-        }));
-    const allYSliceBodies = qUnion(mapArray(yIntersectionIds, function(ySliceId)
-        {
-            return qCreatedBy(ySliceId + "extrudeRectangle", EntityType.BODY);
-        }));
-    
-    try
-    {
-        opDeleteBodies(context, id + "deleteBodies", {
-            "entities" : qUnion([allXSliceBodies, allYSliceBodies])
-        });
-    }
-    catch
-    {
-        // Non-critical if deletion fails
     }
     
     // Step 5: Finalize sheet metal geometry with updateSheetMetalGeometry
