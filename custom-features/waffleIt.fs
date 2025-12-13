@@ -145,29 +145,26 @@ export const sheetMetalStart = defineSheetMetalFeature(function(context is Conte
         // The function calculates which planes are needed based on the bounding box and spacing.
         // Each loop: create a sketch-sized rectangle around the body, extrude it to the material thickness, and retain the raw
         // sheets for a later trimming pass against the selected part.
-        var xSliceResult = generateSheets(context, id, "X", orientedBoundingBox, definition.planeSpacing, referenceFrameToWorldTransform, definition.matThick);
+        generateSheets(context, id, "X", orientedBoundingBox, definition.planeSpacing, referenceFrameToWorldTransform, definition.matThick);
 
-        var secondAxisResult = {};
-        var thirdAxisResult = {};
-        
         if (definition.enableUAxis)
         {
             // U-axis is at an angle relative to Y-axis
             // Convert skew angle (relative to Y-axis at 90 degrees) to absolute angle in XY plane
             // Example: 30 degrees skew from Y-axis (90 degrees) = 120 degrees absolute angle in XY plane
             const uAxisAngle = definition.uAxisSkewAngle + 90 * degree;
-            secondAxisResult = generateSheetsAtAngle(context, id, "U", uAxisAngle, orientedBoundingBox, definition.planeSpacing, referenceFrame, referenceFrameToWorldTransform, definition.matThick, definition.selectedBody);
+            generateSheetsAtAngle(context, id, "U", uAxisAngle, orientedBoundingBox, definition.planeSpacing, referenceFrame, referenceFrameToWorldTransform, definition.matThick, definition.selectedBody);
             
             if (definition.enableVAxis)
             {
                 // V-axis angle creates hexagonal pattern with 60 degrees between all axes
-                thirdAxisResult = generateSheetsAtAngle(context, id, "V", THREE_AXIS_V_ANGLE, orientedBoundingBox, definition.planeSpacing, referenceFrame, referenceFrameToWorldTransform, definition.matThick, definition.selectedBody);
+                generateSheetsAtAngle(context, id, "V", THREE_AXIS_V_ANGLE, orientedBoundingBox, definition.planeSpacing, referenceFrame, referenceFrameToWorldTransform, definition.matThick, definition.selectedBody);
             }
         }
         else
         {
             // Standard Y-axis (orthogonal to X)
-            secondAxisResult = generateSheets(context, id, "Y", orientedBoundingBox, definition.planeSpacing, referenceFrameToWorldTransform, definition.matThick);
+            generateSheets(context, id, "Y", orientedBoundingBox, definition.planeSpacing, referenceFrameToWorldTransform, definition.matThick);
         }
 
         // Intersect each sheet with the target solid to retain only in-bounds material before generating cross-slot geometry.
@@ -389,7 +386,7 @@ export function generateSheetsAtAngle(context is Context, featureIdPrefix is Id,
     
     // Create base slice at first plane position
     const baseDistanceAlongNormal = firstPlaneIndex * planeSpacing;
-    const baseSliceOrigin = planeNormal * baseDistanceAlongNormal + perpVector * perpProjection + vector([0, 0, bboxCenterInRef[2]]);
+    const baseSliceOrigin = planeNormal * baseDistanceAlongNormal + perpVector * perpProjection + vector([0 * meter, 0 * meter, bboxCenterInRef[2]]);
     const baseSlicePlane = referenceFrameToWorldTransform * plane(baseSliceOrigin, planeNormal, planeUpVector);
     const baseSliceId = featureIdPrefix + axisLabel + "base";
     const extrusionDirectionWorld = referenceFrameToWorldTransform.linear * planeNormal;
