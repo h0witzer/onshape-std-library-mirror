@@ -325,76 +325,54 @@ export function generateSheetsAtAngle(context is Context, featureIdPrefix is Id,
     var sliceIds = [] as array;
     
     // axisAngle represents the normal direction to the planes (direction of spacing)
-    // This is consistent with X-axis (planes perpendicular to X) and Y-axis (planes perpendicular to Y)
     const planeNormal = vector([cos(axisAngle), sin(axisAngle), 0]);
     const planeUpVector = vector([0, 0, 1]);
     
-    // The axis direction for bounding box calculations is the same as the plane normal
-    const localAxisDirection = planeNormal;
-    
-    // To determine the extent along this axis, we need to rotate the coordinate system
-    // and compute the bounding box in that rotated frame
-    const rotatedCoordSystem = coordSystem(
+    // Create a coordinate system aligned with the slicing axis
+    // X-axis points along the plane normal (spacing direction)
+    // Y-axis is perpendicular in the XY plane  
+    // Z-axis is vertical
+    const slicingCoordSystem = coordSystem(
         referenceFrame.origin,
-        referenceFrameToWorldTransform.linear * localAxisDirection,
+        referenceFrameToWorldTransform.linear * planeNormal,
         referenceFrame.zAxis
     );
     
-    const rotatedBoundingBox = evBox3d(context, {
+    // Get tight bounding box in the slicing coordinate system
+    const slicingBbox = evBox3d(context, {
         "topology" : targetBody,
-        "cSys" : rotatedCoordSystem,
+        "cSys" : slicingCoordSystem,
         "tight" : true
     });
     
-    // The extent along the rotated X-axis tells us how far we need to place slices
-    const boundingMin = rotatedBoundingBox.minCorner[0];
-    const boundingMax = rotatedBoundingBox.maxCorner[0];
-    
-    // Rectangle dimensions - use maximum extent to ensure coverage at any angle
-    // We need to cover the entire 3D bounding box, so use the diagonal of all three dimensions
-    const bboxSizeX = orientedBoundingBox.maxCorner[0] - orientedBoundingBox.minCorner[0];
-    const bboxSizeY = orientedBoundingBox.maxCorner[1] - orientedBoundingBox.minCorner[1];
-    const bboxSizeZ = orientedBoundingBox.maxCorner[2] - orientedBoundingBox.minCorner[2];
-    // Use the 3D diagonal to ensure rectangles are large enough regardless of rotation
-    const diagonalSize3D = sqrt(bboxSizeX^2 + bboxSizeY^2 + bboxSizeZ^2);
-    const rectangleWidthExpanded = diagonalSize3D;
-    const rectangleHeightExpanded = diagonalSize3D;
-    
-    // Calculate which plane indices are needed to cover the bounding box along the rotated axis
+    // Determine the range of planes needed along the X-axis of the slicing coordinate system
+    const boundingMin = slicingBbox.minCorner[0];
+    const boundingMax = slicingBbox.maxCorner[0];
     const firstPlaneIndex = ceil(boundingMin / planeSpacing);
     const lastPlaneIndex = floor(boundingMax / planeSpacing);
     
-    // Get the center of the rotated bounding box in the Y and Z directions
-    // (perpendicular to the slicing axis)
-    const rotatedBboxCenterY = (rotatedBoundingBox.maxCorner[1] + rotatedBoundingBox.minCorner[1]) / 2;
-    const rotatedBboxCenterZ = (rotatedBoundingBox.maxCorner[2] + rotatedBoundingBox.minCorner[2]) / 2;
+    // Rectangle dimensions from the slicing bbox (Y and Z extents)
+    const rectangleWidth = slicingBbox.maxCorner[1] - slicingBbox.minCorner[1];
+    const rectangleHeight = slicingBbox.maxCorner[2] - slicingBbox.minCorner[2];
     
-    // Calculate the perpendicular direction to the axis (in XY plane, perpendicular to localAxisDirection)
-    const perpDirection = vector([cos(axisAngle + 90 * degree), sin(axisAngle + 90 * degree), 0]);
+    // Center of the bbox in Y and Z (perpendicular to slicing direction)
+    const rectangleCenterY = (slicingBbox.maxCorner[1] + slicingBbox.minCorner[1]) / 2;
+    const rectangleCenterZ = (slicingBbox.maxCorner[2] + slicingBbox.minCorner[2]) / 2;
     
     var planeCounter = 0;
     for (var planeIndex = firstPlaneIndex; planeIndex <= lastPlaneIndex; planeIndex += 1)
     {
-        // Position along the axis direction
+        // Position along the slicing axis (X in the slicing coordinate system)
         const planeLocation = planeIndex * planeSpacing;
         
-        // In the rotated coordinate system, the plane origin is at:
-        // - X (along axis): planeLocation
-        // - Y (perpendicular): rotatedBboxCenterY
-        // - Z: rotatedBboxCenterZ
-        // 
-        // Transform from rotated coords back to reference frame coords:
-        // rotated_coords = [planeLocation, rotatedBboxCenterY, rotatedBboxCenterZ]
-        // reference_coords = rotate_by(-axisAngle) * rotated_coords
-        //
-        // Since we rotated by axisAngle around Z, to go back we rotate by -axisAngle:
-        // X_ref = X_rot * cos(-angle) - Y_rot * sin(-angle) = X_rot * cos(angle) + Y_rot * sin(angle)
-        // Y_ref = X_rot * sin(-angle) + Y_rot * cos(-angle) = -X_rot * sin(angle) + Y_rot * cos(angle)
-        // Z_ref = Z_rot
+        // Origin in the slicing coordinate system
+        const originInSlicingCS = vector([planeLocation, rectangleCenterY, rectangleCenterZ]);
+        
+        // Transform to reference frame: inverse rotate around Z by axisAngle
         const sliceOrigin = vector([
-            planeLocation * cos(axisAngle) + rotatedBboxCenterY * sin(axisAngle),
-            -planeLocation * sin(axisAngle) + rotatedBboxCenterY * cos(axisAngle),
-            rotatedBboxCenterZ
+            originInSlicingCS[0] * cos(axisAngle) + originInSlicingCS[1] * sin(axisAngle),
+            -originInSlicingCS[0] * sin(axisAngle) + originInSlicingCS[1] * cos(axisAngle),
+            originInSlicingCS[2]
         ]);
         
         const slicePlane = referenceFrameToWorldTransform * plane(sliceOrigin, planeNormal, planeUpVector);
@@ -403,7 +381,7 @@ export function generateSheetsAtAngle(context is Context, featureIdPrefix is Id,
         // Transform the extrusion direction from local to world coordinates
         const extrusionDirectionWorld = referenceFrameToWorldTransform.linear * planeNormal;
         
-        generateSliceSheet(context, sliceId, slicePlane, rectangleWidthExpanded, rectangleHeightExpanded, extrusionDirectionWorld, materialThickness);
+        generateSliceSheet(context, sliceId, slicePlane, rectangleWidth, rectangleHeight, extrusionDirectionWorld, materialThickness);
         slicePlanes = append(slicePlanes, slicePlane);
         sliceIds = append(sliceIds, sliceId);
         planeCounter += 1;
