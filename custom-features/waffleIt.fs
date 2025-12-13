@@ -351,19 +351,15 @@ export function generateSheetsAtAngle(context is Context, featureIdPrefix is Id,
     const firstPlaneIndex = ceil(boundingMin / planeSpacing);
     const lastPlaneIndex = floor(boundingMax / planeSpacing);
     
-    // Rectangle dimensions: need to be large enough to cover the body at any angle
-    // Use the full XYZ extent from the original oriented bounding box
-    const bboxSizeX = orientedBoundingBox.maxCorner[0] - orientedBoundingBox.minCorner[0];
-    const bboxSizeY = orientedBoundingBox.maxCorner[1] - orientedBoundingBox.minCorner[1];
-    const bboxSizeZ = orientedBoundingBox.maxCorner[2] - orientedBoundingBox.minCorner[2];
-    // Use the maximum dimension to ensure coverage
-    const maxDimension = max(max(bboxSizeX, bboxSizeY), bboxSizeZ);
-    const rectangleWidth = maxDimension * 2;  // Use 2x to be safe
-    const rectangleHeight = maxDimension * 2;
-    
-    // Center the rectangles in the slicing coordinate system
+    // Use the full slicing bbox extents as the rectangle size (covers the full body)
+    var rectangleWidth = slicingBbox.maxCorner[1] - slicingBbox.minCorner[1];
+    var rectangleHeight = slicingBbox.maxCorner[2] - slicingBbox.minCorner[2];
     const rectangleCenterY = (slicingBbox.maxCorner[1] + slicingBbox.minCorner[1]) / 2;
     const rectangleCenterZ = (slicingBbox.maxCorner[2] + slicingBbox.minCorner[2]) / 2;
+    
+    // Add margin to ensure full coverage
+    rectangleWidth *= 1.2;
+    rectangleHeight *= 1.2;
     
     var planeCounter = 0;
     for (var planeIndex = firstPlaneIndex; planeIndex <= lastPlaneIndex; planeIndex += 1)
