@@ -807,12 +807,12 @@ export function convertSlicesToSheetMetal(context is Context, id is Id, trimmedS
     }
     
     // Step 4: Annotate the extracted surface bodies with sheet metal attributes
-    // CRITICAL: Use base id (not extractSurfaceId) for qCreatedBy to ensure proper tracking
-    // After deleting original bodies, this query now only finds the extracted surfaces
+    // Query the surface bodies created by opExtractSurface using the extractSurfaceId
+    // After deleting original bodies, only the extracted surfaces remain
     try
     {
         annotateSmSurfaceBodies(context, id, {
-            "surfaceBodies" : qCreatedBy(id, EntityType.BODY),
+            "surfaceBodies" : qCreatedBy(extractSurfaceId, EntityType.BODY),
             "bendEdgesAndFaces" : qNothing(),
             "specialRadiiBends" : [],
             "defaultRadius" : definition.bendRadius,
@@ -842,12 +842,12 @@ export function convertSlicesToSheetMetal(context is Context, id is Id, trimmedS
     }
     
     // Step 5: Finalize sheet metal geometry with updateSheetMetalGeometry
-    // CRITICAL: Use base id (not extractSurfaceId) for qCreatedBy queries
-    // This follows the exact pattern from annotateConvertedFaces in sheetMetalStart.fs
+    // Query faces and edges created by the extractSurface operation
+    // Following the pattern from sheetMetalRecognize which uses the sub-ID for queries
     try
     {
         updateSheetMetalGeometry(context, id, {
-            "entities" : qUnion([qCreatedBy(id, EntityType.FACE), qCreatedBy(id, EntityType.EDGE)])
+            "entities" : qUnion([qCreatedBy(extractSurfaceId, EntityType.FACE), qCreatedBy(extractSurfaceId, EntityType.EDGE)])
         });
     }
     catch (error)
