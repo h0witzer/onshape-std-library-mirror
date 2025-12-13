@@ -24,6 +24,14 @@ import(path : "onshape/std/attributes.fs", version : "2815.0");
 const SKEW_ANGLE_LIMIT = 89;
 export const SKEW_ANGLE_BOUNDS = { (degree) : [-SKEW_ANGLE_LIMIT, 0, SKEW_ANGLE_LIMIT] } as AngleBoundSpec;
 
+// Three-axis hexagonal pattern constants
+// In three-axis mode, the U and V axes are at fixed angles to create a hexagonal pattern:
+// - X-axis: 0° (reference direction)
+// - U-axis: 120° (30° skew from Y-axis, which is at 90°)
+// - V-axis: 60° (creates 60° angles between all three axes)
+const THREE_AXIS_U_SKEW_ANGLE = 30 * degree;  // Skew angle of U-axis relative to Y-axis
+const THREE_AXIS_V_ANGLE = 60 * degree;       // Absolute angle of V-axis in XY plane
+
 // Callback function for feature changes to manage axis dependencies
 export function waffleItOnFeatureChange(context is Context, id is Id, oldDefinition is map, definition is map, isCreating is boolean) returns map
 {
@@ -33,16 +41,23 @@ export function waffleItOnFeatureChange(context is Context, id is Id, oldDefinit
         definition.enableVAxis = false;
     }
     
-    // When enabling V-axis, enforce three-axis mode constraints
-    if (!oldDefinition.enableVAxis && definition.enableVAxis)
+    // When enabling V-axis for the first time, enforce three-axis mode constraints
+    const wasVAxisDisabled = (oldDefinition.enableVAxis == undefined || !oldDefinition.enableVAxis);
+    if (wasVAxisDisabled && definition.enableVAxis)
     {
-        // In three-axis mode, U-axis skew angle is fixed to 30 degrees
-        definition.uAxisSkewAngle = 30 * degree;
+        // In three-axis mode, U-axis skew angle is fixed for hexagonal pattern
+        definition.uAxisSkewAngle = THREE_AXIS_U_SKEW_ANGLE;
         // Section spacing must be at least 3x section width to avoid triple intersections
         if (definition.planeSpacing < 3 * definition.matThick)
         {
             definition.planeSpacing = 3 * definition.matThick;
         }
+    }
+    
+    // Lock U-axis angle when V-axis is enabled to maintain hexagonal pattern
+    if (definition.enableVAxis)
+    {
+        definition.uAxisSkewAngle = THREE_AXIS_U_SKEW_ANGLE;
     }
     
     return definition;
@@ -136,15 +151,15 @@ export const sheetMetalStart = defineSheetMetalFeature(function(context is Conte
         if (definition.enableUAxis)
         {
             // U-axis is at an angle relative to Y-axis
-            // In three-axis mode, this is fixed at 30 degrees; otherwise it's user-adjustable
+            // Convert skew angle (relative to Y-axis at 90°) to absolute angle in XY plane
+            // Example: 30° skew from Y-axis (90°) = 120° absolute angle in XY plane
             const uAxisAngle = definition.uAxisSkewAngle + 90 * degree;
             secondAxisResult = generateSheetsAtAngle(context, id, "U", uAxisAngle, orientedBoundingBox, definition.planeSpacing, referenceFrame, referenceFrameToWorldTransform, definition.matThick, definition.selectedBody);
             
             if (definition.enableVAxis)
             {
-                // V-axis is at -30 degrees (60 degrees from X-axis) for hexagonal pattern
-                const vAxisAngle = 60 * degree;
-                thirdAxisResult = generateSheetsAtAngle(context, id, "V", vAxisAngle, orientedBoundingBox, definition.planeSpacing, referenceFrame, referenceFrameToWorldTransform, definition.matThick, definition.selectedBody);
+                // V-axis angle creates hexagonal pattern with 60° between all axes
+                thirdAxisResult = generateSheetsAtAngle(context, id, "V", THREE_AXIS_V_ANGLE, orientedBoundingBox, definition.planeSpacing, referenceFrame, referenceFrameToWorldTransform, definition.matThick, definition.selectedBody);
             }
         }
         else
@@ -556,13 +571,16 @@ export function trimSheetsToSolidThreeAxis(context is Context, featureIdPrefix i
     uSliceIds = processAxisSlices(uOriginalSliceIds, "U");
     vSliceIds = processAxisSlices(vOriginalSliceIds, "V");
 
+    // Return both explicit axis names and Y-axis compatibility mapping
+    // The Y-axis fields map to the U-axis for compatibility with existing two-axis functions
+    // that expect xIntersectionIds and yIntersectionIds as their second axis parameter
     return {
             "xIntersectionIds" : xSliceIds,
-            "yIntersectionIds" : uSliceIds,  // Map U to Y for compatibility
+            "yIntersectionIds" : uSliceIds,  // Compatibility: second axis maps to U in three-axis mode
             "uIntersectionIds" : uSliceIds,
             "vIntersectionIds" : vSliceIds,
             "xSliceIds" : xSliceIds,
-            "ySliceIds" : uSliceIds,  // Map U to Y for compatibility
+            "ySliceIds" : uSliceIds,  // Compatibility: second axis maps to U in three-axis mode
             "uSliceIds" : uSliceIds,
             "vSliceIds" : vSliceIds
         };
@@ -929,14 +947,17 @@ export function generateCrossSlotGeometryForSlicesThreeAxis(context is Context, 
     const uIntersectionIds = trimmedSheetsResult.uIntersectionIds;
     const vIntersectionIds = trimmedSheetsResult.vIntersectionIds;
     
-    // Process X-U pair (0° and 120° angles)
-    generateCrossSlotGeometryForSlicesNonOrthogonal(context, featureIdPrefix + "XU", xIntersectionIds, uIntersectionIds, referenceFrame, 0 * degree, uAxisSkewAngle + 90 * degree);
+    // Convert U-axis skew angle to absolute angle in XY plane
+    const uAxisAbsoluteAngle = uAxisSkewAngle + 90 * degree;
     
-    // Process X-V pair (0° and 60° angles)
-    generateCrossSlotGeometryForSlicesNonOrthogonal(context, featureIdPrefix + "XV", xIntersectionIds, vIntersectionIds, referenceFrame, 0 * degree, 60 * degree);
+    // Process X-U pair (X at 0°, U at ~120° for 30° skew)
+    generateCrossSlotGeometryForSlicesNonOrthogonal(context, featureIdPrefix + "XU", xIntersectionIds, uIntersectionIds, referenceFrame, 0 * degree, uAxisAbsoluteAngle);
     
-    // Process U-V pair (120° and 60° angles)
-    generateCrossSlotGeometryForSlicesNonOrthogonal(context, featureIdPrefix + "UV", uIntersectionIds, vIntersectionIds, referenceFrame, uAxisSkewAngle + 90 * degree, 60 * degree);
+    // Process X-V pair (X at 0°, V at 60°)
+    generateCrossSlotGeometryForSlicesNonOrthogonal(context, featureIdPrefix + "XV", xIntersectionIds, vIntersectionIds, referenceFrame, 0 * degree, THREE_AXIS_V_ANGLE);
+    
+    // Process U-V pair (U at ~120°, V at 60°)
+    generateCrossSlotGeometryForSlicesNonOrthogonal(context, featureIdPrefix + "UV", uIntersectionIds, vIntersectionIds, referenceFrame, uAxisAbsoluteAngle, THREE_AXIS_V_ANGLE);
 }
 
 // Sketch and extrude a rectangular slice at the provided plane, retaining the untrimmed sheet for a later boolean against the target body.
