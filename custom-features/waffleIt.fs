@@ -324,12 +324,13 @@ export function generateSheetsAtAngle(context is Context, featureIdPrefix is Id,
     var slicePlanes = [] as array;
     var sliceIds = [] as array;
     
-    // Calculate the local axis direction in the XY plane
-    const localAxisDirection = vector([cos(axisAngle), sin(axisAngle), 0]);
-    
-    // The plane normal is perpendicular to the axis direction in the XY plane
-    const planeNormal = vector([-sin(axisAngle), cos(axisAngle), 0]);
+    // axisAngle represents the normal direction to the planes (direction of spacing)
+    // This is consistent with X-axis (planes perpendicular to X) and Y-axis (planes perpendicular to Y)
+    const planeNormal = vector([cos(axisAngle), sin(axisAngle), 0]);
     const planeUpVector = vector([0, 0, 1]);
+    
+    // The axis direction for bounding box calculations is the same as the plane normal
+    const localAxisDirection = planeNormal;
     
     // To determine the extent along this axis, we need to rotate the coordinate system
     // and compute the bounding box in that rotated frame
