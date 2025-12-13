@@ -721,31 +721,19 @@ export function normalizeSliceGeometryForLasercutting(context is Context, idPref
     }
 }
 
-// Convert normalized slice bodies to sheet metal by thickening their cap faces.
-// This is a simplified version stripped down from sheetMetalStart's thickenToSheetMetal function.
-// Takes face queries, extracts surfaces, annotates them with sheet metal attributes, and finalizes.
-// The original solid slice bodies are deleted.
-// Inputs:
-//  - id : Feature ID used for sheet metal operations
-//  - trimmedSheetsResult : Map containing xIntersectionIds and yIntersectionIds arrays
-//  - xSliceResult : Map containing slicePlanes for X slices
-//  - ySliceResult : Map containing slicePlanes for Y slices
-//  - definition : Feature definition map containing sheet metal parameters
-// Returns: none
-// Convert normalized slice bodies to sheet metal by thickening the START cap faces.
-// Uses attribute queries to find START cap faces, which persist through topology changes.
-// Each body will have exactly one START cap face to work with, even if prior operations split bodies.
+// Convert normalized slice bodies to sheet metal by extracting surfaces from START cap faces,
+// then annotating and finalizing them following the canonical sheetMetalStart pattern.
+// This matches the pattern used in sheetMetalStart.fs: extract surfaces with a sub-ID,
+// then annotate and finalize using the base ID for proper sheet metal context management.
 // Inputs:
 //  - context : Execution context
-//  - id : Feature ID for sheet metal operations
-//  - trimmedSheetsResult : Map containing intersection IDs
-//  - definition : Feature definition containing sheet metal parameters
+//  - id : Feature ID for sheet metal operations (base ID, not sub-ID)
+//  - trimmedSheetsResult : Map containing xIntersectionIds and yIntersectionIds arrays
+//  - definition : Feature definition containing sheet metal parameters (bendRadius, matThick, kFactor, minimalClearance)
+// Returns: none
 export function convertSlicesToSheetMetal(context is Context, id is Id, trimmedSheetsResult is map, definition is map)
 {
     println("convertSlicesToSheetMetal: Starting sheet metal conversion");
-    
-    // Wrapper function that calls the standard library sheetMetalStart
-    // This allows us to leverage the full functionality of defineSheetMetalFeature
     
     // Step 1: Collect all START cap faces from all slice bodies using attribute queries
     const xIntersectionIds = trimmedSheetsResult.xIntersectionIds;
@@ -780,60 +768,35 @@ export function convertSlicesToSheetMetal(context is Context, id is Id, trimmedS
         return;
     }
     
-    // Step 2: Use the attribute-identified START cap faces
-    var allFacesToConvert = allStartCapFaces;
-    
-    // Step 3: Call the standard library's sheetMetalStart with THICKEN process
-    // This gives us the benefits of defineSheetMetalFeature (surface hiding, proper context naming)
+    // Step 2: Extract surfaces from the START cap faces
+    // Use a sub-ID for the operation (following sheetMetalStart pattern from convertFaces function)
+    const extractSurfaceId = id + "extractSurface";
     try
     {
-        // annotateSmSurfaceBodies(context, id + "sheetMetal", {
-        //     "initEntities" : allFacesToConvert,
-        //     "process" : SMProcessType.THICKEN,
-        //     "regions" : allFacesToConvert,
-        //     "bends" : qNothing(),
-        //     "radius" : definition.bendRadius,
-        //     "minimalClearance" : definition.minimalClearance,
-        //     "thickness" : definition.matThick,
-        //     "oppositeDirection" : true,
-        //     "kFactor" : definition.kFactor
-        // },0);
-        
-        
-        
-
-
-// annotateSmSurfaceBodies (context is Context, id is Id, args is map, objectCount is number) returns number
-
-// Assign SMAttributes to topology of sheet metal definition sheet body
-
-// PARAMETER INFO
-
-// args is map
-// surfaceBodies is Query
-// bendEdgesAndFaces is Query
-// specialRadiiBends is array
-//      array of pairs "(edge, bendRadius)"
-
-// defaultRadius is ValueWithUnits
-//      bend radius to be applied to edges in bendEdgesAndFaces
-
-// controlsThickness is boolean
-// thickness is ValueWithUnits
-// defaultCornerReliefScale is number
-// defaultRoundReliefDiameter is ValueWithUnits
-// defaultSquareReliefWidth is ValueWithUnits
-// defaultBendReliefScale is number
-
-        
-                annotateSmSurfaceBodies(context, id + "sheetMetal", {
-            "surfaceBodies" :allFacesToConvert,
+        opExtractSurface(context, extractSurfaceId, {
+            "faces" : allStartCapFaces,
+            "offset" : 0 * meter,
+            "useFacesAroundToTrimOffset" : false
+        });
+    }
+    catch
+    {
+        throw regenError(ErrorStringEnum.SHEET_METAL_CANNOT_THICKEN);
+    }
+    
+    // Step 3: Annotate the extracted surface bodies with sheet metal attributes
+    // Following the thickenToSheetMetal pattern which annotates BEFORE deleting original bodies
+    try
+    {
+        // Build annotation args similar to getSheetMetalModelAttributeArgsFromDialogParams
+        var annotationArgs = {
+            "surfaceBodies" : qCreatedBy(id, EntityType.BODY),
             "bendEdgesAndFaces" : qNothing(),
             "specialRadiiBends" : [],
             "defaultRadius" : definition.bendRadius,
             "controlsThickness" : true,
             "thickness" : definition.matThick,
-            // "thicknessDirection" : thicknessDirection,
+            "thicknessDirection" : SMThicknessDirection.FRONT,
             "minimalClearance" : definition.minimalClearance,
             "kFactor" : definition.kFactor,
             "flipDirectionUp" : false,
@@ -844,13 +807,18 @@ export function convertSlicesToSheetMetal(context is Context, id is Id, trimmedS
             "defaultRoundReliefDiameter" : 0 * meter,
             "defaultSquareReliefWidth" : 0 * meter,
             "defaultBendReliefDepthScale" : 2.0,
-            "defaultBendReliefScale" : 1.0625,
-            // "bendCalculationType" : SMBendCalculationType.K_FACTOR
-        }, 0);
+            "defaultBendReliefScale" : 1.0625
+        };
+        annotateSmSurfaceBodies(context, id, annotationArgs, 0);
+        
+        // Check for errors after annotation
+        if (getFeatureError(context, id) != undefined)
+        {
+            return;
+        }
     }
     catch (error)
     {
-        // Propagate sheet metal errors appropriately
         var messageAsEnum = try silent(error.message as ErrorStringEnum);
         if (messageAsEnum != undefined)
         {
@@ -859,8 +827,8 @@ export function convertSlicesToSheetMetal(context is Context, id is Id, trimmedS
         throw regenError(ErrorStringEnum.SHEET_METAL_REBUILD_ERROR);
     }
     
-    // Step 4: Delete original solid bodies after successful sheet metal creation
-    // Use the xIntersectionIds and yIntersectionIds already declared above (now extrusion IDs)
+    // Step 4: Delete original solid bodies AFTER successful annotation
+    // Following the pattern from annotateConvertedFaces
     const allXSliceBodies = qUnion(mapArray(xIntersectionIds, function(xSliceId)
         {
             return qCreatedBy(xSliceId + "extrudeRectangle", EntityType.BODY);
@@ -878,13 +846,13 @@ export function convertSlicesToSheetMetal(context is Context, id is Id, trimmedS
     }
     catch
     {
-        // Non-critical if deletion fails - sheet metal bodies are already created
+        throw regenError(ErrorStringEnum.REGEN_ERROR);
     }
-        // Step 5: Finalize - FOLLOWING EXACT PATTERN FROM annotateConvertedFaces in sheetMetalStart
-    // Key: reference with id, NOT id + "extractSurface"
+    
+    // Step 5: Finalize sheet metal geometry using finalizeSheetMetalGeometry pattern
+    // This wraps updateSheetMetalGeometry with proper error handling
     try
     {
-        println("made it");
         updateSheetMetalGeometry(context, id, {
             "entities" : qUnion([qCreatedBy(id, EntityType.FACE), qCreatedBy(id, EntityType.EDGE)])
         });
