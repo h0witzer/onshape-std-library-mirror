@@ -646,6 +646,12 @@ export function generateCrossSlotGeometryForSlices(context is Context, featureId
         }
     }
 
+    // Early return if no slices were copied (nothing to process)
+    if (size(xSlotIds) == 0 || size(ySlotIds) == 0)
+    {
+        return { "xSlotIds" : xSlotIds, "ySlotIds" : ySlotIds };
+    }
+
     const copiedXSlices = qUnion(mapArray(xSlotIds, function(slotId)
             {
                 return qCreatedBy(slotId, EntityType.BODY);
@@ -819,6 +825,12 @@ export function generateCrossSlotGeometryForSlicesNonOrthogonal(context is Conte
                     });
             ySlotIds = append(ySlotIds, yCopyId);
         }
+    }
+
+    // Early return if no slices were copied (nothing to process)
+    if (size(xSlotIds) == 0 || size(ySlotIds) == 0)
+    {
+        return { "xSlotIds" : xSlotIds, "ySlotIds" : ySlotIds };
     }
 
     const copiedXSlices = qUnion(mapArray(xSlotIds, function(slotId)
