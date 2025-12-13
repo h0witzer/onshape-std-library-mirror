@@ -807,17 +807,18 @@ export function convertSlicesToSheetMetal(context is Context, id is Id, trimmedS
     }
     
     // Step 4: Annotate the extracted surface bodies with sheet metal attributes
-    // Query the surface bodies created by opExtractSurface using the extractSurfaceId
-    // After deleting original bodies, only the extracted surfaces remain
+    // CRITICAL: Use base id for queries, not extractSurfaceId (per SHEET_METAL_GOTCHAS.md)
+    // After deleting original bodies, qCreatedBy(id, ...) only finds the extracted surfaces
     try
     {
         annotateSmSurfaceBodies(context, id, {
-            "surfaceBodies" : qCreatedBy(extractSurfaceId, EntityType.BODY),
+            "surfaceBodies" : qCreatedBy(id, EntityType.BODY),
             "bendEdgesAndFaces" : qNothing(),
             "specialRadiiBends" : [],
             "defaultRadius" : definition.bendRadius,
             "controlsThickness" : true,
             "thickness" : definition.matThick,
+            "thicknessDirection" : SMThicknessDirection.FRONT,
             "minimalClearance" : definition.minimalClearance,
             "kFactor" : definition.kFactor,
             "flipDirectionUp" : false,
@@ -830,6 +831,11 @@ export function convertSlicesToSheetMetal(context is Context, id is Id, trimmedS
             "defaultBendReliefDepthScale" : 2.0,
             "defaultBendReliefScale" : 1.0625
         }, 0);
+        // Check for errors after annotation (pattern from annotateConvertedFaces)
+        if (getFeatureError(context, id) != undefined)
+        {
+            return;
+        }
     }
     catch (error)
     {
@@ -842,12 +848,12 @@ export function convertSlicesToSheetMetal(context is Context, id is Id, trimmedS
     }
     
     // Step 5: Finalize sheet metal geometry with updateSheetMetalGeometry
-    // Query faces and edges created by the extractSurface operation
-    // Following the pattern from sheetMetalRecognize which uses the sub-ID for queries
+    // CRITICAL: Use base id for queries, not extractSurfaceId (per SHEET_METAL_GOTCHAS.md)
+    // This matches the pattern from annotateConvertedFaces in sheetMetalStart.fs
     try
     {
         updateSheetMetalGeometry(context, id, {
-            "entities" : qUnion([qCreatedBy(extractSurfaceId, EntityType.FACE), qCreatedBy(extractSurfaceId, EntityType.EDGE)])
+            "entities" : qUnion([qCreatedBy(id, EntityType.FACE), qCreatedBy(id, EntityType.EDGE)])
         });
     }
     catch (error)
