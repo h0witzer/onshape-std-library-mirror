@@ -351,16 +351,10 @@ export function generateSheetsAtAngle(context is Context, featureIdPrefix is Id,
     const firstPlaneIndex = ceil(boundingMin / planeSpacing);
     const lastPlaneIndex = floor(boundingMax / planeSpacing);
     
-    // Rectangle dimensions: use diagonal of Y-Z extent to ensure coverage
-    // When planes intersect the body at angles, we need larger rectangles than just the bbox extents
-    const bboxWidthY = slicingBbox.maxCorner[1] - slicingBbox.minCorner[1];
-    const bboxHeightZ = slicingBbox.maxCorner[2] - slicingBbox.minCorner[2];
-    const diagonalYZ = sqrt(bboxWidthY^2 + bboxHeightZ^2);
-    // Use diagonal plus some margin to ensure full coverage
-    const rectangleWidth = diagonalYZ * 1.5;
-    const rectangleHeight = diagonalYZ * 1.5;
-    
-    // Center of the bbox in Y and Z (perpendicular to slicing direction)
+    // Get actual intersection extent: the slicing bbox already gives us the intersection
+    // of the body with planes perpendicular to the slicing axis
+    const rectangleWidth = slicingBbox.maxCorner[1] - slicingBbox.minCorner[1];
+    const rectangleHeight = slicingBbox.maxCorner[2] - slicingBbox.minCorner[2];
     const rectangleCenterY = (slicingBbox.maxCorner[1] + slicingBbox.minCorner[1]) / 2;
     const rectangleCenterZ = (slicingBbox.maxCorner[2] + slicingBbox.minCorner[2]) / 2;
     
