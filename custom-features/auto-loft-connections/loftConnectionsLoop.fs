@@ -149,24 +149,22 @@ export const loftAutoConnection = defineFeature(function(context is Context, id 
                             "side1" : edgeGroup1
                         });
                 
-                var corresponding = {
+                var correspondingOnEdge1 = {
                         "edge" : qNthElement(edgeGroup1, edgeDist.sides[1].index),
                         "parameter" : edgeDist.sides[1].parameter,
                     };
                 
-                corresponding.point = evEdgeTangentLine(context, {
-                                "edge" : corresponding.edge,
-                                "parameter" : corresponding.parameter
+                correspondingOnEdge1.point = evEdgeTangentLine(context, {
+                                "edge" : correspondingOnEdge1.edge,
+                                "parameter" : correspondingOnEdge1.parameter
                             }).origin;
                 
                 var connectionMap = {
-                    "connectionEntities" : qUnion([currentPoint, corresponding.edge]),
-                    "connectionEdges" : [corresponding.edge],
-                    "connectionEdgeParameters" : [corresponding.parameter]};
+                    "connectionEntities" : qUnion([currentPoint, correspondingOnEdge1.edge]),
+                    "connectionEdges" : [correspondingOnEdge1.edge],
+                    "connectionEdgeParameters" : [correspondingOnEdge1.parameter]};
                 
                 loftConnections = append(loftConnections, connectionMap);
-                
-                println("Added reverse connection: " ~ connectionMap.connectionEdgeParameters);
             }
         }        
 
