@@ -51,7 +51,6 @@ export const loftAutoConnectionPathLength = defineFeature(function(context is Co
         var guide0 = definition.guide0;
         var guide1 = definition.guide1;
 
-        var edgeInfo = {};
         var endPoints1 = qAdjacent(edgeGroup1, AdjacencyType.VERTEX, EntityType.VERTEX);
 
         println("Number of edges 1: " ~ evaluateQueryCount(context, edgeGroup1));
@@ -89,11 +88,8 @@ export const loftAutoConnectionPathLength = defineFeature(function(context is Co
             
             println("Vertex " ~ i ~ " from edge1 at path length ratio: " ~ pathLengthRatio);
             
-            // Use the same path length ratio to find corresponding parameter on edge group 2
-            var corresponding = {
-                    "edge" : edgeGroup2, // For path length, we use the entire edge group
-                    "parameter" : pathLengthRatio,
-                };
+            // Convert the path length ratio to a specific edge and parameter on edge group 2
+            var corresponding = convertPathLengthRatioToEdgeParameter(context, pathLengthRatio, edgeGroup2, totalLength2);
 
             corresponding.point = evEdgeTangentLine(context, {
                             "edge" : corresponding.edge,
@@ -163,11 +159,8 @@ export const loftAutoConnectionPathLength = defineFeature(function(context is Co
                 
                 println("Vertex " ~ j ~ " from edge2 at path length ratio: " ~ pathLengthRatio);
                 
-                // Use the same path length ratio to find corresponding parameter on edge group 1
-                var correspondingOnEdge1 = {
-                        "edge" : edgeGroup1,
-                        "parameter" : pathLengthRatio,
-                    };
+                // Convert the path length ratio to a specific edge and parameter on edge group 1
+                var correspondingOnEdge1 = convertPathLengthRatioToEdgeParameter(context, pathLengthRatio, edgeGroup1, totalLength1);
                 
                 correspondingOnEdge1.point = evEdgeTangentLine(context, {
                                 "edge" : correspondingOnEdge1.edge,
@@ -226,10 +219,6 @@ export const loftAutoConnectionPathLength = defineFeature(function(context is Co
  */
 function calculatePathLengthRatioForVertex(context is Context, vertex is Query, edgeGroup is Query, totalLength is ValueWithUnits) returns number
 {
-    var vertexPosition = evVertexPoint(context, {
-                "vertex" : vertex
-            });
-    
     // Find which edge in the group contains this vertex or is closest to it
     var edgeDist = evDistance(context, {
                 "side0" : vertex,
@@ -240,9 +229,7 @@ function calculatePathLengthRatioForVertex(context is Context, vertex is Query, 
     var edgeParameter = edgeDist.sides[1].parameter;
     
     // Calculate the path length up to the start of this edge
-    var edgesBeforeClosest = [];
     var edgeGroupArray = evaluateQuery(context, edgeGroup);
-    var foundClosest = false;
     var pathLengthBeforeEdge = 0 * meter;
     
     for (var edge in edgeGroupArray)
@@ -250,7 +237,6 @@ function calculatePathLengthRatioForVertex(context is Context, vertex is Query, 
         var isClosestEdge = !isQueryEmpty(context, qIntersection([edge, closestEdge]));
         if (isClosestEdge)
         {
-            foundClosest = true;
             break;
         }
         else
@@ -275,6 +261,51 @@ function calculatePathLengthRatioForVertex(context is Context, vertex is Query, 
     var ratio = totalPathLengthToVertex / totalLength;
     
     return ratio;
+}
+
+/**
+ * Convert a path length ratio (0 to 1) to a specific edge and parameter in an edge group.
+ * 
+ * @param context {Context}: The context
+ * @param pathLengthRatio {number}: The ratio (0 to 1) of position along the edge group
+ * @param edgeGroup {Query}: The edge group to find the edge in
+ * @param totalLength {ValueWithUnits}: The total length of the edge group
+ * 
+ * @returns {map}: A map with "edge" (Query) and "parameter" (number) fields
+ */
+function convertPathLengthRatioToEdgeParameter(context is Context, pathLengthRatio is number, edgeGroup is Query, totalLength is ValueWithUnits) returns map
+{
+    var targetPathLength = totalLength * pathLengthRatio;
+    var edgeGroupArray = evaluateQuery(context, edgeGroup);
+    var accumulatedLength = 0 * meter;
+    
+    for (var edge in edgeGroupArray)
+    {
+        var edgeLength = evLength(context, {
+                    "entities" : edge
+                });
+        
+        if (accumulatedLength + edgeLength >= targetPathLength)
+        {
+            // This is the edge containing the target point
+            var lengthIntoEdge = targetPathLength - accumulatedLength;
+            var parameterOnEdge = lengthIntoEdge / edgeLength;
+            
+            return {
+                "edge" : edge,
+                "parameter" : parameterOnEdge
+            };
+        }
+        
+        accumulatedLength = accumulatedLength + edgeLength;
+    }
+    
+    // If we get here, we're at or past the end - return the last edge at parameter 1.0
+    var lastEdge = edgeGroupArray[size(edgeGroupArray) - 1];
+    return {
+        "edge" : lastEdge,
+        "parameter" : 1.0
+    };
 }
 
 // sample outputs from loft feature
