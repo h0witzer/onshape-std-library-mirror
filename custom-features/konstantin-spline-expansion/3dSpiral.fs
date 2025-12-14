@@ -44,7 +44,7 @@ export const spiral3d = defineFeature(function(context is Context, id is Id, def
         else if (definition.spiralType == SpiralType.TWIST_ANGLE)
         {
             annotation { "Name" : "Twist angle" }
-            isAngle(definition.twistAngle, ANGLE_360_ZERO_DEFAULT_BOUNDS);
+            isAngle(definition.twistAngle, ANGLE_360_FULL_DEFAULT_BOUNDS);
         }
 
         annotation { "Name" : "Flip spiral direction", "UIHint" : UIHint.OPPOSITE_DIRECTION_CIRCULAR }
@@ -65,11 +65,19 @@ export const spiral3d = defineFeature(function(context is Context, id is Id, def
         {
             // Pitch is the axial distance per revolution
             // For a 3D spiral along a curve, the pitch relates to the curve length
+            if (definition.pitch <= 0 * meter)
+            {
+                throw regenError("Pitch must be greater than zero");
+            }
             numberOfRevolutions = splineLength / definition.pitch;
         }
         else if (definition.spiralType == SpiralType.TWIST_ANGLE)
         {
             // Convert twist angle to number of revolutions
+            if (abs(definition.twistAngle) < 1e-10 * radian)
+            {
+                throw regenError("Twist angle must be non-zero");
+            }
             numberOfRevolutions = definition.twistAngle / (360 * degree);
         }
 
