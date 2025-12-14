@@ -76,53 +76,16 @@ export const loftAutoConnectionPathLength = defineFeature(function(context is Co
         
         debug(context, edgeInternalPoints1, DebugColor.RED);
 
-        var loftConnections = [];
-
-        // First pass: Create connections from edge group 1 to edge group 2 using path length
+        // Step 1: Calculate path length ratios for all vertices in both edge groups
+        var pathRatios1 = [];
         for (var i = 0; i < evaluateQueryCount(context, edgeInternalPoints1); i += 1)
         {
             var currentPoint = qNthElement(edgeInternalPoints1, i);
-            
-            // Calculate the path length position of this vertex along edge group 1
             var pathLengthRatio = calculatePathLengthRatioForVertex(context, currentPoint, edgeGroup1, totalLength1);
-            
+            pathRatios1 = append(pathRatios1, pathLengthRatio);
             println("Vertex " ~ i ~ " from edge1 at path length ratio: " ~ pathLengthRatio);
-            
-            // Convert the path length ratio to a specific edge and parameter on edge group 2
-            var corresponding = convertPathLengthRatioToEdgeParameter(context, pathLengthRatio, edgeGroup2, totalLength2);
-
-            corresponding.point = evEdgeTangentLine(context, {
-                            "edge" : corresponding.edge,
-                            "parameter" : corresponding.parameter,
-                            "arcLengthParameterization" : true
-                        }).origin; 
-
-            var connectionMap = {
-                "connectionEntities" : qUnion([currentPoint, corresponding.edge]),
-                "connectionEdges" : [corresponding.edge],
-                "connectionEdgeParameters" : [corresponding.parameter]};
-            
-            loftConnections = append(loftConnections, connectionMap);
-
-            println("Connection parameter: " ~ connectionMap.connectionEdgeParameters); 
         }
         
-        // Collect all connection points from the first pass to check against in the second pass
-        var connectionPointsOnEdge2 = [];
-        for (var k = 0; k < size(loftConnections); k += 1)
-        {
-            // Get the point on edge2 from this connection
-            var edge2InConnection = loftConnections[k].connectionEdges[0];
-            var parameter2 = loftConnections[k].connectionEdgeParameters[0];
-            var connectionPointOnEdge2 = evEdgeTangentLine(context, {
-                        "edge" : edge2InConnection,
-                        "parameter" : parameter2,
-                        "arcLengthParameterization" : true
-                    }).origin;
-            connectionPointsOnEdge2 = append(connectionPointsOnEdge2, connectionPointOnEdge2);
-        }
-        
-        // Second pass: Create connections from edge group 2 to edge group 1 for unmatched vertices using path length
         var allVertices2 = qAdjacent(edgeGroup2, AdjacencyType.VERTEX, EntityType.VERTEX);
         var adjFaces2 = qAdjacent(edgeGroup2, AdjacencyType.EDGE, EntityType.FACE);
         var smoothEdges2 = qAdjacent(adjFaces2, AdjacencyType.EDGE, EntityType.EDGE)->qEdgeConvexityTypeFilter(EdgeConvexityType.SMOOTH);
@@ -131,52 +94,57 @@ export const loftAutoConnectionPathLength = defineFeature(function(context is Co
         
         debug(context, edgeInternalPoints2, DebugColor.BLUE);
         
+        var pathRatios2 = [];
         for (var j = 0; j < evaluateQueryCount(context, edgeInternalPoints2); j += 1)
         {
             var currentPoint = qNthElement(edgeInternalPoints2, j);
+            var pathLengthRatio = calculatePathLengthRatioForVertex(context, currentPoint, edgeGroup2, totalLength2);
+            pathRatios2 = append(pathRatios2, pathLengthRatio);
+            println("Vertex " ~ j ~ " from edge2 at path length ratio: " ~ pathLengthRatio);
+        }
+        
+        // Step 2: Merge and sort all unique path length ratios
+        var allRatios = concatenateArrays(pathRatios1, pathRatios2);
+        allRatios = removeDuplicateRatios(allRatios);
+        allRatios = sortRatios(allRatios);
+        
+        println("Total unique path ratios: " ~ size(allRatios));
+        
+        // Step 3: Create connections at all path length ratios
+        var loftConnections = [];
+        for (var ratio in allRatios)
+        {
+            // Convert ratio to edge+parameter on both groups
+            var edge1Info = convertPathLengthRatioToEdgeParameter(context, ratio, edgeGroup1, totalLength1);
+            var edge2Info = convertPathLengthRatioToEdgeParameter(context, ratio, edgeGroup2, totalLength2);
             
-            // Get the position of this vertex
-            var currentPointPosition = evVertexPoint(context, {
-                        "vertex" : currentPoint
-                    });
+            // Get the 3D points for debugging
+            edge1Info.point = evEdgeTangentLine(context, {
+                            "edge" : edge1Info.edge,
+                            "parameter" : edge1Info.parameter,
+                            "arcLengthParameterization" : true
+                        }).origin;
             
-            // Check if this vertex is close to any connection point from the first pass
-            var isAlreadyConnected = false;
-            for (var connectionPoint in connectionPointsOnEdge2)
-            {
-                if (norm(currentPointPosition - connectionPoint) < TOLERANCE.zeroLength * meter)
-                {
-                    isAlreadyConnected = true;
-                    break;
-                }
-            }
+            edge2Info.point = evEdgeTangentLine(context, {
+                            "edge" : edge2Info.edge,
+                            "parameter" : edge2Info.parameter,
+                            "arcLengthParameterization" : true
+                        }).origin;
             
-            // Only add this connection if the vertex wasn't already connected
-            if (!isAlreadyConnected)
-            {
-                // Calculate the path length position of this vertex along edge group 2
-                var pathLengthRatio = calculatePathLengthRatioForVertex(context, currentPoint, edgeGroup2, totalLength2);
-                
-                println("Vertex " ~ j ~ " from edge2 at path length ratio: " ~ pathLengthRatio);
-                
-                // Convert the path length ratio to a specific edge and parameter on edge group 1
-                var correspondingOnEdge1 = convertPathLengthRatioToEdgeParameter(context, pathLengthRatio, edgeGroup1, totalLength1);
-                
-                correspondingOnEdge1.point = evEdgeTangentLine(context, {
-                                "edge" : correspondingOnEdge1.edge,
-                                "parameter" : correspondingOnEdge1.parameter,
-                                "arcLengthParameterization" : true
-                            }).origin;
-                
-                var connectionMap = {
-                    "connectionEntities" : qUnion([currentPoint, correspondingOnEdge1.edge]),
-                    "connectionEdges" : [correspondingOnEdge1.edge],
-                    "connectionEdgeParameters" : [correspondingOnEdge1.parameter]};
-                
-                loftConnections = append(loftConnections, connectionMap);
-                
-                println("Added reverse connection at parameter: " ~ correspondingOnEdge1.parameter);
-            }
+            // Debug visualization
+            debug(context, edge1Info.point, DebugColor.GREEN);
+            debug(context, edge2Info.point, DebugColor.MAGENTA);
+            
+            // Create connection from edge1 point to edge2
+            var connectionMap = {
+                "connectionEntities" : qUnion([edge1Info.edge, edge2Info.edge]),
+                "connectionEdges" : [edge1Info.edge, edge2Info.edge],
+                "connectionEdgeParameters" : [edge1Info.parameter, edge2Info.parameter]
+            };
+            
+            loftConnections = append(loftConnections, connectionMap);
+            
+            println("Connection at ratio " ~ ratio ~ ": edge1 param=" ~ edge1Info.parameter ~ ", edge2 param=" ~ edge2Info.parameter);
         }        
 
         var loftDerivativeInfo1 = {
@@ -206,6 +174,60 @@ export const loftAutoConnectionPathLength = defineFeature(function(context is Co
                 });
 
     });
+
+/**
+ * Remove duplicate ratios from an array (within tolerance).
+ * 
+ * @param ratios {array}: Array of numbers
+ * @returns {array}: Array with duplicates removed
+ */
+function removeDuplicateRatios(ratios is array) returns array
+{
+    var unique = [];
+    for (var ratio in ratios)
+    {
+        var isDuplicate = false;
+        for (var existing in unique)
+        {
+            if (abs(ratio - existing) < TOLERANCE.zeroLength)
+            {
+                isDuplicate = true;
+                break;
+            }
+        }
+        if (!isDuplicate)
+        {
+            unique = append(unique, ratio);
+        }
+    }
+    return unique;
+}
+
+/**
+ * Sort an array of numbers.
+ * 
+ * @param arr {array}: Array of numbers
+ * @returns {array}: Sorted array
+ */
+function sortRatios(arr is array) returns array
+{
+    // Simple bubble sort for small arrays
+    var sorted = arr;
+    var n = size(sorted);
+    for (var i = 0; i < n - 1; i += 1)
+    {
+        for (var j = 0; j < n - i - 1; j += 1)
+        {
+            if (sorted[j] > sorted[j + 1])
+            {
+                var temp = sorted[j];
+                sorted[j] = sorted[j + 1];
+                sorted[j + 1] = temp;
+            }
+        }
+    }
+    return sorted;
+}
 
 /**
  * Calculate the path length ratio (0 to 1) of a vertex position along an edge group.
