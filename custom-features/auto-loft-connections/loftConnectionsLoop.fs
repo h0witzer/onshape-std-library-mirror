@@ -53,6 +53,14 @@ export const loftAutoConnection = defineFeature(function(context is Context, id 
         annotation { "Name" : "Guide Curve 2", "Filter" : EntityType.EDGE && ConstructionObject.NO, "MaxNumberOfPicks" : 1 }
         definition.guide1 is Query;
         
+        annotation { "Name" : "Match curvature at Edge 1", "Default" : true }
+        definition.matchCurvature1 is boolean;
+        
+        annotation { "Name" : "Match curvature at Edge 2", "Default" : true }
+        definition.matchCurvature2 is boolean;
+        
+        annotation { "Name" : "Derivative magnitude", "Default" : 1.0 }
+        isReal(definition.derivativeMagnitude, POSITIVE_REAL_BOUNDS);
   
     }
     {
@@ -77,16 +85,18 @@ export const loftAutoConnection = defineFeature(function(context is Context, id 
 
         var loftDerivativeInfo1 = {
             "profileIndex" : 0,
-            "magnitude" : 1,
-            "matchCurvature" : false,
-            "adjacentFaces" : qAdjacent(edgeGroup1, AdjacencyType.EDGE, EntityType.FACE)
+            "magnitude" : definition.derivativeMagnitude,
+            "matchCurvature" : definition.matchCurvature1,
+            "adjacentFaces" : qAdjacent(edgeGroup1, AdjacencyType.EDGE, EntityType.FACE),
+            "userDefinedAdjacentFaces" : false
         };
 
         var loftDerivativeInfo2 = {
             "profileIndex" : 1,
-            "magnitude" : 1,
-            "matchCurvature" : false,
-            "adjacentFaces" : qAdjacent(edgeGroup2, AdjacencyType.EDGE, EntityType.FACE)
+            "magnitude" : definition.derivativeMagnitude,
+            "matchCurvature" : definition.matchCurvature2,
+            "adjacentFaces" : qAdjacent(edgeGroup2, AdjacencyType.EDGE, EntityType.FACE),
+            "userDefinedAdjacentFaces" : false
         };
 
 
