@@ -5,21 +5,11 @@ export import(path : "onshape/std/profilecontrolmode.gen.fs", version : "2837.0"
 import(path : "onshape/std/boolean.fs", version : "2837.0");
 import(path : "bb423a46a0203bb01d6f6409", version : "b53602a655f9004e78da482b");//splineFunctions.fs
 
-/**
- * Describes the type of parameter used to define the twist in the sweep.
- * @value REVOLUTIONS : Define the twist by specifying the number of revolutions (twists).
- * @value PITCH : Define the twist by specifying the distance between each revolution along the path.
- * @value TWIST_ANGLE : Define the twist by specifying the total angle of twist around the path.
- */
-export enum TwistType
-{
-    annotation { "Name" : "Revolutions" }
-    REVOLUTIONS,
-    annotation { "Name" : "Pitch" }
-    PITCH,
-    annotation { "Name" : "Twist angle" }
-    TWIST_ANGLE
-}
+// Import the 3dSpiral feature and its types
+import(path : "bb423a46a0203bb01d6f6409/3dSpiral", version : "b53602a655f9004e78da482b");
+
+// Re-export SpiralType from 3dSpiral for use in preconditions
+export import(path : "bb423a46a0203bb01d6f6409/3dSpiral", version : "b53602a655f9004e78da482b") as SpiralTypeImport;
 
 annotation { "Feature Type Name" : "Twisted Sweep" }
 export const twistedSweep = defineFeature(function(context is Context, id is Id, definition is map)
@@ -44,27 +34,30 @@ export const twistedSweep = defineFeature(function(context is Context, id is Id,
         annotation { "Name" : "Sweep path", "Filter" : (EntityType.EDGE && ConstructionObject.NO) || (EntityType.BODY && BodyType.WIRE && SketchObject.NO) }
         definition.pathEdge is Query;
 
-        annotation { "Name" : "Twist type", "UIHint" : UIHint.SHOW_LABEL }
-        definition.twistType is TwistType;
+        annotation { "Name" : "Twist radius" }
+        isLength(definition.twistRadius, NONNEGATIVE_LENGTH_BOUNDS);
 
-        if (definition.twistType == TwistType.REVOLUTIONS)
+        annotation { "Name" : "Spiral type", "UIHint" : UIHint.SHOW_LABEL }
+        definition.spiralType is SpiralType;
+
+        if (definition.spiralType == SpiralType.REVOLUTIONS)
         {
             annotation { "Name" : "Number of revolutions" }
             isInteger(definition.revNumber, POSITIVE_COUNT_BOUNDS);
         }
-        else if (definition.twistType == TwistType.PITCH)
+        else if (definition.spiralType == SpiralType.PITCH)
         {
             annotation { "Name" : "Pitch" }
             isLength(definition.pitch, NONNEGATIVE_LENGTH_BOUNDS);
         }
-        else if (definition.twistType == TwistType.TWIST_ANGLE)
+        else if (definition.spiralType == SpiralType.TWIST_ANGLE)
         {
             annotation { "Name" : "Twist angle" }
             isAngle(definition.twistAngle, ANGLE_360_FULL_DEFAULT_BOUNDS);
         }
 
         annotation { "Name" : "Flip twist direction", "UIHint" : UIHint.OPPOSITE_DIRECTION_CIRCULAR }
-        definition.flipTwistDir is boolean;
+        definition.flipDir is boolean;
 
         if (definition.bodyType == ExtendedToolBodyType.SOLID)
         {
@@ -76,77 +69,37 @@ export const twistedSweep = defineFeature(function(context is Context, id is Id,
         }
     }
     {
-        // Step 1: Generate the spiral using the 3dSpiral logic
-        const splineLength = evLength(context, { "entities" : definition.pathEdge });
+        // Step 1: Create the spiral using the existing 3dSpiral feature
+        const spiralDefinition = {
+                "splineEdge" : definition.pathEdge,
+                "radius" : definition.twistRadius,
+                "spiralType" : definition.spiralType,
+                "flipDir" : definition.flipDir
+            };
         
-        // Use a small fixed radius for the spiral offset - radius doesn't affect the twist
-        const spiralRadius = 0.001 * meter;
-
-        // Calculate the number of revolutions based on the twist type
-        var numberOfRevolutions;
-        if (definition.twistType == TwistType.REVOLUTIONS)
+        // Add the appropriate parameter based on spiral type
+        if (definition.spiralType == SpiralType.REVOLUTIONS)
         {
-            numberOfRevolutions = definition.revNumber;
+            spiralDefinition.revNumber = definition.revNumber;
         }
-        else if (definition.twistType == TwistType.PITCH)
+        else if (definition.spiralType == SpiralType.PITCH)
         {
-            numberOfRevolutions = splineLength / definition.pitch;
+            spiralDefinition.pitch = definition.pitch;
         }
-        else if (definition.twistType == TwistType.TWIST_ANGLE)
+        else if (definition.spiralType == SpiralType.TWIST_ANGLE)
         {
-            numberOfRevolutions = definition.twistAngle / (360 * degree);
+            spiralDefinition.twistAngle = definition.twistAngle;
         }
 
-        var pointNumber = max(20, round(splineLength / (1 * millimeter))) + round(10 * numberOfRevolutions);
+        // Call the 3dSpiral feature to generate the spiral curve
+        spiral3d(context, id + "spiral", spiralDefinition);
 
-        var path;
-        try
-        {
-            path = constructPath(context, definition.pathEdge);
-        }
-        catch
-        {
-            throw regenError("Failed to construct path from selected edges");
-        }
-
-        const pathTangentResult = evPathTangentLines(context, path, [0]);
-        var initTangent = pathTangentResult.tangentLines[0];
-        if (definition.flipTwistDir)
-            initTangent.direction *= -1;
-
-        const trArr = evPathTransfromArray(context, {
-                    "path" : path,
-                    "paramArr" : range(0, 1, pointNumber)
-                });
-
-        const angleArr = range(0 * degree, 360 * degree * numberOfRevolutions, pointNumber);
-
-        const initPoint = initTangent.origin + perpendicularVector(initTangent.direction) * spiralRadius;
-        var spiralPointList = [];
-
-        for (var i = 0; i < pointNumber; i += 1)
-        {
-            var point = rotationAround(initTangent, angleArr[i]) * initPoint;
-            spiralPointList = append(spiralPointList, trArr[i] * point);
-        }
-
-        if (path.closed)
-        {
-            spiralPointList = subArray(spiralPointList, 0, size(spiralPointList) - 2);
-            spiralPointList = append(spiralPointList, spiralPointList[0]);
-        }
-
-        // Step 2: Create the spiral curve
-        opFitSpline(context, id + "spiralCurve", {
-                    "points" : spiralPointList
-                });
-
-        // Step 3: Create a lofted surface between the original path and the spiral
+        // Step 2: Create a lofted surface between the original path and the spiral
         opLoft(context, id + "loftedSurface", {
-                    "profiles" : [definition.pathEdge, qCreatedBy(id + "spiralCurve", EntityType.EDGE)]
+                    "profiles" : [definition.pathEdge, qCreatedBy(id + "spiral", EntityType.EDGE)]
                 });
 
-        // Step 4: Perform the sweep with face locking
+        // Step 3: Perform the sweep with face locking
         const sweepDefinition = {
                 "path" : definition.pathEdge,
                 "profileControl" : ProfileControlMode.LOCK_FACES,
@@ -162,7 +115,7 @@ export const twistedSweep = defineFeature(function(context is Context, id is Id,
 
         opSweep(context, id + "sweep", sweepDefinition);
 
-        // Step 5: Apply boolean operations if needed
+        // Step 4: Apply boolean operations if needed
         if (definition.bodyType == ExtendedToolBodyType.SOLID)
         {
             processNewBodyIfNeeded(context, id, definition, reconstructOp);
@@ -172,10 +125,10 @@ export const twistedSweep = defineFeature(function(context is Context, id is Id,
             joinSurfaceBodiesWithAutoMatching(context, id, definition, false, reconstructOp);
         }
 
-        // Step 6: Clean up helper geometry
+        // Step 5: Clean up helper geometry (spiral and lofted surface)
         opDeleteBodies(context, id + "cleanup", {
                     "entities" : qUnion([
-                                qCreatedBy(id + "spiralCurve", EntityType.BODY),
+                                qCreatedBy(id + "spiral", EntityType.BODY),
                                 qCreatedBy(id + "loftedSurface", EntityType.BODY)
                             ])
                 });
@@ -183,6 +136,6 @@ export const twistedSweep = defineFeature(function(context is Context, id is Id,
     {
         bodyType : ExtendedToolBodyType.SOLID,
         operationType : NewBodyOperationType.NEW,
-        twistType : TwistType.REVOLUTIONS,
+        spiralType : SpiralType.REVOLUTIONS,
         surfaceOperationType : NewSurfaceOperationType.NEW
     });
