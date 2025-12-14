@@ -62,14 +62,12 @@ export const loftAutoConnection = defineFeature(function(context is Context, id 
         
         debug(context, edgeInternalPoints1, DebugColor.RED);
 
-        var currentPoint;
-        var corresponding;
         var loftConnections = [];
 
         // First pass: Create connections from edge group 1 to edge group 2
         for (var i = 0; i < evaluateQueryCount(context, edgeInternalPoints1); i += 1)
         {
-            currentPoint = qNthElement(edgeInternalPoints1, i); // obtain each point from edge1
+            var currentPoint = qNthElement(edgeInternalPoints1, i); // obtain each point from edge1
 
             edgeDist = evDistance(context, { // evaluate the distance to edgeGroup2 and obtain closest edge and parameter
                         "side0" : currentPoint,
@@ -122,7 +120,7 @@ export const loftAutoConnection = defineFeature(function(context is Context, id 
         
         for (var j = 0; j < evaluateQueryCount(context, edgeInternalPoints2); j += 1)
         {
-            currentPoint = qNthElement(edgeInternalPoints2, j); // obtain each point from edge2
+            var currentPoint = qNthElement(edgeInternalPoints2, j); // obtain each point from edge2
             
             // Get the position of this vertex
             var currentPointPosition = evVertexPoint(context, {
