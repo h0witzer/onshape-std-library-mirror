@@ -67,7 +67,7 @@ export const twistedSweep = defineFeature(function(context is Context, id is Id,
     }
     {
         // Step 1: Create the spiral using the existing 3dSpiral feature
-        const spiralDefinition = {
+        var spiralDefinition = {
                 "splineEdge" : definition.pathEdge,
                 "radius" : definition.twistRadius,
                 "spiralType" : definition.spiralType,
@@ -93,11 +93,11 @@ export const twistedSweep = defineFeature(function(context is Context, id is Id,
 
         // Step 2: Create a lofted surface between the original path and the spiral
         opLoft(context, id + "loftedSurface", {
-                    "profiles" : [definition.pathEdge, qCreatedBy(id + "spiral", EntityType.EDGE)]
+                    "profileSubqueries" : [definition.pathEdge, qCreatedBy(id + "spiral", EntityType.EDGE)]
                 });
 
         // Step 3: Perform the sweep with face locking using the sweep feature
-        const sweepDefinition = {
+        var sweepDefinition = {
                 "bodyType" : definition.bodyType,
                 "operationType" : definition.operationType,
                 "surfaceOperationType" : definition.surfaceOperationType,
