@@ -65,7 +65,7 @@ export const loftAutoConnection = defineFeature(function(context is Context, id 
         var currentPoint;
         var corresponding;
         var loftConnections = [];
-        var connectedVerticesFromEdge2 = []; // Track vertices from edge2 that are already connected
+        var connectedVerticesFromEdge2Map = {}; // Track vertices from edge2 that are already connected (as a map for O(1) lookup)
 
         // First pass: Create connections from edge group 1 to edge group 2
         for (var i = 0; i < evaluateQueryCount(context, edgeInternalPoints1); i += 1)
@@ -126,10 +126,10 @@ export const loftAutoConnection = defineFeature(function(context is Context, id 
             for (var vertex2 in endPoints2Evaluated)
             {
                 var vertexPosition = edge2VertexPositions[vertex2];
-                // If the vertex is very close to the connection point, mark it as connected
+                // If the vertex is very close to the connection point, mark it as connected (avoid duplicates)
                 if (norm(vertexPosition - connectionPointOnEdge2) < TOLERANCE.zeroLength * meter)
                 {
-                    connectedVerticesFromEdge2 = append(connectedVerticesFromEdge2, vertex2);
+                    connectedVerticesFromEdge2Map[vertex2] = true;
                     break;
                 }
             }
@@ -147,27 +147,8 @@ export const loftAutoConnection = defineFeature(function(context is Context, id 
         {
             currentPoint = qNthElement(edgeInternalPoints2, j); // obtain each point from edge2
             
-            // Check if this vertex was already connected in the first pass
-            // Use cached position if available
-            var currentPointPosition = edge2VertexPositions[currentPoint];
-            if (currentPointPosition == undefined)
-            {
-                currentPointPosition = evVertexPoint(context, {
-                            "vertex" : currentPoint
-                        });
-            }
-            
-            var isAlreadyConnected = false;
-            for (var connectedVertex in connectedVerticesFromEdge2)
-            {
-                // Use cached position
-                var connectedPosition = edge2VertexPositions[connectedVertex];
-                if (norm(currentPointPosition - connectedPosition) < TOLERANCE.zeroLength * meter)
-                {
-                    isAlreadyConnected = true;
-                    break;
-                }
-            }
+            // Check if this vertex was already connected in the first pass using O(1) map lookup
+            var isAlreadyConnected = connectedVerticesFromEdge2Map[currentPoint] == true;
             
             // Only add this connection if the vertex wasn't already connected
             if (!isAlreadyConnected)
