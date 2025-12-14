@@ -108,9 +108,6 @@ export const loftAutoConnection = defineFeature(function(context is Context, id 
         var guidesArray = [guide0, guide1];
         if (definition.useG3Guides)
         {
-            var adjacentFaces1 = qAdjacent(edgeGroup1, AdjacencyType.EDGE, EntityType.FACE);
-            var adjacentFaces2 = qAdjacent(edgeGroup2, AdjacencyType.EDGE, EntityType.FACE);
-            
             for (var i = 0; i < size(loftConnections); i += 1)
             {
                 try silent
@@ -134,6 +131,10 @@ export const loftAutoConnection = defineFeature(function(context is Context, id 
                     opPoint(context, paramPointId, {"point" : paramPoint});
                     var paramVertex = qCreatedBy(paramPointId, EntityType.VERTEX);
                     
+                    // Get adjacent faces for each vertex (select first face from each side)
+                    var adjacentFaces1 = qNthElement(qAdjacent(connectionVertex, AdjacencyType.VERTEX, EntityType.FACE), 0);
+                    var adjacentFaces2 = qNthElement(qAdjacent(paramVertex, AdjacencyType.VERTEX, EntityType.FACE), 0);
+                    
                     // Create G3 bridging curve between the vertices
                     bridgingCurve(context, bridgeId, {
                         "side1" : qUnion([connectionVertex, adjacentFaces1]),
@@ -141,7 +142,8 @@ export const loftAutoConnection = defineFeature(function(context is Context, id 
                         "flip1" : false,
                         "side2" : qUnion([paramVertex, adjacentFaces2]),
                         "match2" : BridgingCurveMatchType.G3,
-                        "flip2" : false
+                        "flip2" : false,
+                        "editControlPoints" : false
                     });
                     
                     var bridgeCurve = qCreatedBy(bridgeId, EntityType.EDGE);
@@ -430,10 +432,6 @@ function sortRatios(arr is array) returns array
  */
 function calculatePathLengthRatioForVertex(context is Context, vertex is Query, path is Path, totalLength is ValueWithUnits) returns number
 {
-    var vertexPosition = evVertexPoint(context, {
-                "vertex" : vertex
-            });
-    
     // Find which edge in the ordered path contains this vertex
     var pathLengthBeforeEdge = 0 * meter;
     
