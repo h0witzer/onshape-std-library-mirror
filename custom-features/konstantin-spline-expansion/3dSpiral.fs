@@ -2,6 +2,21 @@ FeatureScript 1364;
 import(path : "onshape/std/geometry.fs", version : "1364.0");
 import(path : "bb423a46a0203bb01d6f6409", version : "b53602a655f9004e78da482b");//splineFunctions.fs
 
+/**
+ * Describes the type of parameter used to define the spiral.
+ * @value REVOLUTIONS : Define the spiral by specifying the number of revolutions (twists).
+ * @value PITCH : Define the spiral by specifying the distance between each revolution along the path.
+ * @value TWIST_ANGLE : Define the spiral by specifying the total angle of twist around the path.
+ */
+export enum SpiralType
+{
+    annotation { "Name" : "Revolutions" }
+    REVOLUTIONS,
+    annotation { "Name" : "Pitch" }
+    PITCH,
+    annotation { "Name" : "Twist angle" }
+    TWIST_ANGLE
+}
 
 annotation { "Feature Type Name" : "3D Spiral" }
 export const spiral3d = defineFeature(function(context is Context, id is Id, definition is map)
@@ -13,18 +28,52 @@ export const spiral3d = defineFeature(function(context is Context, id is Id, def
         annotation { "Name" : "Radius" }
         isLength(definition.radius, LENGTH_BOUNDS);
 
-        annotation { "Name" : "Number of revolutions" }
-        isInteger(definition.revNumber, POSITIVE_COUNT_BOUNDS);
+        annotation { "Name" : "Spiral type", "UIHint" : UIHint.SHOW_LABEL }
+        definition.spiralType is SpiralType;
+
+        if (definition.spiralType == SpiralType.REVOLUTIONS)
+        {
+            annotation { "Name" : "Number of revolutions" }
+            isInteger(definition.revNumber, POSITIVE_COUNT_BOUNDS);
+        }
+        else if (definition.spiralType == SpiralType.PITCH)
+        {
+            annotation { "Name" : "Pitch" }
+            isLength(definition.pitch, NONNEGATIVE_LENGTH_BOUNDS);
+        }
+        else if (definition.spiralType == SpiralType.TWIST_ANGLE)
+        {
+            annotation { "Name" : "Twist angle" }
+            isAngle(definition.twistAngle, ANGLE_360_ZERO_DEFAULT_BOUNDS);
+        }
 
         annotation { "Name" : "Flip spiral direction", "UIHint" : UIHint.OPPOSITE_DIRECTION_CIRCULAR }
         definition.flipDir is boolean;
 
     }
     {
-        const L = evLength(context, { "entities" : definition.splineEdge });
-        const r = definition.radius;
+        const splineLength = evLength(context, { "entities" : definition.splineEdge });
+        const spiralRadius = definition.radius;
 
-        var pointNumber = hypot(2 * PI * r * definition.revNumber, L) / (10 * millimeter) + 10 * definition.revNumber;
+        // Calculate the number of revolutions based on the spiral type
+        var numberOfRevolutions;
+        if (definition.spiralType == SpiralType.REVOLUTIONS)
+        {
+            numberOfRevolutions = definition.revNumber;
+        }
+        else if (definition.spiralType == SpiralType.PITCH)
+        {
+            // Pitch is the axial distance per revolution
+            // For a 3D spiral along a curve, the pitch relates to the curve length
+            numberOfRevolutions = splineLength / definition.pitch;
+        }
+        else if (definition.spiralType == SpiralType.TWIST_ANGLE)
+        {
+            // Convert twist angle to number of revolutions
+            numberOfRevolutions = definition.twistAngle / (360 * degree);
+        }
+
+        var pointNumber = hypot(2 * PI * spiralRadius * numberOfRevolutions, splineLength) / (10 * millimeter) + 10 * numberOfRevolutions;
         pointNumber = round(pointNumber);
 
         const path = constructPath(context, definition.splineEdge);
@@ -38,9 +87,9 @@ export const spiral3d = defineFeature(function(context is Context, id is Id, def
                     "paramArr" : range(0, 1, pointNumber)
                 });
 
-        const angleArr = range(0 * degree, 360 * degree * definition.revNumber, pointNumber);
+        const angleArr = range(0 * degree, 360 * degree * numberOfRevolutions, pointNumber);
 
-        const initPoint = initTangent.origin + perpendicularVector(initTangent.direction) * r;
+        const initPoint = initTangent.origin + perpendicularVector(initTangent.direction) * spiralRadius;
         var pointList = [];
 
         for (var i = 0; i < pointNumber; i += 1)
@@ -62,4 +111,7 @@ export const spiral3d = defineFeature(function(context is Context, id is Id, def
         opFitSpline(context, id + "fitSplineSpiral", {
                     "points" : pointList
                 });
+    },
+    {
+        spiralType : SpiralType.REVOLUTIONS
     });
