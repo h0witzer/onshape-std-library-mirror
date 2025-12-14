@@ -3,13 +3,10 @@ import(path : "onshape/std/geometry.fs", version : "2837.0");
 export import(path : "onshape/std/tool.fs", version : "2837.0");
 export import(path : "onshape/std/profilecontrolmode.gen.fs", version : "2837.0");
 import(path : "onshape/std/boolean.fs", version : "2837.0");
-import(path : "bb423a46a0203bb01d6f6409", version : "b53602a655f9004e78da482b");//splineFunctions.fs
+import(path : "onshape/std/sweep.fs", version : "2837.0");
 
-// Import the 3dSpiral feature and its types
-import(path : "bb423a46a0203bb01d6f6409/3dSpiral", version : "b53602a655f9004e78da482b");
-
-// Re-export SpiralType from 3dSpiral for use in preconditions
-export import(path : "bb423a46a0203bb01d6f6409/3dSpiral", version : "b53602a655f9004e78da482b") as SpiralTypeImport;
+// Import the 3dSpiral feature with correct path
+export import(path : "58ce6c94dd2a64cc938d3bfc", version : "fc04ea61c3b34b2d5c037b9a");
 
 annotation { "Feature Type Name" : "Twisted Sweep" }
 export const twistedSweep = defineFeature(function(context is Context, id is Id, definition is map)
@@ -99,33 +96,30 @@ export const twistedSweep = defineFeature(function(context is Context, id is Id,
                     "profiles" : [definition.pathEdge, qCreatedBy(id + "spiral", EntityType.EDGE)]
                 });
 
-        // Step 3: Perform the sweep with face locking
+        // Step 3: Perform the sweep with face locking using the sweep feature
         const sweepDefinition = {
+                "bodyType" : definition.bodyType,
+                "operationType" : definition.operationType,
+                "surfaceOperationType" : definition.surfaceOperationType,
                 "path" : definition.pathEdge,
                 "profileControl" : ProfileControlMode.LOCK_FACES,
-                "lockFaces" : qCreatedBy(id + "loftedSurface", EntityType.FACE),
-                "profiles" : (definition.bodyType == ExtendedToolBodyType.SOLID) ? definition.profiles : undefined,
-                "surfaceProfiles" : (definition.bodyType == ExtendedToolBodyType.SURFACE) ? definition.surfaceProfiles : undefined
+                "lockFaces" : qCreatedBy(id + "loftedSurface", EntityType.FACE)
             };
-
-        const reconstructOp = function(id)
-            {
-                opSweep(context, id + "sweep", sweepDefinition);
-            };
-
-        opSweep(context, id + "sweep", sweepDefinition);
-
-        // Step 4: Apply boolean operations if needed
+        
+        // Add profiles based on body type
         if (definition.bodyType == ExtendedToolBodyType.SOLID)
         {
-            processNewBodyIfNeeded(context, id, definition, reconstructOp);
+            sweepDefinition.profiles = definition.profiles;
         }
-        else if (definition.surfaceOperationType == NewSurfaceOperationType.ADD)
+        else if (definition.bodyType == ExtendedToolBodyType.SURFACE)
         {
-            joinSurfaceBodiesWithAutoMatching(context, id, definition, false, reconstructOp);
+            sweepDefinition.surfaceProfiles = definition.surfaceProfiles;
         }
 
-        // Step 5: Clean up helper geometry (spiral and lofted surface)
+        // Call the sweep feature (handles boolean operations internally)
+        sweep(context, id + "sweep", sweepDefinition);
+
+        // Step 4: Clean up helper geometry (spiral and lofted surface)
         opDeleteBodies(context, id + "cleanup", {
                     "entities" : qUnion([
                                 qCreatedBy(id + "spiral", EntityType.BODY),
