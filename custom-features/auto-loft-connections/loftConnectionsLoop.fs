@@ -3,6 +3,18 @@ import(path : "onshape/std/common.fs", version : "2837.0");
 
 import(path : "12312312345abcabcabcdeff/a6fb0cf8f4a5191f6485f2f7/b2077a52c9d520f2bda0b236", version : "2c109a09f2a3e5d28a9f523f");
 
+/**
+ * Auto Connection Loop: Creates bidirectional loft connections between two edge groups.
+ * 
+ * This feature performs a two-pass connection algorithm to ensure all internal vertices 
+ * find partners for the loft operation:
+ * 
+ * 1. First pass: Creates connections from Edge Group 1 vertices to Edge Group 2
+ * 2. Second pass: Creates connections from unmatched Edge Group 2 vertices to Edge Group 1
+ * 
+ * This bidirectional approach guarantees consistent results regardless of input order 
+ * (A to B vs B to A) and ensures all vertices are properly connected.
+ */
 
 export const INDEX_BOUNDS =
 {
@@ -53,7 +65,9 @@ export const loftAutoConnection = defineFeature(function(context is Context, id 
         var currentPoint;
         var corresponding;
         var loftConnections = [];
+        var connectedVerticesFromEdge2 = []; // Track vertices from edge2 that are already connected
 
+        // First pass: Create connections from edge group 1 to edge group 2
         for (var i = 0; i < evaluateQueryCount(context, edgeInternalPoints1); i += 1)
         {
             currentPoint = qNthElement(edgeInternalPoints1, i); // obtain each point from edge1
@@ -82,6 +96,95 @@ export const loftAutoConnection = defineFeature(function(context is Context, id 
             loftConnections = append(loftConnections, connectionMap);
 
             println(connectionMap.connectionEdgeParameters); 
+        }
+        
+        // Collect all vertices from edge2 that have been connected in the first pass
+        // by checking which edge2 vertices are close to the connection points on edge2
+        var endPoints2 = qAdjacent(edgeGroup2, AdjacencyType.VERTEX, EntityType.VERTEX);
+        for (var k = 0; k < size(loftConnections); k += 1)
+        {
+            // Get the point on edge2 from this connection
+            var edge2InConnection = loftConnections[k].connectionEdges[0];
+            var parameter2 = loftConnections[k].connectionEdgeParameters[0];
+            var connectionPointOnEdge2 = evEdgeTangentLine(context, {
+                        "edge" : edge2InConnection,
+                        "parameter" : parameter2
+                    }).origin;
+            
+            // Find which vertex from edge2 is closest to this connection point
+            var endPoints2Evaluated = evaluateQuery(context, endPoints2);
+            for (var vertex2 in endPoints2Evaluated)
+            {
+                var vertexPosition = evVertexPoint(context, {
+                            "vertex" : vertex2
+                        });
+                // If the vertex is very close to the connection point, mark it as connected
+                if (norm(vertexPosition - connectionPointOnEdge2) < TOLERANCE.zeroLength * meter)
+                {
+                    connectedVerticesFromEdge2 = append(connectedVerticesFromEdge2, vertex2);
+                    break;
+                }
+            }
+        }
+        
+        // Second pass: Create connections from edge group 2 to edge group 1 for unmatched vertices
+        var adjFaces2 = qAdjacent(edgeGroup2, AdjacencyType.EDGE, EntityType.FACE);
+        var smoothEdges2 = qAdjacent(adjFaces2, AdjacencyType.EDGE, EntityType.EDGE)->qEdgeConvexityTypeFilter(EdgeConvexityType.SMOOTH);
+        var internalEndPoints2 = qAdjacent(smoothEdges2, AdjacencyType.VERTEX, EntityType.VERTEX);
+        var edgeInternalPoints2 = qIntersection([endPoints2, internalEndPoints2]);
+        
+        debug(context, edgeInternalPoints2, DebugColor.BLUE);
+        
+        for (var j = 0; j < evaluateQueryCount(context, edgeInternalPoints2); j += 1)
+        {
+            currentPoint = qNthElement(edgeInternalPoints2, j); // obtain each point from edge2
+            
+            // Check if this vertex was already connected in the first pass
+            var currentPointPosition = evVertexPoint(context, {
+                        "vertex" : currentPoint
+                    });
+            
+            var isAlreadyConnected = false;
+            for (var connectedVertex in connectedVerticesFromEdge2)
+            {
+                var connectedPosition = evVertexPoint(context, {
+                            "vertex" : connectedVertex
+                        });
+                if (norm(currentPointPosition - connectedPosition) < TOLERANCE.zeroLength * meter)
+                {
+                    isAlreadyConnected = true;
+                    break;
+                }
+            }
+            
+            // Only add this connection if the vertex wasn't already connected
+            if (!isAlreadyConnected)
+            {
+                // Find closest point on edge group 1
+                edgeDist = evDistance(context, {
+                            "side0" : currentPoint,
+                            "side1" : edgeGroup1
+                        });
+                
+                var corresponding = {
+                        "edge" : qNthElement(edgeGroup1, edgeDist.sides[1].index),
+                        "parameter" : edgeDist.sides[1].parameter,
+                    };
+                
+                corresponding.point = evEdgeTangentLine(context, {
+                                "edge" : corresponding.edge,
+                                "parameter" : corresponding.parameter
+                            }).origin;
+                
+                var connectionMap = {
+                    "connectionEntities" : qUnion([currentPoint, corresponding.edge]),
+                    "connectionEdges" : [corresponding.edge],
+                    "connectionEdgeParameters" : [corresponding.parameter]};
+                
+                loftConnections = append(loftConnections, connectionMap);
+                
+                println("Added reverse connection: " ~ connectionMap.connectionEdgeParameters);
+            }
         }        
 
         var loftDerivativeInfo1 = {
