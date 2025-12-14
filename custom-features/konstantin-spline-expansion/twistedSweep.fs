@@ -1,8 +1,8 @@
-FeatureScript 1364;
-import(path : "onshape/std/geometry.fs", version : "1364.0");
-import(path : "onshape/std/tool.fs", version : "1364.0");
-import(path : "onshape/std/profilecontrolmode.gen.fs", version : "1364.0");
-import(path : "onshape/std/boolean.fs", version : "1364.0");
+FeatureScript 2837;
+import(path : "onshape/std/geometry.fs", version : "2837.0");
+export import(path : "onshape/std/tool.fs", version : "2837.0");
+export import(path : "onshape/std/profilecontrolmode.gen.fs", version : "2837.0");
+import(path : "onshape/std/boolean.fs", version : "2837.0");
 import(path : "bb423a46a0203bb01d6f6409", version : "b53602a655f9004e78da482b");//splineFunctions.fs
 
 /**
@@ -44,9 +44,6 @@ export const twistedSweep = defineFeature(function(context is Context, id is Id,
         annotation { "Name" : "Sweep path", "Filter" : (EntityType.EDGE && ConstructionObject.NO) || (EntityType.BODY && BodyType.WIRE && SketchObject.NO) }
         definition.pathEdge is Query;
 
-        annotation { "Name" : "Twist radius" }
-        isLength(definition.twistRadius, LENGTH_BOUNDS);
-
         annotation { "Name" : "Twist type", "UIHint" : UIHint.SHOW_LABEL }
         definition.twistType is TwistType;
 
@@ -81,7 +78,9 @@ export const twistedSweep = defineFeature(function(context is Context, id is Id,
     {
         // Step 1: Generate the spiral using the 3dSpiral logic
         const splineLength = evLength(context, { "entities" : definition.pathEdge });
-        const spiralRadius = definition.twistRadius;
+        
+        // Use a small fixed radius for the spiral offset - radius doesn't affect the twist
+        const spiralRadius = 0.001 * meter;
 
         // Calculate the number of revolutions based on the twist type
         var numberOfRevolutions;
@@ -98,12 +97,20 @@ export const twistedSweep = defineFeature(function(context is Context, id is Id,
             numberOfRevolutions = definition.twistAngle / (360 * degree);
         }
 
-        var pointNumber = hypot(2 * PI * spiralRadius * numberOfRevolutions, splineLength) / (10 * millimeter) + 10 * numberOfRevolutions;
-        pointNumber = round(pointNumber);
+        var pointNumber = max(20, round(splineLength / (1 * millimeter))) + round(10 * numberOfRevolutions);
 
-        const path = constructPath(context, definition.pathEdge);
+        var path;
+        try
+        {
+            path = constructPath(context, definition.pathEdge);
+        }
+        catch
+        {
+            throw regenError("Failed to construct path from selected edges");
+        }
 
-        var initTangent = evPathTangentLines(context, path, [0]).tangentLines[0];
+        const pathTangentResult = evPathTangentLines(context, path, [0]);
+        var initTangent = pathTangentResult.tangentLines[0];
         if (definition.flipTwistDir)
             initTangent.direction *= -1;
 
