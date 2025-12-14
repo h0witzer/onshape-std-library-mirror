@@ -97,7 +97,7 @@ export const spiral3d = defineFeature(function(context is Context, id is Id, def
         }
         
         // Validate that we got valid tangent lines
-        if (initTangentResult == undefined || initTangentResult.tangentLines == undefined || size(initTangentResult.tangentLines) == 0)
+        if (initTangentResult?.tangentLines == undefined || size(initTangentResult.tangentLines) == 0)
         {
             throw regenError("Failed to evaluate tangent lines on the selected edge. Please select a different edge.");
         }
