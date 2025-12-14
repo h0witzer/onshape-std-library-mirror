@@ -241,30 +241,16 @@ function sortRatios(arr is array) returns array
  */
 function calculatePathLengthRatioForVertex(context is Context, vertex is Query, edgeGroup is Query, totalLength is ValueWithUnits) returns number
 {
-    // Get the 3D position of the vertex
-    var vertexPosition = evVertexPoint(context, {
-                "vertex" : vertex
-            });
-    
     // Find which edge in the group contains this vertex or is closest to it
+    // Use arcLengthParameterization to get the correct parameter
     var edgeDist = evDistance(context, {
                 "side0" : vertex,
-                "side1" : edgeGroup
+                "side1" : edgeGroup,
+                "arcLengthParameterization" : true
             });
     
     var closestEdge = qNthElement(edgeGroup, edgeDist.sides[1].index);
-    
-    // Now we need to find the arc-length parameter on this edge
-    // We'll project the vertex position onto the edge with arc-length parameterization
-    var closestEdgeLength = evLength(context, {
-                "entities" : closestEdge
-            });
-    
-    // Use evDistance to get the closest point, then use a binary search or approximation
-    // to find the arc-length parameter. For simplicity, we'll use evDistance result
-    // but recognize it's not perfect. A better approach would be to evaluate multiple
-    // points along the edge and find the closest one.
-    var arcLengthParameter = findArcLengthParameter(context, closestEdge, vertexPosition);
+    var arcLengthParameter = edgeDist.sides[1].parameter;
     
     // Calculate the path length up to the start of this edge
     var edgeGroupArray = evaluateQuery(context, edgeGroup);
@@ -287,6 +273,9 @@ function calculatePathLengthRatioForVertex(context is Context, vertex is Query, 
     }
     
     // Calculate the length along the closest edge to the vertex using arc-length parameter
+    var closestEdgeLength = evLength(context, {
+                "entities" : closestEdge
+            });
     var lengthAlongEdge = closestEdgeLength * arcLengthParameter;
     
     // Total path length to the vertex
@@ -296,79 +285,6 @@ function calculatePathLengthRatioForVertex(context is Context, vertex is Query, 
     var ratio = totalPathLengthToVertex / totalLength;
     
     return ratio;
-}
-
-/**
- * Find the arc-length parameter for a point on an edge.
- * Uses binary search to find the parameter that gives the closest point.
- * 
- * @param context {Context}: The context
- * @param edge {Query}: The edge to search on
- * @param targetPoint {Vector}: The 3D point to find parameter for
- * 
- * @returns {number}: The arc-length parameter (0-1)
- */
-function findArcLengthParameter(context is Context, edge is Query, targetPoint is Vector) returns number
-{
-    // Binary search for the arc-length parameter
-    var minParam = 0.0;
-    var maxParam = 1.0;
-    var tolerance = 0.0001;
-    
-    for (var iter = 0; iter < 20; iter += 1)
-    {
-        var midParam = (minParam + maxParam) / 2.0;
-        
-        var pointAtMid = evEdgeTangentLine(context, {
-                    "edge" : edge,
-                    "parameter" : midParam,
-                    "arcLengthParameterization" : true
-                }).origin;
-        
-        var distToTarget = norm(pointAtMid - targetPoint);
-        
-        // Check if we're close enough
-        if (distToTarget < TOLERANCE.zeroLength * meter)
-        {
-            return midParam;
-        }
-        
-        // Determine which half to search
-        // Evaluate at slightly before and after midParam to determine gradient
-        var paramBefore = max(0.0, midParam - 0.01);
-        var paramAfter = min(1.0, midParam + 0.01);
-        
-        var pointBefore = evEdgeTangentLine(context, {
-                    "edge" : edge,
-                    "parameter" : paramBefore,
-                    "arcLengthParameterization" : true
-                }).origin;
-        
-        var pointAfter = evEdgeTangentLine(context, {
-                    "edge" : edge,
-                    "parameter" : paramAfter,
-                    "arcLengthParameterization" : true
-                }).origin;
-        
-        var distBefore = norm(pointBefore - targetPoint);
-        var distAfter = norm(pointAfter - targetPoint);
-        
-        if (distBefore < distToTarget)
-        {
-            maxParam = midParam;
-        }
-        else if (distAfter < distToTarget)
-        {
-            minParam = midParam;
-        }
-        else
-        {
-            // We're at a local minimum
-            return midParam;
-        }
-    }
-    
-    return (minParam + maxParam) / 2.0;
 }
 
 /**
