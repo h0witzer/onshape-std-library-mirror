@@ -31,9 +31,6 @@ export const twistedSweep = defineFeature(function(context is Context, id is Id,
         annotation { "Name" : "Sweep path", "Filter" : (EntityType.EDGE && ConstructionObject.NO) || (EntityType.BODY && BodyType.WIRE && SketchObject.NO) }
         definition.pathEdge is Query;
 
-        annotation { "Name" : "Twist radius" }
-        isLength(definition.twistRadius, NONNEGATIVE_LENGTH_BOUNDS);
-
         annotation { "Name" : "Spiral type", "UIHint" : UIHint.SHOW_LABEL }
         definition.spiralType is SpiralType;
 
@@ -66,10 +63,53 @@ export const twistedSweep = defineFeature(function(context is Context, id is Id,
         }
     }
     {
+        // Calculate twist radius based on the furthest vertex of the profile from the path
+        var twistRadius = 1 * millimeter; // Default fallback
+        
+        // Get the profile query based on body type
+        var profileQuery;
+        if (definition.bodyType == ExtendedToolBodyType.SOLID)
+        {
+            profileQuery = definition.profiles;
+        }
+        else if (definition.bodyType == ExtendedToolBodyType.SURFACE)
+        {
+            profileQuery = definition.surfaceProfiles;
+        }
+        
+        // Get vertices from the profile
+        var profileVertices = qAdjacent(profileQuery, AdjacencyType.VERTEX, EntityType.VERTEX);
+        
+        // Find the furthest vertex from the path
+        if (!isQueryEmpty(context, profileVertices))
+        {
+            var maxDistance = 0 * meter;
+            var vertices = evaluateQuery(context, profileVertices);
+            
+            for (var vertex in vertices)
+            {
+                var distResult = evDistance(context, {
+                            "side0" : vertex,
+                            "side1" : definition.pathEdge
+                        });
+                
+                if (distResult.distance > maxDistance)
+                {
+                    maxDistance = distResult.distance;
+                }
+            }
+            
+            // Use the maximum distance found, with a small multiplier for safety
+            if (maxDistance > 0 * meter)
+            {
+                twistRadius = maxDistance * 1.5;
+            }
+        }
+        
         // Step 1: Create the spiral using the existing 3dSpiral feature
         var spiralDefinition = {
                 "splineEdge" : definition.pathEdge,
-                "radius" : definition.twistRadius,
+                "radius" : twistRadius,
                 "spiralType" : definition.spiralType,
                 "flipDir" : definition.flipDir
             };
