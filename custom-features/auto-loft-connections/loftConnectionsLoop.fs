@@ -1,6 +1,8 @@
 FeatureScript 2837;
 import(path : "onshape/std/common.fs", version : "2837.0");
 import(path : "onshape/std/path.fs", version : "2837.0");
+import(path : "onshape/std/feature.fs", version : "2837.0");
+import(path : "onshape/std/bridgingCurve.fs", version : "2837.0");
 
 import(path : "12312312345abcabcabcdeff/a6fb0cf8f4a5191f6485f2f7/b2077a52c9d520f2bda0b236", version : "2c109a09f2a3e5d28a9f523f");
 
@@ -61,6 +63,9 @@ export const loftAutoConnection = defineFeature(function(context is Context, id 
         
         annotation { "Name" : "Derivative magnitude", "Default" : 1.0 }
         isReal(definition.derivativeMagnitude, POSITIVE_REAL_BOUNDS);
+        
+        annotation { "Name" : "Use G3 bridging curve guides", "Default" : false }
+        definition.useG3Guides is boolean;
   
     }
     {
@@ -99,10 +104,55 @@ export const loftAutoConnection = defineFeature(function(context is Context, id 
             "userDefinedAdjacentFaces" : false
         };
 
+        // Generate G3 bridging curve guides if requested
+        var guidesArray = [guide0, guide1];
+        if (definition.useG3Guides)
+        {
+            var adjacentFaces1 = qAdjacent(edgeGroup1, AdjacencyType.EDGE, EntityType.FACE);
+            var adjacentFaces2 = qAdjacent(edgeGroup2, AdjacencyType.EDGE, EntityType.FACE);
+            
+            for (var i = 0; i < size(loftConnections); i += 1)
+            {
+                try silent
+                {
+                    var connection = loftConnections[i];
+                    var bridgeId = id + ("bridge" ~ i);
+                    
+                    // Get the vertex from connection entities
+                    var connectionVertex = qEntityFilter(connection.connectionEntities, EntityType.VERTEX);
+                    
+                    // Get the edge and parameter for the other side
+                    var connectionEdge = connection.connectionEdges[0];
+                    var connectionParam = connection.connectionEdgeParameters[0];
+                    
+                    // Create point at the parameter location on the edge
+                    var paramPointId = id + ("paramPoint" ~ i);
+                    var paramPoint = evEdgeTangentLine(context, {
+                        "edge" : connectionEdge,
+                        "parameter" : connectionParam
+                    }).origin;
+                    opPoint(context, paramPointId, {"point" : paramPoint});
+                    var paramVertex = qCreatedBy(paramPointId, EntityType.VERTEX);
+                    
+                    // Create G3 bridging curve between the vertices
+                    bridgingCurve(context, bridgeId, {
+                        "side1" : qUnion([connectionVertex, adjacentFaces1]),
+                        "match1" : BridgingCurveMatchType.G3,
+                        "flip1" : false,
+                        "side2" : qUnion([paramVertex, adjacentFaces2]),
+                        "match2" : BridgingCurveMatchType.G3,
+                        "flip2" : false
+                    });
+                    
+                    var bridgeCurve = qCreatedBy(bridgeId, EntityType.EDGE);
+                    guidesArray = append(guidesArray, bridgeCurve);
+                }
+            }
+        }
 
         opLoft(context, id + "loft1", {
                     "profileSubqueries" : [edgeGroup1, edgeGroup2],
-                    "guideSubqueries": [guide0, guide1],
+                    "guideSubqueries": guidesArray,
                     "connections" : loftConnections,
                     "bodyType" : ToolBodyType.SURFACE,
                     // "trimProfiles" : true,
