@@ -115,35 +115,29 @@ export const loftAutoConnection = defineFeature(function(context is Context, id 
                     var connection = loftConnections[i];
                     var bridgeId = id + ("bridge" ~ i);
                     
-                    // Get the vertex from connection entities
-                    var connectionVertex = qEntityFilter(connection.connectionEntities, EntityType.VERTEX);
+                    // Get exactly one vertex from connection entities
+                    var connectionVertex = qNthElement(qEntityFilter(connection.connectionEntities, EntityType.VERTEX), 0);
                     
                     // Get the edge and parameter for the other side
                     var connectionEdge = connection.connectionEdges[0];
                     var connectionParam = connection.connectionEdgeParameters[0];
                     
-                    // Create point at the parameter location on the edge
-                    var paramPointId = id + ("paramPoint" ~ i);
-                    var paramPoint = evEdgeTangentLine(context, {
-                        "edge" : connectionEdge,
-                        "parameter" : connectionParam
-                    }).origin;
-                    opPoint(context, paramPointId, {"point" : paramPoint});
-                    var paramVertex = qCreatedBy(paramPointId, EntityType.VERTEX);
-                    
-                    // Get adjacent faces for each vertex (select first face from each side)
+                    // Get exactly one adjacent face for the first vertex
                     var adjacentFaces1 = qNthElement(qAdjacent(connectionVertex, AdjacencyType.VERTEX, EntityType.FACE), 0);
-                    var adjacentFaces2 = qNthElement(qAdjacent(paramVertex, AdjacencyType.VERTEX, EntityType.FACE), 0);
                     
-                    // Create G3 bridging curve between the vertices
+                    // Get exactly one adjacent face for the edge on side 2
+                    var adjacentFaces2 = qNthElement(qAdjacent(connectionEdge, AdjacencyType.EDGE, EntityType.FACE), 0);
+                    
+                    // Create G3 bridging curve between vertex and edge
                     bridgingCurve(context, bridgeId, {
                         "side1" : qUnion([connectionVertex, adjacentFaces1]),
                         "match1" : BridgingCurveMatchType.G3,
                         "flip1" : false,
-                        "side2" : qUnion([paramVertex, adjacentFaces2]),
+                        "side2" : qUnion([connectionEdge, adjacentFaces2]),
                         "match2" : BridgingCurveMatchType.G3,
                         "flip2" : false,
-                        "editControlPoints" : false
+                        "editControlPoints" : false,
+                        "endEdgeParameter" : connectionParam
                     });
                     
                     var bridgeCurve = qCreatedBy(bridgeId, EntityType.EDGE);
