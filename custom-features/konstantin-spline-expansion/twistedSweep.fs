@@ -137,27 +137,20 @@ export const twistedSweep = defineFeature(function(context is Context, id is Id,
                 });
 
         // Step 4: Perform the sweep with face locking
-        var sweepDefinition = {
+        const sweepDefinition = {
                 "path" : definition.pathEdge,
                 "profileControl" : ProfileControlMode.LOCK_FACES,
-                "lockFaces" : qCreatedBy(id + "loftedSurface", EntityType.FACE)
+                "lockFaces" : qCreatedBy(id + "loftedSurface", EntityType.FACE),
+                "profiles" : (definition.bodyType == ExtendedToolBodyType.SOLID) ? definition.profiles : undefined,
+                "surfaceProfiles" : (definition.bodyType == ExtendedToolBodyType.SURFACE) ? definition.surfaceProfiles : undefined
             };
-
-        if (definition.bodyType == ExtendedToolBodyType.SOLID)
-        {
-            sweepDefinition.profiles = definition.profiles;
-        }
-        else if (definition.bodyType == ExtendedToolBodyType.SURFACE)
-        {
-            sweepDefinition.surfaceProfiles = definition.surfaceProfiles;
-        }
-
-        opSweep(context, id + "sweep", sweepDefinition);
 
         const reconstructOp = function(id)
             {
                 opSweep(context, id + "sweep", sweepDefinition);
             };
+
+        opSweep(context, id + "sweep", sweepDefinition);
 
         // Step 5: Apply boolean operations if needed
         if (definition.bodyType == ExtendedToolBodyType.SOLID)
