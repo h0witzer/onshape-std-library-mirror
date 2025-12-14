@@ -93,6 +93,7 @@ export const twistedSweep = defineFeature(function(context is Context, id is Id,
 
         // Step 2: Create a lofted surface between the original path and the spiral
         opLoft(context, id + "loftedSurface", {
+                    "bodyType" : ExtendedToolBodyType.SURFACE,
                     "profileSubqueries" : [definition.pathEdge, qCreatedBy(id + "spiral", EntityType.EDGE)]
                 });
 
