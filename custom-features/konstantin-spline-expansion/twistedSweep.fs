@@ -37,7 +37,7 @@ export const twistedSweep = defineFeature(function(context is Context, id is Id,
         if (definition.spiralType == SpiralType.REVOLUTIONS)
         {
             annotation { "Name" : "Number of revolutions" }
-            isInteger(definition.revNumber, POSITIVE_COUNT_BOUNDS);
+            isReal(definition.revNumber, POSITIVE_REAL_BOUNDS);
         }
         else if (definition.spiralType == SpiralType.PITCH)
         {
