@@ -1,5 +1,8 @@
 FeatureScript 1364;
 import(path : "onshape/std/geometry.fs", version : "1364.0");
+import(path : "onshape/std/tool.fs", version : "1364.0");
+import(path : "onshape/std/profilecontrolmode.gen.fs", version : "1364.0");
+import(path : "onshape/std/boolean.fs", version : "1364.0");
 import(path : "bb423a46a0203bb01d6f6409", version : "b53602a655f9004e78da482b");//splineFunctions.fs
 
 /**
