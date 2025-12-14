@@ -1,5 +1,6 @@
 FeatureScript 2837;
 import(path : "onshape/std/common.fs", version : "2837.0");
+import(path : "onshape/std/path.fs", version : "2837.0");
 
 import(path : "12312312345abcabcabcdeff/a6fb0cf8f4a5191f6485f2f7/b2077a52c9d520f2bda0b236", version : "2c109a09f2a3e5d28a9f523f");
 
@@ -51,37 +52,34 @@ export const loftAutoConnectionPathLength = defineFeature(function(context is Co
         var guide0 = definition.guide0;
         var guide1 = definition.guide1;
 
-        var endPoints1 = qAdjacent(edgeGroup1, AdjacencyType.VERTEX, EntityType.VERTEX);
-
         println("Number of edges 1: " ~ evaluateQueryCount(context, edgeGroup1));
         println("Number of edges 2: " ~ evaluateQueryCount(context, edgeGroup2));
         
-        // Calculate total path length for both edge groups
-        var totalLength1 = evLength(context, {
-                    "entities" : edgeGroup1
-                });
-        var totalLength2 = evLength(context, {
-                    "entities" : edgeGroup2
-                });
+        // Construct ordered paths from the edge groups
+        var path1 = constructPath(context, edgeGroup1);
+        var path2 = constructPath(context, edgeGroup2);
+        
+        var totalLength1 = evPathLength(context, path1);
+        var totalLength2 = evPathLength(context, path2);
         
         println("Total length 1: " ~ totalLength1);
         println("Total length 2: " ~ totalLength2);
         
-        // Get the internal points for the profile. we don't want the edgeGroup endpoints
+        // Get the internal vertices for each path (vertices that are between edges)
+        var endPoints1 = qAdjacent(edgeGroup1, AdjacencyType.VERTEX, EntityType.VERTEX);
         var adjFaces1 = qAdjacent(edgeGroup1, AdjacencyType.EDGE, EntityType.FACE);
         var smoothEdges1 = qAdjacent(adjFaces1, AdjacencyType.EDGE, EntityType.EDGE)->qEdgeConvexityTypeFilter(EdgeConvexityType.SMOOTH);
         var internalEndPoints1 = qAdjacent(smoothEdges1, AdjacencyType.VERTEX, EntityType.VERTEX);
-        
         var edgeInternalPoints1 = qIntersection([endPoints1, internalEndPoints1]);
         
         debug(context, edgeInternalPoints1, DebugColor.RED);
 
-        // Step 1: Calculate path length ratios for all vertices in both edge groups
+        // Step 1: Calculate path length ratios for all vertices in both paths
         var pathRatios1 = [];
         for (var i = 0; i < evaluateQueryCount(context, edgeInternalPoints1); i += 1)
         {
             var currentPoint = qNthElement(edgeInternalPoints1, i);
-            var pathLengthRatio = calculatePathLengthRatioForVertex(context, currentPoint, edgeGroup1, totalLength1);
+            var pathLengthRatio = calculatePathLengthRatioForVertex(context, currentPoint, path1, totalLength1);
             pathRatios1 = append(pathRatios1, pathLengthRatio);
             println("Vertex " ~ i ~ " from edge1 at path length ratio: " ~ pathLengthRatio);
         }
@@ -98,7 +96,7 @@ export const loftAutoConnectionPathLength = defineFeature(function(context is Co
         for (var j = 0; j < evaluateQueryCount(context, edgeInternalPoints2); j += 1)
         {
             var currentPoint = qNthElement(edgeInternalPoints2, j);
-            var pathLengthRatio = calculatePathLengthRatioForVertex(context, currentPoint, edgeGroup2, totalLength2);
+            var pathLengthRatio = calculatePathLengthRatioForVertex(context, currentPoint, path2, totalLength2);
             pathRatios2 = append(pathRatios2, pathLengthRatio);
             println("Vertex " ~ j ~ " from edge2 at path length ratio: " ~ pathLengthRatio);
         }
@@ -114,9 +112,16 @@ export const loftAutoConnectionPathLength = defineFeature(function(context is Co
         var loftConnections = [];
         for (var ratio in allRatios)
         {
-            // Convert ratio to edge+parameter on both groups
-            var edge1Info = convertPathLengthRatioToEdgeParameter(context, ratio, edgeGroup1, totalLength1);
-            var edge2Info = convertPathLengthRatioToEdgeParameter(context, ratio, edgeGroup2, totalLength2);
+            // Convert ratio to edge+parameter on both paths using evPathTangentLines
+            var result1 = evPathTangentLines(context, path1, [ratio]);
+            var result2 = evPathTangentLines(context, path2, [ratio]);
+            
+            var edge1 = path1.edges[result1.edgeIndices[0]];
+            var edge2 = path2.edges[result2.edgeIndices[0]];
+            
+            // Calculate local parameters on the specific edges
+            var edge1Info = calculateLocalEdgeParameter(context, path1, result1.edgeIndices[0], ratio, totalLength1);
+            var edge2Info = calculateLocalEdgeParameter(context, path2, result2.edgeIndices[0], ratio, totalLength2);
             
             // Get the 3D points for debugging
             edge1Info.point = evEdgeTangentLine(context, {
@@ -230,111 +235,108 @@ function sortRatios(arr is array) returns array
 }
 
 /**
- * Calculate the path length ratio (0 to 1) of a vertex position along an edge group.
+ * Calculate the path length ratio (0 to 1) of a vertex position along a path.
  * 
  * @param context {Context}: The context
  * @param vertex {Query}: The vertex to find the position of
- * @param edgeGroup {Query}: The edge group to measure along
- * @param totalLength {ValueWithUnits}: The total length of the edge group
+ * @param path {Path}: The ordered path to measure along
+ * @param totalLength {ValueWithUnits}: The total length of the path
  * 
- * @returns {number}: The ratio (0 to 1) of the vertex position along the edge group
+ * @returns {number}: The ratio (0 to 1) of the vertex position along the path
  */
-function calculatePathLengthRatioForVertex(context is Context, vertex is Query, edgeGroup is Query, totalLength is ValueWithUnits) returns number
+function calculatePathLengthRatioForVertex(context is Context, vertex is Query, path is Path, totalLength is ValueWithUnits) returns number
 {
-    // Find which edge in the group contains this vertex or is closest to it
-    // Use arcLengthParameterization to get the correct parameter
-    var edgeDist = evDistance(context, {
-                "side0" : vertex,
-                "side1" : edgeGroup,
-                "arcLengthParameterization" : true
+    var vertexPosition = evVertexPoint(context, {
+                "vertex" : vertex
             });
     
-    var closestEdge = qNthElement(edgeGroup, edgeDist.sides[1].index);
-    var arcLengthParameter = edgeDist.sides[1].parameter;
-    
-    // Calculate the path length up to the start of this edge
-    var edgeGroupArray = evaluateQuery(context, edgeGroup);
+    // Find which edge in the ordered path contains this vertex
     var pathLengthBeforeEdge = 0 * meter;
     
-    for (var edge in edgeGroupArray)
+    for (var i = 0; i < size(path.edges); i += 1)
     {
-        var isClosestEdge = !isQueryEmpty(context, qIntersection([edge, closestEdge]));
-        if (isClosestEdge)
-        {
-            break;
-        }
-        else
-        {
-            var edgeLength = evLength(context, {
-                        "entities" : edge
-                    });
-            pathLengthBeforeEdge = pathLengthBeforeEdge + edgeLength;
-        }
-    }
-    
-    // Calculate the length along the closest edge to the vertex using arc-length parameter
-    var closestEdgeLength = evLength(context, {
-                "entities" : closestEdge
-            });
-    var lengthAlongEdge = closestEdgeLength * arcLengthParameter;
-    
-    // Total path length to the vertex
-    var totalPathLengthToVertex = pathLengthBeforeEdge + lengthAlongEdge;
-    
-    // Return as a ratio
-    var ratio = totalPathLengthToVertex / totalLength;
-    
-    return ratio;
-}
-
-/**
- * Convert a path length ratio (0 to 1) to a specific edge and parameter in an edge group.
- * 
- * @param context {Context}: The context
- * @param pathLengthRatio {number}: The ratio (0 to 1) of position along the edge group
- * @param edgeGroup {Query}: The edge group to find the edge in
- * @param totalLength {ValueWithUnits}: The total length of the edge group
- * 
- * @returns {map}: A map with "edge" (Query) and "parameter" (number) fields
- */
-function convertPathLengthRatioToEdgeParameter(context is Context, pathLengthRatio is number, edgeGroup is Query, totalLength is ValueWithUnits) returns map
-{
-    // Clamp the ratio to [0, 1] to handle numerical errors
-    pathLengthRatio = max(0.0, min(1.0, pathLengthRatio));
-    
-    var targetPathLength = totalLength * pathLengthRatio;
-    var edgeGroupArray = evaluateQuery(context, edgeGroup);
-    var accumulatedLength = 0 * meter;
-    
-    for (var edge in edgeGroupArray)
-    {
+        var edge = path.edges[i];
         var edgeLength = evLength(context, {
                     "entities" : edge
                 });
         
-        if (accumulatedLength + edgeLength >= targetPathLength)
+        // Check if vertex is on this edge by using evDistance
+        var dist = evDistance(context, {
+                    "side0" : vertex,
+                    "side1" : edge,
+                    "arcLengthParameterization" : true
+                });
+        
+        // If the vertex is very close to this edge, it's on this edge
+        if (dist.distance < TOLERANCE.zeroLength * meter)
         {
-            // This is the edge containing the target point
-            var lengthIntoEdge = targetPathLength - accumulatedLength;
-            var parameterOnEdge = lengthIntoEdge / edgeLength;
+            var arcLengthParameter = dist.sides[1].parameter;
+            var lengthAlongEdge = edgeLength * arcLengthParameter;
             
-            // Clamp parameter to [0, 1] to avoid numerical errors
-            parameterOnEdge = max(0.0, min(1.0, parameterOnEdge));
+            // Account for edge flipping in the path
+            if (path.flipped[i])
+            {
+                lengthAlongEdge = edgeLength - lengthAlongEdge;
+            }
             
-            return {
-                "edge" : edge,
-                "parameter" : parameterOnEdge
-            };
+            var totalPathLengthToVertex = pathLengthBeforeEdge + lengthAlongEdge;
+            return totalPathLengthToVertex / totalLength;
         }
         
-        accumulatedLength = accumulatedLength + edgeLength;
+        pathLengthBeforeEdge = pathLengthBeforeEdge + edgeLength;
     }
     
-    // If we get here, we're at or past the end - return the last edge at parameter 1.0
-    var lastEdge = edgeGroupArray[size(edgeGroupArray) - 1];
+    // If we didn't find the vertex on any edge, return 0 (shouldn't happen)
+    return 0;
+}
+
+/**
+ * Calculate the local edge parameter for a given edge index and global path ratio.
+ * 
+ * @param context {Context}: The context
+ * @param path {Path}: The path
+ * @param edgeIndex {number}: The index of the edge in the path
+ * @param globalRatio {number}: The global ratio (0-1) along the entire path
+ * @param totalLength {ValueWithUnits}: The total length of the path
+ * 
+ * @returns {map}: A map with "edge" (Query) and "parameter" (number) fields
+ */
+function calculateLocalEdgeParameter(context is Context, path is Path, edgeIndex is number, globalRatio is number, totalLength is ValueWithUnits) returns map
+{
+    // Clamp the ratio to [0, 1] to handle numerical errors
+    globalRatio = max(0.0, min(1.0, globalRatio));
+    
+    var targetPathLength = totalLength * globalRatio;
+    var accumulatedLength = 0 * meter;
+    
+    // Calculate accumulated length up to this edge
+    for (var i = 0; i < edgeIndex; i += 1)
+    {
+        accumulatedLength += evLength(context, {
+                    "entities" : path.edges[i]
+                });
+    }
+    
+    // Calculate the local parameter on this edge
+    var edgeLength = evLength(context, {
+                "entities" : path.edges[edgeIndex]
+            });
+    
+    var lengthIntoEdge = targetPathLength - accumulatedLength;
+    var parameterOnEdge = lengthIntoEdge / edgeLength;
+    
+    // Account for edge flipping
+    if (path.flipped[edgeIndex])
+    {
+        parameterOnEdge = 1.0 - parameterOnEdge;
+    }
+    
+    // Clamp parameter to [0, 1] to avoid numerical errors
+    parameterOnEdge = max(0.0, min(1.0, parameterOnEdge));
+    
     return {
-        "edge" : lastEdge,
-        "parameter" : 1.0
+        "edge" : path.edges[edgeIndex],
+        "parameter" : parameterOnEdge
     };
 }
 
