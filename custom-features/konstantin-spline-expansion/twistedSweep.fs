@@ -8,7 +8,7 @@ import(path : "onshape/std/sweep.fs", version : "2837.0");
 export import(path : "e82d5f644c476dabe15157c8/6d2ab01646b5814249c8e2ef/58ce6c94dd2a64cc938d3bfc", version : "87a948b20ec75b7cfd88fbc9");//3dSpiral.fs
 
 
-annotation { "Feature Type Name" : "Twisted Sweep" }
+annotation { "Feature Type Name" : "Tweep" }
 export const twistedSweep = defineFeature(function(context is Context, id is Id, definition is map)
     precondition
     {
