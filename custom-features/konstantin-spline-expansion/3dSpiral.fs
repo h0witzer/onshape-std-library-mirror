@@ -96,6 +96,12 @@ export const spiral3d = defineFeature(function(context is Context, id is Id, def
             throw regenError("Cannot evaluate tangent lines on the selected edge. The edge may be degenerate, or may be a type that does not support tangent evaluation. Please select a different edge.");
         }
         
+        // Validate that we got valid tangent lines
+        if (initTangentResult == undefined || initTangentResult.tangentLines == undefined || size(initTangentResult.tangentLines) == 0)
+        {
+            throw regenError("Failed to evaluate tangent lines on the selected edge. Please select a different edge.");
+        }
+        
         var initTangent = initTangentResult.tangentLines[0];
         if (definition.flipDir)
             initTangent.direction *= -1;
