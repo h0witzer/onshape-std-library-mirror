@@ -62,10 +62,18 @@ export const twistedSweep = defineFeature(function(context is Context, id is Id,
             surfaceOperationTypePredicate(definition);
         }
     }
-    {
+   {
+        // Convert the path query to individual edges when a wire body is selected to
+        // avoid invalid edge evaluations in the downstream sweep logic
+        var sweepPath = definition.pathEdge;
+        if (!isQueryEmpty(context, qEntityFilter(sweepPath, EntityType.BODY)))
+        {
+            sweepPath = qOwnedByBody(sweepPath, EntityType.EDGE);
+        }
+
         // Calculate twist radius based on the furthest vertex of the profile from the path
         var twistRadius = 1 * millimeter; // Default fallback
-        
+
         // Get the profile query based on body type
         var profileQuery;
         if (definition.bodyType == ExtendedToolBodyType.SOLID)
@@ -76,29 +84,29 @@ export const twistedSweep = defineFeature(function(context is Context, id is Id,
         {
             profileQuery = definition.surfaceProfiles;
         }
-        
+
         // Get vertices from the profile
         var profileVertices = qAdjacent(profileQuery, AdjacencyType.VERTEX, EntityType.VERTEX);
-        
+
         // Find the furthest vertex from the path
         if (!isQueryEmpty(context, profileVertices))
         {
             var maxDistance = 0 * meter;
             var vertices = evaluateQuery(context, profileVertices);
-            
+
             for (var vertex in vertices)
             {
                 var distResult = evDistance(context, {
                             "side0" : vertex,
-                            "side1" : definition.pathEdge
+                            "side1" : sweepPath
                         });
-                
+
                 if (distResult.distance > maxDistance)
                 {
                     maxDistance = distResult.distance;
                 }
             }
-            
+
             // Use the maximum distance found, with a small multiplier for safety
             if (maxDistance > 0 * meter)
             {
@@ -108,7 +116,7 @@ export const twistedSweep = defineFeature(function(context is Context, id is Id,
         
         // Step 1: Create the spiral using the existing 3dSpiral feature
         var spiralDefinition = {
-                "splineEdge" : definition.pathEdge,
+                "splineEdge" : sweepPath,
                 "radius" : twistRadius,
                 "spiralType" : definition.spiralType,
                 "flipDir" : definition.flipDir
@@ -134,7 +142,7 @@ export const twistedSweep = defineFeature(function(context is Context, id is Id,
         // Step 2: Create a lofted surface between the original path and the spiral
         opLoft(context, id + "loftedSurface", {
                     "bodyType" : ExtendedToolBodyType.SURFACE,
-                    "profileSubqueries" : [definition.pathEdge, qCreatedBy(id + "spiral", EntityType.EDGE)]
+                    "profileSubqueries" : [sweepPath, qCreatedBy(id + "spiral", EntityType.EDGE)]
                 });
 
         // Step 3: Perform the sweep with face locking using the sweep feature
@@ -142,7 +150,7 @@ export const twistedSweep = defineFeature(function(context is Context, id is Id,
                 "bodyType" : definition.bodyType,
                 "operationType" : definition.operationType,
                 "surfaceOperationType" : definition.surfaceOperationType,
-                "path" : definition.pathEdge,
+                "path" : sweepPath,
                 "profileControl" : ProfileControlMode.LOCK_FACES,
                 "lockFaces" : qCreatedBy(id + "loftedSurface", EntityType.FACE)
             };
