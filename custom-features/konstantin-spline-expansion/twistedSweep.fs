@@ -35,7 +35,6 @@ function generateEvDistanceConnections(context is Context, edgeGroup1 is Query, 
     
     // Get the first vertex and find its closest point on the spiral
     var startVertex = qNthElement(vertices1, 0);
-    var startVertexPos = evVertexPoint(context, { "vertex" : startVertex });
     
     // Use evDistance to find the closest point on the spiral to the start vertex
     var distResult = evDistance(context, {
@@ -82,7 +81,7 @@ function generatePathLengthLoftConnections(context is Context, edgeGroup1 is Que
     var totalLength2 = evPathLength(context, path2);
     
     // Check if path1 is a closed loop with only one edge
-    const isClosedSingleEdge = path1.closed && size(path1.edges) == 1;
+    var isClosedSingleEdge = path1.closed && size(path1.edges) == 1;
     
     // Get all vertices from path1 (the segmented path)
     var allVertices1 = qAdjacent(edgeGroup1, AdjacencyType.VERTEX, EntityType.VERTEX);
