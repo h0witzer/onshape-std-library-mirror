@@ -1,4 +1,30 @@
 FeatureScript 2837;
+
+/**
+ * Tween Multiple Curves Feature
+ * 
+ * This feature extends the basic tween curve functionality to handle arbitrary numbers
+ * of connected curves (paths) on each side. It interpolates between two paths to create
+ * a middle curve, matching subsegments using one of two methods:
+ * 
+ * 1. Nearest Distance: Uses evDistance to find break points where vertices from one path
+ *    map to the other path. This ensures that natural connection points are matched.
+ * 
+ * 2. Path Length Parameterization: Uses path length ratios from vertices on both paths
+ *    to determine unified sampling points. This creates more uniform distribution along
+ *    the paths regardless of individual edge lengths.
+ * 
+ * The feature works by:
+ * - Constructing ordered paths from the selected edge groups
+ * - Determining sample parameters using the chosen method
+ * - Sampling both paths at those parameters
+ * - Interpolating (tweening) the sampled 3D points
+ * - Creating a fitted spline through the interpolated points
+ * 
+ * This approach is inspired by the auto-loft-connections feature but adapted for
+ * creating a single interpolated curve rather than loft connection lines.
+ */
+
 // Standard Library Imports
 import(path : "onshape/std/common.fs", version : "2837.0");
 import(path : "onshape/std/evaluate.fs", version : "2837.0");
@@ -11,9 +37,6 @@ import(path : "onshape/std/curveGeometry.fs", version : "2837.0");
 import(path : "onshape/std/error.fs", version : "2837.0");
 import(path : "onshape/std/path.fs", version : "2837.0");
 import(path : "onshape/std/containers.fs", version : "2837.0");
-
-// Import the existing tweenCurves function and helpers
-import(path : "fd0be504205eef1f9385b57b/eabbc18661ba5776e0ba962d/75073be2bdbf7b4b5e1c2d7c", version : "a50bf20d12bf37d8c0cb3fb8");
 
 /**
  * Defines the method for matching curve segments between two paths.
@@ -56,12 +79,9 @@ export const tweenMultipleCurves = defineFeature(function(context is Context, id
         const edgeCount1 = evaluateQueryCount(context, edgeGroup1);
         const edgeCount2 = evaluateQueryCount(context, edgeGroup2);
         
-        // If both are single edges, use the original simple tween
-        if (edgeCount1 == 1 && edgeCount2 == 1)
-        {
-            tweenCurves(context, id, qNthElement(edgeGroup1, 0), qNthElement(edgeGroup2, 0), definition.fraction);
-            return;
-        }
+        // For single edges, we could use the original tweenCurves function for better B-spline interpolation,
+        // but for now we'll use the same path-based approach for consistency
+        // Single curve case will still work with the sampling method below
         
         // Generate sample parameters based on the selected method
         var sampleParameters = [];
