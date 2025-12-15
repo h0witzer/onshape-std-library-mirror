@@ -7,6 +7,28 @@ import(path : "onshape/std/sweep.fs", version : "2837.0");
 
 export import(path : "e82d5f644c476dabe15157c8/6d2ab01646b5814249c8e2ef/58ce6c94dd2a64cc938d3bfc", version : "87a948b20ec75b7cfd88fbc9");//3dSpiral.fs
 
+/**
+ * Helper function to set wall thickness for thin sweeps
+ * Converts thickness parameters to wallThickness_1 and wallThickness_2
+ */
+function setWallThickness(definition is map) returns map
+{
+    definition.wallThickness_1 = definition.thickness1;
+    definition.wallThickness_2 = definition.thickness2;
+
+    if (definition.midplane)
+    {
+        definition.wallThickness_1 = definition.thickness / 2;
+        definition.wallThickness_2 = definition.wallThickness_1;
+        return definition;
+    }
+    if (definition.flipWall)
+    {
+        definition.wallThickness_1 = definition.thickness2;
+        definition.wallThickness_2 = definition.thickness1;
+    }
+    return definition;
+}
 
 annotation { "Feature Type Name" : "Tweep" }
 export const twistedSweep = defineFeature(function(context is Context, id is Id, definition is map)
@@ -26,6 +48,31 @@ export const twistedSweep = defineFeature(function(context is Context, id is Id,
             annotation { "Name" : "Edges and sketch curves to sweep",
                         "Filter" : (EntityType.EDGE && ConstructionObject.NO) || (EntityType.BODY && BodyType.WIRE && SketchObject.NO)}
             definition.surfaceProfiles is Query;
+        }
+        else if (definition.bodyType == ExtendedToolBodyType.THIN)
+        {
+            annotation { "Name" : "Edges and sketch curves to sweep", "Filter" : (EntityType.EDGE || EntityType.FACE || (EntityType.BODY && BodyType.WIRE && SketchObject.NO)) && ConstructionObject.NO }
+            definition.wallShape is Query;
+
+            annotation { "Name" : "Mid plane", "Default" : false }
+            definition.midplane is boolean;
+
+            if (!definition.midplane)
+            {
+                annotation { "Name" : "Thickness 1" }
+                isLength(definition.thickness1, ZERO_INCLUSIVE_OFFSET_BOUNDS);
+
+                annotation { "Name" : "Flip wall", "UIHint" : UIHint.OPPOSITE_DIRECTION }
+                definition.flipWall is boolean;
+
+                annotation { "Name" : "Thickness 2" }
+                isLength(definition.thickness2, NONNEGATIVE_ZERO_DEFAULT_LENGTH_BOUNDS);
+            }
+            else
+            {
+                annotation { "Name" : "Thickness" }
+                isLength(definition.thickness, ZERO_INCLUSIVE_OFFSET_BOUNDS);
+            }
         }
 
         annotation { "Name" : "Sweep path", "Filter" : (EntityType.EDGE && ConstructionObject.NO) || (EntityType.BODY && BodyType.WIRE && SketchObject.NO) }
@@ -53,7 +100,7 @@ export const twistedSweep = defineFeature(function(context is Context, id is Id,
         annotation { "Name" : "Flip twist direction", "UIHint" : UIHint.OPPOSITE_DIRECTION_CIRCULAR }
         definition.flipDir is boolean;
 
-        if (definition.bodyType == ExtendedToolBodyType.SOLID)
+        if (definition.bodyType == ExtendedToolBodyType.SOLID || definition.bodyType == ExtendedToolBodyType.THIN)
         {
             booleanStepTypePredicate(definition);
         }
@@ -62,7 +109,7 @@ export const twistedSweep = defineFeature(function(context is Context, id is Id,
             surfaceOperationTypePredicate(definition);
         }
 
-        if (definition.bodyType == ExtendedToolBodyType.SOLID)
+        if (definition.bodyType == ExtendedToolBodyType.SOLID || definition.bodyType == ExtendedToolBodyType.THIN)
         {
             booleanStepScopePredicate(definition);
         }
@@ -92,6 +139,31 @@ export const twistedSweep = defineFeature(function(context is Context, id is Id,
         else if (definition.bodyType == ExtendedToolBodyType.SURFACE)
         {
             profileQuery = definition.surfaceProfiles;
+        }
+        else if (definition.bodyType == ExtendedToolBodyType.THIN)
+        {
+            // For thin sweeps, we need to extract edges from faces and wire bodies
+            definition = setWallThickness(definition);
+            
+            // Extract edges from any planar faces
+            const faces = qEntityFilter(definition.wallShape, EntityType.FACE);
+            if (!isQueryEmpty(context, faces))
+            {
+                const extractedEdges = qAdjacent(faces, AdjacencyType.EDGE, EntityType.EDGE);
+                definition.wallShape = qSubtraction(definition.wallShape, faces);
+                definition.wallShape = qUnion([definition.wallShape, extractedEdges]);
+            }
+
+            // Extract edges from any wire bodies
+            const wireBodies = qEntityFilter(definition.wallShape, EntityType.BODY);
+            if (!isQueryEmpty(context, wireBodies))
+            {
+                const extractedEdges = wireBodies->qOwnedByBody(EntityType.EDGE);
+                definition.wallShape = qSubtraction(definition.wallShape, wireBodies);
+                definition.wallShape = qUnion([definition.wallShape, extractedEdges]);
+            }
+
+            profileQuery = qConstructionFilter(definition.wallShape, ConstructionObject.NO);
         }
 
         // Get vertices from the profile
@@ -155,8 +227,15 @@ export const twistedSweep = defineFeature(function(context is Context, id is Id,
                 });
 
         // Step 3: Perform the sweep with face locking
+        // For thin sweeps, we sweep as a surface and then thicken
+        var sweepBodyType = definition.bodyType;
+        if (definition.bodyType == ExtendedToolBodyType.THIN)
+        {
+            sweepBodyType = ExtendedToolBodyType.SURFACE;
+        }
+        
         var sweepDefinition = {
-                "bodyType" : definition.bodyType,
+                "bodyType" : sweepBodyType,
                 "path" : sweepPath,
                 "profileControl" : ProfileControlMode.LOCK_FACES,
                 "lockFaces" : qCreatedBy(id + "loftedSurface", EntityType.FACE)
@@ -172,9 +251,30 @@ export const twistedSweep = defineFeature(function(context is Context, id is Id,
         {
             sweepDefinition.profiles = definition.surfaceProfiles;
         }
+        else if (definition.bodyType == ExtendedToolBodyType.THIN)
+        {
+            sweepDefinition.profiles = profileQuery;
+        }
 
         // Perform the sweep operation
         opSweep(context, id + "sweep", sweepDefinition);
+        
+        // Step 3b: For thin sweeps, thicken the swept surface
+        if (definition.bodyType == ExtendedToolBodyType.THIN)
+        {
+            const sweptBody = qBodyType(qCreatedBy(id + "sweep", EntityType.BODY), BodyType.SHEET);
+            
+            opThicken(context, id + "thicken", {
+                        "entities" : sweptBody,
+                        "thickness1" : definition.wallThickness_1,
+                        "thickness2" : definition.wallThickness_2
+                    });
+            
+            // Delete the swept surface body after thickening
+            opDeleteBodies(context, id + "deleteSurfaceBody", {
+                        "entities" : sweptBody
+                    });
+        }
 
         // Step 4: Clean up helper geometry (spiral and lofted surface)
         opDeleteBodies(context, id + "cleanup", {
@@ -199,6 +299,22 @@ export const twistedSweep = defineFeature(function(context is Context, id is Id,
                 // Recreate the sweep
                 opSweep(context, id + "sweep", sweepDefinition);
                 
+                // Recreate thickening for thin sweeps
+                if (definition.bodyType == ExtendedToolBodyType.THIN)
+                {
+                    const sweptBody = qBodyType(qCreatedBy(id + "sweep", EntityType.BODY), BodyType.SHEET);
+                    
+                    opThicken(context, id + "thicken", {
+                                "entities" : sweptBody,
+                                "thickness1" : definition.wallThickness_1,
+                                "thickness2" : definition.wallThickness_2
+                            });
+                    
+                    opDeleteBodies(context, id + "deleteSurfaceBody", {
+                                "entities" : sweptBody
+                            });
+                }
+                
                 // Clean up helper geometry
                 opDeleteBodies(context, id + "cleanup", {
                             "entities" : qUnion([
@@ -209,7 +325,7 @@ export const twistedSweep = defineFeature(function(context is Context, id is Id,
             };
 
         // Step 5: Handle boolean operations based on body type
-        if (definition.bodyType == ExtendedToolBodyType.SOLID)
+        if (definition.bodyType == ExtendedToolBodyType.SOLID || definition.bodyType == ExtendedToolBodyType.THIN)
         {
             processNewBodyIfNeeded(context, id, definition, reconstructOp);
         }
