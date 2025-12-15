@@ -5,6 +5,7 @@ FeatureScript 2837;
 export import(path : "onshape/std/query.fs", version : "2837.0");
 
 import(path : "onshape/std/attributes.fs", version : "2837.0");
+import(path : "onshape/std/common.fs", version : "2837.0");
 import(path : "onshape/std/containers.fs", version : "2837.0");
 import(path : "onshape/std/evaluate.fs", version : "2837.0");
 import(path : "onshape/std/feature.fs", version : "2837.0");
@@ -79,6 +80,8 @@ export const queryHiddenSurface = defineFeature(function(context is Context, id 
         const entitiesWithWallAttr = qAttributeQuery(asSMAttribute({ "objectType" : SMObjectType.WALL }));
         const foundEntities = evaluateQuery(context, entitiesWithWallAttr);
         
+        // Debug visualization to show found entities (red color indicates hidden sheet metal surfaces)
+        debug(context, entitiesWithWallAttr, DebugColor.RED);
         println("Found " ~ size(foundEntities) ~ " entities with WALL attributes via qAttributeQuery");
 
         // Method 3: Try to query all sheet metal bodies (hidden surfaces should be SHEET BodyType)
