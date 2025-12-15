@@ -14,6 +14,7 @@ import(path : "onshape/std/geomOperations.fs", version : "2837.0");
 import(path : "onshape/std/sheetMetalAttribute.fs", version : "2837.0");
 import(path : "onshape/std/sheetMetalUtils.fs", version : "2837.0");
 import(path : "onshape/std/smobjecttype.gen.fs", version : "2837.0");
+import(path : "onshape/std/string.fs", version : "2837.0");
 import(path : "onshape/std/tool.fs", version : "2837.0");
 import(path : "onshape/std/topologyUtils.fs", version : "2837.0");
 import(path : "onshape/std/valueBounds.fs", version : "2837.0");
@@ -89,14 +90,6 @@ export const hideEdgeSurface = defineSheetMetalFeature(function(context is Conte
             }
         }
 
-        // Create two offset edges to form a surface
-        const offsetPoint1 = edgeTangentLine.origin + offsetDirection * definition.offsetDistance;
-        const offsetPoint2 = edgeTangentLine.origin + edgeTangentLine.direction * 0.001 * meter + 
-                            offsetDirection * definition.offsetDistance;
-
-        // Create a sketch to define the loft profiles
-        // We'll use opLoft with the original edge and a parallel offset edge
-        
         // Create a ruled surface using opLoft between the edge and an offset path
         // We'll create an offset edge parallel to the original edge
         

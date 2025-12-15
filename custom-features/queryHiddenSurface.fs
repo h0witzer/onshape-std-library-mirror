@@ -54,7 +54,7 @@ export const queryHiddenSurface = defineFeature(function(context is Context, id 
             }
         }
 
-        // Method 2: Query using qHasAttribute to find entities with our custom attributes
+        // Method 2: Query using qAttributeQuery to find entities with WALL attributes
         println("\n--- Method 2: Query using qAttributeQuery ---");
         const entitiesWithWallAttr = qAttributeQuery(asSMAttribute({ "objectType" : SMObjectType.WALL }));
         const foundEntities = evaluateQuery(context, entitiesWithWallAttr);
