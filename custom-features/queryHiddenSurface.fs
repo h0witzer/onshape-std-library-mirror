@@ -45,11 +45,9 @@ export const queryHiddenSurface = defineFeature(function(context is Context, id 
         {
             if (wallAttr.experimentType != undefined && wallAttr.experimentType == definition.experimentTypeFilter)
             {
-                println("\nFound hidden edge surface:");
+                println("\nFound hidden copied face:");
                 println("  Attribute ID: " ~ wallAttr.attributeId);
                 println("  Custom Property: " ~ wallAttr.customProperty);
-                println("  Edge ID: " ~ wallAttr.edgeId);
-                println("  Offset Distance: " ~ toString(wallAttr.offsetDistance));
                 println("  Experiment Type: " ~ wallAttr.experimentType);
             }
         }
@@ -85,10 +83,9 @@ export const queryHiddenSurface = defineFeature(function(context is Context, id 
                 {
                     if (attr.experimentType != undefined && attr.experimentType == definition.experimentTypeFilter)
                     {
-                        println("\nFound sheet body with hidden edge surface:");
+                        println("\nFound sheet body with hidden copied face:");
                         println("  Face: " ~ toString(face));
                         println("  Custom Property: " ~ attr.customProperty);
-                        println("  Offset Distance: " ~ toString(attr.offsetDistance));
                     }
                 }
             }
@@ -176,7 +173,6 @@ export const queryHiddenSurface = defineFeature(function(context is Context, id 
                     println("\nEntity with matching attribute:");
                     println("  Entity: " ~ toString(entity));
                     println("  Custom Property: " ~ attr.customProperty);
-                    println("  Offset Distance: " ~ toString(attr.offsetDistance));
                 }
             }
         }
