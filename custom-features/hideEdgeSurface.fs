@@ -11,6 +11,8 @@ import(path : "onshape/std/error.fs", version : "2837.0");
 import(path : "onshape/std/evaluate.fs", version : "2837.0");
 import(path : "onshape/std/feature.fs", version : "2837.0");
 import(path : "onshape/std/geomOperations.fs", version : "2837.0");
+import(path : "onshape/std/math.fs", version : "2837.0");
+import(path : "onshape/std/ruledsurfacetype.gen.fs", version : "2837.0");
 import(path : "onshape/std/sheetMetalAttribute.fs", version : "2837.0");
 import(path : "onshape/std/sheetMetalUtils.fs", version : "2837.0");
 import(path : "onshape/std/smobjecttype.gen.fs", version : "2837.0");
@@ -62,7 +64,7 @@ export const hideEdgeSurface = defineSheetMetalFeature(function(context is Conte
         });
 
         // Get adjacent faces to determine the normal direction for offset
-        const adjacentFaces = evaluateQuery(context, qAdjacent(selectedEdge, AdjacencyType.EDGE, EntityType.FACE));
+        const adjacentFaces = evaluateQuery(context, qAdjacent(selectedEdge, AdjacencyType.VERTEX, EntityType.FACE));
         
         var offsetDirection;
         if (size(adjacentFaces) > 0)
@@ -90,47 +92,24 @@ export const hideEdgeSurface = defineSheetMetalFeature(function(context is Conte
             }
         }
 
-        // Create a ruled surface using opLoft between the edge and an offset path
-        // We'll create an offset edge parallel to the original edge
-        
-        // Get edge endpoints to create the offset edge
-        const edgeEndpoints = evaluateQuery(context, qVertexAdjacent(selectedEdge, EntityType.VERTEX));
-        if (size(edgeEndpoints) < 2)
-        {
-            throw regenError("Failed to get edge endpoints - invalid edge topology detected", ["targetEdge"]);
-        }
-
-        const point1 = evVertexPoint(context, {"vertex" : edgeEndpoints[0]});
-        const point2 = evVertexPoint(context, {"vertex" : edgeEndpoints[1]});
-        
-        // Create offset points parallel to the original edge
-        const offsetPoint1 = point1 + offsetDirection * definition.offsetDistance;
-        const offsetPoint2 = point2 + offsetDirection * definition.offsetDistance;
-
-        // Create a line between the offset points using opFitSpline
-        // This creates a wire body with an edge that will be used for lofting
-        opFitSpline(context, id + "offsetLine", {
-            "points" : [offsetPoint1, offsetPoint2]
-        });
-
-        const offsetEdge = qCreatedBy(id + "offsetLine", EntityType.EDGE);
-
-        // Now create a loft surface between the original edge and offset edge
-        // This creates a ruled surface connecting the two parallel edges
+        // Create a ruled surface using opRuledSurface
+        // This is simpler and more direct than manually creating offset edges and lofting
         try
         {
-            opLoft(context, id + "loftSurface", {
-                "profileSubqueries" : [selectedEdge, offsetEdge],
-                "bodyType" : ToolBodyType.SURFACE
+            opRuledSurface(context, id + "ruledSurface", {
+                "path" : selectedEdge,
+                "ruledSurfaceType" : RuledSurfaceType.ALIGNED_WITH_VECTOR,
+                "ruledDirection" : offsetDirection,
+                "width" : definition.offsetDistance
             });
         }
         catch
         {
-            throw regenError("Failed to create loft surface between edge and offset edge. Check edge geometry and offset distance.", ["targetEdge"]);
+            throw regenError("Failed to create ruled surface from edge. Check edge geometry and offset distance.", ["targetEdge"]);
         }
 
         // Get the created surface body
-        const createdSurface = qCreatedBy(id + "loftSurface", EntityType.BODY);
+        const createdSurface = qCreatedBy(id + "ruledSurface", EntityType.BODY);
         const surfaceFaces = qOwnedByBody(createdSurface, EntityType.FACE);
 
         // Create a custom sheet metal attribute to store on the surface
@@ -158,4 +137,4 @@ export const hideEdgeSurface = defineSheetMetalFeature(function(context is Conte
 
         // Log confirmation that the surface was created and hidden
         println("Hidden edge surface created with custom property: " ~ definition.customProperty);
-    });
+    }, {});
