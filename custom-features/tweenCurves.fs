@@ -18,6 +18,12 @@ import(path : "f42f46716945f2a9bda5a481/eabbc18661ba5776e0ba962d/97730412fb61f53
 
 export const TWEEN_FRACTION_BOUNDS = { (unitless) : [0, 0.5, 1] } as RealBoundSpec;
 
+// Constants for path tweening
+const SAMPLES_PER_EDGE = 3; // Number of sample points per edge for path interpolation
+const MINIMUM_SAMPLE_POINTS = 10; // Minimum number of sample points for path tweening
+const PATH_TWEEN_TOLERANCE = 1e-7 * meter; // Tolerance for B-spline fitting in path tweening
+const ADDITIONAL_CONTROL_POINTS = 10; // Extra control points allowed for B-spline approximation
+
 
 /**
  * Create a curve that is the tween between two input curves or paths.
@@ -47,7 +53,7 @@ export function tweenCurves(context is Context, id is Id,
         return;
     }
 
-    // Single curve handling (original behavior)
+    // Single curve/edge handling (original behavior)
     const edge1 = evaluateQuery(context, curve1)[0];
     const edge2 = evaluateQuery(context, curve2)[0];
 
@@ -239,9 +245,8 @@ function tweenPaths(context is Context, id is Id, edgeGroup1 is Query, edgeGroup
     const edgeCount2 = evaluateQueryCount(context, edgeGroup2);
     const maxEdgeCount = max(edgeCount1, edgeCount2);
     
-    // Use at least 3 points per edge for good interpolation
-    const samplesPerEdge = 3;
-    const totalSamples = max(maxEdgeCount * samplesPerEdge, 10);
+    // Use multiple points per edge for good interpolation
+    const totalSamples = max(maxEdgeCount * SAMPLES_PER_EDGE, MINIMUM_SAMPLE_POINTS);
     
     // Generate sample parameters along path1 using arc-length parameterization
     var sampleParameters = [];
@@ -305,11 +310,11 @@ function tweenPaths(context is Context, id is Id, edgeGroup1 is Query, edgeGroup
     
     const fittedSpline = approximateSpline(context, {
         "degree" : splineDegree,
-        "tolerance" : 1e-7 * meter,
+        "tolerance" : PATH_TWEEN_TOLERANCE,
         "isPeriodic" : path1.closed && path2.closed,
         "targets" : [target],
         "parameters" : parameters,
-        "maxControlPoints" : size(tweenedPoints) + 10
+        "maxControlPoints" : size(tweenedPoints) + ADDITIONAL_CONTROL_POINTS
     })[0];
     
     // Create the B-spline curve
