@@ -100,6 +100,27 @@ export const spiral3d = defineFeature(function(context is Context, id is Id, def
             pointList = append(pointList, trArr[i] * point);
         }
 
+        // Calculate custom parameters based on cumulative arc length for better spline parameterization
+        // This helps smooth out curvature discontinuities at segment boundaries
+        var customParameters = [0.0];
+        var cumulativeLength = 0.0;
+        for (var i = 1; i < pointNumber; i += 1)
+        {
+            const segmentLength = norm(pointList[i] - pointList[i - 1]);
+            cumulativeLength += segmentLength / meter;  // Normalize to unitless
+            customParameters = append(customParameters, cumulativeLength);
+        }
+        
+        // Normalize parameters to [0, 1] range
+        const totalArcLength = customParameters[pointNumber - 1];
+        if (totalArcLength > 0)
+        {
+            for (var i = 0; i < pointNumber; i += 1)
+            {
+                customParameters[i] = customParameters[i] / totalArcLength;
+            }
+        }
+
         // Calculate first derivatives at start and end for better curvature continuity
         // Use a hybrid approach: finite differences from many nearby points for robustness
         var startDerivative;
@@ -153,6 +174,7 @@ export const spiral3d = defineFeature(function(context is Context, id is Id, def
             {
                 opFitSpline(context, id + "fitSplineSpiral", {
                     "points" : pointList,
+                    "parameters" : customParameters,  // Use arc-length based parameterization
                     "startDerivative" : startDerivative,
                     "endDerivative" : endDerivative
                 });
@@ -161,7 +183,8 @@ export const spiral3d = defineFeature(function(context is Context, id is Id, def
             {
                 // Fall back to no derivatives if not enough points
                 opFitSpline(context, id + "fitSplineSpiral", {
-                    "points" : pointList
+                    "points" : pointList,
+                    "parameters" : customParameters  // Use arc-length based parameterization
                 });
             }
         }
