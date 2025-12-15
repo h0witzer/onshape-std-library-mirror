@@ -15,6 +15,7 @@ import(path : "onshape/std/path.fs", version : "2837.0");
 // Import tweenCurves function and utilities
 import(path : "eba90c822a38b2ab9d2b67c5", version : "028e645c08deafca1e158865"); // tweenTwoCurves.fs (includes tweenCurves)
 import(path : "f42f46716945f2a9bda5a481/eabbc18661ba5776e0ba962d/97730412fb61f53dcd526c08", version : "a24da502290d2ae4706c631f"); // 3d Arc Utilities
+import(path : "fd0be504205eef1f9385b57b", version : "30f65e1d900f2b1c5cc3abb6"); // tweenCurves.fs
 
 /**
  * Defines the method for matching curve segments between two paths.
@@ -137,19 +138,24 @@ function generateNearestDistanceBreakPoints(context is Context, path1 is Path, p
         const pos2 = convertEdgeInfoToPathPosition(context, path2, totalLength2,
                                                     edgeDist.sides[1].index, edgeDist.sides[1].parameter);
         
+        const projectedPoint2 = evEdgeTangentLine(context, {
+                    "edge" : pos2.edge,
+                    "parameter" : pos2.parameter
+                }).origin;
+        
         breakPointMaps = append(breakPointMaps, {
                     "sortKey" : pos1.ratio,
                     "segment1" : pos1,
                     "segment2" : pos2,
                     "point1" : vertexPos,
-                    "point2" : evEdgeTangentLine(context, {
-                                "edge" : pos2.edge,
-                                "parameter" : pos2.parameter
-                            }).origin
+                    "point2" : projectedPoint2
                 });
         
-        // Debug point on path1 (RED)
+        // Debug point on path1 vertex (RED)
         debug(context, vertex, DebugColor.RED);
+        
+        // Debug point showing where this path1 vertex projects onto path2 (GREEN)
+        debug(context, projectedPoint2, DebugColor.GREEN);
     }
     
     // Collect all mapped points on path2 from first pass
@@ -191,19 +197,24 @@ function generateNearestDistanceBreakPoints(context is Context, path1 is Path, p
             const pos1 = convertEdgeInfoToPathPosition(context, path1, totalLength1,
                                                         edgeDist.sides[1].index, edgeDist.sides[1].parameter);
             
+            const projectedPoint1 = evEdgeTangentLine(context, {
+                        "edge" : pos1.edge,
+                        "parameter" : pos1.parameter
+                    }).origin;
+            
             breakPointMaps = append(breakPointMaps, {
                         "sortKey" : pos1.ratio,
                         "segment1" : pos1,
                         "segment2" : pos2,
-                        "point1" : evEdgeTangentLine(context, {
-                                    "edge" : pos1.edge,
-                                    "parameter" : pos1.parameter
-                                }).origin,
+                        "point1" : projectedPoint1,
                         "point2" : vertexPos
                     });
             
-            // Debug point on path2 (BLUE)
+            // Debug point on path2 vertex (BLUE)
             debug(context, vertex, DebugColor.BLUE);
+            
+            // Debug point showing where this path2 vertex projects onto path1 (YELLOW)
+            debug(context, projectedPoint1, DebugColor.YELLOW);
         }
     }
     
@@ -287,6 +298,21 @@ function generatePathLengthBreakPoints(context is Context, path1 is Path, path2 
     {
         const pos1 = getPositionAtRatio(context, path1, totalLength1, ratio);
         const pos2 = getPositionAtRatio(context, path2, totalLength2, ratio);
+        
+        // Get 3D points at these positions
+        const point1 = evEdgeTangentLine(context, {
+                    "edge" : pos1.edge,
+                    "parameter" : pos1.parameter
+                }).origin;
+        const point2 = evEdgeTangentLine(context, {
+                    "edge" : pos2.edge,
+                    "parameter" : pos2.parameter
+                }).origin;
+        
+        // Debug points showing split locations at this ratio
+        // GREEN for path1, CYAN for path2
+        debug(context, point1, DebugColor.GREEN);
+        debug(context, point2, DebugColor.CYAN);
         
         breakPointMaps = append(breakPointMaps, {
                     "sortKey" : ratio,
