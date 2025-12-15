@@ -5,6 +5,7 @@ FeatureScript 2837;
 export import(path : "onshape/std/query.fs", version : "2837.0");
 
 import(path : "onshape/std/attributes.fs", version : "2837.0");
+import(path : "onshape/std/containers.fs", version : "2837.0");
 import(path : "onshape/std/error.fs", version : "2837.0");
 import(path : "onshape/std/evaluate.fs", version : "2837.0");
 import(path : "onshape/std/feature.fs", version : "2837.0");
