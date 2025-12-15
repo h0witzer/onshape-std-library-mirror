@@ -50,19 +50,24 @@ export const tweenMultipleCurves = defineFeature(function(context is Context, id
         isReal(definition.fraction, TWEEN_FRACTION_BOUNDS);
     }
     {
-        // Get all connected edges for each input
+        // Check if we have single edges first, before any query manipulation
+        const initialCount1 = evaluateQueryCount(context, definition.curves1);
+        const initialCount2 = evaluateQueryCount(context, definition.curves2);
+        
+        // If both are single edges, pass the original queries directly to tweenCurves
+        // This ensures identical behavior to tweenTwoCurves
+        if (initialCount1 == 1 && initialCount2 == 1)
+        {
+            tweenCurves(context, id, definition.curves1, definition.curves2, definition.fraction);
+            return;
+        }
+        
+        // Get all connected edges for each input (only for multi-curve case)
         const edgeGroup1 = qTangentConnectedEdges(definition.curves1);
         const edgeGroup2 = qTangentConnectedEdges(definition.curves2);
         
         const edgeCount1 = evaluateQueryCount(context, edgeGroup1);
         const edgeCount2 = evaluateQueryCount(context, edgeGroup2);
-        
-        // If both are single edges, use the imported tweenCurves function directly
-        if (edgeCount1 == 1 && edgeCount2 == 1)
-        {
-            tweenCurves(context, id, qNthElement(edgeGroup1, 0), qNthElement(edgeGroup2, 0), definition.fraction);
-            return;
-        }
         
         // For multiple edges, we need to determine break points and tween subsegments
         // Build paths
