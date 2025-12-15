@@ -128,12 +128,13 @@ export const spiral3d = defineFeature(function(context is Context, id is Id, def
                 startDerivative = (-3 * pointList[0] + 4 * pointList[1] - pointList[2]) / (2 * parameterSpacing);
                 endDerivative = (3 * pointList[pointNumber - 1] - 4 * pointList[pointNumber - 2] + pointList[pointNumber - 3]) / (2 * parameterSpacing);
             }
-            else
+            else if (pointNumber >= 2)
             {
-                // Fallback to simple difference if we don't have enough points
+                // Fallback to simple difference if we have at least 2 points
                 startDerivative = (pointList[1] - pointList[0]) / parameterSpacing;
                 endDerivative = (pointList[pointNumber - 1] - pointList[pointNumber - 2]) / parameterSpacing;
             }
+            // If pointNumber < 2, derivatives remain undefined and won't be passed to opFitSpline
         }
 
         if (path.closed)
