@@ -391,6 +391,8 @@ export const twistedSweep = defineFeature(function(context is Context, id is Id,
                 var xAxisDirection = perpendicularVector(tangentLine.direction);
                 sweepCoordSystem = coordSystem(tangentLine.origin, xAxisDirection, tangentLine.direction);
             }
+            // Silent failure is acceptable here - if we can't compute a path-aligned coordinate system,
+            // we fall back to WORLD_COORD_SYSTEM which will still produce a valid bounding box
             
             // Calculate the tight aligned bounding box of the profile entities
             var boundingBox;
