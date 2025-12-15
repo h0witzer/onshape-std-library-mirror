@@ -61,6 +61,15 @@ export const twistedSweep = defineFeature(function(context is Context, id is Id,
         {
             surfaceOperationTypePredicate(definition);
         }
+
+        if (definition.bodyType == ExtendedToolBodyType.SOLID)
+        {
+            booleanStepScopePredicate(definition);
+        }
+        else
+        {
+            surfaceJoinStepScopePredicate(definition);
+        }
     }
    {
         // Convert the path query to individual edges when a wire body is selected to
@@ -145,11 +154,9 @@ export const twistedSweep = defineFeature(function(context is Context, id is Id,
                     "profileSubqueries" : [sweepPath, qCreatedBy(id + "spiral", EntityType.EDGE)]
                 });
 
-        // Step 3: Perform the sweep with face locking using the sweep feature
+        // Step 3: Perform the sweep with face locking
         var sweepDefinition = {
                 "bodyType" : definition.bodyType,
-                "operationType" : definition.operationType,
-                "surfaceOperationType" : definition.surfaceOperationType,
                 "path" : sweepPath,
                 "profileControl" : ProfileControlMode.LOCK_FACES,
                 "lockFaces" : qCreatedBy(id + "loftedSurface", EntityType.FACE)
@@ -165,8 +172,8 @@ export const twistedSweep = defineFeature(function(context is Context, id is Id,
             sweepDefinition.surfaceProfiles = definition.surfaceProfiles;
         }
 
-        // Call the sweep feature (handles boolean operations internally)
-        sweep(context, id + "sweep", sweepDefinition);
+        // Perform the sweep operation
+        opSweep(context, id + "sweep", sweepDefinition);
 
         // Step 4: Clean up helper geometry (spiral and lofted surface)
         opDeleteBodies(context, id + "cleanup", {
@@ -175,10 +182,45 @@ export const twistedSweep = defineFeature(function(context is Context, id is Id,
                                 qCreatedBy(id + "loftedSurface", EntityType.BODY)
                             ])
                 });
+
+        // Define the reconstruction operation for boolean handling
+        const reconstructOp = function(id)
+            {
+                // Recreate the spiral
+                spiral3d(context, id + "spiral", spiralDefinition);
+                
+                // Recreate the lofted surface
+                opLoft(context, id + "loftedSurface", {
+                            "bodyType" : ExtendedToolBodyType.SURFACE,
+                            "profileSubqueries" : [sweepPath, qCreatedBy(id + "spiral", EntityType.EDGE)]
+                        });
+                
+                // Recreate the sweep
+                opSweep(context, id + "sweep", sweepDefinition);
+                
+                // Clean up helper geometry
+                opDeleteBodies(context, id + "cleanup", {
+                            "entities" : qUnion([
+                                        qCreatedBy(id + "spiral", EntityType.BODY),
+                                        qCreatedBy(id + "loftedSurface", EntityType.BODY)
+                                    ])
+                        });
+            };
+
+        // Step 5: Handle boolean operations based on body type
+        if (definition.bodyType == ExtendedToolBodyType.SOLID)
+        {
+            processNewBodyIfNeeded(context, id, definition, reconstructOp);
+        }
+        else if (definition.surfaceOperationType == NewSurfaceOperationType.ADD)
+        {
+            joinSurfaceBodiesWithAutoMatching(context, id, definition, false, reconstructOp);
+        }
     },
     {
         bodyType : ExtendedToolBodyType.SOLID,
         operationType : NewBodyOperationType.NEW,
         spiralType : SpiralType.REVOLUTIONS,
-        surfaceOperationType : NewSurfaceOperationType.NEW
+        surfaceOperationType : NewSurfaceOperationType.NEW,
+        defaultSurfaceScope : true
     });
