@@ -90,25 +90,17 @@ export const hideEdgeSurface = defineSheetMetalFeature(function(context is Conte
             // Annotate the surface bodies with proper sheet metal attributes
             annotateSmSurfaceBodies(context, id, annotationArgs, 0);
             
-            // Add custom properties after annotation
+            // Add custom properties as a separate named attribute
+            // (Can't modify the SMAttribute after it's set - would create duplicate)
             const surfaceFaces = qOwnedByBody(createdSurface, EntityType.FACE);
-            for (var face in evaluateQuery(context, surfaceFaces))
-            {
-                var attrs = getAttributes(context, {
-                    "entities" : face,
-                    "attributePattern" : asSMAttribute({})
-                });
-                if (size(attrs) > 0)
-                {
-                    var attr = attrs[0];
-                    attr.customProperty = definition.customProperty;
-                    attr.experimentType = "hiddenCopiedFace";
-                    setAttribute(context, {
-                        "entities" : face,
-                        "attribute" : attr
-                    });
+            setAttribute(context, {
+                "entities" : surfaceFaces,
+                "name" : "experimentData",
+                "attribute" : {
+                    "customProperty" : definition.customProperty,
+                    "experimentType" : "hiddenCopiedFace"
                 }
-            }
+            });
             
             // Finalize the sheet metal geometry to trigger hiding
             updateSheetMetalGeometry(context, id, {

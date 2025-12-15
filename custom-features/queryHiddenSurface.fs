@@ -32,6 +32,28 @@ export const queryHiddenSurface = defineFeature(function(context is Context, id 
     {
         println("=== Querying for Hidden Surfaces ===");
 
+        // Method 0: Query for named experiment attributes
+        println("\n--- Method 0: Query by named attribute 'experimentData' ---");
+        const experimentDataEntities = qHasAttribute("experimentData");
+        const experimentDataArray = evaluateQuery(context, experimentDataEntities);
+        
+        println("Found " ~ size(experimentDataArray) ~ " entities with experimentData attribute");
+        
+        for (var entity in experimentDataArray)
+        {
+            const expData = getAttribute(context, {
+                "entity" : entity,
+                "name" : "experimentData"
+            });
+            if (expData != undefined && expData.experimentType == definition.experimentTypeFilter)
+            {
+                println("\nFound entity with experiment data:");
+                println("  Entity: " ~ toString(entity));
+                println("  Custom Property: " ~ expData.customProperty);
+                println("  Experiment Type: " ~ expData.experimentType);
+            }
+        }
+
         // Method 1: Query for all surfaces with SMObjectType.WALL attributes
         println("\n--- Method 1: Query by SMObjectType.WALL ---");
         const wallAttributes = getAttributes(context, {
