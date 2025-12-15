@@ -186,10 +186,18 @@ export function triadTransformManipulatorChange(context is Context, definition i
                 const worldTransform = toWorld(baseCSys) * triadTransform;
                 const manipulatorOrigin = worldTransform.translation;
                 
-                // Find the closest point on reference entities
+                // When bodies are selected, snap to their surfaces (faces) rather than interior points
+                // For faces and edges, use them directly
+                var snapTargets = qUnion([
+                    qEntityFilter(definition.referenceEntities, EntityType.FACE),
+                    qEntityFilter(definition.referenceEntities, EntityType.EDGE),
+                    qOwnedByBody(definition.referenceEntities, EntityType.FACE)
+                ]);
+                
+                // Find the closest point on reference entity surfaces
                 const distanceResult = evDistance(context, {
                     "side0" : manipulatorOrigin,
-                    "side1" : definition.referenceEntities
+                    "side1" : snapTargets
                 });
                 
                 // Snap to the closest point
