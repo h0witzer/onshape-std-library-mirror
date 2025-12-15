@@ -98,43 +98,37 @@ export const spiral3d = defineFeature(function(context is Context, id is Id, def
             pointList = append(pointList, trArr[i] * point);
         }
 
-        // Calculate first and second derivatives at start and end for better curvature continuity
-        // Using higher-order finite differences from the generated spiral points provides
-        // accurate estimates that match the discrete geometry
+        // Calculate first derivatives at start and end for better curvature continuity
+        // Use a hybrid approach: finite differences from many nearby points for robustness
         var startDerivative;
         var endDerivative;
-        var startSecondDerivative;
-        var endSecondDerivative;
         
-        if (!path.closed)
+        if (!path.closed && pointNumber >= 5)
         {
+            // Use 5-point finite differences for better accuracy and smoothness
+            // This averages over more points, reducing sensitivity to local discretization artifacts
             const parameterSpacing = 1.0 / (pointNumber - 1);
             
-            if (pointNumber >= 4)
-            {
-                // Use 3-point forward difference for first derivatives
-                // Formula: f'(0) ≈ (-3*f(0) + 4*f(1) - f(2)) / (2*h)
-                startDerivative = (-3 * pointList[0] + 4 * pointList[1] - pointList[2]) / (2 * parameterSpacing);
-                endDerivative = (3 * pointList[pointNumber - 1] - 4 * pointList[pointNumber - 2] + pointList[pointNumber - 3]) / (2 * parameterSpacing);
-                
-                // Use 3-point forward/backward difference for second derivatives
-                // Formula: f''(0) ≈ (f(0) - 2*f(1) + f(2)) / h^2
-                startSecondDerivative = (pointList[0] - 2 * pointList[1] + pointList[2]) / (parameterSpacing * parameterSpacing);
-                endSecondDerivative = (pointList[pointNumber - 1] - 2 * pointList[pointNumber - 2] + pointList[pointNumber - 3]) / (parameterSpacing * parameterSpacing);
-            }
-            else if (pointNumber >= 3)
-            {
-                // Use 3-point formulas for first derivatives only
-                startDerivative = (-3 * pointList[0] + 4 * pointList[1] - pointList[2]) / (2 * parameterSpacing);
-                endDerivative = (3 * pointList[pointNumber - 1] - 4 * pointList[pointNumber - 2] + pointList[pointNumber - 3]) / (2 * parameterSpacing);
-            }
-            else if (pointNumber >= 2)
-            {
-                // Fallback to simple difference if we have at least 2 points
-                startDerivative = (pointList[1] - pointList[0]) / parameterSpacing;
-                endDerivative = (pointList[pointNumber - 1] - pointList[pointNumber - 2]) / parameterSpacing;
-            }
-            // If pointNumber < 2, derivatives remain undefined and won't be passed to opFitSpline
+            // 5-point forward difference at start: f'(0) ≈ (-25f(0) + 48f(1) - 36f(2) + 16f(3) - 3f(4)) / (12h)
+            startDerivative = (-25 * pointList[0] + 48 * pointList[1] - 36 * pointList[2] + 16 * pointList[3] - 3 * pointList[4]) / (12 * parameterSpacing);
+            
+            // 5-point backward difference at end
+            const n = pointNumber - 1;
+            endDerivative = (25 * pointList[n] - 48 * pointList[n - 1] + 36 * pointList[n - 2] - 16 * pointList[n - 3] + 3 * pointList[n - 4]) / (12 * parameterSpacing);
+        }
+        else if (!path.closed && pointNumber >= 3)
+        {
+            // Fallback to 3-point formulas
+            const parameterSpacing = 1.0 / (pointNumber - 1);
+            startDerivative = (-3 * pointList[0] + 4 * pointList[1] - pointList[2]) / (2 * parameterSpacing);
+            endDerivative = (3 * pointList[pointNumber - 1] - 4 * pointList[pointNumber - 2] + pointList[pointNumber - 3]) / (2 * parameterSpacing);
+        }
+        else if (!path.closed && pointNumber >= 2)
+        {
+            // Fallback to 2-point formulas
+            const parameterSpacing = 1.0 / (pointNumber - 1);
+            startDerivative = (pointList[1] - pointList[0]) / parameterSpacing;
+            endDerivative = (pointList[pointNumber - 1] - pointList[pointNumber - 2]) / parameterSpacing;
         }
 
         if (path.closed)
@@ -152,23 +146,22 @@ export const spiral3d = defineFeature(function(context is Context, id is Id, def
         }
         else
         {
-            var fitSplineDefinition = {
-                "points" : pointList,
-                "startDerivative" : startDerivative,
-                "endDerivative" : endDerivative
-            };
-            
-            // Add second derivatives if they were calculated (improves curvature continuity)
-            if (startSecondDerivative != undefined)
+            // Only include derivatives if they were calculated
+            if (startDerivative != undefined && endDerivative != undefined)
             {
-                fitSplineDefinition.start2ndDerivative = startSecondDerivative;
+                opFitSpline(context, id + "fitSplineSpiral", {
+                    "points" : pointList,
+                    "startDerivative" : startDerivative,
+                    "endDerivative" : endDerivative
+                });
             }
-            if (endSecondDerivative != undefined)
+            else
             {
-                fitSplineDefinition.end2ndDerivative = endSecondDerivative;
+                // Fall back to no derivatives if not enough points
+                opFitSpline(context, id + "fitSplineSpiral", {
+                    "points" : pointList
+                });
             }
-            
-            opFitSpline(context, id + "fitSplineSpiral", fitSplineDefinition);
         }
     },
     {
