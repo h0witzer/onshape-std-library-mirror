@@ -98,6 +98,39 @@ export const spiral3d = defineFeature(function(context is Context, id is Id, def
             pointList = append(pointList, trArr[i] * point);
         }
 
+        // Calculate derivatives at start and end for better curvature continuity
+        // The derivative at a point on the spiral is the sum of:
+        // 1. The tangent to the path at that parameter
+        // 2. The rotational velocity component (perpendicular to the radial direction)
+        var startDerivative;
+        var endDerivative;
+        
+        if (!path.closed)
+        {
+            // Calculate start derivative
+            const startPathTangent = evPathTangentLines(context, path, [0]).tangentLines[0];
+            var startTangentDirection = startPathTangent.direction;
+            if (definition.flipDir)
+                startTangentDirection = startTangentDirection * -1;
+            
+            const startAngularVelocity = 360 * degree * numberOfRevolutions;
+            const startRadialVector = pointList[0] - startPathTangent.origin;
+            const startCircumferentialVelocity = cross(startTangentDirection, startRadialVector) * startAngularVelocity;
+            const startPathVelocity = startPathTangent.direction * splineLength;
+            startDerivative = startPathVelocity + startCircumferentialVelocity;
+            
+            // Calculate end derivative
+            const endPathTangent = evPathTangentLines(context, path, [1]).tangentLines[0];
+            var endTangentDirection = endPathTangent.direction;
+            if (definition.flipDir)
+                endTangentDirection = endTangentDirection * -1;
+            
+            const endRadialVector = pointList[pointNumber - 1] - endPathTangent.origin;
+            const endCircumferentialVelocity = cross(endTangentDirection, endRadialVector) * startAngularVelocity;
+            const endPathVelocity = endPathTangent.direction * splineLength;
+            endDerivative = endPathVelocity + endCircumferentialVelocity;
+        }
+
         if (path.closed)
         {
             pointList = subArray(pointList, 0, size(pointList) - 2);
@@ -106,11 +139,19 @@ export const spiral3d = defineFeature(function(context is Context, id is Id, def
             opPoint(context, id + "initialPoint", {
                         "point" : pointList[0]
                     });
+            
+            opFitSpline(context, id + "fitSplineSpiral", {
+                        "points" : pointList
+                    });
         }
-
-        opFitSpline(context, id + "fitSplineSpiral", {
-                    "points" : pointList
-                });
+        else
+        {
+            opFitSpline(context, id + "fitSplineSpiral", {
+                        "points" : pointList,
+                        "startDerivative" : startDerivative,
+                        "endDerivative" : endDerivative
+                    });
+        }
     },
     {
         spiralType : SpiralType.REVOLUTIONS
