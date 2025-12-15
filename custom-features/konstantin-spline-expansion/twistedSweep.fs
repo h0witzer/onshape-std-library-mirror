@@ -371,29 +371,14 @@ export const twistedSweep = defineFeature(function(context is Context, id is Id,
             profileQuery = qConstructionFilter(definition.wallShape, ConstructionObject.NO);
         }
 
-        // Calculate the starting point on the sweep path for the bounding box calculation
+        // Calculate the twist radius using a tight aligned bounding box
         if (!isQueryEmpty(context, profileQuery))
         {
-            // Find the starting point of the sweep path
-            var pathStartPoint = vector(0, 0, 0) * meter;
-            try silent
-            {
-                // Get the first vertex on the sweep path
-                var pathVertices = qAdjacent(sweepPath, AdjacencyType.VERTEX, EntityType.VERTEX);
-                if (!isQueryEmpty(context, pathVertices))
-                {
-                    var firstVertex = qNthElement(pathVertices, 0);
-                    pathStartPoint = evVertexPoint(context, {
-                                "vertex" : firstVertex
-                            });
-                }
-            }
-            
             // Calculate a coordinate system aligned with the sweep path at the starting point
             var sweepCoordSystem = WORLD_COORD_SYSTEM;
             try silent
             {
-                // Try to get a tangent line at the start of the sweep path for proper alignment
+                // Get a tangent line at the start of the sweep path for proper alignment
                 var firstEdge = qNthElement(sweepPath, 0);
                 var tangentLine = evEdgeTangentLine(context, {
                             "edge" : firstEdge,
@@ -409,7 +394,9 @@ export const twistedSweep = defineFeature(function(context is Context, id is Id,
                         "tight" : true
                     });
             
-            // Calculate the maximum distance from the starting point to any corner of the bounding box
+            // Calculate the maximum distance from the sweep path origin to any corner of the bounding box
+            // The bounding box is in the coordinate system aligned with the sweep path, so we can
+            // compute distances directly in the local coordinate system
             var maxDistance = 0 * meter;
             
             // Check all 8 corners of the bounding box
@@ -429,8 +416,8 @@ export const twistedSweep = defineFeature(function(context is Context, id is Id,
             
             for (var corner in corners)
             {
-                var cornerInWorld = toWorld(sweepCoordSystem, corner);
-                var distance = norm(cornerInWorld - pathStartPoint);
+                // Calculate the distance from the origin of the coordinate system to this corner
+                var distance = norm(corner);
                 if (distance > maxDistance)
                 {
                     maxDistance = distance;
