@@ -68,9 +68,6 @@ predicate triadTransformPredicate(definition is map)
             {
                 annotation { "Name" : "Reference entities", "Filter" : EntityType.BODY || EntityType.FACE || EntityType.EDGE }
                 definition.referenceEntities is Query;
-
-                annotation { "Name" : "Align to surface normal", "Default" : false }
-                definition.alignToSurfaceNormal is boolean;
             }
         }
     }
@@ -153,15 +150,14 @@ export const triadTransform = defineFeature(function(context is Context, id is I
             "useAdvancedPlacement" : false,
             "referenceCoordSystem" : qNothing(),
             "enableGeometrySnapping" : false,
-            "referenceEntities" : qNothing(),
-            "alignToSurfaceNormal" : false
+            "referenceEntities" : qNothing()
         });
 
 /**
  * Manipulator handler for triad transform feature.
  * Updates the definition based on manipulator movement.
  * When geometry snapping is enabled, snaps the manipulator origin to the closest point
- * on reference entities and optionally aligns axes to surface normals.
+ * on reference entities.
  * 
  * @param context {Context} : The context for the feature
  * @param definition {map} : The current feature definition
@@ -202,83 +198,20 @@ export function triadTransformManipulatorChange(context is Context, definition i
                 // Convert back to local coordinates
                 const localSnappedPoint = fromWorld(baseCSys) * snappedWorldPoint;
                 
-                // Update the translation to snap to reference
+                // Update the translation to snap to reference, preserving rotation
                 triadTransform = transform(triadTransform.linear, localSnappedPoint);
-                
-                // Optionally align to surface normal
-                if (definition.alignToSurfaceNormal)
-                {
-                    const referenceEntityIndex = distanceResult.sides[1].index;
-                    const referenceEntity = qNthElement(definition.referenceEntities, referenceEntityIndex);
-                    
-                    // Check if it's a face
-                    const faceQuery = qEntityFilter(referenceEntity, EntityType.FACE);
-                    if (!isQueryEmpty(context, faceQuery))
-                    {
-                        // Get the tangent plane at the closest point
-                        const faceParameter = distanceResult.sides[1].parameter;
-                        try
-                        {
-                            const tangentPlane = evFaceTangentPlane(context, {
-                                "face" : referenceEntity,
-                                "parameter" : faceParameter
-                            });
-                            
-                            // Build a coordinate system aligned with the surface (in world space)
-                            const worldAlignedX = tangentPlane.x;
-                            const worldAlignedZ = tangentPlane.normal;
-                            
-                            // When surface alignment is enabled, we show surface-aligned orientation
-                            // as the default, but user can override by rotating
-                            // The extraction will capture the absolute rotation in rx, ry, rz
-                            const surfaceAlignedCSys = coordSystem(snappedWorldPoint, worldAlignedX, worldAlignedZ);
-                            const surfaceAlignmentLocal = (fromWorld(baseCSys) * toWorld(surfaceAlignedCSys)).linear;
-                            
-                            // Show the surface-aligned orientation in the manipulator
-                            // User's rotation values will be updated to match this when they drag translation
-                            triadTransform = transform(surfaceAlignmentLocal, localSnappedPoint);
-                        }
-                        catch
-                        {
-                            // If tangent plane evaluation fails, just use the snapped position
-                        }
-                    }
-                }
             }
         }
         
         // Extract rotation and translation from the transform
-        if (definition.useAdvancedPlacement && 
-            definition.enableGeometrySnapping && 
-            definition.alignToSurfaceNormal)
-        {
-            // Surface alignment mode: extract absolute rotation
-            definition.dx = triadTransform.translation[0];
-            definition.dy = triadTransform.translation[1];
-            definition.dz = triadTransform.translation[2];
-            
-            // Extract ABSOLUTE rotation angles (relative to baseCSys)
-            // The manipulator shows surface-aligned orientation, but we store absolute angles
-            const manipulatorLocalRotation = triadTransform.linear;
-            const rotationTransposed = transpose(manipulatorLocalRotation);
-            const absoluteAngles = matrixToXYZAngles(rotationTransposed);
-            
-            definition.rx = absoluteAngles[0];
-            definition.ry = absoluteAngles[1];
-            definition.rz = absoluteAngles[2];
-        }
-        else
-        {
-            // Normal behavior: extract both translation and rotation
-            const rotation = transpose(triadTransform.linear);
-            const angles = matrixToXYZAngles(rotation);
-            definition.dx = triadTransform.translation[0];
-            definition.dy = triadTransform.translation[1];
-            definition.dz = triadTransform.translation[2];
-            definition.rx = angles[0];
-            definition.ry = angles[1];
-            definition.rz = angles[2];
-        }
+        const rotation = transpose(triadTransform.linear);
+        const angles = matrixToXYZAngles(rotation);
+        definition.dx = triadTransform.translation[0];
+        definition.dy = triadTransform.translation[1];
+        definition.dz = triadTransform.translation[2];
+        definition.rx = angles[0];
+        definition.ry = angles[1];
+        definition.rz = angles[2];
     }
     return definition;
 }
