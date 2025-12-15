@@ -99,36 +99,28 @@ export const spiral3d = defineFeature(function(context is Context, id is Id, def
         }
 
         // Calculate derivatives at start and end for better curvature continuity
-        // The derivative at a point on the spiral is the sum of:
-        // 1. The tangent to the path at that parameter
-        // 2. The rotational velocity component (perpendicular to the radial direction)
+        // Using higher-order finite differences from the generated spiral points provides
+        // a more accurate estimate of the tangent direction that matches the discrete geometry
         var startDerivative;
         var endDerivative;
         
         if (!path.closed)
         {
-            // Calculate start derivative
-            const startPathTangent = evPathTangentLines(context, path, [0]).tangentLines[0];
-            var startTangentDirection = startPathTangent.direction;
-            if (definition.flipDir)
-                startTangentDirection = startTangentDirection * -1;
-            
-            const startAngularVelocity = 360 * degree * numberOfRevolutions;
-            const startRadialVector = pointList[0] - startPathTangent.origin;
-            const startCircumferentialVelocity = cross(startTangentDirection, startRadialVector) * startAngularVelocity;
-            const startPathVelocity = startPathTangent.direction * splineLength;
-            startDerivative = startPathVelocity + startCircumferentialVelocity;
-            
-            // Calculate end derivative
-            const endPathTangent = evPathTangentLines(context, path, [1]).tangentLines[0];
-            var endTangentDirection = endPathTangent.direction;
-            if (definition.flipDir)
-                endTangentDirection = endTangentDirection * -1;
-            
-            const endRadialVector = pointList[pointNumber - 1] - endPathTangent.origin;
-            const endCircumferentialVelocity = cross(endTangentDirection, endRadialVector) * startAngularVelocity;
-            const endPathVelocity = endPathTangent.direction * splineLength;
-            endDerivative = endPathVelocity + endCircumferentialVelocity;
+            // Use 3-point forward difference at start for better accuracy
+            // Formula: f'(0) ≈ (-3*f(0) + 4*f(1) - f(2)) / (2*h)
+            // Scale by the parameter spacing to get the proper derivative magnitude
+            const parameterSpacing = 1.0 / (pointNumber - 1);
+            if (pointNumber >= 3)
+            {
+                startDerivative = (-3 * pointList[0] + 4 * pointList[1] - pointList[2]) / (2 * parameterSpacing);
+                endDerivative = (3 * pointList[pointNumber - 1] - 4 * pointList[pointNumber - 2] + pointList[pointNumber - 3]) / (2 * parameterSpacing);
+            }
+            else
+            {
+                // Fallback to simple difference if we don't have enough points
+                startDerivative = (pointList[1] - pointList[0]) / parameterSpacing;
+                endDerivative = (pointList[pointNumber - 1] - pointList[pointNumber - 2]) / parameterSpacing;
+            }
         }
 
         if (path.closed)
