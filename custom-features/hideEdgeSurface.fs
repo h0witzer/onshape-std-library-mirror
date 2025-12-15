@@ -11,7 +11,6 @@ import(path : "onshape/std/evaluate.fs", version : "2837.0");
 import(path : "onshape/std/feature.fs", version : "2837.0");
 import(path : "onshape/std/geomOperations.fs", version : "2837.0");
 import(path : "onshape/std/sheetMetalAttribute.fs", version : "2837.0");
-import(path : "onshape/std/sheetMetalUtils.fs", version : "2837.0");
 import(path : "onshape/std/smobjecttype.gen.fs", version : "2837.0");
 import(path : "onshape/std/string.fs", version : "2837.0");
 import(path : "onshape/std/topologyUtils.fs", version : "2837.0");
@@ -72,12 +71,10 @@ export const hideEdgeSurface = defineSheetMetalFeature(function(context is Conte
             "attribute" : customAttribute
         });
 
-        // Call updateSheetMetalGeometry to finalize and hide the surface
-        // This should hide the surface from regular queries
-        updateSheetMetalGeometry(context, id, {
-            "entities" : qUnion([surfaceFaces, qOwnedByBody(createdSurface, EntityType.EDGE)])
-        });
+        // Note: We don't call updateSheetMetalGeometry here because we're not actually
+        // building sheet metal geometry - we're just testing if annotating surfaces with
+        // sheet metal attributes causes them to be hidden from regular queries
 
-        // Log confirmation that the surface was created and hidden
-        println("Hidden copied face created with custom property: " ~ definition.customProperty);
+        // Log confirmation that the surface was created and annotated
+        println("Copied face annotated with custom property: " ~ definition.customProperty);
     }, {});
