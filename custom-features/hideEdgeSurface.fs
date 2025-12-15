@@ -97,20 +97,20 @@ export const hideEdgeSurface = defineSheetMetalFeature(function(context is Conte
         const edgeEndpoints = evaluateQuery(context, qVertexAdjacent(selectedEdge, EntityType.VERTEX));
         if (size(edgeEndpoints) < 2)
         {
-            throw regenError("Edge must have at least two endpoints", ["targetEdge"]);
+            throw regenError("Failed to get edge endpoints - invalid edge topology detected", ["targetEdge"]);
         }
 
         const point1 = evVertexPoint(context, {"vertex" : edgeEndpoints[0]});
         const point2 = evVertexPoint(context, {"vertex" : edgeEndpoints[1]});
         
         // Create offset points parallel to the original edge
-        const offsetPoint1Final = point1 + offsetDirection * definition.offsetDistance;
-        const offsetPoint2Final = point2 + offsetDirection * definition.offsetDistance;
+        const offsetPoint1 = point1 + offsetDirection * definition.offsetDistance;
+        const offsetPoint2 = point2 + offsetDirection * definition.offsetDistance;
 
         // Create a line between the offset points using opFitSpline
         // This creates a wire body with an edge that will be used for lofting
         opFitSpline(context, id + "offsetLine", {
-            "points" : [offsetPoint1Final, offsetPoint2Final]
+            "points" : [offsetPoint1, offsetPoint2]
         });
 
         const offsetEdge = qCreatedBy(id + "offsetLine", EntityType.EDGE);
@@ -126,7 +126,7 @@ export const hideEdgeSurface = defineSheetMetalFeature(function(context is Conte
         }
         catch
         {
-            throw regenError("Failed to create loft surface between edge and offset", ["targetEdge"]);
+            throw regenError("Failed to create loft surface between edge and offset edge. Check edge geometry and offset distance.", ["targetEdge"]);
         }
 
         // Get the created surface body
