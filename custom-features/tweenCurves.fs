@@ -206,7 +206,18 @@ export function tweenCurves(context is Context, id is Id,
 
 /**
  * Create a tweened curve between two multi-segment paths using domain matching.
- * Uses arc-length parameterization and evDistance to match corresponding points.
+ * 
+ * This function solves the domain matching problem for paths with different numbers
+ * of segments by using the technique from loft autoconnections:
+ * 1. Construct paths from the edge groups using arc-length parameterization
+ * 2. Sample points uniformly along path1 based on arc-length
+ * 3. For each sampled point on path1, use evDistance to find the closest corresponding
+ *    point on path2 (this handles different segment counts and parameterizations)
+ * 4. Interpolate between corresponding point pairs
+ * 5. Fit a B-spline through the interpolated points
+ *
+ * This approach allows tweening between paths with completely different topologies,
+ * solving the problem of matching domains when paths have different numbers of segments.
  *
  * @param context - The context in which to create the tweened curve
  * @param id - The operation ID
