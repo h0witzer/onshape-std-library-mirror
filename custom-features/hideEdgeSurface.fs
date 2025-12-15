@@ -14,6 +14,7 @@ import(path : "onshape/std/geomOperations.fs", version : "2837.0");
 import(path : "onshape/std/sheetMetalAttribute.fs", version : "2837.0");
 import(path : "onshape/std/sheetMetalUtils.fs", version : "2837.0");
 import(path : "onshape/std/smobjecttype.gen.fs", version : "2837.0");
+import(path : "onshape/std/tool.fs", version : "2837.0");
 import(path : "onshape/std/topologyUtils.fs", version : "2837.0");
 import(path : "onshape/std/valueBounds.fs", version : "2837.0");
 import(path : "onshape/std/vector.fs", version : "2837.0");
@@ -96,27 +97,25 @@ export const hideEdgeSurface = defineSheetMetalFeature(function(context is Conte
         // Create a sketch to define the loft profiles
         // We'll use opLoft with the original edge and a parallel offset edge
         
-        // Create a surface using opLoft between the edge and an offset path
-        // For simplicity, we'll create a ruled surface along the edge in the offset direction
+        // Create a ruled surface using opLoft between the edge and an offset path
+        // We'll create an offset edge parallel to the original edge
         
-        // Create construction geometry for the offset edge
-        const sketchId = id + "offsetSketch";
-        
-        // Get edge endpoints
+        // Get edge endpoints to create the offset edge
         const edgeEndpoints = evaluateQuery(context, qVertexAdjacent(selectedEdge, EntityType.VERTEX));
         if (size(edgeEndpoints) < 2)
         {
-            throw regenError("Edge must have two endpoints", ["targetEdge"]);
+            throw regenError("Edge must have at least two endpoints", ["targetEdge"]);
         }
 
         const point1 = evVertexPoint(context, {"vertex" : edgeEndpoints[0]});
         const point2 = evVertexPoint(context, {"vertex" : edgeEndpoints[1]});
         
-        // Create offset points
+        // Create offset points parallel to the original edge
         const offsetPoint1Final = point1 + offsetDirection * definition.offsetDistance;
         const offsetPoint2Final = point2 + offsetDirection * definition.offsetDistance;
 
-        // Create a line between the offset points using opFitSpline (as a linear spline)
+        // Create a line between the offset points using opFitSpline
+        // This creates a wire body with an edge that will be used for lofting
         opFitSpline(context, id + "offsetLine", {
             "points" : [offsetPoint1Final, offsetPoint2Final]
         });
@@ -124,11 +123,12 @@ export const hideEdgeSurface = defineSheetMetalFeature(function(context is Conte
         const offsetEdge = qCreatedBy(id + "offsetLine", EntityType.EDGE);
 
         // Now create a loft surface between the original edge and offset edge
+        // This creates a ruled surface connecting the two parallel edges
         try
         {
             opLoft(context, id + "loftSurface", {
                 "profileSubqueries" : [selectedEdge, offsetEdge],
-                "makeSolid" : false
+                "bodyType" : ToolBodyType.SURFACE
             });
         }
         catch
