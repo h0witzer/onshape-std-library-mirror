@@ -77,15 +77,47 @@ export const spiral3d = defineFeature(function(context is Context, id is Id, def
         pointNumber = round(pointNumber);
 
         const path = constructPath(context, definition.splineEdge);
-
-        var initTangent = evPathTangentLines(context, path, [0]).tangentLines[0];
+        
+        // Validate that the path has edges
+        if (size(path.edges) == 0)
+        {
+            throw regenError("The selected edge does not form a valid path.");
+        }
+        
+        // Validate that we can evaluate tangents on the path before proceeding
+        // This prevents errors when the path contains edges that don't support tangent evaluation
+        var initTangentResult;
+        try silent
+        {
+            initTangentResult = evPathTangentLines(context, path, [0]);
+        }
+        catch
+        {
+            throw regenError("Cannot evaluate tangent lines on the selected edge. The edge may be degenerate, or may be a type that does not support tangent evaluation. Please select a different edge.");
+        }
+        
+        // Validate that we got valid tangent lines
+        if (initTangentResult?.tangentLines == undefined || size(initTangentResult.tangentLines) == 0)
+        {
+            throw regenError("Failed to evaluate tangent lines on the selected edge. Please select a different edge.");
+        }
+        
+        var initTangent = initTangentResult.tangentLines[0];
         if (definition.flipDir)
             initTangent.direction *= -1;
 
-        const trArr = evPathTransfromArray(context, {
-                    "path" : path,
-                    "paramArr" : range(0, 1, pointNumber)
-                });
+        var trArr;
+        try silent
+        {
+            trArr = evPathTransfromArray(context, {
+                        "path" : path,
+                        "paramArr" : range(0, 1, pointNumber)
+                    });
+        }
+        catch
+        {
+            throw regenError("Cannot create transformation array along the path. The edge may contain discontinuities or unsupported geometry.");
+        }
 
         const angleArr = range(0 * degree, 360 * degree * numberOfRevolutions, pointNumber);
 
