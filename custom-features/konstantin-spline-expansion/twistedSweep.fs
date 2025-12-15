@@ -12,6 +12,58 @@ const ZERO_LENGTH_TOLERANCE = TOLERANCE.zeroLength * meter;
 const RATIO_TOLERANCE = TOLERANCE.computational; // Dimensionless tolerance for ratio comparison
 
 /**
+ * Generate loft connections using evDistance method for closed single-edge loops.
+ * This ensures proper alignment at the start/end of the loop to prevent loft failures.
+ * 
+ * @param context : The context
+ * @param edgeGroup1 : Query for the first edge group (the closed loop)
+ * @param edgeGroup2 : Query for the second edge group (the spiral)
+ * @returns array : Array of connection maps for opLoft
+ */
+function generateEvDistanceConnections(context is Context, edgeGroup1 is Query, edgeGroup2 is Query) returns array
+{
+    var loftConnections = [];
+    
+    // Get the start vertex of the loop edge
+    var vertices1 = qAdjacent(edgeGroup1, AdjacencyType.VERTEX, EntityType.VERTEX);
+    
+    if (isQueryEmpty(context, vertices1))
+    {
+        // No vertices found, return empty connections
+        return loftConnections;
+    }
+    
+    // Get the first vertex and find its closest point on the spiral
+    var startVertex = qNthElement(vertices1, 0);
+    var startVertexPos = evVertexPoint(context, { "vertex" : startVertex });
+    
+    // Use evDistance to find the closest point on the spiral to the start vertex
+    var distResult = evDistance(context, {
+                "side0" : startVertex,
+                "side1" : edgeGroup2,
+                "arcLengthParameterization" : true
+            });
+    
+    // Get the edge and parameter on the spiral
+    var spiralEdge = qNthElement(edgeGroup2, distResult.sides[1].index);
+    var spiralParameter = distResult.sides[1].parameter;
+    
+    // Get the loop edge
+    var loopEdge = qNthElement(edgeGroup1, 0);
+    
+    // Create a connection at parameter 0 on the loop edge to the closest point on the spiral
+    var connectionMap = {
+        "connectionEntities" : qUnion([loopEdge, spiralEdge]),
+        "connectionEdges" : [loopEdge, spiralEdge],
+        "connectionEdgeParameters" : [0.0, spiralParameter]
+    };
+    
+    loftConnections = append(loftConnections, connectionMap);
+    
+    return loftConnections;
+}
+
+/**
  * Generate path length parameterized loft connections between two edge groups.
  * This ensures proper domain matching when one curve is segmented and the other is smooth.
  * 
@@ -29,6 +81,9 @@ function generatePathLengthLoftConnections(context is Context, edgeGroup1 is Que
     var totalLength1 = evPathLength(context, path1);
     var totalLength2 = evPathLength(context, path2);
     
+    // Check if path1 is a closed loop with only one edge
+    const isClosedSingleEdge = path1.closed && size(path1.edges) == 1;
+    
     // Get all vertices from path1 (the segmented path)
     var allVertices1 = qAdjacent(edgeGroup1, AdjacencyType.VERTEX, EntityType.VERTEX);
     
@@ -39,6 +94,12 @@ function generatePathLengthLoftConnections(context is Context, edgeGroup1 is Que
         var currentPoint = qNthElement(allVertices1, i);
         var pathLengthRatio = calculatePathLengthRatioForVertex(context, currentPoint, path1, totalLength1);
         pathRatios = append(pathRatios, pathLengthRatio);
+    }
+    
+    // Special handling for closed loop with single edge: use evDistance to align start/end
+    if (isClosedSingleEdge && size(pathRatios) <= 1)
+    {
+        return generateEvDistanceConnections(context, edgeGroup1, edgeGroup2);
     }
     
     // Remove duplicates and sort
