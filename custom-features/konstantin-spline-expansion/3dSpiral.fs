@@ -98,59 +98,35 @@ export const spiral3d = defineFeature(function(context is Context, id is Id, def
             pointList = append(pointList, trArr[i] * point);
         }
 
-        // Calculate derivatives at start, end, and segment boundaries for smooth curvature continuity
+        // Calculate first derivatives at start and end for better curvature continuity
+        // Use a hybrid approach: finite differences from many nearby points for robustness
         var startDerivative;
         var endDerivative;
-        var internalDerivatives = {};
-        
-        const parameterSpacing = 1.0 / (pointNumber - 1);
         
         if (!path.closed && pointNumber >= 5)
         {
             // Use 5-point finite differences for better accuracy and smoothness
+            // This averages over more points, reducing sensitivity to local discretization artifacts
+            const parameterSpacing = 1.0 / (pointNumber - 1);
+            
             // 5-point forward difference at start: f'(0) ≈ (-25f(0) + 48f(1) - 36f(2) + 16f(3) - 3f(4)) / (12h)
             startDerivative = (-25 * pointList[0] + 48 * pointList[1] - 36 * pointList[2] + 16 * pointList[3] - 3 * pointList[4]) / (12 * parameterSpacing);
             
             // 5-point backward difference at end
             const n = pointNumber - 1;
             endDerivative = (25 * pointList[n] - 48 * pointList[n - 1] + 36 * pointList[n - 2] - 16 * pointList[n - 3] + 3 * pointList[n - 4]) / (12 * parameterSpacing);
-            
-            // Add derivatives at segment boundaries to smooth transitions
-            // Find parameter values where edges meet in the path
-            if (size(path.edges) > 1)
-            {
-                var cumulativeLength = 0 * meter;
-                const totalLength = splineLength;
-                
-                for (var edgeIndex = 0; edgeIndex < size(path.edges) - 1; edgeIndex += 1)
-                {
-                    const edgeLength = evLength(context, { "entities" : path.edges[edgeIndex] });
-                    cumulativeLength += edgeLength;
-                    const boundaryParameter = cumulativeLength / totalLength;
-                    
-                    // Find the closest point index to this boundary parameter
-                    const targetIndex = round(boundaryParameter * (pointNumber - 1));
-                    
-                    // Only add derivatives for internal points (not at endpoints)
-                    if (targetIndex >= 3 && targetIndex <= pointNumber - 4)
-                    {
-                        // Use 5-point central difference at segment boundary
-                        // f'(i) ≈ (-f(i-2) + 8f(i-1) - 8f(i+1) + f(i+2)) / (12h)
-                        const boundaryDerivative = (-pointList[targetIndex - 2] + 8 * pointList[targetIndex - 1] - 8 * pointList[targetIndex + 1] + pointList[targetIndex + 2]) / (12 * parameterSpacing);
-                        internalDerivatives[targetIndex] = boundaryDerivative;
-                    }
-                }
-            }
         }
         else if (!path.closed && pointNumber >= 3)
         {
             // Fallback to 3-point formulas
+            const parameterSpacing = 1.0 / (pointNumber - 1);
             startDerivative = (-3 * pointList[0] + 4 * pointList[1] - pointList[2]) / (2 * parameterSpacing);
             endDerivative = (3 * pointList[pointNumber - 1] - 4 * pointList[pointNumber - 2] + pointList[pointNumber - 3]) / (2 * parameterSpacing);
         }
         else if (!path.closed && pointNumber >= 2)
         {
             // Fallback to 2-point formulas
+            const parameterSpacing = 1.0 / (pointNumber - 1);
             startDerivative = (pointList[1] - pointList[0]) / parameterSpacing;
             endDerivative = (pointList[pointNumber - 1] - pointList[pointNumber - 2]) / parameterSpacing;
         }
@@ -173,19 +149,11 @@ export const spiral3d = defineFeature(function(context is Context, id is Id, def
             // Only include derivatives if they were calculated
             if (startDerivative != undefined && endDerivative != undefined)
             {
-                var fitSplineDefinition = {
+                opFitSpline(context, id + "fitSplineSpiral", {
                     "points" : pointList,
                     "startDerivative" : startDerivative,
                     "endDerivative" : endDerivative
-                };
-                
-                // Add internal derivatives at segment boundaries if any were calculated
-                if (size(internalDerivatives) > 0)
-                {
-                    fitSplineDefinition.derivatives = internalDerivatives;
-                }
-                
-                opFitSpline(context, id + "fitSplineSpiral", fitSplineDefinition);
+                });
             }
             else
             {
