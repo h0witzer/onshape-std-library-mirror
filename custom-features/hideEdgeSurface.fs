@@ -11,9 +11,14 @@ import(path : "onshape/std/evaluate.fs", version : "2837.0");
 import(path : "onshape/std/feature.fs", version : "2837.0");
 import(path : "onshape/std/geomOperations.fs", version : "2837.0");
 import(path : "onshape/std/sheetMetalAttribute.fs", version : "2837.0");
+import(path : "onshape/std/sheetMetalStart.fs", version : "2837.0");
+import(path : "onshape/std/sheetMetalUtils.fs", version : "2837.0");
 import(path : "onshape/std/smobjecttype.gen.fs", version : "2837.0");
+import(path : "onshape/std/smreliefstyle.gen.fs", version : "2837.0");
 import(path : "onshape/std/string.fs", version : "2837.0");
 import(path : "onshape/std/topologyUtils.fs", version : "2837.0");
+import(path : "onshape/std/units.fs", version : "2837.0");
+import(path : "onshape/std/valueBounds.fs", version : "2837.0");
 
 /**
  * Feature that copies a face and hides it using sheet metal annotations.
@@ -54,27 +59,68 @@ export const hideEdgeSurface = defineSheetMetalFeature(function(context is Conte
 
         // Get the created surface body
         const createdSurface = qCreatedBy(id + "extractSurface", EntityType.BODY);
-        const surfaceFaces = qOwnedByBody(createdSurface, EntityType.FACE);
 
-        // Create a custom sheet metal attribute to store on the surface
-        // We'll use a WALL attribute with custom properties
-        const featureIdString = toAttributeId(id);
-        var customAttribute = makeSMWallAttribute(featureIdString);
+        // Use the proper sheet metal annotation workflow from sheetMetalStart
+        // This annotates surfaces with sheet metal attributes properly
+        var annotationArgs = {
+            "surfaceBodies" : createdSurface,
+            "bendEdgesAndFaces" : qNothing(),
+            "specialRadiiBends" : [],
+            "defaultRadius" : 0.01 * meter,
+            "controlsThickness" : false,
+            "thickness" : 0.01 * meter,
+            "thicknessDirection" : SMThicknessDirection.BOTH,
+            "minimalClearance" : 0.001 * meter,
+            "kFactor" : 0.45,
+            "kFactorRolled" : 0.45,
+            "flipDirectionUp" : false,
+            "defaultTwoCornerStyle" : SMReliefStyle.SIMPLE,
+            "defaultThreeCornerStyle" : SMReliefStyle.SIMPLE,
+            "defaultBendReliefStyle" : SMReliefStyle.OBROUND,
+            "defaultCornerReliefScale" : 1.5,
+            "defaultRoundReliefDiameter" : 0 * meter,
+            "defaultSquareReliefWidth" : 0 * meter,
+            "defaultBendReliefDepthScale" : 2.0,
+            "defaultBendReliefScale" : 1.0625,
+            "bendCalculationType" : SMBendCalculationType.K_FACTOR
+        };
         
-        // Add custom properties to the attribute
-        customAttribute.customProperty = definition.customProperty;
-        customAttribute.experimentType = "hiddenCopiedFace";
-
-        // Set the attribute on the surface faces
-        setAttribute(context, {
-            "entities" : surfaceFaces,
-            "attribute" : customAttribute
-        });
-
-        // Note: We don't call updateSheetMetalGeometry here because we're not actually
-        // building sheet metal geometry - we're just testing if annotating surfaces with
-        // sheet metal attributes causes them to be hidden from regular queries
-
-        // Log confirmation that the surface was created and annotated
-        println("Copied face annotated with custom property: " ~ definition.customProperty);
+        try
+        {
+            // Annotate the surface bodies with proper sheet metal attributes
+            annotateSmSurfaceBodies(context, id, annotationArgs, 0);
+            
+            // Add custom properties after annotation
+            const surfaceFaces = qOwnedByBody(createdSurface, EntityType.FACE);
+            for (var face in evaluateQuery(context, surfaceFaces))
+            {
+                var attrs = getAttributes(context, {
+                    "entities" : face,
+                    "attributePattern" : asSMAttribute({})
+                });
+                if (size(attrs) > 0)
+                {
+                    var attr = attrs[0];
+                    attr.customProperty = definition.customProperty;
+                    attr.experimentType = "hiddenCopiedFace";
+                    setAttribute(context, {
+                        "entities" : face,
+                        "attribute" : attr
+                    });
+                }
+            }
+            
+            // Finalize the sheet metal geometry to trigger hiding
+            updateSheetMetalGeometry(context, id, {
+                "entities" : qUnion([qOwnedByBody(createdSurface, EntityType.FACE), qOwnedByBody(createdSurface, EntityType.EDGE)])
+            });
+            
+            // Log confirmation
+            println("Copied face annotated and finalized with custom property: " ~ definition.customProperty);
+        }
+        catch (error)
+        {
+            println("Error during sheet metal annotation: " ~ toString(error));
+            throw regenError("Failed to apply sheet metal attributes to copied face.", ["targetFace"]);
+        }
     }, {});
