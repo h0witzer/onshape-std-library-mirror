@@ -7,6 +7,10 @@ import(path : "onshape/std/sweep.fs", version : "2837.0");
 
 export import(path : "e82d5f644c476dabe15157c8/6d2ab01646b5814249c8e2ef/58ce6c94dd2a64cc938d3bfc", version : "87a948b20ec75b7cfd88fbc9");//3dSpiral.fs
 
+// Constants for domain matching loft operations
+const ZERO_LENGTH_TOLERANCE = TOLERANCE.zeroLength * meter;
+const RATIO_TOLERANCE = TOLERANCE.computational; // Dimensionless tolerance for ratio comparison
+
 /**
  * Generate path length parameterized loft connections between two edge groups.
  * This ensures proper domain matching when one curve is segmented and the other is smooth.
@@ -87,7 +91,7 @@ function calculatePathLengthRatioForVertex(context is Context, vertex is Query, 
                 });
         
         // If the vertex is very close to this edge, it's on this edge
-        if (dist.distance < TOLERANCE.zeroLength * meter)
+        if (dist.distance < ZERO_LENGTH_TOLERANCE)
         {
             var arcLengthParameter = dist.sides[1].parameter;
             var lengthAlongEdge = edgeLength * arcLengthParameter;
@@ -165,7 +169,6 @@ function calculateLocalEdgeParameterFromRatio(context is Context, path is Path, 
  */
 function removeDuplicateRatios(ratios is array) returns array
 {
-    const RATIO_TOLERANCE = 1e-10; // Dimensionless tolerance for ratio comparison
     var unique = [];
     for (var ratio in ratios)
     {
