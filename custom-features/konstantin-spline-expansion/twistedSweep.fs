@@ -8,6 +8,210 @@ import(path : "onshape/std/sweep.fs", version : "2837.0");
 export import(path : "e82d5f644c476dabe15157c8/6d2ab01646b5814249c8e2ef/58ce6c94dd2a64cc938d3bfc", version : "87a948b20ec75b7cfd88fbc9");//3dSpiral.fs
 
 /**
+ * Generate path length parameterized loft connections between two edge groups.
+ * This ensures proper domain matching when one curve is segmented and the other is smooth.
+ * 
+ * @param context : The context
+ * @param edgeGroup1 : Query for the first edge group (typically the segmented sweep path)
+ * @param edgeGroup2 : Query for the second edge group (typically the smooth spiral)
+ * @returns array : Array of connection maps for opLoft
+ */
+function generatePathLengthLoftConnections(context is Context, edgeGroup1 is Query, edgeGroup2 is Query) returns array
+{
+    // Construct ordered paths from the edge groups
+    var path1 = constructPath(context, edgeGroup1);
+    var path2 = constructPath(context, edgeGroup2);
+    
+    var totalLength1 = evPathLength(context, path1);
+    var totalLength2 = evPathLength(context, path2);
+    
+    // Get all vertices from path1 (the segmented path)
+    var allVertices1 = qAdjacent(edgeGroup1, AdjacencyType.VERTEX, EntityType.VERTEX);
+    
+    // Calculate path length ratios for all vertices in path1
+    var pathRatios = [];
+    for (var i = 0; i < evaluateQueryCount(context, allVertices1); i += 1)
+    {
+        var currentPoint = qNthElement(allVertices1, i);
+        var pathLengthRatio = calculatePathLengthRatioForVertex(context, currentPoint, path1, totalLength1);
+        pathRatios = append(pathRatios, pathLengthRatio);
+    }
+    
+    // Remove duplicates and sort
+    pathRatios = removeDuplicateRatios(pathRatios);
+    pathRatios = sortRatios(pathRatios);
+    
+    // Create connections at all path length ratios
+    var loftConnections = [];
+    for (var ratio in pathRatios)
+    {
+        // Calculate edge and parameter on path2 (spiral) for this ratio
+        var edge2Info = calculateLocalEdgeParameterFromRatio(context, path2, ratio, totalLength2);
+        
+        // Find the edge in path1 that contains this ratio
+        var edge1Info = calculateLocalEdgeParameterFromRatio(context, path1, ratio, totalLength1);
+        
+        // Create connection from edge1 to edge2
+        var connectionMap = {
+            "connectionEntities" : qUnion([edge1Info.edge, edge2Info.edge]),
+            "connectionEdges" : [edge1Info.edge, edge2Info.edge],
+            "connectionEdgeParameters" : [edge1Info.parameter, edge2Info.parameter]
+        };
+        
+        loftConnections = append(loftConnections, connectionMap);
+    }
+    
+    return loftConnections;
+}
+
+/**
+ * Calculate the path length ratio (0 to 1) of a vertex position along a path.
+ */
+function calculatePathLengthRatioForVertex(context is Context, vertex is Query, path is Path, totalLength is ValueWithUnits) returns number
+{
+    var vertexPosition = evVertexPoint(context, {
+                "vertex" : vertex
+            });
+    
+    // Find which edge in the ordered path contains this vertex
+    var pathLengthBeforeEdge = 0 * meter;
+    
+    for (var i = 0; i < size(path.edges); i += 1)
+    {
+        var edge = path.edges[i];
+        var edgeLength = evLength(context, {
+                    "entities" : edge
+                });
+        
+        // Check if vertex is on this edge by using evDistance
+        var dist = evDistance(context, {
+                    "side0" : vertex,
+                    "side1" : edge,
+                    "arcLengthParameterization" : true
+                });
+        
+        // If the vertex is very close to this edge, it's on this edge
+        if (dist.distance < TOLERANCE.zeroLength * meter)
+        {
+            var arcLengthParameter = dist.sides[1].parameter;
+            var lengthAlongEdge = edgeLength * arcLengthParameter;
+            
+            // Account for edge flipping in the path
+            if (path.flipped[i])
+            {
+                lengthAlongEdge = edgeLength - lengthAlongEdge;
+            }
+            
+            var totalPathLengthToVertex = pathLengthBeforeEdge + lengthAlongEdge;
+            return totalPathLengthToVertex / totalLength;
+        }
+        
+        pathLengthBeforeEdge = pathLengthBeforeEdge + edgeLength;
+    }
+    
+    // If we didn't find the vertex on any edge, return 0 (shouldn't happen)
+    return 0;
+}
+
+/**
+ * Calculate the local edge and parameter for a given global path ratio.
+ */
+function calculateLocalEdgeParameterFromRatio(context is Context, path is Path, globalRatio is number, totalLength is ValueWithUnits) returns map
+{
+    // Clamp the ratio to [0, 1] to handle numerical errors
+    globalRatio = max(0.0, min(1.0, globalRatio));
+    
+    var targetPathLength = totalLength * globalRatio;
+    var accumulatedLength = 0 * meter;
+    
+    // Find which edge contains this path length
+    var edgeIndex = 0;
+    for (var i = 0; i < size(path.edges); i += 1)
+    {
+        var edgeLength = evLength(context, {
+                    "entities" : path.edges[i]
+                });
+        
+        if (accumulatedLength + edgeLength >= targetPathLength || i == size(path.edges) - 1)
+        {
+            edgeIndex = i;
+            break;
+        }
+        
+        accumulatedLength += edgeLength;
+    }
+    
+    // Calculate the local parameter on this edge
+    var edgeLength = evLength(context, {
+                "entities" : path.edges[edgeIndex]
+            });
+    
+    var lengthIntoEdge = targetPathLength - accumulatedLength;
+    var parameterOnEdge = lengthIntoEdge / edgeLength;
+    
+    // Account for edge flipping
+    if (path.flipped[edgeIndex])
+    {
+        parameterOnEdge = 1.0 - parameterOnEdge;
+    }
+    
+    // Clamp parameter to [0, 1] to avoid numerical errors
+    parameterOnEdge = max(0.0, min(1.0, parameterOnEdge));
+    
+    return {
+        "edge" : path.edges[edgeIndex],
+        "parameter" : parameterOnEdge
+    };
+}
+
+/**
+ * Remove duplicate ratios from an array (within tolerance).
+ */
+function removeDuplicateRatios(ratios is array) returns array
+{
+    var unique = [];
+    for (var ratio in ratios)
+    {
+        var isDuplicate = false;
+        for (var existing in unique)
+        {
+            if (abs(ratio - existing) < TOLERANCE.zeroLength)
+            {
+                isDuplicate = true;
+                break;
+            }
+        }
+        if (!isDuplicate)
+        {
+            unique = append(unique, ratio);
+        }
+    }
+    return unique;
+}
+
+/**
+ * Sort an array of numbers using bubble sort.
+ */
+function sortRatios(arr is array) returns array
+{
+    var sorted = arr;
+    var n = size(sorted);
+    for (var i = 0; i < n - 1; i += 1)
+    {
+        for (var j = 0; j < n - i - 1; j += 1)
+        {
+            if (sorted[j] > sorted[j + 1])
+            {
+                var temp = sorted[j];
+                sorted[j] = sorted[j + 1];
+                sorted[j + 1] = temp;
+            }
+        }
+    }
+    return sorted;
+}
+
+/**
  * Helper function to set wall thickness for thin sweeps
  * Converts thickness parameters to wallThickness_1 and wallThickness_2
  */
@@ -221,9 +425,14 @@ export const twistedSweep = defineFeature(function(context is Context, id is Id,
         spiral3d(context, id + "spiral", spiralDefinition);
 
         // Step 2: Create a lofted surface between the original path and the spiral
+        // Use path length parameterized connections for proper domain matching
+        var spiralEdges = qCreatedBy(id + "spiral", EntityType.EDGE);
+        var loftConnections = generatePathLengthLoftConnections(context, sweepPath, spiralEdges);
+        
         opLoft(context, id + "loftedSurface", {
                     "bodyType" : ExtendedToolBodyType.SURFACE,
-                    "profileSubqueries" : [sweepPath, qCreatedBy(id + "spiral", EntityType.EDGE)]
+                    "profileSubqueries" : [sweepPath, spiralEdges],
+                    "connections" : loftConnections
                 });
 
         // Step 3: Perform the sweep with face locking
@@ -290,10 +499,14 @@ export const twistedSweep = defineFeature(function(context is Context, id is Id,
                 // Recreate the spiral
                 spiral3d(context, id + "spiral", spiralDefinition);
                 
-                // Recreate the lofted surface
+                // Recreate the lofted surface with path length connections
+                var spiralEdgesRecon = qCreatedBy(id + "spiral", EntityType.EDGE);
+                var loftConnectionsRecon = generatePathLengthLoftConnections(context, sweepPath, spiralEdgesRecon);
+                
                 opLoft(context, id + "loftedSurface", {
                             "bodyType" : ExtendedToolBodyType.SURFACE,
-                            "profileSubqueries" : [sweepPath, qCreatedBy(id + "spiral", EntityType.EDGE)]
+                            "profileSubqueries" : [sweepPath, spiralEdgesRecon],
+                            "connections" : loftConnectionsRecon
                         });
                 
                 // Recreate the sweep
