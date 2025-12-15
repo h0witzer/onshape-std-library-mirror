@@ -73,7 +73,9 @@ export const spiral3d = defineFeature(function(context is Context, id is Id, def
             numberOfRevolutions = definition.twistAngle / (360 * degree);
         }
 
-        var pointNumber = hypot(2 * PI * spiralRadius * numberOfRevolutions, splineLength) / (10 * millimeter) + 10 * numberOfRevolutions;
+        // Increase point density for better resolution, especially at segment transitions
+        // Using 5mm instead of 10mm divisor for approximately 2x more points
+        var pointNumber = hypot(2 * PI * spiralRadius * numberOfRevolutions, splineLength) / (5 * millimeter) + 10 * numberOfRevolutions;
         pointNumber = round(pointNumber);
 
         const path = constructPath(context, definition.splineEdge);
