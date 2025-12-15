@@ -27,7 +27,8 @@ export const hideEdgeSurface = defineSheetMetalFeature(function(context is Conte
         definition.targetEntities is Query;
 
         annotation { "Name" : "Attribute Type",
-                    "UIHint" : UIHint.SHOW_LABEL }
+                    "UIHint" : UIHint.SHOW_LABEL,
+                    "Default" : SMObjectType.WALL }
         definition.attributeType is SMObjectType;
     }
     {
