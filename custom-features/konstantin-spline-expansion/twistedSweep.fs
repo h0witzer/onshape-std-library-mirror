@@ -163,13 +163,14 @@ export const twistedSweep = defineFeature(function(context is Context, id is Id,
             };
         
         // Add profiles based on body type
+        // Note: opSweep expects 'profiles' field for both SOLID and SURFACE types
         if (definition.bodyType == ExtendedToolBodyType.SOLID)
         {
             sweepDefinition.profiles = definition.profiles;
         }
         else if (definition.bodyType == ExtendedToolBodyType.SURFACE)
         {
-            sweepDefinition.surfaceProfiles = definition.surfaceProfiles;
+            sweepDefinition.profiles = definition.surfaceProfiles;
         }
 
         // Perform the sweep operation
