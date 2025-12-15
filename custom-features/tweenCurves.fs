@@ -1,17 +1,18 @@
-FeatureScript 2679;
+FeatureScript 2837;
 // Standard Library Imports
-import(path : "onshape/std/common.fs", version : "2679.0");
-import(path : "onshape/std/evaluate.fs", version : "2679.0");
-import(path : "onshape/std/geomOperations.fs", version : "2679.0");
-import(path : "onshape/std/query.fs", version : "2679.0");
-import(path : "onshape/std/vector.fs", version : "2679.0");
-import(path : "onshape/std/units.fs", version : "2679.0");
-import(path : "onshape/std/valueBounds.fs", version : "2679.0");
-import(path : "onshape/std/curveGeometry.fs", version : "2679.0"); // For bSplineCurve() constructor and BSplineCurve type
-import(path : "onshape/std/error.fs", version : "2679.0"); // For reportFeatureWarning
-import(path : "onshape/std/approximationUtils.fs", version : "2679.0");
-import(path : "onshape/std/splineUtils.fs", version : "2679.0");
-import(path : "onshape/std/containers.fs", version : "2679.0");
+import(path : "onshape/std/common.fs", version : "2837.0");
+import(path : "onshape/std/evaluate.fs", version : "2837.0");
+import(path : "onshape/std/geomOperations.fs", version : "2837.0");
+import(path : "onshape/std/query.fs", version : "2837.0");
+import(path : "onshape/std/vector.fs", version : "2837.0");
+import(path : "onshape/std/units.fs", version : "2837.0");
+import(path : "onshape/std/valueBounds.fs", version : "2837.0");
+import(path : "onshape/std/curveGeometry.fs", version : "2837.0"); // For bSplineCurve() constructor and BSplineCurve type
+import(path : "onshape/std/error.fs", version : "2837.0"); // For reportFeatureWarning
+import(path : "onshape/std/approximationUtils.fs", version : "2837.0");
+import(path : "onshape/std/splineUtils.fs", version : "2837.0");
+import(path : "onshape/std/containers.fs", version : "2837.0");
+import(path : "onshape/std/path.fs", version : "2837.0"); // For path parameterization
 import(path : "f42f46716945f2a9bda5a481/eabbc18661ba5776e0ba962d/97730412fb61f53dcd526c08", version : "a24da502290d2ae4706c631f"); // 3d Arc Utilities
 
 
@@ -19,9 +20,10 @@ export const TWEEN_FRACTION_BOUNDS = { (unitless) : [0, 0.5, 1] } as RealBoundSp
 
 
 /**
- * Create a curve that is the tween between two input curves.
+ * Create a curve that is the tween between two input curves or paths.
  *
  * All compatibility checks and conversions are handled internally.
+ * Supports single curves or multi-segment paths with domain matching.
  */
 export function tweenCurves(context is Context, id is Id,
         curve1 is Query, curve2 is Query, fraction is number)
@@ -31,6 +33,21 @@ export function tweenCurves(context is Context, id is Id,
     if (evaluateQueryCount(context, curve2) == 0)
         throw regenError("Select second curve.", ["curve2"]);
 
+    // Check if the input is a multi-segment path by looking for tangent connected edges
+    const edgeGroup1 = qTangentConnectedEdges(curve1);
+    const edgeGroup2 = qTangentConnectedEdges(curve2);
+    
+    const edgeCount1 = evaluateQueryCount(context, edgeGroup1);
+    const edgeCount2 = evaluateQueryCount(context, edgeGroup2);
+    
+    // If either input has multiple segments, use path-based tweening
+    if (edgeCount1 > 1 || edgeCount2 > 1)
+    {
+        tweenPaths(context, id, edgeGroup1, edgeGroup2, fraction);
+        return;
+    }
+
+    // Single curve handling (original behavior)
     const edge1 = evaluateQuery(context, curve1)[0];
     const edge2 = evaluateQuery(context, curve2)[0];
 
@@ -185,6 +202,107 @@ export function tweenCurves(context is Context, id is Id,
         });
 
     opCreateBSplineCurve(context, id + "tweenedCpSpline", { "bSplineCurve" : newBSplineDef });
+}
+
+/**
+ * Create a tweened curve between two multi-segment paths using domain matching.
+ * Uses arc-length parameterization and evDistance to match corresponding points.
+ *
+ * @param context - The context in which to create the tweened curve
+ * @param id - The operation ID
+ * @param edgeGroup1 - Query for the first path (multiple connected edges)
+ * @param edgeGroup2 - Query for the second path (multiple connected edges)
+ * @param fraction - Interpolation fraction (0 = first path, 1 = second path)
+ */
+function tweenPaths(context is Context, id is Id, edgeGroup1 is Query, edgeGroup2 is Query, fraction is number)
+{
+    // Construct paths from edge groups
+    const pathResult1 = constructPath(context, edgeGroup1);
+    const pathResult2 = constructPath(context, edgeGroup2);
+    const path1 = pathResult1.path;
+    const path2 = pathResult2.path;
+    
+    // Determine the number of sample points based on the number of edges
+    // Sample at edge junctions and add intermediate points for smooth interpolation
+    const edgeCount1 = evaluateQueryCount(context, edgeGroup1);
+    const edgeCount2 = evaluateQueryCount(context, edgeGroup2);
+    const maxEdgeCount = max(edgeCount1, edgeCount2);
+    
+    // Use at least 3 points per edge for good interpolation
+    const samplesPerEdge = 3;
+    const totalSamples = max(maxEdgeCount * samplesPerEdge, 10);
+    
+    // Generate sample parameters along path1 using arc-length parameterization
+    var sampleParameters = [];
+    for (var parameterIndex = 0; parameterIndex < totalSamples; parameterIndex += 1)
+    {
+        sampleParameters = append(sampleParameters, parameterIndex / (totalSamples - 1));
+    }
+    
+    // Evaluate tangent lines (which include positions) along path1
+    const tangentResult1 = evPathTangentLines(context, path1, sampleParameters);
+    const tangents1 = tangentResult1.tangentLines;
+    
+    // For each point on path1, find the corresponding point on path2 using evDistance
+    var correspondingPoints2 = [];
+    var matchedParameters2 = [];
+    
+    for (var pointIndex = 0; pointIndex < size(tangents1); pointIndex += 1)
+    {
+        const point1 = tangents1[pointIndex].origin;
+        
+        // Find closest point on path2
+        const distanceResult = evDistance(context, {
+            "side0" : point1,
+            "side1" : edgeGroup2
+        });
+        
+        // Get the edge and parameter on path2
+        const closestEdge2 = qNthElement(edgeGroup2, distanceResult.sides[1].index);
+        const parameterOnEdge2 = distanceResult.sides[1].parameter;
+        
+        // Evaluate the actual point on path2
+        const tangent2 = evEdgeTangentLine(context, {
+            "edge" : closestEdge2,
+            "parameter" : parameterOnEdge2
+        });
+        
+        correspondingPoints2 = append(correspondingPoints2, tangent2.origin);
+    }
+    
+    // Interpolate between corresponding points
+    var tweenedPoints = [];
+    for (var pointIndex = 0; pointIndex < size(tangents1); pointIndex += 1)
+    {
+        const point1 = tangents1[pointIndex].origin;
+        const point2 = correspondingPoints2[pointIndex];
+        const tweenedPoint = point1 * (1 - fraction) + point2 * fraction;
+        tweenedPoints = append(tweenedPoints, tweenedPoint);
+    }
+    
+    // Create a B-spline through the tweened points
+    // Use degree 3 (cubic) for smooth interpolation
+    const splineDegree = min(3, size(tweenedPoints) - 1);
+    
+    // Fit a spline through the tweened points using approximation
+    const target = approximationTarget({ 'positions' : tweenedPoints });
+    var parameters = [];
+    for (var parameterIndex = 0; parameterIndex < size(tweenedPoints); parameterIndex += 1)
+    {
+        parameters = append(parameters, parameterIndex / (size(tweenedPoints) - 1));
+    }
+    
+    const fittedSpline = approximateSpline(context, {
+        "degree" : splineDegree,
+        "tolerance" : 1e-7 * meter,
+        "isPeriodic" : path1.closed && path2.closed,
+        "targets" : [target],
+        "parameters" : parameters,
+        "maxControlPoints" : size(tweenedPoints) + 10
+    })[0];
+    
+    // Create the B-spline curve
+    opCreateBSplineCurve(context, id + "tweenedPathSpline", { "bSplineCurve" : fittedSpline });
 }
 
 //==================================================================
