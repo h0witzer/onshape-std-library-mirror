@@ -10,7 +10,7 @@ import(path : "onshape/std/containers.fs", version : "2837.0");
 import(path : "onshape/std/evaluate.fs", version : "2837.0");
 import(path : "onshape/std/feature.fs", version : "2837.0");
 import(path : "onshape/std/sheetMetalAttribute.fs", version : "2837.0");
-import(path : "onshape/std/smobjecttype.gen.fs", version : "2837.0");
+export import(path : "onshape/std/smobjecttype.gen.fs", version : "2837.0");
 import(path : "onshape/std/string.fs", version : "2837.0");
 
 /**
@@ -45,9 +45,11 @@ export const hideEdgeSurface = defineSheetMetalFeature(function(context is Conte
         // Try directly applying sheet metal attributes to the selected entities
         try
         {
-            // Create a simple SM attribute
-            var smAttribute = makeSMAttribute(toString(id));
-            smAttribute.objectType = definition.attributeType;
+            // Create a simple SM attribute using asSMAttribute
+            var smAttribute = asSMAttribute({
+                "objectType" : definition.attributeType,
+                "attributeId" : toString(id)
+            });
             
             // Apply attribute directly to entities
             setAttribute(context, {
@@ -64,4 +66,5 @@ export const hideEdgeSurface = defineSheetMetalFeature(function(context is Conte
         }
         
         println("Experiment complete - run query feature to check visibility");
-    }, {});
+    });
+
