@@ -69,10 +69,6 @@ function generatePathLengthLoftConnections(context is Context, edgeGroup1 is Que
  */
 function calculatePathLengthRatioForVertex(context is Context, vertex is Query, path is Path, totalLength is ValueWithUnits) returns number
 {
-    var vertexPosition = evVertexPoint(context, {
-                "vertex" : vertex
-            });
-    
     // Find which edge in the ordered path contains this vertex
     var pathLengthBeforeEdge = 0 * meter;
     
@@ -169,13 +165,14 @@ function calculateLocalEdgeParameterFromRatio(context is Context, path is Path, 
  */
 function removeDuplicateRatios(ratios is array) returns array
 {
+    const RATIO_TOLERANCE = 1e-10; // Dimensionless tolerance for ratio comparison
     var unique = [];
     for (var ratio in ratios)
     {
         var isDuplicate = false;
         for (var existing in unique)
         {
-            if (abs(ratio - existing) < TOLERANCE.zeroLength)
+            if (abs(ratio - existing) < RATIO_TOLERANCE)
             {
                 isDuplicate = true;
                 break;
@@ -191,6 +188,7 @@ function removeDuplicateRatios(ratios is array) returns array
 
 /**
  * Sort an array of numbers using bubble sort.
+ * Performance is acceptable for typical twisted sweep use cases (small arrays of vertex ratios).
  */
 function sortRatios(arr is array) returns array
 {
