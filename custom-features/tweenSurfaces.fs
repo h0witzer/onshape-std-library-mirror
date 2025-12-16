@@ -539,7 +539,7 @@ function refineControlPointCount(context is Context, surface is map, targetUCoun
  * Uses the mathematically correct Boehm algorithm for knot insertion to add control points
  * without changing the curve geometry. This preserves the curve shape exactly.
  * 
- * @param context {Context} : The modeling context  
+ * @param context {Context} : The modeling context
  * @param curve {map} : The B-spline curve with controlPoints, knots, degree, etc.
  * @param targetCount {number} : Target number of control points
  * @returns {map} : Refined curve with exact geometry preservation
@@ -564,7 +564,7 @@ function refineCurveControlPointCount(context is Context, curve is map, targetCo
     // Distribute new knots uniformly across the parameter domain
     for (var i = 1; i <= numToInsert; i += 1)
     {
-        const fraction = i / (numToInsert + 1.0);
+        const fraction = i / (numToInsert + 1);
         const newKnot = startParam + (endParam - startParam) * fraction;
         knotsToInsert = append(knotsToInsert, newKnot);
     }
@@ -616,19 +616,20 @@ function insertKnotBoehm(controlPoints is array, knots is array, degree is numbe
     const numControlPoints = size(controlPoints);
     
     // Find the knot span index where insertParam falls
-    var knotSpanIndex = degree;
+    var knotSpanIndex = -1;
     for (var i = degree; i < size(knots) - degree - 1; i += 1)
     {
-        if (insertParam >= knots[i] && insertParam < knots[i + 1])
+        if (insertParam >= knots[i] && insertParam <= knots[i + 1])
         {
             knotSpanIndex = i;
             break;
         }
-        if (insertParam == knots[i + 1] && i == size(knots) - degree - 2)
-        {
-            knotSpanIndex = i;
-            break;
-        }
+    }
+    
+    // Handle edge case: if not found, use the last valid span
+    if (knotSpanIndex == -1)
+    {
+        knotSpanIndex = size(knots) - degree - 2;
     }
     
     // Compute new control points using the Boehm algorithm
@@ -643,7 +644,19 @@ function insertKnotBoehm(controlPoints is array, knots is array, degree is numbe
     // Compute new control points in the affected range
     for (var i = knotSpanIndex - degree + 1; i <= knotSpanIndex; i += 1)
     {
-        const alpha = (insertParam - knots[i]) / (knots[i + degree] - knots[i]);
+        // Compute alpha, handling the case of repeated knots
+        var alpha = 0.0;
+        const denominator = knots[i + degree] - knots[i];
+        if (abs(denominator) > 1e-10)
+        {
+            alpha = (insertParam - knots[i]) / denominator;
+        }
+        else
+        {
+            // For repeated knots, use the control point as-is (alpha = 1)
+            alpha = 1.0;
+        }
+        
         const newPoint = controlPoints[i - 1] * (1 - alpha) + controlPoints[i] * alpha;
         newControlPoints = append(newControlPoints, newPoint);
     }
