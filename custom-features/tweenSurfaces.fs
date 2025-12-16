@@ -172,9 +172,9 @@ function createTweenedSurface(context is Context, id is Id,
  * @param face {Query} : Query resolving to the face to sample
  * @param uParameter {number} : The u parameter in parametric space (0 to 1)
  * @param vParameter {number} : The v parameter in parametric space (0 to 1)
- * @returns {Vector} : The sampled 3D point on the surface, or undefined if sampling fails
+ * @returns {Vector | undefined} : The sampled 3D point on the surface, or undefined if sampling fails
  */
-function sampleSurfacePoint(context is Context, face is Query, uParameter is number, vParameter is number) returns Vector
+function sampleSurfacePoint(context is Context, face is Query, uParameter is number, vParameter is number)
 {
     try
     {
