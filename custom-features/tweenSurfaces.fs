@@ -712,6 +712,6 @@ function insertKnotBoehm(controlPoints is array, knots is array, degree is numbe
     
     return {
         "controlPoints" : newControlPoints,
-        "knots" : newKnots
+        "knots" : knotArray(newKnots)
     };
 }
