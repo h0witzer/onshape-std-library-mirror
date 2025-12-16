@@ -36,12 +36,12 @@ function createEmptyInstance() returns map
 {
     return {
         "index" : 0,
-        "dx" : 0 * millimeter,
-        "dy" : 0 * millimeter,
-        "dz" : 0 * millimeter,
-        "rx" : 0 * degree,
-        "ry" : 0 * degree,
-        "rz" : 0 * degree,
+        "instanceDx" : 0 * millimeter,
+        "instanceDy" : 0 * millimeter,
+        "instanceDz" : 0 * millimeter,
+        "instanceRx" : 0 * degree,
+        "instanceRy" : 0 * degree,
+        "instanceRz" : 0 * degree,
         "rotationMatrix" : identityMatrix(3)
     };
 }
@@ -91,22 +91,22 @@ predicate triadTransformPredicate(definition is map)
             isInteger(instance.index, { (unitless) : [0, 0, 10000] } as IntegerBoundSpec);
             
             annotation { "Name" : "X translation" }
-            isLength(instance.dx, ZERO_DEFAULT_LENGTH_BOUNDS);
+            isLength(instance.instanceDx, ZERO_DEFAULT_LENGTH_BOUNDS);
             
             annotation { "Name" : "Y translation" }
-            isLength(instance.dy, ZERO_DEFAULT_LENGTH_BOUNDS);
+            isLength(instance.instanceDy, ZERO_DEFAULT_LENGTH_BOUNDS);
             
             annotation { "Name" : "Z translation" }
-            isLength(instance.dz, ZERO_DEFAULT_LENGTH_BOUNDS);
+            isLength(instance.instanceDz, ZERO_DEFAULT_LENGTH_BOUNDS);
             
             annotation { "Name" : "X rotation" }
-            isAngle(instance.rx, ANGLE_360_ZERO_DEFAULT_BOUNDS);
+            isAngle(instance.instanceRx, ANGLE_360_ZERO_DEFAULT_BOUNDS);
             
             annotation { "Name" : "Y rotation" }
-            isAngle(instance.ry, ANGLE_360_ZERO_DEFAULT_BOUNDS);
+            isAngle(instance.instanceRy, ANGLE_360_ZERO_DEFAULT_BOUNDS);
             
             annotation { "Name" : "Z rotation" }
-            isAngle(instance.rz, ANGLE_360_ZERO_DEFAULT_BOUNDS);
+            isAngle(instance.instanceRz, ANGLE_360_ZERO_DEFAULT_BOUNDS);
             
             annotation { "Name" : "Rotation matrix", "UIHint" : UIHint.ALWAYS_HIDDEN }
             isAnything(instance.rotationMatrix);
@@ -182,8 +182,8 @@ function addInstanceManipulators(context is Context, id is Id,
     var instancePositions = [];
     for (var instance in definition.instances)
     {
-        const rotation = composeRotation(baseCSys, instance.rx, instance.ry, instance.rz);
-        const instanceTransform = transform(rotation, vector(instance.dx, instance.dy, instance.dz));
+        const rotation = composeRotation(baseCSys, instance.instanceRx, instance.instanceRy, instance.instanceRz);
+        const instanceTransform = transform(rotation, vector(instance.instanceDx, instance.instanceDy, instance.instanceDz));
         const worldTransform = toWorld(baseCSys) * instanceTransform;
         instancePositions = append(instancePositions, worldTransform.translation);
     }
@@ -232,8 +232,8 @@ export const triadTransform = defineFeature(function(context is Context, id is I
             for (var instanceIndex = 0; instanceIndex < @size(definition.instances); instanceIndex += 1)
             {
                 const instance = definition.instances[instanceIndex];
-                const instanceRotation = composeRotation(baseCSys, instance.rx, instance.ry, instance.rz);
-                const instanceLocalTransform = transform(instanceRotation, vector(instance.dx, instance.dy, instance.dz));
+                const instanceRotation = composeRotation(baseCSys, instance.instanceRx, instance.instanceRy, instance.instanceRz);
+                const instanceLocalTransform = transform(instanceRotation, vector(instance.instanceDx, instance.instanceDy, instance.instanceDz));
                 const instanceWorldTransform = toWorld(baseCSys) * instanceLocalTransform * fromWorld(baseCSys);
                 transforms = append(transforms, instanceWorldTransform);
                 instanceNames = append(instanceNames, "copy" ~ toString(instanceIndex + 1));
@@ -368,12 +368,12 @@ export function triadTransformManipulatorChange(context is Context, definition i
             {
                 if (definition.instances[instanceArrayIndex].index == definition.instanceIndex)
                 {
-                    definition.instances[instanceArrayIndex].dx = definition.dx;
-                    definition.instances[instanceArrayIndex].dy = definition.dy;
-                    definition.instances[instanceArrayIndex].dz = definition.dz;
-                    definition.instances[instanceArrayIndex].rx = definition.rx;
-                    definition.instances[instanceArrayIndex].ry = definition.ry;
-                    definition.instances[instanceArrayIndex].rz = definition.rz;
+                    definition.instances[instanceArrayIndex].instanceDx = definition.dx;
+                    definition.instances[instanceArrayIndex].instanceDy = definition.dy;
+                    definition.instances[instanceArrayIndex].instanceDz = definition.dz;
+                    definition.instances[instanceArrayIndex].instanceRx = definition.rx;
+                    definition.instances[instanceArrayIndex].instanceRy = definition.ry;
+                    definition.instances[instanceArrayIndex].instanceRz = definition.rz;
                     definition.instances[instanceArrayIndex].rotationMatrix = rotation;
                     break;
                 }
@@ -527,12 +527,12 @@ export function triadTransformEditLogic(context is Context, id is Id, oldDefinit
     {
         // Create a new instance from current manipulator transform
         var newInstance = createEmptyInstance();
-        newInstance.dx = definition.dx;
-        newInstance.dy = definition.dy;
-        newInstance.dz = definition.dz;
-        newInstance.rx = definition.rx;
-        newInstance.ry = definition.ry;
-        newInstance.rz = definition.rz;
+        newInstance.instanceDx = definition.dx;
+        newInstance.instanceDy = definition.dy;
+        newInstance.instanceDz = definition.dz;
+        newInstance.instanceRx = definition.rx;
+        newInstance.instanceRy = definition.ry;
+        newInstance.instanceRz = definition.rz;
         
         // Extract the rotation matrix from the current angles
         const baseCSys = getBaseCoordinateSystem(context, definition);
@@ -561,12 +561,12 @@ export function triadTransformEditLogic(context is Context, id is Id, oldDefinit
             if (definition.instances[instanceArrayIndex].index == definition.instanceIndex)
             {
                 // Load this instance's transform into the main manipulator
-                definition.dx = definition.instances[instanceArrayIndex].dx;
-                definition.dy = definition.instances[instanceArrayIndex].dy;
-                definition.dz = definition.instances[instanceArrayIndex].dz;
-                definition.rx = definition.instances[instanceArrayIndex].rx;
-                definition.ry = definition.instances[instanceArrayIndex].ry;
-                definition.rz = definition.instances[instanceArrayIndex].rz;
+                definition.dx = definition.instances[instanceArrayIndex].instanceDx;
+                definition.dy = definition.instances[instanceArrayIndex].instanceDy;
+                definition.dz = definition.instances[instanceArrayIndex].instanceDz;
+                definition.rx = definition.instances[instanceArrayIndex].instanceRx;
+                definition.ry = definition.instances[instanceArrayIndex].instanceRy;
+                definition.rz = definition.instances[instanceArrayIndex].instanceRz;
                 break;
             }
         }
@@ -576,7 +576,7 @@ export function triadTransformEditLogic(context is Context, id is Id, oldDefinit
     if (definition.multiCopyMode && @size(definition.instances) > 0)
     {
         const numInstances = @size(definition.instances);
-        const currentIndicesOrder = makeArray(numInstances);
+        var currentIndicesOrder = makeArray(numInstances);
         for (var instanceArrayIndex = 0; instanceArrayIndex < numInstances; instanceArrayIndex += 1)
         {
             currentIndicesOrder[instanceArrayIndex] = definition.instances[instanceArrayIndex].index;
