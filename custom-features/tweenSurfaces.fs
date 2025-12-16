@@ -188,12 +188,19 @@ function createTweenedSurface(context is Context, id is Id,
             controlPointRow = append(controlPointRow, tweenedControlPoint);
             
             // Debug: Visualize control points for debugging
-            // Show a grid of control points to see their distribution
-            if (uIndex < 5 && vIndex < 5)
+            // Show all control points to see their distribution
+            debug(context, firstControlPoint, DebugColor.BLUE);
+            debug(context, secondControlPoint, DebugColor.RED);
+            debug(context, tweenedControlPoint, DebugColor.GREEN);
+            
+            // Additional debug: Print some sample interpolations to verify math
+            if (uIndex == 0 && vIndex == 0)
             {
-                debug(context, firstControlPoint, DebugColor.BLUE);
-                debug(context, secondControlPoint, DebugColor.RED);
-                debug(context, tweenedControlPoint, DebugColor.GREEN);
+                println("DEBUG: Corner CP interpolation (fraction=" ~ tweenFraction ~ "):");
+                println("  First CP: " ~ firstControlPoint);
+                println("  Second CP: " ~ secondControlPoint);
+                println("  Tweened CP: " ~ tweenedControlPoint);
+                println("  Expected: " ~ (firstControlPoint * (1 - tweenFraction) + secondControlPoint * tweenFraction));
             }
         }
         tweenedControlPoints = append(tweenedControlPoints, controlPointRow);
