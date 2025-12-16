@@ -186,6 +186,15 @@ function createTweenedSurface(context is Context, id is Id,
             // Linear interpolation: tweenedCP = (1 - fraction) * cp1 + fraction * cp2
             const tweenedControlPoint = firstControlPoint * (1 - tweenFraction) + secondControlPoint * tweenFraction;
             controlPointRow = append(controlPointRow, tweenedControlPoint);
+            
+            // Debug: Visualize control points for debugging
+            // Show a grid of control points to see their distribution
+            if (uIndex < 5 && vIndex < 5)
+            {
+                debug(context, firstControlPoint, DebugColor.BLUE);
+                debug(context, secondControlPoint, DebugColor.RED);
+                debug(context, tweenedControlPoint, DebugColor.GREEN);
+            }
         }
         tweenedControlPoints = append(tweenedControlPoints, controlPointRow);
     }
