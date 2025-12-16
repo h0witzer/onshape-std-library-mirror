@@ -1,29 +1,44 @@
-FeatureScript 2815;
-import(path : "onshape/std/common.fs", version : "2815.0");
+FeatureScript 2837;
+import(path : "onshape/std/common.fs", version : "2837.0");
 
 //This tool should be illegal. If you need to move objects around in this manner you should be doing it at the assembly level
 //Or you're dealing with some of my coworkers and need to prove a concept as fast and sloppy as possible
 //Break Glass In Case Of Evan
 
 // Imports used in interface
-export import(path : "onshape/std/query.fs", version : "2815.0");
-export import(path : "onshape/std/manipulator.fs", version : "2815.0");
-export import(path : "onshape/std/tool.fs", version : "2815.0");
+export import(path : "onshape/std/query.fs", version : "2837.0");
+export import(path : "onshape/std/manipulator.fs", version : "2837.0");
+export import(path : "onshape/std/tool.fs", version : "2837.0");
 
 // Imports used internally
-import(path : "onshape/std/box.fs", version : "2815.0");
-import(path : "onshape/std/coordSystem.fs", version : "2815.0");
-import(path : "onshape/std/evaluate.fs", version : "2815.0");
-import(path : "onshape/std/feature.fs", version : "2815.0");
-import(path : "onshape/std/topologyUtils.fs", version : "2815.0");
-import(path : "onshape/std/transform.fs", version : "2815.0");
-import(path : "onshape/std/valueBounds.fs", version : "2815.0");
-import(path : "onshape/std/vector.fs", version : "2815.0");
-import(path : "onshape/std/matrix.fs", version : "2815.0");
-import(path : "onshape/std/math.fs", version : "2815.0");
-import(path : "onshape/std/units.fs", version : "2815.0");
+import(path : "onshape/std/box.fs", version : "2837.0");
+import(path : "onshape/std/coordSystem.fs", version : "2837.0");
+import(path : "onshape/std/evaluate.fs", version : "2837.0");
+import(path : "onshape/std/feature.fs", version : "2837.0");
+import(path : "onshape/std/topologyUtils.fs", version : "2837.0");
+import(path : "onshape/std/transform.fs", version : "2837.0");
+import(path : "onshape/std/valueBounds.fs", version : "2837.0");
+import(path : "onshape/std/vector.fs", version : "2837.0");
+import(path : "onshape/std/matrix.fs", version : "2837.0");
+import(path : "onshape/std/math.fs", version : "2837.0");
+import(path : "onshape/std/units.fs", version : "2837.0");
 
 const TRIAD_MANIPULATOR = "triadManipulator";
+const INSTANCE_MANIPULATOR = "instanceManipulator";
+
+/**
+ * Structure to store a transform instance with its position and rotation.
+ */
+const emptyInstance = {
+        "index" : 0,
+        "dx" : 0 * millimeter,
+        "dy" : 0 * millimeter,
+        "dz" : 0 * millimeter,
+        "rx" : 0 * degree,
+        "ry" : 0 * degree,
+        "rz" : 0 * degree,
+        "rotationMatrix" : identityMatrix(3)
+    };
 
 predicate triadTransformPredicate(definition is map)
 {
@@ -50,6 +65,47 @@ predicate triadTransformPredicate(definition is map)
 
     annotation { "Name" : "Copy parts", "Default" : false }
     definition.copyParts is boolean;
+    
+    annotation { "Name" : "Multi-copy mode", "Default" : false }
+    definition.multiCopyMode is boolean;
+    
+    if (definition.multiCopyMode)
+    {
+        annotation { "Name" : "Place copy" }
+        isButton(definition.placeCopy);
+        
+        annotation { "Name" : "Selected instance", "UIHint" : [UIHint.ALWAYS_HIDDEN, UIHint.UNCONFIGURABLE] }
+        isInteger(definition.instanceIndex, { (unitless) : [0, 0, 10000] } as IntegerBoundSpec);
+        
+        annotation { "Name" : "Instances", "Item name" : "instance", "Item label template" : "Instance #index", "UIHint" : UIHint.PREVENT_ARRAY_REORDER }
+        definition.instances is array;
+        for (var instance in definition.instances)
+        {
+            annotation { "Name" : "Instance index", "UIHint" : [UIHint.ALWAYS_HIDDEN] }
+            isInteger(instance.index, { (unitless) : [0, 0, 10000] } as IntegerBoundSpec);
+            
+            annotation { "Name" : "X translation" }
+            isLength(instance.dx, ZERO_DEFAULT_LENGTH_BOUNDS);
+            
+            annotation { "Name" : "Y translation" }
+            isLength(instance.dy, ZERO_DEFAULT_LENGTH_BOUNDS);
+            
+            annotation { "Name" : "Z translation" }
+            isLength(instance.dz, ZERO_DEFAULT_LENGTH_BOUNDS);
+            
+            annotation { "Name" : "X rotation" }
+            isAngle(instance.rx, ANGLE_360_ZERO_DEFAULT_BOUNDS);
+            
+            annotation { "Name" : "Y rotation" }
+            isAngle(instance.ry, ANGLE_360_ZERO_DEFAULT_BOUNDS);
+            
+            annotation { "Name" : "Z rotation" }
+            isAngle(instance.rz, ANGLE_360_ZERO_DEFAULT_BOUNDS);
+            
+            annotation { "Name" : "Rotation matrix", "UIHint" : UIHint.ALWAYS_HIDDEN }
+            isAnything(instance.rotationMatrix);
+        }
+    }
 
     annotation { "Name" : "Advanced placement", "Default" : false }
     definition.useAdvancedPlacement is boolean;
@@ -76,6 +132,7 @@ predicate triadTransformPredicate(definition is map)
 /**
  * Adds a triad manipulator centered on the given coordinate system.
  * The manipulator displays rotation and translation controls that the user can interact with.
+ * In multi-copy mode, also adds point manipulators for each placed instance.
  * 
  * @param context {Context} : The context for the feature
  * @param id {Id} : The feature identifier
@@ -96,6 +153,43 @@ function addTriadManipulator(context is Context, id is Id,
                 "displayEditView" : true
             });
     addManipulators(context, id, { (TRIAD_MANIPULATOR) : triadManip });
+    
+    // In multi-copy mode, add point manipulators for placed instances
+    if (definition.multiCopyMode && definition.instances != undefined && @size(definition.instances) > 0)
+    {
+        addInstanceManipulators(context, id, baseCSys, definition);
+    }
+}
+
+/**
+ * Adds point manipulators for all placed instances in multi-copy mode.
+ * Each point represents a placed copy that can be clicked to select/modify.
+ * 
+ * @param context {Context} : The context for the feature
+ * @param id {Id} : The feature identifier
+ * @param baseCSys {CoordSystem} : The base coordinate system for the manipulator
+ * @param definition {map} : The feature definition containing instances array
+ */
+function addInstanceManipulators(context is Context, id is Id, 
+    baseCSys is CoordSystem, definition is map)
+{
+    var instancePositions = [];
+    for (var instance in definition.instances)
+    {
+        const rotation = composeRotation(baseCSys, instance.rx, instance.ry, instance.rz);
+        const instanceTransform = transform(rotation, vector(instance.dx, instance.dy, instance.dz));
+        const worldTransform = toWorld(baseCSys) * instanceTransform;
+        instancePositions = append(instancePositions, worldTransform.translation);
+    }
+    
+    if (@size(instancePositions) > 0)
+    {
+        const pointManip = pointsManipulator({
+                    "points" : instancePositions,
+                    "index" : -1
+                });
+        addManipulators(context, id, { (INSTANCE_MANIPULATOR) : pointManip });
+    }
 }
 
 /**
@@ -105,6 +199,7 @@ function addTriadManipulator(context is Context, id is Id,
  */
 annotation { "Feature Type Name" : "Triad transform",
         "Manipulator Change Function" : "triadTransformManipulatorChange",
+        "Editing Logic Function" : "triadTransformEditLogic",
         "Filter Selector" : "allparts" }
 export const triadTransform = defineFeature(function(context is Context, id is Id, definition is map)
     precondition
@@ -123,7 +218,31 @@ export const triadTransform = defineFeature(function(context is Context, id is I
 
         const worldTransform = toWorld(baseCSys) * localTransform * fromWorld(baseCSys);
 
-        if (definition.copyParts)
+        if (definition.multiCopyMode)
+        {
+            // In multi-copy mode, apply all saved instance transforms
+            var transforms = [];
+            var instanceNames = [];
+            for (var instanceIndex = 0; instanceIndex < @size(definition.instances); instanceIndex += 1)
+            {
+                const instance = definition.instances[instanceIndex];
+                const instanceRotation = composeRotation(baseCSys, instance.rx, instance.ry, instance.rz);
+                const instanceLocalTransform = transform(instanceRotation, vector(instance.dx, instance.dy, instance.dz));
+                const instanceWorldTransform = toWorld(baseCSys) * instanceLocalTransform * fromWorld(baseCSys);
+                transforms = append(transforms, instanceWorldTransform);
+                instanceNames = append(instanceNames, "copy" ~ toString(instanceIndex + 1));
+            }
+            
+            if (@size(transforms) > 0)
+            {
+                opPattern(context, id, {
+                            "entities" : qOwnerBody(definition.entities),
+                            "transforms" : transforms,
+                            "instanceNames" : instanceNames
+                        });
+            }
+        }
+        else if (definition.copyParts)
         {
             opPattern(context, id, {
                         "entities" : qOwnerBody(definition.entities),
@@ -141,6 +260,9 @@ export const triadTransform = defineFeature(function(context is Context, id is I
     }, {
             "entities" : qNothing(),
             "copyParts" : false,
+            "multiCopyMode" : false,
+            "instances" : [],
+            "instanceIndex" : 0,
             "dx" : 0 * millimeter,
             "dy" : 0 * millimeter,
             "dz" : 0 * millimeter,
@@ -158,6 +280,7 @@ export const triadTransform = defineFeature(function(context is Context, id is I
  * Updates the definition based on manipulator movement.
  * When geometry snapping is enabled, snaps the manipulator origin to the closest point
  * on reference entities.
+ * In multi-copy mode, also handles instance selection via point manipulator clicks.
  * 
  * @param context {Context} : The context for the feature
  * @param definition {map} : The current feature definition
@@ -167,6 +290,17 @@ export const triadTransform = defineFeature(function(context is Context, id is I
  */
 export function triadTransformManipulatorChange(context is Context, definition is map, newManipulators is map) returns map
 {
+    // Handle instance selection in multi-copy mode
+    if (newManipulators[INSTANCE_MANIPULATOR] is map)
+    {
+        const clickedIndex = newManipulators[INSTANCE_MANIPULATOR].index;
+        if (clickedIndex >= 0 && clickedIndex < @size(definition.instances))
+        {
+            definition.instanceIndex = clickedIndex;
+        }
+        return definition;
+    }
+    
     if (newManipulators[TRIAD_MANIPULATOR] is map)
     {
         const manipulator = newManipulators[TRIAD_MANIPULATOR];
@@ -332,4 +466,168 @@ function findCenter(context is Context, entities is Query) returns Vector
 {
     const boxResult = evBox3d(context, { 'topology' : entities, 'tight' : false });
     return box3dCenter(boxResult);
+}
+
+/**
+ * Edit logic function for triad transform feature.
+ * Handles button clicks for placing copies in multi-copy mode and manages the instances array.
+ * 
+ * @param context {Context} : The context for the feature
+ * @param id {Id} : The feature identifier
+ * @param oldDefinition {map} : The previous feature definition
+ * @param definition {map} : The current feature definition
+ * @param isCreating {boolean} : Whether this is the initial creation of the feature
+ * @param specifiedParameters {map} : Parameters that were explicitly set by the user
+ * @param hiddenQueries {Query} : Hidden queries in the context
+ * @param clickedButton {string} : Name of the button that was clicked, if any
+ * 
+ * @returns {map} : Updated definition after processing edit logic
+ */
+export function triadTransformEditLogic(context is Context, id is Id, oldDefinition is map, definition is map, 
+    isCreating is boolean, specifiedParameters is map, hiddenQueries is Query, clickedButton is string) returns map
+{
+    // Handle the "Place copy" button click in multi-copy mode
+    if (clickedButton == "placeCopy" && definition.multiCopyMode)
+    {
+        // Create a new instance from current manipulator transform
+        var newInstance = emptyInstance;
+        newInstance.dx = definition.dx;
+        newInstance.dy = definition.dy;
+        newInstance.dz = definition.dz;
+        newInstance.rx = definition.rx;
+        newInstance.ry = definition.ry;
+        newInstance.rz = definition.rz;
+        
+        // Extract the rotation matrix from the current angles
+        const baseCSys = getBaseCoordinateSystem(context, definition);
+        const rotation = composeRotation(baseCSys, definition.rx, definition.ry, definition.rz);
+        newInstance.rotationMatrix = transpose(rotation);
+        
+        // Assign the next available index
+        newInstance.index = @size(definition.instances);
+        
+        // Add the new instance to the array
+        definition.instances = append(definition.instances, newInstance);
+        definition.instanceIndex = newInstance.index;
+        
+        return definition;
+    }
+    
+    // Handle instance array management: ensure indices are correct and handle deletions
+    if (definition.multiCopyMode && @size(definition.instances) > 0)
+    {
+        const numInstances = @size(definition.instances);
+        const currentIndicesOrder = makeArray(numInstances);
+        for (var instanceArrayIndex = 0; instanceArrayIndex < numInstances; instanceArrayIndex += 1)
+        {
+            currentIndicesOrder[instanceArrayIndex] = definition.instances[instanceArrayIndex].index;
+        }
+        
+        // Check if indices need reordering (due to deletion or other array changes)
+        const newIndicesOrder = shiftIndicesForInstances(deduplicateIndicesForInstances(currentIndicesOrder));
+        if (currentIndicesOrder != newIndicesOrder)
+        {
+            // Update indices to maintain consistency
+            for (var instanceArrayIndex = 0; instanceArrayIndex < numInstances; instanceArrayIndex += 1)
+            {
+                definition.instances[instanceArrayIndex].index = newIndicesOrder[instanceArrayIndex];
+            }
+        }
+        
+        // Ensure instanceIndex is valid
+        if (definition.instanceIndex >= numInstances)
+        {
+            definition.instanceIndex = numInstances - 1;
+        }
+        if (definition.instanceIndex < 0 && numInstances > 0)
+        {
+            definition.instanceIndex = 0;
+        }
+        
+        // Hide all instances in the array except the currently selected one
+        var hiddenIds = [];
+        for (var instanceArrayIndex = 0; instanceArrayIndex < numInstances; instanceArrayIndex += 1)
+        {
+            if (definition.instances[instanceArrayIndex].index != definition.instanceIndex)
+            {
+                hiddenIds = append(hiddenIds, "instances[" ~ toString(instanceArrayIndex) ~ "]");
+            }
+        }
+        setFeatureHiddenParameters(context, id, hiddenIds);
+    }
+    
+    return definition;
+}
+
+/**
+ * Shifts indices to remove gaps, similar to routingCurve's shiftIndices.
+ * Ensures indices are sequential starting from 0.
+ * 
+ * @param indices {array} : Array of unique index values
+ * 
+ * @returns {array} : Array with indices shifted to remove gaps
+ */
+function shiftIndicesForInstances(indices is array) returns array
+{
+    const numIndices = @size(indices);
+    const sortedIndices = sort(indices, function(a, b)
+        {
+            return a - b;
+        });
+    var missingIndices = [];
+    var expectedIndex = 0;
+    for (var index in sortedIndices)
+    {
+        while (index > expectedIndex)
+        {
+            missingIndices = append(missingIndices, expectedIndex);
+            expectedIndex += 1;
+        }
+        expectedIndex += 1;
+    }
+    const numMissingIndices = @size(missingIndices);
+    for (var indexArrayPosition = 0; indexArrayPosition < numIndices; indexArrayPosition += 1)
+    {
+        var diff = 0;
+        while (diff < numMissingIndices && missingIndices[diff] < indices[indexArrayPosition])
+        {
+            diff += 1;
+        }
+        indices[indexArrayPosition] -= diff;
+    }
+    return indices;
+}
+
+/**
+ * Deduplicates indices by incrementing duplicates, similar to routingCurve's deduplicateIndices.
+ * First occurrence of an index has priority.
+ * 
+ * @param indices {array} : Array of index values that may contain duplicates
+ * 
+ * @returns {array} : Array with unique index values
+ */
+function deduplicateIndicesForInstances(indices is array) returns array
+{
+    var seenIndices = {};
+    const numIndices = @size(indices);
+    for (var currentIndexPosition = 0; currentIndexPosition < numIndices; currentIndexPosition += 1)
+    {
+        const index = indices[currentIndexPosition];
+        if (seenIndices[index] == undefined)
+        {
+            seenIndices[index] = true;
+            continue;
+        }
+        for (var otherIndexPosition = 0; otherIndexPosition < numIndices; otherIndexPosition += 1)
+        {
+            // Before currentIndexPosition, there is a single instance of indices[currentIndexPosition], we don't want to change it.
+            // If there are more instances of indices[currentIndexPosition] after currentIndexPosition, we do want to change them.
+            if (indices[otherIndexPosition] > index || (indices[otherIndexPosition] == index && otherIndexPosition >= currentIndexPosition))
+            {
+                indices[otherIndexPosition] += 1;
+            }
+        }
+        seenIndices[indices[currentIndexPosition]] = true;
+    }
+    return indices;
 }
