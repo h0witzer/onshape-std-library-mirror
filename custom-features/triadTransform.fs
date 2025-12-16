@@ -42,7 +42,8 @@ function createEmptyInstance() returns map
         "instanceRx" : 0 * degree,
         "instanceRy" : 0 * degree,
         "instanceRz" : 0 * degree,
-        "rotationMatrix" : identityMatrix(3)
+        "rotationMatrix" : identityMatrix(3),
+        "arrayAdded" : false
     };
 }
 
@@ -77,9 +78,6 @@ predicate triadTransformPredicate(definition is map)
     
     if (definition.multiCopyMode)
     {
-        annotation { "Name" : "Place copy" }
-        isButton(definition.placeCopy);
-        
         annotation { "Name" : "Selected instance", "UIHint" : [UIHint.ALWAYS_HIDDEN, UIHint.UNCONFIGURABLE] }
         isInteger(definition.instanceIndex, { (unitless) : [-1, -1, 10000] } as IntegerBoundSpec);
         
@@ -110,6 +108,9 @@ predicate triadTransformPredicate(definition is map)
             
             annotation { "Name" : "Rotation matrix", "UIHint" : UIHint.ALWAYS_HIDDEN }
             isAnything(instance.rotationMatrix);
+            
+            annotation { "Name" : "Added by the array", "Default" : true, "UIHint" : UIHint.ALWAYS_HIDDEN }
+            instance.arrayAdded is boolean;
         }
     }
 
@@ -540,31 +541,28 @@ export function triadTransformEditLogic(context is Context, id is Id, oldDefinit
         definition.instanceIndex = -1;  // Start with primary position selected
     }
     
-    // Handle the "Place copy" button click in multi-copy mode
-    if (clickedButton == "placeCopy" && definition.multiCopyMode)
+    // Process instances added via the array UI button
+    // When the user clicks "Add" in the array, initialize new instances with current manipulator data
+    if (definition.multiCopyMode && @size(definition.instances) > 0)
     {
-        // Create a new instance from current manipulator transform
-        var newInstance = createEmptyInstance();
-        newInstance.instanceDx = definition.dx;
-        newInstance.instanceDy = definition.dy;
-        newInstance.instanceDz = definition.dz;
-        newInstance.instanceRx = definition.rx;
-        newInstance.instanceRy = definition.ry;
-        newInstance.instanceRz = definition.rz;
-        
-        // Extract the rotation matrix from the current angles
         const baseCSys = getBaseCoordinateSystem(context, definition);
         const rotation = composeRotation(baseCSys, definition.rx, definition.ry, definition.rz);
-        newInstance.rotationMatrix = transpose(rotation);
         
-        // Assign the next available index
-        newInstance.index = @size(definition.instances);
-        
-        // Add the new instance to the array
-        definition.instances = append(definition.instances, newInstance);
-        definition.instanceIndex = newInstance.index;
-        
-        return definition;
+        for (var instanceArrayIndex = 0; instanceArrayIndex < @size(definition.instances); instanceArrayIndex += 1)
+        {
+            if (definition.instances[instanceArrayIndex].arrayAdded)
+            {
+                // Initialize this array-added instance with current manipulator transform
+                definition.instances[instanceArrayIndex].instanceDx = definition.dx;
+                definition.instances[instanceArrayIndex].instanceDy = definition.dy;
+                definition.instances[instanceArrayIndex].instanceDz = definition.dz;
+                definition.instances[instanceArrayIndex].instanceRx = definition.rx;
+                definition.instances[instanceArrayIndex].instanceRy = definition.ry;
+                definition.instances[instanceArrayIndex].instanceRz = definition.rz;
+                definition.instances[instanceArrayIndex].rotationMatrix = transpose(rotation);
+                definition.instances[instanceArrayIndex].arrayAdded = false;
+            }
+        }
     }
     
     // Handle instance selection change - load the selected instance's transform to the manipulator
