@@ -211,8 +211,8 @@ function createTweenedSurface(context is Context, id is Id,
         "vDegree" : firstSurface.vDegree,
         "isUPeriodic" : firstSurface.isUPeriodic,
         "isVPeriodic" : firstSurface.isVPeriodic,
-        "controlPoints" : tweenedControlPoints,
-        "weights" : tweenedWeights,
+        "controlPoints" : controlPointMatrix(tweenedControlPoints),
+        "weights" : tweenedWeights == undefined ? undefined : matrix(tweenedWeights),
         "uKnots" : firstSurface.uKnots,
         "vKnots" : firstSurface.vKnots
     });
