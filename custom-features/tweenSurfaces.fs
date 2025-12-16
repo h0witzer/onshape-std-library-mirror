@@ -425,6 +425,8 @@ function refineControlPointCount(context is Context, surface is map, targetUCoun
     var controlPoints = surface.controlPoints;
     var uDegree = surface.uDegree;
     var vDegree = surface.vDegree;
+    var uKnots = surface.uKnots;
+    var vKnots = surface.vKnots;
     
     // Refine in U direction if needed
     if (size(controlPoints) < targetUCount)
@@ -432,6 +434,7 @@ function refineControlPointCount(context is Context, surface is map, targetUCoun
         // Process each V-column to add U control points
         const numVPoints = size(controlPoints[0]);
         var newControlPoints = [];
+        var newUKnots = undefined;
         
         for (var vIndex = 0; vIndex < numVPoints; vIndex += 1)
         {
@@ -446,7 +449,7 @@ function refineControlPointCount(context is Context, surface is map, targetUCoun
             const columnCurve = bSplineCurve({
                 "degree" : uDegree,
                 "controlPoints" : columnPoints,
-                "knots" : surface.uKnots,
+                "knots" : uKnots,
                 "isPeriodic" : surface.isUPeriodic,
                 "isRational" : false
             });
@@ -454,7 +457,11 @@ function refineControlPointCount(context is Context, surface is map, targetUCoun
             // Refine this curve to have targetUCount control points
             const refinedCurve = refineCurveControlPointCount(context, columnCurve, targetUCount);
             
-            // Store refined control points (transpose)
+            // Store refined control points (transpose) and update knots from first column
+            if (vIndex == 0)
+            {
+                newUKnots = refinedCurve.knots;
+            }
             for (var uIndex = 0; uIndex < size(refinedCurve.controlPoints); uIndex += 1)
             {
                 if (vIndex == 0)
@@ -466,6 +473,10 @@ function refineControlPointCount(context is Context, surface is map, targetUCoun
         }
         
         controlPoints = newControlPoints;
+        if (newUKnots != undefined)
+        {
+            uKnots = newUKnots;
+        }
     }
     
     // Refine in V direction if needed
@@ -473,6 +484,7 @@ function refineControlPointCount(context is Context, surface is map, targetUCoun
     {
         // Process each U-row to add V control points
         var newControlPoints = [];
+        var newVKnots = undefined;
         
         for (var uIndex = 0; uIndex < size(controlPoints); uIndex += 1)
         {
@@ -483,7 +495,7 @@ function refineControlPointCount(context is Context, surface is map, targetUCoun
             const rowCurve = bSplineCurve({
                 "degree" : vDegree,
                 "controlPoints" : rowPoints,
-                "knots" : surface.vKnots,
+                "knots" : vKnots,
                 "isPeriodic" : surface.isVPeriodic,
                 "isRational" : false
             });
@@ -491,10 +503,19 @@ function refineControlPointCount(context is Context, surface is map, targetUCoun
             // Refine this curve to have targetVCount control points
             const refinedCurve = refineCurveControlPointCount(context, rowCurve, targetVCount);
             
+            // Store refined control points and update knots from first row
+            if (uIndex == 0)
+            {
+                newVKnots = refinedCurve.knots;
+            }
             newControlPoints = append(newControlPoints, refinedCurve.controlPoints);
         }
         
         controlPoints = newControlPoints;
+        if (newVKnots != undefined)
+        {
+            vKnots = newVKnots;
+        }
     }
     
     return {
@@ -505,8 +526,8 @@ function refineControlPointCount(context is Context, surface is map, targetUCoun
         "isVPeriodic" : surface.isVPeriodic,
         "controlPoints" : controlPoints,
         "weights" : surface.weights,
-        "uKnots" : surface.uKnots,
-        "vKnots" : surface.vKnots
+        "uKnots" : uKnots,
+        "vKnots" : vKnots
     };
 }
 
@@ -559,8 +580,9 @@ function refineCurveControlPointCount(context is Context, curve is map, targetCo
         return bSplineCurve({
             "degree" : curve.degree,
             "isPeriodic" : curve.isPeriodic,
-            "isRational" : false,
-            "controlPoints" : positions
+            "isRational" : curve.isRational,
+            "controlPoints" : positions,
+            "weights" : curve.isRational ? makeArray(targetCount, 1) : undefined
         });
     }
     
