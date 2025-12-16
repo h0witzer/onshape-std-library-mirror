@@ -7,10 +7,12 @@ FeatureScript 2837;
  * It is inspired by the Parasolid PK_neutral_method_medial_c function which creates
  * a neutral sheet that is an "average" mid-surface between two faces.
  * 
- * The implementation samples points on both surfaces using parametric coordinates
- * and creates a lofted surface through the interpolated profile curves.
+ * The implementation works with B-spline surface representations directly:
+ * 1. Obtains B-spline surface definitions for both input faces (using approximation if needed)
+ * 2. Interpolates control points of the two B-spline surfaces
+ * 3. Creates a new B-spline surface with the interpolated control points
  * 
- * Current implementation: Linear interpolation between surfaces
+ * Current implementation: Linear interpolation of B-spline control points
  * - fraction = 0: surface coincident with first surface
  * - fraction = 0.5: median surface (equidistant from both surfaces)
  * - fraction = 1: surface coincident with second surface
@@ -33,6 +35,7 @@ import(path : "onshape/std/curveGeometry.fs", version : "2837.0");
 import(path : "onshape/std/surfaceGeometry.fs", version : "2837.0");
 import(path : "onshape/std/error.fs", version : "2837.0");
 import(path : "onshape/std/coordSystem.fs", version : "2837.0");
+import(path : "onshape/std/containers.fs", version : "2837.0");
 
 
 export const SURFACE_TWEEN_FRACTION_BOUNDS = { (unitless) : [0, 0.5, 1] } as RealBoundSpec;
@@ -47,27 +50,23 @@ export const SURFACE_TWEEN_FRACTION_BOUNDS = { (unitless) : [0, 0.5, 1] } as Rea
  * - fraction = 0.5: median surface (default, equidistant from both surfaces)
  * - fraction = 1: coincident with second surface
  * 
- * The implementation samples both surfaces at corresponding parametric positions and
- * creates profile curves through the linearly interpolated points. These profiles are
- * then lofted to create the final tweened surface.
+ * The implementation obtains B-spline representations of both surfaces and directly
+ * interpolates their control points to create a new B-spline surface.
  */
 annotation { "Feature Type Name" : "Tween Surfaces",
-        "Feature Type Description" : "Creates a median surface between two input surfaces. At fraction 0.5, creates a neutral sheet that is equidistant between the two surfaces.",
+        "Feature Type Description" : "Creates a median surface between two input surfaces by interpolating B-spline control points. At fraction 0.5, creates a neutral sheet that is equidistant between the two surfaces.",
         "UIHint" : "NO_PREVIEW_PROVIDED" }
 export const tweenSurfaces = defineFeature(function(context is Context, id is Id, definition is map)
     precondition
     {
-        annotation { "Name" : "First surface", "Filter" : EntityType.FACE && SketchObject.NO && ConstructionObject.NO, "MaxNumberOfPicks" : 1 }
+        annotation { "Name" : "First surface", "Filter" : EntityType.FACE && SketchObject.NO && ConstructionObject.NO && AllowMeshGeometry.NO, "MaxNumberOfPicks" : 1 }
         definition.firstSurface is Query;
         
-        annotation { "Name" : "Second surface", "Filter" : EntityType.FACE && SketchObject.NO && ConstructionObject.NO, "MaxNumberOfPicks" : 1 }
+        annotation { "Name" : "Second surface", "Filter" : EntityType.FACE && SketchObject.NO && ConstructionObject.NO && AllowMeshGeometry.NO, "MaxNumberOfPicks" : 1 }
         definition.secondSurface is Query;
         
         annotation { "Name" : "Tween fraction", "Description" : "Position of the median surface: 0 = first surface, 0.5 = middle, 1 = second surface" }
         isReal(definition.tweenFraction, SURFACE_TWEEN_FRACTION_BOUNDS);
-        
-        annotation { "Name" : "Sample resolution", "Description" : "Number of sample points per direction (higher = more accurate but slower)" }
-        isInteger(definition.sampleResolution, POSITIVE_COUNT_BOUNDS);
     }
     {
         // Validate inputs
@@ -80,118 +79,136 @@ export const tweenSurfaces = defineFeature(function(context is Context, id is Id
         const secondFace = evaluateQuery(context, definition.secondSurface)[0];
         
         // Create the tweened surface
-        createTweenedSurface(context, id, firstFace, secondFace, definition.tweenFraction, definition.sampleResolution);
-    }, { tweenFraction : 0.5, sampleResolution : 10 });
+        createTweenedSurface(context, id, firstFace, secondFace, definition.tweenFraction);
+    }, { tweenFraction : 0.5 });
 
 
 /**
- * Creates a tweened surface between two faces by sampling points and creating a loft.
+ * Creates a tweened surface between two faces by interpolating B-spline control points.
  * 
  * The algorithm:
- * 1. Samples both surfaces at a grid of parametric positions (u, v)
- * 2. For each sampled point pair, calculates the interpolated point:
- *    tweenedPoint = (1 - fraction) * pointA + fraction * pointB
- * 3. Creates profile curves (B-splines) through rows of interpolated points
- * 4. Lofts through all profile curves to create the final surface
+ * 1. Obtains B-spline surface representations of both input faces
+ *    - If a face is already a B-spline, uses its definition directly
+ *    - Otherwise, creates a B-spline approximation
+ * 2. Ensures both surfaces are compatible (same degrees and control point counts)
+ * 3. Interpolates control points: tweenedCP = (1 - fraction) * cp1 + fraction * cp2
+ * 4. Creates a new B-spline surface with the interpolated control points
  * 
  * @param context {Context} : The modeling context
  * @param id {Id} : The feature identifier
  * @param firstFace {Query} : Query resolving to the first face
  * @param secondFace {Query} : Query resolving to the second face
  * @param tweenFraction {number} : The interpolation fraction (0 to 1)
- * @param sampleResolution {number} : Number of samples per parametric direction
  */
 function createTweenedSurface(context is Context, id is Id, 
-        firstFace is Query, secondFace is Query, tweenFraction is number, sampleResolution is number)
+        firstFace is Query, secondFace is Query, tweenFraction is number)
 {
-    // Sample points on both surfaces in a grid pattern using parametric coordinates
-    var profileCurves = [];
-    const numberOfProfiles = sampleResolution;
+    // Get B-spline surface representations of both faces
+    var firstSurface = getBSplineSurfaceFromFace(context, firstFace);
+    var secondSurface = getBSplineSurfaceFromFace(context, secondFace);
     
-    for (var profileIndex = 0; profileIndex < numberOfProfiles; profileIndex += 1)
+    // Verify surfaces are compatible for tweening
+    if (firstSurface.uDegree != secondSurface.uDegree || firstSurface.vDegree != secondSurface.vDegree)
     {
-        const vParameter = profileIndex / max(numberOfProfiles - 1, 1);
-        
-        // Create a profile curve at this v parameter by sampling along the u direction
-        var interpolatedPoints = [];
-        
-        for (var pointIndex = 0; pointIndex < sampleResolution; pointIndex += 1)
+        throw regenError("Surfaces must have matching degrees. First surface: u=" ~ firstSurface.uDegree ~ 
+            ", v=" ~ firstSurface.vDegree ~ ". Second surface: u=" ~ secondSurface.uDegree ~ 
+            ", v=" ~ secondSurface.vDegree ~ ".");
+    }
+    
+    const firstControlPointsRowCount = size(firstSurface.controlPoints);
+    const firstControlPointsColumnCount = size(firstSurface.controlPoints[0]);
+    const secondControlPointsRowCount = size(secondSurface.controlPoints);
+    const secondControlPointsColumnCount = size(secondSurface.controlPoints[0]);
+    
+    if (firstControlPointsRowCount != secondControlPointsRowCount || 
+        firstControlPointsColumnCount != secondControlPointsColumnCount)
+    {
+        throw regenError("Surfaces must have matching control point counts. First surface: " ~ 
+            firstControlPointsRowCount ~ "x" ~ firstControlPointsColumnCount ~ 
+            ". Second surface: " ~ secondControlPointsRowCount ~ "x" ~ secondControlPointsColumnCount ~ ".");
+    }
+    
+    // Interpolate control points
+    var tweenedControlPoints = [];
+    for (var uIndex = 0; uIndex < firstControlPointsRowCount; uIndex += 1)
+    {
+        var controlPointRow = [];
+        for (var vIndex = 0; vIndex < firstControlPointsColumnCount; vIndex += 1)
         {
-            const uParameter = pointIndex / max(sampleResolution - 1, 1);
+            const firstControlPoint = firstSurface.controlPoints[uIndex][vIndex];
+            const secondControlPoint = secondSurface.controlPoints[uIndex][vIndex];
             
-            // Sample corresponding points on both surfaces using parametric evaluation
-            const firstSurfacePoint = sampleSurfacePoint(context, firstFace, uParameter, vParameter);
-            const secondSurfacePoint = sampleSurfacePoint(context, secondFace, uParameter, vParameter);
-            
-            if (firstSurfacePoint != undefined && secondSurfacePoint != undefined)
+            // Linear interpolation: tweenedCP = (1 - fraction) * cp1 + fraction * cp2
+            const tweenedControlPoint = firstControlPoint * (1 - tweenFraction) + secondControlPoint * tweenFraction;
+            controlPointRow = append(controlPointRow, tweenedControlPoint);
+        }
+        tweenedControlPoints = append(tweenedControlPoints, controlPointRow);
+    }
+    
+    // Interpolate weights if surfaces are rational
+    var tweenedWeights = undefined;
+    if (firstSurface.isRational && secondSurface.isRational)
+    {
+        tweenedWeights = [];
+        for (var uIndex = 0; uIndex < firstControlPointsRowCount; uIndex += 1)
+        {
+            var weightRow = [];
+            for (var vIndex = 0; vIndex < firstControlPointsColumnCount; vIndex += 1)
             {
-                // Calculate the linearly interpolated point between the two surfaces
-                // tweenedPoint = (1 - fraction) * point1 + fraction * point2
-                // For fraction = 0.5, this gives the exact median point
-                const tweenedPoint = firstSurfacePoint * (1 - tweenFraction) + secondSurfacePoint * tweenFraction;
-                interpolatedPoints = append(interpolatedPoints, tweenedPoint);
+                const firstWeight = firstSurface.weights[uIndex][vIndex];
+                const secondWeight = secondSurface.weights[uIndex][vIndex];
+                const tweenedWeight = firstWeight * (1 - tweenFraction) + secondWeight * tweenFraction;
+                weightRow = append(weightRow, tweenedWeight);
             }
-        }
-        
-        // Create a B-spline curve through the interpolated points if we have enough points
-        if (size(interpolatedPoints) >= 2)
-        {
-            const splineDefinition = bSplineCurve({
-                "degree" : min(3, size(interpolatedPoints) - 1),
-                "controlPoints" : interpolatedPoints,
-                "isPeriodic" : false
-            });
-            
-            opCreateBSplineCurve(context, id + ("profile" ~ profileIndex), { "bSplineCurve" : splineDefinition });
-            profileCurves = append(profileCurves, qCreatedBy(id + ("profile" ~ profileIndex), EntityType.EDGE));
+            tweenedWeights = append(tweenedWeights, weightRow);
         }
     }
     
-    // Create a loft through all the profile curves to form the tweened surface
-    if (size(profileCurves) >= 2)
-    {
-        opLoft(context, id + "loft", {
-            "profileSubqueries" : profileCurves
-        });
-    }
-    else
-    {
-        throw regenError("Unable to create sufficient profile curves for the tweened surface. Try adjusting the sample resolution.");
-    }
+    // Create the tweened B-spline surface
+    const tweenedSurfaceDefinition = bSplineSurface({
+        "uDegree" : firstSurface.uDegree,
+        "vDegree" : firstSurface.vDegree,
+        "isUPeriodic" : firstSurface.isUPeriodic,
+        "isVPeriodic" : firstSurface.isVPeriodic,
+        "controlPoints" : tweenedControlPoints,
+        "weights" : tweenedWeights,
+        "uKnots" : firstSurface.uKnots,
+        "vKnots" : firstSurface.vKnots
+    });
+    
+    opCreateBSplineSurface(context, id, {
+        "bSplineSurface" : tweenedSurfaceDefinition
+    });
 }
 
 
 /**
- * Samples a point on a surface at given parametric coordinates.
+ * Obtains a B-spline surface representation from a face.
  * 
- * Uses evFaceTangentPlane to evaluate the surface at a parametric position in UV space.
- * The parametric coordinates (u, v) are normalized to the range [0, 1] and correspond
- * to the parameter-space bounding box of the face.
+ * If the face is already a B-spline surface, returns its definition directly.
+ * Otherwise, creates and returns a B-spline approximation of the face.
  * 
  * @param context {Context} : The modeling context
- * @param face {Query} : Query resolving to the face to sample
- * @param uParameter {number} : The u parameter in parametric space (0 to 1)
- * @param vParameter {number} : The v parameter in parametric space (0 to 1)
- * @returns {Vector | undefined} : The sampled 3D point on the surface, or undefined if sampling fails
+ * @param face {Query} : Query resolving to the face
+ * @returns {map} : A B-spline surface definition with control points, degrees, knots, etc.
  */
-function sampleSurfacePoint(context is Context, face is Query, uParameter is number, vParameter is number)
+function getBSplineSurfaceFromFace(context is Context, face is Query)
 {
-    try
+    // Try to get the surface definition
+    var surfaceDefinition = evSurfaceDefinition(context, {
+        "face" : face
+    });
+    
+    // If it's already a B-spline, return it
+    if (surfaceDefinition.surfaceType == SurfaceType.SPLINE)
     {
-        // Use evFaceTangentPlane to sample the surface at the parametric position
-        // The parameter is a 2D vector in normalized parameter space coordinates [0, 1]
-        const tangentPlane = evFaceTangentPlane(context, {
-            "face" : face,
-            "parameter" : vector(uParameter, vParameter)
-        });
-        
-        // Return the origin of the tangent plane, which is the point on the surface
-        return tangentPlane.origin;
+        return surfaceDefinition;
     }
-    catch
-    {
-        // If sampling fails (e.g., parameter is outside valid range for the surface),
-        // return undefined to allow the calling code to skip this point
-        return undefined;
-    }
+    
+    // Otherwise, create a B-spline approximation
+    const approximation = evApproximateBSplineSurface(context, {
+        "face" : face
+    });
+    
+    return approximation.bSplineSurface;
 }
