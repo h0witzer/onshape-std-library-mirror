@@ -81,7 +81,7 @@ predicate triadTransformPredicate(definition is map)
         isButton(definition.placeCopy);
         
         annotation { "Name" : "Selected instance", "UIHint" : [UIHint.ALWAYS_HIDDEN, UIHint.UNCONFIGURABLE] }
-        isInteger(definition.instanceIndex, { (unitless) : [0, 0, 10000] } as IntegerBoundSpec);
+        isInteger(definition.instanceIndex, { (unitless) : [-1, -1, 10000] } as IntegerBoundSpec);
         
         annotation { "Name" : "Instances", "Item name" : "instance", "Item label template" : "Instance #index", "UIHint" : UIHint.PREVENT_ARRAY_REORDER }
         definition.instances is array;
@@ -160,8 +160,8 @@ function addTriadManipulator(context is Context, id is Id,
             });
     addManipulators(context, id, { (TRIAD_MANIPULATOR) : triadManip });
     
-    // In multi-copy mode, add point manipulators for placed instances
-    if (definition.multiCopyMode && definition.instances != undefined && @size(definition.instances) > 0)
+    // In multi-copy mode, add point manipulators for the current position and all placed instances
+    if (definition.multiCopyMode)
     {
         addInstanceManipulators(context, id, baseCSys, definition);
     }
@@ -170,6 +170,7 @@ function addTriadManipulator(context is Context, id is Id,
 /**
  * Adds point manipulators for all placed instances in multi-copy mode.
  * Each point represents a placed copy that can be clicked to select/modify.
+ * The first point (index 0) represents the current manipulator position (primary).
  * 
  * @param context {Context} : The context for the feature
  * @param id {Id} : The feature identifier
@@ -180,6 +181,14 @@ function addInstanceManipulators(context is Context, id is Id,
     baseCSys is CoordSystem, definition is map)
 {
     var instancePositions = [];
+    
+    // First, add the current manipulator position (primary instance at index 0)
+    const currentRotation = composeRotation(baseCSys, definition.rx, definition.ry, definition.rz);
+    const currentTransform = transform(currentRotation, vector(definition.dx, definition.dy, definition.dz));
+    const currentWorldTransform = toWorld(baseCSys) * currentTransform;
+    instancePositions = append(instancePositions, currentWorldTransform.translation);
+    
+    // Then add all saved instances
     for (var instance in definition.instances)
     {
         const rotation = composeRotation(baseCSys, instance.instanceRx, instance.instanceRy, instance.instanceRz);
@@ -188,14 +197,11 @@ function addInstanceManipulators(context is Context, id is Id,
         instancePositions = append(instancePositions, worldTransform.translation);
     }
     
-    if (@size(instancePositions) > 0)
-    {
-        const pointManip = pointsManipulator({
-                    "points" : instancePositions,
-                    "index" : -1
-                });
-        addManipulators(context, id, { (INSTANCE_MANIPULATOR) : pointManip });
-    }
+    const pointManip = pointsManipulator({
+                "points" : instancePositions,
+                "index" : -1
+            });
+    addManipulators(context, id, { (INSTANCE_MANIPULATOR) : pointManip });
 }
 
 /**
@@ -226,9 +232,15 @@ export const triadTransform = defineFeature(function(context is Context, id is I
 
         if (definition.multiCopyMode)
         {
-            // In multi-copy mode, apply all saved instance transforms
+            // In multi-copy mode, apply current manipulator position plus all saved instance transforms
             var transforms = [];
             var instanceNames = [];
+            
+            // First, apply the current manipulator position (index 0 / "primary")
+            transforms = append(transforms, worldTransform);
+            instanceNames = append(instanceNames, "primary");
+            
+            // Then apply all saved instances
             for (var instanceIndex = 0; instanceIndex < @size(definition.instances); instanceIndex += 1)
             {
                 const instance = definition.instances[instanceIndex];
@@ -239,14 +251,11 @@ export const triadTransform = defineFeature(function(context is Context, id is I
                 instanceNames = append(instanceNames, "copy" ~ toString(instanceIndex + 1));
             }
             
-            if (@size(transforms) > 0)
-            {
-                opPattern(context, id, {
-                            "entities" : qOwnerBody(definition.entities),
-                            "transforms" : transforms,
-                            "instanceNames" : instanceNames
-                        });
-            }
+            opPattern(context, id, {
+                        "entities" : qOwnerBody(definition.entities),
+                        "transforms" : transforms,
+                        "instanceNames" : instanceNames
+                    });
         }
         else if (definition.copyParts)
         {
@@ -268,7 +277,7 @@ export const triadTransform = defineFeature(function(context is Context, id is I
             "copyParts" : false,
             "multiCopyMode" : false,
             "instances" : [],
-            "instanceIndex" : 0,
+            "instanceIndex" : -1,  // -1 means primary (current manipulator position)
             "dx" : 0 * millimeter,
             "dy" : 0 * millimeter,
             "dz" : 0 * millimeter,
@@ -300,9 +309,17 @@ export function triadTransformManipulatorChange(context is Context, definition i
     if (newManipulators[INSTANCE_MANIPULATOR] is map)
     {
         const clickedIndex = newManipulators[INSTANCE_MANIPULATOR].index;
-        if (clickedIndex >= 0 && clickedIndex < @size(definition.instances))
+        // Index 0 is the current manipulator position (primary), indices 1+ are saved instances
+        if (clickedIndex == 0)
         {
-            definition.instanceIndex = clickedIndex;
+            // Clicking the primary position - no need to load anything, already in manipulator
+            // Just ensure instanceIndex reflects this (use -1 to indicate primary)
+            definition.instanceIndex = -1;
+        }
+        else if (clickedIndex > 0 && clickedIndex <= @size(definition.instances))
+        {
+            // Clicking a saved instance - set instanceIndex to the array index (clickedIndex - 1)
+            definition.instanceIndex = clickedIndex - 1;
         }
         return definition;
     }
@@ -361,8 +378,9 @@ export function triadTransformManipulatorChange(context is Context, definition i
         definition.ry = angles[1];
         definition.rz = angles[2];
         
-        // If in multi-copy mode and an instance is selected, also update that instance
-        if (definition.multiCopyMode && @size(definition.instances) > 0)
+        // If in multi-copy mode and a saved instance is selected, also update that instance
+        // (instanceIndex >= 0 means a saved instance is selected, -1 means primary position)
+        if (definition.multiCopyMode && @size(definition.instances) > 0 && definition.instanceIndex >= 0)
         {
             for (var instanceArrayIndex = 0; instanceArrayIndex < @size(definition.instances); instanceArrayIndex += 1)
             {
@@ -519,7 +537,7 @@ export function triadTransformEditLogic(context is Context, id is Id, oldDefinit
         {
             definition.instances = [];
         }
-        definition.instanceIndex = 0;
+        definition.instanceIndex = -1;  // Start with primary position selected
     }
     
     // Handle the "Place copy" button click in multi-copy mode
@@ -553,7 +571,8 @@ export function triadTransformEditLogic(context is Context, id is Id, oldDefinit
     if (definition.multiCopyMode && 
         oldDefinition.multiCopyMode && 
         oldDefinition.instanceIndex != definition.instanceIndex &&
-        @size(definition.instances) > 0)
+        @size(definition.instances) > 0 &&
+        definition.instanceIndex >= 0)  // Only load if not selecting primary (which is -1)
     {
         // Find the array index for the selected instance
         for (var instanceArrayIndex = 0; instanceArrayIndex < @size(definition.instances); instanceArrayIndex += 1)
@@ -601,20 +620,22 @@ export function triadTransformEditLogic(context is Context, id is Id, oldDefinit
         }
         
         // Ensure instanceIndex is valid
+        // -1 is valid (means primary position), 0 to numInstances-1 are valid saved instances
         if (definition.instanceIndex >= numInstances)
         {
             definition.instanceIndex = numInstances - 1;
         }
-        if (definition.instanceIndex < 0 && numInstances > 0)
+        if (definition.instanceIndex < -1)
         {
-            definition.instanceIndex = 0;
+            definition.instanceIndex = -1;  // Reset to primary if invalid
         }
         
         // Hide all instances in the array except the currently selected one
+        // If instanceIndex is -1 (primary), hide all instances
         var hiddenIds = [];
         for (var instanceArrayIndex = 0; instanceArrayIndex < numInstances; instanceArrayIndex += 1)
         {
-            if (definition.instances[instanceArrayIndex].index != definition.instanceIndex)
+            if (definition.instanceIndex == -1 || definition.instances[instanceArrayIndex].index != definition.instanceIndex)
             {
                 hiddenIds = append(hiddenIds, "instances[" ~ toString(instanceArrayIndex) ~ "]");
             }
