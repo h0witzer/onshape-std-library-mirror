@@ -169,12 +169,16 @@ function createTweenedSurface(context is Context, id is Id,
         throw regenError("Surfaces must have matching knot vector sizes. Use surfaces with compatible parameterizations.");
     }
     
+    // Update control point counts after potential refinement
+    const finalFirstControlPointsRowCount = size(firstSurface.controlPoints);
+    const finalFirstControlPointsColumnCount = size(firstSurface.controlPoints[0]);
+    
     // Interpolate control points
     var tweenedControlPoints = [];
-    for (var uIndex = 0; uIndex < firstControlPointsRowCount; uIndex += 1)
+    for (var uIndex = 0; uIndex < finalFirstControlPointsRowCount; uIndex += 1)
     {
         var controlPointRow = [];
-        for (var vIndex = 0; vIndex < firstControlPointsColumnCount; vIndex += 1)
+        for (var vIndex = 0; vIndex < finalFirstControlPointsColumnCount; vIndex += 1)
         {
             const firstControlPoint = firstSurface.controlPoints[uIndex][vIndex];
             const secondControlPoint = secondSurface.controlPoints[uIndex][vIndex];
@@ -191,10 +195,10 @@ function createTweenedSurface(context is Context, id is Id,
     if (firstSurface.isRational)
     {
         tweenedWeights = [];
-        for (var uIndex = 0; uIndex < firstControlPointsRowCount; uIndex += 1)
+        for (var uIndex = 0; uIndex < finalFirstControlPointsRowCount; uIndex += 1)
         {
             var weightRow = [];
-            for (var vIndex = 0; vIndex < firstControlPointsColumnCount; vIndex += 1)
+            for (var vIndex = 0; vIndex < finalFirstControlPointsColumnCount; vIndex += 1)
             {
                 const firstWeight = firstSurface.weights[uIndex][vIndex];
                 const secondWeight = secondSurface.weights[uIndex][vIndex];
