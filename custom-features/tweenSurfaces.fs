@@ -647,6 +647,8 @@ function refineCurveControlPointCount(context is Context, curve is map, targetCo
     println("DEBUG refineCurveControlPointCount: Starting CP count=" ~ size(curve.controlPoints) ~ ", target=" ~ targetCount);
     println("  startParam=" ~ startParam ~ ", endParam=" ~ endParam);
     println("  Need to insert " ~ numToInsert ~ " knots");
+    println("  Original first CP: " ~ curve.controlPoints[0]);
+    println("  Original last CP: " ~ curve.controlPoints[size(curve.controlPoints) - 1]);
     
     // Find distinct internal knots and spaces between them
     var knotsToInsert = [];
@@ -677,6 +679,8 @@ function refineCurveControlPointCount(context is Context, curve is map, targetCo
     }
     
     println("  Final result: " ~ size(currentControlPoints) ~ " CPs");
+    println("  Refined first CP: " ~ currentControlPoints[0]);
+    println("  Refined last CP: " ~ currentControlPoints[size(currentControlPoints) - 1]);
     
     return {
         "controlPoints" : currentControlPoints,
