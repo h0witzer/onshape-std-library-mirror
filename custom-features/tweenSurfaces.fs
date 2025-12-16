@@ -110,9 +110,9 @@ function createTweenedSurface(context is Context, id is Id,
     // Verify surfaces are compatible for tweening
     if (firstSurface.uDegree != secondSurface.uDegree || firstSurface.vDegree != secondSurface.vDegree)
     {
-        throw regenError("Surfaces must have matching degrees. First surface: u=" ~ firstSurface.uDegree ~ 
-            ", v=" ~ firstSurface.vDegree ~ ". Second surface: u=" ~ secondSurface.uDegree ~ 
-            ", v=" ~ secondSurface.vDegree ~ ".");
+        throw regenError("Surfaces must have matching B-spline degrees in U and V directions. First surface: uDegree=" ~ firstSurface.uDegree ~ 
+            ", vDegree=" ~ firstSurface.vDegree ~ ". Second surface: uDegree=" ~ secondSurface.uDegree ~ 
+            ", vDegree=" ~ secondSurface.vDegree ~ ".");
     }
     
     const firstControlPointsRowCount = size(firstSurface.controlPoints);
@@ -123,9 +123,24 @@ function createTweenedSurface(context is Context, id is Id,
     if (firstControlPointsRowCount != secondControlPointsRowCount || 
         firstControlPointsColumnCount != secondControlPointsColumnCount)
     {
-        throw regenError("Surfaces must have matching control point counts. First surface: " ~ 
+        throw regenError("Surfaces must have matching control point counts in U and V directions. First surface: " ~ 
             firstControlPointsRowCount ~ "x" ~ firstControlPointsColumnCount ~ 
             ". Second surface: " ~ secondControlPointsRowCount ~ "x" ~ secondControlPointsColumnCount ~ ".");
+    }
+    
+    // Verify both surfaces have the same rationality
+    if (firstSurface.isRational != secondSurface.isRational)
+    {
+        throw regenError("Both surfaces must be either rational or non-rational. First surface is " ~ 
+            (firstSurface.isRational ? "rational" : "non-rational") ~ ", second surface is " ~
+            (secondSurface.isRational ? "rational" : "non-rational") ~ ".");
+    }
+    
+    // Verify knot vectors match
+    if (size(firstSurface.uKnots) != size(secondSurface.uKnots) || 
+        size(firstSurface.vKnots) != size(secondSurface.vKnots))
+    {
+        throw regenError("Surfaces must have matching knot vector sizes. Use surfaces with compatible parameterizations.");
     }
     
     // Interpolate control points
@@ -147,7 +162,7 @@ function createTweenedSurface(context is Context, id is Id,
     
     // Interpolate weights if surfaces are rational
     var tweenedWeights = undefined;
-    if (firstSurface.isRational && secondSurface.isRational)
+    if (firstSurface.isRational)
     {
         tweenedWeights = [];
         for (var uIndex = 0; uIndex < firstControlPointsRowCount; uIndex += 1)
