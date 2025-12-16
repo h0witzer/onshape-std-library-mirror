@@ -205,16 +205,35 @@ function createTweenedSurface(context is Context, id is Id,
         }
     }
     
+    // Unpad knot arrays (bSplineSurface expects unpadded knots)
+    // Padded knots have size: nControlPoints + degree + 1
+    // Unpadded knots should have size: nControlPoints - degree + 1
+    // So we remove the first 'degree' and last 'degree' knots
+    const uDegree = firstSurface.uDegree;
+    const vDegree = firstSurface.vDegree;
+    
+    var unpaddedUKnots = [];
+    for (var i = uDegree; i < size(firstSurface.uKnots) - uDegree; i += 1)
+    {
+        unpaddedUKnots = append(unpaddedUKnots, firstSurface.uKnots[i]);
+    }
+    
+    var unpaddedVKnots = [];
+    for (var i = vDegree; i < size(firstSurface.vKnots) - vDegree; i += 1)
+    {
+        unpaddedVKnots = append(unpaddedVKnots, firstSurface.vKnots[i]);
+    }
+    
     // Create the tweened B-spline surface
     const tweenedSurfaceDefinition = bSplineSurface({
-        "uDegree" : firstSurface.uDegree,
-        "vDegree" : firstSurface.vDegree,
+        "uDegree" : uDegree,
+        "vDegree" : vDegree,
         "isUPeriodic" : firstSurface.isUPeriodic,
         "isVPeriodic" : firstSurface.isVPeriodic,
         "controlPoints" : controlPointMatrix(tweenedControlPoints),
         "weights" : tweenedWeights == undefined ? undefined : matrix(tweenedWeights),
-        "uKnots" : firstSurface.uKnots,
-        "vKnots" : firstSurface.vKnots
+        "uKnots" : knotArray(unpaddedUKnots),
+        "vKnots" : knotArray(unpaddedVKnots)
     });
     
     opCreateBSplineSurface(context, id, {
