@@ -211,17 +211,41 @@ function createTweenedSurface(context is Context, id is Id,
     // So we remove the first 'degree' and last 'degree' knots
     const uDegree = firstSurface.uDegree;
     const vDegree = firstSurface.vDegree;
+    const numUControlPoints = size(tweenedControlPoints);
+    const numVControlPoints = size(tweenedControlPoints[0]);
+    
+    // Verify the knot array sizes are correct for padded arrays
+    const expectedPaddedUSize = numUControlPoints + uDegree + 1;
+    const expectedPaddedVSize = numVControlPoints + vDegree + 1;
     
     var unpaddedUKnots = [];
-    for (var i = uDegree; i < size(firstSurface.uKnots) - uDegree; i += 1)
+    if (size(firstSurface.uKnots) == expectedPaddedUSize)
     {
-        unpaddedUKnots = append(unpaddedUKnots, firstSurface.uKnots[i]);
+        // Knots are padded, unpad them
+        for (var i = uDegree; i < size(firstSurface.uKnots) - uDegree; i += 1)
+        {
+            unpaddedUKnots = append(unpaddedUKnots, firstSurface.uKnots[i]);
+        }
+    }
+    else
+    {
+        // Knots might already be unpadded or in unexpected format, use as-is
+        unpaddedUKnots = firstSurface.uKnots;
     }
     
     var unpaddedVKnots = [];
-    for (var i = vDegree; i < size(firstSurface.vKnots) - vDegree; i += 1)
+    if (size(firstSurface.vKnots) == expectedPaddedVSize)
     {
-        unpaddedVKnots = append(unpaddedVKnots, firstSurface.vKnots[i]);
+        // Knots are padded, unpad them
+        for (var i = vDegree; i < size(firstSurface.vKnots) - vDegree; i += 1)
+        {
+            unpaddedVKnots = append(unpaddedVKnots, firstSurface.vKnots[i]);
+        }
+    }
+    else
+    {
+        // Knots might already be unpadded or in unexpected format, use as-is
+        unpaddedVKnots = firstSurface.vKnots;
     }
     
     // Create the tweened B-spline surface
