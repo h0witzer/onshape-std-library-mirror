@@ -354,6 +354,25 @@ export function triadTransformManipulatorChange(context is Context, definition i
         definition.rx = angles[0];
         definition.ry = angles[1];
         definition.rz = angles[2];
+        
+        // If in multi-copy mode and an instance is selected, also update that instance
+        if (definition.multiCopyMode && @size(definition.instances) > 0)
+        {
+            for (var instanceArrayIndex = 0; instanceArrayIndex < @size(definition.instances); instanceArrayIndex += 1)
+            {
+                if (definition.instances[instanceArrayIndex].index == definition.instanceIndex)
+                {
+                    definition.instances[instanceArrayIndex].dx = definition.dx;
+                    definition.instances[instanceArrayIndex].dy = definition.dy;
+                    definition.instances[instanceArrayIndex].dz = definition.dz;
+                    definition.instances[instanceArrayIndex].rx = definition.rx;
+                    definition.instances[instanceArrayIndex].ry = definition.ry;
+                    definition.instances[instanceArrayIndex].rz = definition.rz;
+                    definition.instances[instanceArrayIndex].rotationMatrix = rotation;
+                    break;
+                }
+            }
+        }
     }
     return definition;
 }
@@ -486,6 +505,17 @@ function findCenter(context is Context, entities is Query) returns Vector
 export function triadTransformEditLogic(context is Context, id is Id, oldDefinition is map, definition is map, 
     isCreating is boolean, specifiedParameters is map, hiddenQueries is Query, clickedButton is string) returns map
 {
+    // Handle switching to multi-copy mode for the first time
+    if (definition.multiCopyMode && !oldDefinition.multiCopyMode)
+    {
+        // Initialize empty instances array if needed
+        if (definition.instances == undefined)
+        {
+            definition.instances = [];
+        }
+        definition.instanceIndex = 0;
+    }
+    
     // Handle the "Place copy" button click in multi-copy mode
     if (clickedButton == "placeCopy" && definition.multiCopyMode)
     {
@@ -511,6 +541,29 @@ export function triadTransformEditLogic(context is Context, id is Id, oldDefinit
         definition.instanceIndex = newInstance.index;
         
         return definition;
+    }
+    
+    // Handle instance selection change - load the selected instance's transform to the manipulator
+    if (definition.multiCopyMode && 
+        oldDefinition.multiCopyMode && 
+        oldDefinition.instanceIndex != definition.instanceIndex &&
+        @size(definition.instances) > 0)
+    {
+        // Find the array index for the selected instance
+        for (var instanceArrayIndex = 0; instanceArrayIndex < @size(definition.instances); instanceArrayIndex += 1)
+        {
+            if (definition.instances[instanceArrayIndex].index == definition.instanceIndex)
+            {
+                // Load this instance's transform into the main manipulator
+                definition.dx = definition.instances[instanceArrayIndex].dx;
+                definition.dy = definition.instances[instanceArrayIndex].dy;
+                definition.dz = definition.instances[instanceArrayIndex].dz;
+                definition.rx = definition.instances[instanceArrayIndex].rx;
+                definition.ry = definition.instances[instanceArrayIndex].ry;
+                definition.rz = definition.instances[instanceArrayIndex].rz;
+                break;
+            }
+        }
     }
     
     // Handle instance array management: ensure indices are correct and handle deletions
