@@ -27,9 +27,14 @@ const TRIAD_MANIPULATOR = "triadManipulator";
 const INSTANCE_MANIPULATOR = "instanceManipulator";
 
 /**
- * Structure to store a transform instance with its position and rotation.
+ * Creates a new empty instance with default transform values.
+ * Returns a fresh object to avoid reference sharing issues.
+ * 
+ * @returns {map} : New instance object with default values
  */
-const emptyInstance = {
+function createEmptyInstance() returns map
+{
+    return {
         "index" : 0,
         "dx" : 0 * millimeter,
         "dy" : 0 * millimeter,
@@ -39,6 +44,7 @@ const emptyInstance = {
         "rz" : 0 * degree,
         "rotationMatrix" : identityMatrix(3)
     };
+}
 
 predicate triadTransformPredicate(definition is map)
 {
@@ -520,7 +526,7 @@ export function triadTransformEditLogic(context is Context, id is Id, oldDefinit
     if (clickedButton == "placeCopy" && definition.multiCopyMode)
     {
         // Create a new instance from current manipulator transform
-        var newInstance = emptyInstance;
+        var newInstance = createEmptyInstance();
         newInstance.dx = definition.dx;
         newInstance.dy = definition.dy;
         newInstance.dz = definition.dz;
@@ -577,7 +583,9 @@ export function triadTransformEditLogic(context is Context, id is Id, oldDefinit
         }
         
         // Check if indices need reordering (due to deletion or other array changes)
-        const newIndicesOrder = shiftIndicesForInstances(deduplicateIndicesForInstances(currentIndicesOrder));
+        // First deduplicate any duplicate indices, then shift to remove gaps
+        const deduplicatedIndices = deduplicateIndicesForInstances(currentIndicesOrder);
+        const newIndicesOrder = shiftIndicesForInstances(deduplicatedIndices);
         if (currentIndicesOrder != newIndicesOrder)
         {
             // Update indices to maintain consistency
