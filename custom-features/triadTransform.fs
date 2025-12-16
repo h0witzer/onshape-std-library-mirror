@@ -425,24 +425,19 @@ export function triadTransformManipulatorChange(context is Context, definition i
                         targetLine = evEdgeTangentLine(context, { "edge" : entity, "parameter" : param });
                     }
                     
-                    // Create a coordinate system from the current transform in world space
-                    const currentWorldTransform = toWorld(baseCSys) * triadTransform;
-                    const currentWorldCSys = coordSystem(currentWorldTransform.translation, 
-                                                         currentWorldTransform.linear * vector(1, 0, 0),
-                                                         currentWorldTransform.linear * vector(0, 0, 1));
+                    // Following Konstantin's method exactly:
+                    // First apply the transform to get the current coordinate system
+                    const currentCSys = triadTransform * baseCSys;
                     
-                    // Create the source line (current Z axis in world coordinates)
-                    const sourceLine = line(currentWorldCSys.origin, currentWorldCSys.zAxis);
+                    // Create the source line from the current Z axis
+                    const sourceLine = line(currentCSys.origin, currentCSys.zAxis);
                     
-                    // Calculate the rotation that aligns the source line to the target line
-                    // Swap source and target to invert the rotation direction
-                    const alignmentTransform = transform(targetLine, sourceLine);
+                    // Apply the alignment transform that minimizes roll
+                    // transform(sourceLine, targetLine) aligns source to target with minimal rotation
+                    const alignedCSys = transform(sourceLine, targetLine) * currentCSys;
                     
-                    // Apply the alignment to the current world coordinate system
-                    const alignedWorldCSys = alignmentTransform * currentWorldCSys;
-                    
-                    // Convert back to local coordinates relative to baseCSys
-                    triadTransform = fromWorld(baseCSys) * toWorld(alignedWorldCSys);
+                    // Convert back to manipulator transform relative to baseCSys
+                    triadTransform = toWorld(alignedCSys) * fromWorld(baseCSys);
                 }
             }
         }
