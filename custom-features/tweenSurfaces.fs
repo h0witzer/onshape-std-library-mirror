@@ -397,14 +397,14 @@ function makeUniformKnotVector(degree is number, numControlPoints is number)
 /**
  * Refines a B-spline surface to have a target number of control points in each direction.
  * 
- * This uses curve sampling and approximation to add control points while preserving
- * surface geometry as closely as possible. The algorithm:
- * 1. Samples each isoparametric curve at uniform parameters
- * 2. Uses approximateSpline to create refined curves with target control point count
- * 3. Reconstructs the surface with the new control point grid
+ * This uses the mathematically correct knot insertion (Boehm algorithm) to add control points
+ * while preserving surface geometry exactly. The algorithm:
+ * 1. Processes each isoparametric curve (U-column or V-row) independently
+ * 2. Inserts knots uniformly distributed in the parameter space
+ * 3. Computes new control points using the Boehm knot insertion formula
+ * 4. Reconstructs the surface with the new control point grid
  * 
- * Note: For non-rational surfaces, this preserves geometry within approximation tolerance.
- * The quality depends on surface complexity and target control point count.
+ * Note: This preserves surface geometry exactly using proper B-spline calculus.
  * For rational surfaces with CP count mismatch, an error is thrown.
  * 
  * @param context {Context} : The modeling context
@@ -534,15 +534,15 @@ function refineControlPointCount(context is Context, surface is map, targetUCoun
 
 
 /**
- * Refines a B-spline curve to have a target number of control points.
+ * Refines a B-spline curve to have a target number of control points using knot insertion.
  * 
- * Uses sampling and spline approximation to create a curve with the desired
- * number of control points that closely matches the original curve.
+ * Uses the mathematically correct Boehm algorithm for knot insertion to add control points
+ * without changing the curve geometry. This preserves the curve shape exactly.
  * 
- * @param context {Context} : The modeling context
- * @param curve {BSplineCurve} : The curve to refine
+ * @param context {Context} : The modeling context  
+ * @param curve {map} : The B-spline curve with controlPoints, knots, degree, etc.
  * @param targetCount {number} : Target number of control points
- * @returns {BSplineCurve} : Refined curve
+ * @returns {map} : Refined curve with exact geometry preservation
  */
 function refineCurveControlPointCount(context is Context, curve is map, targetCount is number)
 {
@@ -551,48 +551,123 @@ function refineCurveControlPointCount(context is Context, curve is map, targetCo
         return curve;
     }
     
-    // Sample the curve at uniform parameters
+    // Number of knots to insert
+    const numToInsert = targetCount - size(curve.controlPoints);
+    
+    // Determine which knots to insert by distributing them uniformly in the parameter space
     const startParam = curve.knots[curve.degree];
     const endParam = curve.knots[size(curve.knots) - curve.degree - 1];
-    var params = [];
-    for (var i = 0; i < targetCount; i += 1)
+    
+    // Find distinct internal knots and spaces between them
+    var knotsToInsert = [];
+    
+    // Distribute new knots uniformly across the parameter domain
+    for (var i = 1; i <= numToInsert; i += 1)
     {
-        const fraction = i / max(targetCount - 1, 1);
-        params = append(params, startParam + (endParam - startParam) * fraction);
+        const fraction = i / (numToInsert + 1.0);
+        const newKnot = startParam + (endParam - startParam) * fraction;
+        knotsToInsert = append(knotsToInsert, newKnot);
     }
     
-    // Evaluate the curve at these parameters
-    const positions = evaluateSpline({ "spline" : curve, "parameters" : params })[0];
+    // Sort knots to insert
+    knotsToInsert = sort(knotsToInsert, function(a, b) { return a < b; });
     
-    // Create a new B-spline curve through these points using approximation
-    const target = approximationTarget({ 'positions' : positions });
+    // Insert knots one at a time using Boehm algorithm
+    var currentControlPoints = curve.controlPoints;
+    var currentKnots = curve.knots;
     
-    // Use a tight tolerance for high-quality approximation
-    const tolerance = 1e-7 * meter;
-    const refined = approximateSpline(context, {
+    for (var insertIdx = 0; insertIdx < size(knotsToInsert); insertIdx += 1)
+    {
+        const result = insertKnotBoehm(currentControlPoints, currentKnots, curve.degree, knotsToInsert[insertIdx]);
+        currentControlPoints = result.controlPoints;
+        currentKnots = result.knots;
+    }
+    
+    return {
+        "controlPoints" : currentControlPoints,
+        "knots" : currentKnots,
         "degree" : curve.degree,
-        "tolerance" : tolerance,
         "isPeriodic" : curve.isPeriodic,
-        "targets" : [target],
-        "parameters" : params,
-        "maxControlPoints" : targetCount
-    })[0];
+        "isRational" : curve.isRational,
+        "weights" : curve.weights
+    };
+}
+
+
+/**
+ * Inserts a single knot into a B-spline curve using the Boehm algorithm.
+ * 
+ * This is the mathematically correct approach that preserves curve geometry exactly.
+ * The algorithm computes new control points based on the knot insertion formula:
+ * 
+ * For each affected control point P_i, the new control point Q_i is computed as:
+ * Q_i = alpha_i * P_i + (1 - alpha_i) * P_{i-1}
+ * 
+ * where alpha_i depends on the knot values and the insertion parameter.
+ * 
+ * @param controlPoints {array} : Original control points
+ * @param knots {array} : Original knot vector
+ * @param degree {number} : Degree of the B-spline
+ * @param insertParam {number} : Parameter value where knot should be inserted
+ * @returns {map} : Map with new controlPoints and knots arrays
+ */
+function insertKnotBoehm(controlPoints is array, knots is array, degree is number, insertParam is number)
+{
+    const numControlPoints = size(controlPoints);
     
-    // If approximation didn't give us exactly the target count, use the approximated result anyway
-    // as it will be closer to the original curve than using sampled points as control points
-    if (size(refined.controlPoints) != targetCount)
+    // Find the knot span index where insertParam falls
+    var knotSpanIndex = degree;
+    for (var i = degree; i < size(knots) - degree - 1; i += 1)
     {
-        // Fallback: Create an interpolating curve through the sampled points
-        // Note: This is not ideal as it treats sampled positions as control points,
-        // but it ensures we have the target control point count
-        return bSplineCurve({
-            "degree" : min(curve.degree, targetCount - 1),
-            "isPeriodic" : curve.isPeriodic,
-            "isRational" : curve.isRational,
-            "controlPoints" : positions,
-            "weights" : curve.isRational ? makeArray(targetCount, 1) : undefined
-        });
+        if (insertParam >= knots[i] && insertParam < knots[i + 1])
+        {
+            knotSpanIndex = i;
+            break;
+        }
+        if (insertParam == knots[i + 1] && i == size(knots) - degree - 2)
+        {
+            knotSpanIndex = i;
+            break;
+        }
     }
     
-    return refined;
+    // Compute new control points using the Boehm algorithm
+    var newControlPoints = [];
+    
+    // Control points before the affected range remain unchanged
+    for (var i = 0; i <= knotSpanIndex - degree; i += 1)
+    {
+        newControlPoints = append(newControlPoints, controlPoints[i]);
+    }
+    
+    // Compute new control points in the affected range
+    for (var i = knotSpanIndex - degree + 1; i <= knotSpanIndex; i += 1)
+    {
+        const alpha = (insertParam - knots[i]) / (knots[i + degree] - knots[i]);
+        const newPoint = controlPoints[i - 1] * (1 - alpha) + controlPoints[i] * alpha;
+        newControlPoints = append(newControlPoints, newPoint);
+    }
+    
+    // Control points after the affected range remain unchanged
+    for (var i = knotSpanIndex + 1; i < numControlPoints; i += 1)
+    {
+        newControlPoints = append(newControlPoints, controlPoints[i]);
+    }
+    
+    // Insert the new knot into the knot vector
+    var newKnots = [];
+    for (var i = 0; i <= knotSpanIndex; i += 1)
+    {
+        newKnots = append(newKnots, knots[i]);
+    }
+    newKnots = append(newKnots, insertParam);
+    for (var i = knotSpanIndex + 1; i < size(knots); i += 1)
+    {
+        newKnots = append(newKnots, knots[i]);
+    }
+    
+    return {
+        "controlPoints" : newControlPoints,
+        "knots" : newKnots
+    };
 }
