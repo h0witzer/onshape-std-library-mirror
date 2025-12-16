@@ -220,13 +220,13 @@ function createTweenedSurface(context is Context, id is Id,
     
     // Debug logging to diagnose knot array format issues
     println("DEBUG: uDegree=" ~ uDegree ~ ", vDegree=" ~ vDegree);
-    println("DEBUG: uControlPoints=" ~ uControlPoints ~ ", vControlPoints=" ~ vControlPoints);
+    println("DEBUG: numUControlPoints=" ~ numUControlPoints ~ ", numVControlPoints=" ~ numVControlPoints);
     println("DEBUG: firstSurface.uKnots size=" ~ size(firstSurface.uKnots));
     println("DEBUG: firstSurface.vKnots size=" ~ size(firstSurface.vKnots));
     println("DEBUG: expectedPaddedUSize=" ~ expectedPaddedUSize);
     println("DEBUG: expectedPaddedVSize=" ~ expectedPaddedVSize);
-    println("DEBUG: Expected unpadded U size=" ~ (uControlPoints - uDegree + 1));
-    println("DEBUG: Expected unpadded V size=" ~ (vControlPoints - vDegree + 1));
+    println("DEBUG: Expected unpadded U size=" ~ (numUControlPoints - uDegree + 1));
+    println("DEBUG: Expected unpadded V size=" ~ (numVControlPoints - vDegree + 1));
     
     var unpaddedUKnots = [];
     if (size(firstSurface.uKnots) == expectedPaddedUSize)
