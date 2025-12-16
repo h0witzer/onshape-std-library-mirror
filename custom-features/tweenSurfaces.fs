@@ -397,13 +397,14 @@ function makeUniformKnotVector(degree is number, numControlPoints is number)
 /**
  * Refines a B-spline surface to have a target number of control points in each direction.
  * 
- * This uses knot insertion (refinement) which is a mathematically correct operation that
- * adds control points without changing the surface geometry. The algorithm:
- * 1. Samples the surface to evaluate at specific parameters
- * 2. Uses approximateSpline to create refined isoparametric curves
+ * This uses curve sampling and approximation to add control points while preserving
+ * surface geometry as closely as possible. The algorithm:
+ * 1. Samples each isoparametric curve at uniform parameters
+ * 2. Uses approximateSpline to create refined curves with target control point count
  * 3. Reconstructs the surface with the new control point grid
  * 
- * Note: For non-rational surfaces, this preserves geometry exactly within tolerance.
+ * Note: For non-rational surfaces, this preserves geometry within approximation tolerance.
+ * The quality depends on surface complexity and target control point count.
  * For rational surfaces with CP count mismatch, an error is thrown.
  * 
  * @param context {Context} : The modeling context
@@ -563,22 +564,29 @@ function refineCurveControlPointCount(context is Context, curve is map, targetCo
     // Evaluate the curve at these parameters
     const positions = evaluateSpline({ "spline" : curve, "parameters" : params })[0];
     
-    // Create a new B-spline curve through these points
+    // Create a new B-spline curve through these points using approximation
     const target = approximationTarget({ 'positions' : positions });
+    
+    // Use a tight tolerance for high-quality approximation
+    const tolerance = 1e-7 * meter;
     const refined = approximateSpline(context, {
         "degree" : curve.degree,
-        "tolerance" : 1e-8 * meter,
+        "tolerance" : tolerance,
         "isPeriodic" : curve.isPeriodic,
         "targets" : [target],
         "parameters" : params,
         "maxControlPoints" : targetCount
     })[0];
     
-    // If approximation didn't give us exactly the target count, create a simple interpolating curve
+    // If approximation didn't give us exactly the target count, use the approximated result anyway
+    // as it will be closer to the original curve than using sampled points as control points
     if (size(refined.controlPoints) != targetCount)
     {
+        // Fallback: Create an interpolating curve through the sampled points
+        // Note: This is not ideal as it treats sampled positions as control points,
+        // but it ensures we have the target control point count
         return bSplineCurve({
-            "degree" : curve.degree,
+            "degree" : min(curve.degree, targetCount - 1),
             "isPeriodic" : curve.isPeriodic,
             "isRational" : curve.isRational,
             "controlPoints" : positions,
