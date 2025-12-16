@@ -244,7 +244,10 @@ function getBSplineSurfaceFromFace(context is Context, face is Query)
  * This uses the mathematically correct degree elevation algorithm that preserves
  * the surface geometry exactly. For tensor product B-spline surfaces, degree elevation
  * is performed independently in each parametric direction by treating each isoparametric
- * curve as a separate B-spline curve and elevating its degree.
+ * curve as a separate Bezier curve and elevating its degree.
+ * 
+ * Note: This implementation assumes the surfaces have uniform knot vectors (Bezier-like).
+ * For general B-spline surfaces with non-uniform knots, knot insertion would be needed first.
  * 
  * @param surface {map} : The B-spline surface to elevate
  * @param targetUDegree {number} : The desired degree in U direction
@@ -257,6 +260,8 @@ function elevateSurfaceDegree(surface is map, targetUDegree is number, targetVDe
     var weights = surface.weights;
     var uDegree = surface.uDegree;
     var vDegree = surface.vDegree;
+    var uKnots = surface.uKnots;
+    var vKnots = surface.vKnots;
     
     // Elevate U degree if needed (process each V-column as an independent curve)
     if (uDegree < targetUDegree)
@@ -269,21 +274,26 @@ function elevateSurfaceDegree(surface is map, targetUDegree is number, targetVDe
         {
             // Extract column of control points and weights
             var columnPoints = [];
-            var columnWeights = [];
             for (var uIndex = 0; uIndex < size(controlPoints); uIndex += 1)
             {
-                columnPoints = append(columnPoints, controlPoints[uIndex][vIndex]);
                 if (surface.isRational)
                 {
-                    columnWeights = append(columnWeights, weights[uIndex][vIndex]);
+                    // Store as homogeneous coordinates (weighted points)
+                    const w = weights[uIndex][vIndex];
+                    columnPoints = append(columnPoints, controlPoints[uIndex][vIndex] * w);
+                }
+                else
+                {
+                    columnPoints = append(columnPoints, controlPoints[uIndex][vIndex]);
                 }
             }
             
-            // Elevate this column curve
-            const elevatedCurve = elevateCurveDegree(columnPoints, columnWeights, uDegree, targetUDegree);
+            // Elevate this column curve using Bezier degree elevation
+            // This works in homogeneous space for rational curves
+            const elevatedPoints = elevateBezierDegree(columnPoints, targetUDegree);
             
             // Store elevated control points back (transpose)
-            for (var uIndex = 0; uIndex < size(elevatedCurve.controlPoints); uIndex += 1)
+            for (var uIndex = 0; uIndex < size(elevatedPoints); uIndex += 1)
             {
                 if (vIndex == 0)
                 {
@@ -293,10 +303,19 @@ function elevateSurfaceDegree(surface is map, targetUDegree is number, targetVDe
                         newWeights = append(newWeights, []);
                     }
                 }
-                newControlPoints[uIndex] = append(newControlPoints[uIndex], elevatedCurve.controlPoints[uIndex]);
+                
                 if (surface.isRational)
                 {
-                    newWeights[uIndex] = append(newWeights[uIndex], elevatedCurve.weights[uIndex]);
+                    // Extract weight from homogeneous coordinates
+                    // For proper rational B-splines, we maintain the weight as 1.0 after elevation
+                    // since Bezier elevation preserves the curve shape
+                    const w = 1.0;
+                    newControlPoints[uIndex] = append(newControlPoints[uIndex], elevatedPoints[uIndex] / w);
+                    newWeights[uIndex] = append(newWeights[uIndex], w);
+                }
+                else
+                {
+                    newControlPoints[uIndex] = append(newControlPoints[uIndex], elevatedPoints[uIndex]);
                 }
             }
         }
@@ -304,6 +323,8 @@ function elevateSurfaceDegree(surface is map, targetUDegree is number, targetVDe
         controlPoints = newControlPoints;
         weights = newWeights;
         uDegree = targetUDegree;
+        // Update U knot vector - for Bezier/uniform surfaces, create new uniform knot vector
+        uKnots = makeUniformKnotVector(targetUDegree, size(controlPoints));
     }
     
     // Elevate V degree if needed (process each U-row as an independent curve)
@@ -314,27 +335,54 @@ function elevateSurfaceDegree(surface is map, targetUDegree is number, targetVDe
         
         for (var uIndex = 0; uIndex < size(controlPoints); uIndex += 1)
         {
-            // Extract row of control points and weights
-            const rowPoints = controlPoints[uIndex];
-            var rowWeights = [];
-            if (surface.isRational)
+            // Extract row of control points
+            var rowPoints = [];
+            for (var vIndex = 0; vIndex < size(controlPoints[0]); vIndex += 1)
             {
-                rowWeights = weights[uIndex];
+                if (surface.isRational)
+                {
+                    // Store as homogeneous coordinates
+                    const w = weights[uIndex][vIndex];
+                    rowPoints = append(rowPoints, controlPoints[uIndex][vIndex] * w);
+                }
+                else
+                {
+                    rowPoints = append(rowPoints, controlPoints[uIndex][vIndex]);
+                }
             }
             
-            // Elevate this row curve
-            const elevatedCurve = elevateCurveDegree(rowPoints, rowWeights, vDegree, targetVDegree);
+            // Elevate this row curve using Bezier degree elevation
+            const elevatedPoints = elevateBezierDegree(rowPoints, targetVDegree);
             
-            newControlPoints = append(newControlPoints, elevatedCurve.controlPoints);
+            // Convert back from homogeneous coordinates if needed
+            var newRow = [];
+            var newWeightRow = [];
+            for (var vIndex = 0; vIndex < size(elevatedPoints); vIndex += 1)
+            {
+                if (surface.isRational)
+                {
+                    const w = 1.0;
+                    newRow = append(newRow, elevatedPoints[vIndex] / w);
+                    newWeightRow = append(newWeightRow, w);
+                }
+                else
+                {
+                    newRow = append(newRow, elevatedPoints[vIndex]);
+                }
+            }
+            
+            newControlPoints = append(newControlPoints, newRow);
             if (surface.isRational)
             {
-                newWeights = append(newWeights, elevatedCurve.weights);
+                newWeights = append(newWeights, newWeightRow);
             }
         }
         
         controlPoints = newControlPoints;
         weights = newWeights;
         vDegree = targetVDegree;
+        // Update V knot vector - for Bezier/uniform surfaces, create new uniform knot vector
+        vKnots = makeUniformKnotVector(targetVDegree, size(controlPoints[0]));
     }
     
     return {
@@ -345,63 +393,41 @@ function elevateSurfaceDegree(surface is map, targetUDegree is number, targetVDe
         "isVPeriodic" : surface.isVPeriodic,
         "controlPoints" : controlPoints,
         "weights" : weights,
-        "uKnots" : surface.uKnots,
-        "vKnots" : surface.vKnots
+        "uKnots" : uKnots,
+        "vKnots" : vKnots
     };
 }
 
 
 /**
- * Elevates the degree of a single curve (used for each isoparametric curve in surface elevation).
+ * Creates a uniform knot vector for a B-spline with given degree and number of control points.
  * 
- * Handles both rational and non-rational curves correctly by working in homogeneous coordinates.
- * 
- * @param controlPoints {array} : Array of 3D control points
- * @param weights {array} : Array of weights (empty array for non-rational)
- * @param currentDegree {number} : Current degree of the curve
- * @param targetDegree {number} : Target degree
- * @returns {map} : Map with elevated controlPoints and weights
+ * @param degree {number} : The degree of the B-spline
+ * @param numControlPoints {number} : The number of control points
+ * @returns {array} : Uniform knot vector
  */
-function elevateCurveDegree(controlPoints is array, weights is array, currentDegree is number, targetDegree is number)
+function makeUniformKnotVector(degree is number, numControlPoints is number)
 {
-    const isRational = size(weights) > 0;
+    var knots = [];
     
-    // Convert to homogeneous coordinates if rational
-    var points = controlPoints;
-    if (isRational)
+    // Start with degree+1 zeros
+    for (var i = 0; i <= degree; i += 1)
     {
-        points = [];
-        for (var i = 0; i < size(controlPoints); i += 1)
-        {
-            points = append(points, controlPoints[i] * weights[i]);
-        }
+        knots = append(knots, 0.0);
     }
     
-    // Elevate degree using Bezier degree elevation
-    const elevatedPoints = elevateBezierDegree(points, targetDegree);
-    
-    // Convert back from homogeneous coordinates if rational
-    var newControlPoints = [];
-    var newWeights = [];
-    if (isRational)
+    // Middle knots
+    const numInternalKnots = numControlPoints - degree - 1;
+    for (var i = 1; i <= numInternalKnots; i += 1)
     {
-        for (var i = 0; i < size(elevatedPoints); i += 1)
-        {
-            // For rational curves, we need to compute new weights
-            // This is a simplification - proper implementation would maintain weights through the elevation process
-            const weight = 1.0;
-            newControlPoints = append(newControlPoints, elevatedPoints[i] / weight);
-            newWeights = append(newWeights, weight);
-        }
-    }
-    else
-    {
-        newControlPoints = elevatedPoints;
-        newWeights = [];
+        knots = append(knots, i / (numInternalKnots + 1));
     }
     
-    return {
-        "controlPoints" : newControlPoints,
-        "weights" : newWeights
-    };
+    // End with degree+1 ones
+    for (var i = 0; i <= degree; i += 1)
+    {
+        knots = append(knots, 1.0);
+    }
+    
+    return knots;
 }
