@@ -269,6 +269,10 @@ function createTweenedSurface(context is Context, id is Id,
     println("DEBUG: Final unpaddedUKnots size=" ~ size(unpaddedUKnots));
     println("DEBUG: Final unpaddedVKnots size=" ~ size(unpaddedVKnots));
     
+    // Debug: Print first and last few knot values to check they're valid
+    println("DEBUG: First 5 U knots: " ~ unpaddedUKnots[0] ~ ", " ~ unpaddedUKnots[1] ~ ", " ~ unpaddedUKnots[2] ~ ", " ~ unpaddedUKnots[3] ~ ", " ~ unpaddedUKnots[4]);
+    println("DEBUG: Last 5 U knots: " ~ unpaddedUKnots[size(unpaddedUKnots)-5] ~ ", " ~ unpaddedUKnots[size(unpaddedUKnots)-4] ~ ", " ~ unpaddedUKnots[size(unpaddedUKnots)-3] ~ ", " ~ unpaddedUKnots[size(unpaddedUKnots)-2] ~ ", " ~ unpaddedUKnots[size(unpaddedUKnots)-1]);
+    
     // Create the tweened B-spline surface
     const tweenedSurfaceDefinition = bSplineSurface({
         "uDegree" : uDegree,
