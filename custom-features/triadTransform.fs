@@ -584,6 +584,11 @@ export function triadTransformEditLogic(context is Context, id is Id, oldDefinit
             for (var instanceArrayIndex = 0; instanceArrayIndex < numInstances; instanceArrayIndex += 1)
             {
                 definition.instances[instanceArrayIndex].index = newIndicesOrder[instanceArrayIndex];
+                // Update the array item label to show the correct index
+                setFeatureComputedParameter(context, id, {
+                            "name" : "instances[" ~ toString(instanceArrayIndex) ~ "].index",
+                            "value" : newIndicesOrder[instanceArrayIndex]
+                        });
             }
         }
         
