@@ -277,8 +277,9 @@ function elevateSurfaceDegree(surface is map, targetUDegree is number, targetVDe
     var controlPoints = surface.controlPoints;
     var uDegree = surface.uDegree;
     var vDegree = surface.vDegree;
-    var uKnots = surface.uKnots;
-    var vKnots = surface.vKnots;
+    // Ensure knots are KnotArray type
+    var uKnots = surface.uKnots is KnotArray ? surface.uKnots : knotArray(surface.uKnots);
+    var vKnots = surface.vKnots is KnotArray ? surface.vKnots : knotArray(surface.vKnots);
     
     // Elevate U degree if needed (process each V-column as an independent curve)
     if (uDegree < targetUDegree)
@@ -426,8 +427,9 @@ function refineControlPointCount(context is Context, surface is map, targetUCoun
     var controlPoints = surface.controlPoints;
     var uDegree = surface.uDegree;
     var vDegree = surface.vDegree;
-    var uKnots = surface.uKnots;
-    var vKnots = surface.vKnots;
+    // Ensure knots are KnotArray type
+    var uKnots = surface.uKnots is KnotArray ? surface.uKnots : knotArray(surface.uKnots);
+    var vKnots = surface.vKnots is KnotArray ? surface.vKnots : knotArray(surface.vKnots);
     
     // Refine in U direction if needed
     if (size(controlPoints) < targetUCount)
