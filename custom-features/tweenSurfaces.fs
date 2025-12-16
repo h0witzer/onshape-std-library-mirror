@@ -396,8 +396,8 @@ function elevateSurfaceDegree(surface is map, targetUDegree is number, targetVDe
         
         controlPoints = newControlPoints;
         uDegree = targetUDegree;
-        // Update U knot vector - create new uniform knot vector for elevated surface
-        uKnots = makeUniformKnotVector(targetUDegree, size(controlPoints));
+        // Update U knot vector - elevate it while preserving knot structure
+        uKnots = elevateKnotVector(uKnots, surface.uDegree, targetUDegree);
     }
     
     // Elevate V degree if needed (process each U-row as an independent curve)
@@ -418,8 +418,8 @@ function elevateSurfaceDegree(surface is map, targetUDegree is number, targetVDe
         
         controlPoints = newControlPoints;
         vDegree = targetVDegree;
-        // Update V knot vector - create new uniform knot vector for elevated surface
-        vKnots = makeUniformKnotVector(targetVDegree, size(controlPoints[0]));
+        // Update V knot vector - elevate it while preserving knot structure
+        vKnots = elevateKnotVector(vKnots, surface.vDegree, targetVDegree);
     }
     
     return {
@@ -433,6 +433,67 @@ function elevateSurfaceDegree(surface is map, targetUDegree is number, targetVDe
         "uKnots" : uKnots,
         "vKnots" : vKnots
     };
+}
+
+
+/**
+ * Elevates a knot vector for degree elevation while preserving knot structure.
+ * 
+ * When elevating from degree p to degree p+k, each internal knot needs k additional
+ * repetitions, and the clamped end multiplicities increase from p+1 to p+k+1.
+ * This preserves the knot structure and parameterization of the original curve/surface.
+ * 
+ * @param oldKnots {KnotArray} : Original knot vector
+ * @param oldDegree {number} : Original degree
+ * @param newDegree {number} : New (elevated) degree
+ * @returns {array} : Elevated knot vector
+ */
+function elevateKnotVector(oldKnots, oldDegree is number, newDegree is number)
+{
+    if (oldDegree >= newDegree)
+    {
+        return oldKnots;
+    }
+    
+    const degreeDiff = newDegree - oldDegree;
+    var newKnots = [];
+    
+    // Add degreeDiff more repetitions at the start
+    for (var i = 0; i < oldDegree + 1 + degreeDiff; i += 1)
+    {
+        newKnots = append(newKnots, oldKnots[0]);
+    }
+    
+    // Process internal knots - add degreeDiff repetitions for each distinct knot
+    var i = oldDegree + 1;
+    while (i < size(oldKnots) - oldDegree - 1)
+    {
+        const knotValue = oldKnots[i];
+        var multiplicity = 1;
+        
+        // Count multiplicity of this knot in original vector
+        while (i + multiplicity < size(oldKnots) - oldDegree - 1 && 
+               abs(oldKnots[i + multiplicity] - knotValue) < KNOT_TOLERANCE)
+        {
+            multiplicity += 1;
+        }
+        
+        // Add this knot with multiplicity + degreeDiff repetitions
+        for (var j = 0; j < multiplicity + degreeDiff; j += 1)
+        {
+            newKnots = append(newKnots, knotValue);
+        }
+        
+        i += multiplicity;
+    }
+    
+    // Add degreeDiff more repetitions at the end
+    for (var i = 0; i < oldDegree + 1 + degreeDiff; i += 1)
+    {
+        newKnots = append(newKnots, oldKnots[size(oldKnots) - 1]);
+    }
+    
+    return newKnots;
 }
 
 
