@@ -574,7 +574,7 @@ export function triadTransformEditLogic(context is Context, id is Id, oldDefinit
         definition.instanceIndex = -1;  // Start with primary position selected
     }
     
-    // Process instances added via the array UI button
+    // Step 1: Process instances added via the array UI button
     // When the user clicks "Add" in the array, initialize new instances with current manipulator data
     if (definition.multiCopyMode && @size(definition.instances) > 0)
     {
@@ -598,31 +598,8 @@ export function triadTransformEditLogic(context is Context, id is Id, oldDefinit
         }
     }
     
-    // Handle instance selection change - load the selected instance's transform to the manipulator
-    if (definition.multiCopyMode && 
-        oldDefinition.multiCopyMode && 
-        oldDefinition.instanceIndex != definition.instanceIndex &&
-        @size(definition.instances) > 0 &&
-        definition.instanceIndex >= 0)  // Only load if not selecting primary (which is -1)
-    {
-        // Find the array index for the selected instance
-        for (var instanceArrayIndex = 0; instanceArrayIndex < @size(definition.instances); instanceArrayIndex += 1)
-        {
-            if (definition.instances[instanceArrayIndex].index == definition.instanceIndex)
-            {
-                // Load this instance's transform into the main manipulator
-                definition.dx = definition.instances[instanceArrayIndex].instanceDx;
-                definition.dy = definition.instances[instanceArrayIndex].instanceDy;
-                definition.dz = definition.instances[instanceArrayIndex].instanceDz;
-                definition.rx = definition.instances[instanceArrayIndex].instanceRx;
-                definition.ry = definition.instances[instanceArrayIndex].instanceRy;
-                definition.rz = definition.instances[instanceArrayIndex].instanceRz;
-                break;
-            }
-        }
-    }
-    
-    // Handle instance array management: ensure indices are correct and handle deletions
+    // Step 2: Handle instance array management BEFORE selection loading
+    // This ensures indices are correct before we try to load by index
     if (definition.multiCopyMode && @size(definition.instances) > 0)
     {
         const numInstances = @size(definition.instances);
@@ -672,6 +649,31 @@ export function triadTransformEditLogic(context is Context, id is Id, oldDefinit
             }
         }
         setFeatureHiddenParameters(context, id, hiddenIds);
+    }
+    
+    // Step 3: Handle instance selection change - load the selected instance's transform to the manipulator
+    // This happens AFTER index management to ensure we're working with correct indices
+    if (definition.multiCopyMode && 
+        oldDefinition.multiCopyMode && 
+        oldDefinition.instanceIndex != definition.instanceIndex &&
+        @size(definition.instances) > 0 &&
+        definition.instanceIndex >= 0)  // Only load if not selecting primary (which is -1)
+    {
+        // Find the array index for the selected instance
+        for (var instanceArrayIndex = 0; instanceArrayIndex < @size(definition.instances); instanceArrayIndex += 1)
+        {
+            if (definition.instances[instanceArrayIndex].index == definition.instanceIndex)
+            {
+                // Load this instance's transform into the main manipulator
+                definition.dx = definition.instances[instanceArrayIndex].instanceDx;
+                definition.dy = definition.instances[instanceArrayIndex].instanceDy;
+                definition.dz = definition.instances[instanceArrayIndex].instanceDz;
+                definition.rx = definition.instances[instanceArrayIndex].instanceRx;
+                definition.ry = definition.instances[instanceArrayIndex].instanceRy;
+                definition.rz = definition.instances[instanceArrayIndex].instanceRz;
+                break;
+            }
+        }
     }
     
     return definition;
