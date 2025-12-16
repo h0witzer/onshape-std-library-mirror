@@ -218,6 +218,16 @@ function createTweenedSurface(context is Context, id is Id,
     const expectedPaddedUSize = numUControlPoints + uDegree + 1;
     const expectedPaddedVSize = numVControlPoints + vDegree + 1;
     
+    // Debug logging to diagnose knot array format issues
+    println("DEBUG: uDegree=" ~ uDegree ~ ", vDegree=" ~ vDegree);
+    println("DEBUG: uControlPoints=" ~ uControlPoints ~ ", vControlPoints=" ~ vControlPoints);
+    println("DEBUG: firstSurface.uKnots size=" ~ size(firstSurface.uKnots));
+    println("DEBUG: firstSurface.vKnots size=" ~ size(firstSurface.vKnots));
+    println("DEBUG: expectedPaddedUSize=" ~ expectedPaddedUSize);
+    println("DEBUG: expectedPaddedVSize=" ~ expectedPaddedVSize);
+    println("DEBUG: Expected unpadded U size=" ~ (uControlPoints - uDegree + 1));
+    println("DEBUG: Expected unpadded V size=" ~ (vControlPoints - vDegree + 1));
+    
     var unpaddedUKnots = [];
     if (size(firstSurface.uKnots) == expectedPaddedUSize)
     {
@@ -226,11 +236,13 @@ function createTweenedSurface(context is Context, id is Id,
         {
             unpaddedUKnots = append(unpaddedUKnots, firstSurface.uKnots[i]);
         }
+        println("DEBUG: Unpadded U knots from padded format, result size=" ~ size(unpaddedUKnots));
     }
     else
     {
         // Knots might already be unpadded or in unexpected format, use as-is
         unpaddedUKnots = firstSurface.uKnots;
+        println("DEBUG: Using U knots as-is, size=" ~ size(unpaddedUKnots));
     }
     
     var unpaddedVKnots = [];
@@ -241,12 +253,17 @@ function createTweenedSurface(context is Context, id is Id,
         {
             unpaddedVKnots = append(unpaddedVKnots, firstSurface.vKnots[i]);
         }
+        println("DEBUG: Unpadded V knots from padded format, result size=" ~ size(unpaddedVKnots));
     }
     else
     {
         // Knots might already be unpadded or in unexpected format, use as-is
         unpaddedVKnots = firstSurface.vKnots;
+        println("DEBUG: Using V knots as-is, size=" ~ size(unpaddedVKnots));
     }
+    
+    println("DEBUG: Final unpaddedUKnots size=" ~ size(unpaddedUKnots));
+    println("DEBUG: Final unpaddedVKnots size=" ~ size(unpaddedVKnots));
     
     // Create the tweened B-spline surface
     const tweenedSurfaceDefinition = bSplineSurface({
