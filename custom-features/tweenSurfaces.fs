@@ -656,46 +656,67 @@ function insertKnotBoehm(controlPoints is array, knots is array, degree is numbe
     }
     
     // Compute new control points using the Boehm algorithm
+    // After knot insertion, we'll have numControlPoints + 1 control points
     var newControlPoints = [];
     
-    // Compute the range of affected control points
-    const firstAffected = max(0, knotSpanIndex - degree);
-    const lastAffected = min(numControlPoints - 1, knotSpanIndex);
+    // Determine the affected range: control points from (k-p+1) to k are affected
+    // where k is the knot span index and p is the degree
+    const k = knotSpanIndex;
+    const p = degree;
     
-    // Control points before the affected range remain unchanged
-    for (var i = 0; i <= firstAffected; i += 1)
+    // Control points from 0 to (k-p) remain unchanged
+    for (var i = 0; i <= k - p; i += 1)
     {
         newControlPoints = append(newControlPoints, controlPoints[i]);
     }
     
-    // Compute new control points in the affected range
-    for (var i = firstAffected + 1; i <= lastAffected; i += 1)
+    // Compute new control points from (k-p+1) to (k+1)
+    // These are the affected control points plus one new one
+    for (var i = k - p + 1; i <= k + 1; i += 1)
     {
-        // Ensure valid array access
-        if (i < 1 || i >= numControlPoints)
-        {
-            continue;
-        }
-        
-        // Compute alpha, handling the case of repeated knots
+        // Compute alpha for this new control point
         var alpha = 0.0;
-        const denominator = knots[i + degree] - knots[i];
+        
+        // For the new control point at position i, we blend old points at i-1 and i
+        // But we need to be careful about array bounds
+        const oldIndex = min(i, numControlPoints - 1);
+        
+        const denominator = knots[oldIndex + p] - knots[oldIndex];
         if (abs(denominator) > KNOT_TOLERANCE)
         {
-            alpha = (insertParam - knots[i]) / denominator;
+            alpha = (insertParam - knots[oldIndex]) / denominator;
         }
         else
         {
-            // For repeated knots, use the control point as-is (alpha = 1)
+            // For repeated knots, use alpha = 1 (keep the current point)
             alpha = 1.0;
         }
         
-        const newPoint = controlPoints[i - 1] * (1 - alpha) + controlPoints[i] * alpha;
-        newControlPoints = append(newControlPoints, newPoint);
+        // Blend between control points
+        if (i == 0)
+        {
+            // Edge case: first control point
+            newControlPoints = append(newControlPoints, controlPoints[0]);
+        }
+        else if (oldIndex == i && i < numControlPoints)
+        {
+            // Normal case: blend P[i-1] and P[i]
+            const newPoint = controlPoints[i - 1] * (1 - alpha) + controlPoints[i] * alpha;
+            newControlPoints = append(newControlPoints, newPoint);
+        }
+        else if (i == numControlPoints)
+        {
+            // Edge case: we're adding a point beyond the original array
+            // This happens when k+1 == numControlPoints
+            // Blend the last two points
+            const newPoint = controlPoints[numControlPoints - 2] * (1 - alpha) + controlPoints[numControlPoints - 1] * alpha;
+            newControlPoints = append(newControlPoints, newPoint);
+        }
     }
     
-    // Control points after the affected range remain unchanged
-    for (var i = lastAffected + 1; i < numControlPoints; i += 1)
+    // Control points from (k+1) onward in the original array remain unchanged
+    // but are shifted by 1 in the new array
+    for (var i = k + 1; i < numControlPoints; i += 1)
     {
         newControlPoints = append(newControlPoints, controlPoints[i]);
     }
