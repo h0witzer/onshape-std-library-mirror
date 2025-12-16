@@ -572,7 +572,7 @@ function refineCurveControlPointCount(context is Context, curve is map, targetCo
     }
     
     // Sort knots to insert
-    knotsToInsert = sort(knotsToInsert, function(a, b) { return a < b; });
+    knotsToInsert = sort(knotsToInsert, function(a, b) { return a - b; });
     
     // Insert knots one at a time using Boehm algorithm
     var currentControlPoints = curve.controlPoints;
