@@ -172,6 +172,7 @@ function addTriadManipulator(context is Context, id is Id,
  * Adds point manipulators for all placed instances in multi-copy mode.
  * Each point represents a placed copy that can be clicked to select/modify.
  * The first point (index 0) represents the current manipulator position (primary).
+ * Points are added in order by their index field to ensure correct mapping.
  * 
  * @param context {Context} : The context for the feature
  * @param id {Id} : The feature identifier
@@ -183,19 +184,49 @@ function addInstanceManipulators(context is Context, id is Id,
 {
     var instancePositions = [];
     
-    // First, add the current manipulator position (primary instance at index 0)
+    // First, add the current manipulator position (primary instance at point index 0)
     const currentRotation = composeRotation(baseCSys, definition.rx, definition.ry, definition.rz);
     const currentTransform = transform(currentRotation, vector(definition.dx, definition.dy, definition.dz));
     const currentWorldTransform = toWorld(baseCSys) * currentTransform;
     instancePositions = append(instancePositions, currentWorldTransform.translation);
     
-    // Then add all saved instances
-    for (var instance in definition.instances)
+    // Then add all saved instances, ordered by their index field
+    // Point manipulator index = instance.index + 1 (since 0 is reserved for primary)
+    const numInstances = @size(definition.instances);
+    if (numInstances > 0)
     {
-        const rotation = composeRotation(baseCSys, instance.instanceRx, instance.instanceRy, instance.instanceRz);
-        const instanceTransform = transform(rotation, vector(instance.instanceDx, instance.instanceDy, instance.instanceDz));
-        const worldTransform = toWorld(baseCSys) * instanceTransform;
-        instancePositions = append(instancePositions, worldTransform.translation);
+        // Find the maximum index to determine how many positions we need
+        var maxIndex = -1;
+        for (var instance in definition.instances)
+        {
+            if (instance.index > maxIndex)
+            {
+                maxIndex = instance.index;
+            }
+        }
+        
+        // Create array with positions for each index (may have gaps if instances were deleted)
+        for (var targetIndex = 0; targetIndex <= maxIndex; targetIndex += 1)
+        {
+            // Find the instance with this index
+            var foundInstance = undefined;
+            for (var instance in definition.instances)
+            {
+                if (instance.index == targetIndex)
+                {
+                    foundInstance = instance;
+                    break;
+                }
+            }
+            
+            if (foundInstance != undefined)
+            {
+                const rotation = composeRotation(baseCSys, foundInstance.instanceRx, foundInstance.instanceRy, foundInstance.instanceRz);
+                const instanceTransform = transform(rotation, vector(foundInstance.instanceDx, foundInstance.instanceDy, foundInstance.instanceDz));
+                const worldTransform = toWorld(baseCSys) * instanceTransform;
+                instancePositions = append(instancePositions, worldTransform.translation);
+            }
+        }
     }
     
     const pointManip = pointsManipulator({
@@ -310,16 +341,18 @@ export function triadTransformManipulatorChange(context is Context, definition i
     if (newManipulators[INSTANCE_MANIPULATOR] is map)
     {
         const clickedIndex = newManipulators[INSTANCE_MANIPULATOR].index;
-        // Index 0 is the current manipulator position (primary), indices 1+ are saved instances
+        // Point manipulator index 0 is the primary position
+        // Point manipulator index 1+ corresponds to instance.index (clickedIndex - 1)
         if (clickedIndex == 0)
         {
             // Clicking the primary position - no need to load anything, already in manipulator
             // Just ensure instanceIndex reflects this (use -1 to indicate primary)
             definition.instanceIndex = -1;
         }
-        else if (clickedIndex > 0 && clickedIndex <= @size(definition.instances))
+        else if (clickedIndex > 0)
         {
-            // Clicking a saved instance - set instanceIndex to the array index (clickedIndex - 1)
+            // Clicking a saved instance - instanceIndex should be (clickedIndex - 1)
+            // This maps point manipulator index directly to the instance's index field
             definition.instanceIndex = clickedIndex - 1;
         }
         return definition;
