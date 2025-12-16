@@ -650,15 +650,68 @@ function refineCurveControlPointCount(context is Context, curve is map, targetCo
     println("  Original first CP: " ~ curve.controlPoints[0]);
     println("  Original last CP: " ~ curve.controlPoints[size(curve.controlPoints) - 1]);
     
-    // Find distinct internal knots and spaces between them
+    // Find distinct internal knots by collecting unique values (ignoring multiplicity)
+    var distinctKnots = [];
+    var lastKnot = undefined;
+    for (var i = curve.degree; i < size(curve.knots) - curve.degree; i += 1)
+    {
+        if (lastKnot == undefined || abs(curve.knots[i] - lastKnot) > KNOT_TOLERANCE)
+        {
+            distinctKnots = append(distinctKnots, curve.knots[i]);
+            lastKnot = curve.knots[i];
+        }
+    }
+    
+    println("  Found " ~ size(distinctKnots) ~ " distinct internal knots");
+    
+    // Distribute new knots proportionally across the existing knot spans
     var knotsToInsert = [];
     
-    // Distribute new knots uniformly across the parameter domain
-    for (var i = 1; i <= numToInsert; i += 1)
+    if (size(distinctKnots) <= 1)
     {
-        const fraction = i / (numToInsert + 1);
-        const newKnot = startParam + (endParam - startParam) * fraction;
-        knotsToInsert = append(knotsToInsert, newKnot);
+        // Degenerate case: only one span, distribute uniformly
+        for (var i = 1; i <= numToInsert; i += 1)
+        {
+            const fraction = i / (numToInsert + 1);
+            const newKnot = startParam + (endParam - startParam) * fraction;
+            knotsToInsert = append(knotsToInsert, newKnot);
+        }
+    }
+    else
+    {
+        // Calculate how many knots to insert in each span proportionally
+        const totalSpanLength = endParam - startParam;
+        var remainingKnots = numToInsert;
+        
+        for (var spanIdx = 0; spanIdx < size(distinctKnots) - 1 && remainingKnots > 0; spanIdx += 1)
+        {
+            const spanStart = distinctKnots[spanIdx];
+            const spanEnd = distinctKnots[spanIdx + 1];
+            const spanLength = spanEnd - spanStart;
+            const spanFraction = spanLength / totalSpanLength;
+            
+            // Number of knots to insert in this span (proportional to span length)
+            var knotsInSpan = round(numToInsert * spanFraction);
+            if (spanIdx == size(distinctKnots) - 2)
+            {
+                // Last span gets all remaining knots to ensure we insert exactly numToInsert
+                knotsInSpan = remainingKnots;
+            }
+            else
+            {
+                knotsInSpan = min(knotsInSpan, remainingKnots);
+            }
+            
+            // Distribute knots uniformly within this span
+            for (var i = 1; i <= knotsInSpan; i += 1)
+            {
+                const fraction = i / (knotsInSpan + 1);
+                const newKnot = spanStart + spanLength * fraction;
+                knotsToInsert = append(knotsToInsert, newKnot);
+            }
+            
+            remainingKnots -= knotsInSpan;
+        }
     }
     
     // Sort knots to insert
