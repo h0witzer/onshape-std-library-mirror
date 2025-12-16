@@ -644,6 +644,10 @@ function refineCurveControlPointCount(context is Context, curve is map, targetCo
     const startParam = curve.knots[curve.degree];
     const endParam = curve.knots[size(curve.knots) - curve.degree - 1];
     
+    println("DEBUG refineCurveControlPointCount: Starting CP count=" ~ size(curve.controlPoints) ~ ", target=" ~ targetCount);
+    println("  startParam=" ~ startParam ~ ", endParam=" ~ endParam);
+    println("  Need to insert " ~ numToInsert ~ " knots");
+    
     // Find distinct internal knots and spaces between them
     var knotsToInsert = [];
     
@@ -664,10 +668,15 @@ function refineCurveControlPointCount(context is Context, curve is map, targetCo
     
     for (var insertIdx = 0; insertIdx < size(knotsToInsert); insertIdx += 1)
     {
+        println("  Inserting knot " ~ (insertIdx + 1) ~ "/" ~ numToInsert ~ " at param=" ~ knotsToInsert[insertIdx]);
+        println("    Before: " ~ size(currentControlPoints) ~ " CPs, " ~ size(currentKnots) ~ " knots");
         const result = insertKnotBoehm(currentControlPoints, currentKnots, curve.degree, knotsToInsert[insertIdx]);
         currentControlPoints = result.controlPoints;
         currentKnots = result.knots;
+        println("    After:  " ~ size(currentControlPoints) ~ " CPs, " ~ size(currentKnots) ~ " knots");
     }
+    
+    println("  Final result: " ~ size(currentControlPoints) ~ " CPs");
     
     return {
         "controlPoints" : currentControlPoints,
