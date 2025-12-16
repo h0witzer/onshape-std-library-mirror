@@ -131,6 +131,9 @@ predicate triadTransformPredicate(definition is map)
             {
                 annotation { "Name" : "Reference entities", "Filter" : EntityType.BODY || EntityType.FACE || EntityType.EDGE }
                 definition.referenceEntities is Query;
+                
+                annotation { "Name" : "Align to surface normal", "Default" : false }
+                definition.alignToSurfaceNormal is boolean;
             }
         }
     }
@@ -319,7 +322,8 @@ export const triadTransform = defineFeature(function(context is Context, id is I
             "useAdvancedPlacement" : false,
             "referenceCoordSystem" : qNothing(),
             "enableGeometrySnapping" : false,
-            "referenceEntities" : qNothing()
+            "referenceEntities" : qNothing(),
+            "alignToSurfaceNormal" : false
         });
 
 /**
@@ -399,6 +403,46 @@ export function triadTransformManipulatorChange(context is Context, definition i
                 
                 // Update the translation to snap to reference, preserving rotation
                 triadTransform = transform(triadTransform.linear, localSnappedPoint);
+                
+                // If surface normal alignment is enabled, also align rotation to surface normal
+                if (definition.alignToSurfaceNormal)
+                {
+                    // Get the entity that was snapped to
+                    const entity = snapTargets->qNthElement(distanceResult.sides[1].index);
+                    const param = distanceResult.sides[1].parameter;
+                    
+                    // Determine the target direction (surface normal or edge tangent)
+                    var targetLine;
+                    if (param is Vector)
+                    {
+                        // It's a face - get the tangent plane and use its normal
+                        const tPlane = evFaceTangentPlane(context, { "face" : entity, "parameter" : param });
+                        targetLine = line(tPlane.origin, tPlane.normal);
+                    }
+                    else
+                    {
+                        // It's an edge - get the tangent line
+                        targetLine = evEdgeTangentLine(context, { "edge" : entity, "parameter" : param });
+                    }
+                    
+                    // Create a coordinate system from the current transform in world space
+                    const currentWorldTransform = toWorld(baseCSys) * triadTransform;
+                    const currentWorldCSys = coordSystem(currentWorldTransform.translation, 
+                                                         currentWorldTransform.linear * vector(1, 0, 0),
+                                                         currentWorldTransform.linear * vector(0, 0, 1));
+                    
+                    // Create the source line (current Z axis in world coordinates)
+                    const sourceLine = line(currentWorldCSys.origin, currentWorldCSys.zAxis);
+                    
+                    // Calculate the rotation that aligns the source line to the target line
+                    const alignmentTransform = transform(sourceLine, targetLine);
+                    
+                    // Apply the alignment to the current world coordinate system
+                    const alignedWorldCSys = alignmentTransform * currentWorldCSys;
+                    
+                    // Convert back to local coordinates relative to baseCSys
+                    triadTransform = fromWorld(baseCSys) * toWorld(alignedWorldCSys);
+                }
             }
         }
         
