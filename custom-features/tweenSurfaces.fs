@@ -594,6 +594,9 @@ function refineCurveControlPointCount(context is Context, curve is map, targetCo
 }
 
 
+// Tolerance for comparing knot parameter values
+const KNOT_TOLERANCE = 1e-10;
+
 /**
  * Inserts a single knot into a B-spline curve using the Boehm algorithm.
  * 
@@ -615,9 +618,20 @@ function insertKnotBoehm(controlPoints is array, knots is array, degree is numbe
 {
     const numControlPoints = size(controlPoints);
     
+    // Validate inputs
+    if (numControlPoints < degree + 1)
+    {
+        throw "Invalid B-spline: not enough control points for degree";
+    }
+    if (size(knots) != numControlPoints + degree + 1)
+    {
+        throw "Invalid B-spline: knot vector size doesn't match control point count";
+    }
+    
     // Find the knot span index where insertParam falls
+    // Prefer the rightmost span when insertParam equals a knot value
     var knotSpanIndex = -1;
-    for (var i = degree; i < size(knots) - degree - 1; i += 1)
+    for (var i = size(knots) - degree - 2; i >= degree; i -= 1)
     {
         if (insertParam >= knots[i] && insertParam <= knots[i + 1])
         {
@@ -626,28 +640,45 @@ function insertKnotBoehm(controlPoints is array, knots is array, degree is numbe
         }
     }
     
-    // Handle edge case: if not found, use the last valid span
+    // Handle edge case: if not found, clamp to valid range
     if (knotSpanIndex == -1)
     {
-        knotSpanIndex = size(knots) - degree - 2;
+        if (insertParam < knots[degree])
+        {
+            knotSpanIndex = degree;
+        }
+        else
+        {
+            knotSpanIndex = max(degree, size(knots) - degree - 2);
+        }
     }
     
     // Compute new control points using the Boehm algorithm
     var newControlPoints = [];
     
+    // Compute the range of affected control points
+    const firstAffected = max(0, knotSpanIndex - degree);
+    const lastAffected = min(numControlPoints - 1, knotSpanIndex);
+    
     // Control points before the affected range remain unchanged
-    for (var i = 0; i <= knotSpanIndex - degree; i += 1)
+    for (var i = 0; i <= firstAffected; i += 1)
     {
         newControlPoints = append(newControlPoints, controlPoints[i]);
     }
     
     // Compute new control points in the affected range
-    for (var i = knotSpanIndex - degree + 1; i <= knotSpanIndex; i += 1)
+    for (var i = firstAffected + 1; i <= lastAffected; i += 1)
     {
+        // Ensure valid array access
+        if (i < 1 || i >= numControlPoints)
+        {
+            continue;
+        }
+        
         // Compute alpha, handling the case of repeated knots
         var alpha = 0.0;
         const denominator = knots[i + degree] - knots[i];
-        if (abs(denominator) > 1e-10)
+        if (abs(denominator) > KNOT_TOLERANCE)
         {
             alpha = (insertParam - knots[i]) / denominator;
         }
@@ -662,7 +693,7 @@ function insertKnotBoehm(controlPoints is array, knots is array, degree is numbe
     }
     
     // Control points after the affected range remain unchanged
-    for (var i = knotSpanIndex + 1; i < numControlPoints; i += 1)
+    for (var i = lastAffected + 1; i < numControlPoints; i += 1)
     {
         newControlPoints = append(newControlPoints, controlPoints[i]);
     }
