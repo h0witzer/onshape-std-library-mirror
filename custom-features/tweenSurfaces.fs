@@ -37,6 +37,8 @@ import(path : "onshape/std/error.fs", version : "2837.0");
 import(path : "onshape/std/coordSystem.fs", version : "2837.0");
 import(path : "onshape/std/containers.fs", version : "2837.0");
 import(path : "onshape/std/splineUtils.fs", version : "2837.0");
+import(path : "onshape/std/nurbsUtils.fs", version : "2837.0");
+import(path : "onshape/std/math.fs", version : "2837.0");
 
 
 export const SURFACE_TWEEN_FRACTION_BOUNDS = { (unitless) : [0, 0.5, 1] } as RealBoundSpec;
@@ -119,7 +121,7 @@ function createTweenedSurface(context is Context, id is Id,
         const targetUDegree = max(firstSurface.uDegree, secondSurface.uDegree);
         const targetVDegree = max(firstSurface.vDegree, secondSurface.vDegree);
         
-        // Check if either surface has multi-segment B-splines that would require proper elevation
+        // Check if either surface has multi-segment B-splines
         const firstIsMultiSegmentU = !isSingleSegmentBezierCurve(firstSurface.uDegree, size(firstSurface.controlPoints));
         const firstIsMultiSegmentV = !isSingleSegmentBezierCurve(firstSurface.vDegree, size(firstSurface.controlPoints[0]));
         const secondIsMultiSegmentU = !isSingleSegmentBezierCurve(secondSurface.uDegree, size(secondSurface.controlPoints));
@@ -128,13 +130,12 @@ function createTweenedSurface(context is Context, id is Id,
         if ((firstIsMultiSegmentU || firstIsMultiSegmentV || secondIsMultiSegmentU || secondIsMultiSegmentV) &&
             (firstSurface.uDegree != secondSurface.uDegree || firstSurface.vDegree != secondSurface.vDegree))
         {
-            println("WARNING: Surfaces have different degrees and at least one is a multi-segment B-spline.");
-            println("         Degree elevation may not preserve surface geometry correctly.");
-            println("         First surface: uDegree=" ~ firstSurface.uDegree ~ ", vDegree=" ~ firstSurface.vDegree ~
+            println("INFO: Surfaces have different degrees and at least one is a multi-segment B-spline.");
+            println("      Using proper B-spline degree elevation to preserve geometry.");
+            println("      First surface: uDegree=" ~ firstSurface.uDegree ~ ", vDegree=" ~ firstSurface.vDegree ~
                     ", controlPoints=" ~ size(firstSurface.controlPoints) ~ "x" ~ size(firstSurface.controlPoints[0]));
-            println("         Second surface: uDegree=" ~ secondSurface.uDegree ~ ", vDegree=" ~ secondSurface.vDegree ~
+            println("      Second surface: uDegree=" ~ secondSurface.uDegree ~ ", vDegree=" ~ secondSurface.vDegree ~
                     ", controlPoints=" ~ size(secondSurface.controlPoints) ~ "x" ~ size(secondSurface.controlPoints[0]));
-            println("         For best results, use surfaces with matching degrees or single-segment surfaces.");
         }
         
         if (firstSurface.uDegree < targetUDegree || firstSurface.vDegree < targetVDegree)
@@ -421,24 +422,23 @@ function isSingleSegmentBezierCurve(degree is number, numControlPoints is number
 /**
  * Elevates the degree of a non-rational B-spline surface in U and/or V directions.
  * 
- * This uses degree elevation for single-segment B-spline surfaces (Bezier patches).
- * For tensor product B-spline surfaces, degree elevation is performed independently 
- * in each parametric direction by treating each isoparametric curve as a separate 
- * Bezier curve and elevating its degree.
+ * This implements proper B-spline degree elevation that preserves surface geometry exactly.
+ * For tensor product B-spline surfaces, degree elevation is performed independently in each
+ * parametric direction by processing each isoparametric curve:
  * 
- * LIMITATION: This implementation only works correctly for single-segment B-splines
- * (Bezier patches). For multi-segment B-splines, proper B-spline degree elevation
- * algorithms should be used instead (subdivision into Bezier segments, elevate each,
- * then recombine with proper knot vector handling).
+ * - For single-segment B-splines (Bezier curves): Uses fast Bezier degree elevation
+ * - For multi-segment B-splines: Subdivides into Bezier segments, elevates each segment,
+ *   then recombines with proper knot vector handling
+ * 
+ * The algorithm automatically detects whether each isoparametric curve is single-segment
+ * or multi-segment and applies the appropriate elevation method.
  * 
  * Note: This implementation currently only supports non-rational surfaces.
- * For general B-spline surfaces with non-uniform knots, the knot vectors are
- * regenerated as uniform after elevation.
  * 
  * @param surface {map} : The B-spline surface to elevate (must be non-rational)
- * @param targetUDegree {number} : The desired degree in U direction
- * @param targetVDegree {number} : The desired degree in V direction
- * @returns {map} : The surface with elevated degrees
+ * @param targetUDegree {number} : The desired degree in U direction (must be >= current U degree)
+ * @param targetVDegree {number} : The desired degree in V direction (must be >= current V degree)
+ * @returns {map} : The surface with elevated degrees, preserving geometry exactly
  */
 function elevateSurfaceDegree(surface is map, targetUDegree is number, targetVDegree is number)
 {
@@ -455,6 +455,8 @@ function elevateSurfaceDegree(surface is map, targetUDegree is number, targetVDe
         const numVPoints = size(controlPoints[0]);
         var newControlPoints = [];
         
+        var newUKnots = undefined;
+        
         for (var vIndex = 0; vIndex < numVPoints; vIndex += 1)
         {
             // Extract column of control points
@@ -464,9 +466,25 @@ function elevateSurfaceDegree(surface is map, targetUDegree is number, targetVDe
                 columnPoints = append(columnPoints, controlPoints[uIndex][vIndex]);
             }
             
-            // Elevate this column curve using Bezier degree elevation
-            // NOTE: This only works correctly for single-segment B-splines (Bezier curves)
-            const elevatedPoints = elevateBezierDegree(columnPoints, targetUDegree);
+            // Elevate this column curve using proper B-spline degree elevation
+            // This handles both single-segment (Bezier) and multi-segment B-splines correctly
+            var elevatedPoints;
+            if (isSingleSegmentBezierCurve(uDegree, size(columnPoints)))
+            {
+                // For single-segment B-splines (Bezier curves), use fast Bezier elevation
+                elevatedPoints = elevateBezierDegree(columnPoints, targetUDegree);
+            }
+            else
+            {
+                // For multi-segment B-splines, use proper B-spline elevation
+                const elevationResult = elevateBSplineCurve(columnPoints, uKnots, uDegree, targetUDegree);
+                elevatedPoints = elevationResult.controlPoints;
+                // Update knot vector from first column (all columns should produce same knots)
+                if (vIndex == 0)
+                {
+                    newUKnots = elevationResult.knots;
+                }
+            }
             
             // Store elevated control points back (transpose)
             for (var uIndex = 0; uIndex < size(elevatedPoints); uIndex += 1)
@@ -481,8 +499,16 @@ function elevateSurfaceDegree(surface is map, targetUDegree is number, targetVDe
         
         controlPoints = newControlPoints;
         uDegree = targetUDegree;
-        // Update U knot vector - create new uniform knot vector for elevated surface
-        uKnots = makeUniformKnotVector(targetUDegree, size(controlPoints));
+        // Update U knot vector
+        if (newUKnots != undefined)
+        {
+            uKnots = knotArray(newUKnots);
+        }
+        else
+        {
+            // For Bezier curves, create new uniform knot vector
+            uKnots = makeUniformKnotVector(targetUDegree, size(controlPoints));
+        }
     }
     
     // Elevate V degree if needed (process each U-row as an independent curve)
@@ -490,22 +516,48 @@ function elevateSurfaceDegree(surface is map, targetUDegree is number, targetVDe
     {
         var newControlPoints = [];
         
+        var newVKnots = undefined;
+        
         for (var uIndex = 0; uIndex < size(controlPoints); uIndex += 1)
         {
             // Extract row of control points
             const rowPoints = controlPoints[uIndex];
             
-            // Elevate this row curve using Bezier degree elevation
-            // NOTE: This only works correctly for single-segment B-splines (Bezier curves)
-            const elevatedPoints = elevateBezierDegree(rowPoints, targetVDegree);
+            // Elevate this row curve using proper B-spline degree elevation
+            // This handles both single-segment (Bezier) and multi-segment B-splines correctly
+            var elevatedPoints;
+            if (isSingleSegmentBezierCurve(vDegree, size(rowPoints)))
+            {
+                // For single-segment B-splines (Bezier curves), use fast Bezier elevation
+                elevatedPoints = elevateBezierDegree(rowPoints, targetVDegree);
+            }
+            else
+            {
+                // For multi-segment B-splines, use proper B-spline elevation
+                const elevationResult = elevateBSplineCurve(rowPoints, vKnots, vDegree, targetVDegree);
+                elevatedPoints = elevationResult.controlPoints;
+                // Update knot vector from first row (all rows should produce same knots)
+                if (uIndex == 0)
+                {
+                    newVKnots = elevationResult.knots;
+                }
+            }
             
             newControlPoints = append(newControlPoints, elevatedPoints);
         }
         
         controlPoints = newControlPoints;
         vDegree = targetVDegree;
-        // Update V knot vector - create new uniform knot vector for elevated surface
-        vKnots = makeUniformKnotVector(targetVDegree, size(controlPoints[0]));
+        // Update V knot vector
+        if (newVKnots != undefined)
+        {
+            vKnots = knotArray(newVKnots);
+        }
+        else
+        {
+            // For Bezier curves, create new uniform knot vector
+            vKnots = makeUniformKnotVector(targetVDegree, size(controlPoints[0]));
+        }
     }
     
     return {
@@ -906,5 +958,198 @@ function insertKnotBoehm(controlPoints is array, knots is array, degree is numbe
     return {
         "controlPoints" : newControlPoints,
         "knots" : knotArray(newKnots)
+    };
+}
+
+
+/**
+ * Subdivides a B-spline curve into its constituent Bezier segments.
+ * 
+ * This function implements the subdivision algorithm that splits a B-spline curve
+ * at each distinct internal knot value, producing an array of Bezier curves that
+ * together represent the original B-spline.
+ * 
+ * Adapted from editCurve.fs subdivideIntoBeziers function.
+ * 
+ * @param controlPoints {array} : Control points of the B-spline curve
+ * @param knots {array} : Knot vector (clamped format with multiplicity)
+ * @param curveDegree {number} : Degree of the B-spline
+ * @returns {array} : Array of Bezier control point arrays
+ */
+function subdivideIntoBeziers(controlPoints is array, knots is array, curveDegree is number) returns array
+{
+    var numberOfSplits = 0;
+    for (var i = curveDegree + 1; i < size(knots) - curveDegree - 1; i += 1)
+    {
+        if (knots[i] != knots[i + 1])
+        {
+            numberOfSplits += 1;
+        }
+    }
+    
+    var currentKnots = knots;
+    var currentPoints = controlPoints;
+    var bezierSegments = makeArray(numberOfSplits + 1);
+    
+    for (var i = 0; i < numberOfSplits; i += 1)
+    {
+        const splitResult = splitAtFirstKnot(currentPoints, currentKnots, curveDegree);
+        bezierSegments[i] = splitResult.bezier;
+        currentPoints = splitResult.bspline;
+        currentKnots = splitResult.knots;
+    }
+    bezierSegments[numberOfSplits] = currentPoints;
+    
+    return bezierSegments;
+}
+
+
+/**
+ * Splits a B-spline curve at its first internal knot using DeBoor's algorithm.
+ * 
+ * Returns the first Bezier segment and the remaining B-spline curve.
+ * This implements segment subdivision that gives the first Bezier piece and
+ * updates the B-spline to represent the remaining segments.
+ * 
+ * Adapted from editCurve.fs splitAtFirstKnot function.
+ * 
+ * @param controlPoints {array} : Control points of the B-spline
+ * @param knots {array} : Knot vector
+ * @param curveDegree {number} : Degree of the curve
+ * @returns {map} : Map with "bezier" (first Bezier segment control points),
+ *                  "bspline" (remaining B-spline control points), and
+ *                  "knots" (remaining knot vector)
+ */
+function splitAtFirstKnot(controlPoints is array, knots is array, curveDegree is number) returns map
+{
+    if (size(controlPoints) == curveDegree + 1)
+    {
+        // This is already a Bezier curve, no need to split
+        return { "bezier" : controlPoints, "bspline" : [], "knots" : [] };
+    }
+    
+    // First internal knot index is degree + 1
+    var knotIndex = curveDegree + 1;
+    // Value of first internal knot
+    const knotValue = knots[knotIndex];
+    // Multiplicity of the knot
+    var knotMultiplicity = 1;
+    for (var i = knotIndex + 1; i < size(knots); i += 1)
+    {
+        if (knots[i] != knots[knotIndex])
+        {
+            break;
+        }
+        knotMultiplicity += 1;
+        knotIndex += 1;
+    }
+    
+    // Apply DeBoor's algorithm
+    const h = curveDegree - knotMultiplicity;
+    var deBoorResult = makeArray(h + 1);
+    deBoorResult[0] = subArray(controlPoints, knotIndex - curveDegree, knotIndex - knotMultiplicity + 1);
+    
+    for (var r = 1; r <= h; r += 1)
+    {
+        deBoorResult[r] = makeArray(curveDegree - knotMultiplicity - r + 1);
+        for (var i = 0; i <= curveDegree - knotMultiplicity - r; i += 1)
+        {
+            const currentKnotIndex = i + knotIndex - curveDegree + r;
+            const alpha = (knotValue - knots[currentKnotIndex]) / 
+                         (knots[currentKnotIndex + curveDegree - r + 1] - knots[currentKnotIndex]);
+            deBoorResult[r][i] = (1 - alpha) * deBoorResult[r - 1][i] + alpha * deBoorResult[r - 1][i + 1];
+        }
+    }
+    
+    // Extract Bezier control points and remaining B-spline control points
+    const bezierPointsBeforeDeBoor = subArray(controlPoints, 0, knotIndex - curveDegree);
+    const bsplinePointsAfterDeBoor = subArray(controlPoints, knotIndex - knotMultiplicity + 1, size(controlPoints));
+    
+    var bezierPointsFromDeBoor = makeArray(h + 1);
+    var bsplinePointsFromDeBoor = makeArray(h + 1);
+    for (var r = 0; r <= h; r += 1)
+    {
+        bezierPointsFromDeBoor[r] = deBoorResult[r][0];
+        bsplinePointsFromDeBoor[r] = deBoorResult[h - r][size(deBoorResult[h - r]) - 1];
+    }
+    
+    const bezierControlPoints = concatenateArrays([bezierPointsBeforeDeBoor, bezierPointsFromDeBoor]);
+    const bsplineControlPoints = concatenateArrays([bsplinePointsFromDeBoor, bsplinePointsAfterDeBoor]);
+    const newKnots = concatenateArrays([makeArray(curveDegree + 1, knotValue), 
+                                        subArray(knots, knotIndex + 1, size(knots))]);
+    
+    return {
+        "bezier" : bezierControlPoints,
+        "bspline" : bsplineControlPoints,
+        "knots" : newKnots
+    };
+}
+
+
+/**
+ * Elevates the degree of a general B-spline curve (including multi-segment curves).
+ * 
+ * This properly handles multi-segment B-splines by:
+ * 1. Subdividing the B-spline into Bezier segments at each internal knot
+ * 2. Elevating each Bezier segment independently using elevateBezierDegree
+ * 3. Recombining the elevated segments with proper knot vector handling
+ * 4. Removing unnecessary knots to simplify the result
+ * 
+ * This is the correct approach for B-spline degree elevation that preserves
+ * geometry exactly.
+ * 
+ * Adapted from editCurve.fs elevateBSpline function.
+ * 
+ * @param controlPoints {array} : Original B-spline control points
+ * @param knots {array} : Original knot vector
+ * @param originalDegree {number} : Current degree of the B-spline
+ * @param newDegree {number} : Target degree for elevation
+ * @returns {map} : Map with "controlPoints" and "knots" for the elevated B-spline
+ */
+function elevateBSplineCurve(controlPoints is array, knots is array, originalDegree is number, newDegree is number) returns map
+{
+    // First subdivide the B-spline into Bezier curves
+    var bezierSegments = subdivideIntoBeziers(controlPoints, knots, originalDegree);
+    
+    // Elevate each Bezier curve separately
+    for (var i = 0; i < size(bezierSegments); i += 1)
+    {
+        bezierSegments[i] = elevateBezierDegree(bezierSegments[i], newDegree);
+    }
+    
+    // Combine the Bezier curves back into one B-spline
+    var elevatedControlPoints = [bezierSegments[0][0]];
+    for (var i = 0; i < size(bezierSegments); i += 1)
+    {
+        for (var j = 1; j < size(bezierSegments[i]); j += 1)
+        {
+            elevatedControlPoints = append(elevatedControlPoints, bezierSegments[i][j]);
+        }
+    }
+    
+    // Create the corresponding knot vector with added multiplicity
+    const lastKnot = knots[size(knots) - originalDegree - 1];
+    var i = originalDegree + 1;
+    var currentKnot = knots[i];
+    var elevatedKnots = makeArray(newDegree + 1, knots[i - 1]);
+    
+    while (currentKnot != lastKnot)
+    {
+        elevatedKnots = concatenateArrays([elevatedKnots, makeArray(newDegree, currentKnot)]);
+        // Skip identical knots
+        while (knots[i] == currentKnot)
+        {
+            i += 1;
+        }
+        currentKnot = knots[i];
+    }
+    elevatedKnots = concatenateArrays([elevatedKnots, makeArray(newDegree + 1, lastKnot)]);
+    
+    // Simplify by removing unnecessary knots
+    const simplified = removeKnots(elevatedControlPoints, elevatedKnots, newDegree);
+    
+    return {
+        "controlPoints" : simplified.points,
+        "knots" : simplified.knots
     };
 }
