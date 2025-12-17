@@ -310,7 +310,8 @@ export function splitSketchEditLogic(context is Context, id is Id,
     if (clickedButton == "selectAll")
     {
         println(">>> SELECT ALL button clicked");
-        const bodies = getSplitBodies(context, definition.partsToSplit);
+        // Use oldDefinition.partsToSplit which contains the state from last successful regeneration
+        const bodies = getSplitBodies(context, oldDefinition.partsToSplit);
         println("Evaluated bodies count: " ~ size(bodies));
         
         var newKeep = [];
@@ -328,14 +329,15 @@ export function splitSketchEditLogic(context is Context, id is Id,
     if (clickedButton == "invertSelection")
     {
         println(">>> INVERT SELECTION button clicked");
-        const bodies = getSplitBodies(context, definition.partsToSplit);
+        // Use oldDefinition.partsToSplit which contains the state from last successful regeneration
+        const bodies = getSplitBodies(context, oldDefinition.partsToSplit);
         println("Evaluated bodies count: " ~ size(bodies));
         
         var newKeep = [];
         var index = 0;
         for (var body in bodies)
         {
-            const isInGroup = isInKeepGroup(definition, index);
+            const isInGroup = isInKeepGroup(oldDefinition, index);
             println("  Index " ~ index ~ " isInKeepGroup: " ~ isInGroup);
             if (!isInGroup)
             {
