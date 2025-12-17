@@ -141,23 +141,14 @@ export const splitSketch= defineFeature(function(context is Context, id is Id, d
         }
         
         // Now get all resulting bodies after splits for interactive selection
-        // Create robust queries for each body to handle ID stability issues after splits
-        const robustBodiesQueries = makeRobustQueriesBatched(context, definition.partsToSplit);
+        // Create a robust query for all bodies to handle ID stability issues after splits
+        const robustBodiesQuery = makeRobustQuery(context, definition.partsToSplit);
         
-        // Cache the robust queries array for use in edit logic
-        const bodiesVariableName = toAttributeId(id) ~ "-splitBodiesQueries";
-        setVariable(context, bodiesVariableName, robustBodiesQueries);
+        // Cache the robust query for use in edit logic
+        const bodiesQueryVarName = toAttributeId(id) ~ "-splitBodiesQuery";
+        setVariable(context, bodiesQueryVarName, robustBodiesQuery);
         
-        // Evaluate to get all bodies for manipulator placement
-        var allBodies = [];
-        for (var robustQuery in robustBodiesQueries)
-        {
-            const bodies = evaluateQuery(context, robustQuery);
-            if (size(bodies) > 0)
-            {
-                allBodies = append(allBodies, bodies[0]);
-            }
-        }
+        const allBodies = evaluateQuery(context, robustBodiesQuery);
         
         // Create manipulator points at each body's centroid and draw debug points
         var handlePoints = [];
@@ -239,27 +230,17 @@ export const splitSketch= defineFeature(function(context is Context, id is Id, d
         index : -1
     });
 
-// Helper function: gets the bodies as an array, using cached robust queries from last regeneration if available
-function getSplitBodies(context is Context, id is Id, partsToSplit is Query) returns array
+// Helper function: gets the bodies query, using cached robust query from last regeneration if available
+function getSplitBodiesQuery(context is Context, id is Id, partsToSplit is Query) returns Query
 {
-    const varName = toAttributeId(id) ~ "-splitBodiesQueries";
+    const varName = toAttributeId(id) ~ "-splitBodiesQuery";
     var cached = try(getVariable(context, varName));
     if (cached != undefined)
     {
-        // Evaluate each robust query to get the bodies
-        var bodies = [];
-        for (var robustQuery in (cached as array))
-        {
-            const result = evaluateQuery(context, robustQuery);
-            if (size(result) > 0)
-            {
-                bodies = append(bodies, result[0]);
-            }
-        }
-        return bodies;
+        return cached as Query;
     }
-    // If not cached yet, evaluate the current query (this happens on first creation)
-    return evaluateQuery(context, partsToSplit);
+    // If not cached yet, create and return a robust query (this happens on first creation)
+    return makeRobustQuery(context, partsToSplit);
 }
 
 // Helper function: generates a random unit vector using pseudoRandomNumber for a given seed
@@ -327,10 +308,11 @@ export function splitSketchEditLogic(context is Context, id is Id,
 {
     if (clickedButton == "selectAll")
     {
-        const allBodies = getSplitBodies(context, id, definition.partsToSplit);
+        const bodiesQuery = getSplitBodiesQuery(context, id, definition.partsToSplit);
+        const bodies = evaluateQuery(context, bodiesQuery);
         var newKeep = [];
         var index = 0;
-        for (var body in allBodies)
+        for (var body in bodies)
         {
             newKeep = append(newKeep, { "keepIndex" : index });
             index += 1;
@@ -339,10 +321,11 @@ export function splitSketchEditLogic(context is Context, id is Id,
     }
     if (clickedButton == "invertSelection")
     {
-        const allBodies = getSplitBodies(context, id, definition.partsToSplit);
+        const bodiesQuery = getSplitBodiesQuery(context, id, definition.partsToSplit);
+        const bodies = evaluateQuery(context, bodiesQuery);
         var newKeep = [];
         var index = 0;
-        for (var body in allBodies)
+        for (var body in bodies)
         {
             if (!isInKeepGroup(definition, index))
             {
