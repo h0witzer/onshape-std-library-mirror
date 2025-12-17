@@ -568,6 +568,8 @@ function makeUniformKnotVector(degree is number, numControlPoints is number)
  */
 function refineControlPointCount(context is Context, surface is map, targetUCount is number, targetVCount is number)
 {
+    println("DEBUG refineControlPointCount: Starting with " ~ size(surface.controlPoints) ~ "x" ~ size(surface.controlPoints[0]) ~ " CPs, targeting " ~ targetUCount ~ "x" ~ targetVCount);
+    
     // For now, refinement of rational surfaces is not supported
     if (surface.isRational)
     {
@@ -672,6 +674,8 @@ function refineControlPointCount(context is Context, surface is map, targetUCoun
             vKnots = newVKnots;
         }
     }
+    
+    println("DEBUG refineControlPointCount: Finished with " ~ size(controlPoints) ~ "x" ~ size(controlPoints[0]) ~ " CPs");
     
     return {
         "uDegree" : uDegree,
