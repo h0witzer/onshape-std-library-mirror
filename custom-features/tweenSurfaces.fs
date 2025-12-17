@@ -285,16 +285,9 @@ function createTweenedSurface(context is Context, id is Id,
     println("DEBUG: Final unpaddedUKnots size=" ~ size(unpaddedUKnots));
     println("DEBUG: Final unpaddedVKnots size=" ~ size(unpaddedVKnots));
     
-    // Debug: Print first and last few knot values to check they're valid (only if we have enough)
-    if (size(unpaddedUKnots) >= 5)
-    {
-        println("DEBUG: First 5 U knots: " ~ unpaddedUKnots[0] ~ ", " ~ unpaddedUKnots[1] ~ ", " ~ unpaddedUKnots[2] ~ ", " ~ unpaddedUKnots[3] ~ ", " ~ unpaddedUKnots[4]);
-        println("DEBUG: Last 5 U knots: " ~ unpaddedUKnots[size(unpaddedUKnots)-5] ~ ", " ~ unpaddedUKnots[size(unpaddedUKnots)-4] ~ ", " ~ unpaddedUKnots[size(unpaddedUKnots)-3] ~ ", " ~ unpaddedUKnots[size(unpaddedUKnots)-2] ~ ", " ~ unpaddedUKnots[size(unpaddedUKnots)-1]);
-    }
-    else if (size(unpaddedUKnots) > 0)
-    {
-        println("DEBUG: U knots: " ~ unpaddedUKnots);
-    }
+    // Debug: Print first and last few knot values to check they're valid
+    println("DEBUG: First 5 U knots: " ~ unpaddedUKnots[0] ~ ", " ~ unpaddedUKnots[1] ~ ", " ~ unpaddedUKnots[2] ~ ", " ~ unpaddedUKnots[3] ~ ", " ~ unpaddedUKnots[4]);
+    println("DEBUG: Last 5 U knots: " ~ unpaddedUKnots[size(unpaddedUKnots)-5] ~ ", " ~ unpaddedUKnots[size(unpaddedUKnots)-4] ~ ", " ~ unpaddedUKnots[size(unpaddedUKnots)-3] ~ ", " ~ unpaddedUKnots[size(unpaddedUKnots)-2] ~ ", " ~ unpaddedUKnots[size(unpaddedUKnots)-1]);
     
     // Create the tweened B-spline surface
     const tweenedSurfaceDefinition = bSplineSurface({
@@ -403,8 +396,8 @@ function elevateSurfaceDegree(surface is map, targetUDegree is number, targetVDe
         
         controlPoints = newControlPoints;
         uDegree = targetUDegree;
-        // Update U knot vector - elevate it while preserving knot structure
-        uKnots = elevateKnotVector(uKnots, surface.uDegree, targetUDegree);
+        // Update U knot vector - create new uniform knot vector for elevated surface
+        uKnots = makeUniformKnotVector(targetUDegree, size(controlPoints));
     }
     
     // Elevate V degree if needed (process each U-row as an independent curve)
@@ -425,8 +418,8 @@ function elevateSurfaceDegree(surface is map, targetUDegree is number, targetVDe
         
         controlPoints = newControlPoints;
         vDegree = targetVDegree;
-        // Update V knot vector - elevate it while preserving knot structure
-        vKnots = elevateKnotVector(vKnots, surface.vDegree, targetVDegree);
+        // Update V knot vector - create new uniform knot vector for elevated surface
+        vKnots = makeUniformKnotVector(targetVDegree, size(controlPoints[0]));
     }
     
     return {
@@ -440,67 +433,6 @@ function elevateSurfaceDegree(surface is map, targetUDegree is number, targetVDe
         "uKnots" : uKnots,
         "vKnots" : vKnots
     };
-}
-
-
-/**
- * Elevates a knot vector for degree elevation while preserving knot structure.
- * 
- * When elevating from degree p to degree p+k, each internal knot needs k additional
- * repetitions, and the clamped end multiplicities increase from p+1 to p+k+1.
- * This preserves the knot structure and parameterization of the original curve/surface.
- * 
- * @param oldKnots {KnotArray} : Original knot vector
- * @param oldDegree {number} : Original degree
- * @param newDegree {number} : New (elevated) degree
- * @returns {array} : Elevated knot vector
- */
-function elevateKnotVector(oldKnots, oldDegree is number, newDegree is number)
-{
-    if (oldDegree >= newDegree)
-    {
-        return oldKnots;
-    }
-    
-    const degreeDiff = newDegree - oldDegree;
-    var newKnots = [];
-    
-    // Add degreeDiff more repetitions at the start
-    for (var i = 0; i < oldDegree + 1 + degreeDiff; i += 1)
-    {
-        newKnots = append(newKnots, oldKnots[0]);
-    }
-    
-    // Process internal knots - add degreeDiff repetitions for each distinct knot
-    var i = oldDegree + 1;
-    while (i < size(oldKnots) - oldDegree - 1)
-    {
-        const knotValue = oldKnots[i];
-        var multiplicity = 1;
-        
-        // Count multiplicity of this knot in original vector
-        while (i + multiplicity < size(oldKnots) - oldDegree - 1 && 
-               abs(oldKnots[i + multiplicity] - knotValue) < KNOT_TOLERANCE)
-        {
-            multiplicity += 1;
-        }
-        
-        // Add this knot with multiplicity + degreeDiff repetitions
-        for (var j = 0; j < multiplicity + degreeDiff; j += 1)
-        {
-            newKnots = append(newKnots, knotValue);
-        }
-        
-        i += multiplicity;
-    }
-    
-    // Add degreeDiff more repetitions at the end
-    for (var i = 0; i < oldDegree + 1 + degreeDiff; i += 1)
-    {
-        newKnots = append(newKnots, oldKnots[size(oldKnots) - 1]);
-    }
-    
-    return newKnots;
 }
 
 
@@ -568,8 +500,6 @@ function makeUniformKnotVector(degree is number, numControlPoints is number)
  */
 function refineControlPointCount(context is Context, surface is map, targetUCount is number, targetVCount is number)
 {
-    println("DEBUG refineControlPointCount: Starting with " ~ size(surface.controlPoints) ~ "x" ~ size(surface.controlPoints[0]) ~ " CPs, targeting " ~ targetUCount ~ "x" ~ targetVCount);
-    
     // For now, refinement of rational surfaces is not supported
     if (surface.isRational)
     {
@@ -675,8 +605,6 @@ function refineControlPointCount(context is Context, surface is map, targetUCoun
         }
     }
     
-    println("DEBUG refineControlPointCount: Finished with " ~ size(controlPoints) ~ "x" ~ size(controlPoints[0]) ~ " CPs");
-    
     return {
         "uDegree" : uDegree,
         "vDegree" : vDegree,
@@ -716,77 +644,15 @@ function refineCurveControlPointCount(context is Context, curve is map, targetCo
     const startParam = curve.knots[curve.degree];
     const endParam = curve.knots[size(curve.knots) - curve.degree - 1];
     
-    println("DEBUG refineCurveControlPointCount: Starting CP count=" ~ size(curve.controlPoints) ~ ", target=" ~ targetCount);
-    println("  startParam=" ~ startParam ~ ", endParam=" ~ endParam);
-    println("  Need to insert " ~ numToInsert ~ " knots");
-    println("  Original first CP: " ~ curve.controlPoints[0]);
-    println("  Original last CP: " ~ curve.controlPoints[size(curve.controlPoints) - 1]);
-    
-    // Find distinct internal knots by collecting unique values (ignoring multiplicity)
-    var distinctKnots = [];
-    var lastKnot = undefined;
-    for (var i = curve.degree; i < size(curve.knots) - curve.degree; i += 1)
-    {
-        if (lastKnot == undefined || abs(curve.knots[i] - lastKnot) > KNOT_TOLERANCE)
-        {
-            distinctKnots = append(distinctKnots, curve.knots[i]);
-            lastKnot = curve.knots[i];
-        }
-    }
-    
-    println("  Found " ~ size(distinctKnots) ~ " distinct internal knots");
-    
-    // Distribute new knots proportionally across the existing knot spans
+    // Find distinct internal knots and spaces between them
     var knotsToInsert = [];
     
-    if (size(distinctKnots) <= 1)
+    // Distribute new knots uniformly across the parameter domain
+    for (var i = 1; i <= numToInsert; i += 1)
     {
-        // Degenerate case: only one span, distribute uniformly
-        for (var i = 1; i <= numToInsert; i += 1)
-        {
-            const fraction = i / (numToInsert + 1);
-            const newKnot = startParam + (endParam - startParam) * fraction;
-            knotsToInsert = append(knotsToInsert, newKnot);
-        }
-    }
-    else
-    {
-        // Calculate how many knots to insert in each span proportionally
-        const totalSpanLength = endParam - startParam;
-        var remainingKnots = numToInsert;
-        
-        for (var spanIdx = 0; spanIdx < size(distinctKnots) - 1 && remainingKnots > 0; spanIdx += 1)
-        {
-            const spanStart = distinctKnots[spanIdx];
-            const spanEnd = distinctKnots[spanIdx + 1];
-            const spanLength = spanEnd - spanStart;
-            const spanFraction = spanLength / totalSpanLength;
-            
-            // Number of knots to insert in this span (proportional to span length)
-            // Use floor to avoid over-allocating, then give remainder to last span
-            var knotsInSpan = floor(numToInsert * spanFraction);
-            
-            if (spanIdx == size(distinctKnots) - 2)
-            {
-                // Last span gets all remaining knots to ensure we insert exactly numToInsert
-                knotsInSpan = remainingKnots;
-            }
-            else
-            {
-                // Ensure at least 0 and at most remainingKnots
-                knotsInSpan = max(0, min(knotsInSpan, remainingKnots));
-            }
-            
-            // Distribute knots uniformly within this span
-            for (var i = 1; i <= knotsInSpan; i += 1)
-            {
-                const fraction = i / (knotsInSpan + 1);
-                const newKnot = spanStart + spanLength * fraction;
-                knotsToInsert = append(knotsToInsert, newKnot);
-            }
-            
-            remainingKnots -= knotsInSpan;
-        }
+        const fraction = i / (numToInsert + 1);
+        const newKnot = startParam + (endParam - startParam) * fraction;
+        knotsToInsert = append(knotsToInsert, newKnot);
     }
     
     // Sort knots to insert
@@ -798,17 +664,10 @@ function refineCurveControlPointCount(context is Context, curve is map, targetCo
     
     for (var insertIdx = 0; insertIdx < size(knotsToInsert); insertIdx += 1)
     {
-        println("  Inserting knot " ~ (insertIdx + 1) ~ "/" ~ numToInsert ~ " at param=" ~ knotsToInsert[insertIdx]);
-        println("    Before: " ~ size(currentControlPoints) ~ " CPs, " ~ size(currentKnots) ~ " knots");
         const result = insertKnotBoehm(currentControlPoints, currentKnots, curve.degree, knotsToInsert[insertIdx]);
         currentControlPoints = result.controlPoints;
         currentKnots = result.knots;
-        println("    After:  " ~ size(currentControlPoints) ~ " CPs, " ~ size(currentKnots) ~ " knots");
     }
-    
-    println("  Final result: " ~ size(currentControlPoints) ~ " CPs");
-    println("  Refined first CP: " ~ currentControlPoints[0]);
-    println("  Refined last CP: " ~ currentControlPoints[size(currentControlPoints) - 1]);
     
     return {
         "controlPoints" : currentControlPoints,
