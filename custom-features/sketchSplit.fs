@@ -141,11 +141,11 @@ export const splitSketch= defineFeature(function(context is Context, id is Id, d
         }
         
         // Now get all resulting bodies after splits for interactive selection
-        const allBodies = evaluateQuery(context, definition.partsToSplit);
+        // Cache the query itself for use in edit logic (similar to Better Than Boolean's approach)
+        const bodiesVariableName = toAttributeId(id) ~ "-splitBodiesQuery";
+        setVariable(context, bodiesVariableName, definition.partsToSplit);
         
-        // Cache the body count for use in edit logic
-        const bodiesVariableName = toAttributeId(id) ~ "-splitBodiesCount";
-        setVariable(context, bodiesVariableName, size(allBodies));
+        const allBodies = evaluateQuery(context, definition.partsToSplit);
         
         // Create manipulator points at each body's centroid and draw debug points
         var handlePoints = [];
@@ -292,37 +292,49 @@ export function splitSketchEditLogic(context is Context, id is Id,
 {
     if (clickedButton == "selectAll")
     {
-        // Get the cached body count from the last successful regeneration
-        const bodiesVariableName = toAttributeId(id) ~ "-splitBodiesCount";
-        const bodyCount = try silent(getVariable(context, bodiesVariableName));
+        // Get the cached query from the last successful regeneration
+        const bodiesVariableName = toAttributeId(id) ~ "-splitBodiesQuery";
+        const bodiesQuery = try silent(getVariable(context, bodiesVariableName));
         
-        if (bodyCount != undefined)
+        if (bodiesQuery != undefined)
         {
-            var newKeep = [];
-            for (var index = 0; index < bodyCount; index += 1)
+            const allBodies = try silent(evaluateQuery(context, bodiesQuery as Query));
+            if (allBodies != undefined)
             {
-                newKeep = append(newKeep, { "keepIndex" : index });
+                var newKeep = [];
+                var index = 0;
+                for (var body in allBodies)
+                {
+                    newKeep = append(newKeep, { "keepIndex" : index });
+                    index += 1;
+                }
+                definition.keepIndices = newKeep;
             }
-            definition.keepIndices = newKeep;
         }
     }
     if (clickedButton == "invertSelection")
     {
-        // Get the cached body count from the last successful regeneration
-        const bodiesVariableName = toAttributeId(id) ~ "-splitBodiesCount";
-        const bodyCount = try silent(getVariable(context, bodiesVariableName));
+        // Get the cached query from the last successful regeneration
+        const bodiesVariableName = toAttributeId(id) ~ "-splitBodiesQuery";
+        const bodiesQuery = try silent(getVariable(context, bodiesVariableName));
         
-        if (bodyCount != undefined)
+        if (bodiesQuery != undefined)
         {
-            var newKeep = [];
-            for (var index = 0; index < bodyCount; index += 1)
+            const allBodies = try silent(evaluateQuery(context, bodiesQuery as Query));
+            if (allBodies != undefined)
             {
-                if (!isInKeepGroup(definition, index))
+                var newKeep = [];
+                var index = 0;
+                for (var body in allBodies)
                 {
-                    newKeep = append(newKeep, { "keepIndex" : index });
+                    if (!isInKeepGroup(definition, index))
+                    {
+                        newKeep = append(newKeep, { "keepIndex" : index });
+                    }
+                    index += 1;
                 }
+                definition.keepIndices = newKeep;
             }
-            definition.keepIndices = newKeep;
         }
     }
     return definition;
