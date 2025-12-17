@@ -1663,43 +1663,79 @@ function knotVectorsMatch(knots1, knots2) returns boolean
  * Merges two knot vectors into a single sorted vector containing all unique knots.
  * 
  * Takes the union of knots from both vectors, eliminating duplicates (within tolerance).
- * The resulting knot vector is sorted in ascending order.
+ * This function properly handles padded knot vectors by only merging the unique knot
+ * values (not the multiplicities), then returning them sorted.
  * 
- * @param knots1 {array} : First knot vector
- * @param knots2 {array} : Second knot vector
- * @returns {array} : Merged and sorted knot vector
+ * For padded knot vectors, the function counts multiplicities and merges them intelligently:
+ * - Start/end knots keep their maximum multiplicity
+ * - Internal knots are merged based on unique values
+ * 
+ * @param knots1 {array} : First knot vector (padded format)
+ * @param knots2 {array} : Second knot vector (padded format)
+ * @returns {array} : Merged knot vector with unique knot values and combined multiplicities
  */
 function mergeKnotVectors(knots1 is array, knots2 is array) returns array
 {
-    var mergedKnots = [];
+    // Extract unique knot values with their multiplicities from both vectors
+    var uniqueKnots = []; // Array of {value, multiplicity} maps
     
-    // Add all knots from first vector
+    // Process first knot vector
     for (var i = 0; i < size(knots1); i += 1)
     {
-        mergedKnots = append(mergedKnots, knots1[i]);
-    }
-    
-    // Add knots from second vector that aren't already in the merged list
-    for (var i = 0; i < size(knots2); i += 1)
-    {
-        var knotExists = false;
-        for (var j = 0; j < size(mergedKnots); j += 1)
+        const knotValue = knots1[i];
+        var found = false;
+        
+        for (var j = 0; j < size(uniqueKnots); j += 1)
         {
-            if (abs(knots2[i] - mergedKnots[j]) < KNOT_COMPARISON_TOLERANCE)
+            if (abs(uniqueKnots[j].value - knotValue) < KNOT_COMPARISON_TOLERANCE)
             {
-                knotExists = true;
+                uniqueKnots[j].mult1 += 1;
+                found = true;
                 break;
             }
         }
         
-        if (!knotExists)
+        if (!found)
         {
-            mergedKnots = append(mergedKnots, knots2[i]);
+            uniqueKnots = append(uniqueKnots, { "value" : knotValue, "mult1" : 1, "mult2" : 0 });
         }
     }
     
-    // Sort the merged knots
-    mergedKnots = sort(mergedKnots, function(a, b) { return a - b; });
+    // Process second knot vector
+    for (var i = 0; i < size(knots2); i += 1)
+    {
+        const knotValue = knots2[i];
+        var found = false;
+        
+        for (var j = 0; j < size(uniqueKnots); j += 1)
+        {
+            if (abs(uniqueKnots[j].value - knotValue) < KNOT_COMPARISON_TOLERANCE)
+            {
+                uniqueKnots[j].mult2 += 1;
+                found = true;
+                break;
+            }
+        }
+        
+        if (!found)
+        {
+            uniqueKnots = append(uniqueKnots, { "value" : knotValue, "mult1" : 0, "mult2" : 1 });
+        }
+    }
+    
+    // Sort by knot value
+    uniqueKnots = sort(uniqueKnots, function(a, b) { return a.value - b.value; });
+    
+    // Build merged knot vector using maximum multiplicity for each unique knot
+    var mergedKnots = [];
+    for (var i = 0; i < size(uniqueKnots); i += 1)
+    {
+        const maxMult = max(uniqueKnots[i].mult1, uniqueKnots[i].mult2);
+        for (var j = 0; j < maxMult; j += 1)
+        {
+            mergedKnots = append(mergedKnots, uniqueKnots[i].value);
+        }
+    }
     
     return mergedKnots;
 }
@@ -1838,17 +1874,20 @@ function refineToKnotVector(context is Context, surface is map, targetUKnots is 
             
             for (var knotIdx = 0; knotIdx < size(uKnotsToInsert); knotIdx += 1)
             {
+                // Insert knot into control points
                 const result = insertKnotBoehm(currentPoints, currentKnots, uDegree, uKnotsToInsert[knotIdx]);
                 currentPoints = result.controlPoints;
-                currentKnots = result.knots;
                 
-                // Also update weights if rational
+                // Also update weights if rational (must use same knot vector BEFORE insertion)
                 if (currentWeights != undefined)
                 {
                     // For rational surfaces, weights follow the same knot insertion as control points
                     const weightResult = insertKnotBoehmScalar(currentWeights, currentKnots, uDegree, uKnotsToInsert[knotIdx]);
                     currentWeights = weightResult.values;
                 }
+                
+                // Update knots AFTER processing both control points and weights
+                currentKnots = result.knots;
             }
             
             // Store refined control points (transpose)
@@ -1899,16 +1938,19 @@ function refineToKnotVector(context is Context, surface is map, targetUKnots is 
             
             for (var knotIdx = 0; knotIdx < size(vKnotsToInsert); knotIdx += 1)
             {
+                // Insert knot into control points
                 const result = insertKnotBoehm(currentPoints, currentKnots, vDegree, vKnotsToInsert[knotIdx]);
                 currentPoints = result.controlPoints;
-                currentKnots = result.knots;
                 
-                // Also update weights if rational
+                // Also update weights if rational (must use same knot vector BEFORE insertion)
                 if (currentWeights != undefined)
                 {
                     const weightResult = insertKnotBoehmScalar(currentWeights, currentKnots, vDegree, vKnotsToInsert[knotIdx]);
                     currentWeights = weightResult.values;
                 }
+                
+                // Update knots AFTER processing both control points and weights
+                currentKnots = result.knots;
             }
             
             newControlPoints = append(newControlPoints, currentPoints);
