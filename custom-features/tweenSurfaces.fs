@@ -1874,9 +1874,15 @@ function refineToKnotVector(context is Context, surface is map, targetUKnots is 
             
             for (var knotIdx = 0; knotIdx < size(uKnotsToInsert); knotIdx += 1)
             {
+                println("DEBUG: Before knot insertion " ~ knotIdx ~ ": CPs=" ~ size(currentPoints) ~ 
+                        ", knots=" ~ size(currentKnots) ~ ", expected=" ~ (size(currentPoints) + uDegree + 1));
+                println("DEBUG: Inserting knot: " ~ uKnotsToInsert[knotIdx]);
+                
                 // Insert knot into control points
                 const result = insertKnotBoehm(currentPoints, currentKnots, uDegree, uKnotsToInsert[knotIdx]);
                 currentPoints = result.controlPoints;
+                
+                println("DEBUG: After CP insertion: CPs=" ~ size(currentPoints) ~ ", knots=" ~ size(result.knots));
                 
                 // Also update weights if rational (must use same knot vector BEFORE insertion)
                 if (currentWeights != undefined)
@@ -1888,6 +1894,8 @@ function refineToKnotVector(context is Context, surface is map, targetUKnots is 
                 
                 // Update knots AFTER processing both control points and weights
                 currentKnots = result.knots;
+                
+                println("DEBUG: After knot update: knots=" ~ size(currentKnots));
             }
             
             // Store refined control points (transpose)
