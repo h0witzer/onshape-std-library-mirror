@@ -1848,6 +1848,7 @@ function refineToKnotVector(context is Context, surface is map, targetUKnots is 
         const numVPoints = size(controlPoints[0]);
         var newControlPoints = [];
         var newWeights = weights != undefined ? [] : undefined;
+        var newUKnots = undefined;
         
         for (var vIndex = 0; vIndex < numVPoints; vIndex += 1)
         {
@@ -1868,21 +1869,16 @@ function refineToKnotVector(context is Context, surface is map, targetUKnots is 
             }
             
             // Insert knots into this column curve
+            // IMPORTANT: Each column starts with the ORIGINAL uKnots, not updated ones
             var currentPoints = columnPoints;
             var currentWeights = columnWeights;
             var currentKnots = uKnots;
             
             for (var knotIdx = 0; knotIdx < size(uKnotsToInsert); knotIdx += 1)
             {
-                println("DEBUG: Before knot insertion " ~ knotIdx ~ ": CPs=" ~ size(currentPoints) ~ 
-                        ", knots=" ~ size(currentKnots) ~ ", expected=" ~ (size(currentPoints) + uDegree + 1));
-                println("DEBUG: Inserting knot: " ~ uKnotsToInsert[knotIdx]);
-                
                 // Insert knot into control points
                 const result = insertKnotBoehm(currentPoints, currentKnots, uDegree, uKnotsToInsert[knotIdx]);
                 currentPoints = result.controlPoints;
-                
-                println("DEBUG: After CP insertion: CPs=" ~ size(currentPoints) ~ ", knots=" ~ size(result.knots));
                 
                 // Also update weights if rational (must use same knot vector BEFORE insertion)
                 if (currentWeights != undefined)
@@ -1894,8 +1890,6 @@ function refineToKnotVector(context is Context, surface is map, targetUKnots is 
                 
                 // Update knots AFTER processing both control points and weights
                 currentKnots = result.knots;
-                
-                println("DEBUG: After knot update: knots=" ~ size(currentKnots));
             }
             
             // Store refined control points (transpose)
@@ -1916,15 +1910,16 @@ function refineToKnotVector(context is Context, surface is map, targetUKnots is 
                 }
             }
             
-            // Update knots from first column
+            // Save the new knot vector from the first column (all columns produce the same result)
             if (vIndex == 0)
             {
-                uKnots = currentKnots;
+                newUKnots = currentKnots;
             }
         }
         
         controlPoints = newControlPoints;
         weights = newWeights;
+        uKnots = newUKnots;
     }
     
     // Refine in V direction if needed
@@ -1932,6 +1927,7 @@ function refineToKnotVector(context is Context, surface is map, targetUKnots is 
     {
         var newControlPoints = [];
         var newWeights = weights != undefined ? [] : undefined;
+        var newVKnots = undefined;
         
         for (var uIndex = 0; uIndex < size(controlPoints); uIndex += 1)
         {
@@ -1940,6 +1936,7 @@ function refineToKnotVector(context is Context, surface is map, targetUKnots is 
             const rowWeights = weights != undefined ? weights[uIndex] : undefined;
             
             // Insert knots into this row curve
+            // IMPORTANT: Each row starts with the ORIGINAL vKnots, not updated ones
             var currentPoints = rowPoints;
             var currentWeights = rowWeights;
             var currentKnots = vKnots;
@@ -1967,15 +1964,16 @@ function refineToKnotVector(context is Context, surface is map, targetUKnots is 
                 newWeights = append(newWeights, currentWeights);
             }
             
-            // Update knots from first row
+            // Save the new knot vector from the first row (all rows produce the same result)
             if (uIndex == 0)
             {
-                vKnots = currentKnots;
+                newVKnots = currentKnots;
             }
         }
         
         controlPoints = newControlPoints;
         weights = newWeights;
+        vKnots = newVKnots;
     }
     
     return {
