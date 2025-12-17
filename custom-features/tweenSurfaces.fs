@@ -108,6 +108,11 @@ function createTweenedSurface(context is Context, id is Id,
     var firstSurface = getBSplineSurfaceFromFace(context, firstFace);
     var secondSurface = getBSplineSurfaceFromFace(context, secondFace);
     
+    println("DEBUG: Initial first surface - uDegree=" ~ firstSurface.uDegree ~ ", vDegree=" ~ firstSurface.vDegree ~ 
+            ", controlPoints=" ~ size(firstSurface.controlPoints) ~ "x" ~ size(firstSurface.controlPoints[0]));
+    println("DEBUG: Initial second surface - uDegree=" ~ secondSurface.uDegree ~ ", vDegree=" ~ secondSurface.vDegree ~ 
+            ", controlPoints=" ~ size(secondSurface.controlPoints) ~ "x" ~ size(secondSurface.controlPoints[0]));
+    
     // Elevate degrees to match if necessary
     if (firstSurface.uDegree != secondSurface.uDegree || firstSurface.vDegree != secondSurface.vDegree)
     {
@@ -116,11 +121,19 @@ function createTweenedSurface(context is Context, id is Id,
         
         if (firstSurface.uDegree < targetUDegree || firstSurface.vDegree < targetVDegree)
         {
+            println("DEBUG: Elevating first surface from (" ~ firstSurface.uDegree ~ "," ~ firstSurface.vDegree ~ 
+                    ") to (" ~ targetUDegree ~ "," ~ targetVDegree ~ ")");
             firstSurface = elevateSurfaceDegree(firstSurface, targetUDegree, targetVDegree);
+            println("DEBUG: After elevation, first surface controlPoints=" ~ 
+                    size(firstSurface.controlPoints) ~ "x" ~ size(firstSurface.controlPoints[0]));
         }
         if (secondSurface.uDegree < targetUDegree || secondSurface.vDegree < targetVDegree)
         {
+            println("DEBUG: Elevating second surface from (" ~ secondSurface.uDegree ~ "," ~ secondSurface.vDegree ~ 
+                    ") to (" ~ targetUDegree ~ "," ~ targetVDegree ~ ")");
             secondSurface = elevateSurfaceDegree(secondSurface, targetUDegree, targetVDegree);
+            println("DEBUG: After elevation, second surface controlPoints=" ~ 
+                    size(secondSurface.controlPoints) ~ "x" ~ size(secondSurface.controlPoints[0]));
         }
     }
     
@@ -138,11 +151,19 @@ function createTweenedSurface(context is Context, id is Id,
         
         if (firstControlPointsRowCount < targetUCount || firstControlPointsColumnCount < targetVCount)
         {
+            println("DEBUG: Refining first surface from " ~ firstControlPointsRowCount ~ "x" ~ firstControlPointsColumnCount ~ 
+                    " to " ~ targetUCount ~ "x" ~ targetVCount);
             firstSurface = refineControlPointCount(context, firstSurface, targetUCount, targetVCount);
+            println("DEBUG: After refinement, first surface controlPoints=" ~ 
+                    size(firstSurface.controlPoints) ~ "x" ~ size(firstSurface.controlPoints[0]));
         }
         if (secondControlPointsRowCount < targetUCount || secondControlPointsColumnCount < targetVCount)
         {
+            println("DEBUG: Refining second surface from " ~ secondControlPointsRowCount ~ "x" ~ secondControlPointsColumnCount ~ 
+                    " to " ~ targetUCount ~ "x" ~ targetVCount);
             secondSurface = refineControlPointCount(context, secondSurface, targetUCount, targetVCount);
+            println("DEBUG: After refinement, second surface controlPoints=" ~ 
+                    size(secondSurface.controlPoints) ~ "x" ~ size(secondSurface.controlPoints[0]));
         }
     }
     
@@ -285,9 +306,29 @@ function createTweenedSurface(context is Context, id is Id,
     println("DEBUG: Final unpaddedUKnots size=" ~ size(unpaddedUKnots));
     println("DEBUG: Final unpaddedVKnots size=" ~ size(unpaddedVKnots));
     
-    // Debug: Print first and last few knot values to check they're valid
-    println("DEBUG: First 5 U knots: " ~ unpaddedUKnots[0] ~ ", " ~ unpaddedUKnots[1] ~ ", " ~ unpaddedUKnots[2] ~ ", " ~ unpaddedUKnots[3] ~ ", " ~ unpaddedUKnots[4]);
-    println("DEBUG: Last 5 U knots: " ~ unpaddedUKnots[size(unpaddedUKnots)-5] ~ ", " ~ unpaddedUKnots[size(unpaddedUKnots)-4] ~ ", " ~ unpaddedUKnots[size(unpaddedUKnots)-3] ~ ", " ~ unpaddedUKnots[size(unpaddedUKnots)-2] ~ ", " ~ unpaddedUKnots[size(unpaddedUKnots)-1]);
+    // Debug: Print knot values to check they're valid (handle small arrays)
+    if (size(unpaddedUKnots) > 0)
+    {
+        print("DEBUG: U knots: ");
+        for (var i = 0; i < size(unpaddedUKnots); i += 1)
+        {
+            print(unpaddedUKnots[i]);
+            if (i < size(unpaddedUKnots) - 1)
+                print(", ");
+        }
+        println("");
+    }
+    if (size(unpaddedVKnots) > 0)
+    {
+        print("DEBUG: V knots: ");
+        for (var i = 0; i < size(unpaddedVKnots); i += 1)
+        {
+            print(unpaddedVKnots[i]);
+            if (i < size(unpaddedVKnots) - 1)
+                print(", ");
+        }
+        println("");
+    }
     
     // Create the tweened B-spline surface
     const tweenedSurfaceDefinition = bSplineSurface({
