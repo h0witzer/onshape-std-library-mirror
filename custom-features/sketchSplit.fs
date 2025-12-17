@@ -1,6 +1,13 @@
 FeatureScript 2770;
 import(path : "onshape/std/common.fs", version : "2770.0");
 
+/**
+ * Split with Sketch Feature
+ * 
+ * Splits target bodies using sketch edges by extruding each edge through all
+ * and using the resulting surfaces as split tools. Supports multiple disconnected
+ * sketch lines with automatic cleanup of failed split operations.
+ */
 annotation { "Feature Type Name" : "Split with Sketch", "Feature Type Description" : "Use sketches to split entities" }
 export const splitSketch= defineFeature(function(context is Context, id is Id, definition is map)
     precondition
@@ -42,7 +49,9 @@ export const splitSketch= defineFeature(function(context is Context, id is Id, d
         var successfulSplitCount = 0;
         var failedSplitCount = 0;
         
-        // Iterate over each sketch edge and perform individual split operations
+        // Iterate over each sketch edge and perform individual split operations.
+        // Each edge is extruded separately and used as a split tool, allowing
+        // disconnected lines to split the target bodies independently.
         for (var edgeIndex = 0; edgeIndex < size(sketchEdgesToSplit); edgeIndex += 1)
         {
             const currentEdge = sketchEdgesToSplit[edgeIndex];
@@ -80,7 +89,8 @@ export const splitSketch= defineFeature(function(context is Context, id is Id, d
                     }
                     catch
                     {
-                        // Split failed - perform cleanup by deleting the extruded surface
+                        // Split failed - perform surface cleanup by deleting the extruded
+                        // tool body to avoid leaving orphaned geometry in the part studio
                         try silent
                         {
                             opDeleteBodies(context, cleanupId, {
