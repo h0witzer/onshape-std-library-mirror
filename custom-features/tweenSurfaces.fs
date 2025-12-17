@@ -195,36 +195,6 @@ function createTweenedSurface(context is Context, id is Id,
         }
     }
     
-    // === KNOT VECTOR MATCHING ===
-    // After CP count matching, we need to ensure both surfaces have identical knot vectors.
-    // If knot vectors differ, we need to refine both surfaces to have the union of all knots.
-    println("DEBUG: Checking knot vector compatibility...");
-    println("DEBUG: First surface U knots: " ~ firstSurface.uKnots);
-    println("DEBUG: Second surface U knots: " ~ secondSurface.uKnots);
-    println("DEBUG: First surface V knots: " ~ firstSurface.vKnots);
-    println("DEBUG: Second surface V knots: " ~ secondSurface.vKnots);
-    
-    const knotsMatch = knotVectorsMatch(firstSurface.uKnots, secondSurface.uKnots) &&
-                       knotVectorsMatch(firstSurface.vKnots, secondSurface.vKnots);
-    
-    if (!knotsMatch)
-    {
-        println("DEBUG: Knot vectors don't match - refining both surfaces to common knot vector");
-        const result = refineSurfacesToCommonKnots(context, firstSurface, secondSurface);
-        firstSurface = result.firstSurface;
-        secondSurface = result.secondSurface;
-        println("DEBUG: After knot matching, first surface: " ~ 
-                size(firstSurface.controlPoints) ~ "x" ~ size(firstSurface.controlPoints[0]) ~ 
-                " CP, U knots: " ~ firstSurface.uKnots);
-        println("DEBUG: After knot matching, second surface: " ~ 
-                size(secondSurface.controlPoints) ~ "x" ~ size(secondSurface.controlPoints[0]) ~ 
-                " CP, U knots: " ~ secondSurface.uKnots);
-    }
-    else
-    {
-        println("DEBUG: Knot vectors match - no additional refinement needed");
-    }
-    
     // === ALIGNMENT MATCHING ===
     // Find the best alignment between the two surfaces by testing different transformations
     // (normal, U-flipped, V-flipped, UV-swapped, and combinations)
@@ -367,60 +337,78 @@ function createTweenedSurface(context is Context, id is Id,
     println("DEBUG: Drew " ~ debugPointCount ~ " sets of control points (blue/red/green)");
     println("DEBUG: Expected " ~ (finalFirstControlPointsRowCount * finalFirstControlPointsColumnCount) ~ " sets");
     
-    // Unpad knot arrays (bSplineSurface expects unpadded knots)
-    // Padded knots have size: nControlPoints + degree + 1
-    // Unpadded knots should have size: nControlPoints - degree + 1
-    // So we remove the first 'degree' and last 'degree' knots
+    // Interpolate knot vectors
+    // Even when control point counts match, knot vectors can differ, representing different parameterizations.
+    // We interpolate the knot vectors to create a smooth transition in parameterization.
     const uDegree = firstSurface.uDegree;
     const vDegree = firstSurface.vDegree;
     const numUControlPoints = size(tweenedControlPoints);
     const numVControlPoints = size(tweenedControlPoints[0]);
     
-    // Verify the knot array sizes are correct for padded arrays
+    // Interpolate U knots
+    var interpolatedUKnots = [];
+    for (var i = 0; i < size(firstSurface.uKnots); i += 1)
+    {
+        const interpolatedKnot = firstSurface.uKnots[i] * (1 - tweenFraction) + secondSurface.uKnots[i] * tweenFraction;
+        interpolatedUKnots = append(interpolatedUKnots, interpolatedKnot);
+    }
+    
+    // Interpolate V knots
+    var interpolatedVKnots = [];
+    for (var i = 0; i < size(firstSurface.vKnots); i += 1)
+    {
+        const interpolatedKnot = firstSurface.vKnots[i] * (1 - tweenFraction) + secondSurface.vKnots[i] * tweenFraction;
+        interpolatedVKnots = append(interpolatedVKnots, interpolatedKnot);
+    }
+    
+    // Unpad knot arrays (bSplineSurface expects unpadded knots)
+    // Padded knots have size: nControlPoints + degree + 1
+    // Unpadded knots should have size: nControlPoints - degree + 1
+    // So we remove the first 'degree' and last 'degree' knots
     const expectedPaddedUSize = numUControlPoints + uDegree + 1;
     const expectedPaddedVSize = numVControlPoints + vDegree + 1;
     
     // Debug logging to diagnose knot array format issues
     println("DEBUG: uDegree=" ~ uDegree ~ ", vDegree=" ~ vDegree);
     println("DEBUG: numUControlPoints=" ~ numUControlPoints ~ ", numVControlPoints=" ~ numVControlPoints);
-    println("DEBUG: firstSurface.uKnots size=" ~ size(firstSurface.uKnots));
-    println("DEBUG: firstSurface.vKnots size=" ~ size(firstSurface.vKnots));
+    println("DEBUG: interpolatedUKnots size=" ~ size(interpolatedUKnots));
+    println("DEBUG: interpolatedVKnots size=" ~ size(interpolatedVKnots));
     println("DEBUG: expectedPaddedUSize=" ~ expectedPaddedUSize);
     println("DEBUG: expectedPaddedVSize=" ~ expectedPaddedVSize);
     println("DEBUG: Expected unpadded U size=" ~ (numUControlPoints - uDegree + 1));
     println("DEBUG: Expected unpadded V size=" ~ (numVControlPoints - vDegree + 1));
     
     var unpaddedUKnots = [];
-    if (size(firstSurface.uKnots) == expectedPaddedUSize)
+    if (size(interpolatedUKnots) == expectedPaddedUSize)
     {
         // Knots are padded, unpad them
-        for (var i = uDegree; i < size(firstSurface.uKnots) - uDegree; i += 1)
+        for (var i = uDegree; i < size(interpolatedUKnots) - uDegree; i += 1)
         {
-            unpaddedUKnots = append(unpaddedUKnots, firstSurface.uKnots[i]);
+            unpaddedUKnots = append(unpaddedUKnots, interpolatedUKnots[i]);
         }
         println("DEBUG: Unpadded U knots from padded format, result size=" ~ size(unpaddedUKnots));
     }
     else
     {
         // Knots might already be unpadded or in unexpected format, use as-is
-        unpaddedUKnots = firstSurface.uKnots;
+        unpaddedUKnots = interpolatedUKnots;
         println("DEBUG: Using U knots as-is, size=" ~ size(unpaddedUKnots));
     }
     
     var unpaddedVKnots = [];
-    if (size(firstSurface.vKnots) == expectedPaddedVSize)
+    if (size(interpolatedVKnots) == expectedPaddedVSize)
     {
         // Knots are padded, unpad them
-        for (var i = vDegree; i < size(firstSurface.vKnots) - vDegree; i += 1)
+        for (var i = vDegree; i < size(interpolatedVKnots) - vDegree; i += 1)
         {
-            unpaddedVKnots = append(unpaddedVKnots, firstSurface.vKnots[i]);
+            unpaddedVKnots = append(unpaddedVKnots, interpolatedVKnots[i]);
         }
         println("DEBUG: Unpadded V knots from padded format, result size=" ~ size(unpaddedVKnots));
     }
     else
     {
         // Knots might already be unpadded or in unexpected format, use as-is
-        unpaddedVKnots = firstSurface.vKnots;
+        unpaddedVKnots = interpolatedVKnots;
         println("DEBUG: Using V knots as-is, size=" ~ size(unpaddedVKnots));
     }
     
@@ -1623,481 +1611,5 @@ function applyAlignmentTransform(surface is map, flipU is boolean, flipV is bool
         "weights" : weights,
         "uKnots" : uKnots,
         "vKnots" : vKnots
-    };
-}
-
-
-// Tolerance for comparing knot values
-const KNOT_COMPARISON_TOLERANCE = 1e-10;
-
-/**
- * Checks if two knot vectors match within tolerance.
- * 
- * Knot vectors are considered matching if they have the same size and
- * all corresponding knot values are within tolerance.
- * 
- * @param knots1 {array} : First knot vector
- * @param knots2 {array} : Second knot vector
- * @returns {boolean} : True if knot vectors match
- */
-function knotVectorsMatch(knots1, knots2) returns boolean
-{
-    if (size(knots1) != size(knots2))
-    {
-        return false;
-    }
-    
-    for (var i = 0; i < size(knots1); i += 1)
-    {
-        if (abs(knots1[i] - knots2[i]) > KNOT_COMPARISON_TOLERANCE)
-        {
-            return false;
-        }
-    }
-    
-    return true;
-}
-
-
-/**
- * Merges two knot vectors into a single sorted vector containing all unique knots.
- * 
- * Takes the union of knots from both vectors, eliminating duplicates (within tolerance).
- * This function properly handles padded knot vectors by only merging the unique knot
- * values (not the multiplicities), then returning them sorted.
- * 
- * For padded knot vectors, the function counts multiplicities and merges them intelligently:
- * - Start/end knots keep their maximum multiplicity
- * - Internal knots are merged based on unique values
- * 
- * @param knots1 {array} : First knot vector (padded format)
- * @param knots2 {array} : Second knot vector (padded format)
- * @returns {array} : Merged knot vector with unique knot values and combined multiplicities
- */
-function mergeKnotVectors(knots1 is array, knots2 is array) returns array
-{
-    // Extract unique knot values with their multiplicities from both vectors
-    var uniqueKnots = []; // Array of {value, multiplicity} maps
-    
-    // Process first knot vector
-    for (var i = 0; i < size(knots1); i += 1)
-    {
-        const knotValue = knots1[i];
-        var found = false;
-        
-        for (var j = 0; j < size(uniqueKnots); j += 1)
-        {
-            if (abs(uniqueKnots[j].value - knotValue) < KNOT_COMPARISON_TOLERANCE)
-            {
-                uniqueKnots[j].mult1 += 1;
-                found = true;
-                break;
-            }
-        }
-        
-        if (!found)
-        {
-            uniqueKnots = append(uniqueKnots, { "value" : knotValue, "mult1" : 1, "mult2" : 0 });
-        }
-    }
-    
-    // Process second knot vector
-    for (var i = 0; i < size(knots2); i += 1)
-    {
-        const knotValue = knots2[i];
-        var found = false;
-        
-        for (var j = 0; j < size(uniqueKnots); j += 1)
-        {
-            if (abs(uniqueKnots[j].value - knotValue) < KNOT_COMPARISON_TOLERANCE)
-            {
-                uniqueKnots[j].mult2 += 1;
-                found = true;
-                break;
-            }
-        }
-        
-        if (!found)
-        {
-            uniqueKnots = append(uniqueKnots, { "value" : knotValue, "mult1" : 0, "mult2" : 1 });
-        }
-    }
-    
-    // Sort by knot value
-    uniqueKnots = sort(uniqueKnots, function(a, b) { return a.value - b.value; });
-    
-    // Build merged knot vector using maximum multiplicity for each unique knot
-    var mergedKnots = [];
-    for (var i = 0; i < size(uniqueKnots); i += 1)
-    {
-        const maxMult = max(uniqueKnots[i].mult1, uniqueKnots[i].mult2);
-        for (var j = 0; j < maxMult; j += 1)
-        {
-            mergedKnots = append(mergedKnots, uniqueKnots[i].value);
-        }
-    }
-    
-    return mergedKnots;
-}
-
-
-/**
- * Refines both surfaces to have common knot vectors.
- * 
- * This function:
- * 1. Merges the knot vectors from both surfaces (taking the union)
- * 2. Inserts the additional knots into each surface to match the merged knot vector
- * 3. Returns both surfaces with identical knot vectors
- * 
- * This ensures that when interpolating control points, both surfaces have the
- * same parameterization, which is critical for correct tweening results.
- * 
- * @param context {Context} : The modeling context
- * @param firstSurface {map} : First B-spline surface
- * @param secondSurface {map} : Second B-spline surface
- * @returns {map} : Map with "firstSurface" and "secondSurface" having matching knots
- */
-function refineSurfacesToCommonKnots(context is Context, firstSurface is map, secondSurface is map) returns map
-{
-    // Merge U knot vectors
-    const mergedUKnots = mergeKnotVectors(firstSurface.uKnots, secondSurface.uKnots);
-    println("DEBUG: Merged U knots: " ~ mergedUKnots);
-    
-    // Merge V knot vectors
-    const mergedVKnots = mergeKnotVectors(firstSurface.vKnots, secondSurface.vKnots);
-    println("DEBUG: Merged V knots: " ~ mergedVKnots);
-    
-    // Refine first surface to merged knots
-    var refinedFirst = refineToKnotVector(context, firstSurface, mergedUKnots, mergedVKnots);
-    
-    // Refine second surface to merged knots
-    var refinedSecond = refineToKnotVector(context, secondSurface, mergedUKnots, mergedVKnots);
-    
-    return {
-        "firstSurface" : refinedFirst,
-        "secondSurface" : refinedSecond
-    };
-}
-
-
-/**
- * Refines a B-spline surface to have specific target knot vectors.
- * 
- * Inserts additional knots as needed to match the target knot vectors in both
- * U and V directions, while preserving the surface geometry exactly.
- * 
- * @param context {Context} : The modeling context
- * @param surface {map} : B-spline surface to refine
- * @param targetUKnots {array} : Target knot vector for U direction
- * @param targetVKnots {array} : Target knot vector for V direction
- * @returns {map} : Refined surface with target knot vectors
- */
-function refineToKnotVector(context is Context, surface is map, targetUKnots is array, targetVKnots is array) returns map
-{
-    var controlPoints = surface.controlPoints;
-    var weights = surface.weights;
-    var uKnots = surface.uKnots;
-    var vKnots = surface.vKnots;
-    const uDegree = surface.uDegree;
-    const vDegree = surface.vDegree;
-    
-    // Find knots to insert in U direction
-    var uKnotsToInsert = [];
-    for (var i = 0; i < size(targetUKnots); i += 1)
-    {
-        var knotExists = false;
-        for (var j = 0; j < size(uKnots); j += 1)
-        {
-            if (abs(targetUKnots[i] - uKnots[j]) < KNOT_COMPARISON_TOLERANCE)
-            {
-                knotExists = true;
-                break;
-            }
-        }
-        if (!knotExists)
-        {
-            uKnotsToInsert = append(uKnotsToInsert, targetUKnots[i]);
-        }
-    }
-    
-    // Find knots to insert in V direction
-    var vKnotsToInsert = [];
-    for (var i = 0; i < size(targetVKnots); i += 1)
-    {
-        var knotExists = false;
-        for (var j = 0; j < size(vKnots); j += 1)
-        {
-            if (abs(targetVKnots[i] - vKnots[j]) < KNOT_COMPARISON_TOLERANCE)
-            {
-                knotExists = true;
-                break;
-            }
-        }
-        if (!knotExists)
-        {
-            vKnotsToInsert = append(vKnotsToInsert, targetVKnots[i]);
-        }
-    }
-    
-    println("DEBUG: U knots to insert: " ~ uKnotsToInsert);
-    println("DEBUG: V knots to insert: " ~ vKnotsToInsert);
-    
-    // Refine in U direction if needed
-    if (size(uKnotsToInsert) > 0)
-    {
-        const numVPoints = size(controlPoints[0]);
-        var newControlPoints = [];
-        var newWeights = weights != undefined ? [] : undefined;
-        var newUKnots = undefined;
-        
-        for (var vIndex = 0; vIndex < numVPoints; vIndex += 1)
-        {
-            // Extract column of control points and weights
-            var columnPoints = [];
-            var columnWeights = undefined;
-            for (var uIndex = 0; uIndex < size(controlPoints); uIndex += 1)
-            {
-                columnPoints = append(columnPoints, controlPoints[uIndex][vIndex]);
-            }
-            if (weights != undefined)
-            {
-                columnWeights = [];
-                for (var uIndex = 0; uIndex < size(weights); uIndex += 1)
-                {
-                    columnWeights = append(columnWeights, weights[uIndex][vIndex]);
-                }
-            }
-            
-            // Insert knots into this column curve
-            // IMPORTANT: Each column starts with the ORIGINAL uKnots, not updated ones
-            var currentPoints = columnPoints;
-            var currentWeights = columnWeights;
-            var currentKnots = uKnots;
-            
-            for (var knotIdx = 0; knotIdx < size(uKnotsToInsert); knotIdx += 1)
-            {
-                // Insert knot into control points
-                const result = insertKnotBoehm(currentPoints, currentKnots, uDegree, uKnotsToInsert[knotIdx]);
-                currentPoints = result.controlPoints;
-                
-                // Also update weights if rational (must use same knot vector BEFORE insertion)
-                if (currentWeights != undefined)
-                {
-                    // For rational surfaces, weights follow the same knot insertion as control points
-                    const weightResult = insertKnotBoehmScalar(currentWeights, currentKnots, uDegree, uKnotsToInsert[knotIdx]);
-                    currentWeights = weightResult.values;
-                }
-                
-                // Update knots AFTER processing both control points and weights
-                currentKnots = result.knots;
-            }
-            
-            // Store refined control points (transpose)
-            for (var uIndex = 0; uIndex < size(currentPoints); uIndex += 1)
-            {
-                if (vIndex == 0)
-                {
-                    newControlPoints = append(newControlPoints, []);
-                    if (newWeights != undefined)
-                    {
-                        newWeights = append(newWeights, []);
-                    }
-                }
-                newControlPoints[uIndex] = append(newControlPoints[uIndex], currentPoints[uIndex]);
-                if (newWeights != undefined)
-                {
-                    newWeights[uIndex] = append(newWeights[uIndex], currentWeights[uIndex]);
-                }
-            }
-            
-            // Save the new knot vector from the first column (all columns produce the same result)
-            if (vIndex == 0)
-            {
-                newUKnots = currentKnots;
-            }
-        }
-        
-        controlPoints = newControlPoints;
-        weights = newWeights;
-        uKnots = newUKnots;
-    }
-    
-    // Refine in V direction if needed
-    if (size(vKnotsToInsert) > 0)
-    {
-        var newControlPoints = [];
-        var newWeights = weights != undefined ? [] : undefined;
-        var newVKnots = undefined;
-        
-        for (var uIndex = 0; uIndex < size(controlPoints); uIndex += 1)
-        {
-            // Extract row of control points and weights
-            const rowPoints = controlPoints[uIndex];
-            const rowWeights = weights != undefined ? weights[uIndex] : undefined;
-            
-            // Insert knots into this row curve
-            // IMPORTANT: Each row starts with the ORIGINAL vKnots, not updated ones
-            var currentPoints = rowPoints;
-            var currentWeights = rowWeights;
-            var currentKnots = vKnots;
-            
-            for (var knotIdx = 0; knotIdx < size(vKnotsToInsert); knotIdx += 1)
-            {
-                // Insert knot into control points
-                const result = insertKnotBoehm(currentPoints, currentKnots, vDegree, vKnotsToInsert[knotIdx]);
-                currentPoints = result.controlPoints;
-                
-                // Also update weights if rational (must use same knot vector BEFORE insertion)
-                if (currentWeights != undefined)
-                {
-                    const weightResult = insertKnotBoehmScalar(currentWeights, currentKnots, vDegree, vKnotsToInsert[knotIdx]);
-                    currentWeights = weightResult.values;
-                }
-                
-                // Update knots AFTER processing both control points and weights
-                currentKnots = result.knots;
-            }
-            
-            newControlPoints = append(newControlPoints, currentPoints);
-            if (newWeights != undefined)
-            {
-                newWeights = append(newWeights, currentWeights);
-            }
-            
-            // Save the new knot vector from the first row (all rows produce the same result)
-            if (uIndex == 0)
-            {
-                newVKnots = currentKnots;
-            }
-        }
-        
-        controlPoints = newControlPoints;
-        weights = newWeights;
-        vKnots = newVKnots;
-    }
-    
-    return {
-        "uDegree" : uDegree,
-        "vDegree" : vDegree,
-        "isRational" : surface.isRational,
-        "isUPeriodic" : surface.isUPeriodic,
-        "isVPeriodic" : surface.isVPeriodic,
-        "controlPoints" : controlPoints,
-        "weights" : weights,
-        "uKnots" : uKnots,
-        "vKnots" : vKnots
-    };
-}
-
-
-/**
- * Inserts a knot into a sequence of scalar values (like weights) using Boehm algorithm.
- * 
- * This is similar to insertKnotBoehm but operates on scalar values instead of vectors.
- * Used for inserting knots into weight sequences for rational B-splines.
- * 
- * @param values {array} : Array of scalar values
- * @param knots {array} : Knot vector
- * @param degree {number} : Degree of the B-spline
- * @param insertParam {number} : Parameter value where knot should be inserted
- * @returns {map} : Map with "values" and "knots" arrays
- */
-function insertKnotBoehmScalar(values is array, knots is array, degree is number, insertParam is number)
-{
-    const numValues = size(values);
-    
-    // Find the knot span index
-    var knotSpanIndex = -1;
-    for (var i = size(knots) - degree - 2; i >= degree; i -= 1)
-    {
-        if (insertParam >= knots[i] && insertParam <= knots[i + 1])
-        {
-            knotSpanIndex = i;
-            break;
-        }
-    }
-    
-    if (knotSpanIndex == -1)
-    {
-        if (insertParam < knots[degree])
-        {
-            knotSpanIndex = degree;
-        }
-        else
-        {
-            knotSpanIndex = max(degree, size(knots) - degree - 2);
-        }
-    }
-    
-    // Compute new values using Boehm algorithm
-    var newValues = [];
-    const k = knotSpanIndex;
-    const p = degree;
-    
-    // Values from 0 to (k-p) remain unchanged
-    for (var i = 0; i <= k - p; i += 1)
-    {
-        newValues = append(newValues, values[i]);
-    }
-    
-    // Compute new values from (k-p+1) to k
-    for (var i = k - p + 1; i <= k; i += 1)
-    {
-        const denominator = knots[i + p] - knots[i];
-        var alpha = 0.0;
-        if (abs(denominator) > KNOT_TOLERANCE)
-        {
-            alpha = (insertParam - knots[i]) / denominator;
-        }
-        else
-        {
-            alpha = 1.0;
-        }
-        const newValue = values[i - 1] * (1 - alpha) + values[i] * alpha;
-        newValues = append(newValues, newValue);
-    }
-    
-    // Handle the value at position k+1
-    if (k + 1 < numValues)
-    {
-        const denominator = knots[k + 1 + p] - knots[k + 1];
-        var alpha = 0.0;
-        if (abs(denominator) > KNOT_TOLERANCE)
-        {
-            alpha = (insertParam - knots[k + 1]) / denominator;
-        }
-        else
-        {
-            alpha = 1.0;
-        }
-        const newValue = values[k] * (1 - alpha) + values[k + 1] * alpha;
-        newValues = append(newValues, newValue);
-    }
-    else
-    {
-        newValues = append(newValues, values[numValues - 1]);
-    }
-    
-    // Values from (k+1) onward remain unchanged but shifted
-    for (var i = k + 1; i < numValues; i += 1)
-    {
-        newValues = append(newValues, values[i]);
-    }
-    
-    // Insert the new knot
-    var newKnots = [];
-    for (var i = 0; i <= knotSpanIndex; i += 1)
-    {
-        newKnots = append(newKnots, knots[i]);
-    }
-    newKnots = append(newKnots, insertParam);
-    for (var i = knotSpanIndex + 1; i < size(knots); i += 1)
-    {
-        newKnots = append(newKnots, knots[i]);
-    }
-    
-    return {
-        "values" : newValues,
-        "knots" : knotArray(newKnots)
     };
 }
