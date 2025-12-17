@@ -79,6 +79,39 @@ export const tweenSurfaces = defineFeature(function(context is Context, id is Id
         
         annotation { "Name" : "Tween fraction", "Description" : "Position of the median surface: 0 = first surface, 0.5 = middle, 1 = second surface" }
         isReal(definition.tweenFraction, SURFACE_TWEEN_FRACTION_BOUNDS);
+        
+        annotation { "Group Name" : "Developer diagnostics", "Driving Parameter" : "enableDiagnostics", "Collapsed By Default" : true }
+        {
+            annotation { "Name" : "Enable diagnostics" }
+            definition.enableDiagnostics is boolean;
+            
+            if (definition.enableDiagnostics)
+            {
+                annotation { "Name" : "Surface degree information" }
+                definition.diagnosticSurfaceDegreeInfo is boolean;
+                
+                annotation { "Name" : "Degree elevation details" }
+                definition.diagnosticDegreeElevation is boolean;
+                
+                annotation { "Name" : "Control point refinement details" }
+                definition.diagnosticControlPointRefinement is boolean;
+                
+                annotation { "Name" : "Surface alignment matching" }
+                definition.diagnosticSurfaceAlignment is boolean;
+                
+                annotation { "Name" : "Control point interpolation" }
+                definition.diagnosticControlPointInterpolation is boolean;
+                
+                annotation { "Name" : "Control point visualization" }
+                definition.diagnosticControlPointVisualization is boolean;
+                
+                annotation { "Name" : "Knot vector processing" }
+                definition.diagnosticKnotVectorProcessing is boolean;
+                
+                annotation { "Name" : "Curve refinement details" }
+                definition.diagnosticCurveRefinement is boolean;
+            }
+        }
     }
     {
         // Validate inputs
@@ -91,8 +124,19 @@ export const tweenSurfaces = defineFeature(function(context is Context, id is Id
         const secondFace = evaluateQuery(context, definition.secondSurface)[0];
         
         // Create the tweened surface
-        createTweenedSurface(context, id, firstFace, secondFace, definition.tweenFraction);
-    }, { tweenFraction : 0.5 });
+        createTweenedSurface(context, id, firstFace, secondFace, definition.tweenFraction, definition);
+    }, { 
+        tweenFraction : 0.5,
+        enableDiagnostics : false,
+        diagnosticSurfaceDegreeInfo : false,
+        diagnosticDegreeElevation : false,
+        diagnosticControlPointRefinement : false,
+        diagnosticSurfaceAlignment : false,
+        diagnosticControlPointInterpolation : false,
+        diagnosticControlPointVisualization : false,
+        diagnosticKnotVectorProcessing : false,
+        diagnosticCurveRefinement : false
+    });
 
 
 /**
@@ -111,18 +155,22 @@ export const tweenSurfaces = defineFeature(function(context is Context, id is Id
  * @param firstFace {Query} : Query resolving to the first face
  * @param secondFace {Query} : Query resolving to the second face
  * @param tweenFraction {number} : The interpolation fraction (0 to 1)
+ * @param definition {map} : The feature definition including diagnostics settings
  */
 function createTweenedSurface(context is Context, id is Id, 
-        firstFace is Query, secondFace is Query, tweenFraction is number)
+        firstFace is Query, secondFace is Query, tweenFraction is number, definition is map)
 {
     // Get B-spline surface representations of both faces
     var firstSurface = getBSplineSurfaceFromFace(context, firstFace);
     var secondSurface = getBSplineSurfaceFromFace(context, secondFace);
     
-    println("DEBUG: Initial first surface - uDegree=" ~ firstSurface.uDegree ~ ", vDegree=" ~ firstSurface.vDegree ~ 
-            ", controlPoints=" ~ size(firstSurface.controlPoints) ~ "x" ~ size(firstSurface.controlPoints[0]));
-    println("DEBUG: Initial second surface - uDegree=" ~ secondSurface.uDegree ~ ", vDegree=" ~ secondSurface.vDegree ~ 
-            ", controlPoints=" ~ size(secondSurface.controlPoints) ~ "x" ~ size(secondSurface.controlPoints[0]));
+    if (definition.diagnosticSurfaceDegreeInfo)
+    {
+        println("DEBUG: Initial first surface - uDegree=" ~ firstSurface.uDegree ~ ", vDegree=" ~ firstSurface.vDegree ~ 
+                ", controlPoints=" ~ size(firstSurface.controlPoints) ~ "x" ~ size(firstSurface.controlPoints[0]));
+        println("DEBUG: Initial second surface - uDegree=" ~ secondSurface.uDegree ~ ", vDegree=" ~ secondSurface.vDegree ~ 
+                ", controlPoints=" ~ size(secondSurface.controlPoints) ~ "x" ~ size(secondSurface.controlPoints[0]));
+    }
     
     // Elevate degrees to match if necessary
     if (firstSurface.uDegree != secondSurface.uDegree || firstSurface.vDegree != secondSurface.vDegree)
@@ -139,29 +187,44 @@ function createTweenedSurface(context is Context, id is Id,
         if ((firstIsMultiSegmentU || firstIsMultiSegmentV || secondIsMultiSegmentU || secondIsMultiSegmentV) &&
             (firstSurface.uDegree != secondSurface.uDegree || firstSurface.vDegree != secondSurface.vDegree))
         {
-            println("INFO: Surfaces have different degrees and at least one is a multi-segment B-spline.");
-            println("      Using proper B-spline degree elevation to preserve geometry.");
-            println("      First surface: uDegree=" ~ firstSurface.uDegree ~ ", vDegree=" ~ firstSurface.vDegree ~
-                    ", controlPoints=" ~ size(firstSurface.controlPoints) ~ "x" ~ size(firstSurface.controlPoints[0]));
-            println("      Second surface: uDegree=" ~ secondSurface.uDegree ~ ", vDegree=" ~ secondSurface.vDegree ~
-                    ", controlPoints=" ~ size(secondSurface.controlPoints) ~ "x" ~ size(secondSurface.controlPoints[0]));
+            if (definition.diagnosticDegreeElevation)
+            {
+                println("INFO: Surfaces have different degrees and at least one is a multi-segment B-spline.");
+                println("      Using proper B-spline degree elevation to preserve geometry.");
+                println("      First surface: uDegree=" ~ firstSurface.uDegree ~ ", vDegree=" ~ firstSurface.vDegree ~
+                        ", controlPoints=" ~ size(firstSurface.controlPoints) ~ "x" ~ size(firstSurface.controlPoints[0]));
+                println("      Second surface: uDegree=" ~ secondSurface.uDegree ~ ", vDegree=" ~ secondSurface.vDegree ~
+                        ", controlPoints=" ~ size(secondSurface.controlPoints) ~ "x" ~ size(secondSurface.controlPoints[0]));
+            }
         }
         
         if (firstSurface.uDegree < targetUDegree || firstSurface.vDegree < targetVDegree)
         {
-            println("DEBUG: Elevating first surface from (" ~ firstSurface.uDegree ~ "," ~ firstSurface.vDegree ~ 
-                    ") to (" ~ targetUDegree ~ "," ~ targetVDegree ~ ")");
+            if (definition.diagnosticDegreeElevation)
+            {
+                println("DEBUG: Elevating first surface from (" ~ firstSurface.uDegree ~ "," ~ firstSurface.vDegree ~ 
+                        ") to (" ~ targetUDegree ~ "," ~ targetVDegree ~ ")");
+            }
             firstSurface = elevateSurfaceDegree(firstSurface, targetUDegree, targetVDegree);
-            println("DEBUG: After elevation, first surface controlPoints=" ~ 
-                    size(firstSurface.controlPoints) ~ "x" ~ size(firstSurface.controlPoints[0]));
+            if (definition.diagnosticDegreeElevation)
+            {
+                println("DEBUG: After elevation, first surface controlPoints=" ~ 
+                        size(firstSurface.controlPoints) ~ "x" ~ size(firstSurface.controlPoints[0]));
+            }
         }
         if (secondSurface.uDegree < targetUDegree || secondSurface.vDegree < targetVDegree)
         {
-            println("DEBUG: Elevating second surface from (" ~ secondSurface.uDegree ~ "," ~ secondSurface.vDegree ~ 
-                    ") to (" ~ targetUDegree ~ "," ~ targetVDegree ~ ")");
+            if (definition.diagnosticDegreeElevation)
+            {
+                println("DEBUG: Elevating second surface from (" ~ secondSurface.uDegree ~ "," ~ secondSurface.vDegree ~ 
+                        ") to (" ~ targetUDegree ~ "," ~ targetVDegree ~ ")");
+            }
             secondSurface = elevateSurfaceDegree(secondSurface, targetUDegree, targetVDegree);
-            println("DEBUG: After elevation, second surface controlPoints=" ~ 
-                    size(secondSurface.controlPoints) ~ "x" ~ size(secondSurface.controlPoints[0]));
+            if (definition.diagnosticDegreeElevation)
+            {
+                println("DEBUG: After elevation, second surface controlPoints=" ~ 
+                        size(secondSurface.controlPoints) ~ "x" ~ size(secondSurface.controlPoints[0]));
+            }
         }
     }
     
@@ -179,39 +242,60 @@ function createTweenedSurface(context is Context, id is Id,
         
         if (firstControlPointsRowCount < targetUCount || firstControlPointsColumnCount < targetVCount)
         {
-            println("DEBUG: Refining first surface from " ~ firstControlPointsRowCount ~ "x" ~ firstControlPointsColumnCount ~ 
-                    " to " ~ targetUCount ~ "x" ~ targetVCount);
-            firstSurface = refineControlPointCount(context, firstSurface, targetUCount, targetVCount);
-            println("DEBUG: After refinement, first surface controlPoints=" ~ 
-                    size(firstSurface.controlPoints) ~ "x" ~ size(firstSurface.controlPoints[0]));
+            if (definition.diagnosticControlPointRefinement)
+            {
+                println("DEBUG: Refining first surface from " ~ firstControlPointsRowCount ~ "x" ~ firstControlPointsColumnCount ~ 
+                        " to " ~ targetUCount ~ "x" ~ targetVCount);
+            }
+            firstSurface = refineControlPointCount(context, firstSurface, targetUCount, targetVCount, definition);
+            if (definition.diagnosticControlPointRefinement)
+            {
+                println("DEBUG: After refinement, first surface controlPoints=" ~ 
+                        size(firstSurface.controlPoints) ~ "x" ~ size(firstSurface.controlPoints[0]));
+            }
         }
         if (secondControlPointsRowCount < targetUCount || secondControlPointsColumnCount < targetVCount)
         {
-            println("DEBUG: Refining second surface from " ~ secondControlPointsRowCount ~ "x" ~ secondControlPointsColumnCount ~ 
-                    " to " ~ targetUCount ~ "x" ~ targetVCount);
-            secondSurface = refineControlPointCount(context, secondSurface, targetUCount, targetVCount);
-            println("DEBUG: After refinement, second surface controlPoints=" ~ 
-                    size(secondSurface.controlPoints) ~ "x" ~ size(secondSurface.controlPoints[0]));
+            if (definition.diagnosticControlPointRefinement)
+            {
+                println("DEBUG: Refining second surface from " ~ secondControlPointsRowCount ~ "x" ~ secondControlPointsColumnCount ~ 
+                        " to " ~ targetUCount ~ "x" ~ targetVCount);
+            }
+            secondSurface = refineControlPointCount(context, secondSurface, targetUCount, targetVCount, definition);
+            if (definition.diagnosticControlPointRefinement)
+            {
+                println("DEBUG: After refinement, second surface controlPoints=" ~ 
+                        size(secondSurface.controlPoints) ~ "x" ~ size(secondSurface.controlPoints[0]));
+            }
         }
     }
     
     // === ALIGNMENT MATCHING ===
     // Find the best alignment between the two surfaces by testing different transformations
     // (normal, U-flipped, V-flipped, UV-swapped, and combinations)
-    println("DEBUG: Checking surface alignment...");
+    if (definition.diagnosticSurfaceAlignment)
+    {
+        println("DEBUG: Checking surface alignment...");
+    }
     const alignmentResult = findBestSurfaceAlignment(firstSurface.controlPoints, secondSurface.controlPoints, 
                                                       secondSurface.weights);
-    println("DEBUG: Best alignment - flipU: " ~ alignmentResult.flipU ~ ", flipV: " ~ alignmentResult.flipV ~ 
-            ", swapUV: " ~ alignmentResult.swapUV ~ ", distance: " ~ alignmentResult.distance);
+    if (definition.diagnosticSurfaceAlignment)
+    {
+        println("DEBUG: Best alignment - flipU: " ~ alignmentResult.flipU ~ ", flipV: " ~ alignmentResult.flipV ~ 
+                ", swapUV: " ~ alignmentResult.swapUV ~ ", distance: " ~ alignmentResult.distance);
+    }
     
     // Apply the alignment transformation to the second surface
     if (alignmentResult.flipU || alignmentResult.flipV || alignmentResult.swapUV)
     {
         secondSurface = applyAlignmentTransform(secondSurface, alignmentResult.flipU, 
                                                  alignmentResult.flipV, alignmentResult.swapUV);
-        println("DEBUG: Applied alignment transform to second surface");
-        println("DEBUG: After alignment, second surface controlPoints=" ~ 
-                size(secondSurface.controlPoints) ~ "x" ~ size(secondSurface.controlPoints[0]));
+        if (definition.diagnosticSurfaceAlignment)
+        {
+            println("DEBUG: Applied alignment transform to second surface");
+            println("DEBUG: After alignment, second surface controlPoints=" ~ 
+                    size(secondSurface.controlPoints) ~ "x" ~ size(secondSurface.controlPoints[0]));
+        }
     }
     
     // Verify both surfaces have the same rationality
@@ -278,13 +362,16 @@ function createTweenedSurface(context is Context, id is Id,
                 weightRow = append(weightRow, interpolatedWeight);
                 
                 // Debug visualization
-                debug(context, firstControlPoint, DebugColor.BLUE);
-                debug(context, secondControlPoint, DebugColor.RED);
-                debug(context, tweenedControlPoint, DebugColor.GREEN);
-                debugPointCount += 1;
+                if (definition.diagnosticControlPointVisualization)
+                {
+                    debug(context, firstControlPoint, DebugColor.BLUE);
+                    debug(context, secondControlPoint, DebugColor.RED);
+                    debug(context, tweenedControlPoint, DebugColor.GREEN);
+                    debugPointCount += 1;
+                }
                 
                 // Debug logging for corner point
-                if (uIndex == 0 && vIndex == 0)
+                if (definition.diagnosticControlPointInterpolation && uIndex == 0 && vIndex == 0)
                 {
                     println("DEBUG: Corner CP interpolation (RATIONAL, fraction=" ~ tweenFraction ~ "):");
                     println("  First CP: " ~ firstControlPoint ~ ", weight: " ~ firstWeight);
@@ -316,13 +403,16 @@ function createTweenedSurface(context is Context, id is Id,
                 controlPointRow = append(controlPointRow, tweenedControlPoint);
                 
                 // Debug visualization
-                debug(context, firstControlPoint, DebugColor.BLUE);
-                debug(context, secondControlPoint, DebugColor.RED);
-                debug(context, tweenedControlPoint, DebugColor.GREEN);
-                debugPointCount += 1;
+                if (definition.diagnosticControlPointVisualization)
+                {
+                    debug(context, firstControlPoint, DebugColor.BLUE);
+                    debug(context, secondControlPoint, DebugColor.RED);
+                    debug(context, tweenedControlPoint, DebugColor.GREEN);
+                    debugPointCount += 1;
+                }
                 
                 // Debug logging for corner point
-                if (uIndex == 0 && vIndex == 0)
+                if (definition.diagnosticControlPointInterpolation && uIndex == 0 && vIndex == 0)
                 {
                     println("DEBUG: Corner CP interpolation (NON-RATIONAL, fraction=" ~ tweenFraction ~ "):");
                     println("  First CP: " ~ firstControlPoint);
@@ -334,8 +424,11 @@ function createTweenedSurface(context is Context, id is Id,
         }
     }
     
-    println("DEBUG: Drew " ~ debugPointCount ~ " sets of control points (blue/red/green)");
-    println("DEBUG: Expected " ~ (finalFirstControlPointsRowCount * finalFirstControlPointsColumnCount) ~ " sets");
+    if (definition.diagnosticControlPointVisualization)
+    {
+        println("DEBUG: Drew " ~ debugPointCount ~ " sets of control points (blue/red/green)");
+        println("DEBUG: Expected " ~ (finalFirstControlPointsRowCount * finalFirstControlPointsColumnCount) ~ " sets");
+    }
     
     // Interpolate knot vectors
     // Even when control point counts match, knot vectors can differ, representing different parameterizations.
@@ -369,14 +462,17 @@ function createTweenedSurface(context is Context, id is Id,
     const expectedPaddedVSize = numVControlPoints + vDegree + 1;
     
     // Debug logging to diagnose knot array format issues
-    println("DEBUG: uDegree=" ~ uDegree ~ ", vDegree=" ~ vDegree);
-    println("DEBUG: numUControlPoints=" ~ numUControlPoints ~ ", numVControlPoints=" ~ numVControlPoints);
-    println("DEBUG: interpolatedUKnots size=" ~ size(interpolatedUKnots));
-    println("DEBUG: interpolatedVKnots size=" ~ size(interpolatedVKnots));
-    println("DEBUG: expectedPaddedUSize=" ~ expectedPaddedUSize);
-    println("DEBUG: expectedPaddedVSize=" ~ expectedPaddedVSize);
-    println("DEBUG: Expected unpadded U size=" ~ (numUControlPoints - uDegree + 1));
-    println("DEBUG: Expected unpadded V size=" ~ (numVControlPoints - vDegree + 1));
+    if (definition.diagnosticKnotVectorProcessing)
+    {
+        println("DEBUG: uDegree=" ~ uDegree ~ ", vDegree=" ~ vDegree);
+        println("DEBUG: numUControlPoints=" ~ numUControlPoints ~ ", numVControlPoints=" ~ numVControlPoints);
+        println("DEBUG: interpolatedUKnots size=" ~ size(interpolatedUKnots));
+        println("DEBUG: interpolatedVKnots size=" ~ size(interpolatedVKnots));
+        println("DEBUG: expectedPaddedUSize=" ~ expectedPaddedUSize);
+        println("DEBUG: expectedPaddedVSize=" ~ expectedPaddedVSize);
+        println("DEBUG: Expected unpadded U size=" ~ (numUControlPoints - uDegree + 1));
+        println("DEBUG: Expected unpadded V size=" ~ (numVControlPoints - vDegree + 1));
+    }
     
     var unpaddedUKnots = [];
     if (size(interpolatedUKnots) == expectedPaddedUSize)
@@ -386,13 +482,19 @@ function createTweenedSurface(context is Context, id is Id,
         {
             unpaddedUKnots = append(unpaddedUKnots, interpolatedUKnots[i]);
         }
-        println("DEBUG: Unpadded U knots from padded format, result size=" ~ size(unpaddedUKnots));
+        if (definition.diagnosticKnotVectorProcessing)
+        {
+            println("DEBUG: Unpadded U knots from padded format, result size=" ~ size(unpaddedUKnots));
+        }
     }
     else
     {
         // Knots might already be unpadded or in unexpected format, use as-is
         unpaddedUKnots = interpolatedUKnots;
-        println("DEBUG: Using U knots as-is, size=" ~ size(unpaddedUKnots));
+        if (definition.diagnosticKnotVectorProcessing)
+        {
+            println("DEBUG: Using U knots as-is, size=" ~ size(unpaddedUKnots));
+        }
     }
     
     var unpaddedVKnots = [];
@@ -403,40 +505,49 @@ function createTweenedSurface(context is Context, id is Id,
         {
             unpaddedVKnots = append(unpaddedVKnots, interpolatedVKnots[i]);
         }
-        println("DEBUG: Unpadded V knots from padded format, result size=" ~ size(unpaddedVKnots));
+        if (definition.diagnosticKnotVectorProcessing)
+        {
+            println("DEBUG: Unpadded V knots from padded format, result size=" ~ size(unpaddedVKnots));
+        }
     }
     else
     {
         // Knots might already be unpadded or in unexpected format, use as-is
         unpaddedVKnots = interpolatedVKnots;
-        println("DEBUG: Using V knots as-is, size=" ~ size(unpaddedVKnots));
+        if (definition.diagnosticKnotVectorProcessing)
+        {
+            println("DEBUG: Using V knots as-is, size=" ~ size(unpaddedVKnots));
+        }
     }
     
-    println("DEBUG: Final unpaddedUKnots size=" ~ size(unpaddedUKnots));
-    println("DEBUG: Final unpaddedVKnots size=" ~ size(unpaddedVKnots));
-    
-    // Debug: Print knot values to check they're valid (handle small arrays)
-    if (size(unpaddedUKnots) > 0)
+    if (definition.diagnosticKnotVectorProcessing)
     {
-        print("DEBUG: U knots: ");
-        for (var i = 0; i < size(unpaddedUKnots); i += 1)
+        println("DEBUG: Final unpaddedUKnots size=" ~ size(unpaddedUKnots));
+        println("DEBUG: Final unpaddedVKnots size=" ~ size(unpaddedVKnots));
+        
+        // Debug: Print knot values to check they're valid (handle small arrays)
+        if (size(unpaddedUKnots) > 0)
         {
-            print(unpaddedUKnots[i]);
-            if (i < size(unpaddedUKnots) - 1)
-                print(", ");
+            print("DEBUG: U knots: ");
+            for (var i = 0; i < size(unpaddedUKnots); i += 1)
+            {
+                print(unpaddedUKnots[i]);
+                if (i < size(unpaddedUKnots) - 1)
+                    print(", ");
+            }
+            println("");
         }
-        println("");
-    }
-    if (size(unpaddedVKnots) > 0)
-    {
-        print("DEBUG: V knots: ");
-        for (var i = 0; i < size(unpaddedVKnots); i += 1)
+        if (size(unpaddedVKnots) > 0)
         {
-            print(unpaddedVKnots[i]);
-            if (i < size(unpaddedVKnots) - 1)
-                print(", ");
+            print("DEBUG: V knots: ");
+            for (var i = 0; i < size(unpaddedVKnots); i += 1)
+            {
+                print(unpaddedVKnots[i]);
+                if (i < size(unpaddedVKnots) - 1)
+                    print(", ");
+            }
+            println("");
         }
-        println("");
     }
     
     // Create the tweened B-spline surface
@@ -719,9 +830,10 @@ function makeUniformKnotVector(degree is number, numControlPoints is number)
  * @param surface {map} : The B-spline surface to refine
  * @param targetUCount {number} : Target number of control points in U direction
  * @param targetVCount {number} : Target number of control points in V direction
+ * @param definition {map} : The feature definition including diagnostics settings
  * @returns {map} : Refined surface with target control point counts
  */
-function refineControlPointCount(context is Context, surface is map, targetUCount is number, targetVCount is number)
+function refineControlPointCount(context is Context, surface is map, targetUCount is number, targetVCount is number, definition is map)
 {
     // For now, refinement of rational surfaces is not supported
     if (surface.isRational)
@@ -765,17 +877,23 @@ function refineControlPointCount(context is Context, surface is map, targetUCoun
             });
             
             // Refine this curve to have targetUCount control points
-            println("DEBUG: Refining U curve - before: " ~ size(columnCurve.controlPoints) ~ " CP, after target: " ~ targetUCount);
-            println("DEBUG: Curve knots before refinement: " ~ columnCurve.knots);
-            const refinedCurve = refineCurveControlPointCount(context, columnCurve, targetUCount);
-            println("DEBUG: After refinement: " ~ size(refinedCurve.controlPoints) ~ " CP");
-            println("DEBUG: Refined knots: " ~ refinedCurve.knots);
-            if (vIndex == 0)
+            if (definition.diagnosticCurveRefinement)
             {
-                println("DEBUG: First column refined control points:");
-                for (var i = 0; i < size(refinedCurve.controlPoints); i += 1)
+                println("DEBUG: Refining U curve - before: " ~ size(columnCurve.controlPoints) ~ " CP, after target: " ~ targetUCount);
+                println("DEBUG: Curve knots before refinement: " ~ columnCurve.knots);
+            }
+            const refinedCurve = refineCurveControlPointCount(context, columnCurve, targetUCount);
+            if (definition.diagnosticCurveRefinement)
+            {
+                println("DEBUG: After refinement: " ~ size(refinedCurve.controlPoints) ~ " CP");
+                println("DEBUG: Refined knots: " ~ refinedCurve.knots);
+                if (vIndex == 0)
                 {
-                    println("  [" ~ i ~ "]: " ~ refinedCurve.controlPoints[i]);
+                    println("DEBUG: First column refined control points:");
+                    for (var i = 0; i < size(refinedCurve.controlPoints); i += 1)
+                    {
+                        println("  [" ~ i ~ "]: " ~ refinedCurve.controlPoints[i]);
+                    }
                 }
             }
             
