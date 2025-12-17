@@ -150,6 +150,12 @@ export const splitSketch= defineFeature(function(context is Context, id is Id, d
         
         const allBodies = evaluateQuery(context, robustBodiesQuery);
         
+        println("=== MAIN FEATURE BODY DEBUG ===");
+        println("Created robust query and cached with varName: " ~ bodiesQueryVarName);
+        println("allBodies count: " ~ size(allBodies));
+        println("definition.keepIndices size: " ~ size(definition.keepIndices));
+        println("=== END MAIN FEATURE BODY DEBUG ===");
+        
         // Create manipulator points at each body's centroid and draw debug points
         var handlePoints = [];
         var partIndex = 0;
@@ -234,13 +240,23 @@ export const splitSketch= defineFeature(function(context is Context, id is Id, d
 function getSplitBodiesQuery(context is Context, id is Id, partsToSplit is Query) returns Query
 {
     const varName = toAttributeId(id) ~ "-splitBodiesQuery";
+    println(">>> getSplitBodiesQuery varName: " ~ varName);
+    
     var cached = try(getVariable(context, varName));
     if (cached != undefined)
     {
-        return cached as Query;
+        println(">>> Found cached query");
+        const cachedQuery = cached as Query;
+        const cachedBodies = evaluateQuery(context, cachedQuery);
+        println(">>> Cached query evaluates to " ~ size(cachedBodies) ~ " bodies");
+        return cachedQuery;
     }
     // If not cached yet, create and return a robust query (this happens on first creation)
-    return makeRobustQuery(context, partsToSplit);
+    println(">>> No cache, creating new robust query");
+    const newQuery = makeRobustQuery(context, partsToSplit);
+    const newBodies = evaluateQuery(context, newQuery);
+    println(">>> New query evaluates to " ~ size(newBodies) ~ " bodies");
+    return newQuery;
 }
 
 // Helper function: generates a random unit vector using pseudoRandomNumber for a given seed
@@ -306,34 +322,60 @@ export function splitSketchManipulatorChange(context is Context, definition is m
 export function splitSketchEditLogic(context is Context, id is Id,
     oldDefinition is map, definition is map, isCreating is boolean, clickedButton is string) returns map
 {
+    println("=== EDIT LOGIC DEBUG ===");
+    println("clickedButton: " ~ clickedButton);
+    println("isCreating: " ~ isCreating);
+    println("oldDefinition.keepIndices size: " ~ size(oldDefinition.keepIndices));
+    println("definition.keepIndices size before: " ~ size(definition.keepIndices));
+    
     if (clickedButton == "selectAll")
     {
+        println(">>> SELECT ALL button clicked");
         const bodiesQuery = getSplitBodiesQuery(context, id, definition.partsToSplit);
+        println("Got bodies query: " ~ bodiesQuery);
+        
         const bodies = evaluateQuery(context, bodiesQuery);
+        println("Evaluated bodies count: " ~ size(bodies));
+        
         var newKeep = [];
         var index = 0;
         for (var body in bodies)
         {
+            println("  Adding index " ~ index ~ " to newKeep");
             newKeep = append(newKeep, { "keepIndex" : index });
             index += 1;
         }
+        println("newKeep size: " ~ size(newKeep));
         definition.keepIndices = newKeep;
+        println("definition.keepIndices size after: " ~ size(definition.keepIndices));
     }
     if (clickedButton == "invertSelection")
     {
+        println(">>> INVERT SELECTION button clicked");
         const bodiesQuery = getSplitBodiesQuery(context, id, definition.partsToSplit);
+        println("Got bodies query: " ~ bodiesQuery);
+        
         const bodies = evaluateQuery(context, bodiesQuery);
+        println("Evaluated bodies count: " ~ size(bodies));
+        
         var newKeep = [];
         var index = 0;
         for (var body in bodies)
         {
-            if (!isInKeepGroup(definition, index))
+            const isInGroup = isInKeepGroup(definition, index);
+            println("  Index " ~ index ~ " isInKeepGroup: " ~ isInGroup);
+            if (!isInGroup)
             {
+                println("    Adding index " ~ index ~ " to newKeep");
                 newKeep = append(newKeep, { "keepIndex" : index });
             }
             index += 1;
         }
+        println("newKeep size: " ~ size(newKeep));
         definition.keepIndices = newKeep;
+        println("definition.keepIndices size after: " ~ size(definition.keepIndices));
     }
+    
+    println("=== END EDIT LOGIC DEBUG ===");
     return definition;
 }
