@@ -141,17 +141,9 @@ export const splitSketch= defineFeature(function(context is Context, id is Id, d
         }
         
         // Now get all resulting bodies after splits for interactive selection
-        // Create a robust query for all bodies to handle ID stability issues after splits
-        const robustBodiesQuery = makeRobustQuery(context, definition.partsToSplit);
-        
-        // Cache the robust query for use in edit logic
-        const bodiesQueryVarName = toAttributeId(id) ~ "-splitBodiesQuery";
-        setVariable(context, bodiesQueryVarName, robustBodiesQuery);
-        
-        const allBodies = evaluateQuery(context, robustBodiesQuery);
+        const allBodies = evaluateQuery(context, definition.partsToSplit);
         
         println("=== MAIN FEATURE BODY DEBUG ===");
-        println("Created robust query and cached with varName: " ~ bodiesQueryVarName);
         println("allBodies count: " ~ size(allBodies));
         println("definition.keepIndices size: " ~ size(definition.keepIndices));
         println("=== END MAIN FEATURE BODY DEBUG ===");
@@ -236,27 +228,14 @@ export const splitSketch= defineFeature(function(context is Context, id is Id, d
         index : -1
     });
 
-// Helper function: gets the bodies query, using cached robust query from last regeneration if available
-function getSplitBodiesQuery(context is Context, id is Id, partsToSplit is Query) returns Query
+// Helper function: evaluates the parts to split query to get bodies
+// In edit logic, we can't access cached variables, so we just evaluate the current query
+function getSplitBodies(context is Context, partsToSplit is Query) returns array
 {
-    const varName = toAttributeId(id) ~ "-splitBodiesQuery";
-    println(">>> getSplitBodiesQuery varName: " ~ varName);
-    
-    var cached = try(getVariable(context, varName));
-    if (cached != undefined)
-    {
-        println(">>> Found cached query");
-        const cachedQuery = cached as Query;
-        const cachedBodies = evaluateQuery(context, cachedQuery);
-        println(">>> Cached query evaluates to " ~ size(cachedBodies) ~ " bodies");
-        return cachedQuery;
-    }
-    // If not cached yet, create and return a robust query (this happens on first creation)
-    println(">>> No cache, creating new robust query");
-    const newQuery = makeRobustQuery(context, partsToSplit);
-    const newBodies = evaluateQuery(context, newQuery);
-    println(">>> New query evaluates to " ~ size(newBodies) ~ " bodies");
-    return newQuery;
+    println(">>> getSplitBodies evaluating partsToSplit query");
+    const bodies = evaluateQuery(context, partsToSplit);
+    println(">>> Found " ~ size(bodies) ~ " bodies");
+    return bodies;
 }
 
 // Helper function: generates a random unit vector using pseudoRandomNumber for a given seed
@@ -331,10 +310,7 @@ export function splitSketchEditLogic(context is Context, id is Id,
     if (clickedButton == "selectAll")
     {
         println(">>> SELECT ALL button clicked");
-        const bodiesQuery = getSplitBodiesQuery(context, id, definition.partsToSplit);
-        println("Got bodies query: " ~ bodiesQuery);
-        
-        const bodies = evaluateQuery(context, bodiesQuery);
+        const bodies = getSplitBodies(context, definition.partsToSplit);
         println("Evaluated bodies count: " ~ size(bodies));
         
         var newKeep = [];
@@ -352,10 +328,7 @@ export function splitSketchEditLogic(context is Context, id is Id,
     if (clickedButton == "invertSelection")
     {
         println(">>> INVERT SELECTION button clicked");
-        const bodiesQuery = getSplitBodiesQuery(context, id, definition.partsToSplit);
-        println("Got bodies query: " ~ bodiesQuery);
-        
-        const bodies = evaluateQuery(context, bodiesQuery);
+        const bodies = getSplitBodies(context, definition.partsToSplit);
         println("Evaluated bodies count: " ~ size(bodies));
         
         var newKeep = [];
