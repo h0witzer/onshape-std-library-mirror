@@ -9,13 +9,22 @@ FeatureScript 2837;
  * 
  * The implementation works with B-spline surface representations directly:
  * 1. Obtains B-spline surface definitions for both input faces (using approximation if needed)
- * 2. Interpolates control points of the two B-spline surfaces
- * 3. Creates a new B-spline surface with the interpolated control points
+ * 2. Detects and corrects for misaligned parametric directions (U/V flips and swaps)
+ * 3. Interpolates control points of the two B-spline surfaces
+ * 4. Creates a new B-spline surface with the interpolated control points
  * 
- * Current implementation: Linear interpolation of B-spline control points
- * - fraction = 0: surface coincident with first surface
+ * Key Features:
+ * - Automatic alignment matching: Tests 8 possible transformations (U-flip, V-flip, UV-swap, 
+ *   and combinations) to find the best correspondence between surfaces
+ * - Proper NURBS interpolation: For rational surfaces, interpolates in homogeneous coordinates
+ *   to ensure mathematically correct results
+ * - Exact endpoint preservation: At fraction=0, produces exactly the first surface; at fraction=1, 
+ *   produces exactly the second surface
+ * 
+ * Interpolation behavior:
+ * - fraction = 0: surface coincident with first surface (EXACT)
  * - fraction = 0.5: median surface (equidistant from both surfaces)
- * - fraction = 1: surface coincident with second surface
+ * - fraction = 1: surface coincident with second surface (EXACT)
  * 
  * Future enhancement: Support for the Parasolid-style parameter p where
  * each point satisfies (1 - p) D1 = (1 + p) D2, allowing for weighted median surfaces.
