@@ -82,11 +82,11 @@ export const tweenSurfaces = defineFeature(function(context is Context, id is Id
         annotation { "Name" : "Tween fraction", "Description" : "Position of the median surface: 0 = first surface, 0.5 = middle, 1 = second surface" }
         isReal(definition.tweenFraction, SURFACE_TWEEN_FRACTION_BOUNDS);
         
+        annotation { "Name" : "Enable diagnostics" }
+        definition.enableDiagnostics is boolean;
+        
         annotation { "Group Name" : "Developer diagnostics", "Driving Parameter" : "enableDiagnostics", "Collapsed By Default" : true }
         {
-            annotation { "Name" : "Enable diagnostics" }
-            definition.enableDiagnostics is boolean;
-            
             if (definition.enableDiagnostics)
             {
                 annotation { "Name" : "Surface degree information" }
@@ -1579,6 +1579,9 @@ function transposeWeights(weights is array) returns array
  * This is used as a first pass to determine the correct parametric orientation before
  * performing degree elevation and control point refinement.
  * 
+ * Optimized for performance: uses pre-computed index mappings to avoid conditional logic
+ * and redundant distance calculations.
+ * 
  * @param controlPoints1 {array} : Control point matrix for first surface (reference)
  * @param controlPoints2 {array} : Control point matrix for second surface (to be aligned)
  * @returns {map} : Map with fields: flipU {boolean}, flipV {boolean}, swapUV {boolean}, distance {ValueWithUnits}
@@ -1591,142 +1594,63 @@ function findPreliminaryAlignment(controlPoints1 is array, controlPoints2 is arr
     const numV2 = size(controlPoints2[0]);
     
     // Extract corner points from first surface
-    const corner1_00 = controlPoints1[0][0];
-    const corner1_0V = controlPoints1[0][numV1 - 1];
-    const corner1_U0 = controlPoints1[numU1 - 1][0];
-    const corner1_UV = controlPoints1[numU1 - 1][numV1 - 1];
+    const c1 = [
+        controlPoints1[0][0],           // [0] = corner (0,0)
+        controlPoints1[0][numV1 - 1],   // [1] = corner (0,V)
+        controlPoints1[numU1 - 1][0],   // [2] = corner (U,0)
+        controlPoints1[numU1 - 1][numV1 - 1]  // [3] = corner (U,V)
+    ];
     
     // Extract corner points from second surface
-    const corner2_00 = controlPoints2[0][0];
-    const corner2_0V = controlPoints2[0][numV2 - 1];
-    const corner2_U0 = controlPoints2[numU2 - 1][0];
-    const corner2_UV = controlPoints2[numU2 - 1][numV2 - 1];
+    const c2 = [
+        controlPoints2[0][0],           // [0] = corner (0,0)
+        controlPoints2[0][numV2 - 1],   // [1] = corner (0,V)
+        controlPoints2[numU2 - 1][0],   // [2] = corner (U,0)
+        controlPoints2[numU2 - 1][numV2 - 1]  // [3] = corner (U,V)
+    ];
+    
+    // Pre-computed corner mapping for all 8 transformations
+    // Each entry maps: [c1[0]->c2[?], c1[1]->c2[?], c1[2]->c2[?], c1[3]->c2[?]]
+    // Format: [[mapping], flipU, flipV, swapUV]
+    const transformations = [
+        [[0, 1, 2, 3], false, false, false],  // No transformation
+        [[2, 3, 0, 1], true,  false, false],  // U-flip
+        [[1, 0, 3, 2], false, true,  false],  // V-flip
+        [[3, 2, 1, 0], true,  true,  false],  // UV-flip
+        [[0, 2, 1, 3], false, false, true],   // UV-swap
+        [[1, 3, 0, 2], true,  false, true],   // UV-swap + U-flip
+        [[2, 0, 3, 1], false, true,  true],   // UV-swap + V-flip
+        [[3, 1, 2, 0], true,  true,  true]    // UV-swap + UV-flip
+    ];
     
     var bestDistance = 1e30 * meter * meter;
-    var bestFlipU = false;
-    var bestFlipV = false;
-    var bestSwapUV = false;
+    var bestConfig = 0;
     
-    // Test all 8 possible transformations by comparing corner points
-    // Without UV swap:
-    for (var testFlipU = 0; testFlipU < 2; testFlipU += 1)
+    // Test all 8 transformations
+    for (var transformationIndex = 0; transformationIndex < 8; transformationIndex += 1)
     {
-        for (var testFlipV = 0; testFlipV < 2; testFlipV += 1)
+        const mapping = transformations[transformationIndex][0];
+        
+        // Compute total squared distance for this transformation
+        // Unrolled loop for performance
+        const d0 = c1[0] - c2[mapping[0]];
+        const d1 = c1[1] - c2[mapping[1]];
+        const d2 = c1[2] - c2[mapping[2]];
+        const d3 = c1[3] - c2[mapping[3]];
+        
+        const distance = squaredNorm(d0) + squaredNorm(d1) + squaredNorm(d2) + squaredNorm(d3);
+        
+        if (distance < bestDistance)
         {
-            const flipU = (testFlipU == 1);
-            const flipV = (testFlipV == 1);
-            
-            // Determine which corners of surface 2 correspond to corners of surface 1
-            var c2_00 = corner2_00;
-            var c2_0V = corner2_0V;
-            var c2_U0 = corner2_U0;
-            var c2_UV = corner2_UV;
-            
-            if (flipU && !flipV)
-            {
-                c2_00 = corner2_U0;
-                c2_0V = corner2_UV;
-                c2_U0 = corner2_00;
-                c2_UV = corner2_0V;
-            }
-            else if (!flipU && flipV)
-            {
-                c2_00 = corner2_0V;
-                c2_0V = corner2_00;
-                c2_U0 = corner2_UV;
-                c2_UV = corner2_U0;
-            }
-            else if (flipU && flipV)
-            {
-                c2_00 = corner2_UV;
-                c2_0V = corner2_U0;
-                c2_U0 = corner2_0V;
-                c2_UV = corner2_00;
-            }
-            
-            // Compute distance between corresponding corners
-            const distance = squaredNorm(corner1_00 - c2_00) + 
-                           squaredNorm(corner1_0V - c2_0V) + 
-                           squaredNorm(corner1_U0 - c2_U0) + 
-                           squaredNorm(corner1_UV - c2_UV);
-            
-            if (distance < bestDistance)
-            {
-                bestDistance = distance;
-                bestFlipU = flipU;
-                bestFlipV = flipV;
-                bestSwapUV = false;
-            }
-        }
-    }
-    
-    // With UV swap:
-    for (var testFlipU = 0; testFlipU < 2; testFlipU += 1)
-    {
-        for (var testFlipV = 0; testFlipV < 2; testFlipV += 1)
-        {
-            const flipU = (testFlipU == 1);
-            const flipV = (testFlipV == 1);
-            
-            // After UV swap, U and V are exchanged, so:
-            // corner2[0][0] -> corner2[0][0]
-            // corner2[0][V2] -> corner2[U2][0]
-            // corner2[U2][0] -> corner2[0][V2]
-            // corner2[U2][V2] -> corner2[U2][V2]
-            var c2_00 = corner2_00;
-            var c2_0V = corner2_U0;  // After swap
-            var c2_U0 = corner2_0V;  // After swap
-            var c2_UV = corner2_UV;
-            
-            // Then apply flips in the swapped coordinate system
-            if (flipU && !flipV)
-            {
-                const temp_00 = c2_00;
-                const temp_0V = c2_0V;
-                c2_00 = c2_U0;
-                c2_0V = c2_UV;
-                c2_U0 = temp_00;
-                c2_UV = temp_0V;
-            }
-            else if (!flipU && flipV)
-            {
-                const temp_00 = c2_00;
-                const temp_U0 = c2_U0;
-                c2_00 = c2_0V;
-                c2_0V = temp_00;
-                c2_U0 = c2_UV;
-                c2_UV = temp_U0;
-            }
-            else if (flipU && flipV)
-            {
-                const temp = c2_00;
-                c2_00 = c2_UV;
-                c2_UV = temp;
-                const temp2 = c2_0V;
-                c2_0V = c2_U0;
-                c2_U0 = temp2;
-            }
-            
-            // Compute distance between corresponding corners
-            const distance = squaredNorm(corner1_00 - c2_00) + 
-                           squaredNorm(corner1_0V - c2_0V) + 
-                           squaredNorm(corner1_U0 - c2_U0) + 
-                           squaredNorm(corner1_UV - c2_UV);
-            
-            if (distance < bestDistance)
-            {
-                bestDistance = distance;
-                bestFlipU = flipU;
-                bestFlipV = flipV;
-                bestSwapUV = true;
-            }
+            bestDistance = distance;
+            bestConfig = transformationIndex;
         }
     }
     
     return {
-        "flipU" : bestFlipU,
-        "flipV" : bestFlipV,
-        "swapUV" : bestSwapUV,
+        "flipU" : transformations[bestConfig][1],
+        "flipV" : transformations[bestConfig][2],
+        "swapUV" : transformations[bestConfig][3],
         "distance" : bestDistance
     };
 }
