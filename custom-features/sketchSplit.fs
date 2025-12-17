@@ -1,6 +1,6 @@
 FeatureScript 2770;
 import(path : "onshape/std/common.fs", version : "2770.0");
-import(path : "numberUtils.fs", version : "");
+import(path : "9f4c9835d8018ff7dbdb5683/77c856824c783f8f1c5a3312/f937aebd788e8d724a4de67b", version : "1e843593890adcd0071cee82"); // Reese Number Utils for pseudo rng function
 
 /**
  * Split with Sketch Feature
@@ -39,12 +39,12 @@ export const splitSketch= defineFeature(function(context is Context, id is Id, d
         annotation { "Name" : "Handle index", "UIHint" : UIHint.ALWAYS_HIDDEN }
         isInteger(definition.index, { (unitless) : [-10000, 0, 10000] } as IntegerBoundSpec);
 
-        // Button to select all resulting bodies
-        annotation { "Name" : "Select All" }
+        // Button to keep all resulting bodies
+        annotation { "Name" : "Keep all regions" }
         isButton(definition.selectAll);
 
-        // Button to invert selection of all parts
-        annotation { "Name" : "Invert selection" }
+        // Button to invert which regions are kept
+        annotation { "Name" : "Invert kept regions" }
         isButton(definition.invertSelection);
 
     }
@@ -142,6 +142,10 @@ export const splitSketch= defineFeature(function(context is Context, id is Id, d
         
         // Now get all resulting bodies after splits for interactive selection
         const allBodies = evaluateQuery(context, definition.partsToSplit);
+        
+        // Cache the body count for use in edit logic
+        const bodiesVariableName = toAttributeId(id) ~ "-splitBodiesCount";
+        setVariable(context, bodiesVariableName, size(allBodies));
         
         // Create manipulator points at each body's centroid and draw debug points
         var handlePoints = [];
@@ -282,36 +286,44 @@ export function splitSketchManipulatorChange(context is Context, definition is m
     return definition;
 }
 
-// Editing logic function handles clicks on the select all and invert selection buttons
+// Editing logic function handles clicks on the keep all and invert buttons
 export function splitSketchEditLogic(context is Context, id is Id,
     oldDefinition is map, definition is map, isCreating is boolean, clickedButton is string) returns map
 {
     if (clickedButton == "selectAll")
     {
-        const allBodies = evaluateQuery(context, definition.partsToSplit);
-        var newKeep = [];
-        var index = 0;
-        for (var body in allBodies)
+        // Get the cached body count from the last successful regeneration
+        const bodiesVariableName = toAttributeId(id) ~ "-splitBodiesCount";
+        const bodyCount = try silent(getVariable(context, bodiesVariableName));
+        
+        if (bodyCount != undefined)
         {
-            newKeep = append(newKeep, { "keepIndex" : index });
-            index += 1;
-        }
-        definition.keepIndices = newKeep;
-    }
-    if (clickedButton == "invertSelection")
-    {
-        const allBodies = evaluateQuery(context, definition.partsToSplit);
-        var newKeep = [];
-        var index = 0;
-        for (var body in allBodies)
-        {
-            if (!isInKeepGroup(definition, index))
+            var newKeep = [];
+            for (var index = 0; index < bodyCount; index += 1)
             {
                 newKeep = append(newKeep, { "keepIndex" : index });
             }
-            index += 1;
+            definition.keepIndices = newKeep;
         }
-        definition.keepIndices = newKeep;
+    }
+    if (clickedButton == "invertSelection")
+    {
+        // Get the cached body count from the last successful regeneration
+        const bodiesVariableName = toAttributeId(id) ~ "-splitBodiesCount";
+        const bodyCount = try silent(getVariable(context, bodiesVariableName));
+        
+        if (bodyCount != undefined)
+        {
+            var newKeep = [];
+            for (var index = 0; index < bodyCount; index += 1)
+            {
+                if (!isInKeepGroup(definition, index))
+                {
+                    newKeep = append(newKeep, { "keepIndex" : index });
+                }
+            }
+            definition.keepIndices = newKeep;
+        }
     }
     return definition;
 }
