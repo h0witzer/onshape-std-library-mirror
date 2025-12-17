@@ -904,48 +904,52 @@ function insertKnotBoehm(controlPoints is array, knots is array, degree is numbe
         newControlPoints = append(newControlPoints, controlPoints[i]);
     }
     
-    // Compute new control points from (k-p+1) to (k+1)
-    // These are the affected control points plus one new one
-    for (var i = k - p + 1; i <= k + 1; i += 1)
+    // Compute new control points from (k-p+1) to k using Boehm's knot insertion formula
+    // The formula for the new control point Q_i is:
+    // Q_i = alpha_i * P_i + (1 - alpha_i) * P_{i-1}
+    // where alpha_i = (u - t_i) / (t_{i+p} - t_i) and u is the parameter to insert
+    for (var i = k - p + 1; i <= k; i += 1)
     {
-        // Compute alpha for this new control point
+        const denominator = knots[i + p] - knots[i];
         var alpha = 0.0;
-        
-        // For the new control point at position i, we blend old points at i-1 and i
-        // But we need to be careful about array bounds
-        const oldIndex = min(i, numControlPoints - 1);
-        
-        const denominator = knots[oldIndex + p] - knots[oldIndex];
         if (abs(denominator) > KNOT_TOLERANCE)
         {
-            alpha = (insertParam - knots[oldIndex]) / denominator;
+            alpha = (insertParam - knots[i]) / denominator;
         }
         else
         {
-            // For repeated knots, use alpha = 1 (keep the current point)
+            // For repeated knots, keep the right control point
             alpha = 1.0;
         }
-        
-        // Blend between control points
-        if (i == 0)
+        const newPoint = controlPoints[i - 1] * (1 - alpha) + controlPoints[i] * alpha;
+        newControlPoints = append(newControlPoints, newPoint);
+    }
+    
+    // The last new control point (at position k+1) is special:
+    // If k+1 < numControlPoints, it's P_{k+1} from the old array
+    // If k+1 == numControlPoints, we need to compute it differently
+    if (k + 1 < numControlPoints)
+    {
+        // This shouldn't happen for single knot insertion in a clamped B-spline
+        // but handle it anyway
+        const denominator = knots[k + 1 + p] - knots[k + 1];
+        var alpha = 0.0;
+        if (abs(denominator) > KNOT_TOLERANCE)
         {
-            // Edge case: first control point
-            newControlPoints = append(newControlPoints, controlPoints[0]);
+            alpha = (insertParam - knots[k + 1]) / denominator;
         }
-        else if (oldIndex == i && i < numControlPoints)
+        else
         {
-            // Normal case: blend P[i-1] and P[i]
-            const newPoint = controlPoints[i - 1] * (1 - alpha) + controlPoints[i] * alpha;
-            newControlPoints = append(newControlPoints, newPoint);
+            alpha = 1.0;
         }
-        else if (i == numControlPoints)
-        {
-            // Edge case: we're adding a point beyond the original array
-            // This happens when k+1 == numControlPoints
-            // Blend the last two points
-            const newPoint = controlPoints[numControlPoints - 2] * (1 - alpha) + controlPoints[numControlPoints - 1] * alpha;
-            newControlPoints = append(newControlPoints, newPoint);
-        }
+        const newPoint = controlPoints[k] * (1 - alpha) + controlPoints[k + 1] * alpha;
+        newControlPoints = append(newControlPoints, newPoint);
+    }
+    else
+    {
+        // k+1 >= numControlPoints, so this is the last control point
+        // Just keep the last control point from the original array
+        newControlPoints = append(newControlPoints, controlPoints[numControlPoints - 1]);
     }
     
     // Control points from (k+1) onward in the original array remain unchanged
