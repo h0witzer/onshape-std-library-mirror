@@ -119,6 +119,24 @@ function createTweenedSurface(context is Context, id is Id,
         const targetUDegree = max(firstSurface.uDegree, secondSurface.uDegree);
         const targetVDegree = max(firstSurface.vDegree, secondSurface.vDegree);
         
+        // Check if either surface has multi-segment B-splines that would require proper elevation
+        const firstIsMultiSegmentU = !isSingleSegmentBezierCurve(firstSurface.uDegree, size(firstSurface.controlPoints));
+        const firstIsMultiSegmentV = !isSingleSegmentBezierCurve(firstSurface.vDegree, size(firstSurface.controlPoints[0]));
+        const secondIsMultiSegmentU = !isSingleSegmentBezierCurve(secondSurface.uDegree, size(secondSurface.controlPoints));
+        const secondIsMultiSegmentV = !isSingleSegmentBezierCurve(secondSurface.vDegree, size(secondSurface.controlPoints[0]));
+        
+        if ((firstIsMultiSegmentU || firstIsMultiSegmentV || secondIsMultiSegmentU || secondIsMultiSegmentV) &&
+            (firstSurface.uDegree != secondSurface.uDegree || firstSurface.vDegree != secondSurface.vDegree))
+        {
+            println("WARNING: Surfaces have different degrees and at least one is a multi-segment B-spline.");
+            println("         Degree elevation may not preserve surface geometry correctly.");
+            println("         First surface: uDegree=" ~ firstSurface.uDegree ~ ", vDegree=" ~ firstSurface.vDegree ~
+                    ", controlPoints=" ~ size(firstSurface.controlPoints) ~ "x" ~ size(firstSurface.controlPoints[0]));
+            println("         Second surface: uDegree=" ~ secondSurface.uDegree ~ ", vDegree=" ~ secondSurface.vDegree ~
+                    ", controlPoints=" ~ size(secondSurface.controlPoints) ~ "x" ~ size(secondSurface.controlPoints[0]));
+            println("         For best results, use surfaces with matching degrees or single-segment surfaces.");
+        }
+        
         if (firstSurface.uDegree < targetUDegree || firstSurface.vDegree < targetVDegree)
         {
             println("DEBUG: Elevating first surface from (" ~ firstSurface.uDegree ~ "," ~ firstSurface.vDegree ~ 
@@ -435,17 +453,6 @@ function elevateSurfaceDegree(surface is map, targetUDegree is number, targetVDe
     if (uDegree < targetUDegree)
     {
         const numVPoints = size(controlPoints[0]);
-        const numUPoints = size(controlPoints);
-        
-        // Check if this is a single-segment B-spline (Bezier patch) in U direction
-        if (!isSingleSegmentBezierCurve(uDegree, numUPoints))
-        {
-            println("WARNING: Attempting to elevate degree of a multi-segment B-spline in U direction.");
-            println("         U degree=" ~ uDegree ~ ", numUControlPoints=" ~ numUPoints);
-            println("         Bezier elevation may not preserve surface geometry correctly.");
-            println("         For best results, use surfaces with numControlPoints == degree + 1.");
-        }
-        
         var newControlPoints = [];
         
         for (var vIndex = 0; vIndex < numVPoints; vIndex += 1)
@@ -481,17 +488,6 @@ function elevateSurfaceDegree(surface is map, targetUDegree is number, targetVDe
     // Elevate V degree if needed (process each U-row as an independent curve)
     if (vDegree < targetVDegree)
     {
-        const numVPoints = size(controlPoints[0]);
-        
-        // Check if this is a single-segment B-spline (Bezier patch) in V direction
-        if (!isSingleSegmentBezierCurve(vDegree, numVPoints))
-        {
-            println("WARNING: Attempting to elevate degree of a multi-segment B-spline in V direction.");
-            println("         V degree=" ~ vDegree ~ ", numVControlPoints=" ~ numVPoints);
-            println("         Bezier elevation may not preserve surface geometry correctly.");
-            println("         For best results, use surfaces with numControlPoints == degree + 1.");
-        }
-        
         var newControlPoints = [];
         
         for (var uIndex = 0; uIndex < size(controlPoints); uIndex += 1)
