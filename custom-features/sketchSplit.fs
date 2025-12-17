@@ -94,18 +94,21 @@ export const splitSketch= defineFeature(function(context is Context, id is Id, d
                     // Attempt to perform the split operation, keeping all resulting bodies
                     try silent
                     {
-                        opSplitPart(context, splitId, {
+                        // DIAGNOSTIC: Using opBoolean SUBTRACTION instead of opSplitPart
+                        // to test if split identity changes are causing button issues
+                        opBoolean(context, splitId, {
                             "targets" : definition.partsToSplit,
-                            "tool" : extrudedTool,
-                            "keepType" : SplitOperationKeepType.KEEP_ALL,
-                            "useTrimmed": !definition.extendLines
+                            "tools" : extrudedTool,
+                            "operationType" : BooleanOperationType.SUBTRACTION,
+                            "keepTools" : false,
+                            "makeSolid" : false
                         });
                         
                         successfulSplitCount += 1;
                     }
                     catch
                     {
-                        // Split failed - perform surface cleanup by deleting the extruded
+                        // Boolean failed - perform surface cleanup by deleting the extruded
                         // tool body to avoid leaving orphaned geometry in the part studio
                         try silent
                         {
@@ -129,15 +132,15 @@ export const splitSketch= defineFeature(function(context is Context, id is Id, d
             }
         }
         
-        // Report status to the user if splits failed
+        // Report status to the user if operations failed
         if (successfulSplitCount == 0)
         {
-            throw regenError("All split operations failed. Check that sketch edges intersect target bodies.");
+            throw regenError("All operations failed. Check that sketch edges intersect target bodies.");
         }
         
         if (failedSplitCount > 0)
         {
-            reportFeatureWarning(context, id, "Completed " ~ successfulSplitCount ~ " split(s). " ~ failedSplitCount ~ " split(s) failed.");
+            reportFeatureWarning(context, id, "Completed " ~ successfulSplitCount ~ " operation(s). " ~ failedSplitCount ~ " operation(s) failed.");
         }
         
         // Now get all resulting bodies after splits for interactive selection
