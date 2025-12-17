@@ -326,9 +326,10 @@ export function splitSketchEditLogic(context is Context, id is Id,
         const bodies = getSplitBodies(context, oldDefinition.partsToSplit);
         println("Body count from query: " ~ size(bodies));
         
-        var actualBodyCount = size(bodies);
+        var actualBodyCount = 0;
+        var foundAttribute = false;
         
-        // Try to get the stored body count from attributes
+        // Try to get the stored body count from attributes (this is the authoritative source)
         if (size(bodies) > 0)
         {
             const storedCount = try silent(getAttribute(context, {
@@ -338,15 +339,17 @@ export function splitSketchEditLogic(context is Context, id is Id,
             if (storedCount != undefined)
             {
                 actualBodyCount = storedCount as number;
+                foundAttribute = true;
                 println("Using stored body count from attribute: " ~ actualBodyCount);
             }
         }
         
-        // Fallback: if we have selected items, there must be at least that many bodies
-        if (actualBodyCount < size(oldDefinition.keepIndices))
+        // Fallback only if attribute not found
+        if (!foundAttribute)
         {
-            actualBodyCount = size(oldDefinition.keepIndices);
-            println("Using body count from oldDefinition.keepIndices: " ~ actualBodyCount);
+            // Use the larger of query size or keepIndices size
+            actualBodyCount = max(size(bodies), size(oldDefinition.keepIndices));
+            println("No attribute found, using fallback body count: " ~ actualBodyCount);
         }
         
         var newKeep = [];
@@ -365,9 +368,10 @@ export function splitSketchEditLogic(context is Context, id is Id,
         const bodies = getSplitBodies(context, oldDefinition.partsToSplit);
         println("Body count from query: " ~ size(bodies));
         
-        var actualBodyCount = size(bodies);
+        var actualBodyCount = 0;
+        var foundAttribute = false;
         
-        // Try to get the stored body count from attributes
+        // Try to get the stored body count from attributes (this is the authoritative source)
         if (size(bodies) > 0)
         {
             const storedCount = try silent(getAttribute(context, {
@@ -377,15 +381,17 @@ export function splitSketchEditLogic(context is Context, id is Id,
             if (storedCount != undefined)
             {
                 actualBodyCount = storedCount as number;
+                foundAttribute = true;
                 println("Using stored body count from attribute: " ~ actualBodyCount);
             }
         }
         
-        // Fallback: if we have selected items, there must be at least that many bodies
-        if (actualBodyCount < size(oldDefinition.keepIndices))
+        // Fallback only if attribute not found
+        if (!foundAttribute)
         {
-            actualBodyCount = size(oldDefinition.keepIndices);
-            println("Using body count from oldDefinition.keepIndices: " ~ actualBodyCount);
+            // Use the larger of query size or keepIndices size
+            actualBodyCount = max(size(bodies), size(oldDefinition.keepIndices));
+            println("No attribute found, using fallback body count: " ~ actualBodyCount);
         }
         
         var newKeep = [];
