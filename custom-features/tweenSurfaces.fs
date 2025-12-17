@@ -196,6 +196,7 @@ function createTweenedSurface(context is Context, id is Id,
     
     // Interpolate control points
     var tweenedControlPoints = [];
+    var debugPointCount = 0;
     for (var uIndex = 0; uIndex < finalFirstControlPointsRowCount; uIndex += 1)
     {
         var controlPointRow = [];
@@ -213,6 +214,7 @@ function createTweenedSurface(context is Context, id is Id,
             debug(context, firstControlPoint, DebugColor.BLUE);
             debug(context, secondControlPoint, DebugColor.RED);
             debug(context, tweenedControlPoint, DebugColor.GREEN);
+            debugPointCount += 1;
             
             // Additional debug: Print some sample interpolations to verify math
             if (uIndex == 0 && vIndex == 0)
@@ -226,6 +228,9 @@ function createTweenedSurface(context is Context, id is Id,
         }
         tweenedControlPoints = append(tweenedControlPoints, controlPointRow);
     }
+    
+    println("DEBUG: Drew " ~ debugPointCount ~ " sets of control points (blue/red/green)");
+    println("DEBUG: Expected " ~ (finalFirstControlPointsRowCount * finalFirstControlPointsColumnCount) ~ " sets");
     
     // Interpolate weights if surfaces are rational
     var tweenedWeights = undefined;
@@ -381,12 +386,32 @@ function getBSplineSurfaceFromFace(context is Context, face is Query)
 
 
 /**
+ * Checks if a B-spline curve is a single-segment Bezier curve.
+ * 
+ * A Bezier curve of degree p has exactly p+1 control points and no internal knots.
+ * 
+ * @param degree {number} : The degree of the B-spline curve
+ * @param numControlPoints {number} : The number of control points
+ * @returns {boolean} : True if this is a single-segment Bezier curve
+ */
+function isSingleSegmentBezierCurve(degree is number, numControlPoints is number) returns boolean
+{
+    return numControlPoints == degree + 1;
+}
+
+
+/**
  * Elevates the degree of a non-rational B-spline surface in U and/or V directions.
  * 
- * This uses the mathematically correct degree elevation algorithm that preserves
- * the surface geometry exactly. For tensor product B-spline surfaces, degree elevation
- * is performed independently in each parametric direction by treating each isoparametric
- * curve as a separate Bezier curve and elevating its degree.
+ * This uses degree elevation for single-segment B-spline surfaces (Bezier patches).
+ * For tensor product B-spline surfaces, degree elevation is performed independently 
+ * in each parametric direction by treating each isoparametric curve as a separate 
+ * Bezier curve and elevating its degree.
+ * 
+ * LIMITATION: This implementation only works correctly for single-segment B-splines
+ * (Bezier patches). For multi-segment B-splines, proper B-spline degree elevation
+ * algorithms should be used instead (subdivision into Bezier segments, elevate each,
+ * then recombine with proper knot vector handling).
  * 
  * Note: This implementation currently only supports non-rational surfaces.
  * For general B-spline surfaces with non-uniform knots, the knot vectors are
@@ -410,6 +435,17 @@ function elevateSurfaceDegree(surface is map, targetUDegree is number, targetVDe
     if (uDegree < targetUDegree)
     {
         const numVPoints = size(controlPoints[0]);
+        const numUPoints = size(controlPoints);
+        
+        // Check if this is a single-segment B-spline (Bezier patch) in U direction
+        if (!isSingleSegmentBezierCurve(uDegree, numUPoints))
+        {
+            println("WARNING: Attempting to elevate degree of a multi-segment B-spline in U direction.");
+            println("         U degree=" ~ uDegree ~ ", numUControlPoints=" ~ numUPoints);
+            println("         Bezier elevation may not preserve surface geometry correctly.");
+            println("         For best results, use surfaces with numControlPoints == degree + 1.");
+        }
+        
         var newControlPoints = [];
         
         for (var vIndex = 0; vIndex < numVPoints; vIndex += 1)
@@ -422,6 +458,7 @@ function elevateSurfaceDegree(surface is map, targetUDegree is number, targetVDe
             }
             
             // Elevate this column curve using Bezier degree elevation
+            // NOTE: This only works correctly for single-segment B-splines (Bezier curves)
             const elevatedPoints = elevateBezierDegree(columnPoints, targetUDegree);
             
             // Store elevated control points back (transpose)
@@ -444,6 +481,17 @@ function elevateSurfaceDegree(surface is map, targetUDegree is number, targetVDe
     // Elevate V degree if needed (process each U-row as an independent curve)
     if (vDegree < targetVDegree)
     {
+        const numVPoints = size(controlPoints[0]);
+        
+        // Check if this is a single-segment B-spline (Bezier patch) in V direction
+        if (!isSingleSegmentBezierCurve(vDegree, numVPoints))
+        {
+            println("WARNING: Attempting to elevate degree of a multi-segment B-spline in V direction.");
+            println("         V degree=" ~ vDegree ~ ", numVControlPoints=" ~ numVPoints);
+            println("         Bezier elevation may not preserve surface geometry correctly.");
+            println("         For best results, use surfaces with numControlPoints == degree + 1.");
+        }
+        
         var newControlPoints = [];
         
         for (var uIndex = 0; uIndex < size(controlPoints); uIndex += 1)
@@ -452,6 +500,7 @@ function elevateSurfaceDegree(surface is map, targetUDegree is number, targetVDe
             const rowPoints = controlPoints[uIndex];
             
             // Elevate this row curve using Bezier degree elevation
+            // NOTE: This only works correctly for single-segment B-splines (Bezier curves)
             const elevatedPoints = elevateBezierDegree(rowPoints, targetVDegree);
             
             newControlPoints = append(newControlPoints, elevatedPoints);
