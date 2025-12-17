@@ -680,7 +680,19 @@ function refineControlPointCount(context is Context, surface is map, targetUCoun
             });
             
             // Refine this curve to have targetUCount control points
+            println("DEBUG: Refining U curve - before: " ~ size(columnCurve.controlPoints) ~ " CP, after target: " ~ targetUCount);
+            println("DEBUG: Curve knots before refinement: " ~ columnCurve.knots);
             const refinedCurve = refineCurveControlPointCount(context, columnCurve, targetUCount);
+            println("DEBUG: After refinement: " ~ size(refinedCurve.controlPoints) ~ " CP");
+            println("DEBUG: Refined knots: " ~ refinedCurve.knots);
+            if (vIndex == 0)
+            {
+                println("DEBUG: First column refined control points:");
+                for (var i = 0; i < size(refinedCurve.controlPoints); i += 1)
+                {
+                    println("  [" ~ i ~ "]: " ~ refinedCurve.controlPoints[i]);
+                }
+            }
             
             // Store refined control points (transpose) and update knots from first column
             if (vIndex == 0)
