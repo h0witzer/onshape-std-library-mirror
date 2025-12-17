@@ -164,9 +164,14 @@ export function tweenCurves(context is Context, id is Id,
 
         const pos1 = cpList1[i];
         const pos2 = finalCpList2[i];
-        const blendedPos = pos1 * (1 - fraction) + pos2 * fraction;
+        
+        // For rational B-splines (NURBS), interpolate in homogeneous coordinates
+        // Weighted CP = CP * weight, then interpolate, then divide by interpolated weight
+        const weightedPos1 = pos1 * weight1;
+        const weightedPos2 = pos2 * weight2;
+        const blendedWeightedPos = weightedPos1 * (1 - fraction) + weightedPos2 * fraction;
 
-        tweenedCps = append(tweenedCps, blendedPos / blendedWeight);
+        tweenedCps = append(tweenedCps, blendedWeightedPos / blendedWeight);
         tweenedWeights = append(tweenedWeights, blendedWeight);
     }
 
