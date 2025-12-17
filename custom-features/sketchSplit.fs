@@ -143,9 +143,21 @@ export const splitSketch= defineFeature(function(context is Context, id is Id, d
         // Now get all resulting bodies after splits for interactive selection
         const allBodies = evaluateQuery(context, definition.partsToSplit);
         
+        // Store the body count as an attribute on one of the bodies so edit logic can access it
+        // This persists across regenerations unlike setVariable
+        if (size(allBodies) > 0)
+        {
+            setAttribute(context, {
+                "entities" : allBodies[0],
+                "name" : "sketchSplitBodyCount",
+                "attribute" : size(allBodies)
+            });
+        }
+        
         println("=== MAIN FEATURE BODY DEBUG ===");
         println("allBodies count: " ~ size(allBodies));
         println("definition.keepIndices size: " ~ size(definition.keepIndices));
+        println("Stored body count as attribute: " ~ size(allBodies));
         println("=== END MAIN FEATURE BODY DEBUG ===");
         
         // Create manipulator points at each body's centroid and draw debug points
@@ -310,17 +322,38 @@ export function splitSketchEditLogic(context is Context, id is Id,
     if (clickedButton == "selectAll")
     {
         println(">>> SELECT ALL button clicked");
-        // Use oldDefinition.partsToSplit which contains the state from last successful regeneration
+        // Try to get body count from attribute stored in main feature body
         const bodies = getSplitBodies(context, oldDefinition.partsToSplit);
-        println("Evaluated bodies count: " ~ size(bodies));
+        println("Body count from query: " ~ size(bodies));
+        
+        var actualBodyCount = size(bodies);
+        
+        // Try to get the stored body count from attributes
+        if (size(bodies) > 0)
+        {
+            const storedCount = try silent(getAttribute(context, {
+                "entity" : bodies[0],
+                "name" : "sketchSplitBodyCount"
+            }));
+            if (storedCount != undefined)
+            {
+                actualBodyCount = storedCount as number;
+                println("Using stored body count from attribute: " ~ actualBodyCount);
+            }
+        }
+        
+        // Fallback: if we have selected items, there must be at least that many bodies
+        if (actualBodyCount < size(oldDefinition.keepIndices))
+        {
+            actualBodyCount = size(oldDefinition.keepIndices);
+            println("Using body count from oldDefinition.keepIndices: " ~ actualBodyCount);
+        }
         
         var newKeep = [];
-        var index = 0;
-        for (var body in bodies)
+        for (var index = 0; index < actualBodyCount; index += 1)
         {
             println("  Adding index " ~ index ~ " to newKeep");
             newKeep = append(newKeep, { "keepIndex" : index });
-            index += 1;
         }
         println("newKeep size: " ~ size(newKeep));
         definition.keepIndices = newKeep;
@@ -329,13 +362,34 @@ export function splitSketchEditLogic(context is Context, id is Id,
     if (clickedButton == "invertSelection")
     {
         println(">>> INVERT SELECTION button clicked");
-        // Use oldDefinition.partsToSplit which contains the state from last successful regeneration
         const bodies = getSplitBodies(context, oldDefinition.partsToSplit);
-        println("Evaluated bodies count: " ~ size(bodies));
+        println("Body count from query: " ~ size(bodies));
+        
+        var actualBodyCount = size(bodies);
+        
+        // Try to get the stored body count from attributes
+        if (size(bodies) > 0)
+        {
+            const storedCount = try silent(getAttribute(context, {
+                "entity" : bodies[0],
+                "name" : "sketchSplitBodyCount"
+            }));
+            if (storedCount != undefined)
+            {
+                actualBodyCount = storedCount as number;
+                println("Using stored body count from attribute: " ~ actualBodyCount);
+            }
+        }
+        
+        // Fallback: if we have selected items, there must be at least that many bodies
+        if (actualBodyCount < size(oldDefinition.keepIndices))
+        {
+            actualBodyCount = size(oldDefinition.keepIndices);
+            println("Using body count from oldDefinition.keepIndices: " ~ actualBodyCount);
+        }
         
         var newKeep = [];
-        var index = 0;
-        for (var body in bodies)
+        for (var index = 0; index < actualBodyCount; index += 1)
         {
             const isInGroup = isInKeepGroup(oldDefinition, index);
             println("  Index " ~ index ~ " isInKeepGroup: " ~ isInGroup);
@@ -344,7 +398,6 @@ export function splitSketchEditLogic(context is Context, id is Id,
                 println("    Adding index " ~ index ~ " to newKeep");
                 newKeep = append(newKeep, { "keepIndex" : index });
             }
-            index += 1;
         }
         println("newKeep size: " ~ size(newKeep));
         definition.keepIndices = newKeep;
