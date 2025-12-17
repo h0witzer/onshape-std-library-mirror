@@ -186,6 +186,25 @@ function createTweenedSurface(context is Context, id is Id,
         }
     }
     
+    // === ALIGNMENT MATCHING ===
+    // Find the best alignment between the two surfaces by testing different transformations
+    // (normal, U-flipped, V-flipped, UV-swapped, and combinations)
+    println("DEBUG: Checking surface alignment...");
+    const alignmentResult = findBestSurfaceAlignment(firstSurface.controlPoints, secondSurface.controlPoints, 
+                                                      secondSurface.weights);
+    println("DEBUG: Best alignment - flipU: " ~ alignmentResult.flipU ~ ", flipV: " ~ alignmentResult.flipV ~ 
+            ", swapUV: " ~ alignmentResult.swapUV ~ ", distance: " ~ alignmentResult.distance);
+    
+    // Apply the alignment transformation to the second surface
+    if (alignmentResult.flipU || alignmentResult.flipV || alignmentResult.swapUV)
+    {
+        secondSurface = applyAlignmentTransform(secondSurface, alignmentResult.flipU, 
+                                                 alignmentResult.flipV, alignmentResult.swapUV);
+        println("DEBUG: Applied alignment transform to second surface");
+        println("DEBUG: After alignment, second surface controlPoints=" ~ 
+                size(secondSurface.controlPoints) ~ "x" ~ size(secondSurface.controlPoints[0]));
+    }
+    
     // Verify both surfaces have the same rationality
     if (firstSurface.isRational != secondSurface.isRational)
     {
@@ -213,62 +232,101 @@ function createTweenedSurface(context is Context, id is Id,
     const finalFirstControlPointsRowCount = size(firstSurface.controlPoints);
     const finalFirstControlPointsColumnCount = size(firstSurface.controlPoints[0]);
     
-    // Interpolate control points
+    // Interpolate control points and weights
+    // For rational surfaces (NURBS), we must interpolate in homogeneous coordinates:
+    // - Weighted CP = CP * weight
+    // - Interpolate weighted CPs and weights separately
+    // - Divide interpolated weighted CP by interpolated weight to get final CP
     var tweenedControlPoints = [];
+    var tweenedWeights = undefined;
     var debugPointCount = 0;
-    for (var uIndex = 0; uIndex < finalFirstControlPointsRowCount; uIndex += 1)
+    
+    if (firstSurface.isRational)
     {
-        var controlPointRow = [];
-        for (var vIndex = 0; vIndex < finalFirstControlPointsColumnCount; vIndex += 1)
+        // Rational surface interpolation (NURBS)
+        tweenedWeights = [];
+        for (var uIndex = 0; uIndex < finalFirstControlPointsRowCount; uIndex += 1)
         {
-            const firstControlPoint = firstSurface.controlPoints[uIndex][vIndex];
-            const secondControlPoint = secondSurface.controlPoints[uIndex][vIndex];
-            
-            // Linear interpolation: tweenedCP = (1 - fraction) * cp1 + fraction * cp2
-            const tweenedControlPoint = firstControlPoint * (1 - tweenFraction) + secondControlPoint * tweenFraction;
-            controlPointRow = append(controlPointRow, tweenedControlPoint);
-            
-            // Debug: Visualize control points for debugging
-            // Show all control points to see their distribution
-            debug(context, firstControlPoint, DebugColor.BLUE);
-            debug(context, secondControlPoint, DebugColor.RED);
-            debug(context, tweenedControlPoint, DebugColor.GREEN);
-            debugPointCount += 1;
-            
-            // Additional debug: Print some sample interpolations to verify math
-            if (uIndex == 0 && vIndex == 0)
+            var controlPointRow = [];
+            var weightRow = [];
+            for (var vIndex = 0; vIndex < finalFirstControlPointsColumnCount; vIndex += 1)
             {
-                println("DEBUG: Corner CP interpolation (fraction=" ~ tweenFraction ~ "):");
-                println("  First CP: " ~ firstControlPoint);
-                println("  Second CP: " ~ secondControlPoint);
-                println("  Tweened CP: " ~ tweenedControlPoint);
-                println("  Expected: " ~ (firstControlPoint * (1 - tweenFraction) + secondControlPoint * tweenFraction));
+                const firstControlPoint = firstSurface.controlPoints[uIndex][vIndex];
+                const secondControlPoint = secondSurface.controlPoints[uIndex][vIndex];
+                const firstWeight = firstSurface.weights[uIndex][vIndex];
+                const secondWeight = secondSurface.weights[uIndex][vIndex];
+                
+                // Interpolate in homogeneous coordinates
+                const weightedFirstCP = firstControlPoint * firstWeight;
+                const weightedSecondCP = secondControlPoint * secondWeight;
+                const interpolatedWeightedCP = weightedFirstCP * (1 - tweenFraction) + weightedSecondCP * tweenFraction;
+                const interpolatedWeight = firstWeight * (1 - tweenFraction) + secondWeight * tweenFraction;
+                
+                // Convert back to Cartesian coordinates
+                const tweenedControlPoint = interpolatedWeightedCP / interpolatedWeight;
+                
+                controlPointRow = append(controlPointRow, tweenedControlPoint);
+                weightRow = append(weightRow, interpolatedWeight);
+                
+                // Debug visualization
+                debug(context, firstControlPoint, DebugColor.BLUE);
+                debug(context, secondControlPoint, DebugColor.RED);
+                debug(context, tweenedControlPoint, DebugColor.GREEN);
+                debugPointCount += 1;
+                
+                // Debug logging for corner point
+                if (uIndex == 0 && vIndex == 0)
+                {
+                    println("DEBUG: Corner CP interpolation (RATIONAL, fraction=" ~ tweenFraction ~ "):");
+                    println("  First CP: " ~ firstControlPoint ~ ", weight: " ~ firstWeight);
+                    println("  Second CP: " ~ secondControlPoint ~ ", weight: " ~ secondWeight);
+                    println("  Weighted First CP: " ~ weightedFirstCP);
+                    println("  Weighted Second CP: " ~ weightedSecondCP);
+                    println("  Interpolated Weighted CP: " ~ interpolatedWeightedCP);
+                    println("  Interpolated Weight: " ~ interpolatedWeight);
+                    println("  Tweened CP: " ~ tweenedControlPoint);
+                }
             }
+            tweenedControlPoints = append(tweenedControlPoints, controlPointRow);
+            tweenedWeights = append(tweenedWeights, weightRow);
         }
-        tweenedControlPoints = append(tweenedControlPoints, controlPointRow);
+    }
+    else
+    {
+        // Non-rational surface interpolation (simple linear interpolation)
+        for (var uIndex = 0; uIndex < finalFirstControlPointsRowCount; uIndex += 1)
+        {
+            var controlPointRow = [];
+            for (var vIndex = 0; vIndex < finalFirstControlPointsColumnCount; vIndex += 1)
+            {
+                const firstControlPoint = firstSurface.controlPoints[uIndex][vIndex];
+                const secondControlPoint = secondSurface.controlPoints[uIndex][vIndex];
+                
+                // Linear interpolation: tweenedCP = (1 - fraction) * cp1 + fraction * cp2
+                const tweenedControlPoint = firstControlPoint * (1 - tweenFraction) + secondControlPoint * tweenFraction;
+                controlPointRow = append(controlPointRow, tweenedControlPoint);
+                
+                // Debug visualization
+                debug(context, firstControlPoint, DebugColor.BLUE);
+                debug(context, secondControlPoint, DebugColor.RED);
+                debug(context, tweenedControlPoint, DebugColor.GREEN);
+                debugPointCount += 1;
+                
+                // Debug logging for corner point
+                if (uIndex == 0 && vIndex == 0)
+                {
+                    println("DEBUG: Corner CP interpolation (NON-RATIONAL, fraction=" ~ tweenFraction ~ "):");
+                    println("  First CP: " ~ firstControlPoint);
+                    println("  Second CP: " ~ secondControlPoint);
+                    println("  Tweened CP: " ~ tweenedControlPoint);
+                }
+            }
+            tweenedControlPoints = append(tweenedControlPoints, controlPointRow);
+        }
     }
     
     println("DEBUG: Drew " ~ debugPointCount ~ " sets of control points (blue/red/green)");
     println("DEBUG: Expected " ~ (finalFirstControlPointsRowCount * finalFirstControlPointsColumnCount) ~ " sets");
-    
-    // Interpolate weights if surfaces are rational
-    var tweenedWeights = undefined;
-    if (firstSurface.isRational)
-    {
-        tweenedWeights = [];
-        for (var uIndex = 0; uIndex < finalFirstControlPointsRowCount; uIndex += 1)
-        {
-            var weightRow = [];
-            for (var vIndex = 0; vIndex < finalFirstControlPointsColumnCount; vIndex += 1)
-            {
-                const firstWeight = firstSurface.weights[uIndex][vIndex];
-                const secondWeight = secondSurface.weights[uIndex][vIndex];
-                const tweenedWeight = firstWeight * (1 - tweenFraction) + secondWeight * tweenFraction;
-                weightRow = append(weightRow, tweenedWeight);
-            }
-            tweenedWeights = append(tweenedWeights, weightRow);
-        }
-    }
     
     // Unpad knot arrays (bSplineSurface expects unpadded knots)
     // Padded knots have size: nControlPoints + degree + 1
@@ -1167,5 +1225,364 @@ function elevateBSplineCurve(controlPoints is array, knots is array, originalDeg
     return {
         "controlPoints" : simplified.points,
         "knots" : simplified.knots
+    };
+}
+
+
+/**
+ * Computes the sum of squared distances between corresponding control points of two surfaces.
+ * 
+ * This is used as a metric to determine the best alignment between surfaces.
+ * Lower distance indicates better alignment.
+ * 
+ * @param controlPoints1 {array} : Control point matrix for first surface (2D array)
+ * @param controlPoints2 {array} : Control point matrix for second surface (2D array)
+ * @returns {ValueWithUnits} : Sum of squared distances between corresponding points
+ */
+function surfaceControlPointDistanceSquared(controlPoints1 is array, controlPoints2 is array) returns ValueWithUnits
+{
+    var totalDistanceSquared = 0 * meter * meter;
+    const numUPoints = size(controlPoints1);
+    const numVPoints = size(controlPoints1[0]);
+    
+    for (var uIndex = 0; uIndex < numUPoints; uIndex += 1)
+    {
+        for (var vIndex = 0; vIndex < numVPoints; vIndex += 1)
+        {
+            const point1 = controlPoints1[uIndex][vIndex];
+            const point2 = controlPoints2[uIndex][vIndex];
+            totalDistanceSquared += squaredNorm(point1 - point2);
+        }
+    }
+    
+    return totalDistanceSquared;
+}
+
+
+/**
+ * Flips the U direction of a control point matrix.
+ * 
+ * This reverses the order of rows in the control point matrix.
+ * For a surface with control points CP[u][v], this produces CP[numU-1-u][v].
+ * 
+ * @param controlPoints {array} : Control point matrix (2D array)
+ * @returns {array} : Control point matrix with U direction reversed
+ */
+function flipControlPointsU(controlPoints is array) returns array
+{
+    var flippedControlPoints = [];
+    for (var uIndex = size(controlPoints) - 1; uIndex >= 0; uIndex -= 1)
+    {
+        flippedControlPoints = append(flippedControlPoints, controlPoints[uIndex]);
+    }
+    return flippedControlPoints;
+}
+
+
+/**
+ * Flips the V direction of a control point matrix.
+ * 
+ * This reverses the order of columns in the control point matrix.
+ * For a surface with control points CP[u][v], this produces CP[u][numV-1-v].
+ * 
+ * @param controlPoints {array} : Control point matrix (2D array)
+ * @returns {array} : Control point matrix with V direction reversed
+ */
+function flipControlPointsV(controlPoints is array) returns array
+{
+    var flippedControlPoints = [];
+    for (var uIndex = 0; uIndex < size(controlPoints); uIndex += 1)
+    {
+        var flippedRow = [];
+        for (var vIndex = size(controlPoints[uIndex]) - 1; vIndex >= 0; vIndex -= 1)
+        {
+            flippedRow = append(flippedRow, controlPoints[uIndex][vIndex]);
+        }
+        flippedControlPoints = append(flippedControlPoints, flippedRow);
+    }
+    return flippedControlPoints;
+}
+
+
+/**
+ * Transposes (swaps U and V) a control point matrix.
+ * 
+ * This swaps the U and V parametric directions.
+ * For a surface with control points CP[u][v], this produces CP[v][u].
+ * 
+ * @param controlPoints {array} : Control point matrix (2D array)
+ * @returns {array} : Control point matrix with U and V swapped
+ */
+function transposeControlPoints(controlPoints is array) returns array
+{
+    const numUPoints = size(controlPoints);
+    const numVPoints = size(controlPoints[0]);
+    
+    var transposedControlPoints = [];
+    for (var vIndex = 0; vIndex < numVPoints; vIndex += 1)
+    {
+        var newRow = [];
+        for (var uIndex = 0; uIndex < numUPoints; uIndex += 1)
+        {
+            newRow = append(newRow, controlPoints[uIndex][vIndex]);
+        }
+        transposedControlPoints = append(transposedControlPoints, newRow);
+    }
+    return transposedControlPoints;
+}
+
+
+/**
+ * Flips the U direction of a weights matrix.
+ * 
+ * @param weights {array} : Weights matrix (2D array)
+ * @returns {array} : Weights matrix with U direction reversed
+ */
+function flipWeightsU(weights is array) returns array
+{
+    var flippedWeights = [];
+    for (var uIndex = size(weights) - 1; uIndex >= 0; uIndex -= 1)
+    {
+        flippedWeights = append(flippedWeights, weights[uIndex]);
+    }
+    return flippedWeights;
+}
+
+
+/**
+ * Flips the V direction of a weights matrix.
+ * 
+ * @param weights {array} : Weights matrix (2D array)
+ * @returns {array} : Weights matrix with V direction reversed
+ */
+function flipWeightsV(weights is array) returns array
+{
+    var flippedWeights = [];
+    for (var uIndex = 0; uIndex < size(weights); uIndex += 1)
+    {
+        var flippedRow = [];
+        for (var vIndex = size(weights[uIndex]) - 1; vIndex >= 0; vIndex -= 1)
+        {
+            flippedRow = append(flippedRow, weights[uIndex][vIndex]);
+        }
+        flippedWeights = append(flippedWeights, flippedRow);
+    }
+    return flippedWeights;
+}
+
+
+/**
+ * Transposes (swaps U and V) a weights matrix.
+ * 
+ * @param weights {array} : Weights matrix (2D array)
+ * @returns {array} : Weights matrix with U and V swapped
+ */
+function transposeWeights(weights is array) returns array
+{
+    const numUPoints = size(weights);
+    const numVPoints = size(weights[0]);
+    
+    var transposedWeights = [];
+    for (var vIndex = 0; vIndex < numVPoints; vIndex += 1)
+    {
+        var newRow = [];
+        for (var uIndex = 0; uIndex < numUPoints; uIndex += 1)
+        {
+            newRow = append(newRow, weights[uIndex][vIndex]);
+        }
+        transposedWeights = append(transposedWeights, newRow);
+    }
+    return transposedWeights;
+}
+
+
+/**
+ * Finds the best alignment between two surfaces by testing different transformations.
+ * 
+ * Tests all 8 possible alignments (including UV swap):
+ * 1. Normal (no transformation)
+ * 2. U-flipped
+ * 3. V-flipped
+ * 4. U and V flipped
+ * 5. UV-swapped
+ * 6. UV-swapped + U-flipped (in swapped space)
+ * 7. UV-swapped + V-flipped (in swapped space)
+ * 8. UV-swapped + both flipped
+ * 
+ * Returns the transformation that minimizes the sum of squared distances between
+ * corresponding control points.
+ * 
+ * @param controlPoints1 {array} : Control point matrix for first surface (reference)
+ * @param controlPoints2 {array} : Control point matrix for second surface (to be aligned)
+ * @param weights2 {array|undefined} : Weights matrix for second surface (undefined if non-rational)
+ * @returns {map} : Map with fields: flipU {boolean}, flipV {boolean}, swapUV {boolean}, distance {ValueWithUnits}
+ */
+function findBestSurfaceAlignment(controlPoints1 is array, controlPoints2 is array, weights2) returns map
+{
+    const numU1 = size(controlPoints1);
+    const numV1 = size(controlPoints1[0]);
+    const numU2 = size(controlPoints2);
+    const numV2 = size(controlPoints2[0]);
+    
+    var bestDistance = 1e30 * meter * meter;
+    var bestFlipU = false;
+    var bestFlipV = false;
+    var bestSwapUV = false;
+    
+    // Test all 8 possible transformations
+    // We need to test both with and without UV swap, and for each, test the 4 flip combinations
+    
+    for (var testSwapUV = 0; testSwapUV < 2; testSwapUV += 1)
+    {
+        const swapUV = (testSwapUV == 1);
+        
+        // Check if dimensions match after swap
+        var transformedNumU = swapUV ? numV2 : numU2;
+        var transformedNumV = swapUV ? numU2 : numV2;
+        
+        // Skip this swap configuration if dimensions don't match
+        if (transformedNumU != numU1 || transformedNumV != numV1)
+        {
+            continue;
+        }
+        
+        // Get the base transformed control points
+        var baseTransformedCP = swapUV ? transposeControlPoints(controlPoints2) : controlPoints2;
+        
+        // Test 4 flip combinations
+        for (var testFlipU = 0; testFlipU < 2; testFlipU += 1)
+        {
+            for (var testFlipV = 0; testFlipV < 2; testFlipV += 1)
+            {
+                const flipU = (testFlipU == 1);
+                const flipV = (testFlipV == 1);
+                
+                // Apply flips
+                var transformedCP = baseTransformedCP;
+                if (flipU)
+                {
+                    transformedCP = flipControlPointsU(transformedCP);
+                }
+                if (flipV)
+                {
+                    transformedCP = flipControlPointsV(transformedCP);
+                }
+                
+                // Compute distance
+                const distance = surfaceControlPointDistanceSquared(controlPoints1, transformedCP);
+                
+                // Update best if this is better
+                if (distance < bestDistance)
+                {
+                    bestDistance = distance;
+                    bestFlipU = flipU;
+                    bestFlipV = flipV;
+                    bestSwapUV = swapUV;
+                }
+            }
+        }
+    }
+    
+    return {
+        "flipU" : bestFlipU,
+        "flipV" : bestFlipV,
+        "swapUV" : bestSwapUV,
+        "distance" : bestDistance
+    };
+}
+
+
+/**
+ * Applies alignment transformation to a B-spline surface.
+ * 
+ * This transforms the control points, weights, and knot vectors according to the
+ * specified flips and swap operations to align the surface with a reference surface.
+ * 
+ * @param surface {map} : B-spline surface definition with controlPoints, weights, knots, etc.
+ * @param flipU {boolean} : Whether to flip the U direction
+ * @param flipV {boolean} : Whether to flip the V direction
+ * @param swapUV {boolean} : Whether to swap U and V directions
+ * @returns {map} : Transformed surface definition
+ */
+function applyAlignmentTransform(surface is map, flipU is boolean, flipV is boolean, swapUV is boolean) returns map
+{
+    var controlPoints = surface.controlPoints;
+    var weights = surface.weights;
+    var uKnots = surface.uKnots;
+    var vKnots = surface.vKnots;
+    var uDegree = surface.uDegree;
+    var vDegree = surface.vDegree;
+    var isUPeriodic = surface.isUPeriodic;
+    var isVPeriodic = surface.isVPeriodic;
+    
+    // Apply UV swap first if needed
+    if (swapUV)
+    {
+        controlPoints = transposeControlPoints(controlPoints);
+        if (weights != undefined)
+        {
+            weights = transposeWeights(weights);
+        }
+        
+        // Swap knot vectors
+        const tempKnots = uKnots;
+        uKnots = vKnots;
+        vKnots = tempKnots;
+        
+        // Swap degrees
+        const tempDegree = uDegree;
+        uDegree = vDegree;
+        vDegree = tempDegree;
+        
+        // Swap periodicity
+        const tempPeriodic = isUPeriodic;
+        isUPeriodic = isVPeriodic;
+        isVPeriodic = tempPeriodic;
+    }
+    
+    // Apply U flip if needed
+    if (flipU)
+    {
+        controlPoints = flipControlPointsU(controlPoints);
+        if (weights != undefined)
+        {
+            weights = flipWeightsU(weights);
+        }
+        // Reverse U knot vector: new_knot[i] = 1 - old_knot[n-1-i]
+        var reversedUKnots = [];
+        for (var i = size(uKnots) - 1; i >= 0; i -= 1)
+        {
+            reversedUKnots = append(reversedUKnots, 1.0 - uKnots[i]);
+        }
+        uKnots = knotArray(reversedUKnots);
+    }
+    
+    // Apply V flip if needed
+    if (flipV)
+    {
+        controlPoints = flipControlPointsV(controlPoints);
+        if (weights != undefined)
+        {
+            weights = flipWeightsV(weights);
+        }
+        // Reverse V knot vector: new_knot[i] = 1 - old_knot[n-1-i]
+        var reversedVKnots = [];
+        for (var i = size(vKnots) - 1; i >= 0; i -= 1)
+        {
+            reversedVKnots = append(reversedVKnots, 1.0 - vKnots[i]);
+        }
+        vKnots = knotArray(reversedVKnots);
+    }
+    
+    return {
+        "uDegree" : uDegree,
+        "vDegree" : vDegree,
+        "isRational" : surface.isRational,
+        "isUPeriodic" : isUPeriodic,
+        "isVPeriodic" : isVPeriodic,
+        "controlPoints" : controlPoints,
+        "weights" : weights,
+        "uKnots" : uKnots,
+        "vKnots" : vKnots
     };
 }
