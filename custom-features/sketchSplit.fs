@@ -75,14 +75,28 @@ export const splitSketch= defineFeature(function(context is Context, id is Id, d
             const splitId = id + ("split" ~ edgeIndex);
             const cleanupId = id + ("cleanup" ~ edgeIndex);
             
-            // Attempt to extrude the current edge
+            // Attempt to extrude the current edge using thin wall (1mm solid)
             try silent
             {
                 opExtrude(context, extrudeId, {
                     "entities" : currentEdge,
                     "direction" : sketchPlaneNormal,
                     "endBound" : BoundingType.THROUGH_ALL,
-                    "startBound" : BoundingType.THROUGH_ALL
+                    "startBound" : BoundingType.THROUGH_ALL,
+                    "operationType" : NewBodyOperationType.NEW,
+                    "defaultScope" : false,
+                    "hasTwoDirections" : true,
+                    "oppositeDirection" : false,
+                    "hasSecondDirection" : false,
+                    "secondDirectionOppositeDirection" : false,
+                    "endTranslationalOffset" : 0 * meter,
+                    "startTranslationalOffset" : 0 * meter,
+                    "hasDraft" : false,
+                    "draftAngle" : 0 * degree,
+                    "draftPullDirection" : false,
+                    "hasOffset" : true,
+                    "offsetOppositeDirection" : false,
+                    "offsetDistance" : 0.5 * millimeter
                 });
                 
                 // Query for the extruded body created by this extrude operation
