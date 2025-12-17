@@ -141,11 +141,23 @@ export const splitSketch= defineFeature(function(context is Context, id is Id, d
         }
         
         // Now get all resulting bodies after splits for interactive selection
-        // Cache the query itself for use in edit logic (similar to Better Than Boolean's approach)
-        const bodiesVariableName = toAttributeId(id) ~ "-splitBodiesQuery";
-        setVariable(context, bodiesVariableName, definition.partsToSplit);
+        // Create robust queries for each body to handle ID stability issues after splits
+        const robustBodiesQueries = makeRobustQueriesBatched(context, definition.partsToSplit);
         
-        const allBodies = evaluateQuery(context, definition.partsToSplit);
+        // Cache the robust queries array for use in edit logic
+        const bodiesVariableName = toAttributeId(id) ~ "-splitBodiesQueries";
+        setVariable(context, bodiesVariableName, robustBodiesQueries);
+        
+        // Evaluate to get all bodies for manipulator placement
+        var allBodies = [];
+        for (var robustQuery in robustBodiesQueries)
+        {
+            const bodies = evaluateQuery(context, robustQuery);
+            if (size(bodies) > 0)
+            {
+                allBodies = append(allBodies, bodies[0]);
+            }
+        }
         
         // Create manipulator points at each body's centroid and draw debug points
         var handlePoints = [];
@@ -227,17 +239,27 @@ export const splitSketch= defineFeature(function(context is Context, id is Id, d
         index : -1
     });
 
-// Helper function: gets the bodies query, using cached version from last regeneration if available
-function getSplitBodiesQuery(context is Context, id is Id, partsToSplit is Query) returns Query
+// Helper function: gets the bodies as an array, using cached robust queries from last regeneration if available
+function getSplitBodies(context is Context, id is Id, partsToSplit is Query) returns array
 {
-    const varName = toAttributeId(id) ~ "-splitBodiesQuery";
+    const varName = toAttributeId(id) ~ "-splitBodiesQueries";
     var cached = try(getVariable(context, varName));
     if (cached != undefined)
     {
-        return cached as Query;
+        // Evaluate each robust query to get the bodies
+        var bodies = [];
+        for (var robustQuery in (cached as array))
+        {
+            const result = evaluateQuery(context, robustQuery);
+            if (size(result) > 0)
+            {
+                bodies = append(bodies, result[0]);
+            }
+        }
+        return bodies;
     }
-    // If not cached yet, return the current query (this happens on first creation)
-    return partsToSplit;
+    // If not cached yet, evaluate the current query (this happens on first creation)
+    return evaluateQuery(context, partsToSplit);
 }
 
 // Helper function: generates a random unit vector using pseudoRandomNumber for a given seed
@@ -305,8 +327,7 @@ export function splitSketchEditLogic(context is Context, id is Id,
 {
     if (clickedButton == "selectAll")
     {
-        const bodiesQuery = getSplitBodiesQuery(context, id, definition.partsToSplit);
-        const allBodies = evaluateQuery(context, bodiesQuery);
+        const allBodies = getSplitBodies(context, id, definition.partsToSplit);
         var newKeep = [];
         var index = 0;
         for (var body in allBodies)
@@ -318,8 +339,7 @@ export function splitSketchEditLogic(context is Context, id is Id,
     }
     if (clickedButton == "invertSelection")
     {
-        const bodiesQuery = getSplitBodiesQuery(context, id, definition.partsToSplit);
-        const allBodies = evaluateQuery(context, bodiesQuery);
+        const allBodies = getSplitBodies(context, id, definition.partsToSplit);
         var newKeep = [];
         var index = 0;
         for (var body in allBodies)
