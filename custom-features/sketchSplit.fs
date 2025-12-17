@@ -227,6 +227,19 @@ export const splitSketch= defineFeature(function(context is Context, id is Id, d
         index : -1
     });
 
+// Helper function: gets the bodies query, using cached version from last regeneration if available
+function getSplitBodiesQuery(context is Context, id is Id, partsToSplit is Query) returns Query
+{
+    const varName = toAttributeId(id) ~ "-splitBodiesQuery";
+    var cached = try(getVariable(context, varName));
+    if (cached != undefined)
+    {
+        return cached as Query;
+    }
+    // If not cached yet, return the current query (this happens on first creation)
+    return partsToSplit;
+}
+
 // Helper function: generates a random unit vector using pseudoRandomNumber for a given seed
 function randomUnitVector(seed is number) returns Vector
 {
@@ -292,50 +305,32 @@ export function splitSketchEditLogic(context is Context, id is Id,
 {
     if (clickedButton == "selectAll")
     {
-        // Get the cached query from the last successful regeneration
-        const bodiesVariableName = toAttributeId(id) ~ "-splitBodiesQuery";
-        const bodiesQuery = try silent(getVariable(context, bodiesVariableName));
-        
-        if (bodiesQuery != undefined)
+        const bodiesQuery = getSplitBodiesQuery(context, id, definition.partsToSplit);
+        const allBodies = evaluateQuery(context, bodiesQuery);
+        var newKeep = [];
+        var index = 0;
+        for (var body in allBodies)
         {
-            const allBodies = try silent(evaluateQuery(context, bodiesQuery as Query));
-            if (allBodies != undefined)
-            {
-                var newKeep = [];
-                var index = 0;
-                for (var body in allBodies)
-                {
-                    newKeep = append(newKeep, { "keepIndex" : index });
-                    index += 1;
-                }
-                definition.keepIndices = newKeep;
-            }
+            newKeep = append(newKeep, { "keepIndex" : index });
+            index += 1;
         }
+        definition.keepIndices = newKeep;
     }
     if (clickedButton == "invertSelection")
     {
-        // Get the cached query from the last successful regeneration
-        const bodiesVariableName = toAttributeId(id) ~ "-splitBodiesQuery";
-        const bodiesQuery = try silent(getVariable(context, bodiesVariableName));
-        
-        if (bodiesQuery != undefined)
+        const bodiesQuery = getSplitBodiesQuery(context, id, definition.partsToSplit);
+        const allBodies = evaluateQuery(context, bodiesQuery);
+        var newKeep = [];
+        var index = 0;
+        for (var body in allBodies)
         {
-            const allBodies = try silent(evaluateQuery(context, bodiesQuery as Query));
-            if (allBodies != undefined)
+            if (!isInKeepGroup(definition, index))
             {
-                var newKeep = [];
-                var index = 0;
-                for (var body in allBodies)
-                {
-                    if (!isInKeepGroup(definition, index))
-                    {
-                        newKeep = append(newKeep, { "keepIndex" : index });
-                    }
-                    index += 1;
-                }
-                definition.keepIndices = newKeep;
+                newKeep = append(newKeep, { "keepIndex" : index });
             }
+            index += 1;
         }
+        definition.keepIndices = newKeep;
     }
     return definition;
 }
