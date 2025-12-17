@@ -285,9 +285,16 @@ function createTweenedSurface(context is Context, id is Id,
     println("DEBUG: Final unpaddedUKnots size=" ~ size(unpaddedUKnots));
     println("DEBUG: Final unpaddedVKnots size=" ~ size(unpaddedVKnots));
     
-    // Debug: Print first and last few knot values to check they're valid
-    println("DEBUG: First 5 U knots: " ~ unpaddedUKnots[0] ~ ", " ~ unpaddedUKnots[1] ~ ", " ~ unpaddedUKnots[2] ~ ", " ~ unpaddedUKnots[3] ~ ", " ~ unpaddedUKnots[4]);
-    println("DEBUG: Last 5 U knots: " ~ unpaddedUKnots[size(unpaddedUKnots)-5] ~ ", " ~ unpaddedUKnots[size(unpaddedUKnots)-4] ~ ", " ~ unpaddedUKnots[size(unpaddedUKnots)-3] ~ ", " ~ unpaddedUKnots[size(unpaddedUKnots)-2] ~ ", " ~ unpaddedUKnots[size(unpaddedUKnots)-1]);
+    // Debug: Print first and last few knot values to check they're valid (only if we have enough)
+    if (size(unpaddedUKnots) >= 5)
+    {
+        println("DEBUG: First 5 U knots: " ~ unpaddedUKnots[0] ~ ", " ~ unpaddedUKnots[1] ~ ", " ~ unpaddedUKnots[2] ~ ", " ~ unpaddedUKnots[3] ~ ", " ~ unpaddedUKnots[4]);
+        println("DEBUG: Last 5 U knots: " ~ unpaddedUKnots[size(unpaddedUKnots)-5] ~ ", " ~ unpaddedUKnots[size(unpaddedUKnots)-4] ~ ", " ~ unpaddedUKnots[size(unpaddedUKnots)-3] ~ ", " ~ unpaddedUKnots[size(unpaddedUKnots)-2] ~ ", " ~ unpaddedUKnots[size(unpaddedUKnots)-1]);
+    }
+    else if (size(unpaddedUKnots) > 0)
+    {
+        println("DEBUG: U knots: " ~ unpaddedUKnots);
+    }
     
     // Create the tweened B-spline surface
     const tweenedSurfaceDefinition = bSplineSurface({
@@ -752,7 +759,9 @@ function refineCurveControlPointCount(context is Context, curve is map, targetCo
             const spanFraction = spanLength / totalSpanLength;
             
             // Number of knots to insert in this span (proportional to span length)
-            var knotsInSpan = round(numToInsert * spanFraction);
+            // Use floor to avoid over-allocating, then give remainder to last span
+            var knotsInSpan = floor(numToInsert * spanFraction);
+            
             if (spanIdx == size(distinctKnots) - 2)
             {
                 // Last span gets all remaining knots to ensure we insert exactly numToInsert
@@ -760,7 +769,8 @@ function refineCurveControlPointCount(context is Context, curve is map, targetCo
             }
             else
             {
-                knotsInSpan = min(knotsInSpan, remainingKnots);
+                // Ensure at least 0 and at most remainingKnots
+                knotsInSpan = max(0, min(knotsInSpan, remainingKnots));
             }
             
             // Distribute knots uniformly within this span
