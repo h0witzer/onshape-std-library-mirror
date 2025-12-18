@@ -583,8 +583,9 @@ function calculateEdgeSplitInstructionsFromParameters(context is Context, path i
     return splitInstructions;
 }
 
-// Identifies edges that correspond to tab segments based on tab domains.
-// Checks which edges fall within the tab domain ranges after splitting.
+// Identifies edges in gap regions (outside tab domains) that need wall extension.
+// Tab domains define where tabs should be, but we extend walls in the gaps to create tab protrusions.
+// Returns edges that fall OUTSIDE the tab domain ranges after splitting.
 function identifyTabSegmentEdgesFromDomains(context is Context, splitEdges is Query, path is Path, totalLength is ValueWithUnits, tabDomains is array) returns Query
 {
     if (size(tabDomains) == 0)
@@ -618,18 +619,26 @@ function identifyTabSegmentEdgesFromDomains(context is Context, splitEdges is Qu
         accumulatedLength += edgeLength;
     }
 
-    // Identify which edges fall within tab domains
+    // Identify which edges fall OUTSIDE tab domains (in gap regions)
+    // The tab domains define where tabs should be positioned, but we extend the edges
+    // in the gaps (not in tab domains) to create the protruding tab geometry
     var tabEdgeQueries = [];
     for (var i = 0; i < size(orderedEdges); i += 1)
     {
         const midpoint = edgeMidpoints[i];
+        var inTabDomain = false;
         for (var domain in tabDomains)
         {
             if (midpoint >= domain.start && midpoint <= domain.end)
             {
-                tabEdgeQueries = append(tabEdgeQueries, orderedEdges[i]);
+                inTabDomain = true;
                 break;
             }
+        }
+        // Add edges that are in gap regions (NOT in tab domains)
+        if (!inTabDomain)
+        {
+            tabEdgeQueries = append(tabEdgeQueries, orderedEdges[i]);
         }
     }
 
