@@ -263,7 +263,9 @@ function createTweenedSurface(context is Context, id is Id,
         }
     }
     
-    // Match control point counts by inserting knots if necessary
+    // Match control point counts and knot vectors by inserting knots if necessary
+    // Instead of uniformly distributing knots, we merge the knot vectors from both surfaces
+    // to ensure they have identical knot vectors after refinement
     const firstControlPointsRowCount = size(firstSurface.controlPoints);
     const firstControlPointsColumnCount = size(firstSurface.controlPoints[0]);
     const secondControlPointsRowCount = size(secondSurface.controlPoints);
@@ -272,36 +274,23 @@ function createTweenedSurface(context is Context, id is Id,
     if (firstControlPointsRowCount != secondControlPointsRowCount || 
         firstControlPointsColumnCount != secondControlPointsColumnCount)
     {
-        const targetUCount = max(firstControlPointsRowCount, secondControlPointsRowCount);
-        const targetVCount = max(firstControlPointsColumnCount, secondControlPointsColumnCount);
-        
-        if (firstControlPointsRowCount < targetUCount || firstControlPointsColumnCount < targetVCount)
+        if (definition.diagnosticControlPointRefinement)
         {
-            if (definition.diagnosticControlPointRefinement)
-            {
-                println("DEBUG: Refining first surface from " ~ firstControlPointsRowCount ~ "x" ~ firstControlPointsColumnCount ~ 
-                        " to " ~ targetUCount ~ "x" ~ targetVCount);
-            }
-            firstSurface = refineControlPointCount(context, firstSurface, targetUCount, targetVCount, definition);
-            if (definition.diagnosticControlPointRefinement)
-            {
-                println("DEBUG: After refinement, first surface controlPoints=" ~ 
-                        size(firstSurface.controlPoints) ~ "x" ~ size(firstSurface.controlPoints[0]));
-            }
+            println("DEBUG: Control point count mismatch - first: " ~ firstControlPointsRowCount ~ "x" ~ firstControlPointsColumnCount ~ 
+                    ", second: " ~ secondControlPointsRowCount ~ "x" ~ secondControlPointsColumnCount);
         }
-        if (secondControlPointsRowCount < targetUCount || secondControlPointsColumnCount < targetVCount)
+        
+        // Refine both surfaces to have matching knot vectors
+        const refinementResult = refineToMatchingKnotVectors(context, firstSurface, secondSurface, definition);
+        firstSurface = refinementResult.firstSurface;
+        secondSurface = refinementResult.secondSurface;
+        
+        if (definition.diagnosticControlPointRefinement)
         {
-            if (definition.diagnosticControlPointRefinement)
-            {
-                println("DEBUG: Refining second surface from " ~ secondControlPointsRowCount ~ "x" ~ secondControlPointsColumnCount ~ 
-                        " to " ~ targetUCount ~ "x" ~ targetVCount);
-            }
-            secondSurface = refineControlPointCount(context, secondSurface, targetUCount, targetVCount, definition);
-            if (definition.diagnosticControlPointRefinement)
-            {
-                println("DEBUG: After refinement, second surface controlPoints=" ~ 
-                        size(secondSurface.controlPoints) ~ "x" ~ size(secondSurface.controlPoints[0]));
-            }
+            println("DEBUG: After knot vector matching, first surface: " ~ 
+                    size(firstSurface.controlPoints) ~ "x" ~ size(firstSurface.controlPoints[0]));
+            println("DEBUG: After knot vector matching, second surface: " ~ 
+                    size(secondSurface.controlPoints) ~ "x" ~ size(secondSurface.controlPoints[0]));
         }
     }
     
@@ -1059,6 +1048,365 @@ function refineControlPointCount(context is Context, surface is map, targetUCoun
         "weights" : weights,
         "uKnots" : uKnots,
         "vKnots" : vKnots
+    };
+}
+
+
+/**
+ * Refines two B-spline surfaces to have matching knot vectors by inserting missing knots.
+ * 
+ * This function merges the knot vectors from both surfaces by:
+ * 1. Finding knots that exist in surface1 but not in surface2, and inserting them into surface2
+ * 2. Finding knots that exist in surface2 but not in surface1, and inserting them into surface1
+ * 3. After refinement, both surfaces have identical knot vectors and control point counts
+ * 
+ * This ensures that at tweenFraction=0, the result exactly matches surface1, and at
+ * tweenFraction=1, the result exactly matches surface2, because no new knots are introduced.
+ * 
+ * @param context {Context} : The modeling context
+ * @param firstSurface {map} : The first B-spline surface
+ * @param secondSurface {map} : The second B-spline surface
+ * @param definition {map} : The feature definition including diagnostics settings
+ * @returns {map} : Map with "firstSurface" and "secondSurface" keys, both with matching knot vectors
+ */
+function refineToMatchingKnotVectors(context is Context, firstSurface is map, secondSurface is map, definition is map)
+{
+    // Process U and V directions independently
+    
+    // U direction: Merge knot vectors
+    const knotsToInsertInFirst_U = findMissingKnots(secondSurface.uKnots, firstSurface.uKnots, firstSurface.uDegree);
+    const knotsToInsertInSecond_U = findMissingKnots(firstSurface.uKnots, secondSurface.uKnots, secondSurface.uDegree);
+    
+    // V direction: Merge knot vectors
+    const knotsToInsertInFirst_V = findMissingKnots(secondSurface.vKnots, firstSurface.vKnots, firstSurface.vDegree);
+    const knotsToInsertInSecond_V = findMissingKnots(firstSurface.vKnots, secondSurface.vKnots, secondSurface.vDegree);
+    
+    if (definition.diagnosticControlPointRefinement)
+    {
+        println("DEBUG: Knots to insert in first surface - U: " ~ size(knotsToInsertInFirst_U) ~ ", V: " ~ size(knotsToInsertInFirst_V));
+        println("DEBUG: Knots to insert in second surface - U: " ~ size(knotsToInsertInSecond_U) ~ ", V: " ~ size(knotsToInsertInSecond_V));
+    }
+    
+    // Refine first surface if needed
+    var refinedFirstSurface = firstSurface;
+    if (size(knotsToInsertInFirst_U) > 0 || size(knotsToInsertInFirst_V) > 0)
+    {
+        refinedFirstSurface = refineByInsertingKnots(context, firstSurface, knotsToInsertInFirst_U, knotsToInsertInFirst_V, definition);
+    }
+    
+    // Refine second surface if needed
+    var refinedSecondSurface = secondSurface;
+    if (size(knotsToInsertInSecond_U) > 0 || size(knotsToInsertInSecond_V) > 0)
+    {
+        refinedSecondSurface = refineByInsertingKnots(context, secondSurface, knotsToInsertInSecond_U, knotsToInsertInSecond_V, definition);
+    }
+    
+    return {
+        "firstSurface" : refinedFirstSurface,
+        "secondSurface" : refinedSecondSurface
+    };
+}
+
+
+/**
+ * Finds knots that exist in sourceKnots but not in targetKnots (accounting for multiplicity).
+ * 
+ * Returns a list of knot values to insert into the target, excluding the clamped end knots.
+ * 
+ * @param sourceKnots {array} : Knot vector to search for missing knots
+ * @param targetKnots {array} : Knot vector to check against
+ * @param degree {number} : Degree of the B-spline (used to identify clamped end knots)
+ * @returns {array} : List of knot values to insert (may include duplicates for multiplicity)
+ */
+function findMissingKnots(sourceKnots is array, targetKnots is array, degree is number) returns array
+{
+    // Get padded knot arrays
+    // For unpadded knots: size = n - p + 1, so n = size + p - 1
+    const sourceNumCP = size(sourceKnots) + degree - 1;
+    const targetNumCP = size(targetKnots) + degree - 1;
+    const sourcePadded = padKnotArray(sourceKnots, degree, sourceNumCP);
+    const targetPadded = padKnotArray(targetKnots, degree, targetNumCP);
+    
+    var missingKnots = [];
+    
+    // For each knot in source (excluding clamped ends), check if it exists in target
+    const startIdx = degree;
+    const endIdx = size(sourcePadded) - degree - 1;
+    
+    for (var i = startIdx; i <= endIdx; i += 1)
+    {
+        const knotValue = sourcePadded[i];
+        
+        // Count multiplicity in source and target
+        var sourceMultiplicity = 0;
+        for (var j = startIdx; j <= endIdx; j += 1)
+        {
+            if (abs(sourcePadded[j] - knotValue) < KNOT_TOLERANCE)
+            {
+                sourceMultiplicity += 1;
+            }
+        }
+        
+        var targetMultiplicity = 0;
+        for (var j = degree; j < size(targetPadded) - degree; j += 1)
+        {
+            if (abs(targetPadded[j] - knotValue) < KNOT_TOLERANCE)
+            {
+                targetMultiplicity += 1;
+            }
+        }
+        
+        // If target has fewer instances of this knot, add the difference
+        if (targetMultiplicity < sourceMultiplicity)
+        {
+            // Check if we've already added this knot value
+            var alreadyAdded = 0;
+            for (var k = 0; k < size(missingKnots); k += 1)
+            {
+                if (abs(missingKnots[k] - knotValue) < KNOT_TOLERANCE)
+                {
+                    alreadyAdded += 1;
+                }
+            }
+            
+            // Add the missing instances
+            const numToAdd = sourceMultiplicity - targetMultiplicity - alreadyAdded;
+            for (var k = 0; k < numToAdd; k += 1)
+            {
+                missingKnots = append(missingKnots, knotValue);
+            }
+        }
+    }
+    
+    return missingKnots;
+}
+
+
+/**
+ * Pads a knot array to the expected size for a B-spline.
+ * 
+ * @param knots {array} : Unpadded knot array
+ * @param degree {number} : Degree of the B-spline
+ * @param numControlPoints {number} : Number of control points
+ * @returns {array} : Padded knot array with size = numControlPoints + degree + 1
+ */
+function padKnotArray(knots is array, degree is number, numControlPoints is number) returns array
+{
+    const expectedSize = numControlPoints + degree + 1;
+    if (size(knots) == expectedSize)
+    {
+        // Already padded
+        return knots;
+    }
+    
+    // Assume knots is unpadded, add degree+1 copies of first and last knots
+    var padded = [];
+    
+    // Add degree+1 copies of first knot
+    for (var i = 0; i <= degree; i += 1)
+    {
+        padded = append(padded, knots[0]);
+    }
+    
+    // Add internal knots
+    for (var i = 1; i < size(knots) - 1; i += 1)
+    {
+        padded = append(padded, knots[i]);
+    }
+    
+    // Add degree+1 copies of last knot
+    for (var i = 0; i <= degree; i += 1)
+    {
+        padded = append(padded, knots[size(knots) - 1]);
+    }
+    
+    return padded;
+}
+
+
+/**
+ * Refines a B-spline surface by inserting specific knots in U and V directions.
+ * 
+ * @param context {Context} : The modeling context
+ * @param surface {map} : The B-spline surface to refine
+ * @param knotsToInsertU {array} : List of knot values to insert in U direction
+ * @param knotsToInsertV {array} : List of knot values to insert in V direction
+ * @param definition {map} : The feature definition including diagnostics settings
+ * @returns {map} : Refined surface
+ */
+function refineByInsertingKnots(context is Context, surface is map, knotsToInsertU is array, knotsToInsertV is array, definition is map)
+{
+    var controlPoints = surface.controlPoints;
+    var weights = surface.weights;
+    const isRational = surface.isRational;
+    var uDegree = surface.uDegree;
+    var vDegree = surface.vDegree;
+    var uKnots = surface.uKnots is KnotArray ? surface.uKnots : knotArray(surface.uKnots);
+    var vKnots = surface.vKnots is KnotArray ? surface.vKnots : knotArray(surface.vKnots);
+    
+    // Insert U knots (process each V-column)
+    if (size(knotsToInsertU) > 0)
+    {
+        const numVPoints = size(controlPoints[0]);
+        var newControlPoints = [];
+        var newWeights = isRational ? [] : undefined;
+        var newUKnots = undefined;
+        
+        for (var vIndex = 0; vIndex < numVPoints; vIndex += 1)
+        {
+            // Extract column
+            var columnPoints = [];
+            var columnWeights = [];
+            for (var uIndex = 0; uIndex < size(controlPoints); uIndex += 1)
+            {
+                columnPoints = append(columnPoints, controlPoints[uIndex][vIndex]);
+                if (isRational)
+                {
+                    columnWeights = append(columnWeights, weights[uIndex][vIndex]);
+                }
+            }
+            
+            // Create curve and insert knots
+            const columnCurve = bSplineCurve({
+                "degree" : uDegree,
+                "controlPoints" : columnPoints,
+                "knots" : uKnots,
+                "isPeriodic" : surface.isUPeriodic,
+                "isRational" : isRational,
+                "weights" : isRational ? columnWeights : undefined
+            });
+            
+            const refinedCurve = insertKnotsIntoCurve(context, columnCurve, knotsToInsertU);
+            
+            // Store results
+            if (vIndex == 0)
+            {
+                newUKnots = refinedCurve.knots;
+            }
+            for (var uIndex = 0; uIndex < size(refinedCurve.controlPoints); uIndex += 1)
+            {
+                if (vIndex == 0)
+                {
+                    newControlPoints = append(newControlPoints, []);
+                    if (isRational)
+                    {
+                        newWeights = append(newWeights, []);
+                    }
+                }
+                newControlPoints[uIndex] = append(newControlPoints[uIndex], refinedCurve.controlPoints[uIndex]);
+                if (isRational)
+                {
+                    newWeights[uIndex] = append(newWeights[uIndex], refinedCurve.weights[uIndex]);
+                }
+            }
+        }
+        
+        controlPoints = newControlPoints;
+        weights = newWeights;
+        uKnots = newUKnots;
+    }
+    
+    // Insert V knots (process each U-row)
+    if (size(knotsToInsertV) > 0)
+    {
+        var newControlPoints = [];
+        var newWeights = isRational ? [] : undefined;
+        var newVKnots = undefined;
+        
+        for (var uIndex = 0; uIndex < size(controlPoints); uIndex += 1)
+        {
+            // Extract row
+            const rowPoints = controlPoints[uIndex];
+            const rowWeights = isRational ? weights[uIndex] : undefined;
+            
+            // Create curve and insert knots
+            const rowCurve = bSplineCurve({
+                "degree" : vDegree,
+                "controlPoints" : rowPoints,
+                "knots" : vKnots,
+                "isPeriodic" : surface.isVPeriodic,
+                "isRational" : isRational,
+                "weights" : rowWeights
+            });
+            
+            const refinedCurve = insertKnotsIntoCurve(context, rowCurve, knotsToInsertV);
+            
+            // Store results
+            if (uIndex == 0)
+            {
+                newVKnots = refinedCurve.knots;
+            }
+            newControlPoints = append(newControlPoints, refinedCurve.controlPoints);
+            if (isRational)
+            {
+                newWeights = append(newWeights, refinedCurve.weights);
+            }
+        }
+        
+        controlPoints = newControlPoints;
+        weights = newWeights;
+        vKnots = newVKnots;
+    }
+    
+    return {
+        "uDegree" : uDegree,
+        "vDegree" : vDegree,
+        "isRational" : isRational,
+        "isUPeriodic" : surface.isUPeriodic,
+        "isVPeriodic" : surface.isVPeriodic,
+        "controlPoints" : controlPoints,
+        "weights" : weights,
+        "uKnots" : uKnots,
+        "vKnots" : vKnots
+    };
+}
+
+
+/**
+ * Inserts a list of knots into a B-spline curve.
+ * 
+ * @param context {Context} : The modeling context
+ * @param curve {map} : The B-spline curve
+ * @param knotsToInsert {array} : List of knot values to insert
+ * @returns {map} : Refined curve with inserted knots
+ */
+function insertKnotsIntoCurve(context is Context, curve is map, knotsToInsert is array)
+{
+    // Sort knots to insert
+    const sortedKnots = sort(knotsToInsert, function(a, b) { return a - b; });
+    
+    // For rational curves, work in homogeneous coordinates
+    var currentControlPoints = curve.controlPoints;
+    var currentWeights = curve.weights;
+    if (curve.isRational)
+    {
+        currentControlPoints = combinePointsAndWeights(curve.controlPoints, curve.weights);
+    }
+    var currentKnots = curve.knots;
+    
+    // Insert knots one at a time using Boehm algorithm
+    for (var insertIdx = 0; insertIdx < size(sortedKnots); insertIdx += 1)
+    {
+        const result = insertKnotBoehm(currentControlPoints, currentKnots, curve.degree, sortedKnots[insertIdx]);
+        currentControlPoints = result.controlPoints;
+        currentKnots = result.knots;
+    }
+    
+    // For rational curves, separate back to control points and weights
+    if (curve.isRational)
+    {
+        const separated = separatePointsAndWeights(currentControlPoints);
+        currentControlPoints = separated.points;
+        currentWeights = separated.weights;
+    }
+    
+    return {
+        "controlPoints" : currentControlPoints,
+        "knots" : currentKnots,
+        "degree" : curve.degree,
+        "isPeriodic" : curve.isPeriodic,
+        "isRational" : curve.isRational,
+        "weights" : currentWeights
     };
 }
 
