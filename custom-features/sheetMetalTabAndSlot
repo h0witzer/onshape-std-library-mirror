@@ -116,31 +116,37 @@ export const tabAndSlotBossDisplay = defineFeature(function(context is Context, 
             throw regenError("Unable to order the selected edges into a continuous chain", ["edges"], definition.edges);
         }
 
-        // Calculate segment count based on spacing type
-        var segmentCount = 2;
+        // Calculate tab positions along the edge chain (as normalized parameters from 0 to 1)
+        const totalLength = evLength(context, {
+                "entities" : definition.edges
+            });
+        
         var tabCount = 0;
+        var tabDomains = [];  // Array of {start, end} maps representing tab positions as normalized parameters
+        
         if (definition.spacingType == SpacingType.EQUAL)
         {
-            // For equal spacing, use tab count to determine segments
-            // Each tab creates 2 splits (start and end), plus segments between
             tabCount = definition.tabCount;
-            segmentCount = (tabCount * 2) + (tabCount + 1);
+            tabDomains = calculateEqualSpacedTabDomains(totalLength, definition.tabWidth, tabCount);
         }
         else if (definition.spacingType == SpacingType.LENGTH)
         {
-            // For length-based spacing, calculate how many tabs fit
-            const totalLength = evLength(context, {
-                    "entities" : definition.edges
-                });
             tabCount = floor((totalLength - definition.tabWidth) / definition.spacing);
-            segmentCount = (tabCount * 2) + (tabCount + 1);
+            tabDomains = calculateLengthSpacedTabDomains(totalLength, definition.tabWidth, definition.spacing, tabCount);
+        }
+        
+        if (tabCount == 0 || size(tabDomains) == 0)
+        {
+            throw regenError("No tabs can fit with the specified parameters", ["tabWidth", "spacing"]);
         }
 
         // Track original edges before splitting
         const trackedEdges = startTracking(context, orderedEdgeQuery);
 
-        // Split the edges into segments
-        const splitInstructions = calculateEdgeSplitInstructions(context, path, segmentCount);
+        // Split the edges at tab boundaries
+        const splitParameters = calculateSplitParametersFromTabDomains(tabDomains);
+        const splitInstructions = calculateEdgeSplitInstructionsFromParameters(context, path, splitParameters);
+        
         if (size(splitInstructions) == 0)
         {
             throw regenError("Unable to calculate edge split locations", ["edges"]);
@@ -165,7 +171,7 @@ export const tabAndSlotBossDisplay = defineFeature(function(context is Context, 
 
         // Get the split edges
         const splitEdges = qEntityFilter(trackedEdges, EntityType.EDGE);
-        const tabSegmentEdges = identifyTabSegmentEdges(context, splitEdges, tabCount);
+        const tabSegmentEdges = identifyTabSegmentEdgesFromDomains(context, splitEdges, path, totalLength, tabDomains);
         
         // Debug: Highlight tab segment edges to verify identification
         debug(context, tabSegmentEdges, DebugColor.YELLOW);
@@ -412,14 +418,176 @@ function filterSheetMetalWallFaces(context is Context, faceQuery is Query) retur
     return qUnion(wallFaceQueries);
 }
 
-// Identifies edges that correspond to tab segments after splitting.
-// Tab segments are alternating segments in the split edge chain.
-// For a chain split into N segments with T tabs, tab segments are at positions 1, 3, 5, ... (every other segment starting from index 1).
-// Inputs: splitEdges (query of edges after splitting), tabCount (number of tabs).
-// Outputs: Query containing edges that correspond to tab segments.
-function identifyTabSegmentEdges(context is Context, splitEdges is Query, tabCount is number) returns Query
+// Calculates tab domains for equal spacing distribution.
+// Returns array of {start, end} maps with normalized parameters (0 to 1) for each tab location.
+function calculateEqualSpacedTabDomains(totalLength is ValueWithUnits, tabWidth is ValueWithUnits, tabCount is number) returns array
 {
-    if (tabCount == 0)
+    const tabWidthParam = tabWidth / totalLength;
+    const spacing = (1 - (tabCount * tabWidthParam)) / (tabCount + 1);
+    
+    var tabDomains = [];
+    for (var i = 0; i < tabCount; i += 1)
+    {
+        const start = spacing * (i + 1) + (tabWidthParam * i);
+        const end = start + tabWidthParam;
+        tabDomains = append(tabDomains, {"start" : start, "end" : end});
+    }
+    return tabDomains;
+}
+
+// Calculates tab domains for length-based spacing distribution.
+// Returns array of {start, end} maps with normalized parameters (0 to 1) for each tab location.
+function calculateLengthSpacedTabDomains(totalLength is ValueWithUnits, tabWidth is ValueWithUnits, spacing is ValueWithUnits, tabCount is number) returns array
+{
+    const tabWidthParam = tabWidth / totalLength;
+    const spacingParam = spacing / totalLength;
+    
+    var tabDomains = [];
+    var currentPos = spacingParam;  // Start after first gap
+    
+    for (var i = 0; i < tabCount; i += 1)
+    {
+        if (currentPos + tabWidthParam > 1)
+        {
+            break;  // Don't exceed the edge chain
+        }
+        tabDomains = append(tabDomains, {"start" : currentPos, "end" : currentPos + tabWidthParam});
+        currentPos += tabWidthParam + spacingParam;
+    }
+    return tabDomains;
+}
+
+// Extracts all split parameters from tab domains.
+// Returns sorted array of normalized parameters where splits should occur.
+function calculateSplitParametersFromTabDomains(tabDomains is array) returns array
+{
+    var params = [];
+    for (var domain in tabDomains)
+    {
+        params = append(params, domain.start);
+        params = append(params, domain.end);
+    }
+    return params;
+}
+
+// Calculates split instructions from normalized parameters along the path.
+// Similar to calculateEdgeSplitInstructions but uses explicit parameters instead of equal segments.
+function calculateEdgeSplitInstructionsFromParameters(context is Context, path is Path, splitParameters is array) returns array
+{
+    const totalLength = evLength(context, {
+                "entities" : qUnion(path.edges)
+            });
+    if (totalLength <= EDGE_LENGTH_TOLERANCE)
+    {
+        throw regenError("Selected edge chain must have a measurable length", ["edges"]);
+    }
+
+    var cumulativeFractions = [0];
+    var accumulatedFraction = 0;
+    for (var edgeIndex = 0; edgeIndex < size(path.edges); edgeIndex += 1)
+    {
+        const edge = path.edges[edgeIndex];
+        const edgeLength = evLength(context, { "entities" : edge });
+        if (edgeLength <= EDGE_LENGTH_TOLERANCE)
+        {
+            throw regenError("Edge chain contains a zero length edge", ["edges"], edge);
+        }
+        accumulatedFraction += edgeLength / totalLength;
+        if (edgeIndex == size(path.edges) - 1)
+        {
+            accumulatedFraction = 1;
+        }
+        cumulativeFractions = append(cumulativeFractions, accumulatedFraction);
+    }
+
+    var edgeParameterMap = {};
+    var orderedEdgeIndices = [];
+    
+    for (var fraction in splitParameters)
+    {
+        if (fraction <= FRACTION_TOLERANCE || fraction >= 1 - FRACTION_TOLERANCE)
+        {
+            continue;  // Skip parameters at or near endpoints
+        }
+        
+        var assigned = false;
+        for (var boundaryIndex = 1; boundaryIndex < size(cumulativeFractions); boundaryIndex += 1)
+        {
+            const startFraction = cumulativeFractions[boundaryIndex - 1];
+            const endFraction = cumulativeFractions[boundaryIndex];
+            
+            if (fraction < startFraction - FRACTION_TOLERANCE)
+            {
+                continue;
+            }
+            if (fraction > endFraction + FRACTION_TOLERANCE)
+            {
+                continue;
+            }
+
+            const normalizedRange = endFraction - startFraction;
+            if (normalizedRange <= EDGE_PARAMETER_TOLERANCE)
+            {
+                throw regenError("Edge chain contains a segment that cannot be subdivided", ["edges"], path.edges[boundaryIndex - 1]);
+            }
+
+            var edgeParameter = (fraction - startFraction) / normalizedRange;
+            edgeParameter = max(0, min(1, edgeParameter));
+            if (path.flipped[boundaryIndex - 1])
+            {
+                edgeParameter = 1 - edgeParameter;
+            }
+
+            if (edgeParameterMap[boundaryIndex - 1] == undefined)
+            {
+                edgeParameterMap[boundaryIndex - 1] = [];
+                orderedEdgeIndices = append(orderedEdgeIndices, boundaryIndex - 1);
+            }
+            edgeParameterMap[boundaryIndex - 1] = append(edgeParameterMap[boundaryIndex - 1], edgeParameter);
+            assigned = true;
+            break;
+        }
+    }
+
+    var splitInstructions = [];
+    for (var edgeIndex in orderedEdgeIndices)
+    {
+        var parameters = edgeParameterMap[edgeIndex];
+        parameters = sort(parameters, function(a, b) { return a - b; });
+
+        var filteredParameters = [];
+        for (var parameter in parameters)
+        {
+            if (parameter <= EDGE_PARAMETER_TOLERANCE || parameter >= 1 - EDGE_PARAMETER_TOLERANCE)
+            {
+                continue;
+            }
+            if (size(filteredParameters) != 0 && abs(parameter - filteredParameters[size(filteredParameters) - 1]) < EDGE_PARAMETER_TOLERANCE)
+            {
+                continue;
+            }
+            filteredParameters = append(filteredParameters, parameter);
+        }
+
+        if (size(filteredParameters) == 0)
+        {
+            continue;
+        }
+
+        splitInstructions = append(splitInstructions, {
+                    "edge" : path.edges[edgeIndex],
+                    "parameters" : filteredParameters
+                });
+    }
+
+    return splitInstructions;
+}
+
+// Identifies edges that correspond to tab segments based on tab domains.
+// Checks which edges fall within the tab domain ranges after splitting.
+function identifyTabSegmentEdgesFromDomains(context is Context, splitEdges is Query, path is Path, totalLength is ValueWithUnits, tabDomains is array) returns Query
+{
+    if (size(tabDomains) == 0)
     {
         return qNothing();
     }
@@ -438,12 +606,31 @@ function identifyTabSegmentEdges(context is Context, splitEdges is Query, tabCou
         orderedEdges = orderedPath.edges;
     }
 
-    // Tab segments are at indices: 1, 3, 5, ... (0-indexed)
-    // Pattern: gap, tab, gap, tab, gap, ...
-    var tabEdgeQueries = [];
-    for (var index = 1; index < size(orderedEdges); index += 2)
+    // Calculate cumulative lengths to determine position of each edge
+    var edgeMidpoints = [];
+    var accumulatedLength = 0 * meter;
+    
+    for (var edge in orderedEdges)
     {
-        tabEdgeQueries = append(tabEdgeQueries, orderedEdges[index]);
+        const edgeLength = evLength(context, { "entities" : edge });
+        const midpoint = (accumulatedLength + edgeLength / 2) / totalLength;
+        edgeMidpoints = append(edgeMidpoints, midpoint);
+        accumulatedLength += edgeLength;
+    }
+
+    // Identify which edges fall within tab domains
+    var tabEdgeQueries = [];
+    for (var i = 0; i < size(orderedEdges); i += 1)
+    {
+        const midpoint = edgeMidpoints[i];
+        for (var domain in tabDomains)
+        {
+            if (midpoint >= domain.start && midpoint <= domain.end)
+            {
+                tabEdgeQueries = append(tabEdgeQueries, orderedEdges[i]);
+                break;
+            }
+        }
     }
 
     if (size(tabEdgeQueries) == 0)
