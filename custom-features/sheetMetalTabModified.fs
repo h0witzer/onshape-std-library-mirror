@@ -173,10 +173,9 @@ function processEdgeBasedInput(context is Context, id is Id, definition is map)
 function processFaceBasedInput(context is Context, id is Id, definition is map)
 {
         // this is not necessary but helps with correct error reporting in feature pattern
-        const tabFacesInput = (definition.tabFaces != undefined) ? definition.tabFaces : qNothing();
-        checkNotInFeaturePattern(context, tabFacesInput, ErrorStringEnum.SHEET_METAL_NO_FEATURE_PATTERN);
+        checkNotInFeaturePattern(context, definition.tabFaces, ErrorStringEnum.SHEET_METAL_NO_FEATURE_PATTERN);
 
-        createTools(context, id + "extract", tabFacesInput);
+        createTools(context, id + "extract", definition.tabFaces);
 
         const unionEntities = try silent(getSMDefinitionEntities(context, definition.booleanUnionScope));
         if (unionEntities == undefined || unionEntities == [])
