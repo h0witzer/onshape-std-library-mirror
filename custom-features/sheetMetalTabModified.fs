@@ -88,33 +88,45 @@ export const tabAndSlotBossDisplay = defineSheetMetalFeature(function(context is
         isLength(definition.tabDepth, TAB_DEPTH_BOUNDS);
     }
     {
-        // Step 1: Calculate tab parameters and determine spacing
+        // Step 1: Get sheet metal definition edges from the selected edges
+        // The selected edges are on the folded body, but we need to work with definition body edges
+        const adjacentFacesQuery = qAdjacent(definition.edges, AdjacencyType.EDGE, EntityType.FACE);
+        const smDefinitionEntities = getSMDefinitionEntities(context, adjacentFacesQuery);
+        const smDefinitionEdges = qEntityFilter(qUnion(smDefinitionEntities), EntityType.EDGE);
+        
+        // Debug: Show the definition edges we're working with
+        debug(context, smDefinitionEdges, DebugColor.RED);
+        
+        // Step 2: Calculate tab parameters and determine spacing
+        // Use definition edges for length calculations
+        definition.smEdges = smDefinitionEdges;
         calculateTabSpacing(context, definition);
         
-        // Step 2: Generate tab parameters (locations along edge chain)
+        // Step 3: Generate tab parameters (locations along edge chain)
         const tabParameters = generateTabParameters(context, id, definition);
         
-        // Step 3: Split edges to create tab segments and track them
-        const trackedEdges = startTracking(context, definition.edges);
+        // Step 4: Split definition edges to create tab segments and track them
+        const trackedEdges = startTracking(context, smDefinitionEdges);
         splitEdgesForTabSegments(context, id, definition, tabParameters);
         
         // Add debug visualization for split edges (alternating cyan/magenta)
         showAlternatingDebugSegments(context, trackedEdges, definition.tabCount);
         
-        // Step 4: Copy sheet metal wall surfaces and extend tab segments
+        // Step 5: Copy sheet metal wall surfaces and extend tab segments
         copyAndExtendTabSurfaces(context, id, definition, tabParameters, trackedEdges);
         
-        // Step 5: (Future) Sheet metal recombination using smTabModified.fs logic
+        // Step 6: (Future) Sheet metal recombination using smTabModified.fs logic
         // TODO: Integrate sheet metal tab merging logic
     }, {});
 
 // Calculates tab spacing based on spacing type (from sheetMetalTabAndSlot)
-// Inputs: context, definition (contains edges, spacingType, and spacing/tabCount)
+// Inputs: context, definition (contains smEdges, spacingType, and spacing/tabCount)
 // Outputs: Updates definition.spacing or definition.tabCount based on edge length
 function calculateTabSpacing(context is Context, definition is map)
 {
+    const edgesToUse = definition.smEdges != undefined ? definition.smEdges : definition.edges;
     const edgeLength = evLength(context, {
-        "entities" : definition.edges
+        "entities" : edgesToUse
     });
     
     if (definition.spacingType == SpacingType.EQUAL)
@@ -130,13 +142,14 @@ function calculateTabSpacing(context is Context, definition is map)
 }
 
 // Generates tab parameters (locations) along the edge chain (from sheetMetalTabAndSlot)
-// Inputs: context, id, definition (contains edges, spacing, tabCount, tabWidth)
+// Inputs: context, id, definition (contains smEdges, spacing, tabCount, tabWidth)
 // Outputs: Array of parameter values (0-1) indicating tab center locations along the edge chain
 function generateTabParameters(context is Context, id is Id, definition is map) returns array
 {
-    const edgesAsPath = constructPath(context, definition.edges);
+    const edgesToUse = definition.smEdges != undefined ? definition.smEdges : definition.edges;
+    const edgesAsPath = constructPath(context, edgesToUse);
     const pathLength = evLength(context, {
-        "entities" : definition.edges
+        "entities" : edgesToUse
     });
     
     const parameterSpacing = definition.spacing / pathLength;
@@ -167,7 +180,8 @@ function generateTabParameters(context is Context, id is Id, definition is map) 
     
     // Filter out tabs that overlap with edge vertices
     const tabWidthInParam = definition.tabWidth / pathLength;
-    const pathVertices = calculatePathVertexParameters(context, definition.edges);
+    const edgesToUse = definition.smEdges != undefined ? definition.smEdges : definition.edges;
+    const pathVertices = calculatePathVertexParameters(context, edgesToUse);
     
     var finalParams = [];
     for (var i = 0; i < size(placementParams); i += 1)
@@ -218,7 +232,7 @@ function calculatePathVertexParameters(context is Context, edges is Query) retur
 }
 
 // Splits edges to create tab segments (adapted from sheetMetalTabAndSlot)
-// Inputs: context, id, definition (contains edges, tabWidth), tabParameters (array of tab center locations)
+// Inputs: context, id, definition (contains smEdges, tabWidth), tabParameters (array of tab center locations)
 // Outputs: Splits the edges at tab boundaries using opSplitEdges
 function splitEdgesForTabSegments(context is Context, id is Id, definition is map, tabParameters is array)
 {
@@ -227,9 +241,10 @@ function splitEdgesForTabSegments(context is Context, id is Id, definition is ma
         return;
     }
     
-    const path = constructPath(context, definition.edges);
+    const edgesToUse = definition.smEdges != undefined ? definition.smEdges : definition.edges;
+    const path = constructPath(context, edgesToUse);
     const pathLength = evLength(context, {
-        "entities" : definition.edges
+        "entities" : edgesToUse
     });
     
     if (pathLength <= 0 * meter)
@@ -453,15 +468,15 @@ function copyAndExtendTabSurfaces(context is Context, id is Id, definition is ma
         throw regenError("No edges found after splitting", ["edges"]);
     }
     
-    // Get adjacent faces from the split edges
-    const adjacentFacesQuery = qAdjacent(qUnion(splitEdges), AdjacencyType.EDGE, EntityType.FACE);
+    // Debug: Show the split edges
+    debug(context, qUnion(splitEdges), DebugColor.YELLOW);
     
-    // Use getSMDefinitionEntities to properly get the sheet metal definition faces (the blue debug faces)
-    const smDefinitionFaces = getSMDefinitionEntities(context, adjacentFacesQuery);
+    // Get adjacent faces from the split edges (these should already be definition faces)
+    const adjacentFacesQuery = qAdjacent(qUnion(splitEdges), AdjacencyType.EDGE, EntityType.FACE);
     
     // Filter to only faces with sheet metal wall attribute
     const wallAttributeQuery = qAttributeQuery(asSMAttribute({ "objectType" : SMObjectType.WALL }));
-    const sheetMetalWallFaces = qIntersection([qUnion(smDefinitionFaces), wallAttributeQuery]);
+    const sheetMetalWallFaces = qIntersection([adjacentFacesQuery, wallAttributeQuery]);
     const wallFaces = evaluateQuery(context, sheetMetalWallFaces);
     
     // Debug: Show the wall faces we found (should be blue)
