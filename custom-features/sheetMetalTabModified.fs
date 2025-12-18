@@ -1,780 +1,446 @@
 FeatureScript 2837;
 
-// Imports used in interface
-export import(path : "onshape/std/query.fs", version : "2837.0");
-export import(path : "onshape/std/tool.fs", version : "2837.0");
-
-// Imports used internally
-import(path : "onshape/std/attributes.fs", version : "2837.0");
-import(path : "onshape/std/boolean.fs", version : "2837.0");
-import(path : "onshape/std/containers.fs", version : "2837.0");
+// Imports from sheetMetalTabAndSlot
+import(path : "onshape/std/common.fs", version : "2837.0");
+import(path : "onshape/std/query.fs", version : "2837.0");
 import(path : "onshape/std/evaluate.fs", version : "2837.0");
-import(path : "onshape/std/extendendtype.gen.fs", version : "2837.0");
-import(path : "onshape/std/extendsheetshapetype.gen.fs", version : "2837.0");
-import(path : "onshape/std/feature.fs", version : "2837.0");
+import(path : "onshape/std/valueBounds.fs", version : "2837.0");
 import(path : "onshape/std/geomOperations.fs", version : "2837.0");
-import(path : "onshape/std/math.fs", version : "2837.0");
-import(path : "onshape/std/moveFace.fs", version : "2837.0");
 import(path : "onshape/std/path.fs", version : "2837.0");
 import(path : "onshape/std/transform.fs", version : "2837.0");
-import(path : "onshape/std/sheetMetalAttribute.fs", version : "2837.0");
 import(path : "onshape/std/sheetMetalUtils.fs", version : "2837.0");
-import(path : "onshape/std/surfaceGeometry.fs", version : "2837.0");
-import(path : "onshape/std/topologyUtils.fs", version : "2837.0");
-import(path : "onshape/std/valueBounds.fs", version : "2837.0");
-import(path : "onshape/std/vector.fs", version : "2837.0");
+import(path : "onshape/std/extendendtype.gen.fs", version : "2837.0");
+import(path : "onshape/std/extendsheetshapetype.gen.fs", version : "2837.0");
+import(path : "onshape/std/debug.fs", version : "2837.0");
+import(path : "onshape/std/debugcolor.gen.fs", version : "2837.0");
 
-/**
- * Defines the input type for the tab feature
- */
-export enum InputType
+// Constants for tab and slot feature from sheetMetalTabAndSlot
+export const SPACING_BOUNDS =
 {
-    annotation { "Name" : "Edges" }
-    EDGES,
-    annotation { "Name" : "Faces" }
-    FACES
+    (inch) : [1e-6, 6, 1e6]
+} as LengthBoundSpec;
+
+export const TAB_WIDTH_BOUNDS =
+{
+    (inch) : [1e-6, 1, 1e6]
+} as LengthBoundSpec;
+
+export const TAB_DEPTH_BOUNDS =
+{
+    (inch) : [1e-6, .05, 1e6]
+} as LengthBoundSpec;
+
+export enum SpacingType
+{
+    annotation { "Name" : "Equal" }
+    EQUAL,
+    annotation { "Name" : "Length" }
+    LENGTH
 }
 
+// Constants from splitSmEdgeChainToSegments.fs
+const EDGE_LENGTH_TOLERANCE = 1e-9 * meter;
+const EDGE_PARAMETER_TOLERANCE = 1e-6;
+const FRACTION_TOLERANCE = 1e-9;
+
+const CYAN_MAGENTA_DEBUG_COLORS = [
+    DebugColor.CYAN,
+    DebugColor.MAGENTA
+];
+
 /**
- * Refactored sheet metal tab feature that accepts edges or faces as input.
- * When edges are provided, the feature:
- *   1. Splits the edge chain into segments
- *   2. Copies the sheet metal wall faces attached to those edges
- *   3. Extends the copied surfaces by the specified tab depth
- *   4. Creates tabs from the extended surfaces
- *
- * When faces are provided, the feature works in backwards-compatible mode.
+ * Refactored sheet metal tab feature using edge-based input.
+ * Takes precondition from sheetMetalTabAndSlot and implements:
+ * 1. Tab segment location logic from splitSmEdgeChainToSegments.fs
+ * 2. Copy sheet metal wall surfaces
+ * 3. Extend surfaces with opExtendSheetBody for tab depth
  */
-annotation { "Feature Type Name" : "Tab",
-        "Editing Logic Function" : "sheetMetalTabEditingLogic" }
-export const sheetMetalTab = defineSheetMetalFeature(function(context is Context, id is Id, definition is map)
+annotation { "Feature Type Name" : "Tab and Slot Refactored" }
+export const tabAndSlotRefactored = defineFeature(function(context is Context, id is Id, definition is map)
     precondition
     {
-        annotation { "Name" : "Input type", "UIHint" : UIHint.SHOW_LABEL }
-        definition.inputType is InputType;
+        // Precondition from sheetMetalTabAndSlot
+        annotation { "Name" : "Edges", "Filter" : EntityType.EDGE, "UIHint" : UIHint.SHOW_CREATE_SELECTION }
+        definition.edges is Query;
+
+        annotation { "Name" : "Spacing Type" }
+        definition.spacingType is SpacingType;
+
+        if (definition.spacingType == SpacingType.LENGTH)
+        {
+            annotation { "Name" : "Spacing" }
+            isLength(definition.spacing, SPACING_BOUNDS);
+        }
+
+        if (definition.spacingType == SpacingType.EQUAL)
+        {
+            annotation { "Name" : "Tab Count" }
+            isInteger(definition.tabCount, POSITIVE_COUNT_BOUNDS);
+        }
+
+        annotation { "Name" : "Tab Width" }
+        isLength(definition.tabWidth, TAB_WIDTH_BOUNDS);
+
+        annotation { "Name" : "Tab Depth" }
+        isLength(definition.tabDepth, TAB_DEPTH_BOUNDS);
+    }
+    {
+        // Step 1: Calculate tab parameters and determine spacing
+        calculateTabSpacing(context, definition);
         
-        if (definition.inputType == InputType.EDGES)
-        {
-            annotation { "Name" : "Edge chain", "Filter" : EntityType.EDGE && SheetMetalDefinitionEntityType.EDGE && ActiveSheetMetal.YES && ModifiableEntityOnly.YES }
-            definition.edgeChain is Query;
-            
-            annotation { "Name" : "Tab depth" }
-            isLength(definition.tabDepth, BLEND_BOUNDS);
-        }
-        else
-        {
-            annotation { "Name" : "Tab profile", "Filter" : EntityType.FACE && ConstructionObject.NO }
-            definition.tabFaces is Query;
-        }
+        // Step 2: Generate tab parameters (locations along edge chain)
+        const tabParameters = generateTabParameters(context, id, definition);
+        
+        // Step 3: Split edges to create tab segments
+        splitEdgesForTabSegments(context, id, definition, tabParameters);
+        
+        // Step 4: Copy sheet metal wall surfaces and extend tab segments
+        copyAndExtendTabSurfaces(context, id, definition, tabParameters);
+        
+        // Step 5: (Future) Sheet metal recombination using smTabModified.fs logic
+        // TODO: Integrate sheet metal tab merging logic
+    });
 
-        annotation { "Name" : "Flange to merge", "Filter" : SheetMetalDefinitionEntityType.FACE && AllowFlattenedGeometry.YES && ModifiableEntityOnly.YES }
-        definition.booleanUnionScope is Query;
-
-        annotation { "Name" : "Subtraction offset" }
-        isLength(definition.booleanOffset, NONNEGATIVE_ZERO_DEFAULT_LENGTH_BOUNDS);
-
-        annotation { "Name" : "Subtraction scope", "Filter" : (SheetMetalDefinitionEntityType.FACE && AllowFlattenedGeometry.YES && ModifiableEntityOnly.YES) || (BodyType.SOLID && EntityType.BODY && ActiveSheetMetal.NO) }
-        definition.booleanSubtractScope is Query;
-    }
-    {
-        // Branch based on input type
-        if (definition.inputType == InputType.EDGES)
-        {
-            // New edge-based workflow
-            processEdgeBasedInput(context, id, definition);
-        }
-        else
-        {
-            // Legacy face-based workflow (backwards compatible)
-            processFaceBasedInput(context, id, definition);
-        }
-    }, { booleanSubtractScope : qNothing(), inputType : InputType.FACES });
-
-// Processes edge-based input: splits edges, copies faces, extends surfaces
-function processEdgeBasedInput(context is Context, id is Id, definition is map)
+// Calculates tab spacing based on spacing type (from sheetMetalTabAndSlot)
+// Inputs: context, definition (contains edges, spacingType, and spacing/tabCount)
+// Outputs: Updates definition.spacing or definition.tabCount based on edge length
+function calculateTabSpacing(context is Context, definition is map)
 {
-    // Validate edge input
-    const selectedEdgesQuery = qEntityFilter(definition.edgeChain, EntityType.EDGE);
-    const selectedEdges = evaluateQuery(context, selectedEdgesQuery);
-    if (size(selectedEdges) == 0)
-    {
-        throw regenError("Select at least one sheet metal edge", ["edgeChain"]);
-    }
-
-    // Verify edges belong to active sheet metal body
-    const activeBodiesQuery = qActiveSheetMetalFilter(qOwnerBody(selectedEdgesQuery), ActiveSheetMetal.YES);
-    const activeBodies = evaluateQuery(context, activeBodiesQuery);
-    if (size(activeBodies) == 0)
-    {
-        throw regenError("Selected edges must belong to an active sheet metal part", ["edgeChain"], definition.edgeChain);
-    }
-    if (size(activeBodies) > 1)
-    {
-        throw regenError("Select edges that belong to a single sheet metal part", ["edgeChain"], definition.edgeChain);
-    }
-
-    // Get sheet metal wall faces adjacent to the selected edges
-    const adjacentFacesQuery = qAdjacent(selectedEdgesQuery, AdjacencyType.EDGE, EntityType.FACE);
-    const wallFaces = evaluateQuery(context, adjacentFacesQuery);
-    if (size(wallFaces) == 0)
-    {
-        throw regenError("No sheet metal wall faces found adjacent to selected edges", ["edgeChain"], definition.edgeChain);
-    }
-
-    // Copy the wall faces to create surface bodies for tab generation
-    opPattern(context, id + "copyWalls", {
-                "entities" : qUnion(wallFaces),
-                "transforms" : [identityTransform()],
-                "instanceNames" : ["tabSurfaces"]
-            });
-
-    const copiedSurfacesQuery = qCreatedBy(id + "copyWalls", EntityType.BODY);
-    const copiedSurfaces = evaluateQuery(context, copiedSurfacesQuery);
-    if (size(copiedSurfaces) == 0)
-    {
-        throw regenError("Failed to copy sheet metal wall faces", ["edgeChain"]);
-    }
-
-    // Extract surfaces to ensure they are proper sheet bodies
-    opExtractSurface(context, id + "extractCopied", {
-                "faces" : qOwnedByBody(copiedSurfacesQuery, EntityType.FACE),
-                "redundancyType" : ExtractSurfaceRedundancyType.REMOVE_ALL_REDUNDANCY
-            });
-
-    // Find edges corresponding to the selected edges in the copied surfaces
-    // TODO: This currently extends ALL edges on the copied surface. In the future, this should be refined
-    // to only extend the edges that correspond to the originally selected edge chain, possibly by using
-    // geometric comparison or collision detection to match edges.
-    const copiedEdgesQuery = qCreatedBy(id + "extractCopied", EntityType.EDGE);
+    const edgeLength = evLength(context, {
+        "entities" : definition.edges
+    });
     
-    // Extend the copied surface edges by the specified tab depth
-    try
+    if (definition.spacingType == SpacingType.EQUAL)
     {
-        opExtendSheetBody(context, id + "extend", {
-                    "entities" : copiedEdgesQuery,
-                    "endCondition" : ExtendEndType.EXTEND_BLIND,
-                    "extendDistance" : definition.tabDepth,
-                    "extensionShape" : ExtendSheetShapeType.LINEAR
-                });
+        // Calculate spacing from tab count
+        definition.spacing = definition.tabWidth + ((edgeLength - (definition.tabCount * definition.tabWidth)) / (definition.tabCount + 1));
     }
-    catch (error)
+    else if (definition.spacingType == SpacingType.LENGTH)
     {
-        throw regenError("Failed to extend sheet body edges by tab depth: " ~ error, ["tabDepth", "edgeChain"]);
+        // Calculate tab count from spacing
+        definition.tabCount = floor((edgeLength - definition.tabWidth) / definition.spacing);
     }
-
-    // Store the extended surfaces as tab faces for further processing
-    definition.tabFaces = qCreatedBy(id + "extend", EntityType.FACE);
-    
-    // Continue with standard tab processing
-    processFaceBasedInput(context, id, definition);
 }
 
-// Legacy face-based workflow (backwards compatible)
-function processFaceBasedInput(context is Context, id is Id, definition is map)
+// Generates tab parameters (locations) along the edge chain (from sheetMetalTabAndSlot)
+// Inputs: context, id, definition (contains edges, spacing, tabCount, tabWidth)
+// Outputs: Array of parameter values (0-1) indicating tab center locations along the edge chain
+function generateTabParameters(context is Context, id is Id, definition is map) returns array
 {
-        // this is not necessary but helps with correct error reporting in feature pattern
-        checkNotInFeaturePattern(context, definition.tabFaces, ErrorStringEnum.SHEET_METAL_NO_FEATURE_PATTERN);
-
-        createTools(context, id + "extract", definition.tabFaces);
-
-        const unionEntities = try silent(getSMDefinitionEntities(context, definition.booleanUnionScope));
-        if (unionEntities == undefined || unionEntities == [])
+    const edgesAsPath = constructPath(context, definition.edges);
+    const pathLength = evLength(context, {
+        "entities" : definition.edges
+    });
+    
+    const parameterSpacing = definition.spacing / pathLength;
+    var placementParams = [];
+    
+    for (var i = 0; i < definition.tabCount; i += 1)
+    {
+        var oddEvenParam = i % 2 == 0 ? 1 : -1;
+        var newParam = 1.0;
+        
+        if (definition.tabCount % 2 == 0)
         {
-            throw regenError(ErrorStringEnum.SHEET_METAL_TAB_NO_WALL, ["booleanUnionScope"]);
+            // Even spacing offset from centre
+            newParam = 0.5 + (oddEvenParam * parameterSpacing / 2) + (floor(i / 2) * parameterSpacing * oddEvenParam);
         }
-        const unionEntityQuery = qUnion(unionEntities);
-        const unionBodies = evaluateQuery(context, qOwnerBody(unionEntityQuery));
-
-        if (isAtVersionOrLater(context, FeatureScriptVersionNumber.V1235_TAB_MERGE_AND_SUBTRACT))
+        else if (i > 0)
         {
-            // Do not allow users to target the same flange for both merging and subtraction
-            const subtractEntityQuery = qUnion(getSMDefinitionEntities(context, definition.booleanSubtractScope));
-            const entitiesInBothUnionAndSubtract = evaluateQuery(context, qIntersection([unionEntityQuery, subtractEntityQuery]));
-            if (entitiesInBothUnionAndSubtract != [])
+            // Odd spacing starts at center
+            newParam = 0.5 + (ceil(i / 2) * parameterSpacing * (i % 2 == 0 ? 1 : -1));
+        }
+        else
+        {
+            newParam = 0.5;
+        }
+        
+        placementParams = append(placementParams, newParam);
+    }
+    
+    // Filter out tabs that overlap with edge vertices
+    const tabWidthInParam = definition.tabWidth / pathLength;
+    const pathVertices = calculatePathVertexParameters(context, definition.edges);
+    
+    var finalParams = [];
+    for (var i = 0; i < size(placementParams); i += 1)
+    {
+        var clear = true;
+        for (var j = 0; j < size(pathVertices); j += 1)
+        {
+            if (placementParams[i] + tabWidthInParam / 2 > pathVertices[j] && 
+                placementParams[i] - tabWidthInParam / 2 < pathVertices[j])
             {
-                throw regenError(ErrorStringEnum.SHEET_METAL_TAB_MERGE_AND_SUBTRACT_SAME_FLANGE, ["booleanUnionScope", "booleanSubtractScope"], qUnion(entitiesInBothUnionAndSubtract));
+                clear = false;
             }
         }
-
-        var subtractBodies = getOwnerSMModel(context, definition.booleanSubtractScope);
-        var sheetMetalBodiesQuery = qUnion(concatenateArrays([subtractBodies, unionBodies]));
-        const initialData = getInitialEntitiesAndAttributes(context, sheetMetalBodiesQuery);
-        sheetMetalBodiesQuery = qUnion([startTracking(context, sheetMetalBodiesQuery), sheetMetalBodiesQuery]);
-
-        // The deripping step breaks these queries otherwise.
-        const unionEntityPersistantQuery = qUnion([unionEntityQuery, startTracking(context, unionEntityQuery)]);
-        const associateChanges = startTracking(context, qOwnedByBody(sheetMetalBodiesQuery, EntityType.FACE));
-
-        const selectionsByModelId = partitionSheetMetalQueriesByModel(context, unionEntities);
-        var index = 0;
-        var oneSuccess = false;
-        for (var pair in selectionsByModelId)
+        if (clear)
         {
-            oneSuccess = applyTab(context, id + unstableIdComponent(index), definition, qCreatedBy(id + "extract", EntityType.FACE), pair.value, id) || oneSuccess;
-            index += 1;
+            finalParams = append(finalParams, placementParams[i]);
         }
-
-        if (!oneSuccess)
-        {
-            reportFeatureInfo(context, id, ErrorStringEnum.SHEET_METAL_TAB_NO_EFFECT);
-            setErrorEntities(context, id, { "entities" : definition.tabFaces });
-        }
-
-        opDeleteBodies(context, id + "deleteBodies", {
-                    "entities" : qCreatedBy(id + "extract", EntityType.BODY)
-                });
-
-        const toUpdate = assignSMAttributesToNewOrSplitEntities(context, sheetMetalBodiesQuery, initialData, id);
-
-        updateSheetMetalGeometry(context, id, {
-                    "entities" : qUnion([toUpdate.modifiedEntities, unionEntityPersistantQuery]),
-                    "deletedAttributes" : toUpdate.deletedAttributes,
-                    "associatedChanges" : associateChanges });
+    }
+    
+    return finalParams;
 }
 
-function applyTab(context is Context, id is Id, definition is map, tabQuery is Query, unionEntities is array, rootId is Id) returns boolean
+// Calculates parameter values (0-1) for vertices along the edge path
+// Inputs: context, edges (query containing edge chain)
+// Outputs: Array of parameter values indicating vertex locations
+function calculatePathVertexParameters(context is Context, edges is Query) returns array
 {
-    const tabBodies = evaluateQuery(context, qOwnerBody(tabQuery));
-    if (tabBodies == [])
+    const path = constructPath(context, edges);
+    const pathLength = evLength(context, {
+        "entities" : edges
+    });
+    
+    var params = [0];
+    var currentParamLength = 0;
+    
+    for (var i = 0; i < size(path.edges); i += 1)
     {
-        return false;
+        const edgeLength = evLength(context, {
+            "entities" : path.edges[i]
+        });
+        
+        const portionOfPath = edgeLength / pathLength;
+        currentParamLength += portionOfPath;
+        params = append(params, currentParamLength);
     }
-
-    const separatedSubtractQueries = separateSheetMetalQueries(context, definition.booleanSubtractScope);
-    const unionQuery = qUnion(unionEntities);
-
-    var oneSuccess = false;
-    var index = 0;
-    for (var tabBody in tabBodies)
-    {
-        const tabBodyQuery = qUnion([tabBody]);
-        const trackedTabBody = qUnion([tabBodyQuery, startTracking(context, tabBodyQuery)]);
-        const tabIndexComponent = unstableIdComponent(index);
-        const coincidentWalls = findCoincidentSheetMetalWalls(context, id + tabIndexComponent + "align", trackedTabBody, unionQuery);
-        const coincidentGrouping = { "tabBody" : trackedTabBody, "walls" : coincidentWalls };
-        const status = booleanOneTabGroup(context, id + tabIndexComponent + "group", definition, coincidentGrouping, separatedSubtractQueries, rootId);
-        if (status.statusEnum != ErrorStringEnum.BOOLEAN_UNION_NO_OP)
-        {
-            oneSuccess = true;
-        }
-        index += 1;
-    }
-    return oneSuccess;
+    
+    return params;
 }
 
-/**
- * Takes a sheet metal query and returns the results as a map where the keys are sheet metal model ids
- * and the values are arrays of queries.
- */
-function partitionSheetMetalQueriesByModel(context is Context, selections is array) returns map
+// Splits edges to create tab segments (adapted from sheetMetalTabAndSlot)
+// Inputs: context, id, definition (contains edges, tabWidth), tabParameters (array of tab center locations)
+// Outputs: Splits the edges at tab boundaries using opSplitEdges
+function splitEdgesForTabSegments(context is Context, id is Id, definition is map, tabParameters is array)
 {
-    var out = {};
-    for (var selection in selections)
+    if (size(tabParameters) == 0)
     {
-        const withTracking = qUnion([selection, startTracking(context, selection)]);
-        const id = getActiveSheetMetalId(context, selection);
-        const existing = out[id];
-        if (existing is undefined)
-        {
-            out[id] = [withTracking];
-        }
-        else
-        {
-            out[id] = append(existing, withTracking);
-        }
+        return;
     }
-    return out;
-}
-
-/**
- * Locate the sheet metal walls that are coincident with the supplied tab body.
- */
-function findCoincidentSheetMetalWalls(context is Context, id is Id, tabBody is Query, unionQuery is Query) returns Query
-{
-    var coincidentFaces = collectCoincidentFaces(context, tabBody, unionQuery);
-
-    if (size(coincidentFaces) == 0)
+    
+    const path = constructPath(context, definition.edges);
+    const pathLength = evLength(context, {
+        "entities" : definition.edges
+    });
+    
+    if (pathLength <= 0 * meter)
     {
-        const aligned = tryAlignTabBodyWithOppositeWall(context, id + "offset", tabBody, unionQuery);
-        if (aligned)
-        {
-            coincidentFaces = collectCoincidentFaces(context, tabBody, unionQuery);
-        }
+        return;
     }
-
-    if (size(coincidentFaces) == 0)
+    
+    const halfSpan = (definition.tabWidth / pathLength) / 2;
+    const parameterTolerance = 1e-9;
+    
+    // Convert tab parameters to split parameters (start and end of each tab)
+    var globalParameters = [];
+    for (var parameter in tabParameters)
     {
-        throw regenError(ErrorStringEnum.SHEET_METAL_TAB_NO_PARALLEL_WALL, ["tabFaces"], qOwnedByBody(tabBody, EntityType.FACE));
-    }
-
-    const coincidentQuery = qUnion(coincidentFaces);
-    return qUnion([coincidentQuery, startTracking(context, coincidentQuery)]);
-}
-
-/**
- * Collects all sheet metal wall faces that are currently coincident with the supplied tab body.
- */
-function collectCoincidentFaces(context is Context, tabBody is Query, unionQuery is Query) returns array
-{
-    const collisions = evCollision(context, {
-                "tools" : qOwnedByBody(tabBody, EntityType.FACE),
-                "targets" : unionQuery
-            });
-
-    var coincidentFaces = [];
-    for (var collision in collisions)
-    {
-        if (collision["type"] == ClashType.NONE)
+        var startGlobal = max(parameterTolerance, parameter - halfSpan);
+        var endGlobal = min(1 - parameterTolerance, parameter + halfSpan);
+        
+        if (startGlobal >= endGlobal)
         {
             continue;
         }
-        coincidentFaces = append(coincidentFaces, collision.target);
-    }
-    return coincidentFaces;
-}
-
-/**
- * Offsets the supplied tab body if it is located on the opposite side of the sheet metal by exactly one thickness.
- */
-function tryAlignTabBodyWithOppositeWall(context is Context, id is Id, tabBody is Query, unionQuery is Query) returns boolean
-{
-    const tabFaces = qOwnedByBody(tabBody, EntityType.FACE);
-    var distanceResult = try silent(evDistance(context, { "side0" : tabFaces, "side1" : unionQuery }));
-    if (!(distanceResult is DistanceResult))
-    {
-        return false;
-    }
-
-    if (distanceResult.distance <= TOLERANCE.zeroLength * meter)
-    {
-        return false;
-    }
-
-    const modelParameters = try silent(getModelParameters(context, qOwnerBody(unionQuery)));
-    if (modelParameters is undefined)
-    {
-        return false;
-    }
-
-    const totalThickness = modelParameters.frontThickness + modelParameters.backThickness;
-    if (abs(distanceResult.distance - totalThickness) > TOLERANCE.zeroLength * meter)
-    {
-        return false;
-    }
-
-    const tabFaceArray = evaluateQuery(context, tabFaces);
-    if (distanceResult.sides[0].index >= size(tabFaceArray))
-    {
-        return false;
-    }
-
-    const referenceFace = tabFaceArray[distanceResult.sides[0].index];
-    const tangentPlane = evFaceTangentPlane(context, {
-                "face" : referenceFace,
-                "parameter" : distanceResult.sides[0].parameter
-            });
-    if (tangentPlane is undefined)
-    {
-        return false;
-    }
-
-    var directionVector = distanceResult.sides[1].point - distanceResult.sides[0].point;
-    const directionMagnitude = norm(directionVector);
-    if (directionMagnitude <= TOLERANCE.zeroLength * meter)
-    {
-        return false;
-    }
-    directionVector = directionVector / directionMagnitude;
-
-    const offsetSign = (dot(directionVector, tangentPlane.normal) >= 0) ? 1 : -1;
-    const offsetDistance = offsetSign * totalThickness;
-
-    opOffsetFace(context, id, {
-                "moveFaces" : tabFaces,
-                "offsetDistance" : offsetDistance,
-                "mergeFaces" : true,
-                "reFillet" : false
-            });
-
-    return true;
-}
-
-/**
- * Converts tools into sheet bodies.
- */
-function createTools(context is Context, id is Id, tools is Query)
-{
-    const faces = evaluateQuery(context, tools);
-    if (faces == [])
-    {
-        throw regenError(ErrorStringEnum.SHEET_METAL_TAB_NO_TAB, ["tabFaces"]);
-    }
-    if (isAtVersionOrLater(context, FeatureScriptVersionNumber.V696_REMOVE_ADDED_REDUNDANCY))
-        opExtractSurface(context, id, { "faces" : tools, "redundancyType" : ExtractSurfaceRedundancyType.REMOVE_ALL_REDUNDANCY });
-    else
-        opExtractSurface(context, id, { "faces" : tools, "removeRedundant" : true });
-}
-
-function reportBooleanIssues(context is Context, id is Id, tabBody is Query, wallFaces is Query)
-{
-    const collisions = evCollision(context, {
-                "tools" : tabBody,
-                "targets" : wallFaces
-            });
-
-    if (size(collisions) == 0)
-    {
-        throw regenError(ErrorStringEnum.SHEET_METAL_TAB_NO_MERGE, ["tabFaces"], wallFaces);
-    }
-}
-
-function identifyEdgesForDeripping(context is Context, id is Id, tabBody is Query, partEntities is Query) returns array
-{
-    try silent
-    {
-        var edgesForDerip = [];
-        const collisions = evCollision(context, {
-                    "tools" : qOwnedByBody(tabBody, EntityType.FACE),
-                    "targets" : partEntities
-                });
-        for (var collision in collisions)
-        {
-            if (collision["type"] != ClashType.ABUT_NO_CLASS)
-            {
-                edgesForDerip = concatenateArrays([edgesForDerip, getSMDefinitionEntities(context, collision.target, EntityType.EDGE)]);
-            }
-        }
-        return edgesForDerip;
-    }
-    catch
-    {
-        return [];
-    }
-}
-
-function smSubtractTab(context is Context, id is Id, tab is Query, subtractFaces)
-{
-    if (subtractFaces is undefined)
-    {
-        return;
-    }
-    var index = 0;
-    for (var face in subtractFaces)
-    {
-        const targetModelParameters = try silent(getModelParameters(context, qOwnerBody(face)));
-        if (targetModelParameters is undefined)
-            throw regenError(ErrorStringEnum.REGEN_ERROR);
-        const tool = createBooleanToolsForFace(context, id + unstableIdComponent(index) + "tool", face, tab, targetModelParameters);
-        if (tool != undefined)
-        {
-            opBoolean(context, id + unstableIdComponent(index) + "booleanSubtract", {
-                        "tools" : qCreatedBy(id + unstableIdComponent(index) + "tool", EntityType.FACE),
-                        "targets" : face,
-                        "operationType" : BooleanOperationType.SUBTRACTION,
-                        "localizedInFaces" : true,
-                        "allowSheets" : true
-                    });
-        }
-        index += 1;
-    }
-
-}
-
-function solidSubtractTab(context is Context, id is Id, tab is Query, targets)
-{
-    if (targets is undefined)
-    {
-        return;
-    }
-    try silent(opBoolean(context, id, {
-                    "tools" : tab,
-                    "targets" : targets,
-                    "operationType" : BooleanOperationType.SUBTRACTION,
-                    "allowSheets" : true
-                }));
-}
-
-/**
- * Given a query for sheet metal model faces. Return a query for all sheet metal part faces corresponding to joints
- * on the edges of the input faces.
- */
-function getCorrespondingJointEntitiesInPart(context is Context, selection is Query) returns Query
-{
-    const evaluatedEdges = evaluateQuery(context, selection->qEdgeTopologyFilter(EdgeTopology.TWO_SIDED));
-    var toCollectFaces = [];
-    var toCollectEdges = [];
-    for (var edge in evaluatedEdges)
-    {
-            const jointAttributes = getSmObjectTypeAttributes(context, edge, SMObjectType.JOINT);
-            if (size(jointAttributes) == 0 ||
-                jointAttributes[0].jointType == undefined ||
-                jointAttributes[0].jointType.value != SMJointType.TANGENT)
-            {
-                toCollectFaces = append(toCollectFaces, edge);
-            }
-            else
-            {
-                toCollectEdges = append(toCollectEdges, edge);
-            }
-    }
-    const nToFaces = size(toCollectFaces);
-    const nToEdges = size(toCollectEdges);
-    if (nToFaces == 0 && nToEdges == 0)
-    {
-        return qNothing();
-    }
-    const facesQ = (nToFaces == 0) ? qNothing() : getSMCorrespondingInPart(context, qUnion(toCollectFaces), EntityType.FACE);
-    const edgesQ = (nToEdges == 0) ? qNothing() : getSMCorrespondingInPart(context, qUnion(toCollectEdges), EntityType.EDGE);
-    return qUnion([facesQ, edgesQ]);
-}
-
-/**
- * Thicken the input sheet body based on the parameters of the sheet metal model that is the current union target and
- * subtract it from all subtraction targets.
- */
-function subtractTab(context is Context, id is Id, definition is map, subtractQueries is map, coincidentGrouping is map, rootId is Id)
-{
-    const unionBody = qOwnerBody(coincidentGrouping.walls);
-    const modelParameters = try silent(getModelParameters(context, unionBody));
-    if (modelParameters is undefined)
-        throw regenError(ErrorStringEnum.REGEN_ERROR);
-
-    callSubfeatureAndProcessStatus(rootId, opThicken, context, id + "thicken", {
-                "entities" : qOwnedByBody(coincidentGrouping.tabBody, EntityType.FACE),
-                "thickness1" : modelParameters.frontThickness,
-                "thickness2" : modelParameters.backThickness
-            });
-
-    const unionPartFaces = getSMCorrespondingInPart(context, coincidentGrouping.walls, EntityType.FACE);
-    reportBooleanIssues(context, id + "union", qCreatedBy(id + "thicken", EntityType.BODY), unionPartFaces);
-
-    const corresponding = getCorrespondingJointEntitiesInPart(context, qAdjacent(coincidentGrouping.walls, AdjacencyType.EDGE, EntityType.EDGE));
-    const deripCandidates = identifyEdgesForDeripping(context, id + "identify", qCreatedBy(id + "thicken", EntityType.BODY), corresponding);
-
-    if (!deripEdges(context, id + "derip", qUnion(deripCandidates)))
-    {
-        throw regenError(ErrorStringEnum.SHEET_METAL_TAB_NO_BEND, ["booleanUnionScope"]);
-    }
-
-    const subtractFaces = qUnion([qOwnedByBody(qEntityFilter(subtractQueries.sheetMetalQueries, EntityType.BODY), EntityType.FACE), qEntityFilter(subtractQueries.sheetMetalQueries, EntityType.FACE)]);
-    const unionComplementTracking = startTracking(context, qSubtraction(qOwnedByBody(qOwnerBody(coincidentGrouping.walls), EntityType.FACE), coincidentGrouping.walls));
-    var subtractSMFaces = try silent(getSMDefinitionEntities(context, subtractFaces, EntityType.FACE));
-    if (subtractSMFaces is undefined)
-    {
-        subtractSMFaces = [];
-    }
-
-    if (size(subtractSMFaces) != 0 || !isQueryEmpty(context, subtractQueries.nonSheetMetalQueries))
-    {
-        if (definition.booleanOffset > 0 * meter)
-        {
-            const moveFaceDefinition = {
-                    "moveFaces" : qCreatedBy(id + "thicken", EntityType.FACE),
-                    "moveFaceType" : MoveFaceType.OFFSET,
-                    "offsetDistance" : definition.booleanOffset,
-                    "reFillet" : false };
-
-            opOffsetFace(context, id + "move", moveFaceDefinition);
-        }
-        smSubtractTab(context, id + "sm", qCreatedBy(id + "thicken", EntityType.BODY), subtractSMFaces);
-        solidSubtractTab(context, id + "solid", qCreatedBy(id + "thicken", EntityType.BODY), subtractQueries.nonSheetMetalQueries);
-    }
-
-    if (modelParameters.minimalClearance > definition.booleanOffset && !isQueryEmpty(context, unionComplementTracking))
-    {
-        throw regenError(ErrorStringEnum.SHEET_METAL_TAB_LOW_CLEARANCE, ["booleanOffset"], getSMCorrespondingInPart(context, unionComplementTracking, EntityType.FACE));
-    }
-
-    try silent(opDeleteBodies(context, id + "deleteBodies", {
-                    "entities" : qCreatedBy(id + "thicken", EntityType.BODY)
-                }));
-}
-
-/**
- * Handles the boolean union and subtraction operations for a tab body coincident with the supplied walls.
- */
-function booleanOneTabGroup(context is Context, id is Id, definition is map, coincidentGrouping is map, subtractQueries is map, rootId is Id)
-{
-    const wallBodies = qOwnerBody(coincidentGrouping.walls);
-
-    var cornerBreakTracking;
-    const fixCornerBreaks = isAtVersionOrLater(context, FeatureScriptVersionNumber.V723_REMAP_TAB_BREAKS);
-    if (fixCornerBreaks)
-        cornerBreakTracking = collectCornerBreakTracking(context, wallBodies);
-
-    subtractTab(context, id + "subtract", definition, subtractQueries, coincidentGrouping, rootId);
-
-    opPattern(context, id + "copyTool", {
-                "entities" : coincidentGrouping.tabBody,
-                "transforms" : [identityTransform()],
-                "instanceNames" : ["1"]
-            });
-
-    const toolsQ = qCreatedBy(id + "copyTool", EntityType.BODY);
-    try
-    {
-        opBoolean(context, id + "boolean", {
-                    "tools" : qUnion([wallBodies, toolsQ]),
-                    "operationType" : BooleanOperationType.UNION,
-                    "allowSheets" : true
-                });
-    }
-    catch
-    {
-        const unionComplement = qSubtraction(qOwnedByBody(qOwnerBody(coincidentGrouping.walls), EntityType.FACE), coincidentGrouping.walls);
-        const collisions = evCollision(context, {
-                    "tools" : toolsQ,
-                    "targets" : unionComplement
-                });
-
-        var errorGeom = [];
-        for (var collision in collisions)
-        {
-           if (collision['type'] != ClashType.NONE)
-           {
-              errorGeom = append(errorGeom, collision.tool);
-              errorGeom = append(errorGeom, getSMCorrespondingInPart(context, collision.target,  EntityType.FACE));
-           }
-        }
-        if (size(errorGeom) > 0)
-        {
-           setErrorEntities(context, rootId, { "entities" : qUnion(errorGeom) });
-        //   throw regenError(ErrorStringEnum.SHEET_METAL_TAB_COLLISION);
-        }
-        else
-        {
-            setErrorEntities(context, rootId, { "entities" : toolsQ});
-            throw regenError(ErrorStringEnum.SHEET_METAL_TAB_FAILS_MERGE);
-        }
-    }
-    try silent(opDeleteBodies(context, id + "unionDelete", { "entities" : qCreatedBy(id + "copyTool", EntityType.BODY) }));
-
-    if (fixCornerBreaks)
-        remapCornerBreaks(context, cornerBreakTracking);
-
-    return getFeatureStatus(context, id + "boolean");
-}
-
-/**
- * If multiple input faces share the same sheet metal model faces, only return one of those input faces.
- */
-function filterSimilarSMFaces(context is Context, faces is Query) returns Query
-{
-    var filteredOutArray = [];
-    const definitionFaceArray = try silent(getSMDefinitionEntities(context, faces, EntityType.FACE));
-    if (definitionFaceArray is undefined || size(definitionFaceArray) == 0)
-        return qNothing();
-    for (var definitionFace in definitionFaceArray)
-    {
-        const attributes = getSMAssociationAttributes(context, definitionFace);
-        if (size(attributes) != 1)
-        {
-            throw regenError(ErrorStringEnum.REGEN_ERROR);
-        }
-        const smPartFaces = evaluateQuery(context, qSubtraction(qAttributeFilter(qEverything(EntityType.FACE), attributes[0]), definitionFace));
-        if (size(smPartFaces) == 2)
-        {
-            filteredOutArray = append(filteredOutArray, smPartFaces[0]);
-        }
-    }
-    return qUnion(filteredOutArray);
-}
-
-/**
- * Editing logic.
- * Fills in offset distance with minimal gap and finds the default merge scopes.
- * @internal
- */
-export function sheetMetalTabEditingLogic(context is Context, id is Id, oldDefinition is map, definition is map,
-    specifiedParameters is map, hiddenBodies is Query) returns map
-{
-    // Skip automatic selection in edge-based mode
-    if (definition.inputType == InputType.EDGES)
-    {
-        return definition;
+        
+        globalParameters = append(globalParameters, startGlobal);
+        globalParameters = append(globalParameters, endGlobal);
     }
     
-    if (definition.tabFaces != oldDefinition.tabFaces && (!specifiedParameters.booleanUnionScope || !specifiedParameters.booleanSubtractScope))
+    // Convert global parameters to per-edge parameters
+    const perEdgeParameters = convertPathParametersToEdgeParameters(context, path, globalParameters);
+    
+    // Organize split data by edge
+    var edgeSplitData = {};
+    var orderedEdgeIndices = [];
+    
+    for (var i = 0; i < size(perEdgeParameters); i += 2)
     {
-        const faces = evaluateQuery(context, definition.tabFaces);
-        if (size(faces) == 0)
+        const startInfo = perEdgeParameters[i];
+        const endInfo = perEdgeParameters[i + 1];
+        
+        if (startInfo.edgeIndex != endInfo.edgeIndex)
         {
-            if (!specifiedParameters.booleanUnionScope)
-            {
-                definition.booleanUnionScope = qNothing();
-            }
-            if (!specifiedParameters.booleanSubtractScope)
-            {
-                definition.booleanSubtractScope = qNothing();
-            }
-            return definition;
+            continue;  // Skip tabs that cross edge vertices
         }
-        createTools(context, id + "extractHeuristic", definition.tabFaces);
-        const wallQuery = qAttributeQuery(asSMAttribute({ "objectType" : SMObjectType.WALL }));
-        var entityAssociations = try silent(getSMAssociationAttributes(context, wallQuery));
-        var allSMWalls = [];
-        if (entityAssociations != undefined && size(entityAssociations) > 0)
+        
+        const edgeIndex = startInfo.edgeIndex;
+        var data = edgeSplitData[edgeIndex];
+        if (data == undefined)
         {
-            for (var attribute in entityAssociations)
-            {
-                const visibleFaces = qSubtraction(qEverything(EntityType.FACE), qOwnedByBody(hiddenBodies, EntityType.FACE));
-                const associatedEntities = evaluateQuery(context, qSubtraction(qAttributeFilter(visibleFaces, attribute), wallQuery));
-                const ownerBody = getOwnerSMModel(context, qUnion(associatedEntities));
-                if (ownerBody != [])
-                {
-                    const isActive = isSheetMetalModelActive(context, ownerBody[0]);
-                    if (isActive != undefined && isActive)
-                    {
-                        allSMWalls = concatenateArrays([allSMWalls, associatedEntities]);
-                    }
-                }
-            }
+            data = { "edge" : path.edges[edgeIndex], "parameters" : [] };
+            edgeSplitData[edgeIndex] = data;
+            orderedEdgeIndices = append(orderedEdgeIndices, edgeIndex);
         }
+        
+        const startParameter = min(startInfo.parameter, endInfo.parameter);
+        const endParameter = max(startInfo.parameter, endInfo.parameter);
+        
+        data.parameters = append(data.parameters, startParameter);
+        data.parameters = append(data.parameters, endParameter);
+        edgeSplitData[edgeIndex] = data;
+    }
+    
+    // Perform edge splits
+    var edgeCounter = 0;
+    for (var edgeIndex in orderedEdgeIndices)
+    {
+        var data = edgeSplitData[edgeIndex];
+        var orderedParameters = sort(data.parameters, function(a, b) { return a - b; });
+        
+        var filteredParameters = [];
+        for (var parameter in orderedParameters)
+        {
+            if (parameter <= 0 || parameter >= 1)
+            {
+                continue;
+            }
+            if (size(filteredParameters) > 0 && abs(parameter - filteredParameters[size(filteredParameters) - 1]) < 1e-6)
+            {
+                continue;
+            }
+            filteredParameters = append(filteredParameters, parameter);
+        }
+        
+        if (size(filteredParameters) == 0)
+        {
+            continue;
+        }
+        
+        @opSplitEdges(context, id + ("tabSplit" ~ toString(edgeCounter)), {
+            "edges" : data.edge,
+            "parameters" : [filteredParameters]
+        });
+        edgeCounter += 1;
+    }
+}
 
-        var union = [];
-        var subtraction = [];
-        const collisions = try silent(evCollision(context, {
-                    "tools" : qCreatedBy(id + "extractHeuristic", EntityType.BODY),
-                    "targets" : qUnion(allSMWalls)
-                }));
-        if (collisions != undefined)
+// Converts path parameters (0-1 along entire path) to edge-specific parameters
+// Inputs: context, path (Path object), parameters (array of path parameters)
+// Outputs: Array of maps with "parameter" (0-1 on specific edge) and "edgeIndex"
+function convertPathParametersToEdgeParameters(context is Context, path is Path, parameters is array) returns array
+{
+    var result = [];
+    
+    const pathLength = evLength(context, {
+        "entities" : qUnion(path.edges)
+    });
+    
+    var edgeLengths = [];
+    var edgeParameterBoundaries = [0];
+    var currentBoundary = 0;
+    
+    for (var edge in path.edges)
+    {
+        const edgeLength = evLength(context, {
+            "entities" : edge
+        });
+        edgeLengths = append(edgeLengths, edgeLength);
+        currentBoundary += edgeLength / pathLength;
+        edgeParameterBoundaries = append(edgeParameterBoundaries, currentBoundary);
+    }
+    
+    for (var i = 0; i < size(parameters); i += 1)
+    {
+        for (var j = 1; j < size(edgeParameterBoundaries); j += 1)
         {
-            for (var collision in collisions)
+            if (parameters[i] > edgeParameterBoundaries[j - 1] && parameters[i] < edgeParameterBoundaries[j])
             {
-                if (collision["type"] == ClashType.NONE)
+                // Parameter is in this edge's range
+                const edgeParameterSize = edgeLengths[j - 1] / pathLength;
+                const remaining = parameters[i] - edgeParameterBoundaries[j - 1];
+                var edgeParam = remaining / edgeParameterSize;
+                
+                if (path.flipped[j - 1])
                 {
-                    continue;
+                    edgeParam = 1.0 - edgeParam;
                 }
-                if (collision["type"] == ClashType.ABUT_NO_CLASS || collision["type"] == ClashType.ABUT_TOOL_IN_TARGET || collision["type"] == ClashType.ABUT_TOOL_OUT_TARGET)
-                {
-                    union = append(union, collision.target);
-                }
-                else
-                {
-                    subtraction = append(subtraction, collision.target);
-                }
+                
+                result = append(result, { "parameter" : edgeParam, "edgeIndex" : j - 1 });
+                break;
             }
-        }
-
-        if (!specifiedParameters.booleanUnionScope)
-        {
-            definition.booleanUnionScope = filterSimilarSMFaces(context, qUnion(union));
-        }
-        if (!specifiedParameters.booleanSubtractScope)
-        {
-            definition.booleanSubtractScope = filterSimilarSMFaces(context, qUnion(subtraction));
         }
     }
-    const sheetMetalBodies = try silent(getOwnerSMModel(context, qOwnerBody(definition.booleanUnionScope)));
-    if (sheetMetalBodies is undefined || size(sheetMetalBodies) != 1)
-        return definition;
-    if (oldDefinition == {} || (tolerantEquals(definition.booleanOffset, 0 * meter) && isQueryEmpty(context, oldDefinition.booleanUnionScope)))
+    
+    return result;
+}
+
+// Copies sheet metal wall surfaces and extends tab segments
+// Inputs: context, id, definition (contains edges, tabDepth), tabParameters (array of tab locations)
+// Outputs: Creates copied and extended surfaces for tab generation
+function copyAndExtendTabSurfaces(context is Context, id is Id, definition is map, tabParameters is array)
+{
+    if (size(tabParameters) == 0)
     {
-        const modelParameters = try silent(getModelParameters(context, sheetMetalBodies[0]));
-        if (!(modelParameters is undefined))
-        {
-            definition.booleanOffset = modelParameters.minimalClearance;
-        }
+        return;
     }
-    return definition;
+    
+    // Get adjacent sheet metal wall faces
+    const adjacentFacesQuery = qAdjacent(definition.edges, AdjacencyType.EDGE, EntityType.FACE);
+    const wallFaces = evaluateQuery(context, adjacentFacesQuery);
+    
+    if (size(wallFaces) == 0)
+    {
+        throw regenError("No sheet metal wall faces found adjacent to selected edges", ["edges"]);
+    }
+    
+    // Copy the wall faces to create surface bodies for tab generation
+    opPattern(context, id + "copyWalls", {
+        "entities" : qUnion(wallFaces),
+        "transforms" : [identityTransform()],
+        "instanceNames" : ["tabSurfaces"]
+    });
+    
+    const copiedSurfacesQuery = qCreatedBy(id + "copyWalls", EntityType.BODY);
+    const copiedSurfaces = evaluateQuery(context, copiedSurfacesQuery);
+    
+    if (size(copiedSurfaces) == 0)
+    {
+        throw regenError("Failed to copy sheet metal wall faces", ["edges"]);
+    }
+    
+    // Extract surfaces to ensure they are proper sheet bodies
+    opExtractSurface(context, id + "extractCopied", {
+        "faces" : qOwnedByBody(copiedSurfacesQuery, EntityType.FACE),
+        "redundancyType" : ExtractSurfaceRedundancyType.REMOVE_ALL_REDUNDANCY
+    });
+    
+    // Get edges that correspond to the selected edges in the copied surfaces
+    // These are the edges we want to extend for tab depth
+    const copiedEdgesQuery = identifyTabEdges(context, id, definition);
+    
+    // Extend the tab edges by the specified tab depth
+    try
+    {
+        opExtendSheetBody(context, id + "extend", {
+            "entities" : copiedEdgesQuery,
+            "endCondition" : ExtendEndType.EXTEND_BLIND,
+            "extendDistance" : definition.tabDepth,
+            "extensionShape" : ExtendSheetShapeType.LINEAR
+        });
+    }
+    catch (error)
+    {
+        throw regenError("Failed to extend sheet body edges by tab depth: " ~ error, ["tabDepth", "edges"]);
+    }
+    
+    // Debug: Show the extended surfaces
+    const extendedSurfaces = qCreatedBy(id + "extend", EntityType.FACE);
+    debug(context, extendedSurfaces, DebugColor.GREEN);
+}
+
+// Identifies which edges in the copied surfaces should be extended for tabs
+// Inputs: context, id, definition (contains edges after splitting)
+// Outputs: Query for edges that should be extended
+function identifyTabEdges(context is Context, id is Id, definition is map) returns Query
+{
+    // After splitting, the edges have been divided into segments
+    // We need to identify which segments correspond to tabs (not gaps between tabs)
+    // For now, we'll extend all edges on the copied surfaces
+    // TODO: Refine to only extend alternating segments (tab segments, not gap segments)
+    
+    const copiedEdgesQuery = qCreatedBy(id + "extractCopied", EntityType.EDGE);
+    return copiedEdgesQuery;
 }
