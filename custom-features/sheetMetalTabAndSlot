@@ -186,24 +186,21 @@ export const tabAndSlotBossDisplay = defineFeature(function(context is Context, 
         }
 
         // Phase 3: Identify edges to extend BEFORE extraction
-        // Find edges on the wall faces that are perpendicular to and share location with tab segment edges
-        // These are the edges we want to extend to create the protruding tabs
+        // We need to find edges on the wall faces that are perpendicular to the input edge chain
+        // and positioned within the tab domains
+        
+        // Get all edges on wall faces
         const wallEdges = qAdjacent(wallFaces, AdjacencyType.VERTEX, EntityType.EDGE);
         
-        // Get all edges adjacent to tab segments
-        const allEdgesAdjacentToTabSegments = qAdjacent(tabSegmentEdges, AdjacencyType.VERTEX, EntityType.EDGE);
-        
-        // Intersect with wall edges to get only wall edges at tab locations
-        const edgesAdjacentToTabSegments = qIntersection([
-            allEdgesAdjacentToTabSegments,
-            wallEdges
-        ]);
+        // Identify wall edges that should be extended based on tab domains
+        // These are edges perpendicular to the input chain at tab segment locations
+        const edgesToExtend = identifyWallEdgesToExtendFromDomains(context, wallEdges, splitEdges, path, totalLength, tabDomains);
         
         println("Wall edges count: " ~ toString(size(evaluateQuery(context, wallEdges))));
-        println("Edges adjacent to tab segments: " ~ toString(size(evaluateQuery(context, edgesAdjacentToTabSegments))));
+        println("Edges to extend (before extraction): " ~ toString(size(evaluateQuery(context, edgesToExtend))));
         
         // Track these edges so we can find them after extraction
-        const trackedEdgesToExtend = startTracking(context, edgesAdjacentToTabSegments);
+        const trackedEdgesToExtend = startTracking(context, edgesToExtend);
 
         try
         {
@@ -648,4 +645,103 @@ function identifyTabSegmentEdgesFromDomains(context is Context, splitEdges is Qu
     }
 
     return qUnion(tabEdgeQueries);
+}
+
+// Identifies wall edges that should be extended based on tab domains.
+// Finds edges on wall faces that are perpendicular to the input edge chain and within tab positions.
+// Inputs: wallEdges (all edges on wall faces), splitEdges (edges on input chain), path, totalLength, tabDomains
+// Outputs: Query containing wall edges that should be extended at tab locations
+function identifyWallEdgesToExtendFromDomains(context is Context, wallEdges is Query, splitEdges is Query, path is Path, totalLength is ValueWithUnits, tabDomains is array) returns Query
+{
+    if (size(tabDomains) == 0)
+    {
+        return qNothing();
+    }
+
+    const evaluatedWallEdges = evaluateQuery(context, wallEdges);
+    if (size(evaluatedWallEdges) == 0)
+    {
+        return qNothing();
+    }
+
+    const evaluatedSplitEdges = evaluateQuery(context, splitEdges);
+    
+    // For each wall edge, check if it's positioned within a tab domain
+    var edgesToExtendQueries = [];
+    
+    for (var wallEdge in evaluatedWallEdges)
+    {
+        // Check if this wall edge shares vertices with any split edge in a tab domain
+        // Get vertices of the wall edge
+        const wallEdgeVertices = qAdjacent(wallEdge, AdjacencyType.VERTEX, EntityType.VERTEX);
+        
+        // Check if any of these vertices are shared with tab segment edges
+        const sharedWithSplitEdges = qIntersection([
+            wallEdgeVertices,
+            qAdjacent(splitEdges, AdjacencyType.VERTEX, EntityType.VERTEX)
+        ]);
+        
+        if (size(evaluateQuery(context, sharedWithSplitEdges)) == 0)
+        {
+            continue;  // Wall edge doesn't touch the input edge chain
+        }
+        
+        // Check if the wall edge is at a tab location by finding which split edge it shares vertices with
+        const adjacentSplitEdges = qIntersection([
+            qAdjacent(wallEdge, AdjacencyType.VERTEX, EntityType.EDGE),
+            splitEdges
+        ]);
+        
+        const evaluatedAdjacentSplitEdges = evaluateQuery(context, adjacentSplitEdges);
+        
+        // Check if any adjacent split edge is within tab domains
+        for (var splitEdge in evaluatedAdjacentSplitEdges)
+        {
+            // Calculate the position of this split edge along the chain
+            var edgePosition = calculateEdgePositionAlongPath(context, splitEdge, evaluatedSplitEdges, path, totalLength);
+            
+            // Check if this position falls within any tab domain
+            for (var domain in tabDomains)
+            {
+                if (edgePosition >= domain.start && edgePosition <= domain.end)
+                {
+                    edgesToExtendQueries = append(edgesToExtendQueries, wallEdge);
+                    break;
+                }
+            }
+            
+            if (size(edgesToExtendQueries) > 0 && edgesToExtendQueries[size(edgesToExtendQueries) - 1] == wallEdge)
+            {
+                break;  // Already added this wall edge
+            }
+        }
+    }
+    
+    if (size(edgesToExtendQueries) == 0)
+    {
+        return qNothing();
+    }
+    
+    return qUnion(edgesToExtendQueries);
+}
+
+// Helper function to calculate the midpoint position of an edge along the path
+function calculateEdgePositionAlongPath(context is Context, edge is Query, orderedEdges is array, path is Path, totalLength is ValueWithUnits) returns number
+{
+    var accumulatedLength = 0 * meter;
+    
+    for (var orderedEdge in orderedEdges)
+    {
+        const edgeLength = evLength(context, { "entities" : orderedEdge });
+        
+        // Check if this is the edge we're looking for
+        if (size(evaluateQuery(context, qIntersection([edge, orderedEdge]))) > 0)
+        {
+            return ((accumulatedLength + edgeLength / 2) / totalLength);
+        }
+        
+        accumulatedLength += edgeLength;
+    }
+    
+    return 0;  // Edge not found
 }
