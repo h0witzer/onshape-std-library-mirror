@@ -1085,20 +1085,60 @@ function refineToMatchingKnotVectors(context is Context, firstSurface is map, se
     {
         println("DEBUG: Knots to insert in first surface - U: " ~ size(knotsToInsertInFirst_U) ~ ", V: " ~ size(knotsToInsertInFirst_V));
         println("DEBUG: Knots to insert in second surface - U: " ~ size(knotsToInsertInSecond_U) ~ ", V: " ~ size(knotsToInsertInSecond_V));
+        if (size(knotsToInsertInFirst_U) > 0)
+        {
+            print("DEBUG: First surface U knots to insert: ");
+            for (var i = 0; i < size(knotsToInsertInFirst_U); i += 1)
+            {
+                print(knotsToInsertInFirst_U[i]);
+                if (i < size(knotsToInsertInFirst_U) - 1)
+                    print(", ");
+            }
+            println("");
+        }
+        if (size(knotsToInsertInSecond_U) > 0)
+        {
+            print("DEBUG: Second surface U knots to insert: ");
+            for (var i = 0; i < size(knotsToInsertInSecond_U); i += 1)
+            {
+                print(knotsToInsertInSecond_U[i]);
+                if (i < size(knotsToInsertInSecond_U) - 1)
+                    print(", ");
+            }
+            println("");
+        }
     }
     
     // Refine first surface if needed
     var refinedFirstSurface = firstSurface;
     if (size(knotsToInsertInFirst_U) > 0 || size(knotsToInsertInFirst_V) > 0)
     {
+        if (definition.diagnosticControlPointRefinement)
+        {
+            println("DEBUG: Refining first surface by inserting specific knots (knot merging approach)");
+            println("DEBUG: First surface before: " ~ size(firstSurface.controlPoints) ~ "x" ~ size(firstSurface.controlPoints[0]) ~ " CPs");
+        }
         refinedFirstSurface = refineByInsertingKnots(context, firstSurface, knotsToInsertInFirst_U, knotsToInsertInFirst_V, definition);
+        if (definition.diagnosticControlPointRefinement)
+        {
+            println("DEBUG: First surface after: " ~ size(refinedFirstSurface.controlPoints) ~ "x" ~ size(refinedFirstSurface.controlPoints[0]) ~ " CPs");
+        }
     }
     
     // Refine second surface if needed
     var refinedSecondSurface = secondSurface;
     if (size(knotsToInsertInSecond_U) > 0 || size(knotsToInsertInSecond_V) > 0)
     {
+        if (definition.diagnosticControlPointRefinement)
+        {
+            println("DEBUG: Refining second surface by inserting specific knots (knot merging approach)");
+            println("DEBUG: Second surface before: " ~ size(secondSurface.controlPoints) ~ "x" ~ size(secondSurface.controlPoints[0]) ~ " CPs");
+        }
         refinedSecondSurface = refineByInsertingKnots(context, secondSurface, knotsToInsertInSecond_U, knotsToInsertInSecond_V, definition);
+        if (definition.diagnosticControlPointRefinement)
+        {
+            println("DEBUG: Second surface after: " ~ size(refinedSecondSurface.controlPoints) ~ "x" ~ size(refinedSecondSurface.controlPoints[0]) ~ " CPs");
+        }
     }
     
     return {
