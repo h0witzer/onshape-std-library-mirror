@@ -689,6 +689,12 @@ function filterSimilarSMFaces(context is Context, faces is Query) returns Query
 export function sheetMetalTabEditingLogic(context is Context, id is Id, oldDefinition is map, definition is map,
     specifiedParameters is map, hiddenBodies is Query) returns map
 {
+    // Skip automatic selection in edge-based mode
+    if (definition.inputType == InputType.EDGES)
+    {
+        return definition;
+    }
+    
     if (definition.tabFaces != oldDefinition.tabFaces && (!specifiedParameters.booleanUnionScope || !specifiedParameters.booleanSubtractScope))
     {
         const faces = evaluateQuery(context, definition.tabFaces);
