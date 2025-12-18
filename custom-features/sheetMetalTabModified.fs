@@ -9,6 +9,8 @@ import(path : "onshape/std/attributes.fs", version : "2837.0");
 import(path : "onshape/std/boolean.fs", version : "2837.0");
 import(path : "onshape/std/containers.fs", version : "2837.0");
 import(path : "onshape/std/evaluate.fs", version : "2837.0");
+import(path : "onshape/std/extendendtype.gen.fs", version : "2837.0");
+import(path : "onshape/std/extendsheetshapetype.gen.fs", version : "2837.0");
 import(path : "onshape/std/feature.fs", version : "2837.0");
 import(path : "onshape/std/geomOperations.fs", version : "2837.0");
 import(path : "onshape/std/math.fs", version : "2837.0");
@@ -140,6 +142,9 @@ function processEdgeBasedInput(context is Context, id is Id, definition is map)
             });
 
     // Find edges corresponding to the selected edges in the copied surfaces
+    // TODO: This currently extends ALL edges on the copied surface. In the future, this should be refined
+    // to only extend the edges that correspond to the originally selected edge chain, possibly by using
+    // geometric comparison or collision detection to match edges.
     const copiedEdgesQuery = qCreatedBy(id + "extractCopied", EntityType.EDGE);
     
     // Extend the copied surface edges by the specified tab depth
