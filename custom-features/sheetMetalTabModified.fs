@@ -9,6 +9,9 @@ import(path : "onshape/std/geomOperations.fs", version : "2837.0");
 import(path : "onshape/std/path.fs", version : "2837.0");
 import(path : "onshape/std/transform.fs", version : "2837.0");
 import(path : "onshape/std/sheetMetalUtils.fs", version : "2837.0");
+import(path : "onshape/std/sheetMetalAttribute.fs", version : "2837.0");
+import(path : "onshape/std/feature.fs", version : "2837.0");
+import(path : "onshape/std/surfaceGeometry.fs", version : "2837.0");
 import(path : "onshape/std/extendendtype.gen.fs", version : "2837.0");
 import(path : "onshape/std/extendsheetshapetype.gen.fs", version : "2837.0");
 import(path : "onshape/std/debug.fs", version : "2837.0");
@@ -55,8 +58,8 @@ const CYAN_MAGENTA_DEBUG_COLORS = [
  * 2. Copy sheet metal wall surfaces
  * 3. Extend surfaces with opExtendSheetBody for tab depth
  */
-annotation { "Feature Type Name" : "Tab and Slot Refactored" }
-export const tabAndSlotRefactored = defineFeature(function(context is Context, id is Id, definition is map)
+annotation { "Feature Type Name" : "OnlyTabs - Boss Display", "Feature Type Description" : "Tab and Slot feature for Boss Display" }
+export const tabAndSlotBossDisplay = defineSheetMetalFeature(function(context is Context, id is Id, definition is map)
     precondition
     {
         // Precondition from sheetMetalTabAndSlot
@@ -91,15 +94,16 @@ export const tabAndSlotRefactored = defineFeature(function(context is Context, i
         // Step 2: Generate tab parameters (locations along edge chain)
         const tabParameters = generateTabParameters(context, id, definition);
         
-        // Step 3: Split edges to create tab segments
+        // Step 3: Split edges to create tab segments and track them
+        const trackedEdges = startTracking(context, definition.edges);
         splitEdgesForTabSegments(context, id, definition, tabParameters);
         
         // Step 4: Copy sheet metal wall surfaces and extend tab segments
-        copyAndExtendTabSurfaces(context, id, definition, tabParameters);
+        copyAndExtendTabSurfaces(context, id, definition, tabParameters, trackedEdges);
         
         // Step 5: (Future) Sheet metal recombination using smTabModified.fs logic
         // TODO: Integrate sheet metal tab merging logic
-    });
+    }, {});
 
 // Calculates tab spacing based on spacing type (from sheetMetalTabAndSlot)
 // Inputs: context, definition (contains edges, spacingType, and spacing/tabCount)
@@ -368,29 +372,41 @@ function convertPathParametersToEdgeParameters(context is Context, path is Path,
 }
 
 // Copies sheet metal wall surfaces and extends tab segments
-// Inputs: context, id, definition (contains edges, tabDepth), tabParameters (array of tab locations)
+// Inputs: context, id, definition (contains edges, tabDepth), tabParameters (array of tab locations), trackedEdges (tracked split edges)
 // Outputs: Creates copied and extended surfaces for tab generation
-function copyAndExtendTabSurfaces(context is Context, id is Id, definition is map, tabParameters is array)
+function copyAndExtendTabSurfaces(context is Context, id is Id, definition is map, tabParameters is array, trackedEdges is Query)
 {
     if (size(tabParameters) == 0)
     {
         return;
     }
     
-    // Get adjacent sheet metal wall faces
-    const adjacentFacesQuery = qAdjacent(definition.edges, AdjacencyType.EDGE, EntityType.FACE);
-    const wallFaces = evaluateQuery(context, adjacentFacesQuery);
+    // Get the split edges after splitting operation
+    const splitEdges = evaluateQuery(context, trackedEdges);
+    
+    if (size(splitEdges) == 0)
+    {
+        throw regenError("No edges found after splitting", ["edges"]);
+    }
+    
+    // Get adjacent faces and filter to only sheet metal wall faces
+    const adjacentFacesQuery = qAdjacent(qUnion(splitEdges), AdjacencyType.EDGE, EntityType.FACE);
+    
+    // Filter to only faces with sheet metal wall attribute
+    const wallAttributeQuery = qAttributeQuery(asSMAttribute({ "objectType" : SMObjectType.WALL }));
+    const sheetMetalWallFaces = qIntersection([adjacentFacesQuery, wallAttributeQuery]);
+    const wallFaces = evaluateQuery(context, sheetMetalWallFaces);
     
     if (size(wallFaces) == 0)
     {
         throw regenError("No sheet metal wall faces found adjacent to selected edges", ["edges"]);
     }
     
-    // Copy the wall faces to create surface bodies for tab generation
-    opPattern(context, id + "copyWalls", {
-        "entities" : qUnion(wallFaces),
-        "transforms" : [identityTransform()],
-        "instanceNames" : ["tabSurfaces"]
+    // Copy the wall faces using opOffsetSurface with zero offset
+    // This avoids SHEET_METAL_PARTS_PROHIBITED error from opPattern
+    opOffsetSurface(context, id + "copyWalls", {
+        "faces" : qUnion(wallFaces),
+        "offset" : 0 * meter
     });
     
     const copiedSurfacesQuery = qCreatedBy(id + "copyWalls", EntityType.BODY);
@@ -400,12 +416,6 @@ function copyAndExtendTabSurfaces(context is Context, id is Id, definition is ma
     {
         throw regenError("Failed to copy sheet metal wall faces", ["edges"]);
     }
-    
-    // Extract surfaces to ensure they are proper sheet bodies
-    opExtractSurface(context, id + "extractCopied", {
-        "faces" : qOwnedByBody(copiedSurfacesQuery, EntityType.FACE),
-        "redundancyType" : ExtractSurfaceRedundancyType.REMOVE_ALL_REDUNDANCY
-    });
     
     // Get edges that correspond to the selected edges in the copied surfaces
     // These are the edges we want to extend for tab depth
@@ -441,6 +451,6 @@ function identifyTabEdges(context is Context, id is Id, definition is map) retur
     // For now, we'll extend all edges on the copied surfaces
     // TODO: Refine to only extend alternating segments (tab segments, not gap segments)
     
-    const copiedEdgesQuery = qCreatedBy(id + "extractCopied", EntityType.EDGE);
+    const copiedEdgesQuery = qCreatedBy(id + "copyWalls", EntityType.EDGE);
     return copiedEdgesQuery;
 }
