@@ -1,20 +1,23 @@
-FeatureScript 2559;
-import(path : "onshape/std/common.fs", version : "2559.0");
+FeatureScript 2837;
+import(path : "onshape/std/common.fs", version : "2837.0");
 ICON::import(path : "a34fe683b4cf0eb1de011a4b", version : "ec72feda3911e2ee01d24e0e");
-import(path : "onshape/std/extrude.fs", version : "2559.0");
-import(path : "onshape/std/chamfertype.gen.fs", version : "2559.0");
-import(path : "onshape/std/chamfer.fs", version : "2559.0");
-import(path : "onshape/std/sheetMetalUtils.fs", version : "2559.0");
-import(path : "onshape/std/moveFace.fs", version : "2559.0");
-import(path : "onshape/std/sheetMetalCornerBreak.fs", version : "2559.0");
-
-
-
-
+import(path : "onshape/std/query.fs", version : "2837.0");
+import(path : "onshape/std/evaluate.fs", version : "2837.0");
+import(path : "onshape/std/valueBounds.fs", version : "2837.0");
+import(path : "onshape/std/geomOperations.fs", version : "2837.0");
+import(path : "onshape/std/path.fs", version : "2837.0");
+import(path : "onshape/std/debug.fs", version : "2837.0");
+import(path : "onshape/std/debugcolor.gen.fs", version : "2837.0");
 // Written by Caden Armstrong - SmartBench Software
 // Hacked by Derek Van Allen - Boss Display
 // Created for Boss Display
 // For support contact caden.armstrong@smartbenchsoftware.com
+// 
+// Refactored to use edge splitting method from custom-features/onlyTabs-refactor/splitSmEdgeChainToSegments.fs
+
+const EDGE_LENGTH_TOLERANCE = 1e-9 * meter;
+const EDGE_PARAMETER_TOLERANCE = 1e-6;
+const FRACTION_TOLERANCE = 1e-9;
 
 export const SPACING_BOUNDS =
 {
@@ -93,148 +96,170 @@ export const tabAndSlotBossDisplay = defineFeature(function(context is Context, 
 
     }
     {
-        // Define locations of tabs on the tab part in 3d
-        // Find the locations of the tabs on the slot part in 3d
-        // Convert 3d points into flat 2d points
-        // Create sketch on the face in the flat space
-        // --- offset the edge shape
-        // Add or remove the sketch
+        // Phase 1: Split the input edges using the edge splitting method
+        const selectedEdgesQuery = qEntityFilter(definition.edges, EntityType.EDGE);
+        const selectedEdges = evaluateQuery(context, selectedEdgesQuery);
+        if (size(selectedEdges) == 0)
+        {
+            throw regenError("Select at least one sheet metal edge", ["edges"]);
+        }
 
+        const orderedEdgeQuery = qUnion(selectedEdges);
+        const path = try silent(constructPath(context, orderedEdgeQuery));
+        if (path == undefined)
+        {
+            throw regenError("Unable to order the selected edges into a continuous chain", ["edges"], definition.edges);
+        }
+
+        // Calculate segment count based on spacing type
+        var segmentCount = 2;
         if (definition.spacingType == SpacingType.EQUAL)
         {
-            // Get length and calculate spacing
-            var l = evLength(context, {
-                    "entities" : definition.edges
-                });
-
-            definition.spacing = definition.tabWidth + ((l - ((definition.tabCount) * definition.tabWidth)) / (definition.tabCount + 1));
-
+            // For equal spacing, use tab count to determine segments
+            // Each tab creates 2 splits (start and end), plus segments between
+            segmentCount = (definition.tabCount * 2) + (definition.tabCount + 1);
         }
         else if (definition.spacingType == SpacingType.LENGTH)
         {
-            // Get length and calculate spacing
-            var l = evLength(context, {
+            // For length-based spacing, calculate how many tabs fit
+            const totalLength = evLength(context, {
                     "entities" : definition.edges
                 });
-
-
-
-            definition.tabCount = floor((l - definition.tabWidth) / definition.spacing);
-            println(definition.tabCount);
+            const tabCount = floor((totalLength - definition.tabWidth) / definition.spacing);
+            segmentCount = (tabCount * 2) + (tabCount + 1);
         }
 
-        if(definition.removeRipJoints)
+        // Split the edges into segments
+        const splitInstructions = calculateEdgeSplitInstructions(context, path, segmentCount);
+        if (size(splitInstructions) == 0)
         {
-            RemoveRips(context,definition);   
+            throw regenError("Unable to calculate edge split locations", ["edges"]);
         }
 
-        var tabPoints = GenerateTabParameters(context, id, definition);
-
-        SplitEdgesForTabs(context, id, definition, tabPoints);
+        var splitOperationIndex = 0;
+        for (var instruction in splitInstructions)
+        {
+            try
+            {
+                @opSplitEdges(context, id + ("split" ~ toString(splitOperationIndex)), {
+                            "edges" : instruction.edge,
+                            "parameters" : [instruction.parameters]
+                        });
+            }
+            catch
+            {
+                throw regenError("Failed to split the sheet metal edge chain at the requested locations", ["edges"], instruction.edge);
+            }
+            splitOperationIndex += 1;
+        }
     });
 
-function RemoveRips(context is Context, definition is map)
+// Calculates split parameters for each edge within a path so a folded edge chain can be split into evenly sized segments.
+// Adapted from custom-features/onlyTabs-refactor/splitSmEdgeChainToSegments.fs
+// Inputs: path (ordered path representing the selected edge chain), segmentCount (desired number of segments for the chain).
+// Outputs: Array of maps containing an edge query and the sorted parameters to split on that edge.
+function calculateEdgeSplitInstructions(context is Context, path is Path, segmentCount is number) returns array
 {
-    var adjFaces = qAdjacent(definition.edges, AdjacencyType.EDGE, EntityType.FACE);
-    const smEntity = qUnion(getSMDefinitionEntities(context, adjFaces));
-    var smEdge = qEntityFilter(smEntity, EntityType.EDGE);
-    debug(context, smEdge, DebugColor.MAGENTA);
-    
-        for (var edge in evaluateQuery(context, smEdge))
-        {
-             var props = getSmObjectTypeAttributes(context, smEdge, SMObjectType.JOINT);
-     
-             if(size(props) > 0 && props[0].jointType.value == SMJointType.RIP)
-             {
-                 println("removing rip joint");
-                  clearSmAttributes(context, edge);
-             }
-        }   
-        
-}
-
-function SplitEdgesForTabs(context is Context, id is Id, definition is map, tabParameters is array)
-{
-    if (size(tabParameters) == 0)
+    const totalLength = evLength(context, {
+                "entities" : qUnion(path.edges)
+            });
+    if (totalLength <= EDGE_LENGTH_TOLERANCE)
     {
-        return;
+        throw regenError("Selected edge chain must have a measurable length", ["edges"]);
     }
 
-    const path = constructPath(context, definition.edges);
-    const pathLength = evLength(context, {
-            "entities" : definition.edges
-        });
-
-    if (pathLength <= 0 * meter)
+    var cumulativeFractions = [0];
+    var accumulatedFraction = 0;
+    for (var edgeIndex = 0; edgeIndex < size(path.edges); edgeIndex += 1)
     {
-        return;
-    }
-
-    const halfSpan = (definition.tabWidth / pathLength) / 2;
-    const parameterTolerance = 1e-9;
-    var globalParameters = [];
-    for (var parameter in tabParameters)
-    {
-        var startGlobal = max(parameterTolerance, parameter - halfSpan);
-        var endGlobal = min(1 - parameterTolerance, parameter + halfSpan);
-
-        if (startGlobal >= endGlobal)
+        const edge = path.edges[edgeIndex];
+        const edgeLength = evLength(context, { "entities" : edge });
+        if (edgeLength <= EDGE_LENGTH_TOLERANCE)
         {
-            println("Skipping zero-width tab interval");
-            continue;
+            throw regenError("Edge chain contains a zero length edge", ["edges"], edge);
         }
-
-        globalParameters = append(globalParameters, startGlobal);
-        globalParameters = append(globalParameters, endGlobal);
+        accumulatedFraction += edgeLength / totalLength;
+        if (edgeIndex == size(path.edges) - 1)
+        {
+            accumulatedFraction = 1;
+        }
+        cumulativeFractions = append(cumulativeFractions, accumulatedFraction);
     }
 
-    const perEdgeParameters = PathToEdgeParams(context, path, globalParameters);
+    var fractionsToSplit = [];
+    for (var index = 1; index < segmentCount; index += 1)
+    {
+        fractionsToSplit = append(fractionsToSplit, index / segmentCount);
+    }
 
-    var edgeSplitData = {};
+    var edgeParameterMap = {};
     var orderedEdgeIndices = [];
-
-    for (var i = 0; i < size(perEdgeParameters); i += 2)
+    for (var fraction in fractionsToSplit)
     {
-        const startInfo = perEdgeParameters[i];
-        const endInfo = perEdgeParameters[i + 1];
-
-        if (startInfo.edgeIndex != endInfo.edgeIndex)
+        var assigned = false;
+        for (var boundaryIndex = 1; boundaryIndex < size(cumulativeFractions); boundaryIndex += 1)
         {
-            println("Skipping tab split that crosses an edge vertex");
-            continue;
-        }
-
-        const edgeIndex = startInfo.edgeIndex;
-        var data = edgeSplitData[edgeIndex];
-        if (data == undefined)
-        {
-            data = { "edge" : path.edges[edgeIndex], "parameters" : [] };
-            edgeSplitData[edgeIndex] = data;
-            orderedEdgeIndices = append(orderedEdgeIndices, edgeIndex);
-        }
-
-        const startParameter = min(startInfo.parameter, endInfo.parameter);
-        const endParameter = max(startInfo.parameter, endInfo.parameter);
-
-        data.parameters = append(data.parameters, startParameter);
-        data.parameters = append(data.parameters, endParameter);
-        edgeSplitData[edgeIndex] = data;
-    }
-
-    var edgeCounter = 0;
-    for (var edgeIndex in orderedEdgeIndices)
-    {
-        var data = edgeSplitData[edgeIndex];
-        var orderedParameters = sort(data.parameters, function(a, b) { return a - b; });
-
-        var filteredParameters = [];
-        for (var parameter in orderedParameters)
-        {
-            if (parameter <= 0 || parameter >= 1)
+            const startFraction = cumulativeFractions[boundaryIndex - 1];
+            const endFraction = cumulativeFractions[boundaryIndex];
+            if (fraction < startFraction - FRACTION_TOLERANCE)
             {
                 continue;
             }
-            if (size(filteredParameters) > 0 && abs(parameter - filteredParameters[size(filteredParameters) - 1]) < 1e-6)
+            if (fraction > endFraction + FRACTION_TOLERANCE)
+            {
+                continue;
+            }
+
+            const normalizedRange = endFraction - startFraction;
+            if (normalizedRange <= EDGE_PARAMETER_TOLERANCE)
+            {
+                throw regenError("Edge chain contains a segment that cannot be subdivided", ["edges"], path.edges[boundaryIndex - 1]);
+            }
+
+            var edgeParameter = (fraction - startFraction) / normalizedRange;
+            edgeParameter = max(0, min(1, edgeParameter));
+            if (path.flipped[boundaryIndex - 1])
+            {
+                edgeParameter = 1 - edgeParameter;
+            }
+
+            if (edgeParameterMap[boundaryIndex - 1] == undefined)
+            {
+                edgeParameterMap[boundaryIndex - 1] = [];
+                orderedEdgeIndices = append(orderedEdgeIndices, boundaryIndex - 1);
+            }
+            edgeParameterMap[boundaryIndex - 1] = append(edgeParameterMap[boundaryIndex - 1], edgeParameter);
+            assigned = true;
+            break;
+        }
+
+        if (!assigned)
+        {
+            const lastEdgeIndex = size(path.edges) - 1;
+            var edgeParameter = path.flipped[lastEdgeIndex] ? EDGE_PARAMETER_TOLERANCE : 1 - EDGE_PARAMETER_TOLERANCE;
+            if (edgeParameterMap[lastEdgeIndex] == undefined)
+            {
+                edgeParameterMap[lastEdgeIndex] = [];
+                orderedEdgeIndices = append(orderedEdgeIndices, lastEdgeIndex);
+            }
+            edgeParameterMap[lastEdgeIndex] = append(edgeParameterMap[lastEdgeIndex], edgeParameter);
+        }
+    }
+
+    var splitInstructions = [];
+    for (var edgeIndex in orderedEdgeIndices)
+    {
+        var parameters = edgeParameterMap[edgeIndex];
+        parameters = sort(parameters, function(a, b) { return a - b; });
+
+        var filteredParameters = [];
+        for (var parameter in parameters)
+        {
+            if (parameter <= EDGE_PARAMETER_TOLERANCE || parameter >= 1 - EDGE_PARAMETER_TOLERANCE)
+            {
+                continue;
+            }
+            if (size(filteredParameters) != 0 && abs(parameter - filteredParameters[size(filteredParameters) - 1]) < EDGE_PARAMETER_TOLERANCE)
             {
                 continue;
             }
@@ -246,150 +271,11 @@ function SplitEdgesForTabs(context is Context, id is Id, definition is map, tabP
             continue;
         }
 
-        @opSplitEdges(context, id + ("tabSplit" ~ toString(edgeCounter)), {
-                    "edges" : data.edge,
-                    "parameters" : [filteredParameters]
+        splitInstructions = append(splitInstructions, {
+                    "edge" : path.edges[edgeIndex],
+                    "parameters" : filteredParameters
                 });
-        edgeCounter += 1;
-    }
-}
-
-// Needed because oriented requires the edge parameter
-function PathToEdgeParams(context is Context, p is Path, parameters is array) returns array
-{
-    var result = [];
-
-    var pathLength = evLength(context, {
-            "entities" : qUnion(p.edges)
-        });
-
-    var edgeLengths = [];
-    var edgeParameterBoundaries = [0];
-    var cur = 0;
-    for (var edge in p.edges)
-    {
-        var edgeLength = evLength(context, {
-                "entities" : edge
-            });
-        edgeLengths = append(edgeLengths, edgeLength);
-        cur += edgeLength / pathLength;
-        edgeParameterBoundaries = append(edgeParameterBoundaries, cur);
     }
 
-    for (var i = 0; i < size(parameters); i += 1)
-    {
-        for (var j = 1; j < size(edgeParameterBoundaries); j += 1)
-        {
-            if (parameters[i] > edgeParameterBoundaries[j - 1] && parameters[i] < edgeParameterBoundaries[j])
-            {
-                // it is in this range
-                var edgeParameterSize = edgeLengths[j - 1] / pathLength;
-                var remaining = parameters[i] - edgeParameterBoundaries[j - 1];
-                var edgeParam = remaining / edgeParameterSize;
-                if (p.flipped[j - 1])
-                {
-                    edgeParam = 1.0 - edgeParam;
-                }
-
-                result = append(result, { "parameter" : edgeParam, "edgeIndex" : j - 1 });
-                break;
-            }
-        }
-    }
-
-    return result;
-}
-
-function verticesInPath(context, edges) returns array
-{
-    var p = constructPath(context, edges);
-
-    var pathLength = evLength(context, {
-            "entities" : edges
-        });
-
-    var params = [0];
-    var currentParamLength = 0;
-    for (var i = 0; i < size(p.edges); i += 1)
-    {
-        var l = evLength(context, {
-                "entities" : p.edges[i]
-            });
-
-        var portionOfPath = l / pathLength;
-        currentParamLength += portionOfPath;
-        params = append(params, currentParamLength);
-    }
-    return params;
-}
-
-
-function GenerateTabParameters(context, id, definition) returns array
-{
-    var edgesAsPath = constructPath(context, definition.edges);
-    var pathLength = evLength(context, {
-            "entities" : definition.edges
-        });
-
-    var flatlength = evLength(context, {
-            "entities" : qCorrespondingInFlat(definition.edges)
-        });
-
-
-    // endpoints as path parameters?
-
-    var parameterSpacing = definition.spacing / pathLength;
-    var placementParams = [];
-    for (var i = 0; i < definition.tabCount; i += 1)
-    {
-        var oddEvenParam = i % 2 == 0 ? 1 : -1;
-        var newParam = 1.0;
-        if (definition.tabCount % 2 == 0)
-        {
-            // even spacing offset from centre
-            newParam = 0.5 + (oddEvenParam * parameterSpacing / 2) + (floor(i / 2) * parameterSpacing * oddEvenParam);
-        }
-        else if (i > 0)
-        {
-            // odd spacing starts at center
-            newParam = 0.5 + (ceil(i / 2) * parameterSpacing * (i % 2 == 0 ? 1 : -1));
-        }
-        else
-        {
-            newParam = 0.5;
-        }
-        placementParams = append(placementParams, newParam);
-    }
-
-    // parameters should be shifted around to ensure no overlap with boundaries
-
-    var tabWidthInParam = definition.tabWidth / pathLength;
-    // determine if any tab is too close to an edge and shift it
-
-    var pathVertices = verticesInPath(context, definition.edges);
-
-    // gotta figure out where the edges even are in parameter space
-    var finalParams = [];
-    for (var i = 0; i < size(placementParams); i += 1)
-    {
-        var clear = true;
-        for (var j = 0; j < size(pathVertices); j += 1)
-        {
-            if (placementParams[i] + tabWidthInParam / 2 > pathVertices[j] && placementParams[i] - tabWidthInParam / 2 < pathVertices[j])
-            {
-                clear = false;
-            }
-        }
-        if (clear)
-        {
-            finalParams = append(finalParams, placementParams[i]);
-        }
-        else
-        {
-            // add a point to show a fail?
-        }
-    }
-
-    return finalParams;
-
+    return splitInstructions;
 }
