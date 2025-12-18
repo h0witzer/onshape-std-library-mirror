@@ -8,6 +8,7 @@ import(path : "onshape/std/geomOperations.fs", version : "2837.0");
 import(path : "onshape/std/path.fs", version : "2837.0");
 import(path : "onshape/std/debug.fs", version : "2837.0");
 import(path : "onshape/std/debugcolor.gen.fs", version : "2837.0");
+import(path : "onshape/std/sheetMetalAttribute.fs", version : "2837.0");
 // Written by Caden Armstrong - SmartBench Software
 // Hacked by Derek Van Allen - Boss Display
 // Created for Boss Display
@@ -152,6 +153,26 @@ export const tabAndSlotBossDisplay = defineFeature(function(context is Context, 
             }
             splitOperationIndex += 1;
         }
+
+        // Phase 2: Copy adjacent sheet metal wall surfaces
+        const adjacentFaces = qAdjacent(definition.edges, AdjacencyType.EDGE, EntityType.FACE);
+        const wallFaces = filterSheetMetalWallFaces(context, adjacentFaces);
+        
+        if (size(evaluateQuery(context, wallFaces)) > 0)
+        {
+            try
+            {
+                @opExtractSurface(context, id + "extractWalls", {
+                            "faces" : wallFaces,
+                            "tangentPropagation" : false
+                        });
+                debug(context, wallFaces, DebugColor.BLUE);
+            }
+            catch
+            {
+                throw regenError("Failed to extract adjacent wall surfaces", ["edges"]);
+            }
+        }
     });
 
 // Calculates split parameters for each edge within a path so a folded edge chain can be split into evenly sized segments.
@@ -278,4 +299,29 @@ function calculateEdgeSplitInstructions(context is Context, path is Path, segmen
     }
 
     return splitInstructions;
+}
+
+// Filters a query of faces to return only those with SMObjectType.WALL attributes.
+// Inputs: faceQuery (query containing faces to filter).
+// Outputs: Query containing only faces with wall attributes.
+function filterSheetMetalWallFaces(context is Context, faceQuery is Query) returns Query
+{
+    const faces = evaluateQuery(context, faceQuery);
+    var wallFaceQueries = [];
+    
+    for (var face in faces)
+    {
+        const faceAsQuery = qUnion([face]);
+        if (hasSheetMetalAttribute(context, faceAsQuery, SMObjectType.WALL))
+        {
+            wallFaceQueries = append(wallFaceQueries, faceAsQuery);
+        }
+    }
+    
+    if (size(wallFaceQueries) == 0)
+    {
+        return qNothing();
+    }
+    
+    return qUnion(wallFaceQueries);
 }
