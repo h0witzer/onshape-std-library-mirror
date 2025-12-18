@@ -186,12 +186,21 @@ export const tabAndSlotBossDisplay = defineFeature(function(context is Context, 
         }
 
         // Phase 3: Identify edges to extend BEFORE extraction
-        // Find edges on the wall faces that are adjacent to the tab segment edges
+        // Find edges on the wall faces that are perpendicular to and share location with tab segment edges
+        // These are the edges we want to extend to create the protruding tabs
         const wallEdges = qAdjacent(wallFaces, AdjacencyType.VERTEX, EntityType.EDGE);
+        
+        // Get all edges adjacent to tab segments
+        const allEdgesAdjacentToTabSegments = qAdjacent(tabSegmentEdges, AdjacencyType.VERTEX, EntityType.EDGE);
+        
+        // Intersect with wall edges to get only wall edges at tab locations
         const edgesAdjacentToTabSegments = qIntersection([
-            qAdjacent(tabSegmentEdges, AdjacencyType.VERTEX, EntityType.EDGE),
+            allEdgesAdjacentToTabSegments,
             wallEdges
         ]);
+        
+        println("Wall edges count: " ~ toString(size(evaluateQuery(context, wallEdges))));
+        println("Edges adjacent to tab segments: " ~ toString(size(evaluateQuery(context, edgesAdjacentToTabSegments))));
         
         // Track these edges so we can find them after extraction
         const trackedEdgesToExtend = startTracking(context, edgesAdjacentToTabSegments);
