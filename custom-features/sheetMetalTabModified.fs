@@ -98,6 +98,9 @@ export const tabAndSlotBossDisplay = defineSheetMetalFeature(function(context is
         const trackedEdges = startTracking(context, definition.edges);
         splitEdgesForTabSegments(context, id, definition, tabParameters);
         
+        // Add debug visualization for split edges (alternating cyan/magenta)
+        showAlternatingDebugSegments(context, trackedEdges, definition.tabCount);
+        
         // Step 4: Copy sheet metal wall surfaces and extend tab segments
         copyAndExtendTabSurfaces(context, id, definition, tabParameters, trackedEdges);
         
@@ -371,6 +374,67 @@ function convertPathParametersToEdgeParameters(context is Context, path is Path,
     return result;
 }
 
+// Displays the resulting split edge segments with alternating cyan and magenta debug colors for visual verification.
+// Inputs: trackedEdges (tracking query that captures the edge chain before splitting), segmentCount (number of desired segments).
+// Outputs: Alternating debug highlights per segment domain across the resulting edge chain.
+function showAlternatingDebugSegments(context is Context, trackedEdges is Query, segmentCount is number)
+{
+    const edgeQuery = qEntityFilter(trackedEdges, EntityType.EDGE);
+    const splitEdges = evaluateQuery(context, edgeQuery);
+    if (size(splitEdges) == 0)
+    {
+        return;
+    }
+
+    var orderedEdges = splitEdges;
+    const orderedPath = try silent(constructPath(context, qUnion(splitEdges)));
+    if (orderedPath != undefined)
+    {
+        orderedEdges = orderedPath.edges;
+    }
+
+    if (segmentCount <= 0)
+    {
+        return;
+    }
+
+    var totalLength = 0 * meter;
+    var edgeLengths = [];
+    for (var edge in orderedEdges)
+    {
+        const edgeLength = evLength(context, { "entities" : edge });
+        edgeLengths = append(edgeLengths, edgeLength);
+        totalLength += edgeLength;
+    }
+
+    if (totalLength <= EDGE_LENGTH_TOLERANCE)
+    {
+        return;
+    }
+
+    const segmentLength = totalLength / segmentCount;
+    var currentSegmentIndex = 0;
+    var accumulatedLength = 0 * meter;
+
+    for (var i = 0; i < size(orderedEdges); i += 1)
+    {
+        accumulatedLength += edgeLengths[i];
+        const newSegmentIndex = floor(accumulatedLength / segmentLength);
+        
+        if (newSegmentIndex >= segmentCount)
+        {
+            currentSegmentIndex = segmentCount - 1;
+        }
+        else
+        {
+            currentSegmentIndex = newSegmentIndex;
+        }
+
+        const colorIndex = currentSegmentIndex % 2;
+        debug(context, orderedEdges[i], CYAN_MAGENTA_DEBUG_COLORS[colorIndex]);
+    }
+}
+
 // Copies sheet metal wall surfaces and extends tab segments
 // Inputs: context, id, definition (contains edges, tabDepth), tabParameters (array of tab locations), trackedEdges (tracked split edges)
 // Outputs: Creates copied and extended surfaces for tab generation
@@ -389,13 +453,19 @@ function copyAndExtendTabSurfaces(context is Context, id is Id, definition is ma
         throw regenError("No edges found after splitting", ["edges"]);
     }
     
-    // Get adjacent faces and filter to only sheet metal wall faces
+    // Get adjacent faces from the split edges
     const adjacentFacesQuery = qAdjacent(qUnion(splitEdges), AdjacencyType.EDGE, EntityType.FACE);
+    
+    // Use getSMDefinitionEntities to properly get the sheet metal definition faces (the blue debug faces)
+    const smDefinitionFaces = getSMDefinitionEntities(context, adjacentFacesQuery);
     
     // Filter to only faces with sheet metal wall attribute
     const wallAttributeQuery = qAttributeQuery(asSMAttribute({ "objectType" : SMObjectType.WALL }));
-    const sheetMetalWallFaces = qIntersection([adjacentFacesQuery, wallAttributeQuery]);
+    const sheetMetalWallFaces = qIntersection([qUnion(smDefinitionFaces), wallAttributeQuery]);
     const wallFaces = evaluateQuery(context, sheetMetalWallFaces);
+    
+    // Debug: Show the wall faces we found (should be blue)
+    debug(context, qUnion(wallFaces), DebugColor.BLUE);
     
     if (size(wallFaces) == 0)
     {
