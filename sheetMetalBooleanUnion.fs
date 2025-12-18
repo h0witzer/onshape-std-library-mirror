@@ -129,7 +129,7 @@ function buildDefinitionFaceMapping(context is Context, unionTools is Query, she
     
     for (var collision in collisions)
     {
-        if (!isIntersectingClashType(collision['type']))
+        if (!isInstersectingClashType(collision['type']))
         {
             continue;
         }
