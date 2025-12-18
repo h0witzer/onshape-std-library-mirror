@@ -1,21 +1,21 @@
-FeatureScript ✨; /* Automatically generated version */
+FeatureScript 2837;
 // This module is part of the FeatureScript Standard Library and is distributed under the MIT License.
 // See the LICENSE tab for the license text.
 // Copyright (c) 2013-Present PTC Inc.
 
 // Imports used in interface
-export import(path : "onshape/std/query.fs", version : "✨");
+export import(path : "onshape/std/query.fs", version : "2837.0");
 
 // Imports used internally
-import(path : "onshape/std/clashtype.gen.fs", version : "✨");
-import(path : "onshape/std/containers.fs", version : "✨");
-import(path : "onshape/std/evaluate.fs", version : "✨");
-import(path : "onshape/std/feature.fs", version : "✨");
-import(path : "onshape/std/formedUtils.fs", version : "✨");
-import(path : "onshape/std/geomOperations.fs", version : "✨");
-import(path : "onshape/std/registerSheetMetalFormedTools.fs", version : "✨");
-import(path : "onshape/std/sheetMetalAttribute.fs", version : "✨");
-import(path : "onshape/std/sheetMetalUtils.fs", version : "✨");
+import(path : "onshape/std/clashtype.gen.fs", version : "2837.0");
+import(path : "onshape/std/containers.fs", version : "2837.0");
+import(path : "onshape/std/evaluate.fs", version : "2837.0");
+import(path : "onshape/std/feature.fs", version : "2837.0");
+import(path : "onshape/std/formedUtils.fs", version : "2837.0");
+import(path : "onshape/std/geomOperations.fs", version : "2837.0");
+import(path : "onshape/std/registerSheetMetalFormedTools.fs", version : "2837.0");
+import(path : "onshape/std/sheetMetalAttribute.fs", version : "2837.0");
+import(path : "onshape/std/sheetMetalUtils.fs", version : "2837.0");
 
 /**
  * Performs a boolean union operation between solid tool bodies and sheet metal target bodies.
@@ -112,14 +112,10 @@ function buildDefinitionFaceMapping(context is Context, unionTools is Query, she
 {
     var definitionFaceToFormedBodies = {};
     
-    // Get all definition entities (master body faces) from the sheet metal targets
-    const definitionEntities = qUnion(getSMDefinitionEntities(context, qOwnedByBody(sheetMetalTargets, EntityType.FACE)));
-    const definitionFaces = qEntityFilter(definitionEntities, EntityType.FACE);
-    
-    // Perform collision detection between union tools and sheet metal parts
+    // Perform collision detection between union tools and sheet metal parts (using 3D folded bodies)
     const collisions = evCollision(context, {
         "tools" : unionTools,
-        "targets" : qSheetMetalFlatFilter(qBodyType(qOwnerBody(definitionFaces), BodyType.SOLID), SMFlatType.NO)
+        "targets" : qSheetMetalFlatFilter(sheetMetalTargets, SMFlatType.NO)
     });
     
     if (size(collisions) == 0)
