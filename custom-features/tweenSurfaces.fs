@@ -9,9 +9,11 @@ FeatureScript 2837;
  * 
  * The implementation works with B-spline surface representations directly:
  * 1. Obtains B-spline surface definitions for both input faces (using approximation if needed)
- * 2. Detects and corrects for misaligned parametric directions (U/V flips and swaps)
- * 3. Interpolates control points of the two B-spline surfaces
- * 4. Creates a new B-spline surface with the interpolated control points
+ * 2. Detects and corrects for misaligned parametric directions (U/V flips and swaps) using corner points
+ * 3. Elevates surface degrees to match if necessary
+ * 4. Refines control point counts to match if necessary
+ * 5. Interpolates control points of the two B-spline surfaces
+ * 6. Creates a new B-spline surface with the interpolated control points
  * 
  * Key Features:
  * - Automatic alignment matching: Tests 8 possible transformations (U-flip, V-flip, UV-swap, 
@@ -80,24 +82,24 @@ export const tweenSurfaces = defineFeature(function(context is Context, id is Id
         annotation { "Name" : "Tween fraction", "Description" : "Position of the median surface: 0 = first surface, 0.5 = middle, 1 = second surface" }
         isReal(definition.tweenFraction, SURFACE_TWEEN_FRACTION_BOUNDS);
         
+        annotation { "Name" : "Enable diagnostics" }
+        definition.enableDiagnostics is boolean;
+        
         annotation { "Group Name" : "Developer diagnostics", "Driving Parameter" : "enableDiagnostics", "Collapsed By Default" : true }
         {
-            annotation { "Name" : "Enable diagnostics" }
-            definition.enableDiagnostics is boolean;
-            
             if (definition.enableDiagnostics)
             {
                 annotation { "Name" : "Surface degree information" }
                 definition.diagnosticSurfaceDegreeInfo is boolean;
+                
+                annotation { "Name" : "Surface alignment matching" }
+                definition.diagnosticSurfaceAlignment is boolean;
                 
                 annotation { "Name" : "Degree elevation details" }
                 definition.diagnosticDegreeElevation is boolean;
                 
                 annotation { "Name" : "Control point refinement details" }
                 definition.diagnosticControlPointRefinement is boolean;
-                
-                annotation { "Name" : "Surface alignment matching" }
-                definition.diagnosticSurfaceAlignment is boolean;
                 
                 annotation { "Name" : "Control point interpolation" }
                 definition.diagnosticControlPointInterpolation is boolean;
@@ -146,9 +148,12 @@ export const tweenSurfaces = defineFeature(function(context is Context, id is Id
  * 1. Obtains B-spline surface representations of both input faces
  *    - If a face is already a B-spline, uses its definition directly
  *    - Otherwise, creates a B-spline approximation
- * 2. Ensures both surfaces are compatible (same degrees and control point counts)
- * 3. Interpolates control points: tweenedCP = (1 - fraction) * cp1 + fraction * cp2
- * 4. Creates a new B-spline surface with the interpolated control points
+ * 2. Finds preliminary alignment using corner points to determine correct parametric orientation
+ * 3. Applies alignment transformation (UV flip/swap) to second surface
+ * 4. Elevates degrees to match if necessary (now working in correct parametric space)
+ * 5. Refines control point counts to match if necessary (now working in correct parametric space)
+ * 6. Interpolates control points: tweenedCP = (1 - fraction) * cp1 + fraction * cp2
+ * 7. Creates a new B-spline surface with the interpolated control points
  * 
  * @param context {Context} : The modeling context
  * @param id {Id} : The feature identifier
@@ -170,6 +175,36 @@ function createTweenedSurface(context is Context, id is Id,
                 ", controlPoints=" ~ size(firstSurface.controlPoints) ~ "x" ~ size(firstSurface.controlPoints[0]));
         println("DEBUG: Initial second surface - uDegree=" ~ secondSurface.uDegree ~ ", vDegree=" ~ secondSurface.vDegree ~ 
                 ", controlPoints=" ~ size(secondSurface.controlPoints) ~ "x" ~ size(secondSurface.controlPoints[0]));
+    }
+    
+    // === PRELIMINARY ALIGNMENT MATCHING ===
+    // Find the best alignment between surfaces using corner points before degree elevation and refinement.
+    // This ensures we work in the correct parametric space from the start, avoiding unnecessary computation.
+    if (definition.diagnosticSurfaceAlignment)
+    {
+        println("DEBUG: Checking preliminary surface alignment using corner points...");
+    }
+    const preliminaryAlignmentResult = findPreliminaryAlignment(firstSurface.controlPoints, secondSurface.controlPoints);
+    if (definition.diagnosticSurfaceAlignment)
+    {
+        println("DEBUG: Preliminary alignment - flipU: " ~ preliminaryAlignmentResult.flipU ~ 
+                ", flipV: " ~ preliminaryAlignmentResult.flipV ~ 
+                ", swapUV: " ~ preliminaryAlignmentResult.swapUV ~ 
+                ", corner distance: " ~ preliminaryAlignmentResult.distance);
+    }
+    
+    // Apply the preliminary alignment transformation to the second surface
+    if (preliminaryAlignmentResult.flipU || preliminaryAlignmentResult.flipV || preliminaryAlignmentResult.swapUV)
+    {
+        secondSurface = applyAlignmentTransform(secondSurface, preliminaryAlignmentResult.flipU, 
+                                                 preliminaryAlignmentResult.flipV, preliminaryAlignmentResult.swapUV);
+        if (definition.diagnosticSurfaceAlignment)
+        {
+            println("DEBUG: Applied preliminary alignment transform to second surface");
+            println("DEBUG: After preliminary alignment, second surface - uDegree=" ~ secondSurface.uDegree ~ 
+                    ", vDegree=" ~ secondSurface.vDegree ~ 
+                    ", controlPoints=" ~ size(secondSurface.controlPoints) ~ "x" ~ size(secondSurface.controlPoints[0]));
+        }
     }
     
     // Elevate degrees to match if necessary
@@ -270,31 +305,24 @@ function createTweenedSurface(context is Context, id is Id,
         }
     }
     
-    // === ALIGNMENT MATCHING ===
-    // Find the best alignment between the two surfaces by testing different transformations
-    // (normal, U-flipped, V-flipped, UV-swapped, and combinations)
+    // === ALIGNMENT VERIFICATION ===
+    // Verify alignment is optimal after degree elevation and refinement.
+    // Since we already applied preliminary alignment before elevation/refinement, this should
+    // typically show no additional transformation is needed (flipU=false, flipV=false, swapUV=false).
     if (definition.diagnosticSurfaceAlignment)
     {
-        println("DEBUG: Checking surface alignment...");
-    }
-    const alignmentResult = findBestSurfaceAlignment(firstSurface.controlPoints, secondSurface.controlPoints, 
-                                                      secondSurface.weights);
-    if (definition.diagnosticSurfaceAlignment)
-    {
-        println("DEBUG: Best alignment - flipU: " ~ alignmentResult.flipU ~ ", flipV: " ~ alignmentResult.flipV ~ 
-                ", swapUV: " ~ alignmentResult.swapUV ~ ", distance: " ~ alignmentResult.distance);
-    }
-    
-    // Apply the alignment transformation to the second surface
-    if (alignmentResult.flipU || alignmentResult.flipV || alignmentResult.swapUV)
-    {
-        secondSurface = applyAlignmentTransform(secondSurface, alignmentResult.flipU, 
-                                                 alignmentResult.flipV, alignmentResult.swapUV);
-        if (definition.diagnosticSurfaceAlignment)
+        println("DEBUG: Verifying final surface alignment after elevation and refinement...");
+        const verificationResult = findBestSurfaceAlignment(firstSurface.controlPoints, secondSurface.controlPoints, 
+                                                           secondSurface.weights);
+        println("DEBUG: Final alignment verification - flipU: " ~ verificationResult.flipU ~ 
+                ", flipV: " ~ verificationResult.flipV ~ 
+                ", swapUV: " ~ verificationResult.swapUV ~ 
+                ", total distance: " ~ verificationResult.distance);
+        
+        if (verificationResult.flipU || verificationResult.flipV || verificationResult.swapUV)
         {
-            println("DEBUG: Applied alignment transform to second surface");
-            println("DEBUG: After alignment, second surface controlPoints=" ~ 
-                    size(secondSurface.controlPoints) ~ "x" ~ size(secondSurface.controlPoints[0]));
+            println("WARNING: Final alignment verification suggests additional transformation needed.");
+            println("         This may indicate the preliminary alignment was incorrect or surfaces are unusual.");
         }
     }
     
@@ -1542,6 +1570,93 @@ function transposeWeights(weights is array) returns array
 
 
 /**
+ * Finds preliminary alignment between two surfaces using corner points only.
+ * 
+ * This function works with surfaces of any dimensions by comparing only the four corner
+ * control points. It tests all 8 possible alignments and returns the transformation that
+ * minimizes the sum of squared distances between corresponding corners.
+ * 
+ * This is used as a first pass to determine the correct parametric orientation before
+ * performing degree elevation and control point refinement.
+ * 
+ * Optimized for performance: uses pre-computed index mappings to avoid conditional logic
+ * and redundant distance calculations.
+ * 
+ * @param controlPoints1 {array} : Control point matrix for first surface (reference)
+ * @param controlPoints2 {array} : Control point matrix for second surface (to be aligned)
+ * @returns {map} : Map with fields: flipU {boolean}, flipV {boolean}, swapUV {boolean}, distance {ValueWithUnits}
+ */
+function findPreliminaryAlignment(controlPoints1 is array, controlPoints2 is array) returns map
+{
+    const numU1 = size(controlPoints1);
+    const numV1 = size(controlPoints1[0]);
+    const numU2 = size(controlPoints2);
+    const numV2 = size(controlPoints2[0]);
+    
+    // Extract corner points from first surface
+    const c1 = [
+        controlPoints1[0][0],           // [0] = corner (0,0)
+        controlPoints1[0][numV1 - 1],   // [1] = corner (0,V)
+        controlPoints1[numU1 - 1][0],   // [2] = corner (U,0)
+        controlPoints1[numU1 - 1][numV1 - 1]  // [3] = corner (U,V)
+    ];
+    
+    // Extract corner points from second surface
+    const c2 = [
+        controlPoints2[0][0],           // [0] = corner (0,0)
+        controlPoints2[0][numV2 - 1],   // [1] = corner (0,V)
+        controlPoints2[numU2 - 1][0],   // [2] = corner (U,0)
+        controlPoints2[numU2 - 1][numV2 - 1]  // [3] = corner (U,V)
+    ];
+    
+    // Pre-computed corner mapping for all 8 transformations
+    // Each entry maps: [c1[0]->c2[?], c1[1]->c2[?], c1[2]->c2[?], c1[3]->c2[?]]
+    // Format: [[mapping], flipU, flipV, swapUV]
+    const transformations = [
+        [[0, 1, 2, 3], false, false, false],  // No transformation
+        [[2, 3, 0, 1], true,  false, false],  // U-flip
+        [[1, 0, 3, 2], false, true,  false],  // V-flip
+        [[3, 2, 1, 0], true,  true,  false],  // UV-flip
+        [[0, 2, 1, 3], false, false, true],   // UV-swap
+        [[1, 3, 0, 2], true,  false, true],   // UV-swap + U-flip
+        [[2, 0, 3, 1], false, true,  true],   // UV-swap + V-flip
+        [[3, 1, 2, 0], true,  true,  true]    // UV-swap + UV-flip
+    ];
+    
+    var bestDistance = 1e30 * meter * meter;
+    var bestConfig = 0;
+    
+    // Test all 8 transformations
+    for (var transformationIndex = 0; transformationIndex < 8; transformationIndex += 1)
+    {
+        const mapping = transformations[transformationIndex][0];
+        
+        // Compute total squared distance for this transformation
+        // Unrolled loop for performance
+        const d0 = c1[0] - c2[mapping[0]];
+        const d1 = c1[1] - c2[mapping[1]];
+        const d2 = c1[2] - c2[mapping[2]];
+        const d3 = c1[3] - c2[mapping[3]];
+        
+        const distance = squaredNorm(d0) + squaredNorm(d1) + squaredNorm(d2) + squaredNorm(d3);
+        
+        if (distance < bestDistance)
+        {
+            bestDistance = distance;
+            bestConfig = transformationIndex;
+        }
+    }
+    
+    return {
+        "flipU" : transformations[bestConfig][1],
+        "flipV" : transformations[bestConfig][2],
+        "swapUV" : transformations[bestConfig][3],
+        "distance" : bestDistance
+    };
+}
+
+
+/**
  * Finds the best alignment between two surfaces by testing different transformations.
  * 
  * Tests all 8 possible alignments (including UV swap):
@@ -1556,6 +1671,9 @@ function transposeWeights(weights is array) returns array
  * 
  * Returns the transformation that minimizes the sum of squared distances between
  * corresponding control points.
+ * 
+ * This function requires that both surfaces have the same dimensions (after any UV swap).
+ * For preliminary alignment with mismatched dimensions, use findPreliminaryAlignment.
  * 
  * @param controlPoints1 {array} : Control point matrix for first surface (reference)
  * @param controlPoints2 {array} : Control point matrix for second surface (to be aligned)
