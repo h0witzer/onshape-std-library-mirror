@@ -12,6 +12,7 @@ import(path : "onshape/std/sheetMetalAttribute.fs", version : "2837.0");
 import(path : "onshape/std/feature.fs", version : "2837.0");
 import(path : "onshape/std/extendendtype.gen.fs", version : "2837.0");
 import(path : "onshape/std/extendsheetshapetype.gen.fs", version : "2837.0");
+import(path : "onshape/std/edgetopology.gen.fs", version : "2837.0");
 // Written by Caden Armstrong - SmartBench Software
 // Hacked by Derek Van Allen - Boss Display
 // Created for Boss Display
@@ -205,11 +206,16 @@ export const tabAndSlotBossDisplay = defineFeature(function(context is Context, 
         // After extraction, find the tracked edges on the extracted bodies
         const extractedBodies = qCreatedBy(id + "extractWalls", EntityType.BODY);
         const extractedEdges = qOwnedByBody(extractedBodies, EntityType.EDGE);
-        const extractedEdgesToExtend = qIntersection([qEntityFilter(trackedEdgesToExtend, EntityType.EDGE), extractedEdges]);
+        const trackedExtractedEdges = qIntersection([qEntityFilter(trackedEdgesToExtend, EntityType.EDGE), extractedEdges]);
+        
+        // Filter to only laminar (one-sided/boundary) edges to avoid EXTEND_NON_LAMINAR error
+        // This excludes internal edges between tangent faces
+        const extractedEdgesToExtend = qEdgeTopologyFilter(trackedExtractedEdges, EdgeTopology.ONE_SIDED);
         
         println("Tab segment edges count: " ~ toString(size(evaluateQuery(context, tabSegmentEdges))));
         println("Extracted edges count: " ~ toString(size(evaluateQuery(context, extractedEdges))));
-        println("Edges to extend count: " ~ toString(size(evaluateQuery(context, extractedEdgesToExtend))));
+        println("Tracked extracted edges count: " ~ toString(size(evaluateQuery(context, trackedExtractedEdges))));
+        println("Laminar edges to extend count: " ~ toString(size(evaluateQuery(context, extractedEdgesToExtend))));
         
         if (size(evaluateQuery(context, extractedEdgesToExtend)) > 0)
         {
