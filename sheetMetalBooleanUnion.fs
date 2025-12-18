@@ -7,12 +7,12 @@ FeatureScript 2837;
 export import(path : "onshape/std/query.fs", version : "2837.0");
 
 // Imports used internally
-import(path : "onshape/std/clashtype.gen.fs", version : "2837.0");
 import(path : "onshape/std/containers.fs", version : "2837.0");
 import(path : "onshape/std/evaluate.fs", version : "2837.0");
 import(path : "onshape/std/feature.fs", version : "2837.0");
 import(path : "onshape/std/formedUtils.fs", version : "2837.0");
 import(path : "onshape/std/geomOperations.fs", version : "2837.0");
+import(path : "onshape/std/registerSheetMetalBooleanTools.fs", version : "2837.0");
 import(path : "onshape/std/registerSheetMetalFormedTools.fs", version : "2837.0");
 import(path : "onshape/std/sheetMetalAttribute.fs", version : "2837.0");
 import(path : "onshape/std/sheetMetalUtils.fs", version : "2837.0");
@@ -80,7 +80,7 @@ export const sheetMetalBooleanUnion = defineSheetMetalFeature(function(context i
 
         if (definitionFaceToFormedBodies == {})
         {
-            reportFeatureWarning(context, id, ErrorStringEnum.BOOLEAN_SUBTRACT_NO_OP);
+            reportFeatureInfo(context, id, ErrorStringEnum.BOOLEAN_UNION_NO_OP);
             if (!definition.keepTools)
             {
                 opDeleteBodies(context, id + "deleteTools", { "entities" : definition.unionTools });
@@ -155,52 +155,4 @@ function buildDefinitionFaceMapping(context is Context, unionTools is Query, she
     return definitionFaceToFormedBodies;
 }
 
-/**
- * @internal
- * Create a cache that can find sheet metal master body entity corresponding to `target` input.
- */
-function makeDefinitionEntityCache(context is Context) returns function
-{
-    return memoizeFunction(function(target is Query)
-    {
-        const definitionEntities = getSMDefinitionEntities(context, target);
-        if (size(definitionEntities) != 1)
-        {
-            if (definitionEntities != [])
-            {
-                throw "Unexpected number of definition entities";
-            }
-            else
-            {
-                // Faces created by holes no longer have a corresponding definition entity
-                return qNothing();
-            }
-        }
-        else
-        {
-            return definitionEntities[0];
-        }
-    });
-}
 
-/**
- * @internal
- * Create a cache that computes whether the passed in entity is planar or not.
- */
-function makeIsEntityPlanarCache(context is Context) returns function
-{
-    return memoizeFunction((entity is Query) => !isQueryEmpty(context, qGeometry(entity, GeometryType.PLANE)));
-}
-
-/**
- * @internal
- * Check if a collision type indicates intersection
- */
-function isIntersectingClashType(clashType is ClashType) returns boolean
-{
-    return (clashType == ClashType.INTERFERE ||
-            clashType == ClashType.EXISTS ||
-            clashType == ClashType.ABUT_TOOL_IN_TARGET ||
-            clashType == ClashType.TARGET_IN_TOOL ||
-            clashType == ClashType.TOOL_IN_TARGET);
-}
