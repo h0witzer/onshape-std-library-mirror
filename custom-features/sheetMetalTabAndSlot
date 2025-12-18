@@ -302,6 +302,7 @@ function calculateEdgeSplitInstructions(context is Context, path is Path, segmen
 }
 
 // Filters a query of faces to return only those with SMObjectType.WALL attributes.
+// Checks both direct attributes on faces and attributes on master definition entities.
 // Inputs: faceQuery (query containing faces to filter).
 // Outputs: Query containing only faces with wall attributes.
 function filterSheetMetalWallFaces(context is Context, faceQuery is Query) returns Query
@@ -312,7 +313,26 @@ function filterSheetMetalWallFaces(context is Context, faceQuery is Query) retur
     for (var face in faces)
     {
         const faceAsQuery = qUnion([face]);
-        if (hasSheetMetalAttribute(context, faceAsQuery, SMObjectType.WALL))
+        
+        // Check for direct attributes on the face
+        var hasWallAttribute = hasSheetMetalAttribute(context, faceAsQuery, SMObjectType.WALL);
+        
+        // If no direct attribute, check master definition entities
+        if (!hasWallAttribute)
+        {
+            const definitionEntities = getSMDefinitionEntities(context, faceAsQuery, EntityType.FACE);
+            for (var defEntity in definitionEntities)
+            {
+                const defQuery = qUnion([defEntity]);
+                if (hasSheetMetalAttribute(context, defQuery, SMObjectType.WALL))
+                {
+                    hasWallAttribute = true;
+                    break;
+                }
+            }
+        }
+        
+        if (hasWallAttribute)
         {
             wallFaceQueries = append(wallFaceQueries, faceAsQuery);
         }
