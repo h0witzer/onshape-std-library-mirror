@@ -10,16 +10,16 @@ FeatureScript 2837;
  * The implementation works with B-spline surface representations directly:
  * 1. Obtains B-spline surface definitions for both input faces (using approximation if needed)
  * 2. Detects and corrects for misaligned parametric directions (U/V flips and swaps) using corner points
- * 3. Elevates surface degrees to match if necessary
- * 4. Refines control point counts to match if necessary
+ * 3. Elevates surface degrees to match if necessary (supports both non-rational and rational surfaces)
+ * 4. Refines control point counts to match if necessary (supports both non-rational and rational surfaces)
  * 5. Interpolates control points of the two B-spline surfaces
  * 6. Creates a new B-spline surface with the interpolated control points
  * 
  * Key Features:
  * - Automatic alignment matching: Tests 8 possible transformations (U-flip, V-flip, UV-swap, 
  *   and combinations) to find the best correspondence between surfaces
- * - Proper NURBS interpolation: For rational surfaces, interpolates in homogeneous coordinates
- *   to ensure mathematically correct results
+ * - Full NURBS support: Handles both non-rational and rational (NURBS) surfaces with proper
+ *   homogeneous coordinate mathematics for degree elevation, control point refinement, and interpolation
  * - Exact endpoint preservation: At fraction=0, produces exactly the first surface; at fraction=1, 
  *   produces exactly the second surface
  * 
@@ -334,14 +334,6 @@ function createTweenedSurface(context is Context, id is Id,
             (secondSurface.isRational ? "rational" : "non-rational") ~ ".");
     }
     
-    // For now, degree elevation of rational surfaces is not supported
-    if (firstSurface.isRational && (firstSurface.uDegree != secondSurface.uDegree || firstSurface.vDegree != secondSurface.vDegree))
-    {
-        throw regenError("Automatic degree elevation is not yet supported for rational surfaces. " ~
-            "First surface: uDegree=" ~ firstSurface.uDegree ~ ", vDegree=" ~ firstSurface.vDegree ~
-            ". Second surface: uDegree=" ~ secondSurface.uDegree ~ ", vDegree=" ~ secondSurface.vDegree ~ ".");
-    }
-    
     // Verify knot vectors match
     if (size(firstSurface.uKnots) != size(secondSurface.uKnots) || 
         size(firstSurface.vKnots) != size(secondSurface.vKnots))
@@ -644,7 +636,7 @@ function isSingleSegmentBezierCurve(degree is number, numControlPoints is number
 
 
 /**
- * Elevates the degree of a non-rational B-spline surface in U and/or V directions.
+ * Elevates the degree of a B-spline surface in U and/or V directions.
  * 
  * This implements proper B-spline degree elevation that preserves surface geometry exactly.
  * For tensor product B-spline surfaces, degree elevation is performed independently in each
@@ -657,9 +649,10 @@ function isSingleSegmentBezierCurve(degree is number, numControlPoints is number
  * The algorithm automatically detects whether each isoparametric curve is single-segment
  * or multi-segment and applies the appropriate elevation method.
  * 
- * Note: This implementation currently only supports non-rational surfaces.
+ * For rational surfaces (NURBS), the algorithm works in homogeneous coordinates by combining
+ * control points with their weights before elevation, then separating them afterward.
  * 
- * @param surface {map} : The B-spline surface to elevate (must be non-rational)
+ * @param surface {map} : The B-spline surface to elevate (rational or non-rational)
  * @param targetUDegree {number} : The desired degree in U direction (must be >= current U degree)
  * @param targetVDegree {number} : The desired degree in V direction (must be >= current V degree)
  * @returns {map} : The surface with elevated degrees, preserving geometry exactly
@@ -667,8 +660,10 @@ function isSingleSegmentBezierCurve(degree is number, numControlPoints is number
 function elevateSurfaceDegree(surface is map, targetUDegree is number, targetVDegree is number)
 {
     var controlPoints = surface.controlPoints;
+    var weights = surface.weights;
     var uDegree = surface.uDegree;
     var vDegree = surface.vDegree;
+    const isRational = surface.isRational;
     // Ensure knots are KnotArray type
     var uKnots = surface.uKnots is KnotArray ? surface.uKnots : knotArray(surface.uKnots);
     var vKnots = surface.vKnots is KnotArray ? surface.vKnots : knotArray(surface.vKnots);
@@ -678,6 +673,7 @@ function elevateSurfaceDegree(surface is map, targetUDegree is number, targetVDe
     {
         const numVPoints = size(controlPoints[0]);
         var newControlPoints = [];
+        var newWeights = isRational ? [] : undefined;
         
         var newUKnots = undefined;
         
@@ -685,23 +681,31 @@ function elevateSurfaceDegree(surface is map, targetUDegree is number, targetVDe
         {
             // Extract column of control points
             var columnPoints = [];
+            var columnWeights = [];
             for (var uIndex = 0; uIndex < size(controlPoints); uIndex += 1)
             {
                 columnPoints = append(columnPoints, controlPoints[uIndex][vIndex]);
+                if (isRational)
+                {
+                    columnWeights = append(columnWeights, weights[uIndex][vIndex]);
+                }
             }
+            
+            // For rational surfaces, work in homogeneous coordinates
+            var workingPoints = isRational ? combinePointsAndWeights(columnPoints, columnWeights) : columnPoints;
             
             // Elevate this column curve using proper B-spline degree elevation
             // This handles both single-segment (Bezier) and multi-segment B-splines correctly
             var elevatedPoints;
-            if (isSingleSegmentBezierCurve(uDegree, size(columnPoints)))
+            if (isSingleSegmentBezierCurve(uDegree, size(workingPoints)))
             {
                 // For single-segment B-splines (Bezier curves), use fast Bezier elevation
-                elevatedPoints = elevateBezierDegree(columnPoints, targetUDegree);
+                elevatedPoints = elevateBezierDegree(workingPoints, targetUDegree);
             }
             else
             {
                 // For multi-segment B-splines, use proper B-spline elevation
-                const elevationResult = elevateBSplineCurve(columnPoints, uKnots, uDegree, targetUDegree);
+                const elevationResult = elevateBSplineCurve(workingPoints, uKnots, uDegree, targetUDegree);
                 elevatedPoints = elevationResult.controlPoints;
                 // Update knot vector from first column (all columns should produce same knots)
                 if (vIndex == 0)
@@ -710,18 +714,41 @@ function elevateSurfaceDegree(surface is map, targetUDegree is number, targetVDe
                 }
             }
             
+            // For rational surfaces, separate back to control points and weights
+            var elevatedControlPoints;
+            var elevatedWeights;
+            if (isRational)
+            {
+                const separated = separatePointsAndWeights(elevatedPoints);
+                elevatedControlPoints = separated.points;
+                elevatedWeights = separated.weights;
+            }
+            else
+            {
+                elevatedControlPoints = elevatedPoints;
+            }
+            
             // Store elevated control points back (transpose)
-            for (var uIndex = 0; uIndex < size(elevatedPoints); uIndex += 1)
+            for (var uIndex = 0; uIndex < size(elevatedControlPoints); uIndex += 1)
             {
                 if (vIndex == 0)
                 {
                     newControlPoints = append(newControlPoints, []);
+                    if (isRational)
+                    {
+                        newWeights = append(newWeights, []);
+                    }
                 }
-                newControlPoints[uIndex] = append(newControlPoints[uIndex], elevatedPoints[uIndex]);
+                newControlPoints[uIndex] = append(newControlPoints[uIndex], elevatedControlPoints[uIndex]);
+                if (isRational)
+                {
+                    newWeights[uIndex] = append(newWeights[uIndex], elevatedWeights[uIndex]);
+                }
             }
         }
         
         controlPoints = newControlPoints;
+        weights = newWeights;
         uDegree = targetUDegree;
         // Update U knot vector
         if (newUKnots != undefined)
@@ -739,26 +766,31 @@ function elevateSurfaceDegree(surface is map, targetUDegree is number, targetVDe
     if (vDegree < targetVDegree)
     {
         var newControlPoints = [];
+        var newWeights = isRational ? [] : undefined;
         
         var newVKnots = undefined;
         
         for (var uIndex = 0; uIndex < size(controlPoints); uIndex += 1)
         {
-            // Extract row of control points
+            // Extract row of control points and weights
             const rowPoints = controlPoints[uIndex];
+            const rowWeights = isRational ? weights[uIndex] : undefined;
+            
+            // For rational surfaces, work in homogeneous coordinates
+            var workingPoints = isRational ? combinePointsAndWeights(rowPoints, rowWeights) : rowPoints;
             
             // Elevate this row curve using proper B-spline degree elevation
             // This handles both single-segment (Bezier) and multi-segment B-splines correctly
             var elevatedPoints;
-            if (isSingleSegmentBezierCurve(vDegree, size(rowPoints)))
+            if (isSingleSegmentBezierCurve(vDegree, size(workingPoints)))
             {
                 // For single-segment B-splines (Bezier curves), use fast Bezier elevation
-                elevatedPoints = elevateBezierDegree(rowPoints, targetVDegree);
+                elevatedPoints = elevateBezierDegree(workingPoints, targetVDegree);
             }
             else
             {
                 // For multi-segment B-splines, use proper B-spline elevation
-                const elevationResult = elevateBSplineCurve(rowPoints, vKnots, vDegree, targetVDegree);
+                const elevationResult = elevateBSplineCurve(workingPoints, vKnots, vDegree, targetVDegree);
                 elevatedPoints = elevationResult.controlPoints;
                 // Update knot vector from first row (all rows should produce same knots)
                 if (uIndex == 0)
@@ -767,10 +799,21 @@ function elevateSurfaceDegree(surface is map, targetUDegree is number, targetVDe
                 }
             }
             
-            newControlPoints = append(newControlPoints, elevatedPoints);
+            // For rational surfaces, separate back to control points and weights
+            if (isRational)
+            {
+                const separated = separatePointsAndWeights(elevatedPoints);
+                newControlPoints = append(newControlPoints, separated.points);
+                newWeights = append(newWeights, separated.weights);
+            }
+            else
+            {
+                newControlPoints = append(newControlPoints, elevatedPoints);
+            }
         }
         
         controlPoints = newControlPoints;
+        weights = newWeights;
         vDegree = targetVDegree;
         // Update V knot vector
         if (newVKnots != undefined)
@@ -787,11 +830,11 @@ function elevateSurfaceDegree(surface is map, targetUDegree is number, targetVDe
     return {
         "uDegree" : uDegree,
         "vDegree" : vDegree,
-        "isRational" : surface.isRational,
+        "isRational" : isRational,
         "isUPeriodic" : surface.isUPeriodic,
         "isVPeriodic" : surface.isVPeriodic,
         "controlPoints" : controlPoints,
-        "weights" : surface.weights,
+        "weights" : weights,
         "uKnots" : uKnots,
         "vKnots" : vKnots
     };
@@ -851,11 +894,13 @@ function makeUniformKnotVector(degree is number, numControlPoints is number)
  * 3. Computes new control points using the Boehm knot insertion formula
  * 4. Reconstructs the surface with the new control point grid
  * 
+ * For rational surfaces (NURBS), the algorithm works in homogeneous coordinates to ensure
+ * mathematically correct results.
+ * 
  * Note: This preserves surface geometry exactly using proper B-spline calculus.
- * For rational surfaces with CP count mismatch, an error is thrown.
  * 
  * @param context {Context} : The modeling context
- * @param surface {map} : The B-spline surface to refine
+ * @param surface {map} : The B-spline surface to refine (rational or non-rational)
  * @param targetUCount {number} : Target number of control points in U direction
  * @param targetVCount {number} : Target number of control points in V direction
  * @param definition {map} : The feature definition including diagnostics settings
@@ -863,15 +908,9 @@ function makeUniformKnotVector(degree is number, numControlPoints is number)
  */
 function refineControlPointCount(context is Context, surface is map, targetUCount is number, targetVCount is number, definition is map)
 {
-    // For now, refinement of rational surfaces is not supported
-    if (surface.isRational)
-    {
-        throw regenError("Automatic control point count matching is not yet supported for rational surfaces. " ~
-            "Current surface has " ~ size(surface.controlPoints) ~ "x" ~ size(surface.controlPoints[0]) ~ 
-            " control points. Target is " ~ targetUCount ~ "x" ~ targetVCount ~ ".");
-    }
-    
     var controlPoints = surface.controlPoints;
+    var weights = surface.weights;
+    const isRational = surface.isRational;
     var uDegree = surface.uDegree;
     var vDegree = surface.vDegree;
     // Ensure knots are KnotArray type
@@ -884,15 +923,21 @@ function refineControlPointCount(context is Context, surface is map, targetUCoun
         // Process each V-column to add U control points
         const numVPoints = size(controlPoints[0]);
         var newControlPoints = [];
+        var newWeights = isRational ? [] : undefined;
         var newUKnots = undefined;
         
         for (var vIndex = 0; vIndex < numVPoints; vIndex += 1)
         {
-            // Extract column of control points
+            // Extract column of control points and weights
             var columnPoints = [];
+            var columnWeights = [];
             for (var uIndex = 0; uIndex < size(controlPoints); uIndex += 1)
             {
                 columnPoints = append(columnPoints, controlPoints[uIndex][vIndex]);
+                if (isRational)
+                {
+                    columnWeights = append(columnWeights, weights[uIndex][vIndex]);
+                }
             }
             
             // Create a B-spline curve from this column
@@ -901,7 +946,8 @@ function refineControlPointCount(context is Context, surface is map, targetUCoun
                 "controlPoints" : columnPoints,
                 "knots" : uKnots,
                 "isPeriodic" : surface.isUPeriodic,
-                "isRational" : false
+                "isRational" : isRational,
+                "weights" : isRational ? columnWeights : undefined
             });
             
             // Refine this curve to have targetUCount control points
@@ -935,12 +981,21 @@ function refineControlPointCount(context is Context, surface is map, targetUCoun
                 if (vIndex == 0)
                 {
                     newControlPoints = append(newControlPoints, []);
+                    if (isRational)
+                    {
+                        newWeights = append(newWeights, []);
+                    }
                 }
                 newControlPoints[uIndex] = append(newControlPoints[uIndex], refinedCurve.controlPoints[uIndex]);
+                if (isRational)
+                {
+                    newWeights[uIndex] = append(newWeights[uIndex], refinedCurve.weights[uIndex]);
+                }
             }
         }
         
         controlPoints = newControlPoints;
+        weights = newWeights;
         if (newUKnots != undefined)
         {
             uKnots = newUKnots;
@@ -952,12 +1007,14 @@ function refineControlPointCount(context is Context, surface is map, targetUCoun
     {
         // Process each U-row to add V control points
         var newControlPoints = [];
+        var newWeights = isRational ? [] : undefined;
         var newVKnots = undefined;
         
         for (var uIndex = 0; uIndex < size(controlPoints); uIndex += 1)
         {
-            // Extract row of control points
+            // Extract row of control points and weights
             const rowPoints = controlPoints[uIndex];
+            const rowWeights = isRational ? weights[uIndex] : undefined;
             
             // Create a B-spline curve from this row
             const rowCurve = bSplineCurve({
@@ -965,7 +1022,8 @@ function refineControlPointCount(context is Context, surface is map, targetUCoun
                 "controlPoints" : rowPoints,
                 "knots" : vKnots,
                 "isPeriodic" : surface.isVPeriodic,
-                "isRational" : false
+                "isRational" : isRational,
+                "weights" : rowWeights
             });
             
             // Refine this curve to have targetVCount control points
@@ -977,9 +1035,14 @@ function refineControlPointCount(context is Context, surface is map, targetUCoun
                 newVKnots = refinedCurve.knots;
             }
             newControlPoints = append(newControlPoints, refinedCurve.controlPoints);
+            if (isRational)
+            {
+                newWeights = append(newWeights, refinedCurve.weights);
+            }
         }
         
         controlPoints = newControlPoints;
+        weights = newWeights;
         if (newVKnots != undefined)
         {
             vKnots = newVKnots;
@@ -989,11 +1052,11 @@ function refineControlPointCount(context is Context, surface is map, targetUCoun
     return {
         "uDegree" : uDegree,
         "vDegree" : vDegree,
-        "isRational" : surface.isRational,
+        "isRational" : isRational,
         "isUPeriodic" : surface.isUPeriodic,
         "isVPeriodic" : surface.isVPeriodic,
         "controlPoints" : controlPoints,
-        "weights" : surface.weights,
+        "weights" : weights,
         "uKnots" : uKnots,
         "vKnots" : vKnots
     };
@@ -1006,8 +1069,11 @@ function refineControlPointCount(context is Context, surface is map, targetUCoun
  * Uses the mathematically correct Boehm algorithm for knot insertion to add control points
  * without changing the curve geometry. This preserves the curve shape exactly.
  * 
+ * For rational curves (NURBS), the algorithm works in homogeneous coordinates to ensure
+ * mathematically correct results.
+ * 
  * @param context {Context} : The modeling context
- * @param curve {map} : The B-spline curve with controlPoints, knots, degree, etc.
+ * @param curve {map} : The B-spline curve with controlPoints, knots, degree, etc. (rational or non-rational)
  * @param targetCount {number} : Target number of control points
  * @returns {map} : Refined curve with exact geometry preservation
  */
@@ -1039,15 +1105,29 @@ function refineCurveControlPointCount(context is Context, curve is map, targetCo
     // Sort knots to insert
     knotsToInsert = sort(knotsToInsert, function(a, b) { return a - b; });
     
-    // Insert knots one at a time using Boehm algorithm
+    // For rational curves, work in homogeneous coordinates
     var currentControlPoints = curve.controlPoints;
+    var currentWeights = curve.weights;
+    if (curve.isRational)
+    {
+        currentControlPoints = combinePointsAndWeights(curve.controlPoints, curve.weights);
+    }
     var currentKnots = curve.knots;
     
+    // Insert knots one at a time using Boehm algorithm
     for (var insertIdx = 0; insertIdx < size(knotsToInsert); insertIdx += 1)
     {
         const result = insertKnotBoehm(currentControlPoints, currentKnots, curve.degree, knotsToInsert[insertIdx]);
         currentControlPoints = result.controlPoints;
         currentKnots = result.knots;
+    }
+    
+    // For rational curves, separate back to control points and weights
+    if (curve.isRational)
+    {
+        const separated = separatePointsAndWeights(currentControlPoints);
+        currentControlPoints = separated.points;
+        currentWeights = separated.weights;
     }
     
     return {
@@ -1056,7 +1136,7 @@ function refineCurveControlPointCount(context is Context, curve is map, targetCo
         "degree" : curve.degree,
         "isPeriodic" : curve.isPeriodic,
         "isRational" : curve.isRational,
-        "weights" : curve.weights
+        "weights" : currentWeights
     };
 }
 
