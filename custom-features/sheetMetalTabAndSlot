@@ -185,22 +185,14 @@ export const tabAndSlotBossDisplay = defineFeature(function(context is Context, 
             throw regenError("No adjacent wall surfaces found to copy", ["edges"]);
         }
 
-        // Phase 3: Identify edges to extend BEFORE extraction
-        // We need to find edges on the wall faces that are perpendicular to the input edge chain
-        // and positioned within the tab domains
+        // Phase 3: Track tab segment edges directly through extraction
+        // Instead of trying to identify wall edges geometrically, we'll track the tab segments
+        // and find the corresponding edges on the extracted surfaces
         
-        // Get all edges on wall faces
-        const wallEdges = qAdjacent(wallFaces, AdjacencyType.VERTEX, EntityType.EDGE);
+        // Track the tab segment edges themselves
+        const trackedTabSegments = startTracking(context, tabSegmentEdges);
         
-        // Identify wall edges that should be extended based on tab domains
-        // These are edges perpendicular to the input chain at tab segment locations
-        const edgesToExtend = identifyWallEdgesToExtendFromDomains(context, wallEdges, splitEdges, path, totalLength, tabDomains);
-        
-        println("Wall edges count: " ~ toString(size(evaluateQuery(context, wallEdges))));
-        println("Edges to extend (before extraction): " ~ toString(size(evaluateQuery(context, edgesToExtend))));
-        
-        // Track these edges so we can find them after extraction
-        const trackedEdgesToExtend = startTracking(context, edgesToExtend);
+        println("Tab segment edges count (before extraction): " ~ toString(size(evaluateQuery(context, tabSegmentEdges))));
 
         try
         {
@@ -215,18 +207,26 @@ export const tabAndSlotBossDisplay = defineFeature(function(context is Context, 
             throw regenError("Failed to extract adjacent wall surfaces", ["edges"]);
         }
 
-        // After extraction, find the tracked edges on the extracted bodies
+        // After extraction, find edges on extracted surfaces that are adjacent to the tracked tab segments
         const extractedBodies = qCreatedBy(id + "extractWalls", EntityType.BODY);
         const extractedEdges = qOwnedByBody(extractedBodies, EntityType.EDGE);
-        const trackedExtractedEdges = qIntersection([qEntityFilter(trackedEdgesToExtend, EntityType.EDGE), extractedEdges]);
+        
+        // Find the tracked tab segments after extraction
+        const trackedTabSegmentsAfterExtraction = qEntityFilter(trackedTabSegments, EntityType.EDGE);
+        
+        // Find edges on the extracted surfaces that share vertices with the tracked tab segments
+        // These are the wall edges at the tab locations that we want to extend
+        const edgesAdjacentToTrackedTabs = qIntersection([
+            qAdjacent(trackedTabSegmentsAfterExtraction, AdjacencyType.VERTEX, EntityType.EDGE),
+            extractedEdges
+        ]);
         
         // Filter to only laminar (one-sided/boundary) edges to avoid EXTEND_NON_LAMINAR error
-        // This excludes internal edges between tangent faces
-        const extractedEdgesToExtend = qEdgeTopologyFilter(trackedExtractedEdges, EdgeTopology.ONE_SIDED);
+        const extractedEdgesToExtend = qEdgeTopologyFilter(edgesAdjacentToTrackedTabs, EdgeTopology.ONE_SIDED);
         
-        println("Tab segment edges count: " ~ toString(size(evaluateQuery(context, tabSegmentEdges))));
         println("Extracted edges count: " ~ toString(size(evaluateQuery(context, extractedEdges))));
-        println("Tracked extracted edges count: " ~ toString(size(evaluateQuery(context, trackedExtractedEdges))));
+        println("Tracked tab segments (after extraction): " ~ toString(size(evaluateQuery(context, trackedTabSegmentsAfterExtraction))));
+        println("Edges adjacent to tracked tabs: " ~ toString(size(evaluateQuery(context, edgesAdjacentToTrackedTabs))));
         println("Laminar edges to extend count: " ~ toString(size(evaluateQuery(context, extractedEdgesToExtend))));
         
         if (size(evaluateQuery(context, extractedEdgesToExtend)) > 0)
