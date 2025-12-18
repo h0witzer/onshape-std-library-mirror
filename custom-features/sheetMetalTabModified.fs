@@ -1,39 +1,69 @@
-FeatureScript 2780; /* Automatically generated version */
-// This module is part of the FeatureScript Standard Library and is distributed under the MIT License.
-// See the LICENSE tab for the license text.
-// Copyright (c) 2013-Present PTC Inc.
+FeatureScript 2837;
 
 // Imports used in interface
-export import(path : "onshape/std/query.fs", version : "2780.0");
-export import(path : "onshape/std/tool.fs", version : "2780.0");
+export import(path : "onshape/std/query.fs", version : "2837.0");
+export import(path : "onshape/std/tool.fs", version : "2837.0");
 
 // Imports used internally
-import(path : "onshape/std/attributes.fs", version : "2780.0");
-import(path : "onshape/std/boolean.fs", version : "2780.0");
-import(path : "onshape/std/containers.fs", version : "2780.0");
-import(path : "onshape/std/evaluate.fs", version : "2780.0");
-import(path : "onshape/std/feature.fs", version : "2780.0");
-import(path : "onshape/std/math.fs", version : "2780.0");
-import(path : "onshape/std/moveFace.fs", version : "2780.0");
-import(path : "onshape/std/transform.fs", version : "2780.0");
-import(path : "onshape/std/sheetMetalAttribute.fs", version : "2780.0");
-import(path : "onshape/std/sheetMetalUtils.fs", version : "2780.0");
-import(path : "onshape/std/surfaceGeometry.fs", version : "2780.0");
-import(path : "onshape/std/topologyUtils.fs", version : "2780.0");
-import(path : "onshape/std/valueBounds.fs", version : "2780.0");
-import(path : "onshape/std/vector.fs", version : "2780.0");
+import(path : "onshape/std/attributes.fs", version : "2837.0");
+import(path : "onshape/std/boolean.fs", version : "2837.0");
+import(path : "onshape/std/containers.fs", version : "2837.0");
+import(path : "onshape/std/evaluate.fs", version : "2837.0");
+import(path : "onshape/std/feature.fs", version : "2837.0");
+import(path : "onshape/std/geomOperations.fs", version : "2837.0");
+import(path : "onshape/std/math.fs", version : "2837.0");
+import(path : "onshape/std/moveFace.fs", version : "2837.0");
+import(path : "onshape/std/path.fs", version : "2837.0");
+import(path : "onshape/std/transform.fs", version : "2837.0");
+import(path : "onshape/std/sheetMetalAttribute.fs", version : "2837.0");
+import(path : "onshape/std/sheetMetalUtils.fs", version : "2837.0");
+import(path : "onshape/std/surfaceGeometry.fs", version : "2837.0");
+import(path : "onshape/std/topologyUtils.fs", version : "2837.0");
+import(path : "onshape/std/valueBounds.fs", version : "2837.0");
+import(path : "onshape/std/vector.fs", version : "2837.0");
 
 /**
- * Feature adding tabs to sheet metal faces using supplied surface geometry.
+ * Defines the input type for the tab feature
+ */
+export enum InputType
+{
+    annotation { "Name" : "Edges" }
+    EDGES,
+    annotation { "Name" : "Faces" }
+    FACES
+}
+
+/**
+ * Refactored sheet metal tab feature that accepts edges or faces as input.
+ * When edges are provided, the feature:
+ *   1. Splits the edge chain into segments
+ *   2. Copies the sheet metal wall faces attached to those edges
+ *   3. Extends the copied surfaces by the specified tab depth
+ *   4. Creates tabs from the extended surfaces
  *
+ * When faces are provided, the feature works in backwards-compatible mode.
  */
 annotation { "Feature Type Name" : "Tab",
         "Editing Logic Function" : "sheetMetalTabEditingLogic" }
 export const sheetMetalTab = defineSheetMetalFeature(function(context is Context, id is Id, definition is map)
     precondition
     {
-        annotation { "Name" : "Tab profile", "Filter" : EntityType.FACE && ConstructionObject.NO }
-        definition.tabFaces is Query;
+        annotation { "Name" : "Input type", "UIHint" : UIHint.SHOW_LABEL }
+        definition.inputType is InputType;
+        
+        if (definition.inputType == InputType.EDGES)
+        {
+            annotation { "Name" : "Edge chain", "Filter" : EntityType.EDGE && SheetMetalDefinitionEntityType.EDGE && ActiveSheetMetal.YES && ModifiableEntityOnly.YES }
+            definition.edgeChain is Query;
+            
+            annotation { "Name" : "Tab depth" }
+            isLength(definition.tabDepth, BLEND_BOUNDS);
+        }
+        else
+        {
+            annotation { "Name" : "Tab profile", "Filter" : EntityType.FACE && ConstructionObject.NO }
+            definition.tabFaces is Query;
+        }
 
         annotation { "Name" : "Flange to merge", "Filter" : SheetMetalDefinitionEntityType.FACE && AllowFlattenedGeometry.YES && ModifiableEntityOnly.YES }
         definition.booleanUnionScope is Query;
@@ -45,10 +75,103 @@ export const sheetMetalTab = defineSheetMetalFeature(function(context is Context
         definition.booleanSubtractScope is Query;
     }
     {
-        // this is not necessary but helps with correct error reporting in feature pattern
-        checkNotInFeaturePattern(context, definition.tabFaces, ErrorStringEnum.SHEET_METAL_NO_FEATURE_PATTERN);
+        // Branch based on input type
+        if (definition.inputType == InputType.EDGES)
+        {
+            // New edge-based workflow
+            processEdgeBasedInput(context, id, definition);
+        }
+        else
+        {
+            // Legacy face-based workflow (backwards compatible)
+            processFaceBasedInput(context, id, definition);
+        }
+    }, { booleanSubtractScope : qNothing(), inputType : InputType.FACES });
 
-        createTools(context, id + "extract", definition.tabFaces);
+// Processes edge-based input: splits edges, copies faces, extends surfaces
+function processEdgeBasedInput(context is Context, id is Id, definition is map)
+{
+    // Validate edge input
+    const selectedEdgesQuery = qEntityFilter(definition.edgeChain, EntityType.EDGE);
+    const selectedEdges = evaluateQuery(context, selectedEdgesQuery);
+    if (size(selectedEdges) == 0)
+    {
+        throw regenError("Select at least one sheet metal edge", ["edgeChain"]);
+    }
+
+    // Verify edges belong to active sheet metal body
+    const activeBodiesQuery = qActiveSheetMetalFilter(qOwnerBody(selectedEdgesQuery), ActiveSheetMetal.YES);
+    const activeBodies = evaluateQuery(context, activeBodiesQuery);
+    if (size(activeBodies) == 0)
+    {
+        throw regenError("Selected edges must belong to an active sheet metal part", ["edgeChain"], definition.edgeChain);
+    }
+    if (size(activeBodies) > 1)
+    {
+        throw regenError("Select edges that belong to a single sheet metal part", ["edgeChain"], definition.edgeChain);
+    }
+
+    // Get sheet metal wall faces adjacent to the selected edges
+    const adjacentFacesQuery = qAdjacent(selectedEdgesQuery, AdjacencyType.EDGE, EntityType.FACE);
+    const wallFaces = evaluateQuery(context, adjacentFacesQuery);
+    if (size(wallFaces) == 0)
+    {
+        throw regenError("No sheet metal wall faces found adjacent to selected edges", ["edgeChain"], definition.edgeChain);
+    }
+
+    // Copy the wall faces to create surface bodies for tab generation
+    opPattern(context, id + "copyWalls", {
+                "entities" : qUnion(wallFaces),
+                "transforms" : [identityTransform()],
+                "instanceNames" : ["tabSurfaces"]
+            });
+
+    const copiedSurfacesQuery = qCreatedBy(id + "copyWalls", EntityType.BODY);
+    const copiedSurfaces = evaluateQuery(context, copiedSurfacesQuery);
+    if (size(copiedSurfaces) == 0)
+    {
+        throw regenError("Failed to copy sheet metal wall faces", ["edgeChain"]);
+    }
+
+    // Extract surfaces to ensure they are proper sheet bodies
+    opExtractSurface(context, id + "extractCopied", {
+                "faces" : qOwnedByBody(copiedSurfacesQuery, EntityType.FACE),
+                "redundancyType" : ExtractSurfaceRedundancyType.REMOVE_ALL_REDUNDANCY
+            });
+
+    // Find edges corresponding to the selected edges in the copied surfaces
+    const copiedEdgesQuery = qCreatedBy(id + "extractCopied", EntityType.EDGE);
+    
+    // Extend the copied surface edges by the specified tab depth
+    try
+    {
+        opExtendSheetBody(context, id + "extend", {
+                    "entities" : copiedEdgesQuery,
+                    "endCondition" : ExtendEndType.EXTEND_BLIND,
+                    "extendDistance" : definition.tabDepth,
+                    "extensionShape" : ExtendSheetShapeType.LINEAR
+                });
+    }
+    catch (error)
+    {
+        throw regenError("Failed to extend sheet body edges by tab depth: " ~ error, ["tabDepth", "edgeChain"]);
+    }
+
+    // Store the extended surfaces as tab faces for further processing
+    definition.tabFaces = qCreatedBy(id + "extend", EntityType.FACE);
+    
+    // Continue with standard tab processing
+    processFaceBasedInput(context, id, definition);
+}
+
+// Legacy face-based workflow (backwards compatible)
+function processFaceBasedInput(context is Context, id is Id, definition is map)
+{
+        // this is not necessary but helps with correct error reporting in feature pattern
+        const tabFacesInput = (definition.tabFaces != undefined) ? definition.tabFaces : qNothing();
+        checkNotInFeaturePattern(context, tabFacesInput, ErrorStringEnum.SHEET_METAL_NO_FEATURE_PATTERN);
+
+        createTools(context, id + "extract", tabFacesInput);
 
         const unionEntities = try silent(getSMDefinitionEntities(context, definition.booleanUnionScope));
         if (unionEntities == undefined || unionEntities == [])
@@ -103,7 +226,7 @@ export const sheetMetalTab = defineSheetMetalFeature(function(context is Context
                     "entities" : qUnion([toUpdate.modifiedEntities, unionEntityPersistantQuery]),
                     "deletedAttributes" : toUpdate.deletedAttributes,
                     "associatedChanges" : associateChanges });
-    }, { booleanSubtractScope : qNothing() });
+}
 
 function applyTab(context is Context, id is Id, definition is map, tabQuery is Query, unionEntities is array, rootId is Id) returns boolean
 {
