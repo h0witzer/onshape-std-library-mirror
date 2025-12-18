@@ -207,27 +207,15 @@ export const tabAndSlotBossDisplay = defineFeature(function(context is Context, 
             throw regenError("Failed to extract adjacent wall surfaces", ["edges"]);
         }
 
-        // After extraction, find edges on extracted surfaces that are adjacent to the tracked tab segments
+        // After extraction, find edges on extracted surfaces that correspond directly to the tab segments
         const extractedBodies = qCreatedBy(id + "extractWalls", EntityType.BODY);
         const extractedEdges = qOwnedByBody(extractedBodies, EntityType.EDGE);
         
         // Find the tracked tab segments after extraction
         const trackedTabSegmentsAfterExtraction = qEntityFilter(trackedTabSegments, EntityType.EDGE);
         
-        // Find edges on the extracted surfaces that share vertices with the tracked tab segments
-        // These are the wall edges at the tab locations that we want to extend
-        const edgesAdjacentToTrackedTabs = qIntersection([
-            qAdjacent(trackedTabSegmentsAfterExtraction, AdjacencyType.VERTEX, EntityType.EDGE),
-            extractedEdges
-        ]);
-        
         // Filter to only laminar (one-sided/boundary) edges to avoid EXTEND_NON_LAMINAR error
-        const extractedEdgesToExtend = qEdgeTopologyFilter(edgesAdjacentToTrackedTabs, EdgeTopology.ONE_SIDED);
-        
-        println("Extracted edges count: " ~ toString(size(evaluateQuery(context, extractedEdges))));
-        println("Tracked tab segments (after extraction): " ~ toString(size(evaluateQuery(context, trackedTabSegmentsAfterExtraction))));
-        println("Edges adjacent to tracked tabs: " ~ toString(size(evaluateQuery(context, edgesAdjacentToTrackedTabs))));
-        println("Laminar edges to extend count: " ~ toString(size(evaluateQuery(context, extractedEdgesToExtend))));
+        const extractedEdgesToExtend = qEdgeTopologyFilter(trackedTabSegmentsAfterExtraction, EdgeTopology.ONE_SIDED);
         
         if (size(evaluateQuery(context, extractedEdgesToExtend)) > 0)
         {
