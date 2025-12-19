@@ -813,15 +813,16 @@ export const linearPatternPlus = defineFeature(function(context is Context, id i
                     const instanceKey = toString(i) ~ "," ~ toString(j) ~ "," ~ toString(k);
                     const isSkipped = definition.skipInstances && skippedIndicesSet[instanceKey] == true;
                     
+                    // Collect manipulator points for ALL instances (including seed) for skip functionality
+                    // The seed will be suppressed via suppressedIndices in the manipulator
+                    if (definition.skipInstances)
+                    {
+                        manipulatorPoints = append(manipulatorPoints, instanceTransform.translation);
+                    }
+                    
                     // skip recreating original (seed instance)
                     if (j != 0 || i != 0 || k != 0)
                     {
-                        // Collect manipulator points for all non-seed instances for skip functionality
-                        if (definition.skipInstances)
-                        {
-                            manipulatorPoints = append(manipulatorPoints, instanceTransform.translation);
-                        }
-                        
                         // Only add transform if not skipped
                         if (!isSkipped)
                         {
