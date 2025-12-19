@@ -176,21 +176,16 @@ export const tabAndSlotBossDisplay = defineFeature(function(context is Context, 
         const splitEdgesEvaluated = evaluateQuery(context, splitEdges);
         println("Split edges count: " ~ toString(size(splitEdgesEvaluated)));
         
-        // Phase 2: Identify tab segments directly from the split edges
-        // The edges are already split at the correct locations, so we just need to identify
-        // which segments fall within the tab domains based on their position
-        const tabSegmentEdges = identifyTabSegmentsFromSplitEdges(context, splitEdges, path, totalLength, tabDomains);
-        const tabSegmentEdgesEvaluated = evaluateQuery(context, tabSegmentEdges);
+        // Phase 2: Identify tab segments - get midpoints of edges in tab domains
+        // Calculate midpoints for edges that fall within tab domains
+        const tabMidpoints = identifyTabMidpointsFromSplitEdges(context, splitEdges, path, totalLength, tabDomains);
         
-        if (size(tabSegmentEdgesEvaluated) == 0)
+        if (size(tabMidpoints) == 0)
         {
             throw regenError("No tab segment edges identified after splitting. Check edge selection and tab parameters.", ["edges", "tabWidth", "spacing"]);
         }
         
-        println("Tab segment edges count: " ~ toString(size(tabSegmentEdgesEvaluated)));
-        
-        // Debug: Highlight tab segment edges to verify identification
-        debug(context, tabSegmentEdges, DebugColor.YELLOW);
+        println("Tab midpoints identified: " ~ toString(size(tabMidpoints)));
         
         // Filter split edges to only those adjacent to wall surfaces for extraction
         const adjacentFaces = qAdjacent(splitEdges, AdjacencyType.EDGE, EntityType.FACE);
@@ -201,12 +196,7 @@ export const tabAndSlotBossDisplay = defineFeature(function(context is Context, 
             throw regenError("No adjacent wall surfaces found to copy. Ensure edges are on sheet metal walls.", ["edges"]);
         }
 
-        // Phase 3: Track tab segment edges through extraction and extend them
-        // Track the tab segment edges before extraction to find corresponding edges on extracted surfaces
-        const trackedTabSegments = startTracking(context, tabSegmentEdges);
-        
-        println("Tab segment edges count (before extraction): " ~ toString(size(tabSegmentEdgesEvaluated)));
-
+        // Phase 3: Extract surfaces and find edges by geometric proximity
         try
         {
             @opExtractSurface(context, id + "extractWalls", {
@@ -220,26 +210,25 @@ export const tabAndSlotBossDisplay = defineFeature(function(context is Context, 
             throw regenError("Failed to extract adjacent wall surfaces. Check that edges are on sheet metal walls.", ["edges"]);
         }
 
-        // After extraction, find edges on extracted surfaces that correspond to tracked tab segments
+        // After extraction, find edges on extracted surfaces using geometric proximity
         const extractedBodies = qCreatedBy(id + "extractWalls", EntityType.BODY);
         const extractedEdges = qOwnedByBody(extractedBodies, EntityType.EDGE);
         
         println("Extracted bodies count: " ~ toString(size(evaluateQuery(context, extractedBodies))));
         println("Extracted edges count: " ~ toString(size(evaluateQuery(context, extractedEdges))));
         
-        // Find the tracked tab segments after extraction - these should be edges on the extracted surfaces
-        const trackedTabSegmentsAfterExtraction = qEntityFilter(trackedTabSegments, EntityType.EDGE);
-        const trackedCount = size(evaluateQuery(context, trackedTabSegmentsAfterExtraction));
+        // Find extracted edges that are touching the tab midpoints using distance evaluation
+        const tabEdgesToExtend = findEdgesTouchingPoints(context, extractedEdges, tabMidpoints);
         
-        println("Tracked tab segment edges after extraction: " ~ toString(trackedCount));
-        
-        if (trackedCount == 0)
+        if (size(evaluateQuery(context, tabEdgesToExtend)) == 0)
         {
-            throw regenError("Tab segment edges not found on extracted surfaces. Edge tracking failed.", ["edges"]);
+            throw regenError("No extracted edges found touching tab midpoints. Check edge selection.", ["edges"]);
         }
         
+        println("Tab edges found by proximity: " ~ toString(size(evaluateQuery(context, tabEdgesToExtend))));
+        
         // Filter to only laminar (one-sided/boundary) edges to avoid EXTEND_NON_LAMINAR error
-        const extractedEdgesToExtend = qEdgeTopologyFilter(trackedTabSegmentsAfterExtraction, EdgeTopology.ONE_SIDED);
+        const extractedEdgesToExtend = qEdgeTopologyFilter(tabEdgesToExtend, EdgeTopology.ONE_SIDED);
         const laminarEdgeCount = size(evaluateQuery(context, extractedEdgesToExtend));
         
         println("Laminar edges to extend: " ~ toString(laminarEdgeCount));
@@ -480,21 +469,20 @@ function calculateEdgeSplitInstructionsFromParameters(context is Context, path i
     return splitInstructions;
 }
 
-// Identifies tab segments directly from split edges.
+// Identifies midpoints of split edges that fall within tab domains.
+// Returns an array of 3D points (midpoints) that represent where tabs should be.
 // Uses accumulated length tracking to calculate each edge's midpoint position.
-// An edge is a tab if its midpoint falls within any tab domain.
-// Midpoint checking is more robust than start position for preventing consecutive tabs.
-function identifyTabSegmentsFromSplitEdges(context is Context, splitEdges is Query, path is Path, totalLength is ValueWithUnits, tabDomains is array) returns Query
+function identifyTabMidpointsFromSplitEdges(context is Context, splitEdges is Query, path is Path, totalLength is ValueWithUnits, tabDomains is array) returns array
 {
     if (size(tabDomains) == 0)
     {
-        return qNothing();
+        return [];
     }
 
     const edges = evaluateQuery(context, splitEdges);
     if (size(edges) == 0)
     {
-        return qNothing();
+        return [];
     }
 
     // Construct path from split edges to get them in order
@@ -502,7 +490,7 @@ function identifyTabSegmentsFromSplitEdges(context is Context, splitEdges is Que
     if (orderedPath == undefined)
     {
         println("ERROR: Unable to construct ordered path from split edges");
-        return qNothing();
+        return [];
     }
     
     const orderedEdges = orderedPath.edges;
@@ -515,7 +503,7 @@ function identifyTabSegmentsFromSplitEdges(context is Context, splitEdges is Que
         edgeLengths = append(edgeLengths, edgeLength);
     }
     
-    println("DEBUG: Identifying tab segments from " ~ toString(size(orderedEdges)) ~ " split edges");
+    println("DEBUG: Identifying tab midpoints from " ~ toString(size(orderedEdges)) ~ " split edges");
     println("DEBUG: Total length: " ~ toString(totalLength));
     println("DEBUG: Number of tab domains: " ~ toString(size(tabDomains)));
     for (var domain in tabDomains)
@@ -523,10 +511,9 @@ function identifyTabSegmentsFromSplitEdges(context is Context, splitEdges is Que
         println("DEBUG: Tab domain [" ~ toString(domain.start) ~ ", " ~ toString(domain.end) ~ "]");
     }
     
-    // Track accumulated length and check each edge's MIDPOINT against all tab domains
-    // Using midpoint is more robust than start position for determining segment membership
+    // Track accumulated length and collect midpoints of edges in tab domains
     var accumulatedLength = 0 * meter;
-    var tabEdgeQueries = [];
+    var tabMidpoints = [];
     
     for (var i = 0; i < size(orderedEdges); i += 1)
     {
@@ -551,7 +538,14 @@ function identifyTabSegmentsFromSplitEdges(context is Context, splitEdges is Que
         
         if (isTab)
         {
-            tabEdgeQueries = append(tabEdgeQueries, edge);
+            // Get the 3D midpoint of this edge
+            const edgeMidpointParam = 0.5;
+            const midpointResult = evEdgeTangentLine(context, {
+                "edge" : edge,
+                "parameter" : edgeMidpointParam
+            });
+            tabMidpoints = append(tabMidpoints, midpointResult.origin);
+            println("DEBUG: Tab midpoint at: " ~ toString(midpointResult.origin));
         }
         else
         {
@@ -561,16 +555,64 @@ function identifyTabSegmentsFromSplitEdges(context is Context, splitEdges is Que
         accumulatedLength += edgeLength;
     }
     
-    if (size(tabEdgeQueries) == 0)
+    if (size(tabMidpoints) == 0)
     {
-        println("WARNING: No tab segment edges identified from " ~ toString(size(orderedEdges)) ~ " split edges");
+        println("WARNING: No tab midpoints identified from " ~ toString(size(orderedEdges)) ~ " split edges");
+    }
+    
+    println("DEBUG: Identified " ~ toString(size(tabMidpoints)) ~ " tab midpoints");
+    
+    return tabMidpoints;
+}
+
+// Finds edges on extracted surfaces that are touching (within tolerance) the given points.
+// Uses evDistance to check geometric proximity between points and edges.
+// Returns a query for all edges that are close to any of the points.
+function findEdgesTouchingPoints(context is Context, edges is Query, points is array) returns Query
+{
+    const DISTANCE_TOLERANCE = 1e-6 * meter;
+    
+    const edgesEvaluated = evaluateQuery(context, edges);
+    if (size(edgesEvaluated) == 0 || size(points) == 0)
+    {
         return qNothing();
     }
     
-    println("DEBUG: Identified " ~ toString(size(tabEdgeQueries)) ~ " tab edges");
+    println("DEBUG: Checking " ~ toString(size(edgesEvaluated)) ~ " edges against " ~ toString(size(points)) ~ " points");
     
-    // Return the union of all tab edge queries
-    // These are the exact edge entities that need to be tracked and extended
-    return qUnion(tabEdgeQueries);
+    var matchingEdges = [];
+    
+    // For each point, find edges that are touching it
+    for (var i = 0; i < size(points); i += 1)
+    {
+        const point = points[i];
+        println("DEBUG: Checking point " ~ toString(i) ~ " at " ~ toString(point));
+        
+        // Check each edge
+        for (var edge in edgesEvaluated)
+        {
+            const distResult = evDistance(context, {
+                "side0" : point,
+                "side1" : edge
+            });
+            
+            if (distResult.distance < DISTANCE_TOLERANCE)
+            {
+                matchingEdges = append(matchingEdges, edge);
+                println("DEBUG: Edge touches point " ~ toString(i) ~ " (distance: " ~ toString(distResult.distance) ~ ")");
+                break; // This edge matches, move to next point
+            }
+        }
+    }
+    
+    if (size(matchingEdges) == 0)
+    {
+        println("WARNING: No edges found touching the tab midpoints");
+        return qNothing();
+    }
+    
+    println("DEBUG: Found " ~ toString(size(matchingEdges)) ~ " edges touching tab points");
+    
+    return qUnion(matchingEdges);
 }
 
