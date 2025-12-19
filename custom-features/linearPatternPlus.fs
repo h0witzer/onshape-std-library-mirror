@@ -777,8 +777,6 @@ export const linearPatternPlus = defineFeature(function(context is Context, id i
             }
         }
 
-        reportFeatureInfo(context, id, toString(count1 * count2 * count3) ~ " instances.");
-
         // Compute a vector of transforms
         // Adding just the values and mutating the transform rather than creating the translation from scratch on each iteration
         // is necessary for performance since it is in an inner loop bottleneck.
@@ -869,6 +867,10 @@ export const linearPatternPlus = defineFeature(function(context is Context, id i
         definition.seed = definition.entities;
         
         definition.sketchPatternInfo = ErrorStringEnum.LINEAR_PATTERN_SKETCH_REAPPLY_INFO;
+        
+        // Report actual number of instances (including seed, after skipping)
+        const actualInstanceCount = size(transforms) + 1; // +1 for seed
+        reportFeatureInfo(context, id, toString(actualInstanceCount) ~ " instances.");
 
         applyPattern(context, id, definition, remainingTransform);
         
@@ -1172,32 +1174,57 @@ export function linearPatternPlusManipulatorFunction(context is Context, definit
             return definition;
         }
 
-        definition.skippedInstances = makeArray(size(newInstances) + size(outInstances));
+        // Merge and deduplicate newInstances and outInstances
+        // First, combine both arrays
+        var mergedInstances = makeArray(size(newInstances) + size(outInstances));
         var newIndex = 0;
         var outIndex = 0;
+        var mergedIndex = 0;
 
-        for (var i = 0; i < size(definition.skippedInstances); i += 1)
+        while (newIndex < size(newInstances) || outIndex < size(outInstances))
         {
             if (newIndex >= size(newInstances))
             {
-                definition.skippedInstances[i] = outInstances[outIndex];
+                mergedInstances[mergedIndex] = outInstances[outIndex];
                 outIndex += 1;
+                mergedIndex += 1;
             }
             else if (outIndex >= size(outInstances))
             {
-                definition.skippedInstances[i] = newInstances[newIndex];
+                mergedInstances[mergedIndex] = newInstances[newIndex];
                 newIndex += 1;
-            }
-            else if (compareInstanceIndices(newInstances[newIndex], outInstances[outIndex]) < 0)
-            {
-                definition.skippedInstances[i] = newInstances[newIndex];
-                newIndex += 1;
+                mergedIndex += 1;
             }
             else
             {
-                definition.skippedInstances[i] = outInstances[outIndex];
-                outIndex += 1;
+                const comparison = compareInstanceIndices(newInstances[newIndex], outInstances[outIndex]);
+                if (comparison < 0)
+                {
+                    mergedInstances[mergedIndex] = newInstances[newIndex];
+                    newIndex += 1;
+                    mergedIndex += 1;
+                }
+                else if (comparison > 0)
+                {
+                    mergedInstances[mergedIndex] = outInstances[outIndex];
+                    outIndex += 1;
+                    mergedIndex += 1;
+                }
+                else // comparison == 0, duplicate found, skip one
+                {
+                    mergedInstances[mergedIndex] = newInstances[newIndex];
+                    newIndex += 1;
+                    outIndex += 1;
+                    mergedIndex += 1;
+                }
             }
+        }
+
+        // Trim array to actual size (removing duplicates may have reduced the size)
+        definition.skippedInstances = makeArray(mergedIndex);
+        for (var i = 0; i < mergedIndex; i += 1)
+        {
+            definition.skippedInstances[i] = mergedInstances[i];
         }
     }
 
