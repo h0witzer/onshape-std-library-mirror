@@ -480,9 +480,9 @@ function calculateEdgeSplitInstructionsFromParameters(context is Context, path i
     return splitInstructions;
 }
 
-// Identifies which split edges fall within tab domains using accumulated length comparison.
+// Identifies which split edges are tabs using bucket approach.
+// Walks along edge chain, placing edges into alternating GAP/TAB buckets based on split parameter boundaries.
 // Returns a Query of edges that should be tabs (for visualization).
-// Uses segment boundary comparison similar to showAlternatingCyanMagentaSegments in reference implementation.
 function identifyTabEdgesFromSplitEdges(context is Context, splitEdges is Query, path is Path, totalLength is ValueWithUnits, tabDomains is array) returns Query
 {
     if (size(tabDomains) == 0)
@@ -496,7 +496,7 @@ function identifyTabEdgesFromSplitEdges(context is Context, splitEdges is Query,
         return qNothing();
     }
     
-    // Try to construct path from split edges, but if it fails, use edges in arbitrary order
+    // Try to construct path from split edges to get proper ordering
     var orderedEdges = [];
     const orderedPath = try silent(constructPath(context, qUnion(edges)));
     if (orderedPath != undefined)
@@ -510,75 +510,71 @@ function identifyTabEdgesFromSplitEdges(context is Context, splitEdges is Query,
         orderedEdges = edges;
     }
     
-    // Collect edge lengths and calculate actual total length
-    var edgeLengths = [];
-    var actualTotalLength = 0 * meter;
-    for (var edge in orderedEdges)
-    {
-        const edgeLength = evLength(context, { "entities" : edge });
-        edgeLengths = append(edgeLengths, edgeLength);
-        actualTotalLength += edgeLength;
-    }
-    
-    println("DEBUG: Identifying tab edges from " ~ toString(size(orderedEdges)) ~ " split edges");
-    println("DEBUG: Original total length: " ~ toString(totalLength));
-    println("DEBUG: Actual total length: " ~ toString(actualTotalLength));
+    // Get split parameters from tab domains (sorted boundaries where we split)
+    const splitParams = calculateSplitParametersFromTabDomains(tabDomains);
+    println("DEBUG: Split parameters: " ~ toString(splitParams));
     println("DEBUG: Number of tab domains: " ~ toString(size(tabDomains)));
-    for (var domain in tabDomains)
-    {
-        println("DEBUG: Tab domain [" ~ toString(domain.start) ~ ", " ~ toString(domain.end) ~ "]");
-    }
     
-    // For each edge, calculate its position and check if it overlaps with any tab domain
-    // Similar to showAlternatingCyanMagentaSegments pattern
+    // Walk along edges, accumulating length until we hit each split parameter
+    // Alternate between GAP bucket (segment 0) and TAB bucket (segment 1), etc.
     var accumulatedLength = 0 * meter;
-    var tabEdgeQueries = [];
+    var currentSegmentIndex = 0; // Start with segment 0 (GAP)
+    var nextSplitParamIndex = 0;
+    var nextSplitPosition = (nextSplitParamIndex < size(splitParams)) ? 
+                            (splitParams[nextSplitParamIndex] * totalLength) : 
+                            (totalLength + 1 * meter);
+    
+    var tabEdgesBucket = [];
+    var gapEdgesBucket = [];
     
     for (var i = 0; i < size(orderedEdges); i += 1)
     {
         const edge = orderedEdges[i];
-        const edgeLength = edgeLengths[i];
+        const edgeLength = evLength(context, { "entities" : edge });
+        const edgeStart = accumulatedLength;
+        const edgeEnd = accumulatedLength + edgeLength;
         
-        // Calculate this edge's start and end positions as fractions of actual total length
-        const edgeStartFraction = accumulatedLength / actualTotalLength;
-        const edgeEndFraction = (accumulatedLength + edgeLength) / actualTotalLength;
+        println("DEBUG: Edge " ~ toString(i) ~ " from " ~ toString(edgeStart) ~ " to " ~ toString(edgeEnd) ~ " (segment " ~ toString(currentSegmentIndex) ~ ")");
         
-        // Check if this edge overlaps with ANY tab domain
-        // Edge overlaps if its range [start, end] intersects with domain range [domain.start, domain.end]
-        var isTab = false;
-        for (var domain in tabDomains)
+        // Add this edge to the current bucket (GAP or TAB)
+        if (currentSegmentIndex % 2 == 0)
         {
-            // Check for overlap: edge overlaps domain if edge_start < domain_end AND edge_end > domain_start
-            if (edgeStartFraction < domain.end + FRACTION_TOLERANCE && 
-                edgeEndFraction > domain.start - FRACTION_TOLERANCE)
-            {
-                isTab = true;
-                println("DEBUG: Edge " ~ toString(i) ~ " [" ~ toString(edgeStartFraction) ~ ", " ~ toString(edgeEndFraction) ~ "] overlaps domain [" ~ toString(domain.start) ~ ", " ~ toString(domain.end) ~ "] - TAB");
-                break;
-            }
-        }
-        
-        if (isTab)
-        {
-            tabEdgeQueries = append(tabEdgeQueries, edge);
+            // Even segment = GAP
+            gapEdgesBucket = append(gapEdgesBucket, edge);
+            println("DEBUG: --> Added to GAP bucket");
         }
         else
         {
-            println("DEBUG: Edge " ~ toString(i) ~ " [" ~ toString(edgeStartFraction) ~ ", " ~ toString(edgeEndFraction) ~ "] is GAP");
+            // Odd segment = TAB
+            tabEdgesBucket = append(tabEdgesBucket, edge);
+            println("DEBUG: --> Added to TAB bucket");
         }
         
-        accumulatedLength += edgeLength;
+        accumulatedLength = edgeEnd;
+        
+        // Check if we've passed the next split point
+        // If so, move to the next segment and update the next split position
+        while (accumulatedLength >= nextSplitPosition - EDGE_LENGTH_TOLERANCE && nextSplitParamIndex < size(splitParams))
+        {
+            currentSegmentIndex += 1;
+            nextSplitParamIndex += 1;
+            nextSplitPosition = (nextSplitParamIndex < size(splitParams)) ? 
+                                (splitParams[nextSplitParamIndex] * totalLength) : 
+                                (totalLength + 1 * meter);
+            println("DEBUG: Crossed split boundary, now in segment " ~ toString(currentSegmentIndex));
+        }
     }
     
-    if (size(tabEdgeQueries) == 0)
+    println("DEBUG: GAP bucket has " ~ toString(size(gapEdgesBucket)) ~ " edges");
+    println("DEBUG: TAB bucket has " ~ toString(size(tabEdgesBucket)) ~ " edges");
+    
+    if (size(tabEdgesBucket) == 0)
     {
-        println("WARNING: No tab edges identified from " ~ toString(size(orderedEdges)) ~ " split edges");
+        println("WARNING: No tab edges identified");
         return qNothing();
     }
     
-    println("DEBUG: Identified " ~ toString(size(tabEdgeQueries)) ~ " tab edges");
-    
-    return qUnion(tabEdgeQueries);
+    return qUnion(tabEdgesBucket);
 }
 
 // Identifies midpoints of split edges that fall within tab domains.
