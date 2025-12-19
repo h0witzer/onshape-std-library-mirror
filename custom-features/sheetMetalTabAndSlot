@@ -111,12 +111,11 @@ export const tabAndSlotBossDisplay = defineFeature(function(context is Context, 
 
         // Sort edges before path construction to ensure proper ordering
         const sortedEdgeQuery = qUnion(selectedEdges);
-        const pathResult = try silent(constructPath(context, sortedEdgeQuery));
-        if (pathResult == undefined)
+        const path = try silent(constructPath(context, sortedEdgeQuery));
+        if (path == undefined)
         {
             throw regenError("Unable to order the selected edges into a continuous chain", ["edges"], definition.edges);
         }
-        const path = pathResult;
 
         // Calculate tab positions along the edge chain using ordered path edges
         const orderedEdgeQuery = qUnion(path.edges);
