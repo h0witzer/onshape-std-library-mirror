@@ -480,7 +480,8 @@ function calculateEdgeSplitInstructionsFromParameters(context is Context, path i
 }
 
 // Identifies edges that correspond to tab segments based on tab domains.
-// Checks which edges fall within the tab domain ranges after splitting.
+// Checks which edges overlap with the tab domain ranges after splitting.
+// An edge is considered a tab segment if any part of it falls within a tab domain.
 // Uses the original path structure to maintain edge ordering and orientation.
 function identifyTabSegmentEdgesFromDomains(context is Context, splitEdges is Query, path is Path, totalLength is ValueWithUnits, tabDomains is array) returns Query
 {
@@ -507,27 +508,31 @@ function identifyTabSegmentEdgesFromDomains(context is Context, splitEdges is Qu
     
     const orderedEdges = orderedPath.edges;
 
-    // Calculate cumulative lengths to determine position of each edge along the ordered path
-    var edgeMidpoints = [];
+    // Calculate cumulative lengths to determine start and end position of each edge along the ordered path
+    var edgePositions = [];
     var accumulatedLength = 0 * meter;
     
     for (var edge in orderedEdges)
     {
         const edgeLength = evLength(context, { "entities" : edge });
-        const midpoint = (accumulatedLength + edgeLength / 2) / totalLength;
-        edgeMidpoints = append(edgeMidpoints, midpoint);
+        const startPos = accumulatedLength / totalLength;
         accumulatedLength += edgeLength;
+        const endPos = accumulatedLength / totalLength;
+        edgePositions = append(edgePositions, {"start" : startPos, "end" : endPos});
     }
 
-    // Identify which edges fall within tab domains based on their midpoint position
+    // Identify which edges overlap with tab domains
+    // An edge is a tab segment if any part of it falls within a tab domain range
     var tabEdgeQueries = [];
     for (var i = 0; i < size(orderedEdges); i += 1)
     {
-        const midpoint = edgeMidpoints[i];
+        const edgeStart = edgePositions[i].start;
+        const edgeEnd = edgePositions[i].end;
+        
         for (var domain in tabDomains)
         {
-            // Check if edge midpoint falls within the tab domain range
-            if (midpoint >= domain.start - FRACTION_TOLERANCE && midpoint <= domain.end + FRACTION_TOLERANCE)
+            // Check if edge overlaps with tab domain: edge overlaps if edge_start < domain_end AND edge_end > domain_start
+            if (edgeStart < domain.end + FRACTION_TOLERANCE && edgeEnd > domain.start - FRACTION_TOLERANCE)
             {
                 tabEdgeQueries = append(tabEdgeQueries, orderedEdges[i]);
                 break;
