@@ -141,8 +141,9 @@ export const tabAndSlotBossDisplay = defineFeature(function(context is Context, 
             throw regenError("No tabs can fit with the specified parameters", ["tabWidth", "spacing"]);
         }
 
-        // Track original edges before splitting
-        const trackedEdges = startTracking(context, orderedEdgeQuery);
+        // Track original edges before splitting using makeRobustQuery for better spline support
+        const robustEdgeQuery = makeRobustQuery(context, orderedEdgeQuery);
+        const trackedEdges = startTracking(context, robustEdgeQuery);
 
         // Split the edges at tab boundaries
         const splitParameters = calculateSplitParametersFromTabDomains(tabDomains);
@@ -154,14 +155,17 @@ export const tabAndSlotBossDisplay = defineFeature(function(context is Context, 
         }
 
         var splitOperationIndex = 0;
+        var splitOperationIds = [];
         for (var instruction in splitInstructions)
         {
+            const splitId = id + ("split" ~ toString(splitOperationIndex));
             try
             {
-                @opSplitEdges(context, id + ("split" ~ toString(splitOperationIndex)), {
+                @opSplitEdges(context, splitId, {
                             "edges" : instruction.edge,
                             "parameters" : [instruction.parameters]
                         });
+                splitOperationIds = append(splitOperationIds, splitId);
             }
             catch
             {
@@ -170,8 +174,24 @@ export const tabAndSlotBossDisplay = defineFeature(function(context is Context, 
             splitOperationIndex += 1;
         }
 
-        // Get the split edges and identify tabs using length-based alternation strategy
-        const splitEdges = qEntityFilter(trackedEdges, EntityType.EDGE);
+        // Get the split edges using both tracking and created-by queries for robustness
+        const trackedSplitEdges = qEntityFilter(trackedEdges, EntityType.EDGE);
+        
+        // Also collect edges created by split operations
+        var createdByQueries = [];
+        for (var splitId in splitOperationIds)
+        {
+            createdByQueries = append(createdByQueries, qCreatedBy(splitId, EntityType.EDGE));
+        }
+        const createdEdges = size(createdByQueries) > 0 ? qUnion(createdByQueries) : qNothing();
+        
+        // Combine both approaches: tracked edges AND created edges
+        const splitEdges = qUnion([trackedSplitEdges, createdEdges]);
+        
+        println("Tracked edges: " ~ toString(size(evaluateQuery(context, trackedSplitEdges))));
+        println("Created edges: " ~ toString(size(evaluateQuery(context, createdEdges))));
+        println("Combined edges: " ~ toString(size(evaluateQuery(context, splitEdges))));
+        
         showAlternatingTabsAndSlots(context, splitEdges, tabDomains, totalLength);
 
         // COMMENTED OUT: Everything after edge splitting routine for debugging
