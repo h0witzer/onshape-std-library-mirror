@@ -393,6 +393,12 @@ export const linearPatternPlus = defineFeature(function(context is Context, id i
                 }
             }
 
+            // Check if previousFeatureInfo was successfully retrieved
+            if (previousFeatureInfo == undefined)
+            {
+                throw regenError("No valid previous feature found. Please select a Linear Pattern Plus feature to match.");
+            }
+
             countOne = previousFeatureInfo.countOne;
             distanceOne = previousFeatureInfo.spacingOne;
             directionOne = previousFeatureInfo["@directionOne"];
