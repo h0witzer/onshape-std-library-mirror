@@ -141,9 +141,10 @@ export const tabAndSlotBossDisplay = defineFeature(function(context is Context, 
             throw regenError("No tabs can fit with the specified parameters", ["tabWidth", "spacing"]);
         }
 
-        // Track ALL edges in the path before splitting
+        // Track ALL edges from the original selection before splitting
         // opSplitEdges modifies edges in place, so tracking will follow them through the split
-        const trackedEdges = startTracking(context, qUnion(path.edges));
+        // Use orderedEdgeQuery to ensure we track all selected edges, not just those in path.edges
+        const trackedEdges = startTracking(context, orderedEdgeQuery);
         
         // Split the edges at tab boundaries
         const splitParameters = calculateSplitParametersFromTabDomains(tabDomains);
