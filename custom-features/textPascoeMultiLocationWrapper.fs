@@ -36,8 +36,7 @@ export const textMultiLocation = defineFeature(function(context is Context, id i
         }
         
         // Iterate through each mate connector and call TextFunctionPascoe
-        var textInstanceIndex = 0;
-        for (var currentMateConnector in mateConnectors)
+        for (var textInstanceIndex, currentMateConnector in mateConnectors)
         {
             // Call TextFunctionPascoe for this location
             TextFunctionPascoe(
@@ -56,8 +55,6 @@ export const textMultiLocation = defineFeature(function(context is Context, id i
                 definition.italic,
                 definition.mirrorHorizontal,
                 definition.mirrorVertical);
-            
-            textInstanceIndex += 1;
         }
     });
 
