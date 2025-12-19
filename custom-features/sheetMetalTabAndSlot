@@ -486,8 +486,8 @@ function calculateEdgeSplitInstructionsFromParameters(context is Context, path i
 }
 
 // Identifies edges that correspond to tab segments based on tab domains.
-// Checks which edges fall within the tab domain ranges after splitting.
-// Uses the original path structure to maintain edge ordering and orientation.
+// Uses the SAME position calculation method as edge splitting to ensure consistency.
+// Walks through split edges in order and calculates positions the same way as splitting logic.
 function identifyTabSegmentEdgesFromDomains(context is Context, splitEdges is Query, path is Path, totalLength is ValueWithUnits, tabDomains is array) returns Query
 {
     if (size(tabDomains) == 0)
@@ -501,20 +501,18 @@ function identifyTabSegmentEdgesFromDomains(context is Context, splitEdges is Qu
         return qNothing();
     }
 
-    // Construct a new path from the split edges to maintain proper ordering
+    // Construct path from split edges to get them in order
     const orderedPath = try silent(constructPath(context, qUnion(edges)));
     if (orderedPath == undefined)
     {
-        // If we can't construct a path after splitting, the edges may not form a continuous chain
-        // This is a critical error as we need ordered edges for position calculation
         println("ERROR: Unable to construct ordered path from split edges");
         return qNothing();
     }
     
     const orderedEdges = orderedPath.edges;
 
-    // Calculate cumulative lengths to determine position of each edge along the ordered path
-    // Use the original totalLength passed in, as tab domains are calculated relative to it
+    // Calculate positions using THE SAME method as calculateEdgeSplitInstructionsFromParameters
+    // Walk through edges and calculate cumulative position as a fraction of totalLength
     var edgeMidpoints = [];
     var accumulatedLength = 0 * meter;
     
@@ -528,6 +526,7 @@ function identifyTabSegmentEdgesFromDomains(context is Context, splitEdges is Qu
     for (var edge in orderedEdges)
     {
         const edgeLength = evLength(context, { "entities" : edge });
+        // Calculate midpoint position as fraction of totalLength (same as splitting logic)
         const midpoint = (accumulatedLength + edgeLength / 2) / totalLength;
         edgeMidpoints = append(edgeMidpoints, midpoint);
         println("DEBUG: Edge " ~ toString(size(edgeMidpoints) - 1) ~ " midpoint: " ~ toString(midpoint) ~ " (length: " ~ toString(edgeLength) ~ ")");
