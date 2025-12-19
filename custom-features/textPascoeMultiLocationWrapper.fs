@@ -29,6 +29,8 @@ export enum TextSourceType
     PART_DESCRIPTION
 }
 
+const DEFAULT_TEXT = "Text";
+
 
 annotation {
         "Feature Type Name" : "Text - Multi Location",
@@ -66,7 +68,7 @@ export const textMultiLocation = defineFeature(function(context is Context, id i
                 }
                 else
                 {
-                    currentText = "Text";
+                    currentText = DEFAULT_TEXT;
                 }
             }
             
@@ -150,7 +152,9 @@ export predicate TextMultiLocationMainPredicate(definition is map)
     }
 
     if (definition.textSourceType != TextSourceType.MANUAL && 
-        (definition.booleanEnum == BooleanScopeLocal.ADD || definition.booleanEnum == BooleanScopeLocal.SUBTRACT))
+        (definition.booleanEnum == BooleanScopeLocal.ADD || 
+         definition.booleanEnum == BooleanScopeLocal.SUBTRACT ||
+         definition.booleanEnum == BooleanScopeLocal.INTERSECT))
     {
         annotation { "Name" : "Update from part properties", "UIHint" : UIHint.OPPOSITE_DIRECTION_CIRCULAR }
         definition.updatePartProperties is boolean;
@@ -201,7 +205,9 @@ export function editLogicMultiText(context is Context, id is Id, oldDefinition i
     
     // Update part properties when button is pressed or text source type changes
     if (definition.textSourceType != TextSourceType.MANUAL && 
-        (definition.booleanEnum == BooleanScopeLocal.ADD || definition.booleanEnum == BooleanScopeLocal.SUBTRACT))
+        (definition.booleanEnum == BooleanScopeLocal.ADD || 
+         definition.booleanEnum == BooleanScopeLocal.SUBTRACT ||
+         definition.booleanEnum == BooleanScopeLocal.INTERSECT))
     {
         const shouldUpdate = (definition.updatePartProperties != oldDefinition.updatePartProperties) ||
                             (definition.textSourceType != oldDefinition.textSourceType) ||
@@ -227,7 +233,7 @@ export function editLogicMultiText(context is Context, id is Id, oldDefinition i
             
             for (var mergeScopeIndex, mergeScope in mergeScopeArray)
             {
-                var currentText = "Text";
+                var currentText = DEFAULT_TEXT;
                 
                 try silent
                 {
@@ -258,7 +264,7 @@ export function editLogicMultiText(context is Context, id is Id, oldDefinition i
                 catch
                 {
                     // If property retrieval fails, use default text
-                    currentText = "Text";
+                    currentText = DEFAULT_TEXT;
                 }
                 
                 textArray = append(textArray, currentText);
