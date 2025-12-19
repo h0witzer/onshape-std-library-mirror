@@ -141,24 +141,6 @@ export const tabAndSlotBossDisplay = defineFeature(function(context is Context, 
             throw regenError("No tabs can fit with the specified parameters", ["tabWidth", "spacing"]);
         }
 
-        // Create tracking points at the START and END of each tab domain before splitting
-        // This allows us to identify ALL tab segments after the split by finding edges between boundary pairs
-        var tabBoundaryParameters = [];
-        for (var domain in tabDomains)
-        {
-            // Add a small offset from the exact boundary to ensure points fall inside tab segments
-            const startParam = domain.start + FRACTION_TOLERANCE;
-            const endParam = domain.end - FRACTION_TOLERANCE;
-            tabBoundaryParameters = append(tabBoundaryParameters, {"start": startParam, "end": endParam});
-        }
-        
-        // Create point entities at tab boundaries for tracking
-        const tabBoundaryPoints = createTrackingPointPairsAlongPath(context, id + "tabBoundaries", path, totalLength, tabBoundaryParameters);
-        const trackedTabBoundaries = startTracking(context, tabBoundaryPoints);
-        
-        // Debug: Show tab boundary tracking points in green
-        debug(context, tabBoundaryPoints, DebugColor.GREEN);
-        
         // Track original edges before splitting
         const trackedEdges = startTracking(context, orderedEdgeQuery);
 
@@ -188,16 +170,9 @@ export const tabAndSlotBossDisplay = defineFeature(function(context is Context, 
             splitOperationIndex += 1;
         }
 
-        // Get the split edges
+        // Get the split edges and identify tabs using length-based alternation strategy
         const splitEdges = qEntityFilter(trackedEdges, EntityType.EDGE);
-        println("Total edges after splitting: " ~ toString(size(evaluateQuery(context, splitEdges))));
-        
-        // Identify tab segments by finding ALL edges that lie between the tracked boundary point pairs
-        const tabSegmentEdges = identifyTabSegmentEdgesByBoundaryPairs(context, splitEdges, trackedTabBoundaries, size(tabDomains));
-        println("Tab segment edges identified: " ~ toString(size(evaluateQuery(context, tabSegmentEdges))));
-        
-        // Debug: Highlight tab segment edges to verify identification
-        debug(context, tabSegmentEdges, DebugColor.RED);
+        showAlternatingTabsAndSlots(context, splitEdges, tabDomains, totalLength);
 
         // COMMENTED OUT: Everything after edge splitting routine for debugging
         // Phase 2: Copy adjacent sheet metal wall surfaces
@@ -475,217 +450,78 @@ function calculateEdgeSplitInstructionsFromParameters(context is Context, path i
     return splitInstructions;
 }
 
-// Creates point entity pairs at start and end of tab domains along a path.
-// These point pairs can be tracked through operations to identify ALL edges between them.
-// Inputs: 
-//   - context: The current context
-//   - id: The operation ID for creating points
-//   - path: The edge chain path
-//   - totalLength: Total length of the path
-//   - boundaryPairs: Array of {start, end} maps with normalized parameters (0 to 1)
-// Outputs: Query containing all created point entities
-function createTrackingPointPairsAlongPath(context is Context, id is Id, path is Path, totalLength is ValueWithUnits, boundaryPairs is array) returns Query
-{
-    if (size(boundaryPairs) == 0)
-    {
-        return qNothing();
-    }
-    
-    // Calculate cumulative fractions for each edge in the path
-    var cumulativeFractions = [0];
-    var accumulatedFraction = 0;
-    for (var edgeIndex = 0; edgeIndex < size(path.edges); edgeIndex += 1)
-    {
-        const edge = path.edges[edgeIndex];
-        const edgeLength = evLength(context, { "entities" : edge });
-        accumulatedFraction += edgeLength / totalLength;
-        if (edgeIndex == size(path.edges) - 1)
-        {
-            accumulatedFraction = 1;
-        }
-        cumulativeFractions = append(cumulativeFractions, accumulatedFraction);
-    }
-    
-    var pointQueries = [];
-    var pointIndex = 0;
-    
-    // Create both start and end points for each boundary pair
-    for (var pair in boundaryPairs)
-    {
-        for (var paramType in ["start", "end"])
-        {
-            const normalizedParam = pair[paramType];
-            
-            // Find which edge this parameter falls on
-            for (var boundaryIndex = 1; boundaryIndex < size(cumulativeFractions); boundaryIndex += 1)
-            {
-                const startFraction = cumulativeFractions[boundaryIndex - 1];
-                const endFraction = cumulativeFractions[boundaryIndex];
-                
-                if (normalizedParam < startFraction - FRACTION_TOLERANCE)
-                {
-                    continue;
-                }
-                if (normalizedParam > endFraction + FRACTION_TOLERANCE)
-                {
-                    continue;
-                }
-                
-                // Calculate the parameter on this specific edge
-                const normalizedRange = endFraction - startFraction;
-                var edgeParameter = (normalizedParam - startFraction) / normalizedRange;
-                edgeParameter = max(0, min(1, edgeParameter));
-                
-                if (path.flipped[boundaryIndex - 1])
-                {
-                    edgeParameter = 1 - edgeParameter;
-                }
-                
-                // Evaluate the point on the edge
-                const tangentLine = evEdgeTangentLine(context, {
-                            "edge" : path.edges[boundaryIndex - 1],
-                            "parameter" : edgeParameter
-                        });
-                
-                // Create a construction point at this location
-                try
-                {
-                    opPoint(context, id + ("point" ~ toString(pointIndex)), {
-                                "point" : tangentLine.origin,
-                                "origin" : tangentLine.origin
-                        });
-                    pointQueries = append(pointQueries, qCreatedBy(id + ("point" ~ toString(pointIndex)), EntityType.VERTEX));
-                    pointIndex += 1;
-                }
-                catch
-                {
-                    // If point creation fails, skip this point
-                }
-                break;
-            }
-        }
-    }
-    
-    if (size(pointQueries) == 0)
-    {
-        return qNothing();
-    }
-    
-    return qUnion(pointQueries);
-}
-
-// Identifies tab segment edges by finding ALL edges that lie between tracked boundary point pairs.
-// For each tab, we have a start and end boundary point. ALL edges that lie between these
-// boundaries (including those that don't contain either point) should be classified as tab segments.
+// Displays tab segments with RED and slot segments with CYAN debug colors for visual verification.
+// Uses the proven length-based alternation strategy from splitSmEdgeChainToSegments.fs
 // Inputs:
 //   - context: The current context
-//   - splitEdges: Query containing all edges after splitting
-//   - trackedBoundaries: Query containing tracked boundary points (pairs of start/end for each tab)
-//   - expectedTabCount: Number of tabs expected (to validate we have correct number of boundary pairs)
-// Outputs: Query containing ALL edges identified as tab segments
-function identifyTabSegmentEdgesByBoundaryPairs(context is Context, splitEdges is Query, trackedBoundaries is Query, expectedTabCount is number) returns Query
+//   - splitEdges: Query containing split edges from the tracked chain
+//   - tabDomains: Array of {start, end} maps with normalized parameters defining tab locations
+//   - totalLength: Total length of the edge chain
+// Outputs: RED debug highlights on tab edges, CYAN debug highlights on slot edges
+function showAlternatingTabsAndSlots(context is Context, splitEdges is Query, tabDomains is array, totalLength is ValueWithUnits)
 {
     const edges = evaluateQuery(context, splitEdges);
-    const boundaryPoints = evaluateQuery(context, qEntityFilter(trackedBoundaries, EntityType.VERTEX));
-    
-    if (size(edges) == 0 || size(boundaryPoints) == 0)
+    if (size(edges) == 0)
     {
-        return qNothing();
+        return;
     }
-    
-    // We should have 2 boundary points per tab (start and end)
-    if (size(boundaryPoints) != expectedTabCount * 2)
-    {
-        println("WARNING: Expected " ~ toString(expectedTabCount * 2) ~ " boundary points, got " ~ toString(size(boundaryPoints)));
-    }
-    
-    // First, try to reconstruct the path to get edge ordering
-    const orderedPath = try silent(constructPath(context, qUnion(edges)));
+
+    // Reconstruct the path to get ordered edges
     var orderedEdges = edges;
+    const orderedPath = try silent(constructPath(context, qUnion(edges)));
     if (orderedPath != undefined)
     {
         orderedEdges = orderedPath.edges;
     }
-    
-    // Build a map of edge positions along the reconstructed path
-    var edgePositions = {};  // Maps edge transient ID to cumulative position
-    var cumulativePosition = 0;
-    for (var edgeIndex = 0; edgeIndex < size(orderedEdges); edgeIndex += 1)
+
+    if (totalLength <= EDGE_LENGTH_TOLERANCE)
     {
-        const edge = orderedEdges[edgeIndex];
+        return;
+    }
+
+    // Calculate edge lengths
+    var edgeLengths = [];
+    for (var edge in orderedEdges)
+    {
         const edgeLength = evLength(context, { "entities" : edge });
-        const midPosition = cumulativePosition + edgeLength / 2;
-        edgePositions[toString(edge)] = midPosition;
-        cumulativePosition += edgeLength;
+        edgeLengths = append(edgeLengths, edgeLength);
     }
-    
-    // Find positions of boundary points along the path
-    var boundaryPositions = [];
-    for (var boundaryPoint in boundaryPoints)
+
+    // Convert tab domains from normalized parameters to absolute positions
+    var tabRanges = [];
+    for (var domain in tabDomains)
     {
-        const pointLocation = evVertexPoint(context, {
-                    "vertex" : boundaryPoint
+        tabRanges = append(tabRanges, {
+                    "start" : domain.start * totalLength,
+                    "end" : domain.end * totalLength
                 });
+    }
+
+    // Iterate through edges and assign colors based on position
+    var accumulatedLength = 0 * meter;
+    for (var index = 0; index < size(orderedEdges); index += 1)
+    {
+        const edgeLength = edgeLengths[index];
+        const edgeMidpoint = accumulatedLength + edgeLength / 2;
         
-        // Find the closest point on the edge chain
-        var closestPosition = 0 * meter;
-        var minDistance = MAX_DISTANCE_TOLERANCE;
-        
-        for (var edge in orderedEdges)
+        // Check if this edge's midpoint falls within any tab domain
+        var isTab = false;
+        for (var tabRange in tabRanges)
         {
-            const distanceResult = evDistance(context, {
-                        "side0" : pointLocation,
-                        "side1" : edge
-                    });
-            
-            if (distanceResult.distance < minDistance)
+            if (edgeMidpoint >= tabRange.start - EDGE_LENGTH_TOLERANCE 
+                && edgeMidpoint <= tabRange.end + EDGE_LENGTH_TOLERANCE)
             {
-                minDistance = distanceResult.distance;
-                closestPosition = edgePositions[toString(edge)];
+                isTab = true;
+                break;
             }
         }
         
-        boundaryPositions = append(boundaryPositions, closestPosition);
-    }
-    
-    // Sort boundary positions and pair them up (every 2 positions define a tab domain)
-    // Convert to meters for proper comparison of ValueWithUnits
-    boundaryPositions = sort(boundaryPositions, function(a, b) { 
-        return (a / meter) - (b / meter); 
-    });
-    
-    var tabEdgeQueries = [];
-    
-    // Process boundary pairs to identify edges in each tab domain
-    for (var pairIndex = 0; pairIndex < size(boundaryPositions); pairIndex += 2)
-    {
-        if (pairIndex + 1 >= size(boundaryPositions))
-        {
-            break;  // Incomplete pair
-        }
+        // Color tabs RED, slots CYAN
+        const color = isTab ? DebugColor.RED : DebugColor.CYAN;
+        debug(context, orderedEdges[index], color);
         
-        const startPos = boundaryPositions[pairIndex];
-        const endPos = boundaryPositions[pairIndex + 1];
-        
-        // Find ALL edges whose midpoint falls between start and end positions
-        for (var edge in orderedEdges)
-        {
-            const edgeMidPosition = edgePositions[toString(edge)];
-            
-            // Include edge if its midpoint is within the tab domain
-            if (edgeMidPosition >= startPos && edgeMidPosition <= endPos)
-            {
-                tabEdgeQueries = append(tabEdgeQueries, edge);
-            }
-        }
+        accumulatedLength += edgeLength;
     }
-    
-    if (size(tabEdgeQueries) == 0)
-    {
-        return qNothing();
-    }
-    
-    return qUnion(tabEdgeQueries);
 }
 
 
