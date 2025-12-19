@@ -212,6 +212,12 @@ export predicate TextMainPredicatePascoe(definition)
         definition.oppositeDirection is boolean;
     }
     
+    if (definition.booleanEnum == BooleanScopeLocal.SUBTRACT)
+    {
+        annotation { "Name" : "Delete island bodies", "Default" : true, "UIHint" : UIHint.REMEMBER_PREVIOUS_VALUE }
+        definition.deleteIslandBodies is boolean;
+    }
+    
     if (definition.textSourceType != TextSourceType.MANUAL && 
         (definition.booleanEnum == BooleanScopeLocal.ADD || 
          definition.booleanEnum == BooleanScopeLocal.SUBTRACT ||
@@ -457,6 +463,12 @@ export function TextFunctionPascoe(
             tools = qIntersection([tools, qBodyType(tools, BodyType.SOLID)]);
 
             BooleanFunctionPascoe(context, id, definition.booleanEnum->toString(), tools, definition.mergeScope->qOwnerBody(), false);
+            
+            // Delete island bodies created by subtraction operation
+            if (definition.booleanEnum == BooleanScopeLocal.SUBTRACT && definition.deleteIslandBodies)
+            {
+                deleteIslandBodies(context, id, definition.mergeScope->qOwnerBody());
+            }
         }
     }
 
@@ -591,6 +603,82 @@ export function getFaceAtMateConnectorOrigin(context is Context, mateConnectorQu
     }
 
     return qNothing();
+}
+
+
+/**
+ * Delete small island bodies created by subtraction operations.
+ * Identifies bodies that are disconnected from the main body and deletes them if they're smaller.
+ * @param context : The current context
+ * @param id : The feature id
+ * @param mergeScope : Query for the bodies to check for islands
+ */
+function deleteIslandBodies(context is Context, id is Id, mergeScope is Query)
+{
+    try
+    {
+        const bodies = evaluateQuery(context, mergeScope);
+        
+        if (size(bodies) <= 1)
+        {
+            // No islands if only one body or no bodies
+            return;
+        }
+        
+        // Evaluate the volume/mass of each body to identify the largest (main) body
+        var bodyMasses = [];
+        for (var body in bodies)
+        {
+            try silent
+            {
+                const massProperties = evApproximateMassProperties(context, {
+                        "entities" : body
+                    });
+                bodyMasses = append(bodyMasses, {
+                        "body" : body,
+                        "volume" : massProperties.volume
+                    });
+            }
+        }
+        
+        if (size(bodyMasses) <= 1)
+        {
+            return;
+        }
+        
+        // Find the largest body
+        var largestBodyData = bodyMasses[0];
+        for (var bodyData in bodyMasses)
+        {
+            if (bodyData.volume > largestBodyData.volume)
+            {
+                largestBodyData = bodyData;
+            }
+        }
+        
+        // Collect island bodies (all bodies except the largest)
+        var islandBodies = qNothing();
+        for (var bodyData in bodyMasses)
+        {
+            if (bodyData.body != largestBodyData.body)
+            {
+                islandBodies = qUnion([islandBodies, bodyData.body]);
+            }
+        }
+        
+        // Delete the island bodies
+        if (!isQueryEmpty(context, islandBodies))
+        {
+            opDeleteBodies(context, id + "deleteIslands", {
+                    "entities" : islandBodies
+                });
+        }
+    }
+    catch
+    {
+        // If island deletion fails, continue without deleting
+        // This is not a critical error
+    }
 }
 
 
