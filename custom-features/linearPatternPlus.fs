@@ -441,6 +441,16 @@ export const linearPatternPlus = defineFeature(function(context is Context, id i
 
             // carry the variables forward so this feature can be selected for extraction too.
             embeddedVariables = previousFeatureInfo;
+            
+            // Restore skip instances from previous feature if present
+            if (previousFeatureInfo.skipInstances != undefined)
+            {
+                definition.skipInstances = previousFeatureInfo.skipInstances;
+            }
+            if (previousFeatureInfo.skippedInstances != undefined)
+            {
+                definition.skippedInstances = previousFeatureInfo.skippedInstances;
+            }
         }
 
         // Processing standard UI inputs
@@ -679,6 +689,16 @@ export const linearPatternPlus = defineFeature(function(context is Context, id i
                 }
 
             }
+        }
+
+        // Add skip instances to embedded variables for match previous feature functionality
+        if (definition.skipInstances != undefined)
+        {
+            embeddedVariables.skipInstances = definition.skipInstances;
+        }
+        if (definition.skippedInstances != undefined)
+        {
+            embeddedVariables.skippedInstances = definition.skippedInstances;
         }
 
         // embedding variables for retrieval by the Extract Variables feature.
