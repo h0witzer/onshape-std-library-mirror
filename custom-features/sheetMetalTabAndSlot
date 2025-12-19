@@ -13,6 +13,7 @@ import(path : "onshape/std/feature.fs", version : "2837.0");
 import(path : "onshape/std/extendendtype.gen.fs", version : "2837.0");
 import(path : "onshape/std/extendsheetshapetype.gen.fs", version : "2837.0");
 import(path : "onshape/std/edgetopology.gen.fs", version : "2837.0");
+import(path : "onshape/std/attributes.fs", version : "2837.0");
 // Written by Caden Armstrong - SmartBench Software
 // Hacked by Derek Van Allen - Boss Display
 // Created for Boss Display
@@ -176,8 +177,12 @@ export const tabAndSlotBossDisplay = defineFeature(function(context is Context, 
         const splitEdgesEvaluated = evaluateQuery(context, splitEdges);
         println("Split edges count: " ~ toString(size(splitEdgesEvaluated)));
         
-        // Phase 2: Filter split edges to only those adjacent to wall surfaces
-        // This ensures we only identify tabs on edges that will actually be extracted
+        // Phase 2: Label split edges as TAB or GAP using attributes
+        // This is done immediately after splitting using the same logic as the split calculation
+        // to ensure tabs are correctly identified regardless of filtering or path reconstruction
+        labelEdgesAsTabsOrGaps(context, id, splitEdges, path, totalLength, tabDomains);
+        
+        // Filter split edges to only those adjacent to wall surfaces
         const adjacentFaces = qAdjacent(splitEdges, AdjacencyType.EDGE, EntityType.FACE);
         const wallFaces = filterSheetMetalWallFaces(context, adjacentFaces);
         
@@ -192,8 +197,8 @@ export const tabAndSlotBossDisplay = defineFeature(function(context is Context, 
         const splitWallEdgesEvaluated = evaluateQuery(context, splitWallEdges);
         println("Split wall edges count: " ~ toString(size(splitWallEdgesEvaluated)));
         
-        // Identify which split wall edges correspond to tab segments
-        const tabSegmentEdges = identifyTabSegmentEdgesFromDomains(context, splitWallEdges, path, totalLength, tabDomains);
+        // Identify tab segments by querying for edges with the TAB attribute
+        const tabSegmentEdges = qAttributeFilter(splitWallEdges, asSMAttribute({ "tabSegmentType" : "TAB" }));
         const tabSegmentEdgesEvaluated = evaluateQuery(context, tabSegmentEdges);
         
         if (size(tabSegmentEdgesEvaluated) == 0)
@@ -485,77 +490,72 @@ function calculateEdgeSplitInstructionsFromParameters(context is Context, path i
     return splitInstructions;
 }
 
-// Identifies edges that correspond to tab segments based on tab domains.
-// Uses the SAME position calculation method as edge splitting to ensure consistency.
-// Walks through split edges in order and calculates positions the same way as splitting logic.
-function identifyTabSegmentEdgesFromDomains(context is Context, splitEdges is Query, path is Path, totalLength is ValueWithUnits, tabDomains is array) returns Query
+// Labels split edges as TAB or GAP using attributes.
+// This is done immediately after splitting using the SAME logic as edge splitting.
+// By labeling edges with attributes, we avoid the need to re-measure and match positions later.
+// This ensures tabs are correctly identified even when edges are filtered (e.g., bend joints removed).
+function labelEdgesAsTabsOrGaps(context is Context, id is Id, splitEdges is Query, path is Path, totalLength is ValueWithUnits, tabDomains is array)
 {
     if (size(tabDomains) == 0)
     {
-        return qNothing();
+        return;
     }
 
     const edges = evaluateQuery(context, splitEdges);
     if (size(edges) == 0)
     {
-        return qNothing();
+        return;
     }
 
     // Construct path from split edges to get them in order
     const orderedPath = try silent(constructPath(context, qUnion(edges)));
     if (orderedPath == undefined)
     {
-        println("ERROR: Unable to construct ordered path from split edges");
-        return qNothing();
+        println("ERROR: Unable to construct ordered path from split edges for labeling");
+        return;
     }
     
     const orderedEdges = orderedPath.edges;
 
     // Calculate positions using THE SAME method as calculateEdgeSplitInstructionsFromParameters
     // Walk through edges and calculate cumulative position as a fraction of totalLength
-    var edgeMidpoints = [];
     var accumulatedLength = 0 * meter;
     
+    println("DEBUG: Labeling " ~ toString(size(orderedEdges)) ~ " edges as TAB or GAP");
     println("DEBUG: Total length for normalization: " ~ toString(totalLength));
     println("DEBUG: Number of tab domains: " ~ toString(size(tabDomains)));
-    for (var domain in tabDomains)
-    {
-        println("DEBUG: Tab domain from " ~ toString(domain.start) ~ " to " ~ toString(domain.end));
-    }
     
-    for (var edge in orderedEdges)
+    for (var i = 0; i < size(orderedEdges); i += 1)
     {
+        const edge = orderedEdges[i];
         const edgeLength = evLength(context, { "entities" : edge });
         // Calculate midpoint position as fraction of totalLength (same as splitting logic)
         const midpoint = (accumulatedLength + edgeLength / 2) / totalLength;
-        edgeMidpoints = append(edgeMidpoints, midpoint);
-        println("DEBUG: Edge " ~ toString(size(edgeMidpoints) - 1) ~ " midpoint: " ~ toString(midpoint) ~ " (length: " ~ toString(edgeLength) ~ ")");
         accumulatedLength += edgeLength;
-    }
-
-    // Identify which edges fall within tab domains based on their midpoint position
-    var tabEdgeQueries = [];
-    for (var i = 0; i < size(orderedEdges); i += 1)
-    {
-        const midpoint = edgeMidpoints[i];
+        
+        // Check if this edge's midpoint falls within any tab domain
+        var isTab = false;
         for (var domain in tabDomains)
         {
-            // Check if edge midpoint falls within the tab domain range
             if (midpoint >= domain.start - FRACTION_TOLERANCE && midpoint <= domain.end + FRACTION_TOLERANCE)
             {
-                tabEdgeQueries = append(tabEdgeQueries, orderedEdges[i]);
-                println("DEBUG: Edge " ~ toString(i) ~ " with midpoint " ~ toString(midpoint) ~ " matches domain [" ~ toString(domain.start) ~ ", " ~ toString(domain.end) ~ "]");
+                isTab = true;
+                println("DEBUG: Edge " ~ toString(i) ~ " at midpoint " ~ toString(midpoint) ~ " labeled as TAB");
                 break;
             }
         }
+        
+        // Set attribute on the edge to mark it as TAB or GAP
+        const segmentType = isTab ? "TAB" : "GAP";
+        setAttribute(context, {
+            "entities" : edge,
+            "attribute" : asSMAttribute({ "tabSegmentType" : segmentType })
+        });
+        
+        if (!isTab)
+        {
+            println("DEBUG: Edge " ~ toString(i) ~ " at midpoint " ~ toString(midpoint) ~ " labeled as GAP");
+        }
     }
-
-    if (size(tabEdgeQueries) == 0)
-    {
-        println("WARNING: No tab segment edges identified from " ~ toString(size(orderedEdges)) ~ " split edges");
-        return qNothing();
-    }
-
-    return qUnion(tabEdgeQueries);
 }
 
