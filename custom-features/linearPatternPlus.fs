@@ -844,27 +844,9 @@ export const linearPatternPlus = defineFeature(function(context is Context, id i
         {
             const instanceToIndex = function(instance)
                 {
-                    // Handle dimension-specific mapping based on pattern directions
-                    if (count2 == 1 && count3 == 1)
-                    {
-                        // Single direction: map linearly from first dimension
-                        return definition.isCenteredOne ? instance.index1 - (1 - count1) : instance.index1;
-                    }
-                    else if (count3 == 1)
-                    {
-                        // Two directions: map as 2D grid
-                        const index1Max = definition.isCenteredOne ? 2 * count1 - 1 : count1;
-                        const normalizedIndex1 = definition.isCenteredOne ? instance.index1 + count1 - 1 : instance.index1;
-                        const normalizedIndex2 = definition.isCenteredTwo ? instance.index2 + count2 - 1 : instance.index2;
-                        return normalizedIndex1 + normalizedIndex2 * index1Max;
-                    }
-                    else
-                    {
-                        // Three directions: use full 3D conversion
-                        return gridCoordinatesToIndexThreeDirection(instance.index1, instance.index2, instance.index3, 
-                            count1, count2, count3, 
-                            definition.isCenteredOne, definition.isCenteredTwo, definition.isCenteredThree);
-                    }
+                    return gridCoordinatesToIndexThreeDirection(instance.index1, instance.index2, instance.index3, 
+                        count1, count2, count3, 
+                        definition.isCenteredOne, definition.isCenteredTwo, definition.isCenteredThree);
                 };
             const isInstanceWithinRange = function(instance)
                 {
@@ -873,32 +855,11 @@ export const linearPatternPlus = defineFeature(function(context is Context, id i
                         definition.isCenteredOne, definition.isCenteredTwo, definition.isCenteredThree);
                 };
             
-            // Calculate suppressed index for seed (0,0,0)
-            var seedIndex = 0;
-            if (count2 == 1 && count3 == 1)
-            {
-                // Single direction
-                seedIndex = definition.isCenteredOne ? -(1 - count1) : 0;
-            }
-            else if (count3 == 1)
-            {
-                // Two directions
-                const index1Max = definition.isCenteredOne ? 2 * count1 - 1 : count1;
-                const normalizedIndex1 = definition.isCenteredOne ? count1 - 1 : 0;
-                const normalizedIndex2 = definition.isCenteredTwo ? count2 - 1 : 0;
-                seedIndex = normalizedIndex1 + normalizedIndex2 * index1Max;
-            }
-            else
-            {
-                // Three directions
-                seedIndex = gridCoordinatesToIndexThreeDirection(0, 0, 0, count1, count2, count3, 
-                    definition.isCenteredOne, definition.isCenteredTwo, definition.isCenteredThree);
-            }
-            
             addManipulators(context, id, { "points" : {
                         "points" : manipulatorPoints,
                         "selectedIndices" : mapArray(filter(definition.skippedInstances, isInstanceWithinRange), instanceToIndex),
-                        "suppressedIndices" : [seedIndex],
+                        "suppressedIndices" : [gridCoordinatesToIndexThreeDirection(0, 0, 0, count1, count2, count3, 
+                            definition.isCenteredOne, definition.isCenteredTwo, definition.isCenteredThree)],
                         "manipulatorType" : ManipulatorType.TOGGLE_POINTS } as Manipulator });
         }
 
@@ -1195,27 +1156,8 @@ export function linearPatternPlusManipulatorFunction(context is Context, definit
         
         const indexToInstance = function(index)
             {
-                // Handle dimension-specific mapping based on pattern directions
-                if (!definition.hasSecondDir)
-                {
-                    // Single direction: map linearly to first dimension
-                    const index1Value = definition.isCenteredOne ? index + (1 - count1) : index;
-                    return { "index1" : index1Value, "index2" : 0, "index3" : 0 };
-                }
-                else if (!definition.hasThirdDir)
-                {
-                    // Two directions: map as 2D grid
-                    const index1Max = definition.isCenteredOne ? 2 * count1 - 1 : count1;
-                    const index1Value = definition.isCenteredOne ? index % index1Max - count1 + 1 : index % index1Max;
-                    const index2Value = definition.isCenteredTwo ? floor(index / index1Max) - count2 + 1 : floor(index / index1Max);
-                    return { "index1" : index1Value, "index2" : index2Value, "index3" : 0 };
-                }
-                else
-                {
-                    // Three directions: use full 3D conversion
-                    return indexToGridCoordinatesThreeDirection(index, count1, count2, count3, 
-                        definition.isCenteredOne, definition.isCenteredTwo, definition.isCenteredThree);
-                }
+                return indexToGridCoordinatesThreeDirection(index, count1, count2, count3, 
+                    definition.isCenteredOne, definition.isCenteredTwo, definition.isCenteredThree);
             };
         const isInstanceOutsideRange = function(instance)
             {
@@ -1361,9 +1303,9 @@ function reportAnyInvalidEntriesThreeDirection(context is Context, id is Id, def
 
 /**
  * Converts a linear index to three-dimensional grid coordinates.
- * Used for manipulator point selection in skip instances.
+ * Maps directly to the k-j-i nested loop iteration order used in pattern generation.
  * 
- * @param index : The linear index to convert
+ * @param index : The linear index to convert (corresponds to Nth iteration of nested loops)
  * @param instanceCount1 : Number of instances in first direction
  * @param instanceCount2 : Number of instances in second direction
  * @param instanceCount3 : Number of instances in third direction
@@ -1374,22 +1316,32 @@ function reportAnyInvalidEntriesThreeDirection(context is Context, id is Id, def
  */
 function indexToGridCoordinatesThreeDirection(index is number, instanceCount1 is number, instanceCount2 is number, instanceCount3 is number, isCentered1 is boolean, isCentered2 is boolean, isCentered3 is boolean) returns map
 {
-    const index1Max = isCentered1 ? 2 * instanceCount1 - 1 : instanceCount1;
-    const index2Max = isCentered2 ? 2 * instanceCount2 - 1 : instanceCount2;
-    const planarSize = index1Max * index2Max;
+    // Calculate the actual loop ranges (these match the pattern generation loops)
+    const startIndex1 = isCentered1 ? 1 - instanceCount1 : 0;
+    const startIndex2 = isCentered2 ? 1 - instanceCount2 : 0;
+    const startIndex3 = isCentered3 ? 1 - instanceCount3 : 0;
     
-    const planarIndex = index % planarSize;
+    const range1 = instanceCount1 - startIndex1;
+    const range2 = instanceCount2 - startIndex2;
+    const range3 = instanceCount3 - startIndex3;
+    
+    // Decompose linear index to k-j-i coordinates (matching nested loop order)
+    const planarSize = range1 * range2;
+    const kOffset = floor(index / planarSize);
+    const remainder = index % planarSize;
+    const jOffset = floor(remainder / range1);
+    const iOffset = remainder % range1;
     
     return {
-            "index1" : isCentered1 ? planarIndex % index1Max - instanceCount1 + 1 : planarIndex % index1Max,
-            "index2" : isCentered2 ? floor(planarIndex / index1Max) - instanceCount2 + 1 : floor(planarIndex / index1Max),
-            "index3" : isCentered3 ? floor(index / planarSize) - instanceCount3 + 1 : floor(index / planarSize)
+            "index1" : iOffset + startIndex1,
+            "index2" : jOffset + startIndex2,
+            "index3" : kOffset + startIndex3
         };
 }
 
 /**
  * Converts three-dimensional grid coordinates to a linear index.
- * Used for manipulator point selection in skip instances.
+ * Maps directly to the k-j-i nested loop iteration order used in pattern generation.
  * 
  * @param index1 : Index in first direction
  * @param index2 : Index in second direction
@@ -1404,14 +1356,20 @@ function indexToGridCoordinatesThreeDirection(index is number, instanceCount1 is
  */
 function gridCoordinatesToIndexThreeDirection(index1 is number, index2 is number, index3 is number, instanceCount1 is number, instanceCount2 is number, instanceCount3 is number, isCentered1 is boolean, isCentered2 is boolean, isCentered3 is boolean) returns number
 {
-    const index1Max = isCentered1 ? 2 * instanceCount1 - 1 : instanceCount1;
-    const index2Max = isCentered2 ? 2 * instanceCount2 - 1 : instanceCount2;
-
-    const normalizedIndex1 = isCentered1 ? index1 + instanceCount1 - 1 : index1;
-    const normalizedIndex2 = isCentered2 ? index2 + instanceCount2 - 1 : index2;
-    const normalizedIndex3 = isCentered3 ? index3 + instanceCount3 - 1 : index3;
-
-    return normalizedIndex1 + normalizedIndex2 * index1Max + normalizedIndex3 * index1Max * index2Max;
+    // Calculate the actual loop ranges (these match the pattern generation loops)
+    const startIndex1 = isCentered1 ? 1 - instanceCount1 : 0;
+    const startIndex2 = isCentered2 ? 1 - instanceCount2 : 0;
+    const startIndex3 = isCentered3 ? 1 - instanceCount3 : 0;
+    
+    const range1 = instanceCount1 - startIndex1;
+    const range2 = instanceCount2 - startIndex2;
+    
+    // Convert k-j-i coordinates to linear index (matching nested loop order)
+    const iOffset = index1 - startIndex1;
+    const jOffset = index2 - startIndex2;
+    const kOffset = index3 - startIndex3;
+    
+    return kOffset * range1 * range2 + jOffset * range1 + iOffset;
 }
 
 /**
