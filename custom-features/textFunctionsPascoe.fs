@@ -467,7 +467,9 @@ export function TextFunctionPascoe(
             // Delete island bodies created by subtraction operation
             if (definition.booleanEnum == BooleanScopeLocal.SUBTRACT && definition.deleteIslandBodies == true)
             {
-                deleteIslandBodies(context, id, definition.mergeScope->qOwnerBody());
+                // Query all bodies that were in the merge scope area after the boolean
+                // The boolean operation modifies the target bodies in place, potentially splitting them
+                deleteIslandBodies(context, id, definition.mergeScope);
             }
         }
     }
@@ -611,13 +613,16 @@ export function getFaceAtMateConnectorOrigin(context is Context, mateConnectorQu
  * Identifies bodies that are disconnected from the main body and deletes them if they're smaller.
  * @param context : The current context
  * @param id : The feature id
- * @param mergeScope : Query for the bodies to check for islands
+ * @param mergeScope : Query for faces/bodies that were the target of the subtraction
  */
 function deleteIslandBodies(context is Context, id is Id, mergeScope is Query)
 {
     try
     {
-        const bodies = evaluateQuery(context, mergeScope);
+        // After a boolean subtraction, the target body may have been split into multiple bodies
+        // We need to find all bodies that contain faces from the merge scope
+        const mergeScopeBodies = qOwnerBody(mergeScope);
+        const bodies = evaluateQuery(context, mergeScopeBodies);
         
         if (size(bodies) <= 1)
         {
