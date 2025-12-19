@@ -159,13 +159,6 @@ export predicate TextMultiLocationMainPredicate(definition is map)
         annotation { "Name" : "Update from part properties", "UIHint" : UIHint.OPPOSITE_DIRECTION_CIRCULAR }
         definition.updatePartProperties is boolean;
     }
-    
-    // Hidden parameters for storing per-location data (populated by editing logic)
-    annotation { "Name" : "Text array (internal)", "UIHint" : UIHint.ALWAYS_HIDDEN }
-    definition.textArray is array;
-    
-    annotation { "Name" : "Merge scope array (internal)", "UIHint" : UIHint.ALWAYS_HIDDEN }
-    definition.mergeScopeArray is array;
 }
 
 
