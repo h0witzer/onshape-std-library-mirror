@@ -449,13 +449,23 @@ export const linearPatternPlus = defineFeature(function(context is Context, id i
             embeddedVariables = previousFeatureInfo;
             
             // Restore skip instances from previous feature if present
+            // If not present (older feature), use defaults: false and []
             if (previousFeatureInfo.skipInstances != undefined)
             {
                 definition.skipInstances = previousFeatureInfo.skipInstances;
             }
+            else
+            {
+                definition.skipInstances = false;
+            }
+            
             if (previousFeatureInfo.skippedInstances != undefined)
             {
                 definition.skippedInstances = previousFeatureInfo.skippedInstances;
+            }
+            else
+            {
+                definition.skippedInstances = [];
             }
         }
 
@@ -698,14 +708,9 @@ export const linearPatternPlus = defineFeature(function(context is Context, id i
         }
 
         // Add skip instances to embedded variables for match previous feature functionality
-        if (definition.skipInstances != undefined)
-        {
-            embeddedVariables.skipInstances = definition.skipInstances;
-        }
-        if (definition.skippedInstances != undefined)
-        {
-            embeddedVariables.skippedInstances = definition.skippedInstances;
-        }
+        // Always save these fields to ensure they're available for downstream features
+        embeddedVariables.skipInstances = definition.skipInstances;
+        embeddedVariables.skippedInstances = definition.skippedInstances;
 
         // embedding variables for retrieval by the Extract Variables feature.
         embedVariableList(context, id, embeddedVariables);
