@@ -23,6 +23,7 @@ import(path : "onshape/std/edgetopology.gen.fs", version : "2837.0");
 const EDGE_LENGTH_TOLERANCE = 1e-9 * meter;
 const EDGE_PARAMETER_TOLERANCE = 1e-6;
 const FRACTION_TOLERANCE = 1e-9;
+const MAX_DISTANCE_TOLERANCE = 1e10 * meter;
 
 export const SPACING_BOUNDS =
 {
@@ -614,7 +615,7 @@ function identifyTabSegmentEdgesByBoundaryPairs(context is Context, splitEdges i
         const edge = orderedEdges[edgeIndex];
         const edgeLength = evLength(context, { "entities" : edge });
         const midPosition = cumulativePosition + edgeLength / 2;
-        edgePositions[transientIdToString(edge)] = midPosition;
+        edgePositions[toString(edge)] = midPosition;
         cumulativePosition += edgeLength;
     }
     
@@ -628,7 +629,7 @@ function identifyTabSegmentEdgesByBoundaryPairs(context is Context, splitEdges i
         
         // Find the closest point on the edge chain
         var closestPosition = 0 * meter;
-        var minDistance = 1e10 * meter;
+        var minDistance = MAX_DISTANCE_TOLERANCE;
         
         for (var edge in orderedEdges)
         {
@@ -640,7 +641,7 @@ function identifyTabSegmentEdgesByBoundaryPairs(context is Context, splitEdges i
             if (distanceResult.distance < minDistance)
             {
                 minDistance = distanceResult.distance;
-                closestPosition = edgePositions[transientIdToString(edge)];
+                closestPosition = edgePositions[toString(edge)];
             }
         }
         
@@ -648,7 +649,10 @@ function identifyTabSegmentEdgesByBoundaryPairs(context is Context, splitEdges i
     }
     
     // Sort boundary positions and pair them up (every 2 positions define a tab domain)
-    boundaryPositions = sort(boundaryPositions, function(a, b) { return a - b; });
+    // Convert to meters for proper comparison of ValueWithUnits
+    boundaryPositions = sort(boundaryPositions, function(a, b) { 
+        return (a / meter) - (b / meter); 
+    });
     
     var tabEdgeQueries = [];
     
@@ -666,7 +670,7 @@ function identifyTabSegmentEdgesByBoundaryPairs(context is Context, splitEdges i
         // Find ALL edges whose midpoint falls between start and end positions
         for (var edge in orderedEdges)
         {
-            const edgeMidPosition = edgePositions[transientIdToString(edge)];
+            const edgeMidPosition = edgePositions[toString(edge)];
             
             // Include edge if its midpoint is within the tab domain
             if (edgeMidPosition >= startPos && edgeMidPosition <= endPos)
@@ -684,9 +688,5 @@ function identifyTabSegmentEdgesByBoundaryPairs(context is Context, splitEdges i
     return qUnion(tabEdgeQueries);
 }
 
-// Helper function to convert a transient query to a string identifier
-function transientIdToString(entity is Query) returns string
-{
-    return toString(entity);
-}
+
 
