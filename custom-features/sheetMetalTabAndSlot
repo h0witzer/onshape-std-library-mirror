@@ -23,6 +23,7 @@ import(path : "onshape/std/edgetopology.gen.fs", version : "2837.0");
 const EDGE_LENGTH_TOLERANCE = 1e-9 * meter;
 const EDGE_PARAMETER_TOLERANCE = 1e-6;
 const FRACTION_TOLERANCE = 1e-9;
+const MAX_DISTANCE_TOLERANCE = 1e10 * meter;
 
 export const SPACING_BOUNDS =
 {
@@ -140,9 +141,10 @@ export const tabAndSlotBossDisplay = defineFeature(function(context is Context, 
             throw regenError("No tabs can fit with the specified parameters", ["tabWidth", "spacing"]);
         }
 
-        // Track original edges before splitting
+        // Use mixinTracking pattern to capture both affected and unaffected edges
+        // This handles edges that are split (affected) and edges that remain unchanged (unaffected)
         const trackedEdges = startTracking(context, orderedEdgeQuery);
-
+        
         // Split the edges at tab boundaries
         const splitParameters = calculateSplitParametersFromTabDomains(tabDomains);
         const splitInstructions = calculateEdgeSplitInstructionsFromParameters(context, path, splitParameters);
@@ -169,13 +171,16 @@ export const tabAndSlotBossDisplay = defineFeature(function(context is Context, 
             splitOperationIndex += 1;
         }
 
-        // Get the split edges
-        const splitEdges = qEntityFilter(trackedEdges, EntityType.EDGE);
-        const tabSegmentEdges = identifyTabSegmentEdgesFromDomains(context, splitEdges, path, totalLength, tabDomains);
+        // Apply mixinTracking pattern: union of original query (unaffected) and tracking query (affected + children)
+        // This captures both edges that were split and edges that were not split
+        const splitEdges = qUnion([
+                    qEntityFilter(orderedEdgeQuery, EntityType.EDGE),
+                    qEntityFilter(trackedEdges, EntityType.EDGE)
+                ]);
         
-        // Debug: Highlight tab segment edges to verify identification
-        debug(context, tabSegmentEdges, DebugColor.YELLOW);
-
+        // Identify which edges are tabs using length-based alternation
+        const tabSegmentEdges = identifyTabSegmentEdges(context, splitEdges, tabDomains, totalLength);
+        
         // Phase 2: Copy adjacent sheet metal wall surfaces
         const adjacentFaces = qAdjacent(splitEdges, AdjacencyType.EDGE, EntityType.FACE);
         const wallFaces = filterSheetMetalWallFaces(context, adjacentFaces);
@@ -185,14 +190,8 @@ export const tabAndSlotBossDisplay = defineFeature(function(context is Context, 
             throw regenError("No adjacent wall surfaces found to copy", ["edges"]);
         }
 
-        // Phase 3: Track tab segment edges directly through extraction
-        // Instead of trying to identify wall edges geometrically, we'll track the tab segments
-        // and find the corresponding edges on the extracted surfaces
-        
-        // Track the tab segment edges themselves
+        // Phase 3: Track tab segment edges through extraction
         const trackedTabSegments = startTracking(context, tabSegmentEdges);
-        
-        println("Tab segment edges count (before extraction): " ~ toString(size(evaluateQuery(context, tabSegmentEdges))));
 
         try
         {
@@ -200,18 +199,13 @@ export const tabAndSlotBossDisplay = defineFeature(function(context is Context, 
                         "faces" : wallFaces,
                         "tangentPropagation" : false
                     });
-            debug(context, wallFaces, DebugColor.BLUE);
         }
         catch
         {
             throw regenError("Failed to extract adjacent wall surfaces", ["edges"]);
         }
 
-        // After extraction, find edges on extracted surfaces that correspond directly to the tab segments
-        const extractedBodies = qCreatedBy(id + "extractWalls", EntityType.BODY);
-        const extractedEdges = qOwnedByBody(extractedBodies, EntityType.EDGE);
-        
-        // Find the tracked tab segments after extraction
+        // After extraction, find tracked tab segment edges
         const trackedTabSegmentsAfterExtraction = qEntityFilter(trackedTabSegments, EntityType.EDGE);
         
         // Filter to only laminar (one-sided/boundary) edges to avoid EXTEND_NON_LAMINAR error
@@ -228,16 +222,11 @@ export const tabAndSlotBossDisplay = defineFeature(function(context is Context, 
                             "extendDistance" : definition.tabDepth,
                             "extensionShape" : ExtendSheetShapeType.LINEAR
                         });
-                debug(context, extractedEdgesToExtend, DebugColor.GREEN);
             }
             catch
             {
                 throw regenError("Failed to extend tab edges", ["tabDepth"]);
             }
-        }
-        else
-        {
-            println("Warning: No edges found to extend");
         }
     });
 
@@ -451,61 +440,179 @@ function calculateEdgeSplitInstructionsFromParameters(context is Context, path i
     return splitInstructions;
 }
 
-// Identifies edges that correspond to tab segments based on tab domains.
-// Checks which edges fall within the tab domain ranges after splitting.
-function identifyTabSegmentEdgesFromDomains(context is Context, splitEdges is Query, path is Path, totalLength is ValueWithUnits, tabDomains is array) returns Query
+// Identifies tab segment edges using length-based alternation strategy from splitSmEdgeChainToSegments.fs
+// Inputs:
+//   - context: The current context
+//   - splitEdges: Query containing split edges from the tracked chain
+//   - tabDomains: Array of {start, end} maps with normalized parameters defining tab locations
+//   - totalLength: Total length of the edge chain
+// Outputs: Query containing edges identified as tabs
+function identifyTabSegmentEdges(context is Context, splitEdges is Query, tabDomains is array, totalLength is ValueWithUnits) returns Query
 {
-    if (size(tabDomains) == 0)
-    {
-        return qNothing();
-    }
-
     const edges = evaluateQuery(context, splitEdges);
     if (size(edges) == 0)
     {
         return qNothing();
     }
 
-    // Try to construct a path to get ordered edges
-    const orderedPath = try silent(constructPath(context, qUnion(edges)));
+    // Reconstruct the path to get ordered edges
     var orderedEdges = edges;
+    const orderedPath = try silent(constructPath(context, qUnion(edges)));
     if (orderedPath != undefined)
     {
         orderedEdges = orderedPath.edges;
     }
 
-    // Calculate cumulative lengths to determine position of each edge
-    var edgeMidpoints = [];
-    var accumulatedLength = 0 * meter;
-    
-    for (var edge in orderedEdges)
-    {
-        const edgeLength = evLength(context, { "entities" : edge });
-        const midpoint = (accumulatedLength + edgeLength / 2) / totalLength;
-        edgeMidpoints = append(edgeMidpoints, midpoint);
-        accumulatedLength += edgeLength;
-    }
-
-    // Identify which edges fall within tab domains
-    var tabEdgeQueries = [];
-    for (var i = 0; i < size(orderedEdges); i += 1)
-    {
-        const midpoint = edgeMidpoints[i];
-        for (var domain in tabDomains)
-        {
-            if (midpoint >= domain.start && midpoint <= domain.end)
-            {
-                tabEdgeQueries = append(tabEdgeQueries, orderedEdges[i]);
-                break;
-            }
-        }
-    }
-
-    if (size(tabEdgeQueries) == 0)
+    if (totalLength <= EDGE_LENGTH_TOLERANCE)
     {
         return qNothing();
     }
 
+    // Calculate edge lengths and recalculate total to handle any discrepancies
+    var edgeLengths = [];
+    var recalculatedTotalLength = 0 * meter;
+    for (var edge in orderedEdges)
+    {
+        const edgeLength = evLength(context, { "entities" : edge });
+        edgeLengths = append(edgeLengths, edgeLength);
+        recalculatedTotalLength += edgeLength;
+    }
+    
+    // Use the recalculated total length if significantly different
+    var effectiveTotalLength = totalLength;
+    if (abs(recalculatedTotalLength - totalLength) > EDGE_LENGTH_TOLERANCE)
+    {
+        effectiveTotalLength = recalculatedTotalLength;
+    }
+
+    // Convert tab domains from normalized parameters to absolute positions
+    var tabRanges = [];
+    for (var domain in tabDomains)
+    {
+        tabRanges = append(tabRanges, {
+                    "start" : domain.start * effectiveTotalLength,
+                    "end" : domain.end * effectiveTotalLength
+                });
+    }
+
+    // Iterate through edges and identify tabs based on position
+    var tabEdgeQueries = [];
+    var accumulatedLength = 0 * meter;
+    for (var index = 0; index < size(orderedEdges); index += 1)
+    {
+        const edgeLength = edgeLengths[index];
+        const edgeMidpoint = accumulatedLength + edgeLength / 2;
+        
+        // Check if this edge's midpoint falls within any tab domain
+        var isTab = false;
+        for (var tabRange in tabRanges)
+        {
+            if (edgeMidpoint >= tabRange.start - EDGE_LENGTH_TOLERANCE 
+                && edgeMidpoint <= tabRange.end + EDGE_LENGTH_TOLERANCE)
+            {
+                isTab = true;
+                break;
+            }
+        }
+        
+        if (isTab)
+        {
+            tabEdgeQueries = append(tabEdgeQueries, orderedEdges[index]);
+        }
+        
+        accumulatedLength += edgeLength;
+    }
+    
+    if (size(tabEdgeQueries) == 0)
+    {
+        return qNothing();
+    }
+    
     return qUnion(tabEdgeQueries);
 }
+
+// Displays tab segments with RED and slot segments with CYAN debug colors for visual verification.
+// Uses the proven length-based alternation strategy from splitSmEdgeChainToSegments.fs
+// Inputs:
+//   - context: The current context
+//   - splitEdges: Query containing split edges from the tracked chain
+//   - tabDomains: Array of {start, end} maps with normalized parameters defining tab locations
+//   - totalLength: Total length of the edge chain
+// Outputs: RED debug highlights on tab edges, CYAN debug highlights on slot edges
+function showAlternatingTabsAndSlots(context is Context, splitEdges is Query, tabDomains is array, totalLength is ValueWithUnits)
+{
+    const edges = evaluateQuery(context, splitEdges);
+    if (size(edges) == 0)
+    {
+        return;
+    }
+
+    // Reconstruct the path to get ordered edges
+    var orderedEdges = edges;
+    const orderedPath = try silent(constructPath(context, qUnion(edges)));
+    if (orderedPath != undefined)
+    {
+        orderedEdges = orderedPath.edges;
+    }
+
+    if (totalLength <= EDGE_LENGTH_TOLERANCE)
+    {
+        return;
+    }
+
+    // Calculate edge lengths and recalculate total to handle any discrepancies
+    var edgeLengths = [];
+    var recalculatedTotalLength = 0 * meter;
+    for (var edge in orderedEdges)
+    {
+        const edgeLength = evLength(context, { "entities" : edge });
+        edgeLengths = append(edgeLengths, edgeLength);
+        recalculatedTotalLength += edgeLength;
+    }
+    
+    // Use the recalculated total length if significantly different
+    var effectiveTotalLength = totalLength;
+    if (abs(recalculatedTotalLength - totalLength) > EDGE_LENGTH_TOLERANCE)
+    {
+        effectiveTotalLength = recalculatedTotalLength;
+    }
+
+    // Convert tab domains from normalized parameters to absolute positions
+    var tabRanges = [];
+    for (var domain in tabDomains)
+    {
+        tabRanges = append(tabRanges, {
+                    "start" : domain.start * effectiveTotalLength,
+                    "end" : domain.end * effectiveTotalLength
+                });
+    }
+
+    // Iterate through edges and assign colors based on position
+    var accumulatedLength = 0 * meter;
+    for (var index = 0; index < size(orderedEdges); index += 1)
+    {
+        const edgeLength = edgeLengths[index];
+        const edgeMidpoint = accumulatedLength + edgeLength / 2;
+        
+        // Check if this edge's midpoint falls within any tab domain
+        var isTab = false;
+        for (var tabRange in tabRanges)
+        {
+            if (edgeMidpoint >= tabRange.start - EDGE_LENGTH_TOLERANCE 
+                && edgeMidpoint <= tabRange.end + EDGE_LENGTH_TOLERANCE)
+            {
+                isTab = true;
+                break;
+            }
+        }
+        
+        // Color tabs RED, slots CYAN
+        const color = isTab ? DebugColor.RED : DebugColor.CYAN;
+        debug(context, orderedEdges[index], color);
+        
+        accumulatedLength += edgeLength;
+    }
+}
+
+
 
