@@ -470,6 +470,12 @@ function handleFont(fontName is FontEnumLocal, bold is boolean, italic is boolea
 }
 
 
+/**
+ * Check if the location query contains a face entity.
+ * @param context : The current context
+ * @param definition : The feature definition containing the location query
+ * @returns {boolean} : True if location contains a face, false otherwise
+ */
 function isFace(context, definition)
 {
     var isFace = false;
@@ -483,17 +489,105 @@ function isFace(context, definition)
 }
 
 
+/**
+ * Check if the location query contains a mate connector.
+ * @param context : The current context
+ * @param definition : The feature definition containing the location query
+ * @returns {boolean} : True if location contains a mate connector, false otherwise
+ */
+function isMateConnector(context is Context, definition is map) returns boolean
+{
+    var isMateConnectorResult = false;
+
+    try
+    {
+        isMateConnectorResult = size(evaluateQuery(context, qBodyType(definition.location, BodyType.MATE_CONNECTOR))) > 0;
+    }
+
+    return isMateConnectorResult;
+}
+
+
+/**
+ * Find the face or body that the mate connector is touching.
+ * Uses the mate connector's origin point to find the closest face.
+ * @param context : The current context
+ * @param mateConnectorQuery : Query for the mate connector
+ * @returns {Query} : Query for the face/body at the mate connector location, or qNothing() if not found
+ */
+function getFaceAtMateConnectorOrigin(context is Context, mateConnectorQuery is Query) returns Query
+{
+    try
+    {
+        // Get the mate connector's coordinate system
+        const mateConnectorCoordSys = evMateConnector(context, {
+                    "mateConnector" : mateConnectorQuery
+                });
+
+        // Get all faces in the context (excluding construction objects)
+        const allFaces = qConstructionFilter(qEverything(EntityType.FACE), ConstructionObject.NO);
+
+        // Find the closest face to the mate connector origin
+        const closestFace = qClosestTo(allFaces, mateConnectorCoordSys.origin);
+
+        // Check if we found a face and if it's very close (touching)
+        const evaluatedFaces = evaluateQuery(context, closestFace);
+        if (size(evaluatedFaces) > 0)
+        {
+            // Use evDistance to verify the face is actually at the mate connector origin (touching)
+            const distanceResult = try silent(evDistance(context, {
+                            "side0" : mateConnectorCoordSys.origin,
+                            "side1" : closestFace
+                        }));
+
+            if (distanceResult != undefined && distanceResult.distance < TOLERANCE.zeroLength * meter)
+            {
+                return closestFace;
+            }
+        }
+    }
+
+    return qNothing();
+}
+
+
 export function editLogic(context is Context, id is Id, oldDefinition is map, definition is map, isCreating is boolean, specifiedParameters is map) returns map
 {
     definition = cadsharpUrlFunctionForPreExistingEditLogic(oldDefinition, definition);
 
-    var noScope = evaluateQuery(context, definition.mergeScope)->size() == 0;
-
-    if (noScope && definition.booleanEnum == BooleanScopeLocal.SPLIT)
+    // Auto-populate merge scope when location changes and user hasn't manually specified merge scope
+    if (definition.location != oldDefinition.location && !specifiedParameters.mergeScope)
     {
-        if (isFace(context, definition))
+        const noScope = evaluateQuery(context, definition.mergeScope)->size() == 0;
+        
+        // Only auto-populate for operations that require merge scope
+        if (noScope && (definition.booleanEnum == BooleanScopeLocal.SPLIT || 
+                        definition.booleanEnum == BooleanScopeLocal.ADD || 
+                        definition.booleanEnum == BooleanScopeLocal.SUBTRACT || 
+                        definition.booleanEnum == BooleanScopeLocal.INTERSECT))
         {
-            definition.mergeScope = definition.location;
+            // If location is a face, use it directly for SPLIT operation
+            if (definition.booleanEnum == BooleanScopeLocal.SPLIT && isFace(context, definition))
+            {
+                definition.mergeScope = definition.location;
+            }
+            // If location is a mate connector, find the face/body it's touching
+            else if (isMateConnector(context, definition))
+            {
+                const faceAtMateConnector = getFaceAtMateConnectorOrigin(context, definition.location);
+                if (!isQueryEmpty(context, faceAtMateConnector))
+                {
+                    // For SPLIT, use the face; for other operations, use the owner body
+                    if (definition.booleanEnum == BooleanScopeLocal.SPLIT)
+                    {
+                        definition.mergeScope = faceAtMateConnector;
+                    }
+                    else
+                    {
+                        definition.mergeScope = qOwnerBody(faceAtMateConnector);
+                    }
+                }
+            }
         }
     }
 
