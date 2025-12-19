@@ -465,7 +465,7 @@ export function TextFunctionPascoe(
             BooleanFunctionPascoe(context, id, definition.booleanEnum->toString(), tools, definition.mergeScope->qOwnerBody(), false);
             
             // Delete island bodies created by subtraction operation
-            if (definition.booleanEnum == BooleanScopeLocal.SUBTRACT && definition.deleteIslandBodies)
+            if (definition.booleanEnum == BooleanScopeLocal.SUBTRACT && definition.deleteIslandBodies == true)
             {
                 deleteIslandBodies(context, id, definition.mergeScope->qOwnerBody());
             }
