@@ -354,6 +354,7 @@ function calculateLengthSpacedTabDomains(totalLength is ValueWithUnits, tabWidth
 
 // Extracts all split parameters from tab domains.
 // Returns sorted array of normalized parameters where splits should occur.
+// Sorting ensures parameters are in ascending order for proper edge splitting.
 function calculateSplitParametersFromTabDomains(tabDomains is array) returns array
 {
     var params = [];
@@ -362,7 +363,8 @@ function calculateSplitParametersFromTabDomains(tabDomains is array) returns arr
         params = append(params, domain.start);
         params = append(params, domain.end);
     }
-    return params;
+    // Sort parameters in ascending order to ensure correct splitting sequence
+    return sort(params, function(a, b) { return a - b; });
 }
 
 // Calculates split instructions from normalized parameters along the path.
