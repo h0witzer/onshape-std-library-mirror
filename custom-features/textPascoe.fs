@@ -9,8 +9,9 @@
 FeatureScript 2260;
 import(path : "onshape/std/common.fs", version : "2260.0");
 
-// Tolerance for detecting if a mate connector is touching a face
-// This is used in the editLogic to determine proximity
+// Tolerance in meters for detecting if a mate connector is touching a face
+// during proximity-based detection in the editLogic function.
+// A mate connector is considered "touching" if it is within this distance of a face.
 const MATE_CONNECTOR_TOUCHING_TOLERANCE = 1e-5 * meter;
 
 // CADSharp
@@ -79,9 +80,9 @@ export function editLogic(context is Context, id is Id, oldDefinition is map, de
             // First approach: Try to get the owner body directly from the mate connector
             // This should return the body/part that the mate connector is attached to
             const ownerBodyQuery = qOwnerBody(mateConnectorQuery);
-            const ownerBodies = try silent(evaluateQuery(context, ownerBodyQuery));
+            const ownerBodyResult = try silent(evaluateQuery(context, ownerBodyQuery));
             
-            if (ownerBodies != undefined && size(ownerBodies) > 0)
+            if (ownerBodyResult != undefined && size(ownerBodyResult) > 0)
             {
                 // Successfully found the owner body - use it as the merge scope
                 definition.mergeScope = ownerBodyQuery;
@@ -96,11 +97,9 @@ export function editLogic(context is Context, id is Id, oldDefinition is map, de
                 
                 if (mateConnectorCoordSys != undefined)
                 {
-                    // Get visible solid bodies (excluding hidden bodies and non-solid types)
-                    const visibleSolidBodies = qSubtraction(
-                        qBodyType(qEverything(EntityType.BODY), BodyType.SOLID),
-                        hiddenBodies
-                    );
+                    // Get visible solid bodies (excluding hidden bodies)
+                    // Using qAllSolidBodies() for better performance than qEverything
+                    const visibleSolidBodies = qSubtraction(qAllSolidBodies(), hiddenBodies);
                     
                     // Get faces owned by these solid bodies for better performance
                     const visibleFaces = qOwnedByBody(visibleSolidBodies, EntityType.FACE);
