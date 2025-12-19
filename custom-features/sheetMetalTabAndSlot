@@ -481,8 +481,9 @@ function calculateEdgeSplitInstructionsFromParameters(context is Context, path i
 }
 
 // Identifies tab segments directly from split edges.
-// Uses segment boundary tracking logic similar to splitSmEdgeChainToSegments.fs
-// to properly determine which edges belong to tab vs gap segments.
+// Uses accumulated length tracking to calculate each edge's midpoint position.
+// An edge is a tab if its midpoint falls within any tab domain.
+// Midpoint checking is more robust than start position for preventing consecutive tabs.
 function identifyTabSegmentsFromSplitEdges(context is Context, splitEdges is Query, path is Path, totalLength is ValueWithUnits, tabDomains is array) returns Query
 {
     if (size(tabDomains) == 0)
@@ -522,8 +523,8 @@ function identifyTabSegmentsFromSplitEdges(context is Context, splitEdges is Que
         println("DEBUG: Tab domain [" ~ toString(domain.start) ~ ", " ~ toString(domain.end) ~ "]");
     }
     
-    // Track accumulated length and check each edge against all tab domains
-    // An edge is a tab if its START position falls within any tab domain
+    // Track accumulated length and check each edge's MIDPOINT against all tab domains
+    // Using midpoint is more robust than start position for determining segment membership
     var accumulatedLength = 0 * meter;
     var tabEdgeQueries = [];
     
@@ -532,18 +533,18 @@ function identifyTabSegmentsFromSplitEdges(context is Context, splitEdges is Que
         const edge = orderedEdges[i];
         const edgeLength = edgeLengths[i];
         
-        // Calculate this edge's start position as a fraction of total length
-        const edgeStartFraction = accumulatedLength / totalLength;
+        // Calculate this edge's midpoint position as a fraction of total length
+        const edgeMidpointFraction = (accumulatedLength + edgeLength / 2) / totalLength;
         
-        // Check if this edge's start position falls within ANY tab domain
+        // Check if this edge's midpoint falls within ANY tab domain
         var isTab = false;
         for (var domain in tabDomains)
         {
-            if (edgeStartFraction >= domain.start - FRACTION_TOLERANCE 
-                && edgeStartFraction < domain.end + FRACTION_TOLERANCE)
+            if (edgeMidpointFraction >= domain.start - FRACTION_TOLERANCE 
+                && edgeMidpointFraction <= domain.end + FRACTION_TOLERANCE)
             {
                 isTab = true;
-                println("DEBUG: Edge " ~ toString(i) ~ " at position " ~ toString(edgeStartFraction) ~ " is TAB (domain [" ~ toString(domain.start) ~ ", " ~ toString(domain.end) ~ "])");
+                println("DEBUG: Edge " ~ toString(i) ~ " at midpoint " ~ toString(edgeMidpointFraction) ~ " is TAB (domain [" ~ toString(domain.start) ~ ", " ~ toString(domain.end) ~ "])");
                 break;
             }
         }
@@ -554,7 +555,7 @@ function identifyTabSegmentsFromSplitEdges(context is Context, splitEdges is Que
         }
         else
         {
-            println("DEBUG: Edge " ~ toString(i) ~ " at position " ~ toString(edgeStartFraction) ~ " is GAP");
+            println("DEBUG: Edge " ~ toString(i) ~ " at midpoint " ~ toString(edgeMidpointFraction) ~ " is GAP");
         }
         
         accumulatedLength += edgeLength;
