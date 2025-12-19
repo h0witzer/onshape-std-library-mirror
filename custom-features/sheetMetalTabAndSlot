@@ -174,71 +174,72 @@ export const tabAndSlotBossDisplay = defineFeature(function(context is Context, 
         const tabSegmentEdges = identifyTabSegmentEdgesFromDomains(context, splitEdges, path, totalLength, tabDomains);
         
         // Debug: Highlight tab segment edges to verify identification
-        debug(context, tabSegmentEdges, DebugColor.YELLOW);
+        debug(context, tabSegmentEdges, DebugColor.RED);
 
+        // COMMENTED OUT: Everything after edge splitting routine for debugging
         // Phase 2: Copy adjacent sheet metal wall surfaces
-        const adjacentFaces = qAdjacent(splitEdges, AdjacencyType.EDGE, EntityType.FACE);
-        const wallFaces = filterSheetMetalWallFaces(context, adjacentFaces);
-        
-        if (size(evaluateQuery(context, wallFaces)) == 0)
-        {
-            throw regenError("No adjacent wall surfaces found to copy", ["edges"]);
-        }
+        // const adjacentFaces = qAdjacent(splitEdges, AdjacencyType.EDGE, EntityType.FACE);
+        // const wallFaces = filterSheetMetalWallFaces(context, adjacentFaces);
+        // 
+        // if (size(evaluateQuery(context, wallFaces)) == 0)
+        // {
+        //     throw regenError("No adjacent wall surfaces found to copy", ["edges"]);
+        // }
 
         // Phase 3: Track tab segment edges directly through extraction
         // Instead of trying to identify wall edges geometrically, we'll track the tab segments
         // and find the corresponding edges on the extracted surfaces
         
         // Track the tab segment edges themselves
-        const trackedTabSegments = startTracking(context, tabSegmentEdges);
-        
-        println("Tab segment edges count (before extraction): " ~ toString(size(evaluateQuery(context, tabSegmentEdges))));
+        // const trackedTabSegments = startTracking(context, tabSegmentEdges);
+        // 
+        // println("Tab segment edges count (before extraction): " ~ toString(size(evaluateQuery(context, tabSegmentEdges))));
 
-        try
-        {
-            @opExtractSurface(context, id + "extractWalls", {
-                        "faces" : wallFaces,
-                        "tangentPropagation" : false
-                    });
-            debug(context, wallFaces, DebugColor.BLUE);
-        }
-        catch
-        {
-            throw regenError("Failed to extract adjacent wall surfaces", ["edges"]);
-        }
+        // try
+        // {
+        //     @opExtractSurface(context, id + "extractWalls", {
+        //                 "faces" : wallFaces,
+        //                 "tangentPropagation" : false
+        //             });
+        //     debug(context, wallFaces, DebugColor.BLUE);
+        // }
+        // catch
+        // {
+        //     throw regenError("Failed to extract adjacent wall surfaces", ["edges"]);
+        // }
 
         // After extraction, find edges on extracted surfaces that correspond directly to the tab segments
-        const extractedBodies = qCreatedBy(id + "extractWalls", EntityType.BODY);
-        const extractedEdges = qOwnedByBody(extractedBodies, EntityType.EDGE);
-        
+        // const extractedBodies = qCreatedBy(id + "extractWalls", EntityType.BODY);
+        // const extractedEdges = qOwnedByBody(extractedBodies, EntityType.EDGE);
+        // 
         // Find the tracked tab segments after extraction
-        const trackedTabSegmentsAfterExtraction = qEntityFilter(trackedTabSegments, EntityType.EDGE);
-        
+        // const trackedTabSegmentsAfterExtraction = qEntityFilter(trackedTabSegments, EntityType.EDGE);
+        // 
         // Filter to only laminar (one-sided/boundary) edges to avoid EXTEND_NON_LAMINAR error
-        const extractedEdgesToExtend = qEdgeTopologyFilter(trackedTabSegmentsAfterExtraction, EdgeTopology.ONE_SIDED);
-        
-        if (size(evaluateQuery(context, extractedEdgesToExtend)) > 0)
-        {
-            try
-            {
-                @opExtendSheetBody(context, id + "extendTabs", {
-                            "endCondition" : ExtendEndType.EXTEND_BLIND,
-                            "entities" : extractedEdgesToExtend,
-                            "tangentPropagation" : false,
-                            "extendDistance" : definition.tabDepth,
-                            "extensionShape" : ExtendSheetShapeType.LINEAR
-                        });
-                debug(context, extractedEdgesToExtend, DebugColor.GREEN);
-            }
-            catch
-            {
-                throw regenError("Failed to extend tab edges", ["tabDepth"]);
-            }
-        }
-        else
-        {
-            println("Warning: No edges found to extend");
-        }
+        // const extractedEdgesToExtend = qEdgeTopologyFilter(trackedTabSegmentsAfterExtraction, EdgeTopology.ONE_SIDED);
+        // 
+        // if (size(evaluateQuery(context, extractedEdgesToExtend)) > 0)
+        // {
+        //     try
+        //     {
+        //         @opExtendSheetBody(context, id + "extendTabs", {
+        //                     "endCondition" : ExtendEndType.EXTEND_BLIND,
+        //                     "entities" : extractedEdgesToExtend,
+        //                     "tangentPropagation" : false,
+        //                     "extendDistance" : definition.tabDepth,
+        //                     "extensionShape" : ExtendSheetShapeType.LINEAR
+        //             });
+        //         debug(context, extractedEdgesToExtend, DebugColor.GREEN);
+        //     }
+        //     catch
+        //     {
+        //         throw regenError("Failed to extend tab edges", ["tabDepth"]);
+        //     }
+        // }
+        // else
+        // {
+        //     println("Warning: No edges found to extend");
+        // }
     });
 
 // Filters a query of faces to return only those with SMObjectType.WALL attributes.
