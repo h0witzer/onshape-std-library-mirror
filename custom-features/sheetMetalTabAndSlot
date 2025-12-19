@@ -481,9 +481,8 @@ function calculateEdgeSplitInstructionsFromParameters(context is Context, path i
 }
 
 // Identifies tab segments directly from split edges.
-// Since we already split the edges at the correct locations, we just identify which
-// segments fall within tab domains and return those edge queries directly.
-// This is simpler and more robust than attributes or re-measurement.
+// Uses segment boundary tracking logic similar to splitSmEdgeChainToSegments.fs
+// to properly determine which edges belong to tab vs gap segments.
 function identifyTabSegmentsFromSplitEdges(context is Context, splitEdges is Query, path is Path, totalLength is ValueWithUnits, tabDomains is array) returns Query
 {
     if (size(tabDomains) == 0)
@@ -506,37 +505,59 @@ function identifyTabSegmentsFromSplitEdges(context is Context, splitEdges is Que
     }
     
     const orderedEdges = orderedPath.edges;
-
-    // Calculate positions using THE SAME method as calculateEdgeSplitInstructionsFromParameters
-    // Walk through edges and calculate cumulative position as a fraction of totalLength
-    var accumulatedLength = 0 * meter;
+    
+    // Collect edge lengths first
+    var edgeLengths = [];
+    for (var edge in orderedEdges)
+    {
+        const edgeLength = evLength(context, { "entities" : edge });
+        edgeLengths = append(edgeLengths, edgeLength);
+    }
     
     println("DEBUG: Identifying tab segments from " ~ toString(size(orderedEdges)) ~ " split edges");
-    println("DEBUG: Total length for normalization: " ~ toString(totalLength));
+    println("DEBUG: Total length: " ~ toString(totalLength));
     println("DEBUG: Number of tab domains: " ~ toString(size(tabDomains)));
+    for (var domain in tabDomains)
+    {
+        println("DEBUG: Tab domain [" ~ toString(domain.start) ~ ", " ~ toString(domain.end) ~ "]");
+    }
     
-    // Collect the edge queries that are tabs
+    // Track accumulated length and check each edge against all tab domains
+    // An edge is a tab if its START position falls within any tab domain
+    var accumulatedLength = 0 * meter;
     var tabEdgeQueries = [];
     
     for (var i = 0; i < size(orderedEdges); i += 1)
     {
         const edge = orderedEdges[i];
-        const edgeLength = evLength(context, { "entities" : edge });
-        // Calculate midpoint position as fraction of totalLength (same as splitting logic)
-        const midpoint = (accumulatedLength + edgeLength / 2) / totalLength;
-        accumulatedLength += edgeLength;
+        const edgeLength = edgeLengths[i];
         
-        // Check if this edge's midpoint falls within any tab domain
+        // Calculate this edge's start position as a fraction of total length
+        const edgeStartFraction = accumulatedLength / totalLength;
+        
+        // Check if this edge's start position falls within ANY tab domain
+        var isTab = false;
         for (var domain in tabDomains)
         {
-            if (midpoint >= domain.start - FRACTION_TOLERANCE && midpoint <= domain.end + FRACTION_TOLERANCE)
+            if (edgeStartFraction >= domain.start - FRACTION_TOLERANCE 
+                && edgeStartFraction < domain.end + FRACTION_TOLERANCE)
             {
-                // This edge is a tab segment - store its query
-                tabEdgeQueries = append(tabEdgeQueries, edge);
-                println("DEBUG: Edge " ~ toString(i) ~ " at midpoint " ~ toString(midpoint) ~ " identified as TAB");
+                isTab = true;
+                println("DEBUG: Edge " ~ toString(i) ~ " at position " ~ toString(edgeStartFraction) ~ " is TAB (domain [" ~ toString(domain.start) ~ ", " ~ toString(domain.end) ~ "])");
                 break;
             }
         }
+        
+        if (isTab)
+        {
+            tabEdgeQueries = append(tabEdgeQueries, edge);
+        }
+        else
+        {
+            println("DEBUG: Edge " ~ toString(i) ~ " at position " ~ toString(edgeStartFraction) ~ " is GAP");
+        }
+        
+        accumulatedLength += edgeLength;
     }
     
     if (size(tabEdgeQueries) == 0)
@@ -544,6 +565,8 @@ function identifyTabSegmentsFromSplitEdges(context is Context, splitEdges is Que
         println("WARNING: No tab segment edges identified from " ~ toString(size(orderedEdges)) ~ " split edges");
         return qNothing();
     }
+    
+    println("DEBUG: Identified " ~ toString(size(tabEdgeQueries)) ~ " tab edges");
     
     // Return the union of all tab edge queries
     // These are the exact edge entities that need to be tracked and extended
