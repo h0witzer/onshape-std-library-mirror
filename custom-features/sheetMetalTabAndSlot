@@ -502,16 +502,19 @@ function identifyTabMidpointsFromSplitEdges(context is Context, splitEdges is Qu
         orderedEdges = edges;
     }
     
-    // Collect edge lengths first
+    // Collect edge lengths first and calculate actual total length of split edges
     var edgeLengths = [];
+    var actualTotalLength = 0 * meter;
     for (var edge in orderedEdges)
     {
         const edgeLength = evLength(context, { "entities" : edge });
         edgeLengths = append(edgeLengths, edgeLength);
+        actualTotalLength += edgeLength;
     }
     
     println("DEBUG: Identifying tab midpoints from " ~ toString(size(orderedEdges)) ~ " split edges");
-    println("DEBUG: Total length: " ~ toString(totalLength));
+    println("DEBUG: Original total length: " ~ toString(totalLength));
+    println("DEBUG: Actual total length of split edges: " ~ toString(actualTotalLength));
     println("DEBUG: Number of tab domains: " ~ toString(size(tabDomains)));
     for (var domain in tabDomains)
     {
@@ -527,8 +530,10 @@ function identifyTabMidpointsFromSplitEdges(context is Context, splitEdges is Qu
         const edge = orderedEdges[i];
         const edgeLength = edgeLengths[i];
         
-        // Calculate this edge's midpoint position as a fraction of total length
-        const edgeMidpointFraction = (accumulatedLength + edgeLength / 2) / totalLength;
+        // Calculate this edge's midpoint position as a fraction of actual total length
+        // Use actualTotalLength instead of totalLength to handle cases where split edges 
+        // may have different ordering or total length than original path
+        const edgeMidpointFraction = (accumulatedLength + edgeLength / 2) / actualTotalLength;
         
         // Check if this edge's midpoint falls within ANY tab domain
         var isTab = false;
