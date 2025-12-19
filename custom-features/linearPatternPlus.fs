@@ -1149,10 +1149,82 @@ export function linearPatternPlusManipulatorFunction(context is Context, definit
     // Handle skip instances manipulator changes
     if (newManipulators["points"] is map)
     {
-        // Determine the instance counts to use
-        var count1 = definition.countOne;
-        var count2 = definition.hasSecondDir ? definition.countTwo : 1;
-        var count3 = (definition.hasSecondDir && definition.hasThirdDir) ? definition.countThree : 1;
+        // Determine the instance counts to use - must match the pattern generation logic!
+        // The counts may differ from definition.countOne/Two/Three due to target spacing rounding
+        
+        // Calculate count1 (always needed)
+        var measuredDistanceOne = try(definition.distanceTypeOne == DistanceType.Measured ? 
+            evDistance(context, { "side0" : definition.startEntityOne, "side1" : definition.endEntityOne }).distance : 0 * inch);
+        if (measuredDistanceOne == undefined)
+            measuredDistanceOne = 0 * inch;
+        
+        var directionInfoOne = getCountAndDistance(
+            definition.distanceOne,
+            definition.hasOffsetOne,
+            definition.oppositeDirectionOne,
+            definition.spacingTypeOne,
+            definition.distanceTypeOne,
+            definition.offsetOne,
+            definition.oppositeOffsetDirectionOne,
+            definition.instanceCountTypeOne,
+            definition.countOne,
+            definition.targetSpacingOne,
+            measuredDistanceOne,
+            definition.roundingTypeOne
+        );
+        var count1 = directionInfoOne.instanceCount;
+        
+        // Calculate count2 if second direction exists
+        var count2 = 1;
+        if (definition.hasSecondDir)
+        {
+            var measuredDistanceTwo = try(definition.distanceTypeTwo == DistanceType.Measured ? 
+                evDistance(context, { "side0" : definition.startEntityTwo, "side1" : definition.endEntityTwo }).distance : 0 * inch);
+            if (measuredDistanceTwo == undefined)
+                measuredDistanceTwo = 0 * inch;
+            
+            var directionInfoTwo = getCountAndDistance(
+                definition.distanceTwo,
+                definition.hasOffsetTwo,
+                definition.oppositeDirectionTwo,
+                definition.spacingTypeTwo,
+                definition.distanceTypeTwo,
+                definition.offsetTwo,
+                definition.oppositeOffsetDirectionTwo,
+                definition.instanceCountTypeTwo,
+                definition.countTwo,
+                definition.targetSpacingTwo,
+                measuredDistanceTwo,
+                definition.roundingTypeTwo
+            );
+            count2 = directionInfoTwo.instanceCount;
+        }
+        
+        // Calculate count3 if third direction exists
+        var count3 = 1;
+        if (definition.hasSecondDir && definition.hasThirdDir)
+        {
+            var measuredDistanceThree = try(definition.distanceTypeThree == DistanceType.Measured ? 
+                evDistance(context, { "side0" : definition.startEntityThree, "side1" : definition.endEntityThree }).distance : 0 * inch);
+            if (measuredDistanceThree == undefined)
+                measuredDistanceThree = 0 * inch;
+            
+            var directionInfoThree = getCountAndDistance(
+                definition.distanceThree,
+                definition.hasOffsetThree,
+                definition.oppositeDirectionThree,
+                definition.spacingTypeThree,
+                definition.distanceTypeThree,
+                definition.offsetThree,
+                definition.oppositeOffsetDirectionThree,
+                definition.instanceCountTypeThree,
+                definition.countThree,
+                definition.targetSpacingThree,
+                measuredDistanceThree,
+                definition.roundingTypeThree
+            );
+            count3 = directionInfoThree.instanceCount;
+        }
         
         const indexToInstance = function(index)
             {
