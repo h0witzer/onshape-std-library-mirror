@@ -1,5 +1,5 @@
 
-// This custom feature is owned by Evan Reese and distributed by The Onsherpa. It may not be redistributed without permission of the owner. Copywright © 2025 Evan Reese.
+// This custom feature is owned by Evan Reese and distributed by The Onsherpa. It may not be redistributed without permission of the owner. Copyright © 2025 Evan Reese.
 
 // TODO I'm still working on getting directions 2 and 3 to match previous features. What's different between them and direction 1, which seems to work?
 
@@ -318,7 +318,7 @@ export const linearPatternPlus = defineFeature(function(context is Context, id i
                 for (var instance in definition.skippedInstances)
                 {
                     annotation { "Name" : "First direction" }
-                    isInteger(instance.index1, { (unitless) : [-1e5, 1, 1e5] } as IntegerBoundSpec);
+                    isInteger(instance.index1, { (unitless) : [-1e5, 0, 1e5] } as IntegerBoundSpec);
 
                     annotation { "Name" : "Second direction" }
                     isInteger(instance.index2, { (unitless) : [-1e5, 0, 1e5] } as IntegerBoundSpec);
@@ -1192,9 +1192,7 @@ export function linearPatternPlusManipulatorFunction(context is Context, definit
                 definition.skippedInstances[i] = newInstances[newIndex];
                 newIndex += 1;
             }
-            else if (newInstances[newIndex].index3 < outInstances[outIndex].index3 
-                || (newInstances[newIndex].index3 == outInstances[outIndex].index3 && newInstances[newIndex].index2 < outInstances[outIndex].index2) 
-                || (newInstances[newIndex].index3 == outInstances[outIndex].index3 && newInstances[newIndex].index2 == outInstances[outIndex].index2 && newInstances[newIndex].index1 < outInstances[outIndex].index1))
+            else if (compareInstanceIndices(newInstances[newIndex], outInstances[outIndex]) < 0)
             {
                 definition.skippedInstances[i] = newInstances[newIndex];
                 newIndex += 1;
@@ -1220,6 +1218,27 @@ export function checkTargetSpacingAndDistance(context is Context, id is Id, dist
     }
     return targetTooBig;
 
+}
+
+/**
+ * Compares two three-dimensional instance coordinates for sorting.
+ * Orders by index3, then index2, then index1 (row-major order with third direction as outermost).
+ * 
+ * @param instance1 : First instance with index1, index2, index3 fields
+ * @param instance2 : Second instance with index1, index2, index3 fields
+ * @returns number : Negative if instance1 < instance2, positive if instance1 > instance2, 0 if equal
+ */
+function compareInstanceIndices(instance1 is map, instance2 is map) returns number
+{
+    if (instance1.index3 != instance2.index3)
+    {
+        return instance1.index3 - instance2.index3;
+    }
+    if (instance1.index2 != instance2.index2)
+    {
+        return instance1.index2 - instance2.index2;
+    }
+    return instance1.index1 - instance2.index1;
 }
 
 /**
