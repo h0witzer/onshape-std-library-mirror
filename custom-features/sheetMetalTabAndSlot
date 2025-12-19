@@ -172,30 +172,40 @@ export const tabAndSlotBossDisplay = defineFeature(function(context is Context, 
             splitOperationIndex += 1;
         }
 
-        // Get the split edges
+        // Get the split edges after splitting operations
         const splitEdges = qEntityFilter(trackedEdges, EntityType.EDGE);
+        const splitEdgesEvaluated = evaluateQuery(context, splitEdges);
+        println("Split edges count: " ~ toString(size(splitEdgesEvaluated)));
+        
+        // Identify which split edges correspond to tab segments
         const tabSegmentEdges = identifyTabSegmentEdgesFromDomains(context, splitEdges, path, totalLength, tabDomains);
+        const tabSegmentEdgesEvaluated = evaluateQuery(context, tabSegmentEdges);
+        
+        if (size(tabSegmentEdgesEvaluated) == 0)
+        {
+            throw regenError("No tab segment edges identified after splitting. Check edge selection and tab parameters.", ["edges", "tabWidth", "spacing"]);
+        }
+        
+        println("Tab segment edges count: " ~ toString(size(tabSegmentEdgesEvaluated)));
         
         // Debug: Highlight tab segment edges to verify identification
         debug(context, tabSegmentEdges, DebugColor.YELLOW);
 
         // Phase 2: Copy adjacent sheet metal wall surfaces
+        // Query adjacent faces from all split edges to get wall surfaces
         const adjacentFaces = qAdjacent(splitEdges, AdjacencyType.EDGE, EntityType.FACE);
         const wallFaces = filterSheetMetalWallFaces(context, adjacentFaces);
         
         if (size(evaluateQuery(context, wallFaces)) == 0)
         {
-            throw regenError("No adjacent wall surfaces found to copy", ["edges"]);
+            throw regenError("No adjacent wall surfaces found to copy. Ensure edges are on sheet metal walls.", ["edges"]);
         }
 
-        // Phase 3: Track tab segment edges directly through extraction
-        // Instead of trying to identify wall edges geometrically, we'll track the tab segments
-        // and find the corresponding edges on the extracted surfaces
-        
-        // Track the tab segment edges themselves
+        // Phase 3: Track tab segment edges through extraction and extend them
+        // Track the tab segment edges before extraction to find corresponding edges on extracted surfaces
         const trackedTabSegments = startTracking(context, tabSegmentEdges);
         
-        println("Tab segment edges count (before extraction): " ~ toString(size(evaluateQuery(context, tabSegmentEdges))));
+        println("Tab segment edges count (before extraction): " ~ toString(size(tabSegmentEdgesEvaluated)));
 
         try
         {
@@ -207,20 +217,34 @@ export const tabAndSlotBossDisplay = defineFeature(function(context is Context, 
         }
         catch
         {
-            throw regenError("Failed to extract adjacent wall surfaces", ["edges"]);
+            throw regenError("Failed to extract adjacent wall surfaces. Check that edges are on sheet metal walls.", ["edges"]);
         }
 
-        // After extraction, find edges on extracted surfaces that correspond directly to the tab segments
+        // After extraction, find edges on extracted surfaces that correspond to tracked tab segments
         const extractedBodies = qCreatedBy(id + "extractWalls", EntityType.BODY);
         const extractedEdges = qOwnedByBody(extractedBodies, EntityType.EDGE);
         
-        // Find the tracked tab segments after extraction
+        println("Extracted bodies count: " ~ toString(size(evaluateQuery(context, extractedBodies))));
+        println("Extracted edges count: " ~ toString(size(evaluateQuery(context, extractedEdges))));
+        
+        // Find the tracked tab segments after extraction - these should be edges on the extracted surfaces
         const trackedTabSegmentsAfterExtraction = qEntityFilter(trackedTabSegments, EntityType.EDGE);
+        const trackedCount = size(evaluateQuery(context, trackedTabSegmentsAfterExtraction));
+        
+        println("Tracked tab segment edges after extraction: " ~ toString(trackedCount));
+        
+        if (trackedCount == 0)
+        {
+            throw regenError("Tab segment edges not found on extracted surfaces. Edge tracking failed.", ["edges"]);
+        }
         
         // Filter to only laminar (one-sided/boundary) edges to avoid EXTEND_NON_LAMINAR error
         const extractedEdgesToExtend = qEdgeTopologyFilter(trackedTabSegmentsAfterExtraction, EdgeTopology.ONE_SIDED);
+        const laminarEdgeCount = size(evaluateQuery(context, extractedEdgesToExtend));
         
-        if (size(evaluateQuery(context, extractedEdgesToExtend)) > 0)
+        println("Laminar edges to extend: " ~ toString(laminarEdgeCount));
+        
+        if (laminarEdgeCount > 0)
         {
             try
             {
