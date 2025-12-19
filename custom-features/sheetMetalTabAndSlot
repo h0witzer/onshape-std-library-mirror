@@ -176,8 +176,24 @@ export const tabAndSlotBossDisplay = defineFeature(function(context is Context, 
         const splitEdgesEvaluated = evaluateQuery(context, splitEdges);
         println("Split edges count: " ~ toString(size(splitEdgesEvaluated)));
         
-        // Identify which split edges correspond to tab segments
-        const tabSegmentEdges = identifyTabSegmentEdgesFromDomains(context, splitEdges, path, totalLength, tabDomains);
+        // Phase 2: Filter split edges to only those adjacent to wall surfaces
+        // This ensures we only identify tabs on edges that will actually be extracted
+        const adjacentFaces = qAdjacent(splitEdges, AdjacencyType.EDGE, EntityType.FACE);
+        const wallFaces = filterSheetMetalWallFaces(context, adjacentFaces);
+        
+        if (size(evaluateQuery(context, wallFaces)) == 0)
+        {
+            throw regenError("No adjacent wall surfaces found to copy. Ensure edges are on sheet metal walls.", ["edges"]);
+        }
+        
+        // Filter to only edges adjacent to wall faces (excludes bend joint edges)
+        const wallEdges = qAdjacent(wallFaces, AdjacencyType.EDGE, EntityType.EDGE);
+        const splitWallEdges = qIntersection([splitEdges, wallEdges]);
+        const splitWallEdgesEvaluated = evaluateQuery(context, splitWallEdges);
+        println("Split wall edges count: " ~ toString(size(splitWallEdgesEvaluated)));
+        
+        // Identify which split wall edges correspond to tab segments
+        const tabSegmentEdges = identifyTabSegmentEdgesFromDomains(context, splitWallEdges, path, totalLength, tabDomains);
         const tabSegmentEdgesEvaluated = evaluateQuery(context, tabSegmentEdges);
         
         if (size(tabSegmentEdgesEvaluated) == 0)
@@ -189,16 +205,6 @@ export const tabAndSlotBossDisplay = defineFeature(function(context is Context, 
         
         // Debug: Highlight tab segment edges to verify identification
         debug(context, tabSegmentEdges, DebugColor.YELLOW);
-
-        // Phase 2: Copy adjacent sheet metal wall surfaces
-        // Query adjacent faces from all split edges to get wall surfaces
-        const adjacentFaces = qAdjacent(splitEdges, AdjacencyType.EDGE, EntityType.FACE);
-        const wallFaces = filterSheetMetalWallFaces(context, adjacentFaces);
-        
-        if (size(evaluateQuery(context, wallFaces)) == 0)
-        {
-            throw regenError("No adjacent wall surfaces found to copy. Ensure edges are on sheet metal walls.", ["edges"]);
-        }
 
         // Phase 3: Track tab segment edges through extraction and extend them
         // Track the tab segment edges before extraction to find corresponding edges on extracted surfaces
@@ -480,8 +486,7 @@ function calculateEdgeSplitInstructionsFromParameters(context is Context, path i
 }
 
 // Identifies edges that correspond to tab segments based on tab domains.
-// Checks which edges overlap with the tab domain ranges after splitting.
-// An edge is considered a tab segment if any part of it falls within a tab domain.
+// Checks which edges fall within the tab domain ranges after splitting.
 // Uses the original path structure to maintain edge ordering and orientation.
 function identifyTabSegmentEdgesFromDomains(context is Context, splitEdges is Query, path is Path, totalLength is ValueWithUnits, tabDomains is array) returns Query
 {
@@ -508,31 +513,31 @@ function identifyTabSegmentEdgesFromDomains(context is Context, splitEdges is Qu
     
     const orderedEdges = orderedPath.edges;
 
-    // Calculate cumulative lengths to determine start and end position of each edge along the ordered path
-    var edgePositions = [];
+    // Calculate the actual total length of the ordered edges being evaluated
+    // This may differ from the original totalLength if edges were filtered (e.g., bend joints removed)
+    const actualTotalLength = evLength(context, { "entities" : qUnion(orderedEdges) });
+    
+    // Calculate cumulative lengths to determine position of each edge along the ordered path
+    var edgeMidpoints = [];
     var accumulatedLength = 0 * meter;
     
     for (var edge in orderedEdges)
     {
         const edgeLength = evLength(context, { "entities" : edge });
-        const startPos = accumulatedLength / totalLength;
+        const midpoint = (accumulatedLength + edgeLength / 2) / actualTotalLength;
+        edgeMidpoints = append(edgeMidpoints, midpoint);
         accumulatedLength += edgeLength;
-        const endPos = accumulatedLength / totalLength;
-        edgePositions = append(edgePositions, {"start" : startPos, "end" : endPos});
     }
 
-    // Identify which edges overlap with tab domains
-    // An edge is a tab segment if any part of it falls within a tab domain range
+    // Identify which edges fall within tab domains based on their midpoint position
     var tabEdgeQueries = [];
     for (var i = 0; i < size(orderedEdges); i += 1)
     {
-        const edgeStart = edgePositions[i].start;
-        const edgeEnd = edgePositions[i].end;
-        
+        const midpoint = edgeMidpoints[i];
         for (var domain in tabDomains)
         {
-            // Check if edge overlaps with tab domain: edge overlaps if edge_start < domain_end AND edge_end > domain_start
-            if (edgeStart < domain.end + FRACTION_TOLERANCE && edgeEnd > domain.start - FRACTION_TOLERANCE)
+            // Check if edge midpoint falls within the tab domain range
+            if (midpoint >= domain.start - FRACTION_TOLERANCE && midpoint <= domain.end + FRACTION_TOLERANCE)
             {
                 tabEdgeQueries = append(tabEdgeQueries, orderedEdges[i]);
                 break;
