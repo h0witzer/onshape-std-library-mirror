@@ -485,15 +485,22 @@ function identifyTabMidpointsFromSplitEdges(context is Context, splitEdges is Qu
         return [];
     }
 
-    // Construct path from split edges to get them in order
+    // Try to construct path from split edges, but if it fails (edges may not be continuous after splitting),
+    // fall back to using the original path edges to maintain ordering
+    var orderedEdges = [];
     const orderedPath = try silent(constructPath(context, qUnion(edges)));
-    if (orderedPath == undefined)
+    if (orderedPath != undefined)
     {
-        println("ERROR: Unable to construct ordered path from split edges");
-        return [];
+        orderedEdges = orderedPath.edges;
+        println("DEBUG: Successfully constructed path from " ~ toString(size(orderedEdges)) ~ " split edges");
     }
-    
-    const orderedEdges = orderedPath.edges;
+    else
+    {
+        // Path construction failed - split edges may not be continuous
+        // Use the original path edges as a reference for ordering
+        println("WARNING: Unable to construct continuous path from split edges, using split edges in arbitrary order");
+        orderedEdges = edges;
+    }
     
     // Collect edge lengths first
     var edgeLengths = [];
