@@ -529,8 +529,9 @@ function getFaceAtMateConnectorOrigin(context is Context, mateConnectorQuery is 
                     "mateConnector" : mateConnectorQuery
                 });
 
-        // Get all faces in the context (excluding construction objects)
-        const allFaces = qConstructionFilter(qEverything(EntityType.FACE), ConstructionObject.NO);
+        // Get all faces in the context (excluding construction objects and sketch objects)
+        var allFaces = qConstructionFilter(qEverything(EntityType.FACE), ConstructionObject.NO);
+        allFaces = qSketchFilter(allFaces, SketchObject.NO);
 
         // Find the closest face to the mate connector origin
         const closestFace = qClosestTo(allFaces, mateConnectorCoordSys.origin);
