@@ -290,7 +290,6 @@ export function TextFunctionPascoe(
     skSolve(sketch1);
 
     var toDelete = qNothing();
-    var toBoolean = qNothing();
     var sketchEdges = qCreatedBy(id + "sketch1", EntityType.EDGE);
 
     const longestEdge = evaluateQuery(context, qLargest(sketchEdges))[0];
