@@ -1105,6 +1105,106 @@ export function getCountAndDistance(
 }
 
 /**
+ * Helper function to compute instance count for a direction in skip instances manipulator.
+ * Matches the pattern generation logic by calling getCountAndDistance.
+ * 
+ * @param context : The context for this operation
+ * @param definition : The feature definition
+ * @param directionNum : Direction number (1, 2, or 3)
+ * @returns number : The computed instance count for this direction
+ */
+function computeInstanceCountForManipulator(context is Context, definition is map, directionNum is number) returns number
+{
+    var measuredDistance = 0 * inch;
+    var distance;
+    var hasOffset;
+    var oppositeDirection;
+    var spacingType;
+    var distanceType;
+    var offset;
+    var oppositeOffsetDirection;
+    var instanceCountType;
+    var instanceCount;
+    var targetSpacing;
+    var roundingType;
+    
+    if (directionNum == 1)
+    {
+        measuredDistance = try(definition.distanceTypeOne == DistanceType.Measured ? 
+            evDistance(context, { "side0" : definition.startEntityOne, "side1" : definition.endEntityOne }).distance : 0 * inch);
+        if (measuredDistance == undefined)
+            measuredDistance = 0 * inch;
+        
+        distance = definition.distanceOne;
+        hasOffset = definition.hasOffsetOne;
+        oppositeDirection = definition.oppositeDirectionOne;
+        spacingType = definition.spacingTypeOne;
+        distanceType = definition.distanceTypeOne;
+        offset = definition.offsetOne;
+        oppositeOffsetDirection = definition.oppositeOffsetDirectionOne;
+        instanceCountType = definition.instanceCountTypeOne;
+        instanceCount = definition.countOne;
+        targetSpacing = definition.targetSpacingOne;
+        roundingType = definition.roundingTypeOne;
+    }
+    else if (directionNum == 2)
+    {
+        measuredDistance = try(definition.distanceTypeTwo == DistanceType.Measured ? 
+            evDistance(context, { "side0" : definition.startEntityTwo, "side1" : definition.endEntityTwo }).distance : 0 * inch);
+        if (measuredDistance == undefined)
+            measuredDistance = 0 * inch;
+        
+        distance = definition.distanceTwo;
+        hasOffset = definition.hasOffsetTwo;
+        oppositeDirection = definition.oppositeDirectionTwo;
+        spacingType = definition.spacingTypeTwo;
+        distanceType = definition.distanceTypeTwo;
+        offset = definition.offsetTwo;
+        oppositeOffsetDirection = definition.oppositeOffsetDirectionTwo;
+        instanceCountType = definition.instanceCountTypeTwo;
+        instanceCount = definition.countTwo;
+        targetSpacing = definition.targetSpacingTwo;
+        roundingType = definition.roundingTypeTwo;
+    }
+    else // directionNum == 3
+    {
+        measuredDistance = try(definition.distanceTypeThree == DistanceType.Measured ? 
+            evDistance(context, { "side0" : definition.startEntityThree, "side1" : definition.endEntityThree }).distance : 0 * inch);
+        if (measuredDistance == undefined)
+            measuredDistance = 0 * inch;
+        
+        distance = definition.distanceThree;
+        hasOffset = definition.hasOffsetThree;
+        oppositeDirection = definition.oppositeDirectionThree;
+        spacingType = definition.spacingTypeThree;
+        distanceType = definition.distanceTypeThree;
+        offset = definition.offsetThree;
+        oppositeOffsetDirection = definition.oppositeOffsetDirectionThree;
+        instanceCountType = definition.instanceCountTypeThree;
+        instanceCount = definition.countThree;
+        targetSpacing = definition.targetSpacingThree;
+        roundingType = definition.roundingTypeThree;
+    }
+    
+    var directionInfo = getCountAndDistance(
+        distance,
+        hasOffset,
+        oppositeDirection,
+        spacingType,
+        distanceType,
+        offset,
+        oppositeOffsetDirection,
+        instanceCountType,
+        instanceCount,
+        targetSpacing,
+        measuredDistance,
+        roundingType
+    );
+    
+    return directionInfo.instanceCount;
+}
+
+/**
  * Manipulator change function for linearPatternPlus.
  * Handles updates from linear manipulators, offset manipulators, and skip instances toggle points.
  * 
@@ -1152,79 +1252,9 @@ export function linearPatternPlusManipulatorFunction(context is Context, definit
         // Determine the instance counts to use - must match the pattern generation logic!
         // The counts may differ from definition.countOne/Two/Three due to target spacing rounding
         
-        // Calculate count1 (always needed)
-        var measuredDistanceOne = try(definition.distanceTypeOne == DistanceType.Measured ? 
-            evDistance(context, { "side0" : definition.startEntityOne, "side1" : definition.endEntityOne }).distance : 0 * inch);
-        if (measuredDistanceOne == undefined)
-            measuredDistanceOne = 0 * inch;
-        
-        var directionInfoOne = getCountAndDistance(
-            definition.distanceOne,
-            definition.hasOffsetOne,
-            definition.oppositeDirectionOne,
-            definition.spacingTypeOne,
-            definition.distanceTypeOne,
-            definition.offsetOne,
-            definition.oppositeOffsetDirectionOne,
-            definition.instanceCountTypeOne,
-            definition.countOne,
-            definition.targetSpacingOne,
-            measuredDistanceOne,
-            definition.roundingTypeOne
-        );
-        var count1 = directionInfoOne.instanceCount;
-        
-        // Calculate count2 if second direction exists
-        var count2 = 1;
-        if (definition.hasSecondDir)
-        {
-            var measuredDistanceTwo = try(definition.distanceTypeTwo == DistanceType.Measured ? 
-                evDistance(context, { "side0" : definition.startEntityTwo, "side1" : definition.endEntityTwo }).distance : 0 * inch);
-            if (measuredDistanceTwo == undefined)
-                measuredDistanceTwo = 0 * inch;
-            
-            var directionInfoTwo = getCountAndDistance(
-                definition.distanceTwo,
-                definition.hasOffsetTwo,
-                definition.oppositeDirectionTwo,
-                definition.spacingTypeTwo,
-                definition.distanceTypeTwo,
-                definition.offsetTwo,
-                definition.oppositeOffsetDirectionTwo,
-                definition.instanceCountTypeTwo,
-                definition.countTwo,
-                definition.targetSpacingTwo,
-                measuredDistanceTwo,
-                definition.roundingTypeTwo
-            );
-            count2 = directionInfoTwo.instanceCount;
-        }
-        
-        // Calculate count3 if third direction exists
-        var count3 = 1;
-        if (definition.hasSecondDir && definition.hasThirdDir)
-        {
-            var measuredDistanceThree = try(definition.distanceTypeThree == DistanceType.Measured ? 
-                evDistance(context, { "side0" : definition.startEntityThree, "side1" : definition.endEntityThree }).distance : 0 * inch);
-            if (measuredDistanceThree == undefined)
-                measuredDistanceThree = 0 * inch;
-            
-            var directionInfoThree = getCountAndDistance(
-                definition.distanceThree,
-                definition.hasOffsetThree,
-                definition.oppositeDirectionThree,
-                definition.spacingTypeThree,
-                definition.distanceTypeThree,
-                definition.offsetThree,
-                definition.oppositeOffsetDirectionThree,
-                definition.instanceCountTypeThree,
-                definition.countThree,
-                definition.targetSpacingThree,
-                measuredDistanceThree,
-                definition.roundingTypeThree
-            );
-            count3 = directionInfoThree.instanceCount;
-        }
+        var count1 = computeInstanceCountForManipulator(context, definition, 1);
+        var count2 = definition.hasSecondDir ? computeInstanceCountForManipulator(context, definition, 2) : 1;
+        var count3 = (definition.hasSecondDir && definition.hasThirdDir) ? computeInstanceCountForManipulator(context, definition, 3) : 1;
         
         const indexToInstance = function(index)
             {
