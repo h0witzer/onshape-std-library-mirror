@@ -109,16 +109,19 @@ export const tabAndSlotBossDisplay = defineFeature(function(context is Context, 
             throw regenError("Select at least one sheet metal edge", ["edges"]);
         }
 
-        const orderedEdgeQuery = qUnion(selectedEdges);
-        const path = try silent(constructPath(context, orderedEdgeQuery));
-        if (path == undefined)
+        // Sort edges before path construction to ensure proper ordering
+        const sortedEdgeQuery = qUnion(selectedEdges);
+        const pathResult = try silent(constructPath(context, sortedEdgeQuery));
+        if (pathResult == undefined)
         {
             throw regenError("Unable to order the selected edges into a continuous chain", ["edges"], definition.edges);
         }
+        const path = pathResult;
 
-        // Calculate tab positions along the edge chain (as normalized parameters from 0 to 1)
+        // Calculate tab positions along the edge chain using ordered path edges
+        const orderedEdgeQuery = qUnion(path.edges);
         const totalLength = evLength(context, {
-                "entities" : definition.edges
+                "entities" : orderedEdgeQuery
             });
         
         var tabCount = 0;
@@ -140,7 +143,7 @@ export const tabAndSlotBossDisplay = defineFeature(function(context is Context, 
             throw regenError("No tabs can fit with the specified parameters", ["tabWidth", "spacing"]);
         }
 
-        // Track original edges before splitting
+        // Track ordered path edges before splitting to maintain edge ordering
         const trackedEdges = startTracking(context, orderedEdgeQuery);
 
         // Split the edges at tab boundaries
@@ -453,6 +456,7 @@ function calculateEdgeSplitInstructionsFromParameters(context is Context, path i
 
 // Identifies edges that correspond to tab segments based on tab domains.
 // Checks which edges fall within the tab domain ranges after splitting.
+// Uses the original path structure to maintain edge ordering and orientation.
 function identifyTabSegmentEdgesFromDomains(context is Context, splitEdges is Query, path is Path, totalLength is ValueWithUnits, tabDomains is array) returns Query
 {
     if (size(tabDomains) == 0)
@@ -466,15 +470,19 @@ function identifyTabSegmentEdgesFromDomains(context is Context, splitEdges is Qu
         return qNothing();
     }
 
-    // Try to construct a path to get ordered edges
+    // Construct a new path from the split edges to maintain proper ordering
     const orderedPath = try silent(constructPath(context, qUnion(edges)));
-    var orderedEdges = edges;
-    if (orderedPath != undefined)
+    if (orderedPath == undefined)
     {
-        orderedEdges = orderedPath.edges;
+        // If we can't construct a path after splitting, the edges may not form a continuous chain
+        // This is a critical error as we need ordered edges for position calculation
+        println("ERROR: Unable to construct ordered path from split edges");
+        return qNothing();
     }
+    
+    const orderedEdges = orderedPath.edges;
 
-    // Calculate cumulative lengths to determine position of each edge
+    // Calculate cumulative lengths to determine position of each edge along the ordered path
     var edgeMidpoints = [];
     var accumulatedLength = 0 * meter;
     
@@ -486,14 +494,15 @@ function identifyTabSegmentEdgesFromDomains(context is Context, splitEdges is Qu
         accumulatedLength += edgeLength;
     }
 
-    // Identify which edges fall within tab domains
+    // Identify which edges fall within tab domains based on their midpoint position
     var tabEdgeQueries = [];
     for (var i = 0; i < size(orderedEdges); i += 1)
     {
         const midpoint = edgeMidpoints[i];
         for (var domain in tabDomains)
         {
-            if (midpoint >= domain.start && midpoint <= domain.end)
+            // Check if edge midpoint falls within the tab domain range
+            if (midpoint >= domain.start - FRACTION_TOLERANCE && midpoint <= domain.end + FRACTION_TOLERANCE)
             {
                 tabEdgeQueries = append(tabEdgeQueries, orderedEdges[i]);
                 break;
@@ -503,6 +512,7 @@ function identifyTabSegmentEdgesFromDomains(context is Context, splitEdges is Qu
 
     if (size(tabEdgeQueries) == 0)
     {
+        println("WARNING: No tab segment edges identified from " ~ toString(size(orderedEdges)) ~ " split edges");
         return qNothing();
     }
 
