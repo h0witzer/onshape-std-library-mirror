@@ -462,14 +462,52 @@ export function TextFunctionPascoe(
             tools = qUnion([tools, thickenned]);
             tools = qIntersection([tools, qBodyType(tools, BodyType.SOLID)]);
 
-            BooleanFunctionPascoe(context, id, definition.booleanEnum->toString(), tools, definition.mergeScope->qOwnerBody(), false);
-            
             // Delete island bodies created by subtraction operation
             if (definition.booleanEnum == BooleanScopeLocal.SUBTRACT && definition.deleteIslandBodies == true)
             {
-                // Query all bodies that were in the merge scope area after the boolean
-                // The boolean operation modifies the target bodies in place, potentially splitting them
-                deleteIslandBodies(context, id, definition.mergeScope);
+                // Query scoped entities BEFORE the boolean operation and get their bounding box volumes
+                const bodiesBeforeBoolean = evaluateQuery(context, definition.mergeScope->qOwnerBody());
+                var beforeBBoxVolumes = [];
+                for (var body in bodiesBeforeBoolean)
+                {
+                    const bbox = evBox3d(context, {
+                            "topology" : body,
+                            "tight" : false
+                        });
+                    const volume = (bbox.maxCorner[0] - bbox.minCorner[0]) * 
+                                   (bbox.maxCorner[1] - bbox.minCorner[1]) * 
+                                   (bbox.maxCorner[2] - bbox.minCorner[2]);
+                    beforeBBoxVolumes = append(beforeBBoxVolumes, {
+                            "body" : body,
+                            "bboxVolume" : volume
+                        });
+                }
+
+                BooleanFunctionPascoe(context, id, definition.booleanEnum->toString(), tools, definition.mergeScope->qOwnerBody(), false);
+                
+                // Query scoped entities AFTER the boolean operation and get their bounding box volumes
+                const bodiesAfterBoolean = evaluateQuery(context, qOwnerBody(definition.mergeScope));
+                var afterBBoxVolumes = [];
+                for (var body in bodiesAfterBoolean)
+                {
+                    const bbox = evBox3d(context, {
+                            "topology" : body,
+                            "tight" : false
+                        });
+                    const volume = (bbox.maxCorner[0] - bbox.minCorner[0]) * 
+                                   (bbox.maxCorner[1] - bbox.minCorner[1]) * 
+                                   (bbox.maxCorner[2] - bbox.minCorner[2]);
+                    afterBBoxVolumes = append(afterBBoxVolumes, {
+                            "body" : body,
+                            "bboxVolume" : volume
+                        });
+                }
+                
+                deleteIslandBodies(context, id, beforeBBoxVolumes, afterBBoxVolumes);
+            }
+            else
+            {
+                BooleanFunctionPascoe(context, id, definition.booleanEnum->toString(), tools, definition.mergeScope->qOwnerBody(), false);
             }
         }
     }
@@ -610,57 +648,46 @@ export function getFaceAtMateConnectorOrigin(context is Context, mateConnectorQu
 
 /**
  * Delete small island bodies created by subtraction operations.
- * Identifies bodies that are disconnected from the main body and deletes them if they're smaller.
+ * Compares bounding box volumes before and after the boolean operation to identify the main body.
  * @param context : The current context
  * @param id : The feature id
- * @param mergeScope : Query for faces/bodies that were the target of the subtraction
+ * @param beforeBBoxVolumes : Array of {body, bboxVolume} for bodies before the boolean operation
+ * @param afterBBoxVolumes : Array of {body, bboxVolume} for bodies after the boolean operation
  */
-function deleteIslandBodies(context is Context, id is Id, mergeScope is Query)
+function deleteIslandBodies(context is Context, id is Id, beforeBBoxVolumes is array, afterBBoxVolumes is array)
 {
-    // After a boolean subtraction, the target body may have been split into multiple bodies
-    // We need to find all bodies that contain faces from the merge scope
-    const mergeScopeBodies = qOwnerBody(mergeScope);
-    const bodies = evaluateQuery(context, mergeScopeBodies);
-    
-    if (size(bodies) <= 1)
-    {
-        // No islands if only one body or no bodies
-        return;
-    }
-    
-    // Evaluate the volume/mass of each body to identify the largest (main) body
-    var bodyMasses = [];
-    for (var body in bodies)
-    {
-        const massProperties = evApproximateMassProperties(context, {
-                "entities" : body
-            });
-        bodyMasses = append(bodyMasses, {
-                "body" : body,
-                "volume" : massProperties.volume
-            });
-    }
-    
-    if (size(bodyMasses) <= 1)
+    // If only one body after the operation, no islands to delete
+    if (size(afterBBoxVolumes) <= 1)
     {
         return;
     }
     
-    // Find the largest body
-    var largestBodyData = bodyMasses[0];
-    for (var bodyData in bodyMasses)
+    // Find the body with the largest bounding box in the BEFORE set
+    var largestBeforeBBox = beforeBBoxVolumes[0];
+    for (var bodyData in beforeBBoxVolumes)
     {
-        if (bodyData.volume > largestBodyData.volume)
+        if (bodyData.bboxVolume > largestBeforeBBox.bboxVolume)
         {
-            largestBodyData = bodyData;
+            largestBeforeBBox = bodyData;
         }
     }
     
-    // Collect island bodies (all bodies except the largest)
-    var islandBodies = [];
-    for (var bodyData in bodyMasses)
+    // Find the body with the largest bounding box in the AFTER set
+    var largestAfterBBox = afterBBoxVolumes[0];
+    for (var bodyData in afterBBoxVolumes)
     {
-        if (bodyData.body != largestBodyData.body)
+        if (bodyData.bboxVolume > largestAfterBBox.bboxVolume)
+        {
+            largestAfterBBox = bodyData;
+        }
+    }
+    
+    // The body with the biggest bounding box in both sets is the original to keep
+    // Collect all other bodies as islands to delete
+    var islandBodies = [];
+    for (var bodyData in afterBBoxVolumes)
+    {
+        if (bodyData.body != largestAfterBBox.body)
         {
             islandBodies = append(islandBodies, bodyData.body);
         }
