@@ -217,8 +217,8 @@ export predicate TextMainPredicatePascoe(definition)
          definition.booleanEnum == BooleanScopeLocal.SUBTRACT ||
          definition.booleanEnum == BooleanScopeLocal.INTERSECT))
     {
-        annotation { "Name" : "Update from part properties", "UIHint" : UIHint.OPPOSITE_DIRECTION_CIRCULAR }
-        definition.updatePartProperties is boolean;
+        annotation { "Name" : "Update from part properties" }
+        isButton(definition.updatePartProperties);
     }
 }
 
@@ -594,7 +594,7 @@ export function getFaceAtMateConnectorOrigin(context is Context, mateConnectorQu
 }
 
 
-export function editLogic(context is Context, id is Id, oldDefinition is map, definition is map, isCreating is boolean, specifiedParameters is map) returns map
+export function editLogic(context is Context, id is Id, oldDefinition is map, definition is map, isCreating is boolean, specifiedParameters is map, clickedButton is string) returns map
 {
     definition = cadsharpUrlFunctionForPreExistingEditLogic(oldDefinition, definition);
 
@@ -640,15 +640,12 @@ export function editLogic(context is Context, id is Id, oldDefinition is map, de
          definition.booleanEnum == BooleanScopeLocal.SUBTRACT ||
          definition.booleanEnum == BooleanScopeLocal.INTERSECT))
     {
-        const shouldUpdate = (definition.updatePartProperties != oldDefinition.updatePartProperties) ||
+        const shouldUpdate = (clickedButton == "updatePartProperties") ||
                             (definition.textSourceType != oldDefinition.textSourceType) ||
                             (definition.mergeScope != oldDefinition.mergeScope);
         
         if (shouldUpdate)
         {
-            // Reset the button state
-            definition.updatePartProperties = oldDefinition.updatePartProperties;
-            
             // Retrieve text from part property
             if (!isQueryEmpty(context, definition.mergeScope))
             {
