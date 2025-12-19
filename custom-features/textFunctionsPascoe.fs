@@ -617,72 +617,61 @@ export function getFaceAtMateConnectorOrigin(context is Context, mateConnectorQu
  */
 function deleteIslandBodies(context is Context, id is Id, mergeScope is Query)
 {
-    try
+    // After a boolean subtraction, the target body may have been split into multiple bodies
+    // We need to find all bodies that contain faces from the merge scope
+    const mergeScopeBodies = qOwnerBody(mergeScope);
+    const bodies = evaluateQuery(context, mergeScopeBodies);
+    
+    if (size(bodies) <= 1)
     {
-        // After a boolean subtraction, the target body may have been split into multiple bodies
-        // We need to find all bodies that contain faces from the merge scope
-        const mergeScopeBodies = qOwnerBody(mergeScope);
-        const bodies = evaluateQuery(context, mergeScopeBodies);
-        
-        if (size(bodies) <= 1)
+        // No islands if only one body or no bodies
+        return;
+    }
+    
+    // Evaluate the volume/mass of each body to identify the largest (main) body
+    var bodyMasses = [];
+    for (var body in bodies)
+    {
+        const massProperties = evApproximateMassProperties(context, {
+                "entities" : body
+            });
+        bodyMasses = append(bodyMasses, {
+                "body" : body,
+                "volume" : massProperties.volume
+            });
+    }
+    
+    if (size(bodyMasses) <= 1)
+    {
+        return;
+    }
+    
+    // Find the largest body
+    var largestBodyData = bodyMasses[0];
+    for (var bodyData in bodyMasses)
+    {
+        if (bodyData.volume > largestBodyData.volume)
         {
-            // No islands if only one body or no bodies
-            return;
-        }
-        
-        // Evaluate the volume/mass of each body to identify the largest (main) body
-        var bodyMasses = [];
-        for (var body in bodies)
-        {
-            try silent
-            {
-                const massProperties = evApproximateMassProperties(context, {
-                        "entities" : body
-                    });
-                bodyMasses = append(bodyMasses, {
-                        "body" : body,
-                        "volume" : massProperties.volume
-                    });
-            }
-        }
-        
-        if (size(bodyMasses) <= 1)
-        {
-            return;
-        }
-        
-        // Find the largest body
-        var largestBodyData = bodyMasses[0];
-        for (var bodyData in bodyMasses)
-        {
-            if (bodyData.volume > largestBodyData.volume)
-            {
-                largestBodyData = bodyData;
-            }
-        }
-        
-        // Collect island bodies (all bodies except the largest)
-        var islandBodies = qNothing();
-        for (var bodyData in bodyMasses)
-        {
-            if (bodyData.body != largestBodyData.body)
-            {
-                islandBodies = qUnion([islandBodies, bodyData.body]);
-            }
-        }
-        
-        // Delete the island bodies
-        if (!isQueryEmpty(context, islandBodies))
-        {
-            opDeleteBodies(context, id + "deleteIslands", {
-                    "entities" : islandBodies
-                });
+            largestBodyData = bodyData;
         }
     }
-    catch
+    
+    // Collect island bodies (all bodies except the largest)
+    var islandBodies = [];
+    for (var bodyData in bodyMasses)
     {
-        // If island deletion fails, continue without deleting
-        // This is not a critical error
+        if (bodyData.body != largestBodyData.body)
+        {
+            islandBodies = append(islandBodies, bodyData.body);
+        }
+    }
+    
+    // Delete the island bodies
+    if (size(islandBodies) > 0)
+    {
+        opDeleteBodies(context, id + "deleteIslands", {
+                "entities" : qUnion(islandBodies)
+            });
     }
 }
 
