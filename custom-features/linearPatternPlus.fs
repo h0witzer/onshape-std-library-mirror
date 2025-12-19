@@ -871,8 +871,22 @@ export const linearPatternPlus = defineFeature(function(context is Context, id i
         definition.transforms = transforms;
         definition.instanceNames = instanceNames;
         definition.seed = definition.entities;
+        
+        definition.sketchPatternInfo = ErrorStringEnum.LINEAR_PATTERN_SKETCH_REAPPLY_INFO;
 
         applyPattern(context, id, definition, remainingTransform);
+        
+        // Record pattern metadata for downstream features
+        var patternDirections = [offset1];
+        if (count2 > 1)
+        {
+            patternDirections = append(patternDirections, offset2);
+        }
+        if (count3 > 1)
+        {
+            patternDirections = append(patternDirections, offset3);
+        }
+        setPatternData(context, id, RecordPatternType.LINEAR, patternDirections);
 
         if (definition.patternType == PatternType.PART && definition.composite && definition.operationType == NewBodyOperationType.NEW)
         {
