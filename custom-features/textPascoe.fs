@@ -55,6 +55,10 @@ export const text = defineFeature(function(context is Context, id is Id, definit
  * Editing logic function for the text feature.
  * Automatically detects and populates the mergeScope when a mate connector is selected
  * for the location input by finding the face or body that the mate connector is touching.
+ * 
+ * This function is called whenever the feature definition changes in the UI.
+ * It automatically fills in the mergeScope field when a mate connector is selected
+ * for the location, similar to how the sheet metal tab feature handles wiring.
  */
 export function editLogic(context is Context, id is Id, oldDefinition is map, definition is map,
     specifiedParameters is map, hiddenBodies is Query) returns map
@@ -68,37 +72,51 @@ export function editLogic(context is Context, id is Id, oldDefinition is map, de
         
         if (size(mateConnectorEntities) > 0)
         {
-            // Get the coordinate system of the mate connector
             try silent
             {
-                const mateConnectorCoordSys = evMateConnector(context, {
-                    "mateConnector" : mateConnectorQuery
-                });
+                // First approach: Try to get the owner body directly from the mate connector
+                // This should return the body/part that the mate connector is attached to
+                const ownerBodyQuery = qOwnerBody(mateConnectorQuery);
+                const ownerBodies = evaluateQuery(context, ownerBodyQuery);
                 
-                // Get all visible faces (excluding hidden bodies)
-                const visibleFaces = qSubtraction(qEverything(EntityType.FACE), qOwnedByBody(hiddenBodies, EntityType.FACE));
-                
-                // Find the closest face to the mate connector's origin point
-                const closestFaceQuery = qClosestTo(visibleFaces, mateConnectorCoordSys.origin);
-                const closestFaces = evaluateQuery(context, closestFaceQuery);
-                
-                if (size(closestFaces) > 0)
+                if (size(ownerBodies) > 0)
                 {
-                    // Check if the mate connector is actually touching/near the face
-                    // by checking the distance is very small (within tolerance)
-                    const distanceResult = evDistance(context, {
-                        "side0" : mateConnectorCoordSys.origin,
-                        "side1" : closestFaceQuery
+                    // Successfully found the owner body - use it as the merge scope
+                    definition.mergeScope = ownerBodyQuery;
+                }
+                else
+                {
+                    // Fallback approach: Find the closest face to the mate connector's position
+                    // and use its owner body as the merge scope
+                    const mateConnectorCoordSys = evMateConnector(context, {
+                        "mateConnector" : mateConnectorQuery
                     });
                     
-                    // If the mate connector is very close to the face (touching it)
-                    // set it as the merge scope. Using a small tolerance for "touching"
-                    const tolerance = 1e-5 * meter; // Small tolerance for detecting contact
-                    if (distanceResult.distance < tolerance)
+                    // Get all visible faces (excluding hidden bodies)
+                    const visibleFaces = qSubtraction(qEverything(EntityType.FACE), qOwnedByBody(hiddenBodies, EntityType.FACE));
+                    
+                    // Find the closest face to the mate connector's origin point
+                    const closestFaceQuery = qClosestTo(visibleFaces, mateConnectorCoordSys.origin);
+                    const closestFaces = evaluateQuery(context, closestFaceQuery);
+                    
+                    if (size(closestFaces) > 0)
                     {
-                        // Get the body that owns this face
-                        const ownerBody = qOwnerBody(closestFaceQuery);
-                        definition.mergeScope = ownerBody;
+                        // Check if the mate connector is actually touching/near the face
+                        // by checking the distance is very small (within tolerance)
+                        const distanceResult = evDistance(context, {
+                            "side0" : mateConnectorCoordSys.origin,
+                            "side1" : closestFaceQuery
+                        });
+                        
+                        // If the mate connector is very close to the face (touching it)
+                        // set it as the merge scope. Using a small tolerance for "touching"
+                        const tolerance = 1e-5 * meter; // Small tolerance for detecting contact
+                        if (distanceResult.distance < tolerance)
+                        {
+                            // Get the body that owns this face
+                            const ownerBodyFromFace = qOwnerBody(closestFaceQuery);
+                            definition.mergeScope = ownerBodyFromFace;
+                        }
                     }
                 }
             }
