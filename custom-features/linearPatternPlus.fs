@@ -7,8 +7,10 @@ FeatureScript 2837;
 import(path : "onshape/std/geometry.fs", version : "2837.0");
 export import(path : "onshape/std/patternUtils.fs", version : "2837.0");
 import(path : "onshape/std/manipulator.fs", version : "2837.0");
-icon::import(path : "112b21d6eefe93747274a402", version : "8a4b67ede16d223bb06f67bf");
-import(path : "c3fe41e654ffc2f052a38c8f/312092e1b28afbd4f1e894dd/3c37750af0cf716cb0ede1e0", version : "632ec68437f325e31ffbe8f9"); //reeseSetVariablesFunctions.fs
+import(path : "onshape/std/recordpatterntype.gen.fs", version : "2837.0");
+
+icon::import(path : "20b2a3d05c3013e2f73b24d4", version : "3d19453df2c52d2777d8108f");
+import(path : "c3fe41e654ffc2f052a38c8f/312092e1b28afbd4f1e894dd/3c37750af0cf716cb0ede1e0", version : "632ec68437f325e31ffbe8f9");
 
 
 export enum DistanceType
@@ -354,7 +356,6 @@ export const linearPatternPlus = defineFeature(function(context is Context, id i
         var distanceOne;
         var directionOne;
         var directionQueryOne;
-        var isCenteredOne;
 
         var oppositeDirectionTwo;
         var hasSecondDir = false; // false default, and will change true later if needed
@@ -362,7 +363,6 @@ export const linearPatternPlus = defineFeature(function(context is Context, id i
         var distanceTwo;
         var directionTwo;
         var directionQueryTwo;
-        var isCenteredTwo;
 
         var oppositeDirectionThree;
         var hasThirdDir = false; // false default, and will change true later if needed
@@ -370,7 +370,6 @@ export const linearPatternPlus = defineFeature(function(context is Context, id i
         var distanceThree;
         var directionThree;
         var directionQueryThree;
-        var isCenteredThree;
 
         var toCleanUp = [];
 
@@ -380,7 +379,7 @@ export const linearPatternPlus = defineFeature(function(context is Context, id i
         {
             // get the info from last feature's variables
             var previousFeatureInfo;
-            for (var key, value in definition.feature)
+            for (var key in definition.feature)
             {
                 const featureID = key;
                 try
@@ -388,7 +387,7 @@ export const linearPatternPlus = defineFeature(function(context is Context, id i
                     previousFeatureInfo = getVariable(context, toString(featureID));
                     println(previousFeatureInfo);
                 }
-                catch (error)
+                catch
                 {
                     reportFeatureWarning(context, id, "Incompatible feature selected. Only other Linear Pattern Plus features may be used, and others are ignored.");
                 }
@@ -398,7 +397,6 @@ export const linearPatternPlus = defineFeature(function(context is Context, id i
             distanceOne = previousFeatureInfo.spacingOne;
             directionOne = previousFeatureInfo["@directionOne"];
             oppositeDirectionOne = previousFeatureInfo["@oppositeDirectionOne"];
-            isCenteredOne = definition.isCenteredOne;
 
             opPlane(context, id + "directionQueryOneBody", {
                         "plane" : plane(vector(0, 0, 0) * inch, directionOne)
@@ -413,7 +411,6 @@ export const linearPatternPlus = defineFeature(function(context is Context, id i
                 distanceTwo = previousFeatureInfo.spacingTwo;
                 directionTwo = previousFeatureInfo["@directionTwo"];
                 hasSecondDir = true;
-                isCenteredTwo = definition.isCenteredTwo;
 
                 oppositeDirectionTwo = previousFeatureInfo["@oppositeDirectionTwo"];
 
@@ -431,7 +428,6 @@ export const linearPatternPlus = defineFeature(function(context is Context, id i
                 distanceThree = previousFeatureInfo.spacingThree;
                 directionThree = previousFeatureInfo["@directionThree"];
                 hasThirdDir = true;
-                isCenteredThree = definition.isCenteredThree;
 
                 oppositeDirectionThree = previousFeatureInfo["@oppositeDirectionThree"];
 
@@ -461,7 +457,6 @@ export const linearPatternPlus = defineFeature(function(context is Context, id i
             }
             else if (definition.patternType == PatternType.FACE)
             {
-                var entities = evaluateQuery(context, definition.entities);
                 manipOrigin = evApproximateCentroid(context, { "entities" : evaluateQuery(context, definition.faces)[0] });
             }
             else if (definition.patternType == PatternType.FEATURE)
