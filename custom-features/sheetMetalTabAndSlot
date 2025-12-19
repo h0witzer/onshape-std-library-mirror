@@ -176,16 +176,25 @@ export const tabAndSlotBossDisplay = defineFeature(function(context is Context, 
         const splitEdgesEvaluated = evaluateQuery(context, splitEdges);
         println("Split edges count: " ~ toString(size(splitEdgesEvaluated)));
         
-        // Phase 2: Identify tab segments - get midpoints of edges in tab domains
-        // Calculate midpoints for edges that fall within tab domains
-        const tabMidpoints = identifyTabMidpointsFromSplitEdges(context, splitEdges, path, totalLength, tabDomains);
+        // Phase 2: Identify tab segments and visualize them on the original split edges
+        // Calculate which edges should be tabs based on their midpoint positions
+        const tabEdges = identifyTabEdgesFromSplitEdges(context, splitEdges, path, totalLength, tabDomains);
         
-        if (size(tabMidpoints) == 0)
+        if (size(evaluateQuery(context, tabEdges)) == 0)
         {
             throw regenError("No tab segment edges identified after splitting. Check edge selection and tab parameters.", ["edges", "tabWidth", "spacing"]);
         }
         
-        println("Tab midpoints identified: " ~ toString(size(tabMidpoints)));
+        println("Tab edges identified: " ~ toString(size(evaluateQuery(context, tabEdges))));
+        
+        // DEBUG: Highlight tab edges on the original split edges in YELLOW
+        debug(context, tabEdges, DebugColor.YELLOW);
+        
+        // DEBUG: Highlight gap edges (all split edges that are not tabs) in CYAN
+        const gapEdges = qSubtraction(splitEdges, tabEdges);
+        debug(context, gapEdges, DebugColor.CYAN);
+        
+        /* COMMENTED OUT FOR DEBUGGING - WILL RE-ENABLE AFTER VISUAL VERIFICATION
         
         // Filter split edges to only those adjacent to wall surfaces for extraction
         const adjacentFaces = qAdjacent(splitEdges, AdjacencyType.EDGE, EntityType.FACE);
@@ -255,6 +264,8 @@ export const tabAndSlotBossDisplay = defineFeature(function(context is Context, 
         {
             println("Warning: No edges found to extend");
         }
+        
+        END COMMENTED OUT SECTION */
     });
 
 // Filters a query of faces to return only those with SMObjectType.WALL attributes.
@@ -467,6 +478,103 @@ function calculateEdgeSplitInstructionsFromParameters(context is Context, path i
     }
 
     return splitInstructions;
+}
+
+// Identifies which split edges fall within tab domains.
+// Returns a Query of edges that should be tabs (for visualization).
+// Uses accumulated length tracking to calculate each edge's midpoint position.
+function identifyTabEdgesFromSplitEdges(context is Context, splitEdges is Query, path is Path, totalLength is ValueWithUnits, tabDomains is array) returns Query
+{
+    if (size(tabDomains) == 0)
+    {
+        return qNothing();
+    }
+
+    const edges = evaluateQuery(context, splitEdges);
+    if (size(edges) == 0)
+    {
+        return qNothing();
+    }
+
+    // Try to construct path from split edges, but if it fails, use edges in arbitrary order
+    var orderedEdges = [];
+    const orderedPath = try silent(constructPath(context, qUnion(edges)));
+    if (orderedPath != undefined)
+    {
+        orderedEdges = orderedPath.edges;
+        println("DEBUG: Successfully constructed path from " ~ toString(size(orderedEdges)) ~ " split edges");
+    }
+    else
+    {
+        println("WARNING: Unable to construct continuous path from split edges, using split edges in arbitrary order");
+        orderedEdges = edges;
+    }
+    
+    // Collect edge lengths first and calculate actual total length of split edges
+    var edgeLengths = [];
+    var actualTotalLength = 0 * meter;
+    for (var edge in orderedEdges)
+    {
+        const edgeLength = evLength(context, { "entities" : edge });
+        edgeLengths = append(edgeLengths, edgeLength);
+        actualTotalLength += edgeLength;
+    }
+    
+    println("DEBUG: Identifying tab edges from " ~ toString(size(orderedEdges)) ~ " split edges");
+    println("DEBUG: Original total length: " ~ toString(totalLength));
+    println("DEBUG: Actual total length of split edges: " ~ toString(actualTotalLength));
+    println("DEBUG: Number of tab domains: " ~ toString(size(tabDomains)));
+    for (var domain in tabDomains)
+    {
+        println("DEBUG: Tab domain [" ~ toString(domain.start) ~ ", " ~ toString(domain.end) ~ "]");
+    }
+    
+    // Track accumulated length and collect edges in tab domains
+    var accumulatedLength = 0 * meter;
+    var tabEdgeQueries = [];
+    
+    for (var i = 0; i < size(orderedEdges); i += 1)
+    {
+        const edge = orderedEdges[i];
+        const edgeLength = edgeLengths[i];
+        
+        // Calculate this edge's midpoint position as a fraction of actual total length
+        const edgeMidpointFraction = (accumulatedLength + edgeLength / 2) / actualTotalLength;
+        
+        // Check if this edge's midpoint falls within ANY tab domain
+        var isTab = false;
+        for (var domain in tabDomains)
+        {
+            if (edgeMidpointFraction >= domain.start - FRACTION_TOLERANCE 
+                && edgeMidpointFraction <= domain.end + FRACTION_TOLERANCE)
+            {
+                isTab = true;
+                println("DEBUG: Edge " ~ toString(i) ~ " at midpoint " ~ toString(edgeMidpointFraction) ~ " is TAB (domain [" ~ toString(domain.start) ~ ", " ~ toString(domain.end) ~ "])");
+                break;
+            }
+        }
+        
+        if (isTab)
+        {
+            tabEdgeQueries = append(tabEdgeQueries, edge);
+        }
+        else
+        {
+            println("DEBUG: Edge " ~ toString(i) ~ " at midpoint " ~ toString(edgeMidpointFraction) ~ " is GAP");
+        }
+        
+        accumulatedLength += edgeLength;
+    }
+    
+    if (size(tabEdgeQueries) == 0)
+    {
+        println("WARNING: No tab edges identified from " ~ toString(size(orderedEdges)) ~ " split edges");
+        return qNothing();
+    }
+    
+    println("DEBUG: Identified " ~ toString(size(tabEdgeQueries)) ~ " tab edges");
+    
+    return qUnion(tabEdgeQueries);
 }
 
 // Identifies midpoints of split edges that fall within tab domains.
