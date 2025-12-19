@@ -379,13 +379,16 @@ export const linearPatternPlus = defineFeature(function(context is Context, id i
         {
             // get the info from last feature's variables
             var previousFeatureInfo;
-            for (var key in definition.feature)
+            
+            // definition.feature is a FeatureList, iterate over the actual features
+            for (var selectedFeature in definition.feature)
             {
-                const featureID = key;
                 try
                 {
-                    previousFeatureInfo = getVariable(context, toString(featureID));
+                    previousFeatureInfo = getVariable(context, selectedFeature);
                     println(previousFeatureInfo);
+                    // Successfully retrieved, break out of loop
+                    break;
                 }
                 catch
                 {
