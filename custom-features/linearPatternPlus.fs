@@ -3,9 +3,10 @@
 
 // TODO I'm still working on getting directions 2 and 3 to match previous features. What's different between them and direction 1, which seems to work?
 
-FeatureScript 1711;
-import(path : "onshape/std/geometry.fs", version : "1711.0");
-export import(path : "onshape/std/patternUtils.fs", version : "1711.0");
+FeatureScript 2837;
+import(path : "onshape/std/geometry.fs", version : "2837.0");
+export import(path : "onshape/std/patternUtils.fs", version : "2837.0");
+import(path : "onshape/std/manipulator.fs", version : "2837.0");
 icon::import(path : "112b21d6eefe93747274a402", version : "8a4b67ede16d223bb06f67bf");
 import(path : "c3fe41e654ffc2f052a38c8f/312092e1b28afbd4f1e894dd/3c37750af0cf716cb0ede1e0", version : "632ec68437f325e31ffbe8f9"); //reeseSetVariablesFunctions.fs
 
@@ -300,6 +301,30 @@ export const linearPatternPlus = defineFeature(function(context is Context, id i
             {
                 annotation { "Name" : "Closed" }
                 definition.closedComposite is boolean;
+            }
+        }
+
+        annotation { "Name" : "Skip instances" }
+        definition.skipInstances is boolean;
+
+        annotation { "Group Name" : "Skip instances", "Driving Parameter" : "skipInstances", "Collapsed By Default" : false }
+        {
+            if (definition.skipInstances)
+            {
+                annotation { "Name" : "Instances to skip", "Item name" : "instance", "Item label template" : "(#index1, #index2, #index3)", "Show labels only" : true, "UIHint" : [UIHint.INITIAL_FOCUS, UIHint.PREVENT_ARRAY_REORDER, UIHint.ALLOW_ARRAY_FOCUS] }
+                definition.skippedInstances is array;
+
+                for (var instance in definition.skippedInstances)
+                {
+                    annotation { "Name" : "First direction" }
+                    isInteger(instance.index1, { (unitless) : [-1e5, 1, 1e5] } as IntegerBoundSpec);
+
+                    annotation { "Name" : "Second direction" }
+                    isInteger(instance.index2, { (unitless) : [-1e5, 0, 1e5] } as IntegerBoundSpec);
+
+                    annotation { "Name" : "Third direction" }
+                    isInteger(instance.index3, { (unitless) : [-1e5, 0, 1e5] } as IntegerBoundSpec);
+                }
             }
         }
 
@@ -727,6 +752,21 @@ export const linearPatternPlus = defineFeature(function(context is Context, id i
 
         verifyPatternSize(context, id, count1 * count2 * count3);
 
+        // Handle skip instances validation and manipulators
+        var skippedIndicesSet = {};
+        if (definition.skipInstances)
+        {
+            reportAnyInvalidEntriesThreeDirection(context, id, definition, count1, count2, count3, 
+                definition.isCenteredOne, definition.isCenteredTwo, definition.isCenteredThree);
+
+            // Build a set of skipped indices for fast lookup
+            for (var instance in definition.skippedInstances)
+            {
+                const instanceKey = toString(instance.index1) ~ "," ~ toString(instance.index2) ~ "," ~ toString(instance.index3);
+                skippedIndicesSet[instanceKey] = true;
+            }
+        }
+
         reportFeatureInfo(context, id, toString(count1 * count2 * count3) ~ " instances.");
 
         // Compute a vector of transforms
@@ -734,6 +774,7 @@ export const linearPatternPlus = defineFeature(function(context is Context, id i
         // is necessary for performance since it is in an inner loop bottleneck.
         var transforms = [];
         var instanceNames = [];
+        var manipulatorPoints = [];
         const identity = identityMatrix(3);
         var instanceTransform = transform(identity, zeroVector(3) * meter);
 
@@ -758,11 +799,25 @@ export const linearPatternPlus = defineFeature(function(context is Context, id i
                 // i for direction 1
                 for (var i = startIndex1; i < count1; i += 1)
                 {
+                    // Check if this instance should be skipped
+                    const instanceKey = toString(i) ~ "," ~ toString(j) ~ "," ~ toString(k);
+                    const isSkipped = definition.skipInstances && skippedIndicesSet[instanceKey] == true;
+                    
                     // skip recreating original
                     if (j != 0 || i != 0 || k != 0)
                     {
-                        transforms = append(transforms, instanceTransform);
-                        instanceNames = append(instanceNames, i ~ jName ~ kName);
+                        // Collect manipulator points for all instances (including seed but excluding skipped)
+                        if (definition.skipInstances)
+                        {
+                            manipulatorPoints = append(manipulatorPoints, instanceTransform.translation);
+                        }
+                        
+                        // Only add transform if not skipped
+                        if (!isSkipped)
+                        {
+                            transforms = append(transforms, instanceTransform);
+                            instanceNames = append(instanceNames, i ~ jName ~ kName);
+                        }
                     }
                     instanceTransform.translation[0].value += offset1[0].value;
                     instanceTransform.translation[1].value += offset1[1].value;
@@ -773,6 +828,29 @@ export const linearPatternPlus = defineFeature(function(context is Context, id i
                 instanceTransform.translation[1].value += offset2[1].value;
                 instanceTransform.translation[2].value += offset2[2].value;
             }
+        }
+        
+        // Add manipulators for skip instances
+        if (definition.skipInstances)
+        {
+            const instanceToIndex = function(instance)
+                {
+                    return gridCoordinatesToIndexThreeDirection(instance.index1, instance.index2, instance.index3, 
+                        count1, count2, count3, 
+                        definition.isCenteredOne, definition.isCenteredTwo, definition.isCenteredThree);
+                };
+            const isInstanceWithinRange = function(instance)
+                {
+                    return !isIndexOutsideRangeThreeDirection(instance.index1, instance.index2, instance.index3, 
+                        count1, count2, count3, 
+                        definition.isCenteredOne, definition.isCenteredTwo, definition.isCenteredThree);
+                };
+            addManipulators(context, id, { "points" : {
+                        "points" : manipulatorPoints,
+                        "selectedIndices" : mapArray(filter(definition.skippedInstances, isInstanceWithinRange), instanceToIndex),
+                        "suppressedIndices" : [gridCoordinatesToIndexThreeDirection(0, 0, 0, count1, count2, count3, 
+                            definition.isCenteredOne, definition.isCenteredTwo, definition.isCenteredThree)],
+                        "manipulatorType" : ManipulatorType.TOGGLE_POINTS } as Manipulator });
         }
 
         definition.transforms = transforms;
@@ -800,7 +878,8 @@ export const linearPatternPlus = defineFeature(function(context is Context, id i
     },
 
     { patternType : PatternType.PART, operationType : NewBodyOperationType.NEW, hasSecondDir : false,
-            oppositeDirection : false, oppositeDirectionTwo : false, isCentered : false, isCenteredTwo : false, fullFeaturePattern : false }
+            oppositeDirection : false, oppositeDirectionTwo : false, isCentered : false, isCenteredTwo : false, fullFeaturePattern : false,
+            skipInstances : false, skippedInstances : [] }
 
     );
 
@@ -997,6 +1076,15 @@ export function getCountAndDistance(
     return directionInfo;
 }
 
+/**
+ * Manipulator change function for linearPatternPlus.
+ * Handles updates from linear manipulators, offset manipulators, and skip instances toggle points.
+ * 
+ * @param context : The context for this operation
+ * @param definition : The current feature definition
+ * @param newManipulators : Map containing the updated manipulator values
+ * @returns map : Updated definition with new manipulator values
+ */
 export function linearPatternPlusManipulatorFunction(context is Context, definition is map, newManipulators is map) returns map
 {
     if (newManipulators["linearManipOne"] is map)
@@ -1029,6 +1117,66 @@ export function linearPatternPlusManipulatorFunction(context is Context, definit
         definition.oppositeOffsetDirectionThree = newManipulators["offsetManipThree"].offset < 0;
         definition.offsetThree = abs(newManipulators["offsetManipThree"].offset);
     }
+    
+    // Handle skip instances manipulator changes
+    if (newManipulators["points"] is map)
+    {
+        // Determine the instance counts to use
+        var count1 = definition.countOne;
+        var count2 = definition.hasSecondDir ? definition.countTwo : 1;
+        var count3 = (definition.hasSecondDir && definition.hasThirdDir) ? definition.countThree : 1;
+        
+        const indexToInstance = function(index)
+            {
+                return indexToGridCoordinatesThreeDirection(index, count1, count2, count3, 
+                    definition.isCenteredOne, definition.isCenteredTwo, definition.isCenteredThree);
+            };
+        const isInstanceOutsideRange = function(instance)
+            {
+                return isIndexOutsideRangeThreeDirection(instance.index1, instance.index2, instance.index3, 
+                    count1, count2, count3, 
+                    definition.isCenteredOne, definition.isCenteredTwo, definition.isCenteredThree);
+            };
+
+        const newInstances = mapArray(newManipulators["points"].selectedIndices, indexToInstance);
+        const outInstances = filter(definition.skippedInstances, isInstanceOutsideRange);
+
+        if (size(outInstances) == 0)
+        {
+            definition.skippedInstances = newInstances;
+            return definition;
+        }
+
+        definition.skippedInstances = makeArray(size(newInstances) + size(outInstances));
+        var newIndex = 0;
+        var outIndex = 0;
+
+        for (var i = 0; i < size(definition.skippedInstances); i += 1)
+        {
+            if (newIndex >= size(newInstances))
+            {
+                definition.skippedInstances[i] = outInstances[outIndex];
+                outIndex += 1;
+            }
+            else if (outIndex >= size(outInstances))
+            {
+                definition.skippedInstances[i] = newInstances[newIndex];
+                newIndex += 1;
+            }
+            else if (newInstances[newIndex].index3 < outInstances[outIndex].index3 
+                || (newInstances[newIndex].index3 == outInstances[outIndex].index3 && newInstances[newIndex].index2 < outInstances[outIndex].index2) 
+                || (newInstances[newIndex].index3 == outInstances[outIndex].index3 && newInstances[newIndex].index2 == outInstances[outIndex].index2 && newInstances[newIndex].index1 < outInstances[outIndex].index1))
+            {
+                definition.skippedInstances[i] = newInstances[newIndex];
+                newIndex += 1;
+            }
+            else
+            {
+                definition.skippedInstances[i] = outInstances[outIndex];
+                outIndex += 1;
+            }
+        }
+    }
 
     return definition;
 }
@@ -1043,5 +1191,117 @@ export function checkTargetSpacingAndDistance(context is Context, id is Id, dist
     }
     return targetTooBig;
 
+}
+
+/**
+ * Reports any invalid entries in the skipped instances array.
+ * Checks for seed index (0,0,0) and indices outside the pattern range.
+ * 
+ * @param context : The context for this operation
+ * @param id : The id of the feature
+ * @param definition : The feature definition containing skippedInstances array
+ */
+function reportAnyInvalidEntriesThreeDirection(context is Context, id is Id, definition is map, count1 is number, count2 is number, count3 is number, isCentered1 is boolean, isCentered2 is boolean, isCentered3 is boolean)
+{
+    var hasSeedIndex = false;
+    var hasOutsideRangeIndex = false;
+
+    for (var instance in definition.skippedInstances)
+    {
+        if (instance.index1 == 0 && instance.index2 == 0 && instance.index3 == 0)
+        {
+            hasSeedIndex = true;
+        }
+
+        if (isIndexOutsideRangeThreeDirection(instance.index1, instance.index2, instance.index3, count1, count2, count3, isCentered1, isCentered2, isCentered3))
+        {
+            hasOutsideRangeIndex = true;
+        }
+    }
+
+    if (hasSeedIndex)
+    {
+        reportFeatureInfo(context, id, ErrorStringEnum.PATTERN_SKIPPED_INSTANCES_SEED_INDEX);
+    }
+    else if (hasOutsideRangeIndex)
+    {
+        reportFeatureInfo(context, id, ErrorStringEnum.PATTERN_SKIPPED_INSTANCES_OUT_OF_RANGE_INDEX);
+    }
+}
+
+/**
+ * Converts a linear index to three-dimensional grid coordinates.
+ * Used for manipulator point selection in skip instances.
+ * 
+ * @param index : The linear index to convert
+ * @param instanceCount1 : Number of instances in first direction
+ * @param instanceCount2 : Number of instances in second direction
+ * @param instanceCount3 : Number of instances in third direction
+ * @param isCentered1 : Whether first direction is centered
+ * @param isCentered2 : Whether second direction is centered
+ * @param isCentered3 : Whether third direction is centered
+ * @returns map : Map containing index1, index2, and index3
+ */
+function indexToGridCoordinatesThreeDirection(index is number, instanceCount1 is number, instanceCount2 is number, instanceCount3 is number, isCentered1 is boolean, isCentered2 is boolean, isCentered3 is boolean) returns map
+{
+    const index1Max = isCentered1 ? 2 * instanceCount1 - 1 : instanceCount1;
+    const index2Max = isCentered2 ? 2 * instanceCount2 - 1 : instanceCount2;
+    const planarSize = index1Max * index2Max;
+    
+    const planarIndex = index % planarSize;
+    
+    return {
+            "index1" : isCentered1 ? planarIndex % index1Max - instanceCount1 + 1 : planarIndex % index1Max,
+            "index2" : isCentered2 ? floor(planarIndex / index1Max) - instanceCount2 + 1 : floor(planarIndex / index1Max),
+            "index3" : isCentered3 ? floor(index / planarSize) - instanceCount3 + 1 : floor(index / planarSize)
+        };
+}
+
+/**
+ * Converts three-dimensional grid coordinates to a linear index.
+ * Used for manipulator point selection in skip instances.
+ * 
+ * @param index1 : Index in first direction
+ * @param index2 : Index in second direction
+ * @param index3 : Index in third direction
+ * @param instanceCount1 : Number of instances in first direction
+ * @param instanceCount2 : Number of instances in second direction
+ * @param instanceCount3 : Number of instances in third direction
+ * @param isCentered1 : Whether first direction is centered
+ * @param isCentered2 : Whether second direction is centered
+ * @param isCentered3 : Whether third direction is centered
+ * @returns number : The linear index
+ */
+function gridCoordinatesToIndexThreeDirection(index1 is number, index2 is number, index3 is number, instanceCount1 is number, instanceCount2 is number, instanceCount3 is number, isCentered1 is boolean, isCentered2 is boolean, isCentered3 is boolean) returns number
+{
+    const index1Max = isCentered1 ? 2 * instanceCount1 - 1 : instanceCount1;
+    const index2Max = isCentered2 ? 2 * instanceCount2 - 1 : instanceCount2;
+
+    const normalizedIndex1 = isCentered1 ? index1 + instanceCount1 - 1 : index1;
+    const normalizedIndex2 = isCentered2 ? index2 + instanceCount2 - 1 : index2;
+    const normalizedIndex3 = isCentered3 ? index3 + instanceCount3 - 1 : index3;
+
+    return normalizedIndex1 + normalizedIndex2 * index1Max + normalizedIndex3 * index1Max * index2Max;
+}
+
+/**
+ * Checks if a three-dimensional grid coordinate is outside the valid pattern range.
+ * 
+ * @param index1 : Index in first direction
+ * @param index2 : Index in second direction
+ * @param index3 : Index in third direction
+ * @param instanceCount1 : Number of instances in first direction
+ * @param instanceCount2 : Number of instances in second direction
+ * @param instanceCount3 : Number of instances in third direction
+ * @param isCentered1 : Whether first direction is centered
+ * @param isCentered2 : Whether second direction is centered
+ * @param isCentered3 : Whether third direction is centered
+ * @returns boolean : True if the index is outside range
+ */
+function isIndexOutsideRangeThreeDirection(index1 is number, index2 is number, index3 is number, instanceCount1 is number, instanceCount2 is number, instanceCount3 is number, isCentered1 is boolean, isCentered2 is boolean, isCentered3 is boolean) returns boolean
+{
+    return index1 >= instanceCount1 || index1 < (isCentered1 ? -instanceCount1 + 1 : 0)
+        || index2 >= instanceCount2 || index2 < (isCentered2 ? -instanceCount2 + 1 : 0)
+        || index3 >= instanceCount3 || index3 < (isCentered3 ? -instanceCount3 + 1 : 0);
 }
 
