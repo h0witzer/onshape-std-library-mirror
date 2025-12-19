@@ -513,19 +513,24 @@ function identifyTabSegmentEdgesFromDomains(context is Context, splitEdges is Qu
     
     const orderedEdges = orderedPath.edges;
 
-    // Calculate the actual total length of the ordered edges being evaluated
-    // This may differ from the original totalLength if edges were filtered (e.g., bend joints removed)
-    const actualTotalLength = evLength(context, { "entities" : qUnion(orderedEdges) });
-    
     // Calculate cumulative lengths to determine position of each edge along the ordered path
+    // Use the original totalLength passed in, as tab domains are calculated relative to it
     var edgeMidpoints = [];
     var accumulatedLength = 0 * meter;
+    
+    println("DEBUG: Total length for normalization: " ~ toString(totalLength));
+    println("DEBUG: Number of tab domains: " ~ toString(size(tabDomains)));
+    for (var domain in tabDomains)
+    {
+        println("DEBUG: Tab domain from " ~ toString(domain.start) ~ " to " ~ toString(domain.end));
+    }
     
     for (var edge in orderedEdges)
     {
         const edgeLength = evLength(context, { "entities" : edge });
-        const midpoint = (accumulatedLength + edgeLength / 2) / actualTotalLength;
+        const midpoint = (accumulatedLength + edgeLength / 2) / totalLength;
         edgeMidpoints = append(edgeMidpoints, midpoint);
+        println("DEBUG: Edge " ~ toString(size(edgeMidpoints) - 1) ~ " midpoint: " ~ toString(midpoint) ~ " (length: " ~ toString(edgeLength) ~ ")");
         accumulatedLength += edgeLength;
     }
 
@@ -540,6 +545,7 @@ function identifyTabSegmentEdgesFromDomains(context is Context, splitEdges is Qu
             if (midpoint >= domain.start - FRACTION_TOLERANCE && midpoint <= domain.end + FRACTION_TOLERANCE)
             {
                 tabEdgeQueries = append(tabEdgeQueries, orderedEdges[i]);
+                println("DEBUG: Edge " ~ toString(i) ~ " with midpoint " ~ toString(midpoint) ~ " matches domain [" ~ toString(domain.start) ~ ", " ~ toString(domain.end) ~ "]");
                 break;
             }
         }
