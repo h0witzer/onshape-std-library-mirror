@@ -231,7 +231,7 @@ export function editLogicMultiText(context is Context, id is Id, oldDefinition i
                 }
             }
             
-            for (var mergeScopeIndex, mergeScope in mergeScopeArray)
+            for (var mergeScope in mergeScopeArray)
             {
                 var currentText = DEFAULT_TEXT;
                 

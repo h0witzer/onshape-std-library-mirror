@@ -521,7 +521,7 @@ function isMateConnector(context is Context, definition is map) returns boolean
  * @param mateConnectorQuery : Query for the mate connector
  * @returns {Query} : Query for the face/body at the mate connector location, or qNothing() if not found
  */
-function getFaceAtMateConnectorOrigin(context is Context, mateConnectorQuery is Query) returns Query
+export function getFaceAtMateConnectorOrigin(context is Context, mateConnectorQuery is Query) returns Query
 {
     try
     {
