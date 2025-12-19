@@ -516,6 +516,7 @@ function isMateConnector(context is Context, definition is map) returns boolean
 /**
  * Find the face or body that the mate connector is touching.
  * Uses the mate connector's origin point to find the closest face.
+ * Only returns faces belonging to modifiable SOLID or SHEET bodies.
  * @param context : The current context
  * @param mateConnectorQuery : Query for the mate connector
  * @returns {Query} : Query for the face/body at the mate connector location, or qNothing() if not found
@@ -529,9 +530,13 @@ function getFaceAtMateConnectorOrigin(context is Context, mateConnectorQuery is 
                     "mateConnector" : mateConnectorQuery
                 });
 
-        // Get all faces in the context (excluding construction objects and sketch objects)
-        var allFaces = qConstructionFilter(qEverything(EntityType.FACE), ConstructionObject.NO);
-        allFaces = qSketchFilter(allFaces, SketchObject.NO);
+        // Get all valid target bodies (SOLID or SHEET, modifiable, non-construction, non-sketch)
+        var validBodies = qModifiableEntityFilter(qBodyType(qEverything(EntityType.BODY), BodyType.SOLID));
+        validBodies = qUnion([validBodies, 
+                              qModifiableEntityFilter(qBodyType(qConstructionFilter(qSketchFilter(qEverything(EntityType.BODY), SketchObject.NO), ConstructionObject.NO), BodyType.SHEET))]);
+
+        // Get all faces owned by valid bodies
+        var allFaces = qOwnedByBody(validBodies, EntityType.FACE);
 
         // Find the closest face to the mate connector origin
         const closestFace = qClosestTo(allFaces, mateConnectorCoordSys.origin);
