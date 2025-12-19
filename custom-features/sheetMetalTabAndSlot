@@ -141,6 +141,10 @@ export const tabAndSlotBossDisplay = defineFeature(function(context is Context, 
             throw regenError("No tabs can fit with the specified parameters", ["tabWidth", "spacing"]);
         }
 
+        // Track ALL edges in the path before splitting
+        // opSplitEdges modifies edges in place, so tracking will follow them through the split
+        const trackedEdges = startTracking(context, qUnion(path.edges));
+        
         // Split the edges at tab boundaries
         const splitParameters = calculateSplitParametersFromTabDomains(tabDomains);
         const splitInstructions = calculateEdgeSplitInstructionsFromParameters(context, path, splitParameters);
@@ -150,25 +154,15 @@ export const tabAndSlotBossDisplay = defineFeature(function(context is Context, 
             throw regenError("Unable to calculate edge split locations", ["edges"]);
         }
 
-        // Collect which edges will be split so we can identify unsplit edges later
-        var edgesThatWillBeSplit = [];
-        for (var instruction in splitInstructions)
-        {
-            edgesThatWillBeSplit = append(edgesThatWillBeSplit, instruction.edge);
-        }
-        
         var splitOperationIndex = 0;
-        var splitOperationIds = [];
         for (var instruction in splitInstructions)
         {
-            const splitId = id + ("split" ~ toString(splitOperationIndex));
             try
             {
-                @opSplitEdges(context, splitId, {
+                @opSplitEdges(context, id + ("split" ~ toString(splitOperationIndex)), {
                             "edges" : instruction.edge,
                             "parameters" : [instruction.parameters]
                         });
-                splitOperationIds = append(splitOperationIds, splitId);
             }
             catch
             {
@@ -177,43 +171,10 @@ export const tabAndSlotBossDisplay = defineFeature(function(context is Context, 
             splitOperationIndex += 1;
         }
 
-        // Collect all edges after splitting:
-        // 1. Edges created by split operations
-        var createdByQueries = [];
-        for (var splitId in splitOperationIds)
-        {
-            createdByQueries = append(createdByQueries, qCreatedBy(splitId, EntityType.EDGE));
-        }
-        const newlySplitEdges = size(createdByQueries) > 0 ? qUnion(createdByQueries) : qNothing();
+        // Get all edges after splitting - tracking follows edges through the split operations
+        const splitEdges = qEntityFilter(trackedEdges, EntityType.EDGE);
         
-        // 2. Original edges that were NOT split (these still exist)
-        // Find edges from the original path that are NOT in the edgesThatWillBeSplit list
-        var unsplitEdgeQueries = [];
-        for (var originalEdge in path.edges)
-        {
-            var wasSplit = false;
-            for (var splitEdge in edgesThatWillBeSplit)
-            {
-                // Check if this edge was split by comparing the queries
-                if (toString(originalEdge) == toString(splitEdge))
-                {
-                    wasSplit = true;
-                    break;
-                }
-            }
-            if (!wasSplit)
-            {
-                unsplitEdgeQueries = append(unsplitEdgeQueries, originalEdge);
-            }
-        }
-        const unsplitEdges = size(unsplitEdgeQueries) > 0 ? qUnion(unsplitEdgeQueries) : qNothing();
-        
-        // Combine all edge sources
-        const splitEdges = qUnion([newlySplitEdges, unsplitEdges]);
-        
-        println("Newly split edges: " ~ toString(size(evaluateQuery(context, newlySplitEdges))));
-        println("Unsplit edges: " ~ toString(size(evaluateQuery(context, unsplitEdges))));
-        println("Total edges: " ~ toString(size(evaluateQuery(context, splitEdges))));
+        println("Total edges after splitting: " ~ toString(size(evaluateQuery(context, splitEdges))));
         
         showAlternatingTabsAndSlots(context, splitEdges, tabDomains, totalLength);
 
