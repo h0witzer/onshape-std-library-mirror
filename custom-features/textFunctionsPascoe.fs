@@ -670,10 +670,14 @@ export function editLogic(context is Context, id is Id, oldDefinition is map, de
                             "propertyType" : propertyType
                         });
                     
-                    if (propertyValue != undefined)
+                    if (propertyValue != undefined && propertyValue != "")
                     {
                         definition.text = propertyValue;
                     }
+                }
+                catch
+                {
+                    // If property retrieval fails, keep existing text
                 }
             }
         }
