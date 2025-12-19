@@ -48,6 +48,7 @@ export enum RoundingType
 
 annotation { "Feature Type Name" : "Linear pattern plus",
         "Icon" : icon::BLOB_DATA,
+        "Filter Selector" : "allparts",
         "Editing Logic Function" : "linearPatternPlusEditingLogic",
         "Manipulator Change Function" : "linearPatternPlusManipulatorFunction",
     }
@@ -330,6 +331,20 @@ export const linearPatternPlus = defineFeature(function(context is Context, id i
 
     }
     {
+        // Verify that direction queries don't reference mesh bodies
+        if (!definition.matchPrevious)
+        {
+            verifyNoMesh(context, definition, "directionOne");
+            if (definition.hasSecondDir)
+            {
+                verifyNoMesh(context, definition, "directionTwo");
+            }
+            if (definition.hasSecondDir && definition.hasThirdDir)
+            {
+                verifyNoMesh(context, definition, "directionThree");
+            }
+        }
+        
         // a map to store variables to be later retrieved by the Extract Variables feature. These are also used by downstream Linear Pattern Plus features if "match previous feature settings" is selected.
         var embeddedVariables = {};
 
@@ -803,10 +818,10 @@ export const linearPatternPlus = defineFeature(function(context is Context, id i
                     const instanceKey = toString(i) ~ "," ~ toString(j) ~ "," ~ toString(k);
                     const isSkipped = definition.skipInstances && skippedIndicesSet[instanceKey] == true;
                     
-                    // skip recreating original
+                    // skip recreating original (seed instance)
                     if (j != 0 || i != 0 || k != 0)
                     {
-                        // Collect manipulator points for all instances (including seed but excluding skipped)
+                        // Collect manipulator points for all non-seed instances for skip functionality
                         if (definition.skipInstances)
                         {
                             manipulatorPoints = append(manipulatorPoints, instanceTransform.translation);
