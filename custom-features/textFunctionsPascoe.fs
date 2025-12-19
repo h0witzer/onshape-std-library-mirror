@@ -162,6 +162,18 @@ export enum FontEnumLocal
 //   "z": undefined
 // };
 
+export enum TextSourceType
+{
+    annotation { "Name" : "Manual text" }
+    MANUAL,
+    annotation { "Name" : "Part name" }
+    PART_NAME,
+    annotation { "Name" : "Part number" }
+    PART_NUMBER,
+    annotation { "Name" : "Part description" }
+    PART_DESCRIPTION
+}
+
 export predicate TextMainPredicatePascoe(definition)
 {
     annotation { "Name" : "Boolean enum", "Default" : BooleanScopeLocal.NEW, "UIHint" : [UIHint.HORIZONTAL_ENUM, UIHint.REMEMBER_PREVIOUS_VALUE] }
@@ -173,8 +185,14 @@ export predicate TextMainPredicatePascoe(definition)
         definition.bodyOption is BodyOptions;
     }
 
-    annotation { "Name" : "Text (abc)", "Default" : "Words" }
-    definition.text is string;
+    annotation { "Name" : "Text source", "Default" : TextSourceType.MANUAL, "UIHint" : UIHint.REMEMBER_PREVIOUS_VALUE }
+    definition.textSourceType is TextSourceType;
+
+    if (definition.textSourceType == TextSourceType.MANUAL)
+    {
+        annotation { "Name" : "Text (abc)", "Default" : "Words" }
+        definition.text is string;
+    }
 
     annotation { "Name" : "Face", "Filter" : EntityType.FACE || BodyType.MATE_CONNECTOR, "MaxNumberOfPicks" : 1 }
     definition.location is Query;
@@ -192,6 +210,15 @@ export predicate TextMainPredicatePascoe(definition)
 
         annotation { "Name" : "Opposite direction", "UIHint" : [UIHint.OPPOSITE_DIRECTION, UIHint.REMEMBER_PREVIOUS_VALUE] }
         definition.oppositeDirection is boolean;
+    }
+    
+    if (definition.textSourceType != TextSourceType.MANUAL && 
+        (definition.booleanEnum == BooleanScopeLocal.ADD || 
+         definition.booleanEnum == BooleanScopeLocal.SUBTRACT ||
+         definition.booleanEnum == BooleanScopeLocal.INTERSECT))
+    {
+        annotation { "Name" : "Update from part properties", "UIHint" : UIHint.OPPOSITE_DIRECTION_CIRCULAR }
+        definition.updatePartProperties is boolean;
     }
 }
 
@@ -601,6 +628,51 @@ export function editLogic(context is Context, id is Id, oldDefinition is map, de
                     else
                     {
                         definition.mergeScope = qOwnerBody(faceAtMateConnector);
+                    }
+                }
+            }
+        }
+    }
+    
+    // Update text from part properties when button is pressed or settings change
+    if (definition.textSourceType != TextSourceType.MANUAL && 
+        (definition.booleanEnum == BooleanScopeLocal.ADD || 
+         definition.booleanEnum == BooleanScopeLocal.SUBTRACT ||
+         definition.booleanEnum == BooleanScopeLocal.INTERSECT))
+    {
+        const shouldUpdate = (definition.updatePartProperties != oldDefinition.updatePartProperties) ||
+                            (definition.textSourceType != oldDefinition.textSourceType) ||
+                            (definition.mergeScope != oldDefinition.mergeScope);
+        
+        if (shouldUpdate)
+        {
+            // Reset the button state
+            definition.updatePartProperties = oldDefinition.updatePartProperties;
+            
+            // Retrieve text from part property
+            if (!isQueryEmpty(context, definition.mergeScope))
+            {
+                try silent
+                {
+                    var propertyType = PropertyType.NAME;
+                    
+                    if (definition.textSourceType == TextSourceType.PART_NUMBER)
+                    {
+                        propertyType = PropertyType.PART_NUMBER;
+                    }
+                    else if (definition.textSourceType == TextSourceType.PART_DESCRIPTION)
+                    {
+                        propertyType = PropertyType.DESCRIPTION;
+                    }
+                    
+                    const propertyValue = getProperty(context, {
+                            "entity" : definition.mergeScope,
+                            "propertyType" : propertyType
+                        });
+                    
+                    if (propertyValue != undefined)
+                    {
+                        definition.text = propertyValue;
                     }
                 }
             }
