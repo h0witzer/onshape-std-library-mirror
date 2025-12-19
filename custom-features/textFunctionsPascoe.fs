@@ -465,8 +465,12 @@ export function TextFunctionPascoe(
             // Delete island bodies created by subtraction operation
             if (definition.booleanEnum == BooleanScopeLocal.SUBTRACT && definition.deleteIslandBodies == true)
             {
-                // Query scoped entities BEFORE the boolean operation and get their bounding box volumes
-                const bodiesBeforeBoolean = evaluateQuery(context, definition.mergeScope->qOwnerBody());
+                // Start tracking the merge scope bodies BEFORE the boolean operation
+                const mergeScopeBodies = definition.mergeScope->qOwnerBody();
+                const trackedBodies = startTracking(context, mergeScopeBodies);
+                
+                // Get bounding box volumes BEFORE the boolean operation
+                const bodiesBeforeBoolean = evaluateQuery(context, mergeScopeBodies);
                 var beforeBBoxVolumes = [];
                 for (var body in bodiesBeforeBoolean)
                 {
@@ -483,10 +487,10 @@ export function TextFunctionPascoe(
                         });
                 }
 
-                BooleanFunctionPascoe(context, id, definition.booleanEnum->toString(), tools, definition.mergeScope->qOwnerBody(), false);
+                BooleanFunctionPascoe(context, id, definition.booleanEnum->toString(), tools, mergeScopeBodies, false);
                 
-                // Query scoped entities AFTER the boolean operation and get their bounding box volumes
-                const bodiesAfterBoolean = evaluateQuery(context, qOwnerBody(definition.mergeScope));
+                // Query tracked bodies AFTER the boolean operation using the tracking query
+                const bodiesAfterBoolean = evaluateQuery(context, qOwnerBody(trackedBodies));
                 var afterBBoxVolumes = [];
                 for (var body in bodiesAfterBoolean)
                 {
