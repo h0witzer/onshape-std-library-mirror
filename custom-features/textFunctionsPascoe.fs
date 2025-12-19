@@ -503,6 +503,11 @@ function isMateConnector(context is Context, definition is map) returns boolean
     {
         isMateConnectorResult = size(evaluateQuery(context, qBodyType(definition.location, BodyType.MATE_CONNECTOR))) > 0;
     }
+    catch
+    {
+        // If evaluation fails, return false
+        isMateConnectorResult = false;
+    }
 
     return isMateConnectorResult;
 }
@@ -540,11 +545,17 @@ function getFaceAtMateConnectorOrigin(context is Context, mateConnectorQuery is 
                             "side1" : closestFace
                         }));
 
-            if (distanceResult != undefined && distanceResult.distance < TOLERANCE.zeroLength * meter)
+            // Compare using tolerantEquals or check if distance is less than zeroLength tolerance
+            if (distanceResult != undefined && distanceResult.distance < (TOLERANCE.zeroLength * meter))
             {
                 return closestFace;
             }
         }
+    }
+    catch
+    {
+        // If any evaluation fails, return qNothing()
+        return qNothing();
     }
 
     return qNothing();
