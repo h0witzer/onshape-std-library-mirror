@@ -534,9 +534,21 @@ function identifyTabEdgesFromSplitEdges(context is Context, splitEdges is Query,
         const edgeStart = accumulatedLength;
         const edgeEnd = accumulatedLength + edgeLength;
         
+        // First, check if we need to advance to a new segment before processing this edge
+        // This handles edges that start after a split boundary
+        while (edgeStart >= nextSplitPosition - EDGE_LENGTH_TOLERANCE && nextSplitParamIndex < size(splitParams))
+        {
+            currentSegmentIndex += 1;
+            nextSplitParamIndex += 1;
+            nextSplitPosition = (nextSplitParamIndex < size(splitParams)) ? 
+                                (splitParams[nextSplitParamIndex] * totalLength) : 
+                                (totalLength + 1 * meter);
+            println("DEBUG: Crossed split boundary at start, now in segment " ~ toString(currentSegmentIndex));
+        }
+        
         println("DEBUG: Edge " ~ toString(i) ~ " from " ~ toString(edgeStart) ~ " to " ~ toString(edgeEnd) ~ " (segment " ~ toString(currentSegmentIndex) ~ ")");
         
-        // Add this edge to the current bucket (GAP or TAB)
+        // Add this edge to the current bucket (GAP or TAB) based on current segment
         if (currentSegmentIndex % 2 == 0)
         {
             // Even segment = GAP
@@ -551,18 +563,6 @@ function identifyTabEdgesFromSplitEdges(context is Context, splitEdges is Query,
         }
         
         accumulatedLength = edgeEnd;
-        
-        // Check if we've passed the next split point
-        // If so, move to the next segment and update the next split position
-        while (accumulatedLength >= nextSplitPosition - EDGE_LENGTH_TOLERANCE && nextSplitParamIndex < size(splitParams))
-        {
-            currentSegmentIndex += 1;
-            nextSplitParamIndex += 1;
-            nextSplitPosition = (nextSplitParamIndex < size(splitParams)) ? 
-                                (splitParams[nextSplitParamIndex] * totalLength) : 
-                                (totalLength + 1 * meter);
-            println("DEBUG: Crossed split boundary, now in segment " ~ toString(currentSegmentIndex));
-        }
     }
     
     println("DEBUG: GAP bucket has " ~ toString(size(gapEdgesBucket)) ~ " edges");
