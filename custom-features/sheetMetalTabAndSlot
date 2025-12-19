@@ -463,28 +463,45 @@ function showAlternatingTabsAndSlots(context is Context, splitEdges is Query, ta
     const edges = evaluateQuery(context, splitEdges);
     if (size(edges) == 0)
     {
+        println("WARNING: No edges to color");
         return;
     }
 
     // Reconstruct the path to get ordered edges
     var orderedEdges = edges;
     const orderedPath = try silent(constructPath(context, qUnion(edges)));
-    if (orderedPath != undefined)
+    if (orderedPath == undefined)
+    {
+        println("WARNING: Failed to reconstruct path from split edges - edges may not be properly ordered");
+        // Continue anyway with unordered edges - every edge will still get a color
+    }
+    else
     {
         orderedEdges = orderedPath.edges;
     }
 
     if (totalLength <= EDGE_LENGTH_TOLERANCE)
     {
+        println("WARNING: Total length is too small");
         return;
     }
 
-    // Calculate edge lengths
+    // Calculate edge lengths and recalculate total to handle any discrepancies
     var edgeLengths = [];
+    var recalculatedTotalLength = 0 * meter;
     for (var edge in orderedEdges)
     {
         const edgeLength = evLength(context, { "entities" : edge });
         edgeLengths = append(edgeLengths, edgeLength);
+        recalculatedTotalLength += edgeLength;
+    }
+    
+    // Use the recalculated total length if significantly different
+    var effectiveTotalLength = totalLength;
+    if (abs(recalculatedTotalLength - totalLength) > EDGE_LENGTH_TOLERANCE)
+    {
+        println("WARNING: Total length mismatch - original: " ~ toString(totalLength) ~ ", recalculated: " ~ toString(recalculatedTotalLength));
+        effectiveTotalLength = recalculatedTotalLength;
     }
 
     // Convert tab domains from normalized parameters to absolute positions
@@ -492,10 +509,12 @@ function showAlternatingTabsAndSlots(context is Context, splitEdges is Query, ta
     for (var domain in tabDomains)
     {
         tabRanges = append(tabRanges, {
-                    "start" : domain.start * totalLength,
-                    "end" : domain.end * totalLength
+                    "start" : domain.start * effectiveTotalLength,
+                    "end" : domain.end * effectiveTotalLength
                 });
     }
+
+    println("Coloring " ~ toString(size(orderedEdges)) ~ " edges with " ~ toString(size(tabRanges)) ~ " tab ranges");
 
     // Iterate through edges and assign colors based on position
     var accumulatedLength = 0 * meter;
@@ -516,12 +535,14 @@ function showAlternatingTabsAndSlots(context is Context, splitEdges is Query, ta
             }
         }
         
-        // Color tabs RED, slots CYAN
+        // Color tabs RED, slots CYAN - EVERY edge gets a color
         const color = isTab ? DebugColor.RED : DebugColor.CYAN;
         debug(context, orderedEdges[index], color);
         
         accumulatedLength += edgeLength;
     }
+    
+    println("Finished coloring all edges");
 }
 
 
