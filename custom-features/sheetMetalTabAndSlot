@@ -141,9 +141,8 @@ export const tabAndSlotBossDisplay = defineFeature(function(context is Context, 
             throw regenError("No tabs can fit with the specified parameters", ["tabWidth", "spacing"]);
         }
 
-        // Track ALL edges from the original selection before splitting
-        // opSplitEdges modifies edges in place, so tracking will follow them through the split
-        // Use orderedEdgeQuery to ensure we track all selected edges, not just those in path.edges
+        // Use mixinTracking pattern to capture both affected and unaffected edges
+        // This handles edges that are split (affected) and edges that remain unchanged (unaffected)
         const trackedEdges = startTracking(context, orderedEdgeQuery);
         
         // Split the edges at tab boundaries
@@ -172,8 +171,12 @@ export const tabAndSlotBossDisplay = defineFeature(function(context is Context, 
             splitOperationIndex += 1;
         }
 
-        // Get all edges after splitting - tracking follows edges through the split operations
-        const splitEdges = qEntityFilter(trackedEdges, EntityType.EDGE);
+        // Apply mixinTracking pattern: union of original query (unaffected) and tracking query (affected + children)
+        // This captures both edges that were split and edges that were not split
+        const splitEdges = qUnion([
+                    qEntityFilter(orderedEdgeQuery, EntityType.EDGE),
+                    qEntityFilter(trackedEdges, EntityType.EDGE)
+                ]);
         
         println("Total edges after splitting: " ~ toString(size(evaluateQuery(context, splitEdges))));
         
