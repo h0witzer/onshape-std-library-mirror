@@ -222,7 +222,8 @@ Example (200mm curve, 2.7mm blade width):
 - Automatic cut geometry generation
 - Pattern mirroring for bidirectional cuts
 - Material thickness optimization
-- DXF/CAM export
+- Geometry building utilities for 3d solids
+- Unfolding support for flipping from bent state to flattened state
 
 ## References
 
