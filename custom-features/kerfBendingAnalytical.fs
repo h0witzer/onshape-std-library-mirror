@@ -70,13 +70,15 @@ export predicate canBeKerfBendingSolution(value)
  * @param cutWidth : The thickness of the cutting tool with length units
  * @param cutDepth : The depth of the cut with length units
  * @param minimumCutSpacing : Minimum distance between cuts (default: 2 * cutWidth) with length units
+ * @param useHalfKerfOffset : For circles only, offset first and last cuts by half spacing (default: false)
  * @returns {KerfBendingSolution} : Complete solution containing all cut information
  */
 export function generateAnalyticalKerfSolution(context is Context,
                                               curveEdge is Query,
                                               cutWidth is ValueWithUnits,
                                               cutDepth is ValueWithUnits,
-                                              minimumCutSpacing is ValueWithUnits) returns KerfBendingSolution
+                                              minimumCutSpacing is ValueWithUnits,
+                                              useHalfKerfOffset is boolean) returns KerfBendingSolution
 precondition
 {
     isLength(cutWidth);
@@ -238,7 +240,8 @@ function generateCircularKerfSolution(context is Context,
                                      kerfAngle is ValueWithUnits,
                                      minimumCutSpacing is ValueWithUnits,
                                      totalLength is ValueWithUnits,
-                                     curveDefinition is map) returns KerfBendingSolution
+                                     curveDefinition is map,
+                                     useHalfKerfOffset is boolean) returns KerfBendingSolution
 {
     // For circles, curvature is constant = 1/radius
     // Arc length between cuts = kerfAngle / curvature = kerfAngle * radius
