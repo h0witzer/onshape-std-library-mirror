@@ -141,12 +141,12 @@ precondition
             if (derivMagnitude > (1e-9 / meter / meter))
             {
                 // Use trapezoidal integration to account for changing curvature
-                // Estimate parameter step
-                const paramStep = initialEstimate / totalLength;
+                // With arc length parameterization, parameter step IS arc length
+                const paramStep = initialEstimate;
                 
                 // Get curvature at estimated next position
                 const nextParam = currentParam + paramStep;
-                if (nextParam < 1.0)
+                if (nextParam < totalLength)
                 {
                     const nextCurvResult = evEdgeCurvature(context, { "edge" : curveEdge, "parameter" : nextParam, "arcLengthParameterization" : true });
                     const nextCurvMag = abs(nextCurvResult.curvature);
@@ -186,70 +186,20 @@ precondition
             arcLengthToNextCut = minimumCutSpacing;
         }
         
-        // Convert arc length to parameter using B-spline-aware method
-        // Get B-spline approximation for better parameterization handling
-        var nextParam = currentParam;
-        try
-        {
-            // Try to use B-spline approximation for accurate arc-length-to-parameter conversion
-            const bspline = evApproximateBSplineCurve(context, { "edge" : curveEdge, "tolerance" : 1e-6 });
-            
-            // Estimate parameter step based on desired arc length
-            // For B-splines, we'll use a sampling approach to find the right parameter
-            const numSamples = 10;
-            var bestParam = currentParam;
-            var bestDiff = 1e10 * meter;
-            
-            for (var i = 1; i <= numSamples; i += 1)
-            {
-                const testParam = currentParam + (arcLengthToNextCut / totalLength) * (i / numSamples);
-                if (testParam >= 1.0)
-                    break;
-                    
-                const testPos = evaluateSpline({ "spline" : bspline, "parameters" : [testParam], "nDerivatives" : 0 })[0][0];
-                const testDistance = norm(testPos - tangentLine.origin);
-                const diff = abs(testDistance - arcLengthToNextCut);
-                
-                if (diff < bestDiff)
-                {
-                    bestDiff = diff;
-                    bestParam = testParam;
-                }
-            }
-            nextParam = bestParam;
-        }
-        catch
-        {
-            // Fallback to simple parameter scaling if B-spline evaluation fails
-            nextParam = currentParam + (arcLengthToNextCut / totalLength);
-        }
+        // Since we're using arcLengthParameterization : true, parameters ARE arc lengths
+        // So we can directly add the arc length to get the next parameter
+        var nextParam = currentParam + arcLengthToNextCut;
         
-        // Additional refinement using actual geometry - measure distance and adjust
-        if (nextParam < 1.0)
+        // Clamp to valid parameter range (totalLength is the max parameter with arc length parameterization)
+        if (nextParam > totalLength)
         {
-            // Get tangent at estimated next position
-            const testTangent = evEdgeTangentLine(context, { "edge" : curveEdge, "parameter" : nextParam, "arcLengthParameterization" : false });
-            const measuredDistance = norm(testTangent.origin - tangentLine.origin);
-            
-            // Adjust parameter step based on measured vs desired distance
-            if (measuredDistance > 1e-9 * meter)
-            {
-                const ratio = arcLengthToNextCut / measuredDistance;
-                paramDelta = paramDelta * ratio;
-                nextParam = currentParam + paramDelta;
-            }
-        }
-        
-        // Clamp to valid parameter range
-        if (nextParam > 1.0)
-        {
-            nextParam = 1.0;
+            nextParam = totalLength;
         }
         
         currentParam = nextParam;
         
         // Check if we've reached the end
-        if (currentParam >= 1.0)
+        if (currentParam >= totalLength)
         {
             break;
         }
@@ -266,17 +216,17 @@ precondition
     }
     
     // Always add end point if we have room
-    if (currentParam < 1.0 && @size(cutParameters) > 0)
+    if (currentParam < totalLength && @size(cutParameters) > 0)
     {
-        tangentLine = evEdgeTangentLine(context, { "edge" : curveEdge, "parameter" : 1.0, "arcLengthParameterization" : true });
+        tangentLine = evEdgeTangentLine(context, { "edge" : curveEdge, "parameter" : totalLength, "arcLengthParameterization" : true });
         const lastPos = cutPositions[@size(cutPositions) - 1];
         const endDist = norm(tangentLine.origin - lastPos);
         
         if (endDist >= minimumCutSpacing)
         {
-            cutParameters = append(cutParameters, 1.0);
+            cutParameters = append(cutParameters, totalLength);
             cutPositions = append(cutPositions, tangentLine.origin);
-            curvatureResult = evEdgeCurvature(context, { "edge" : curveEdge, "parameter" : 1.0, "arcLengthParameterization" : true });
+            curvatureResult = evEdgeCurvature(context, { "edge" : curveEdge, "parameter" : totalLength, "arcLengthParameterization" : true });
             curvatureSigns = append(curvatureSigns, getCurvatureSign(curvatureResult.curvature));
         }
     }
