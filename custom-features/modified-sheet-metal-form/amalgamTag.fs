@@ -145,10 +145,6 @@ function doTagForm(context is Context, topLevelId is Id, definition is map)
         {
             throw regenError(ErrorStringEnum.FORMED_TAG_FORM_POSITIVE_PART_NOT_SOLID, ["positivePart"], definition.positivePart);
         }
-        else if (!isQueryEmpty(context, qConsumed(definition.positivePart, Consumed.YES)))
-        {
-            throw regenError(ErrorStringEnum.FORMED_TAG_FORM_POSITIVE_PART_CONSUMED, ["positivePart"], definition.positivePart);
-        }
     }
     var negativePartSelected = !isQueryEmpty(context, definition.negativePart);
     if (negativePartSelected)
@@ -157,10 +153,6 @@ function doTagForm(context is Context, topLevelId is Id, definition is map)
         {
             throw regenError(ErrorStringEnum.FORMED_TAG_FORM_NEGATIVE_PART_NOT_SOLID, ["negativePart"], definition.negativePart);
         }
-        else if (!isQueryEmpty(context, qConsumed(definition.negativePart, Consumed.YES)))
-        {
-            throw regenError(ErrorStringEnum.FORMED_TAG_FORM_NEGATIVE_PART_CONSUMED, ["negativePart"], definition.negativePart);
-        }
     }
         var newPartSelected = !isQueryEmpty(context, definition.newPart);
     if (newPartSelected)
@@ -168,10 +160,6 @@ function doTagForm(context is Context, topLevelId is Id, definition is map)
         if (isQueryEmpty(context, qBodyType(definition.newPart, BodyType.SOLID)))
         {
             throw regenError(ErrorStringEnum.FORMED_TAG_FORM_NEGATIVE_PART_NOT_SOLID, ["negativePart"], definition.negativePart);
-        }
-        else if (!isQueryEmpty(context, qConsumed(definition.negativePart, Consumed.YES)))
-        {
-            throw regenError(ErrorStringEnum.FORMED_TAG_FORM_NEGATIVE_PART_CONSUMED, ["negativePart"], definition.negativePart);
         }
     }
     if (positivePartSelected && negativePartSelected &&
