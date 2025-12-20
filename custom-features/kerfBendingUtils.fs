@@ -436,3 +436,163 @@ precondition
     return totalLength;
 }
 
+/**
+ * Type representing the complete kerf bending solution for a curve.
+ * Contains all information needed to manufacture the kerf-bent piece.
+ * 
+ * @type {{
+ *      @field cutPositions {array} : Array of 3D positions where cuts should be made with length units
+ *      @field cutDistances {array} : Array of distances between consecutive cuts with length units
+ *      @field totalLength {ValueWithUnits} : Total length of the flattened workpiece with length units
+ *      @field numberOfCuts {number} : Total number of cuts required
+ *      @field kerfAngle {ValueWithUnits} : The kerf angle used in the calculation with angle units
+ *      @field curvatureSigns {array} : Array of curvature signs at each cut location (for determining cut side)
+ * }}
+ */
+export type KerfBendingSolution typecheck canBeKerfBendingSolution;
+
+/**
+ * Typecheck for KerfBendingSolution
+ */
+export predicate canBeKerfBendingSolution(value)
+{
+    value is map;
+    value.cutPositions is array;
+    value.cutDistances is array;
+    isLength(value.totalLength);
+    value.numberOfCuts is number;
+    isAngle(value.kerfAngle);
+    value.curvatureSigns is array;
+}
+
+/**
+ * Generate a complete kerf bending solution for a quadratic Bezier curve.
+ * This is the main high-level function that calculates everything needed for manufacturing.
+ * 
+ * @param controlPoints : Array of three 3D control points defining the Bezier curve with length units
+ * @param cutWidth : The thickness of the cutting tool with length units
+ * @param cutDepth : The depth of the cut with length units
+ * @param curveSamples : Number of samples to use when discretizing the curve (default: 600)
+ * @param searchWindow : Size of the search window for finding next cut points (default: 80)
+ * @returns {KerfBendingSolution} : Complete solution containing all cut information
+ */
+export function generateKerfBendingSolution(controlPoints is array,
+                                           cutWidth is ValueWithUnits,
+                                           cutDepth is ValueWithUnits,
+                                           curveSamples is number,
+                                           searchWindow is number) returns KerfBendingSolution
+precondition
+{
+    @size(controlPoints) == 3;
+    for (var point in controlPoints)
+        is3dLengthVector(point);
+    isLength(cutWidth);
+    isLength(cutDepth);
+    cutWidth > 0 * meter;
+    cutDepth > 0 * meter;
+    curveSamples >= 10;
+    searchWindow > 0;
+}
+{
+    // Calculate cut positions along the curve
+    const cutResult = calculateKerfCutPositions(controlPoints, cutWidth, cutDepth, 
+                                                curveSamples, searchWindow);
+    
+    // Extract cut positions from curve points
+    var cutPositions = [];
+    var curvatureSigns = [];
+    
+    for (var index in cutResult.cutIndices)
+    {
+        const curvePoint = cutResult.curvePoints[index];
+        cutPositions = append(cutPositions, curvePoint.position);
+        curvatureSigns = append(curvatureSigns, curvePoint.curvatureSign);
+    }
+    
+    // Calculate distances between cuts
+    const cutDistances = calculateCutDistances(cutPositions);
+    
+    // Calculate total length
+    const totalLength = calculateTotalLength(cutDistances);
+    
+    return {
+        "cutPositions" : cutPositions,
+        "cutDistances" : cutDistances,
+        "totalLength" : totalLength,
+        "numberOfCuts" : @size(cutPositions),
+        "kerfAngle" : cutResult.kerfAngle,
+        "curvatureSigns" : curvatureSigns
+    } as KerfBendingSolution;
+}
+
+/**
+ * Overloaded version with default parameters for curve samples and search window.
+ * Uses recommended defaults: 600 samples and search window of 80.
+ */
+export function generateKerfBendingSolution(controlPoints is array,
+                                           cutWidth is ValueWithUnits,
+                                           cutDepth is ValueWithUnits) returns KerfBendingSolution
+precondition
+{
+    @size(controlPoints) == 3;
+    for (var point in controlPoints)
+        is3dLengthVector(point);
+    isLength(cutWidth);
+    isLength(cutDepth);
+    cutWidth > 0 * meter;
+    cutDepth > 0 * meter;
+}
+{
+    return generateKerfBendingSolution(controlPoints, cutWidth, cutDepth, 600, 80);
+}
+
+/**
+ * Calculate the flattened cut positions along a linear axis.
+ * This transforms the 3D cut positions into 1D positions suitable for CAM software,
+ * where cuts are represented as positions along a straight line.
+ * 
+ * @param cutDistances : Array of distances between consecutive cuts with length units
+ * @param centerOrigin : If true, positions are centered around zero; if false, start from zero
+ * @returns {array} : Array of 1D positions with length units where cuts should be made
+ */
+export function calculateFlattenedCutPositions(cutDistances is array, centerOrigin is boolean) returns array
+precondition
+{
+    @size(cutDistances) > 0;
+    for (var distance in cutDistances)
+        isLength(distance);
+}
+{
+    const totalLength = calculateTotalLength(cutDistances);
+    var currentPosition = centerOrigin ? -totalLength / 2 : 0 * meter;
+    
+    var flattenedPositions = [currentPosition];
+    
+    for (var distance in cutDistances)
+    {
+        currentPosition = currentPosition + distance;
+        flattenedPositions = append(flattenedPositions, currentPosition);
+    }
+    
+    return flattenedPositions;
+}
+
+/**
+ * Create a summary map with key information about a kerf bending solution.
+ * Useful for displaying information to users or for logging.
+ * 
+ * @param solution : A KerfBendingSolution object
+ * @returns {map} : Map containing formatted summary information
+ */
+export function createKerfBendingSummary(solution is KerfBendingSolution) returns map
+{
+    return {
+        "totalLength" : solution.totalLength,
+        "numberOfCuts" : solution.numberOfCuts,
+        "kerfAngleDegrees" : solution.kerfAngle / degree,
+        "averageCutSpacing" : solution.totalLength / (solution.numberOfCuts - 1),
+        "minimumCutSpacing" : min(solution.cutDistances),
+        "maximumCutSpacing" : max(solution.cutDistances)
+    };
+}
+
