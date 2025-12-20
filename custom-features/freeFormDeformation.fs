@@ -13,6 +13,7 @@ import(path : "onshape/std/vector.fs", version : "2837.0");
 import(path : "onshape/std/units.fs", version : "2837.0");
 import(path : "onshape/std/geomOperations.fs", version : "2837.0");
 import(path : "onshape/std/box.fs", version : "2837.0");
+import(path : "onshape/std/string.fs", version : "2837.0");
 
 /**
  * Free-Form Deformation (FFD) Feature
@@ -47,7 +48,8 @@ export predicate canBeFFDLattice(value)
     value.axes is array;
 }
 
-annotation { "Feature Type Name" : "Free-Form Deformation" }
+annotation { "Feature Type Name" : "Free-Form Deformation",
+            "Manipulator Change Function" : "freeFormDeformationManipulatorChange" }
 export const freeFormDeformation = defineFeature(function(context is Context, id is Id, definition is map)
     precondition
     {
@@ -67,6 +69,10 @@ export const freeFormDeformation = defineFeature(function(context is Context, id
         annotation { "Name" : "U direction spans (height)",
                     "UIHint" : UIHint.DISPLAY_SHORT }
         isInteger(definition.uSpans, POSITIVE_COUNT_BOUNDS);
+        
+        annotation { "Name" : "Show control lattice",
+                    "Default" : true }
+        definition.showLattice is boolean;
         
         annotation { "Name" : "Control point adjustments",
                     "UIHint" : UIHint.ALWAYS_HIDDEN }
@@ -101,12 +107,45 @@ export const freeFormDeformation = defineFeature(function(context is Context, id
         // Apply any control point offsets from manipulators
         applyControlPointOffsets(lattice, definition.controlPointOffsets);
         
-        // Create manipulators for control points (simplified for initial implementation)
-        // In full implementation, this would add manipulators for each control point
+        // Add manipulators for control points
+        if (definition.showLattice)
+        {
+            addControlPointManipulators(context, id, lattice, definition);
+        }
         
         // Perform the FFD deformation on the target face
         performFFDDeformation(context, id, definition, lattice, targetFace);
     });
+
+/**
+ * Manipulator change function for FFD
+ * Updates control point offsets when manipulators are moved
+ */
+export function freeFormDeformationManipulatorChange(context is Context, definition is map, newManipulators is map) returns map
+{
+    // Update control point offsets based on manipulator changes
+    for (var entry in newManipulators)
+    {
+        const manipulatorId = entry.key;
+        const manipulator = entry.value;
+        
+        // Extract control point index from manipulator ID
+        if (startsWith(manipulatorId, "controlPoint_"))
+        {
+            const parts = splitByRegexp(manipulatorId, "_");
+            if (size(parts) >= 2)
+            {
+                const indexString = parts[1];
+                const controlPointIndex = stringToNumber(indexString);
+                
+                // Store the offset for this control point
+                definition.controlPointOffsets[controlPointIndex] = manipulator.offset;
+            }
+        }
+    }
+    
+    return definition;
+}
 
 /**
  * Creates an FFD lattice structure around the given bounding box
@@ -178,6 +217,128 @@ function applyControlPointOffsets(lattice is FFDLattice, offsets is map)
             lattice.controlPoints[index] = lattice.controlPoints[index] + offset;
         }
     }
+}
+
+/**
+ * Adds triad manipulators for FFD control points
+ * For performance, only adds manipulators for corner and edge control points
+ * 
+ * @param context : The context
+ * @param id : Feature ID
+ * @param lattice : The FFD lattice
+ * @param definition : Feature definition
+ */
+function addControlPointManipulators(context is Context, id is Id, lattice is FFDLattice, definition is map)
+{
+    const sCount = lattice.controlPointCounts[0];
+    const tCount = lattice.controlPointCounts[1];
+    const uCount = lattice.controlPointCounts[2];
+    
+    var manipulators = {};
+    
+    // Add manipulators for a subset of control points to keep UI manageable
+    // We'll add manipulators for corners and some edge midpoints
+    const indices = getManipulatorIndices(sCount, tCount, uCount);
+    
+    for (var index in indices)
+    {
+        const controlPoint = lattice.controlPoints[index];
+        const offset = definition.controlPointOffsets[index];
+        const actualOffset = offset != undefined ? offset : vector(0, 0, 0) * meter;
+        
+        const manipulator = triadManipulator({
+            "base" : controlPoint - actualOffset,
+            "offset" : actualOffset,
+            "primaryParameterId" : "controlPointOffsets"
+        });
+        
+        manipulators["controlPoint_" ~ index] = manipulator;
+    }
+    
+    addManipulators(context, id, manipulators);
+}
+
+/**
+ * Returns indices of control points that should have manipulators
+ * For large lattices, only show corner and select edge control points
+ * 
+ * @param sCount : Number of control points in S direction
+ * @param tCount : Number of control points in T direction
+ * @param uCount : Number of control points in U direction
+ * @returns Array of control point indices
+ */
+function getManipulatorIndices(sCount is number, tCount is number, uCount is number) returns array
+{
+    var indices = [];
+    
+    // For small lattices (2x2x2 or 3x3x3), show all control points
+    const totalPoints = sCount * tCount * uCount;
+    if (totalPoints <= 27) // 3x3x3
+    {
+        for (var i = 0; i < totalPoints; i += 1)
+        {
+            indices = append(indices, i);
+        }
+        return indices;
+    }
+    
+    // For larger lattices, only show corner points and some strategic points
+    // Corner points (8 corners of the lattice)
+    const corners = [
+        getControlPointIndex(0, 0, 0, tCount, uCount),
+        getControlPointIndex(sCount - 1, 0, 0, tCount, uCount),
+        getControlPointIndex(0, tCount - 1, 0, tCount, uCount),
+        getControlPointIndex(sCount - 1, tCount - 1, 0, tCount, uCount),
+        getControlPointIndex(0, 0, uCount - 1, tCount, uCount),
+        getControlPointIndex(sCount - 1, 0, uCount - 1, tCount, uCount),
+        getControlPointIndex(0, tCount - 1, uCount - 1, tCount, uCount),
+        getControlPointIndex(sCount - 1, tCount - 1, uCount - 1, tCount, uCount)
+    ];
+    
+    indices = concatenateArrays([indices, corners]);
+    
+    // Add midpoints of edges if lattice is large enough
+    if (sCount > 2)
+    {
+        const sMid = floor(sCount / 2);
+        const tMid = floor(tCount / 2);
+        const uMid = floor(uCount / 2);
+        
+        // Mid edges on bottom face
+        indices = append(indices, getControlPointIndex(sMid, 0, 0, tCount, uCount));
+        indices = append(indices, getControlPointIndex(sMid, tCount - 1, 0, tCount, uCount));
+        indices = append(indices, getControlPointIndex(0, tMid, 0, tCount, uCount));
+        indices = append(indices, getControlPointIndex(sCount - 1, tMid, 0, tCount, uCount));
+        
+        // Mid edges on top face
+        indices = append(indices, getControlPointIndex(sMid, 0, uCount - 1, tCount, uCount));
+        indices = append(indices, getControlPointIndex(sMid, tCount - 1, uCount - 1, tCount, uCount));
+        indices = append(indices, getControlPointIndex(0, tMid, uCount - 1, tCount, uCount));
+        indices = append(indices, getControlPointIndex(sCount - 1, tMid, uCount - 1, tCount, uCount));
+        
+        // Vertical mid edges
+        indices = append(indices, getControlPointIndex(0, 0, uMid, tCount, uCount));
+        indices = append(indices, getControlPointIndex(sCount - 1, 0, uMid, tCount, uCount));
+        indices = append(indices, getControlPointIndex(0, tCount - 1, uMid, tCount, uCount));
+        indices = append(indices, getControlPointIndex(sCount - 1, tCount - 1, uMid, tCount, uCount));
+    }
+    
+    return indices;
+}
+
+/**
+ * Converts 3D indices (i, j, k) to a flat array index
+ * 
+ * @param i : S direction index
+ * @param j : T direction index
+ * @param k : U direction index
+ * @param tCount : Number of control points in T direction
+ * @param uCount : Number of control points in U direction
+ * @returns Flat array index
+ */
+function getControlPointIndex(i is number, j is number, k is number, tCount is number, uCount is number) returns number
+{
+    return i * tCount * uCount + j * uCount + k;
 }
 
 /**
