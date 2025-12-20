@@ -101,7 +101,7 @@ precondition
     {
         // Circle has constant curvature = 1/radius
         // For circles/arcs, we can directly calculate cut spacing analytically
-        return generateCircularKerfSolution(context, curveEdge, kerfAngle, minimumCutSpacing, totalLength, curveDefinition, useHalfKerfOffset);
+        return generateCircularKerfSolution(context, curveEdge, kerfAngle, minimumCutSpacing, totalLength, curveDefinition, useHalfKerfOffset, cutWidth);
     }
     
     // Start from parameter 0 and walk along curve
@@ -241,13 +241,14 @@ function generateCircularKerfSolution(context is Context,
                                      minimumCutSpacing is ValueWithUnits,
                                      totalLength is ValueWithUnits,
                                      curveDefinition is map,
-                                     useHalfKerfOffset is boolean) returns KerfBendingSolution
+                                     useHalfKerfOffset is boolean,
+                                     cutWidth is ValueWithUnits) returns KerfBendingSolution
 {
     // For circles, curvature is constant = 1/radius
     // Arc length between cuts = kerfAngle / curvature = kerfAngle * radius
     const radius = curveDefinition.radius;
     const curvature = 1.0 / radius;
-    var arcLengthBetweenCuts = kerfAngle * radius;
+    var arcLengthBetweenCuts = (kerfAngle * radius) / radian;
     
     // Respect minimum spacing constraint
     if (arcLengthBetweenCuts < minimumCutSpacing)
@@ -265,7 +266,8 @@ function generateCircularKerfSolution(context is Context,
     var curvatureSigns = [];
     
     // Calculate offset for half-kerf on ends if enabled
-    const startOffset = useHalfKerfOffset ? (actualSpacing / (2 * totalLength)) : 0.0;
+    // This shifts cuts inward by half the blade width on each end to fit only in bendy region
+    const startOffset = useHalfKerfOffset ? (cutWidth / (2 * totalLength)) : 0.0;
     
     for (var i = 0; i <= numberOfCuts; i += 1)
     {
