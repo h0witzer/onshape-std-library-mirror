@@ -16,6 +16,7 @@ import(path : "onshape/std/featureList.fs", version : "2815.0");
 import(path : "5418313fd7f629d9c7f1ac10", version : "b97acafda22e3375bf349519"); //modifiedFormedUtils.fs
 import(path : "onshape/std/frameAttributes.fs", version : "2815.0");
 import(path : "onshape/std/frameUtils.fs", version : "2815.0");
+import(path : "onshape/std/properties.fs", version : "2815.0");
 import(path : "onshape/std/surfaceGeometry.fs", version : "2815.0");
 import(path : "onshape/std/units.fs", version : "2815.0");
 import(path : "onshape/std/vector.fs", version : "2815.0");
@@ -205,6 +206,12 @@ function doTagForm(context is Context, topLevelId is Id, definition is map)
     if (negativePartSelected)
     {
         setFormAttribute(context, definition.negativePart, FORM_BODY_NEGATIVE_PART);
+        // Apply magenta appearance with 0.2 alpha to subtraction tool bodies for user identification
+        setProperty(context, {
+            "entities" : definition.negativePart,
+            "propertyType" : PropertyType.APPEARANCE,
+            "value" : color(1, 0, 1, 0.2)
+        });
     }
         if (newPartSelected)
     {
