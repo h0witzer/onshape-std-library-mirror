@@ -129,7 +129,7 @@ precondition
         const clampedDot = max(-1.0, min(1.0, dotProduct)); // Clamp to valid acos domain
         const angleChange = acos(clampedDot) * radian;
         
-        accumulatedAngle = accumulatedAngle + abs(angleChange);
+        accumulatedAngle += angleChange;
         
         // Check if we've accumulated enough angle for a cut
         if (accumulatedAngle >= kerfAngle)
