@@ -195,8 +195,9 @@ function doTagForm(context is Context, topLevelId is Id, definition is map)
     {
         setFormAttribute(context, definition.negativePart, FORM_BODY_NEGATIVE_PART);
         // Apply magenta appearance with 0.2 alpha to subtraction tool bodies for user identification
+        // Use qFlattenedCompositeParts to ensure composite part constituents also get the appearance
         setProperty(context, {
-            "entities" : definition.negativePart,
+            "entities" : qFlattenedCompositeParts(definition.negativePart),
             "propertyType" : PropertyType.APPEARANCE,
             "value" : color(1, 0, 1, 0.2)
         });
