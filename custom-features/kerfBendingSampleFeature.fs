@@ -26,26 +26,36 @@ export const kerfBendingSample = defineFeature(function(context is Context, id i
         annotation { "Name" : "Cut depth" }
         isLength(definition.cutDepth, BLEND_BOUNDS);
         
-        annotation { "Name" : "Curve samples" }
-        isInteger(definition.curveSamples, POSITIVE_COUNT_BOUNDS);
-        
-        annotation { "Name" : "Search window" }
-        isInteger(definition.searchWindow, POSITIVE_COUNT_BOUNDS);
-        
         annotation { "Name" : "Show debug info", "Default" : true }
         definition.showDebug is boolean;
+        
+        annotation { "Name" : "Advanced settings", "Default" : false }
+        definition.showAdvanced is boolean;
+        
+        if (definition.showAdvanced)
+        {
+            annotation { "Name" : "Curve samples", "Description" : "Number of points to sample along the curve (higher = more accurate)" }
+            isInteger(definition.curveSamples, POSITIVE_COUNT_BOUNDS);
+            
+            annotation { "Name" : "Search window", "Description" : "Size of the search window for finding cut points" }
+            isInteger(definition.searchWindow, POSITIVE_COUNT_BOUNDS);
+        }
     }
     {
         // Get control points from curve edge
         const controlPoints = extractBezierControlPoints(context, definition.curveEdge);
+        
+        // Use default values if advanced settings not shown
+        const curveSamples = definition.showAdvanced ? definition.curveSamples : 600;
+        const searchWindow = definition.showAdvanced ? definition.searchWindow : 80;
         
         // Generate the kerf bending solution
         const solution = generateKerfBendingSolution(
             controlPoints,
             definition.bladeWidth,
             definition.cutDepth,
-            definition.curveSamples,
-            definition.searchWindow
+            curveSamples,
+            searchWindow
         );
         
         // Create summary for display
@@ -109,9 +119,8 @@ export const kerfBendingSample = defineFeature(function(context is Context, id i
     {
         bladeWidth : 2.7 * millimeter,
         cutDepth : 35 * millimeter,
-        curveSamples : 600,
-        searchWindow : 80,
-        showDebug : true
+        showDebug : true,
+        showAdvanced : false
     });
 
 /**
