@@ -111,6 +111,7 @@ export const freeFormDeformation = defineFeature(function(context is Context, id
         if (definition.showLattice)
         {
             addControlPointManipulators(context, id, lattice, definition);
+            visualizeLattice(context, id, lattice);
         }
         
         // Perform the FFD deformation on the target face
@@ -339,6 +340,83 @@ function getManipulatorIndices(sCount is number, tCount is number, uCount is num
 function getControlPointIndex(i is number, j is number, k is number, tCount is number, uCount is number) returns number
 {
     return i * tCount * uCount + j * uCount + k;
+}
+
+/**
+ * Visualizes the FFD lattice as a wireframe by creating lines between control points
+ * 
+ * @param context : The context
+ * @param id : Feature ID
+ * @param lattice : The FFD lattice to visualize
+ */
+function visualizeLattice(context is Context, id is Id, lattice is FFDLattice)
+{
+    const sCount = lattice.controlPointCounts[0];
+    const tCount = lattice.controlPointCounts[1];
+    const uCount = lattice.controlPointCounts[2];
+    
+    // Create lines along S direction
+    for (var j = 0; j < tCount; j += 1)
+    {
+        for (var k = 0; k < uCount; k += 1)
+        {
+            var linePoints = [];
+            for (var i = 0; i < sCount; i += 1)
+            {
+                const index = getControlPointIndex(i, j, k, tCount, uCount);
+                linePoints = append(linePoints, lattice.controlPoints[index]);
+            }
+            
+            if (size(linePoints) >= 2)
+            {
+                opFitSpline(context, id + ("latticeS_" ~ j ~ "_" ~ k), {
+                    "points" : linePoints
+                });
+            }
+        }
+    }
+    
+    // Create lines along T direction
+    for (var i = 0; i < sCount; i += 1)
+    {
+        for (var k = 0; k < uCount; k += 1)
+        {
+            var linePoints = [];
+            for (var j = 0; j < tCount; j += 1)
+            {
+                const index = getControlPointIndex(i, j, k, tCount, uCount);
+                linePoints = append(linePoints, lattice.controlPoints[index]);
+            }
+            
+            if (size(linePoints) >= 2)
+            {
+                opFitSpline(context, id + ("latticeT_" ~ i ~ "_" ~ k), {
+                    "points" : linePoints
+                });
+            }
+        }
+    }
+    
+    // Create lines along U direction
+    for (var i = 0; i < sCount; i += 1)
+    {
+        for (var j = 0; j < tCount; j += 1)
+        {
+            var linePoints = [];
+            for (var k = 0; k < uCount; k += 1)
+            {
+                const index = getControlPointIndex(i, j, k, tCount, uCount);
+                linePoints = append(linePoints, lattice.controlPoints[index]);
+            }
+            
+            if (size(linePoints) >= 2)
+            {
+                opFitSpline(context, id + ("latticeU_" ~ i ~ "_" ~ j), {
+                    "points" : linePoints
+                });
+            }
+        }
+    }
 }
 
 /**
