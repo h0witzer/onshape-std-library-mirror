@@ -99,7 +99,7 @@ precondition
     {
         // Circle has constant curvature = 1/radius
         // For circles/arcs, we can directly calculate cut spacing analytically
-        return generateCircularKerfSolution(context, curveEdge, kerfAngle, minimumCutSpacing, totalLength, curveDefinition);
+        return generateCircularKerfSolution(context, curveEdge, kerfAngle, minimumCutSpacing, totalLength, curveDefinition, useHalfKerfOffset);
     }
     
     // Start from parameter 0 and walk along curve
@@ -261,9 +261,12 @@ function generateCircularKerfSolution(context is Context,
     var cutPositions = [];
     var curvatureSigns = [];
     
+    // Calculate offset for half-kerf on ends if enabled
+    const startOffset = useHalfKerfOffset ? (actualSpacing / (2 * totalLength)) : 0.0;
+    
     for (var i = 0; i <= numberOfCuts; i += 1)
     {
-        const parameter = i / numberOfCuts; // Normalized 0-1 range
+        const parameter = startOffset + (i / numberOfCuts) * (1.0 - 2 * startOffset); // Normalized 0-1 range with optional offset
         cutParameters = append(cutParameters, parameter);
         
         const tangentLine = evEdgeTangentLine(context, { "edge" : curveEdge, "parameter" : parameter, "arcLengthParameterization" : true });

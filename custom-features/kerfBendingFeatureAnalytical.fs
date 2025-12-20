@@ -35,6 +35,9 @@ export const kerfBendingFeature = defineFeature(function(context is Context, id 
         {
             annotation { "Name" : "Minimum cut spacing", "Description" : "Minimum distance between cuts" }
             isLength(definition.minimumCutSpacing, BLEND_BOUNDS);
+            
+            annotation { "Name" : "Use half-kerf offset on ends (circles only)", "Default" : false, "Description" : "For circles/arcs, offset first and last cuts by half the spacing" }
+            definition.useHalfKerfOffset is boolean;
         }
     }
     {
@@ -43,13 +46,17 @@ export const kerfBendingFeature = defineFeature(function(context is Context, id 
             definition.minimumCutSpacing : 
             definition.bladeWidth * 2;
         
+        // Use default half-kerf offset setting if not specified
+        const useHalfKerfOffset = definition.showAdvanced && definition.useHalfKerfOffset;
+        
         // Generate the kerf bending solution using analytical approach
         const solution = generateAnalyticalKerfSolution(
             context,
             definition.curveEdge,
             definition.bladeWidth,
             definition.cutDepth,
-            minimumCutSpacing
+            minimumCutSpacing,
+            useHalfKerfOffset
         );
         
         // Create summary for display
