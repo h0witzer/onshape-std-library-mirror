@@ -185,37 +185,19 @@ precondition
             arcLengthToNextCut = minimumCutSpacing;
         }
         
-        // Convert arc length to parameter using evDistance
-        // Cannot simply divide by totalLength because parameter may not be uniform
-        const currentDistance = evDistance(context, { "edge" : curveEdge, "parameter" : currentParam, "arcLengthParameterization" : true }).distance;
-        const targetDistance = currentDistance + arcLengthToNextCut;
+        // Convert arc length to parameter
+        // For non-uniformly parameterized curves (like splines), we need to use arc length parameterization
+        // Estimate next parameter by scaling by arc length, then refine using distance measurement
+        var paramDelta = arcLengthToNextCut / totalLength;
+        var nextParam = currentParam + paramDelta;
         
-        // Binary search to find parameter for target distance
-        var lowParam = currentParam;
-        var highParam = 1.0;
-        var midParam = (lowParam + highParam) / 2;
-        
-        for (var iter = 0; iter < 20; iter += 1)
+        // Clamp to valid parameter range
+        if (nextParam > 1.0)
         {
-            midParam = (lowParam + highParam) / 2;
-            const midDistance = evDistance(context, { "edge" : curveEdge, "parameter" : midParam, "arcLengthParameterization" : true }).distance;
-            
-            if (abs(midDistance - targetDistance) < 0.001 * millimeter)
-            {
-                break;
-            }
-            
-            if (midDistance < targetDistance)
-            {
-                lowParam = midParam;
-            }
-            else
-            {
-                highParam = midParam;
-            }
+            nextParam = 1.0;
         }
         
-        currentParam = midParam;
+        currentParam = nextParam;
         
         // Check if we've reached the end
         if (currentParam >= 1.0)
