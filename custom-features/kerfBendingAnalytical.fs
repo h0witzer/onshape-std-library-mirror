@@ -244,7 +244,7 @@ function generateCircularKerfSolution(context is Context,
     // Arc length between cuts = kerfAngle / curvature = kerfAngle * radius
     const radius = curveDefinition.radius;
     const curvature = 1.0 / radius;
-    var arcLengthBetweenCuts = kerfAngle / curvature;
+    var arcLengthBetweenCuts = kerfAngle * radius;
     
     // Respect minimum spacing constraint
     if (arcLengthBetweenCuts < minimumCutSpacing)
