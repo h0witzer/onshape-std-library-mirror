@@ -108,116 +108,55 @@ precondition
     const initialCurvatureSign = getCurvatureSign(curvatureResult.curvature);
     curvatureSigns = append(curvatureSigns, initialCurvatureSign);
     
-    // Walk along curve, adding cuts based on curvature with derivative-based refinement
+    // Walk along curve by integrating tangent angle changes
     // With arcLengthParameterization: true, parameters range from 0 to 1
-    const totalLengthValue = totalLength / meter;
+    // Use small parameter steps and accumulate tangent angle changes
+    const parameterStepSize = 0.002; // Small step for accurate integration (0.2% of curve)
+    var accumulatedAngle = 0.0 * radian;
+    var previousTangent = tangentLine.direction;
+    var lastCutParam = 0.0;
     
-    while (currentParam < 1.0)
+    currentParam = parameterStepSize;
+    while (currentParam <= 1.0)
     {
-        // Get curvature and its derivative at current point
-        curvatureResult = evEdgeCurvature(context, { "edge" : curveEdge, "parameter" : currentParam, "arcLengthParameterization" : true });
-        const curvatureMagnitude = abs(curvatureResult.curvature);
-        const curvatureWithSign = curvatureResult.curvature; // Keep the sign for inflection point detection
-        
-        // Get curvature derivative for better accuracy with variable curvature
-        var curvatureDerivative = vector(0, 0, 0) / meter;
-        try
-        {
-            curvatureDerivative = evEdgeCurvatureDerivative(context, { "edge" : curveEdge, "parameter" : currentParam, "arcLengthParameterization" : true });
-        }
-        catch
-        {
-            // If derivative evaluation fails, continue with constant curvature assumption
-        }
-        
-        // Calculate arc length to next cut using improved algorithm
-        // For variable curvature, we use numerical integration with derivatives
-        var arcLengthToNextCut = minimumCutSpacing; // Initialize with default value
-        if (curvatureMagnitude > (1e-6 / meter))
-        {
-            // Initial estimate using current curvature
-            const curvatureValue = curvatureMagnitude * meter; // Unitless
-            const angleValue = kerfAngle / radian; // Unitless
-            const initialEstimate = abs(angleValue / curvatureValue) * meter;
-            
-            // Refine using derivative information if available
-            const derivMagnitude = norm(curvatureDerivative);
-            if (derivMagnitude > (1e-9 / meter / meter))
-            {
-                // Use trapezoidal integration to account for changing curvature
-                // With arc length parameterization, parameter step needs to be normalized (0 to 1)
-                const paramStep = initialEstimate / totalLength;
-                
-                // Get curvature at estimated next position
-                const nextParamValue = currentParam + paramStep;
-                if (nextParamValue < 1.0)
-                {
-                    const nextCurvResult = evEdgeCurvature(context, { "edge" : curveEdge, "parameter" : nextParamValue, "arcLengthParameterization" : true });
-                    const nextCurvMag = abs(nextCurvResult.curvature);
-                    
-                    // Average curvature for better accuracy
-                    const avgCurvValue = ((curvatureMagnitude + nextCurvMag) / 2) * meter;
-                    
-                    if (avgCurvValue > 1e-6)
-                    {
-                        arcLengthToNextCut = abs(angleValue / avgCurvValue) * meter;
-                    }
-                    else
-                    {
-                        arcLengthToNextCut = initialEstimate;
-                    }
-                }
-                else
-                {
-                    arcLengthToNextCut = initialEstimate;
-                }
-            }
-            else
-            {
-                // Low derivative - constant curvature assumption is fine
-                arcLengthToNextCut = initialEstimate;
-            }
-            
-            // Ensure we don't go below minimum spacing
-            if (arcLengthToNextCut < minimumCutSpacing)
-            {
-                arcLengthToNextCut = minimumCutSpacing;
-            }
-        }
-        else
-        {
-            // Very low curvature - use minimum spacing
-            arcLengthToNextCut = minimumCutSpacing;
-        }
-        
-        // With arcLengthParameterization: true, parameters range from 0 to 1
-        // Convert arc length step to parameter range (0 to 1)
-        var nextParam = currentParam + (arcLengthToNextCut / totalLength);
-        
-        // Clamp to valid parameter range [0, 1]
-        if (nextParam > 1.0)
-        {
-            nextParam = 1.0;
-        }
-        
-        // Move to next position
-        currentParam = nextParam;
-        
-        // Add this cut position
-        cutParameters = append(cutParameters, currentParam);
-        
+        // Get tangent at current parameter
         tangentLine = evEdgeTangentLine(context, { "edge" : curveEdge, "parameter" : currentParam, "arcLengthParameterization" : true });
-        cutPositions = append(cutPositions, tangentLine.origin);
+        const currentTangent = tangentLine.direction;
         
-        curvatureResult = evEdgeCurvature(context, { "edge" : curveEdge, "parameter" : currentParam, "arcLengthParameterization" : true });
-        const curvatureSign = getCurvatureSign(curvatureResult.curvature);
-        curvatureSigns = append(curvatureSigns, curvatureSign);
+        // Calculate angle change between previous and current tangent
+        // Using acos(dot product) for angle between unit vectors
+        const dotProduct = dot(previousTangent, currentTangent);
+        const clampedDot = max(-1.0, min(1.0, dotProduct)); // Clamp to valid acos domain
+        const angleChange = acos(clampedDot) * radian;
         
-        // Check if we've reached the end - do this AFTER adding the point
-        if (currentParam >= 1.0)
+        accumulatedAngle = accumulatedAngle + abs(angleChange);
+        
+        // Check if we've accumulated enough angle for a cut
+        if (accumulatedAngle >= kerfAngle)
         {
-            break;
+            // Check minimum spacing constraint
+            const distanceFromLastCut = (currentParam - lastCutParam) * totalLength;
+            
+            if (distanceFromLastCut >= minimumCutSpacing)
+            {
+                // Add cut at current position
+                cutParameters = append(cutParameters, currentParam);
+                cutPositions = append(cutPositions, tangentLine.origin);
+                
+                // Get curvature sign at this point
+                curvatureResult = evEdgeCurvature(context, { "edge" : curveEdge, "parameter" : currentParam, "arcLengthParameterization" : true });
+                const curvatureSign = getCurvatureSign(curvatureResult.curvature);
+                curvatureSigns = append(curvatureSigns, curvatureSign);
+                
+                // Reset accumulated angle and update last cut parameter
+                accumulatedAngle = 0.0 * radian;
+                lastCutParam = currentParam;
+            }
         }
+        
+        // Update for next iteration
+        previousTangent = currentTangent;
+        currentParam = currentParam + parameterStepSize;
     }
     
     // Always add end point if we haven't already and we have at least one cut
