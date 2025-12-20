@@ -28,21 +28,21 @@ import(path : "onshape/std/vector.fs", version : "2815.0");
  */
 export enum TagPurpose
 {
+        annotation { "Name" : "Form" }
+    FORM,
     annotation { "Name" : "Frame" }
-    FRAME,
-    annotation { "Name" : "Form" }
-    FORM
+    FRAME
 }
 
 /**
  * Tag an entity with metadata. The metadata will be used for formed and frame features.
  */
 
-annotation { "Feature Type Name" : "Tag" }
+annotation { "Feature Type Name" : "Amalgam Tag" }
 export const tag = defineFeature(function(context is Context, id is Id, definition is map)
     precondition
     {
-        annotation { "Name" : "Tag purpose", "UIHint" : UIHint.REMEMBER_PREVIOUS_VALUE }
+        annotation { "Name" : "Tag purpose", "UIHint" : UIHint.ALWAYS_HIDDEN }
         definition.tagPurpose is TagPurpose;
 
         if (definition.tagPurpose == TagPurpose.FRAME)
@@ -87,19 +87,19 @@ export const tag = defineFeature(function(context is Context, id is Id, definiti
         }
         else if (definition.tagPurpose == TagPurpose.FORM)
         {
-            annotation { "Name" : "Part to add", "Filter" : EntityType.BODY && BodyType.SOLID, "MaxNumberOfPicks" : 1 }
+            annotation { "Name" : "Tools for union operations", "Filter" : EntityType.BODY && BodyType.SOLID}
             definition.positivePart is Query;
 
-            annotation { "Name" : "Part to remove", "Filter" : EntityType.BODY && BodyType.SOLID, "MaxNumberOfPicks" : 1 }
+            annotation { "Name" : "Tools for subtraction operations", "Filter" : EntityType.BODY && BodyType.SOLID }
             definition.negativePart is Query;
 
-            annotation { "Name" : "Part to new", "Filter" : EntityType.BODY && BodyType.SOLID, "MaxNumberOfPicks" : 1 }
+            annotation { "Name" : "Parts to insert as new", "Filter" : EntityType.BODY && BodyType.SOLID}
             definition.newPart is Query;
 
-            annotation { "Name" : "Sketch for flat view" }
+            annotation { "Name" : "Sketch for flat view" , "UIHint" : UIHint.ALWAYS_HIDDEN}
             definition.flatFormSketch is FeatureList;
 
-            annotation { "Name" : "Form origin mate connector", "Description" : "If none selected, this feature will create one at Origin",
+            annotation { "Name" : "Amalgam tool origin mate connector", "Description" : "If none selected, this feature will create one at Origin",
                         "Filter" : BodyType.MATE_CONNECTOR, "MaxNumberOfPicks" : 1 }
             definition.cSysMateConnector is Query;
         }
@@ -114,7 +114,7 @@ export const tag = defineFeature(function(context is Context, id is Id, definiti
             doTagForm(context, id, definition);
         }
     }, {
-            tagPurpose : TagPurpose.FRAME,
+            tagPurpose : TagPurpose.FORM,
             standard : "",
             description : "",
             additionalColumns : [],
@@ -222,15 +222,6 @@ function doTagForm(context is Context, topLevelId is Id, definition is map)
         opMateConnector(context, originMateConnectorId, { "coordSystem" : WORLD_COORD_SYSTEM });
         cSysMateConnector = qCreatedBy(originMateConnectorId, EntityType.BODY)->qBodyType(BodyType.MATE_CONNECTOR);
     }
-    if (isAtVersionOrLater(context, FeatureScriptVersionNumber.V2591_WARN_FORM_ORIGIN_OUTSIDE_TOOLS_BBOX))
-    {
-        const toolsBoundingBox = evBox3d(context, { "topology" : qUnion(definition.positivePart, definition.negativePart,definition.newPart), "tight" : false });
-        const formCSys = evMateConnector(context, { "mateConnector" : cSysMateConnector });
-        if (!insideBox3d(formCSys.origin, toolsBoundingBox))
-        {
-            reportFeatureWarning(context, topLevelId, ErrorStringEnum.FORMED_TAG_FORM_ORIGIN_OUTSIDE_TOOLS_BBOX, ["cSysMateConnector"]);
-        }
-    }
     setFormAttribute(context, qOwnerBody(cSysMateConnector), FORM_BODY_CSYS_MATE_CONNECTOR);
 }
 
@@ -310,4 +301,3 @@ function displayAlignmentPoints(context is Context, sketchRegions is Query, show
         return;
     }
 }
-
