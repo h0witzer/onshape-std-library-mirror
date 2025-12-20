@@ -112,6 +112,7 @@ precondition
         // Get curvature and its derivative at current point
         curvatureResult = evEdgeCurvature(context, { "edge" : curveEdge, "parameter" : currentParam, "arcLengthParameterization" : true });
         const curvatureMagnitude = abs(curvatureResult.curvature);
+        const curvatureWithSign = curvatureResult.curvature; // Keep the sign for inflection point detection
         
         // Get curvature derivative for better accuracy with variable curvature
         var curvatureDerivative = vector(0, 0, 0) / meter;
@@ -184,9 +185,37 @@ precondition
             arcLengthToNextCut = minimumCutSpacing;
         }
         
-        // Convert arc length to parameter delta
-        const paramDelta = arcLengthToNextCut / totalLength;
-        currentParam = currentParam + paramDelta;
+        // Convert arc length to parameter using evDistance
+        // Cannot simply divide by totalLength because parameter may not be uniform
+        const currentDistance = evDistance(context, { "edge" : curveEdge, "parameter" : currentParam, "arcLengthParameterization" : true }).distance;
+        const targetDistance = currentDistance + arcLengthToNextCut;
+        
+        // Binary search to find parameter for target distance
+        var lowParam = currentParam;
+        var highParam = 1.0;
+        var midParam = (lowParam + highParam) / 2;
+        
+        for (var iter = 0; iter < 20; iter += 1)
+        {
+            midParam = (lowParam + highParam) / 2;
+            const midDistance = evDistance(context, { "edge" : curveEdge, "parameter" : midParam, "arcLengthParameterization" : true }).distance;
+            
+            if (abs(midDistance - targetDistance) < 0.001 * millimeter)
+            {
+                break;
+            }
+            
+            if (midDistance < targetDistance)
+            {
+                lowParam = midParam;
+            }
+            else
+            {
+                highParam = midParam;
+            }
+        }
+        
+        currentParam = midParam;
         
         // Check if we've reached the end
         if (currentParam >= 1.0)
