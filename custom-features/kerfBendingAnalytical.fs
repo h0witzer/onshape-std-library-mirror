@@ -299,7 +299,7 @@ function generateCircularKerfSolution(context is Context,
 }
 
 /**
- * Overloaded version with default minimum spacing
+ * Overloaded version with default minimum spacing and half-kerf offset
  */
 export function generateAnalyticalKerfSolution(context is Context,
                                               curveEdge is Query,
@@ -313,7 +313,7 @@ precondition
     cutDepth > 0 * meter;
 }
 {
-    return generateAnalyticalKerfSolution(context, curveEdge, cutWidth, cutDepth, cutWidth * 2);
+    return generateAnalyticalKerfSolution(context, curveEdge, cutWidth, cutDepth, cutWidth * 2, false);
 }
 
 /**
