@@ -62,16 +62,13 @@ export const freeFormDeformation = defineFeature(function(context is Context, id
                     "MaxNumberOfPicks" : 1 }
         definition.targetFace is Query;
 
-        annotation { "Name" : "S direction spans (length)",
-                    "UIHint" : UIHint.DISPLAY_SHORT }
+        annotation { "Name" : "S direction spans (length)" }
         isInteger(definition.sSpans, POSITIVE_COUNT_BOUNDS);
 
-        annotation { "Name" : "T direction spans (width)",
-                    "UIHint" : UIHint.DISPLAY_SHORT }
+        annotation { "Name" : "T direction spans (width)" }
         isInteger(definition.tSpans, POSITIVE_COUNT_BOUNDS);
 
-        annotation { "Name" : "U direction spans (height)",
-                    "UIHint" : UIHint.DISPLAY_SHORT }
+        annotation { "Name" : "U direction spans (height)" }
         isInteger(definition.uSpans, POSITIVE_COUNT_BOUNDS);
         
         annotation { "Name" : "Show control lattice",
@@ -79,7 +76,8 @@ export const freeFormDeformation = defineFeature(function(context is Context, id
         definition.showLattice is boolean;
         
         annotation { "Name" : "Control point adjustments",
-                    "UIHint" : UIHint.ALWAYS_HIDDEN }
+                    "UIHint" : UIHint.ALWAYS_HIDDEN,
+                    "Default" : {} }
         isAnything(definition.controlPointOffsets);
     }
     {
@@ -91,12 +89,6 @@ export const freeFormDeformation = defineFeature(function(context is Context, id
         }
         
         const targetFace = targetFaces[0];
-        
-        // Initialize control point offsets if not set
-        if (definition.controlPointOffsets == undefined)
-        {
-            definition.controlPointOffsets = {};
-        }
         
         // Get the bounding box of the target face
         const faceBoundingBox = evBox3d(context, {
@@ -470,7 +462,7 @@ function bernsteinPolynomial(n is number, k is number, u is number) returns numb
     const binomialCoefficient = factorial(n) / (factorial(k) * factorial(n - k));
     
     // Bernstein polynomial: C(n,k) * (1-u)^(n-k) * u^k
-    return binomialCoefficient * pow(1 - u, n - k) * pow(u, k);
+    return binomialCoefficient * (1 - u)^(n - k) * u^k;
 }
 
 /**
