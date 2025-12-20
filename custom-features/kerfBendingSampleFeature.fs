@@ -1,5 +1,6 @@
 FeatureScript 2837;
 import(path : "onshape/std/common.fs", version : "2837.0");
+import(path : "onshape/std/curveGeometry.fs", version : "2837.0");
 import(path : "onshape/std/feature.fs", version : "2837.0");
 import(path : "onshape/std/evaluate.fs", version : "2837.0");
 import(path : "onshape/std/sketch.fs", version : "2837.0");
@@ -115,8 +116,8 @@ export const kerfBendingSample = defineFeature(function(context is Context, id i
 
 /**
  * Extract control points from a curve edge.
- * Samples the curve at strategic points to approximate a quadratic Bezier.
- * Works with any curve type - Bezier, spline, arc, etc.
+ * Uses evCurveDefinition to get the actual curve data, or evApproximateBSplineCurve
+ * to get a B-spline approximation, then extracts/converts to quadratic Bezier control points.
  * 
  * @param context : The context
  * @param curveEdge : Query for the curve edge
@@ -124,19 +125,87 @@ export const kerfBendingSample = defineFeature(function(context is Context, id i
  */
 function extractBezierControlPoints(context is Context, curveEdge is Query) returns array
 {
-    // Sample at t=0 (start), t=0.5 (middle), t=1 (end)
-    const startLine = evEdgeTangentLine(context, { "edge" : curveEdge, "parameter" : 0.0 });
-    const midLine = evEdgeTangentLine(context, { "edge" : curveEdge, "parameter" : 0.5 });
-    const endLine = evEdgeTangentLine(context, { "edge" : curveEdge, "parameter" : 1.0 });
+    // First try to get the curve definition directly
+    const curveDef = evCurveDefinition(context, { "edge" : curveEdge });
     
-    const p0 = startLine.origin;
-    const p2 = endLine.origin;
-    const midPoint = midLine.origin;
+    // Check if it's a line
+    if (curveDef.curveType == CurveType.LINE)
+    {
+        // For a line, use start and end points with control point at midpoint
+        const line = curveDef as Line;
+        const startLine = evEdgeTangentLine(context, { "edge" : curveEdge, "parameter" : 0.0 });
+        const endLine = evEdgeTangentLine(context, { "edge" : curveEdge, "parameter" : 1.0 });
+        const p0 = startLine.origin;
+        const p2 = endLine.origin;
+        const p1 = (p0 + p2) / 2; // Control point at midpoint for straight line
+        return [p0, p1, p2];
+    }
+    else if (curveDef.curveType == CurveType.CIRCLE || curveDef.curveType == CurveType.ELLIPSE)
+    {
+        // For circles and ellipses, approximate with B-spline then extract control points
+        return extractFromBSpline(context, curveEdge);
+    }
+    else
+    {
+        // For splines and other curves, use B-spline approximation
+        return extractFromBSpline(context, curveEdge);
+    }
+}
+
+/**
+ * Extract control points from a curve by getting its B-spline representation.
+ * 
+ * @param context : The context
+ * @param curveEdge : Query for the curve edge
+ * @returns {array} : Array of three 3D control points [start, control, end]
+ */
+function extractFromBSpline(context is Context, curveEdge is Query) returns array
+{
+    // Get B-spline approximation of the curve
+    const bSpline = evApproximateBSplineCurve(context, { "edge" : curveEdge });
     
-    // For a quadratic Bezier: midPoint = 0.25*p0 + 0.5*p1 + 0.25*p2
-    // Solving for p1: p1 = 2*midPoint - 0.5*(p0 + p2)
-    const p1 = 2 * midPoint - 0.5 * (p0 + p2);
+    const controlPoints = bSpline.controlPoints;
+    const numPoints = size(controlPoints);
     
-    return [p0, p1, p2];
+    if (numPoints == 3 && bSpline.degree == 2)
+    {
+        // Perfect - it's already a quadratic Bezier
+        return controlPoints;
+    }
+    else if (numPoints == 2 && bSpline.degree == 1)
+    {
+        // Linear B-spline (line segment)
+        const p0 = controlPoints[0];
+        const p2 = controlPoints[1];
+        const p1 = (p0 + p2) / 2;
+        return [p0, p1, p2];
+    }
+    else if (numPoints == 4 && bSpline.degree == 3)
+    {
+        // Cubic B-spline/Bezier - convert to quadratic approximation
+        // For cubic Bezier: approximate middle control point
+        const p0 = controlPoints[0];
+        const p1 = (3 * controlPoints[1] + 3 * controlPoints[2]) / 6;
+        const p2 = controlPoints[3];
+        return [p0, p1, p2];
+    }
+    else
+    {
+        // Higher order or different structure - fit quadratic Bezier
+        // Use start, end, and approximate middle control point
+        const p0 = controlPoints[0];
+        const p2 = controlPoints[numPoints - 1];
+        
+        // Estimate middle control point from the B-spline control points
+        // Use weighted average of interior points
+        var weightedSum = vector(0, 0, 0) * meter;
+        for (var i = 1; i < numPoints - 1; i += 1)
+        {
+            weightedSum = weightedSum + controlPoints[i];
+        }
+        const p1 = weightedSum / (numPoints - 2);
+        
+        return [p0, p1, p2];
+    }
 }
 
