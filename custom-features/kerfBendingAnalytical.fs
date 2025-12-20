@@ -6,6 +6,7 @@ import(path : "onshape/std/evaluate.fs", version : "2837.0");
 import(path : "onshape/std/math.fs", version : "2837.0");
 import(path : "onshape/std/units.fs", version : "2837.0");
 import(path : "onshape/std/vector.fs", version : "2837.0");
+import(path : "onshape/std/splineUtils.fs", version : "2837.0");
 
 /**
  * Kerf bending utilities using analytical NURBS-based approach for performance.
@@ -185,16 +186,48 @@ precondition
             arcLengthToNextCut = minimumCutSpacing;
         }
         
-        // Convert arc length to parameter
-        // For non-uniformly parameterized curves (like splines), use iterative refinement
-        // Start with a rough estimate
-        var paramDelta = arcLengthToNextCut / totalLength;
-        var nextParam = currentParam + paramDelta;
+        // Convert arc length to parameter using B-spline-aware method
+        // Get B-spline approximation for better parameterization handling
+        var nextParam = currentParam;
+        try
+        {
+            // Try to use B-spline approximation for accurate arc-length-to-parameter conversion
+            const bspline = evApproximateBSplineCurve(context, { "edge" : curveEdge, "tolerance" : 1e-6 });
+            
+            // Estimate parameter step based on desired arc length
+            // For B-splines, we'll use a sampling approach to find the right parameter
+            const numSamples = 10;
+            var bestParam = currentParam;
+            var bestDiff = 1e10 * meter;
+            
+            for (var i = 1; i <= numSamples; i += 1)
+            {
+                const testParam = currentParam + (arcLengthToNextCut / totalLength) * (i / numSamples);
+                if (testParam >= 1.0)
+                    break;
+                    
+                const testPos = evaluateSpline({ "spline" : bspline, "parameters" : [testParam], "nDerivatives" : 0 })[0][0];
+                const testDistance = norm(testPos - tangentLine.origin);
+                const diff = abs(testDistance - arcLengthToNextCut);
+                
+                if (diff < bestDiff)
+                {
+                    bestDiff = diff;
+                    bestParam = testParam;
+                }
+            }
+            nextParam = bestParam;
+        }
+        catch
+        {
+            // Fallback to simple parameter scaling if B-spline evaluation fails
+            nextParam = currentParam + (arcLengthToNextCut / totalLength);
+        }
         
-        // Refine using actual geometry - measure distance and adjust
+        // Additional refinement using actual geometry - measure distance and adjust
         if (nextParam < 1.0)
         {
-            // Get tangent at estimated next position (use non-arc-length for speed)
+            // Get tangent at estimated next position
             const testTangent = evEdgeTangentLine(context, { "edge" : curveEdge, "parameter" : nextParam, "arcLengthParameterization" : false });
             const measuredDistance = norm(testTangent.origin - tangentLine.origin);
             
