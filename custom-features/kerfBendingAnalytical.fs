@@ -186,10 +186,26 @@ precondition
         }
         
         // Convert arc length to parameter
-        // For non-uniformly parameterized curves (like splines), we need to use arc length parameterization
-        // Estimate next parameter by scaling by arc length, then refine using distance measurement
+        // For non-uniformly parameterized curves (like splines), use iterative refinement
+        // Start with a rough estimate
         var paramDelta = arcLengthToNextCut / totalLength;
         var nextParam = currentParam + paramDelta;
+        
+        // Refine using actual geometry - measure distance and adjust
+        if (nextParam < 1.0)
+        {
+            // Get tangent at estimated next position (use non-arc-length for speed)
+            const testTangent = evEdgeTangentLine(context, { "edge" : curveEdge, "parameter" : nextParam, "arcLengthParameterization" : false });
+            const measuredDistance = norm(testTangent.origin - tangentLine.origin);
+            
+            // Adjust parameter step based on measured vs desired distance
+            if (measuredDistance > 1e-9 * meter)
+            {
+                const ratio = arcLengthToNextCut / measuredDistance;
+                paramDelta = paramDelta * ratio;
+                nextParam = currentParam + paramDelta;
+            }
+        }
         
         // Clamp to valid parameter range
         if (nextParam > 1.0)
