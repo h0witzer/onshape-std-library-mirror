@@ -110,13 +110,14 @@ precondition
     
     // Walk along curve by integrating tangent angle changes
     // With arcLengthParameterization: true, parameters range from 0 to 1
-    // Use small parameter steps and accumulate tangent angle changes
-    const parameterStepSize = 0.002; // Small step for accurate integration (0.2% of curve)
+    // Use adaptive step sizing based on curvature for efficiency
+    const baseParameterStepSize = 0.01; // Base step (1% of curve) - adaptive based on curvature
+    const minParameterStepSize = 0.001; // Minimum step in high curvature regions (0.1%)
     var accumulatedAngle = 0.0 * radian;
     var previousTangent = tangentLine.direction;
     var lastCutParam = 0.0;
     
-    currentParam = parameterStepSize;
+    currentParam = baseParameterStepSize;
     while (currentParam <= 1.0)
     {
         // Get tangent at current parameter
@@ -127,7 +128,7 @@ precondition
         // Using acos(dot product) for angle between unit vectors
         const dotProduct = dot(previousTangent, currentTangent);
         const clampedDot = max(-1.0, min(1.0, dotProduct)); // Clamp to valid acos domain
-        const angleChange = acos(clampedDot) * radian;
+        const angleChange = acos(clampedDot); // acos returns radians directly
         
         accumulatedAngle += angleChange;
         
@@ -156,7 +157,25 @@ precondition
         
         // Update for next iteration
         previousTangent = currentTangent;
-        currentParam = currentParam + parameterStepSize;
+        
+        // Adaptive step sizing: use larger steps in low curvature regions, smaller in high curvature
+        // Sample curvature at current point to adjust next step
+        curvatureResult = evEdgeCurvature(context, { "edge" : curveEdge, "parameter" : currentParam, "arcLengthParameterization" : true });
+        const curvatureMagnitude = norm(curvatureResult.curvature);
+        
+        // Adjust step size: smaller steps when curvature is high
+        // If curvature is near zero (straight line or inflection), use large steps
+        // If curvature is high, use small steps
+        var adaptiveStepSize = baseParameterStepSize;
+        if (curvatureMagnitude > 1e-6 / meter)
+        {
+            // Scale step inversely with curvature magnitude
+            // Higher curvature → smaller steps
+            const curvatureScale = min(1.0, 10.0 / (curvatureMagnitude * meter + 10.0));
+            adaptiveStepSize = minParameterStepSize + (baseParameterStepSize - minParameterStepSize) * curvatureScale;
+        }
+        
+        currentParam = currentParam + adaptiveStepSize;
     }
     
     // Always add end point if we haven't already and we have at least one cut
