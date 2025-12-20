@@ -119,9 +119,15 @@ precondition
         var arcLengthToNextCut;
         if (curvatureMagnitude > (1e-6 / meter))
         {
-            arcLengthToNextCut = abs(kerfAngle / curvatureMagnitude);
+            // kerfAngle is in radians, curvature is in 1/meter
+            // arcLength = angle / curvature = radian / (1/meter) = radian * meter
+            // We need to convert this to just length by dividing by radian
+            arcLengthToNextCut = abs(kerfAngle * meter / (curvatureMagnitude * radian));
             // Ensure we don't go below minimum spacing
-            arcLengthToNextCut = max(arcLengthToNextCut, minimumCutSpacing);
+            if (arcLengthToNextCut < minimumCutSpacing)
+            {
+                arcLengthToNextCut = minimumCutSpacing;
+            }
         }
         else
         {
@@ -233,11 +239,17 @@ function getCurvatureSign(curvature is ValueWithUnits) returns number
 export function calculateFlattenedCutPositions(cutDistances is array, centerOrigin is boolean) returns array
 precondition
 {
-    @size(cutDistances) > 0;
+    @size(cutDistances) >= 0;
     for (var distance in cutDistances)
         isLength(distance);
 }
 {
+    // Handle edge case of empty cutDistances (single point)
+    if (@size(cutDistances) == 0)
+    {
+        return [0 * meter];
+    }
+    
     var totalLength = 0 * meter;
     for (var distance in cutDistances)
     {
