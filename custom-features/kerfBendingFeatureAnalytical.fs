@@ -1,5 +1,6 @@
 FeatureScript 2837;
 import(path : "onshape/std/common.fs", version : "2837.0");
+import(path : "onshape/std/debug.fs", version : "2837.0");
 import(path : "onshape/std/feature.fs", version : "2837.0");
 import(path : "onshape/std/evaluate.fs", version : "2837.0");
 import(path : "onshape/std/sketch.fs", version : "2837.0");
@@ -78,8 +79,8 @@ export const kerfBendingFeature = defineFeature(function(context is Context, id 
                 // Use different colors based on curvature sign
                 const debugColor = curvSign > 0 ? DebugColor.BLUE : (curvSign < 0 ? DebugColor.RED : DebugColor.GREEN);
                 
-                // Draw a sphere at each cut position on the curve
-                debug(context, cutPos, debugColor);
+                // Draw a visible point at each cut position on the curve
+                addDebugPoint(context, cutPos, debugColor);
                 
                 // Also print to console for verification
                 println("Cut " ~ i ~ " at parameter " ~ solution.cutParameters[i] ~ ": " ~ cutPos);
@@ -88,7 +89,7 @@ export const kerfBendingFeature = defineFeature(function(context is Context, id 
             // Draw lines connecting cut positions on the curve
             for (var i = 0; i < @size(solution.cutPositions) - 1; i += 1)
             {
-                debug(context, [solution.cutPositions[i], solution.cutPositions[i + 1]], DebugColor.YELLOW);
+                debug(context, solution.cutPositions[i], solution.cutPositions[i + 1], DebugColor.YELLOW);
             }
         }
         
