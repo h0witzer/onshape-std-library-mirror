@@ -143,9 +143,9 @@ export function freeFormDeformationManipulatorChange(context is Context, definit
         {
             // Parse the index from the manipulator ID (format: "controlPoint_123")
             const underscoreIndex = indexOf(manipulatorId, "_");
-            if (underscoreIndex != -1 && underscoreIndex < size(manipulatorId) - 1)
+            if (underscoreIndex != -1 && underscoreIndex < length(manipulatorId) - 1)
             {
-                const indexString = substring(manipulatorId, underscoreIndex + 1, size(manipulatorId));
+                const indexString = substring(manipulatorId, underscoreIndex + 1, length(manipulatorId));
                 try
                 {
                     const controlPointIndex = stringToNumber(indexString);
@@ -506,21 +506,22 @@ function worldToParameterSpace(lattice is FFDLattice, worldPoint is Vector) retu
     
     // Guard against division by zero (degenerate lattice)
     // Use epsilon threshold to handle near-zero denominators
+    const epsilon = PARAMETER_SPACE_EPSILON * meter;
     
     var sParameter = 0.0;
-    if (abs(sDenominator) > PARAMETER_SPACE_EPSILON)
+    if (abs(sDenominator) > epsilon)
     {
         sParameter = sNumerator / sDenominator;
     }
     
     var tParameter = 0.0;
-    if (abs(tDenominator) > PARAMETER_SPACE_EPSILON)
+    if (abs(tDenominator) > epsilon)
     {
         tParameter = tNumerator / tDenominator;
     }
     
     var uParameter = 0.0;
-    if (abs(uDenominator) > PARAMETER_SPACE_EPSILON)
+    if (abs(uDenominator) > epsilon)
     {
         uParameter = uNumerator / uDenominator;
     }
