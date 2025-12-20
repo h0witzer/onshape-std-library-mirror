@@ -88,13 +88,13 @@ export const tag = defineFeature(function(context is Context, id is Id, definiti
         }
         else if (definition.tagPurpose == TagPurpose.FORM)
         {
-            annotation { "Name" : "Tools for union operations", "Filter" : EntityType.BODY && BodyType.SOLID}
+            annotation { "Name" : "Tools for union operations", "Filter" : (EntityType.BODY && BodyType.SOLID) || BodyType.COMPOSITE}
             definition.positivePart is Query;
 
-            annotation { "Name" : "Tools for subtraction operations", "Filter" : EntityType.BODY && BodyType.SOLID }
+            annotation { "Name" : "Tools for subtraction operations", "Filter" : (EntityType.BODY && BodyType.SOLID) || BodyType.COMPOSITE }
             definition.negativePart is Query;
 
-            annotation { "Name" : "Parts to insert as new", "Filter" : EntityType.BODY && BodyType.SOLID}
+            annotation { "Name" : "Parts to insert as new", "Filter" : (EntityType.BODY && BodyType.SOLID) || BodyType.COMPOSITE}
             definition.newPart is Query;
 
             annotation { "Name" : "Sketch for flat view" , "UIHint" : UIHint.ALWAYS_HIDDEN}
@@ -141,7 +141,12 @@ function doTagForm(context is Context, topLevelId is Id, definition is map)
     var positivePartSelected = !isQueryEmpty(context, definition.positivePart);
     if (positivePartSelected)
     {
-        if (isQueryEmpty(context, qBodyType(definition.positivePart, BodyType.SOLID)))
+        // Allow both solid bodies and composite parts
+        const solidOrComposite = qUnion([
+            qBodyType(definition.positivePart, BodyType.SOLID),
+            qBodyType(definition.positivePart, BodyType.COMPOSITE)
+        ]);
+        if (isQueryEmpty(context, solidOrComposite))
         {
             throw regenError(ErrorStringEnum.FORMED_TAG_FORM_POSITIVE_PART_NOT_SOLID, ["positivePart"], definition.positivePart);
         }
@@ -149,7 +154,12 @@ function doTagForm(context is Context, topLevelId is Id, definition is map)
     var negativePartSelected = !isQueryEmpty(context, definition.negativePart);
     if (negativePartSelected)
     {
-        if (isQueryEmpty(context, qBodyType(definition.negativePart, BodyType.SOLID)))
+        // Allow both solid bodies and composite parts
+        const solidOrComposite = qUnion([
+            qBodyType(definition.negativePart, BodyType.SOLID),
+            qBodyType(definition.negativePart, BodyType.COMPOSITE)
+        ]);
+        if (isQueryEmpty(context, solidOrComposite))
         {
             throw regenError(ErrorStringEnum.FORMED_TAG_FORM_NEGATIVE_PART_NOT_SOLID, ["negativePart"], definition.negativePart);
         }
@@ -157,7 +167,12 @@ function doTagForm(context is Context, topLevelId is Id, definition is map)
         var newPartSelected = !isQueryEmpty(context, definition.newPart);
     if (newPartSelected)
     {
-        if (isQueryEmpty(context, qBodyType(definition.newPart, BodyType.SOLID)))
+        // Allow both solid bodies and composite parts
+        const solidOrComposite = qUnion([
+            qBodyType(definition.newPart, BodyType.SOLID),
+            qBodyType(definition.newPart, BodyType.COMPOSITE)
+        ]);
+        if (isQueryEmpty(context, solidOrComposite))
         {
             throw regenError(ErrorStringEnum.FORMED_TAG_FORM_NEGATIVE_PART_NOT_SOLID, ["newPart"], definition.newPart);
         }
