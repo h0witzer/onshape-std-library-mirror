@@ -93,12 +93,13 @@ precondition
     const totalLength = evLength(context, { "entities" : curveEdge });
     
     // Start from parameter 0 and walk along curve
-    var cutParameters = [0.0];
+    // With arc length parameterization, parameters have units of length
+    var cutParameters = [0 * meter];
     var cutPositions = [];
     var curvatureSigns = [];
     
     // Get initial position
-    var currentParam = 0.0;
+    var currentParam = 0 * meter;
     var tangentLine = evEdgeTangentLine(context, { "edge" : curveEdge, "parameter" : currentParam, "arcLengthParameterization" : true });
     cutPositions = append(cutPositions, tangentLine.origin);
     
@@ -108,7 +109,7 @@ precondition
     curvatureSigns = append(curvatureSigns, initialCurvatureSign);
     
     // Walk along curve, adding cuts based on curvature with derivative-based refinement
-    while (currentParam < 1.0)
+    while (currentParam < totalLength)
     {
         // Get curvature and its derivative at current point
         curvatureResult = evEdgeCurvature(context, { "edge" : curveEdge, "parameter" : currentParam, "arcLengthParameterization" : true });
