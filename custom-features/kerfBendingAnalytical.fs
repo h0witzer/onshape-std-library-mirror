@@ -120,7 +120,7 @@ precondition
         // In FeatureScript, angles are dimensional, so we need: kerfAngle / curvatureMagnitude / radian * meter
         // This simplifies to: (kerfAngle / radian) / (curvatureMagnitude * meter)
         // Or more simply: kerfAngle / (curvatureMagnitude * meter) / radian
-        var arcLengthToNextCut is ValueWithUnits;
+        var arcLengthToNextCut = minimumCutSpacing; // Initialize with default value
         if (curvatureMagnitude > (1e-6 / meter))
         {
             // Convert: angle / curvature = (radian) / (1/meter) needs to become length
