@@ -54,19 +54,23 @@ export const kerfBendingFeature = defineFeature(function(context is Context, id 
         // Create summary for display
         const summary = createKerfBendingSummary(solution);
         
-        // Display results in the console
+        // Display results in the console with better formatting
         println("=== Kerf Bending Solution (Analytical) ===");
-        println("Total curve length: " ~ solution.totalLength);
+        println("Blade width: " ~ toString(definition.bladeWidth));
+        println("Cut depth: " ~ toString(definition.cutDepth));
+        println("Minimum cut spacing: " ~ toString(minimumCutSpacing));
+        println("Total curve length: " ~ toString(solution.totalLength));
         println("Number of cuts: " ~ solution.numberOfCuts);
-        println("Kerf angle (degrees): " ~ (solution.kerfAngle / degree));
-        println("Average cut spacing: " ~ summary.averageCutSpacing);
-        println("Minimum cut spacing: " ~ summary.minimumCutSpacing);
-        println("Maximum cut spacing: " ~ summary.maximumCutSpacing);
+        println("Kerf angle (degrees): " ~ toString(solution.kerfAngle / degree));
+        println("Kerf angle (radians): " ~ toString(solution.kerfAngle / radian));
+        println("Average cut spacing: " ~ toString(summary.averageCutSpacing));
+        println("Minimum cut spacing: " ~ toString(summary.minimumCutSpacing));
+        println("Maximum cut spacing: " ~ toString(summary.maximumCutSpacing));
         
         if (definition.showDebug)
         {
-            // Create debug visualization of cut positions
-            for (var i = 0; i < size(solution.cutPositions); i += 1)
+            // Create debug visualization of cut positions on the actual curve
+            for (var i = 0; i < @size(solution.cutPositions); i += 1)
             {
                 const cutPos = solution.cutPositions[i];
                 const curvSign = solution.curvatureSigns[i];
@@ -74,12 +78,15 @@ export const kerfBendingFeature = defineFeature(function(context is Context, id 
                 // Use different colors based on curvature sign
                 const debugColor = curvSign > 0 ? DebugColor.BLUE : (curvSign < 0 ? DebugColor.RED : DebugColor.GREEN);
                 
-                // Draw a point at each cut position
+                // Draw a sphere at each cut position on the curve
                 debug(context, cutPos, debugColor);
+                
+                // Also print to console for verification
+                println("Cut " ~ i ~ " at parameter " ~ solution.cutParameters[i] ~ ": " ~ cutPos);
             }
             
-            // Draw lines connecting cut positions
-            for (var i = 0; i < size(solution.cutPositions) - 1; i += 1)
+            // Draw lines connecting cut positions on the curve
+            for (var i = 0; i < @size(solution.cutPositions) - 1; i += 1)
             {
                 debug(context, [solution.cutPositions[i], solution.cutPositions[i + 1]], DebugColor.YELLOW);
             }
