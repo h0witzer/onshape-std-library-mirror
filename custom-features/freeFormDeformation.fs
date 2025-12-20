@@ -308,7 +308,7 @@ function getManipulatorIndices(sCount is number, tCount is number, uCount is num
         getControlPointIndex(sCount - 1, tCount - 1, uCount - 1, tCount, uCount)
     ];
     
-    indices = concatenateArrays([indices, corners]);
+    indices = indices + corners;
     
     // Add midpoints of edges if lattice is large enough
     if (sCount > 2)
