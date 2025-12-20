@@ -133,14 +133,22 @@ export function freeFormDeformationManipulatorChange(context is Context, definit
         // Extract control point index from manipulator ID
         if (startsWith(manipulatorId, "controlPoint_"))
         {
-            const parts = splitByRegexp(manipulatorId, "_");
-            if (size(parts) >= 2)
+            // Parse the index from the manipulator ID (format: "controlPoint_123")
+            const underscoreIndex = indexOf(manipulatorId, "_");
+            if (underscoreIndex != -1 && underscoreIndex < size(manipulatorId) - 1)
             {
-                const indexString = parts[1];
-                const controlPointIndex = stringToNumber(indexString);
-                
-                // Store the offset for this control point
-                definition.controlPointOffsets[controlPointIndex] = manipulator.offset;
+                const indexString = substring(manipulatorId, underscoreIndex + 1, size(manipulatorId));
+                try
+                {
+                    const controlPointIndex = stringToNumber(indexString);
+                    
+                    // Store the offset for this control point
+                    definition.controlPointOffsets[controlPointIndex] = manipulator.offset;
+                }
+                catch
+                {
+                    // Invalid index format - skip this manipulator
+                }
             }
         }
     }
@@ -421,17 +429,30 @@ function visualizeLattice(context is Context, id is Id, lattice is FFDLattice)
 
 /**
  * Calculates factorial of n
+ * Results are cached to avoid redundant calculations
  * 
  * @param n : Non-negative integer
  * @returns n! (factorial of n)
  */
+const FACTORIAL_CACHE = {}; // Module-level cache for factorial values
+
 function factorial(n is number) returns number
 {
+    // Check cache first
+    if (FACTORIAL_CACHE[n] != undefined)
+    {
+        return FACTORIAL_CACHE[n];
+    }
+    
     var result = 1;
     for (var i = n; i > 1; i -= 1)
     {
         result = result * i;
     }
+    
+    // Cache the result
+    FACTORIAL_CACHE[n] = result;
+    
     return result;
 }
 
@@ -475,15 +496,34 @@ function worldToParameterSpace(lattice is FFDLattice, worldPoint is Vector) retu
     // Calculate parameters using the formula from the paper
     const sNumerator = dot(crossTU, minToWorld);
     const sDenominator = dot(crossTU, lattice.axes[0]);
-    const sParameter = sNumerator / sDenominator;
     
     const tNumerator = dot(crossSU, minToWorld);
     const tDenominator = dot(crossSU, lattice.axes[1]);
-    const tParameter = tNumerator / tDenominator;
     
     const uNumerator = dot(crossST, minToWorld);
     const uDenominator = dot(crossST, lattice.axes[2]);
-    const uParameter = uNumerator / uDenominator;
+    
+    // Guard against division by zero (degenerate lattice)
+    // Use small epsilon to handle near-zero denominators
+    const epsilon = 1e-10;
+    
+    var sParameter = 0.0;
+    if (abs(sDenominator) > epsilon)
+    {
+        sParameter = sNumerator / sDenominator;
+    }
+    
+    var tParameter = 0.0;
+    if (abs(tDenominator) > epsilon)
+    {
+        tParameter = tNumerator / tDenominator;
+    }
+    
+    var uParameter = 0.0;
+    if (abs(uDenominator) > epsilon)
+    {
+        uParameter = uNumerator / uDenominator;
+    }
     
     return vector(sParameter, tParameter, uParameter);
 }
@@ -526,8 +566,8 @@ function evaluateFFDTrivariate(lattice is FFDLattice, s is number, t is number, 
             {
                 const bernsteinU = bernsteinPolynomial(uSpans, k, u);
                 
-                // Get control point at (i, j, k)
-                const controlPointIndex = i * tCount * uCount + j * uCount + k;
+                // Get control point at (i, j, k) using the shared index function
+                const controlPointIndex = getControlPointIndex(i, j, k, tCount, uCount);
                 const controlPoint = lattice.controlPoints[controlPointIndex];
                 
                 // Add weighted contribution of this control point
