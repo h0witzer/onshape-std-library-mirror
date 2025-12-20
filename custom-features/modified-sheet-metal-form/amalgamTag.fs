@@ -159,7 +159,7 @@ function doTagForm(context is Context, topLevelId is Id, definition is map)
     {
         if (isQueryEmpty(context, qBodyType(definition.newPart, BodyType.SOLID)))
         {
-            throw regenError(ErrorStringEnum.FORMED_TAG_FORM_NEGATIVE_PART_NOT_SOLID, ["negativePart"], definition.negativePart);
+            throw regenError(ErrorStringEnum.FORMED_TAG_FORM_NEGATIVE_PART_NOT_SOLID, ["newPart"], definition.newPart);
         }
     }
     if (positivePartSelected && negativePartSelected &&
