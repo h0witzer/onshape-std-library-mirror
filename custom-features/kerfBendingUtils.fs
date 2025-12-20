@@ -1,5 +1,6 @@
 FeatureScript 2837;
 import(path : "onshape/std/common.fs", version : "2837.0");
+import(path : "onshape/std/containers.fs", version : "2837.0");
 import(path : "onshape/std/curveGeometry.fs", version : "2837.0");
 import(path : "onshape/std/math.fs", version : "2837.0");
 import(path : "onshape/std/units.fs", version : "2837.0");
@@ -375,7 +376,7 @@ precondition
     // Reverse left indices and prepend to cutIndices
     for (var i = @size(leftCutIndices) - 1; i >= 0; i -= 1)
     {
-        cutIndices = insert(cutIndices, leftCutIndices[i], 0);
+        cutIndices = insertElementAt(cutIndices, 0, leftCutIndices[i]);
     }
     
     return {
