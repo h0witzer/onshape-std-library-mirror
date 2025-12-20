@@ -23,7 +23,7 @@ export const amalgamate = defineFeature(function(context is Context, id is Id, d
     {
         annotation {
                     "Library Definition" : "65dcc2bb2c4ff1c239467eca",
-                    "Name" : "Form Part Studio",
+                    "Name" : "Amalgam Tool Part Studio",
                     "Filter" : PartStudioItemType.ENTIRE_PART_STUDIO,
                     "ComputedConfigurationInputs" : ["thickness"],
                     "MaxNumberOfPicks" : 1,
@@ -36,22 +36,26 @@ export const amalgamate = defineFeature(function(context is Context, id is Id, d
         annotation { "Name" : "Flip direction", "UIHint" : UIHint.OPPOSITE_DIRECTION }
         definition.flipDirection is boolean;
 
-        annotation { "Name" : "Target body/bodies", "Filter" : BodyType.SOLID && ModifiableEntityOnly.YES }
-        definition.targets is Query;
+        annotation { "Name" : "Subtraction Scope", "Filter" : EntityType.BODY && BodyType.SOLID && ModifiableEntityOnly.YES }
+        definition.subtractionTargets is Query;
 
+        annotation { "Name" : "Union Scope", "Filter" : EntityType.BODY && BodyType.SOLID && ModifiableEntityOnly.YES }
+        definition.unionTargets is Query;
+        
+        annotation { "Name" : "Include bodies tagged as New", "Default" : true }
+        definition.createNewBodies is boolean;
+        
         annotation { "Name" : "Form thickness (only needed for sheet metal tagged form tools)", "Default" : millimeter }
         isLength(definition.thickness, LENGTH_BOUNDS);
 
     }
     {
-        const targetSolids = definition.targets->qBodyType(BodyType.SOLID);
+        const subtractionSolids = definition.subtractionTargets;//->qBodyType(BodyType.SOLID);
+        const unionSolids = definition.unionTargets;//->qBodyType(BodyType.SOLID);
+
         if (isQueryEmpty(context, definition.locations))
         {
             throw regenError(ErrorStringEnum.FORMED_SELECT_LOCATION, ["locations"]);
-        }
-        if (isQueryEmpty(context, targetSolids))
-        {
-            throw regenError(ErrorStringEnum.BOOLEAN_NEED_ONE_SOLID, ["targets"]);
         }
 
         const instantiator = newInstantiator(id, {});
@@ -67,9 +71,15 @@ export const amalgamate = defineFeature(function(context is Context, id is Id, d
             throw regenError(ErrorStringEnum.FORMED_FAILED_TO_DERIVE, ["formPartStudio"]);
         }
 
-        performFormBooleans(context, id, targetSolids, allFormedBodies);
+        performFormBooleans(context, id, subtractionSolids, unionSolids, allFormedBodies, definition.createNewBodies);
     },
-    { "flipDirection" : false, "targets" : qAllModifiableSolidBodies(), "thickness" : 1 * millimeter });
+    {
+            "flipDirection" : false,
+            "subtractionTargets" : qAllModifiableSolidBodies(),
+            "unionTargets" : qAllModifiableSolidBodies(),
+            "thickness" : 1 * millimeter,
+            "createNewBodies" : true
+        });
 
 /**
  * Create an instance of the form Part Studio at each requested location.
@@ -101,9 +111,9 @@ function addFormInstances(context is Context, id is Id, definition is map, insta
 }
 
 /**
- * Apply the positive and negative form bodies to the target solids, then clean up helper geometry.
+ * Apply the positive and negative form bodies to the selected target solids, then clean up helper geometry.
  */
-function performFormBooleans(context is Context, id is Id, targetSolids is Query, allFormedBodies is Query)
+function performFormBooleans(context is Context, id is Id, subtractionTargets is Query, unionTargets is Query, allFormedBodies is Query, createNewBodies is boolean)
 {
     const positiveBodies = qBodiesWithAnyFormAttribute(allFormedBodies, modifiedFormed::FORM_BODY_POSITIVE_PART);
     const negativeBodies = qBodiesWithAnyFormAttribute(allFormedBodies, modifiedFormed::FORM_BODY_NEGATIVE_PART);
@@ -111,31 +121,38 @@ function performFormBooleans(context is Context, id is Id, targetSolids is Query
 
     if (!isQueryEmpty(context, negativeBodies))
     {
+        if (isQueryEmpty(context, subtractionTargets))
+        {
+            throw regenError(ErrorStringEnum.BOOLEAN_NEED_ONE_SOLID, ["subtractionTargets"]);
+        }
         //         debug(context, positiveBodies, DebugColor.YELLOW);
-        // debug(context, targetSolids, DebugColor.GREEN);
-        opBoolean(context, id + "formRemove", {
+        // debug(context, subtractionTargets, DebugColor.GREEN);
+        booleanBodies(context, id + "formRemove", {
                     "tools" : negativeBodies,
-                    "targets" : targetSolids,
+                    "targets" : subtractionTargets,
                     "operationType" : BooleanOperationType.SUBTRACTION,
                     "targetsAndToolsNeedGrouping" : true
                 });
-        if (!isQueryEmpty(context, positiveBodies))
+    }
+
+    if (!isQueryEmpty(context, positiveBodies))
+    {
+        if (isQueryEmpty(context, unionTargets))
         {
-            // debug(context, positiveBodies, DebugColor.RED);
-            // debug(context, targetSolids, DebugColor.CYAN);
-            opBoolean(context, id + "formAdd", {
-                        "tools" : qUnion([targetSolids, positiveBodies]),
-                        "targets" : targetSolids,
-                        "operationType" : BooleanOperationType.UNION
-
-                    });
+            throw regenError(ErrorStringEnum.BOOLEAN_NEED_ONE_SOLID, ["unionTargets"]);
         }
+        // debug(context, positiveBodies, DebugColor.RED);
+        // debug(context, unionTargets, DebugColor.CYAN);
+        opBoolean(context, id + "formAdd", {
+                    "tools" : qUnion([unionTargets, positiveBodies]),
+                    "targets" : unionTargets,
+                    "operationType" : BooleanOperationType.UNION
 
-
+                });
     }
 
     const cleanupBodies = qBodiesWithAnyFormAttributes(allFormedBodies, [modifiedFormed::FORM_BODY_SKETCH_FOR_FLAT_VIEW, modifiedFormed::FORM_BODY_CSYS_MATE_CONNECTOR]);
-    const unusedBodies = qSubtraction(allFormedBodies, qUnion([positiveBodies, negativeBodies, newBodies]));
+    const unusedBodies = qSubtraction(allFormedBodies, qUnion([positiveBodies, negativeBodies, (createNewBodies ? newBodies : qNothing())]));
     const deleteCandidates = qUnion([cleanupBodies, unusedBodies]);
 
     if (!isQueryEmpty(context, deleteCandidates))
