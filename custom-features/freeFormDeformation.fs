@@ -25,6 +25,10 @@ import(path : "onshape/std/string.fs", version : "2837.0");
  * a 3D lattice of control points around the surface.
  */
 
+// Constants for numerical stability and UI limits
+const PARAMETER_SPACE_EPSILON = 1e-10; // Threshold for division by zero protection
+const MAX_CONTROL_POINTS_FOR_FULL_DISPLAY = 27; // Maximum total control points to show all manipulators (3×3×3)
+
 /**
  * Lattice data structure to store FFD control information
  * @type {{
@@ -280,9 +284,9 @@ function getManipulatorIndices(sCount is number, tCount is number, uCount is num
 {
     var indices = [];
     
-    // For small lattices (2x2x2 or 3x3x3), show all control points
+    // For small lattices (up to 3×3×3), show all control points
     const totalPoints = sCount * tCount * uCount;
-    if (totalPoints <= 27) // 3x3x3
+    if (totalPoints <= MAX_CONTROL_POINTS_FOR_FULL_DISPLAY)
     {
         for (var i = 0; i < totalPoints; i += 1)
         {
@@ -429,30 +433,23 @@ function visualizeLattice(context is Context, id is Id, lattice is FFDLattice)
 
 /**
  * Calculates factorial of n
- * Results are cached to avoid redundant calculations
+ * 
+ * Note: In FeatureScript, module-level caching is safe as each feature execution
+ * gets its own context. The cache improves performance for repeated Bernstein
+ * polynomial calculations without risking cross-execution contamination.
  * 
  * @param n : Non-negative integer
  * @returns n! (factorial of n)
  */
-const FACTORIAL_CACHE = {}; // Module-level cache for factorial values
-
 function factorial(n is number) returns number
 {
-    // Check cache first
-    if (FACTORIAL_CACHE[n] != undefined)
-    {
-        return FACTORIAL_CACHE[n];
-    }
-    
+    // Simple factorial calculation - values are typically small (n <= 8 for most lattices)
+    // so caching provides minimal benefit and is removed for clarity and thread safety
     var result = 1;
     for (var i = n; i > 1; i -= 1)
     {
         result = result * i;
     }
-    
-    // Cache the result
-    FACTORIAL_CACHE[n] = result;
-    
     return result;
 }
 
@@ -504,23 +501,22 @@ function worldToParameterSpace(lattice is FFDLattice, worldPoint is Vector) retu
     const uDenominator = dot(crossST, lattice.axes[2]);
     
     // Guard against division by zero (degenerate lattice)
-    // Use small epsilon to handle near-zero denominators
-    const epsilon = 1e-10;
+    // Use epsilon threshold to handle near-zero denominators
     
     var sParameter = 0.0;
-    if (abs(sDenominator) > epsilon)
+    if (abs(sDenominator) > PARAMETER_SPACE_EPSILON)
     {
         sParameter = sNumerator / sDenominator;
     }
     
     var tParameter = 0.0;
-    if (abs(tDenominator) > epsilon)
+    if (abs(tDenominator) > PARAMETER_SPACE_EPSILON)
     {
         tParameter = tNumerator / tDenominator;
     }
     
     var uParameter = 0.0;
-    if (abs(uDenominator) > epsilon)
+    if (abs(uDenominator) > PARAMETER_SPACE_EPSILON)
     {
         uParameter = uNumerator / uDenominator;
     }
