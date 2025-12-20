@@ -90,6 +90,12 @@ export const freeFormDeformation = defineFeature(function(context is Context, id
         
         const targetFace = targetFaces[0];
         
+        // Ensure control point offsets is a map (isAnything could be various types)
+        if (!(definition.controlPointOffsets is map))
+        {
+            definition.controlPointOffsets = {};
+        }
+        
         // Get the bounding box of the target face
         const faceBoundingBox = evBox3d(context, {
             "topology" : targetFace,
