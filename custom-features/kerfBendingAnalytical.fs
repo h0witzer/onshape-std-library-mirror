@@ -106,29 +106,71 @@ precondition
     const initialCurvatureSign = getCurvatureSign(curvatureResult.curvature);
     curvatureSigns = append(curvatureSigns, initialCurvatureSign);
     
-    // Walk along curve, adding cuts based on curvature
+    // Walk along curve, adding cuts based on curvature with derivative-based refinement
     while (currentParam < 1.0)
     {
-        // Get curvature at current point
+        // Get curvature and its derivative at current point
         curvatureResult = evEdgeCurvature(context, { "edge" : curveEdge, "parameter" : currentParam, "arcLengthParameterization" : true });
         const curvatureMagnitude = abs(curvatureResult.curvature);
         
-        // Calculate arc length to next cut
-        // For constant curvature: arcLength = kerfAngle / curvature
-        // kerfAngle has units of radian (angle), curvature has units of 1/meter
-        // arcLength = radian / (1/meter) = radian * meter
-        // In FeatureScript, angles are dimensional, so we need: kerfAngle / curvatureMagnitude / radian * meter
-        // This simplifies to: (kerfAngle / radian) / (curvatureMagnitude * meter)
-        // Or more simply: kerfAngle / (curvatureMagnitude * meter) / radian
+        // Get curvature derivative for better accuracy with variable curvature
+        var curvatureDerivative = vector(0, 0, 0) / meter;
+        try
+        {
+            curvatureDerivative = evEdgeCurvatureDerivative(context, { "edge" : curveEdge, "parameter" : currentParam, "arcLengthParameterization" : true });
+        }
+        catch
+        {
+            // If derivative evaluation fails, continue with constant curvature assumption
+        }
+        
+        // Calculate arc length to next cut using improved algorithm
+        // For variable curvature, we use numerical integration with derivatives
         var arcLengthToNextCut = minimumCutSpacing; // Initialize with default value
         if (curvatureMagnitude > (1e-6 / meter))
         {
-            // Convert: angle / curvature = (radian) / (1/meter) needs to become length
-            // arcLength = (kerfAngle / radian) * (meter / curvatureMagnitude / meter)
-            // Simplified: divide angle by (curvature with proper units)
-            const curvatureValue = curvatureMagnitude * meter; // Now unitless
-            const angleValue = kerfAngle / radian; // Now unitless
-            arcLengthToNextCut = abs(angleValue / curvatureValue) * meter;
+            // Initial estimate using current curvature
+            const curvatureValue = curvatureMagnitude * meter; // Unitless
+            const angleValue = kerfAngle / radian; // Unitless
+            const initialEstimate = abs(angleValue / curvatureValue) * meter;
+            
+            // Refine using derivative information if available
+            const derivMagnitude = norm(curvatureDerivative);
+            if (derivMagnitude > (1e-9 / meter / meter))
+            {
+                // Use trapezoidal integration to account for changing curvature
+                // Estimate parameter step
+                const paramStep = initialEstimate / totalLength;
+                
+                // Get curvature at estimated next position
+                const nextParam = currentParam + paramStep;
+                if (nextParam < 1.0)
+                {
+                    const nextCurvResult = evEdgeCurvature(context, { "edge" : curveEdge, "parameter" : nextParam, "arcLengthParameterization" : true });
+                    const nextCurvMag = abs(nextCurvResult.curvature);
+                    
+                    // Average curvature for better accuracy
+                    const avgCurvValue = ((curvatureMagnitude + nextCurvMag) / 2) * meter;
+                    
+                    if (avgCurvValue > 1e-6)
+                    {
+                        arcLengthToNextCut = abs(angleValue / avgCurvValue) * meter;
+                    }
+                    else
+                    {
+                        arcLengthToNextCut = initialEstimate;
+                    }
+                }
+                else
+                {
+                    arcLengthToNextCut = initialEstimate;
+                }
+            }
+            else
+            {
+                // Low derivative - constant curvature assumption is fine
+                arcLengthToNextCut = initialEstimate;
+            }
             
             // Ensure we don't go below minimum spacing
             if (arcLengthToNextCut < minimumCutSpacing)
@@ -142,7 +184,7 @@ precondition
             arcLengthToNextCut = minimumCutSpacing;
         }
         
-        // Convert arc length to parameter delta (approximate)
+        // Convert arc length to parameter delta
         const paramDelta = arcLengthToNextCut / totalLength;
         currentParam = currentParam + paramDelta;
         
