@@ -77,7 +77,7 @@ export const freeFormDeformation = defineFeature(function(context is Context, id
         
         annotation { "Name" : "Control point adjustments",
                     "UIHint" : UIHint.ALWAYS_HIDDEN,
-                    "Default" : {} }
+                    "Default" : "{}" }
         isAnything(definition.controlPointOffsets);
     }
     {
