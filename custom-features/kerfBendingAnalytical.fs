@@ -115,14 +115,21 @@ precondition
         
         // Calculate arc length to next cut
         // For constant curvature: arcLength = kerfAngle / curvature
-        // Use minimum spacing as fallback for low curvature
-        var arcLengthToNextCut;
+        // kerfAngle has units of radian (angle), curvature has units of 1/meter
+        // arcLength = radian / (1/meter) = radian * meter
+        // In FeatureScript, angles are dimensional, so we need: kerfAngle / curvatureMagnitude / radian * meter
+        // This simplifies to: (kerfAngle / radian) / (curvatureMagnitude * meter)
+        // Or more simply: kerfAngle / (curvatureMagnitude * meter) / radian
+        var arcLengthToNextCut is ValueWithUnits;
         if (curvatureMagnitude > (1e-6 / meter))
         {
-            // kerfAngle is in radians, curvature is in 1/meter
-            // arcLength = angle / curvature = radian / (1/meter) = radian * meter
-            // We need to convert this to just length by dividing by radian
-            arcLengthToNextCut = abs(kerfAngle * meter / (curvatureMagnitude * radian));
+            // Convert: angle / curvature = (radian) / (1/meter) needs to become length
+            // arcLength = (kerfAngle / radian) * (meter / curvatureMagnitude / meter)
+            // Simplified: divide angle by (curvature with proper units)
+            const curvatureValue = curvatureMagnitude * meter; // Now unitless
+            const angleValue = kerfAngle / radian; // Now unitless
+            arcLengthToNextCut = abs(angleValue / curvatureValue) * meter;
+            
             // Ensure we don't go below minimum spacing
             if (arcLengthToNextCut < minimumCutSpacing)
             {
@@ -210,11 +217,13 @@ precondition
 }
 
 /**
- * Get the sign of curvature for visualization
+ * Get the sign of curvature for visualization.
+ * Curvature has units of 1/meter, so we need to normalize it.
  */
 function getCurvatureSign(curvature is ValueWithUnits) returns number
 {
-    const curvVal = curvature / (1 / meter);
+    // curvature has units of 1/meter, multiply by meter to get unitless value
+    const curvVal = curvature * meter;
     if (curvVal > 1e-6)
     {
         return 1;
