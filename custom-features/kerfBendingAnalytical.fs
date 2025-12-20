@@ -109,10 +109,10 @@ precondition
     curvatureSigns = append(curvatureSigns, initialCurvatureSign);
     
     // Walk along curve, adding cuts based on curvature with derivative-based refinement
-    // Convert totalLength to unitless for comparison (parameter is unitless arc length value)
+    // With arcLengthParameterization: true, parameters range from 0 to 1
     const totalLengthValue = totalLength / meter;
     
-    while (currentParam < totalLengthValue)
+    while (currentParam < 1.0)
     {
         // Get curvature and its derivative at current point
         curvatureResult = evEdgeCurvature(context, { "edge" : curveEdge, "parameter" : currentParam, "arcLengthParameterization" : true });
@@ -145,12 +145,12 @@ precondition
             if (derivMagnitude > (1e-9 / meter / meter))
             {
                 // Use trapezoidal integration to account for changing curvature
-                // With arc length parameterization, parameter step IS arc length
-                const paramStep = initialEstimate;
+                // With arc length parameterization, parameter step needs to be normalized (0 to 1)
+                const paramStep = initialEstimate / totalLength;
                 
                 // Get curvature at estimated next position
-                const nextParamValue = currentParam + (paramStep / meter);
-                if (nextParamValue < totalLengthValue)
+                const nextParamValue = currentParam + paramStep;
+                if (nextParamValue < 1.0)
                 {
                     const nextCurvResult = evEdgeCurvature(context, { "edge" : curveEdge, "parameter" : nextParamValue, "arcLengthParameterization" : true });
                     const nextCurvMag = abs(nextCurvResult.curvature);
@@ -190,14 +190,14 @@ precondition
             arcLengthToNextCut = minimumCutSpacing;
         }
         
-        // Since we're using arcLengthParameterization : true, parameters are unitless arc length values
-        // Convert arc length to unitless value for parameter
-        var nextParam = currentParam + (arcLengthToNextCut / meter);
+        // With arcLengthParameterization: true, parameters range from 0 to 1
+        // Convert arc length step to parameter range (0 to 1)
+        var nextParam = currentParam + (arcLengthToNextCut / totalLength);
         
-        // Clamp to valid parameter range
-        if (nextParam > totalLengthValue)
+        // Clamp to valid parameter range [0, 1]
+        if (nextParam > 1.0)
         {
-            nextParam = totalLengthValue;
+            nextParam = 1.0;
         }
         
         // Move to next position
@@ -214,7 +214,7 @@ precondition
         curvatureSigns = append(curvatureSigns, curvatureSign);
         
         // Check if we've reached the end - do this AFTER adding the point
-        if (currentParam >= totalLengthValue)
+        if (currentParam >= 1.0)
         {
             break;
         }
@@ -226,17 +226,17 @@ precondition
         // Check if the last parameter is not already at the end
         const lastParam = cutParameters[@size(cutParameters) - 1];
         
-        if (lastParam < totalLengthValue)
+        if (lastParam < 1.0)
         {
-            tangentLine = evEdgeTangentLine(context, { "edge" : curveEdge, "parameter" : totalLengthValue, "arcLengthParameterization" : true });
+            tangentLine = evEdgeTangentLine(context, { "edge" : curveEdge, "parameter" : 1.0, "arcLengthParameterization" : true });
             const lastPos = cutPositions[@size(cutPositions) - 1];
             const endDist = norm(tangentLine.origin - lastPos);
             
             if (endDist >= minimumCutSpacing)
             {
-                cutParameters = append(cutParameters, totalLengthValue);
+                cutParameters = append(cutParameters, 1.0);
                 cutPositions = append(cutPositions, tangentLine.origin);
-                curvatureResult = evEdgeCurvature(context, { "edge" : curveEdge, "parameter" : totalLengthValue, "arcLengthParameterization" : true });
+                curvatureResult = evEdgeCurvature(context, { "edge" : curveEdge, "parameter" : 1.0, "arcLengthParameterization" : true });
                 curvatureSigns = append(curvatureSigns, getCurvatureSign(curvatureResult.curvature));
             }
         }
