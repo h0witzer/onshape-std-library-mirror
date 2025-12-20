@@ -200,15 +200,10 @@ precondition
             nextParam = totalLengthValue;
         }
         
+        // Move to next position
         currentParam = nextParam;
         
-        // Check if we've reached the end
-        if (currentParam >= totalLengthValue)
-        {
-            break;
-        }
-        
-        // Add this cut
+        // Add this cut position
         cutParameters = append(cutParameters, currentParam);
         
         tangentLine = evEdgeTangentLine(context, { "edge" : curveEdge, "parameter" : currentParam, "arcLengthParameterization" : true });
@@ -217,6 +212,12 @@ precondition
         curvatureResult = evEdgeCurvature(context, { "edge" : curveEdge, "parameter" : currentParam, "arcLengthParameterization" : true });
         const curvatureSign = getCurvatureSign(curvatureResult.curvature);
         curvatureSigns = append(curvatureSigns, curvatureSign);
+        
+        // Check if we've reached the end - do this AFTER adding the point
+        if (currentParam >= totalLengthValue)
+        {
+            break;
+        }
     }
     
     // Always add end point if we haven't already and we have at least one cut
