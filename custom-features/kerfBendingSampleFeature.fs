@@ -8,36 +8,16 @@ import(path : "onshape/std/valueBounds.fs", version : "2837.0");
 import(path : "d206287863cb4400750c9aff", version : "36c04743534bad7be94aac56"); // kerfBendingUtils.fs
 
 /**
- * Sample feature demonstrating kerf bending utilities.
- * This feature calculates kerf cut positions for a parabolic curve and displays the results.
- * 
- * Input methods:
- * 1. Select a Bezier curve edge from a sketch
- * 2. Select 3 vertices (start, control, end) to define a Bezier curve
+ * Kerf bending feature that calculates cut positions along a curve.
+ * Takes any sketch curve (Bezier, spline, arc, etc.) and generates kerf cut positions
+ * for creating flexible bends in flat materials like plywood.
  */
-annotation { "Feature Type Name" : "Kerf Bending Sample" }
+annotation { "Feature Type Name" : "Kerf Bending" }
 export const kerfBendingSample = defineFeature(function(context is Context, id is Id, definition is map)
     precondition
     {
-        annotation { "Name" : "Input type", "UIHint" : UIHint.SHOW_LABEL }
-        definition.inputType is InputType;
-        
-        if (definition.inputType == InputType.CURVE)
-        {
-            annotation { "Name" : "Bezier curve", "Filter" : EntityType.EDGE, "MaxNumberOfPicks" : 1 }
-            definition.curveEdge is Query;
-        }
-        else
-        {
-            annotation { "Name" : "Start point", "Filter" : EntityType.VERTEX, "MaxNumberOfPicks" : 1 }
-            definition.startVertex is Query;
-            
-            annotation { "Name" : "Control point", "Filter" : EntityType.VERTEX, "MaxNumberOfPicks" : 1 }
-            definition.controlVertex is Query;
-            
-            annotation { "Name" : "End point", "Filter" : EntityType.VERTEX, "MaxNumberOfPicks" : 1 }
-            definition.endVertex is Query;
-        }
+        annotation { "Name" : "Curve", "Filter" : EntityType.EDGE, "MaxNumberOfPicks" : 1 }
+        definition.curveEdge is Query;
         
         annotation { "Name" : "Blade width" }
         isLength(definition.bladeWidth, BLEND_BOUNDS);
@@ -55,24 +35,8 @@ export const kerfBendingSample = defineFeature(function(context is Context, id i
         definition.showDebug is boolean;
     }
     {
-        var controlPoints;
-        
-        // Extract control points based on input type
-        if (definition.inputType == InputType.CURVE)
-        {
-            // Get control points from Bezier curve edge
-            controlPoints = extractBezierControlPoints(context, definition.curveEdge);
-        }
-        else
-        {
-            // Get the vertex positions
-            const startPoint = evVertexPoint(context, { "vertex" : definition.startVertex });
-            const controlPoint = evVertexPoint(context, { "vertex" : definition.controlVertex });
-            const endPoint = evVertexPoint(context, { "vertex" : definition.endVertex });
-            
-            // Create control points array for quadratic Bezier
-            controlPoints = [startPoint, controlPoint, endPoint];
-        }
+        // Get control points from curve edge
+        const controlPoints = extractBezierControlPoints(context, definition.curveEdge);
         
         // Generate the kerf bending solution
         const solution = generateKerfBendingSolution(
@@ -142,24 +106,12 @@ export const kerfBendingSample = defineFeature(function(context is Context, id i
         skSolve(sketch1);
     },
     {
-        inputType : InputType.CURVE,
         bladeWidth : 2.7 * millimeter,
         cutDepth : 35 * millimeter,
         curveSamples : 600,
         searchWindow : 80,
         showDebug : true
     });
-
-/**
- * Enum for input type selection
- */
-export enum InputType
-{
-    annotation { "Name" : "Bezier curve from sketch" }
-    CURVE,
-    annotation { "Name" : "Three vertices" }
-    VERTICES
-}
 
 /**
  * Extract control points from a curve edge.
