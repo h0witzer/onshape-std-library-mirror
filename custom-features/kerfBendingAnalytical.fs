@@ -2,6 +2,7 @@ FeatureScript 2837;
 import(path : "onshape/std/common.fs", version : "2837.0");
 import(path : "onshape/std/containers.fs", version : "2837.0");
 import(path : "onshape/std/curveGeometry.fs", version : "2837.0");
+import(path : "onshape/std/curvetype.gen.fs", version : "2837.0");
 import(path : "onshape/std/evaluate.fs", version : "2837.0");
 import(path : "onshape/std/math.fs", version : "2837.0");
 import(path : "onshape/std/units.fs", version : "2837.0");
@@ -92,6 +93,15 @@ precondition
     // Get total curve length
     const totalLength = evLength(context, { "entities" : curveEdge });
     
+    // Check if curve is a circle or arc - use analytical solution for constant curvature
+    const curveDefinition = evCurveDefinition(context, { "edge" : curveEdge });
+    if (curveDefinition.curveType == CurveType.CIRCLE)
+    {
+        // Circle has constant curvature = 1/radius
+        // For circles/arcs, we can directly calculate cut spacing analytically
+        return generateCircularKerfSolution(context, curveEdge, kerfAngle, minimumCutSpacing, totalLength, curveDefinition);
+    }
+    
     // Start from parameter 0 and walk along curve
     // With arc length parameterization, parameters are unitless arc length values
     var cutParameters = [0.0];
@@ -161,13 +171,13 @@ precondition
         // Adaptive step sizing: use larger steps in low curvature regions, smaller in high curvature
         // Sample curvature at current point to adjust next step
         curvatureResult = evEdgeCurvature(context, { "edge" : curveEdge, "parameter" : currentParam, "arcLengthParameterization" : true });
-        const curvatureMagnitude = norm(curvatureResult.curvature);
+        const curvatureMagnitude = abs(curvatureResult.curvature);
         
         // Adjust step size: smaller steps when curvature is high
         // If curvature is near zero (straight line or inflection), use large steps
         // If curvature is high, use small steps
         var adaptiveStepSize = baseParameterStepSize;
-        if (curvatureMagnitude > 1e-6 / meter)
+        if (curvatureMagnitude > 1.0 / meter)
         {
             // Scale step inversely with curvature magnitude
             // Higher curvature → smaller steps
@@ -198,6 +208,69 @@ precondition
                 curvatureSigns = append(curvatureSigns, getCurvatureSign(curvatureResult.curvature));
             }
         }
+    }
+    
+    // Calculate distances between cuts
+    var cutDistances = [];
+    for (var i = 0; i < @size(cutPositions) - 1; i += 1)
+    {
+        const distance = norm(cutPositions[i + 1] - cutPositions[i]);
+        cutDistances = append(cutDistances, distance);
+    }
+    
+    return {
+        "cutParameters" : cutParameters,
+        "cutPositions" : cutPositions,
+        "cutDistances" : cutDistances,
+        "totalLength" : totalLength,
+        "numberOfCuts" : @size(cutParameters),
+        "kerfAngle" : kerfAngle,
+        "curvatureSigns" : curvatureSigns
+    } as KerfBendingSolution;
+}
+
+/**
+ * Analytical solution for circles and arcs with constant curvature.
+ * Much faster than integration since curvature is constant.
+ */
+function generateCircularKerfSolution(context is Context,
+                                     curveEdge is Query,
+                                     kerfAngle is ValueWithUnits,
+                                     minimumCutSpacing is ValueWithUnits,
+                                     totalLength is ValueWithUnits,
+                                     curveDefinition is map) returns KerfBendingSolution
+{
+    // For circles, curvature is constant = 1/radius
+    // Arc length between cuts = kerfAngle / curvature = kerfAngle * radius
+    const radius = curveDefinition.radius;
+    const curvature = 1.0 / radius;
+    var arcLengthBetweenCuts = kerfAngle / curvature;
+    
+    // Respect minimum spacing constraint
+    if (arcLengthBetweenCuts < minimumCutSpacing)
+    {
+        arcLengthBetweenCuts = minimumCutSpacing;
+    }
+    
+    // Calculate number of cuts needed
+    const numberOfCuts = ceil(totalLength / arcLengthBetweenCuts);
+    const actualSpacing = totalLength / numberOfCuts;
+    
+    // Generate evenly-spaced cut positions
+    var cutParameters = [];
+    var cutPositions = [];
+    var curvatureSigns = [];
+    
+    for (var i = 0; i <= numberOfCuts; i += 1)
+    {
+        const parameter = i / numberOfCuts; // Normalized 0-1 range
+        cutParameters = append(cutParameters, parameter);
+        
+        const tangentLine = evEdgeTangentLine(context, { "edge" : curveEdge, "parameter" : parameter, "arcLengthParameterization" : true });
+        cutPositions = append(cutPositions, tangentLine.origin);
+        
+        const curvatureResult = evEdgeCurvature(context, { "edge" : curveEdge, "parameter" : parameter, "arcLengthParameterization" : true });
+        curvatureSigns = append(curvatureSigns, getCurvatureSign(curvatureResult.curvature));
     }
     
     // Calculate distances between cuts
