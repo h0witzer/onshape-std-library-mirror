@@ -126,6 +126,12 @@ export const freeFormDeformation = defineFeature(function(context is Context, id
  */
 export function freeFormDeformationManipulatorChange(context is Context, definition is map, newManipulators is map) returns map
 {
+    // Ensure control point offsets is a map (isAnything could be various types)
+    if (!(definition.controlPointOffsets is map))
+    {
+        definition.controlPointOffsets = {};
+    }
+    
     // Update control point offsets based on manipulator changes
     for (var entry in newManipulators)
     {
