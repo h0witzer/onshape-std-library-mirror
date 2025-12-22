@@ -1114,8 +1114,8 @@ function shadowVisibilitySelection(context is Context, definition is map) return
 
     const viewDirection = evaluateDirectionReference(context, viewDirectionQuery, "shadowViewDirection");
 
-    // Use a unique ID for the shadow operation within this feature context
-    const shadowId = toAttributeId(makeId("shadowVisibility"));
+    // Use a unique ID for the shadow operation
+    const shadowId = newId() + "shadowVisibility";
 
     const shadowResult = opSplitBySelfShadow(context, shadowId, {
                 "bodies" : bodies,
