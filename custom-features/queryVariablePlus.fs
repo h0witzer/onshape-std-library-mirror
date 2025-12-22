@@ -22,7 +22,6 @@ import(path : "onshape/std/containers.fs", version : "2815.0");
 import(path : "onshape/std/error.fs", version : "2815.0");
 import(path : "onshape/std/sketch.fs", version : "2815.0");
 import(path : "onshape/std/variable.fs", version : "2815.0");
-import(path : "onshape/std/geomOperations.fs", version : "2815.0");
 
 /**
  * Allowed selection types to create query variable.
@@ -70,9 +69,7 @@ export enum SelectionType
     annotation { "Name" : "All solid bodies" }
     ALL_SOLID_BODIES,
     annotation { "Name" : "Edge convexity" }
-    EDGE_CONVEXITY,
-    annotation { "Name" : "Operation queries" }
-    OPERATION_QUERIES
+    EDGE_CONVEXITY
 }
 
 /**
@@ -99,8 +96,7 @@ const SelectionTypeToLowercaseName = {
         SelectionType.POSITIONAL_DIRECTIONAL : "positional/directional",
         SelectionType.GEOMETRY : "geometry type",
         SelectionType.ALL_SOLID_BODIES : "all solid bodies",
-        SelectionType.EDGE_CONVEXITY : "edge convexity",
-        SelectionType.OPERATION_QUERIES : "operation queries"
+        SelectionType.EDGE_CONVEXITY : "edge convexity"
     };
 
 const MATCHING_BODY_CLUSTER_RELATIVE_TOLERANCE = 1e-4;
@@ -216,27 +212,6 @@ export enum PositionalDirectionalType
     FACE_PARALLEL_DIRECTION,
     annotation { "Name" : "In front of plane" }
     IN_FRONT_OF_PLANE
-}
-
-/**
- * Defines whether to return visible or invisible faces from shadow visibility query.
- */
-export enum ShadowVisibilityType
-{
-    annotation { "Name" : "Visible faces" }
-    VISIBLE,
-    annotation { "Name" : "Invisible faces" }
-    INVISIBLE
-}
-
-/**
- * Defines operation-based queries that modify model geometry as a side effect.
- * These queries perform geometry operations to generate their results.
- */
-export enum OperationQueryType
-{
-    annotation { "Name" : "Shadow visibility" }
-    SHADOW_VISIBILITY
 }
 
 /**
@@ -374,26 +349,6 @@ export predicate initialQueryPredicate(definition is map)
 
         annotation { "Name" : "Geometry type" }
         definition.geometryType is GeometryType;
-    }
-    else if (definition.selectionType == SelectionType.OPERATION_QUERIES)
-    {
-        annotation { "Name" : "Operation type" }
-        definition.operationQueryType is OperationQueryType;
-
-        if (definition.operationQueryType == OperationQueryType.SHADOW_VISIBILITY)
-        {
-            annotation { "Name" : "Bodies", "Filter" : EntityType.BODY }
-            definition.shadowBodies is Query;
-
-            annotation { "Name" : "View direction", "Filter" : EntityType.EDGE || QueryFilterCompound.ALLOWS_DIRECTION, "MaxNumberOfPicks" : 1 }
-            definition.shadowViewDirection is Query;
-
-            annotation { "Name" : "Opposite direction", "UIHint" : UIHint.OPPOSITE_DIRECTION, "Default" : false }
-            definition.shadowOppositeDirection is boolean;
-
-            annotation { "Name" : "Visibility type", "Default" : ShadowVisibilityType.VISIBLE }
-            definition.shadowVisibilityType is ShadowVisibilityType;
-        }
     }
     if (definition.selectionType == SelectionType.TANGENT_CONNECTED && definition.seedType == SeedType.FACE)
     {
@@ -595,26 +550,6 @@ export predicate additionalQueryPredicate(addQ is map)
         annotation { "Name" : "Geometry type" }
         addQ.addQgeometryType is GeometryType;
     }
-    else if (addQ.addQselectionType == SelectionType.OPERATION_QUERIES)
-    {
-        annotation { "Name" : "Operation type" }
-        addQ.addQoperationQueryType is OperationQueryType;
-
-        if (addQ.addQoperationQueryType == OperationQueryType.SHADOW_VISIBILITY)
-        {
-            annotation { "Name" : "Bodies", "Filter" : EntityType.BODY }
-            addQ.addQshadowBodies is Query;
-
-            annotation { "Name" : "View direction", "Filter" : EntityType.EDGE || QueryFilterCompound.ALLOWS_DIRECTION, "MaxNumberOfPicks" : 1 }
-            addQ.addQshadowViewDirection is Query;
-
-            annotation { "Name" : "Opposite direction", "UIHint" : UIHint.OPPOSITE_DIRECTION, "Default" : false }
-            addQ.addQshadowOppositeDirection is boolean;
-
-            annotation { "Name" : "Visibility type", "Default" : ShadowVisibilityType.VISIBLE }
-            addQ.addQshadowVisibilityType is ShadowVisibilityType;
-        }
-    }
     if (addQ.addQselectionType == SelectionType.TANGENT_CONNECTED && addQ.addQseedType == SeedType.FACE)
     {
         annotation { "Name" : "Angle tolerance", "Default" : 0 * degree }
@@ -717,11 +652,6 @@ export predicate additionalQueryPredicate(addQ is map)
  *      @field positionalDirection {Query} : If positionalMetricType requires a direction, the entity defining the direction.
  *      @field geometrySeedEntities {Query} : If selectionType is GEOMETRY, entities that will be filtered by geometry type.
  *      @field geometryType {GeometryType} : If selectionType is GEOMETRY, geometry category used to filter the seed entities.
- *      @field operationQueryType {OperationQueryType} : If selectionType is OPERATION_QUERIES, the operation query type to apply. Operation queries modify geometry.
- *      @field shadowBodies {Query} : If operationQueryType is SHADOW_VISIBILITY, bodies to analyze for shadow visibility.
- *      @field shadowViewDirection {Query} : If operationQueryType is SHADOW_VISIBILITY, direction from which to evaluate visibility.
- *      @field shadowOppositeDirection {boolean} : If operationQueryType is SHADOW_VISIBILITY, whether to flip the view direction.
- *      @field shadowVisibilityType {ShadowVisibilityType} : If operationQueryType is SHADOW_VISIBILITY, whether to return visible or invisible faces.
  *      @field angleTolerance {ValueWithUnits} : If selectionType is TANGENT_CONNECTED and seedType is FACE,
  *          maximum angular deviation for considering faces tangent. Defaults to `0` degrees.
  *      @field seedEdgesOrFaces {Query} : If selectionType is LOOP_CHAIN_CONNECTED, faces or edges from which the loops are computed.
@@ -795,13 +725,13 @@ export const queryVariable = defineFeature(function(context is Context, id is Id
         }
         checkQueryVariableName(context, definition.name);
 
-        var query = mapSelectionTypeToQuery(context, id, definition);
+        var query = mapSelectionTypeToQuery(context, definition);
 
         if (definition.addAdditionalQueries)
         {
             for (var addQ in definition.additionalQueries)
             {
-                const innerQuery = mapSelectionTypeToQuery(context, id, remapAdditionalQuery(addQ));
+                const innerQuery = mapSelectionTypeToQuery(context, remapAdditionalQuery(addQ));
 
                 query = switch (addQ.booleanOperation)
                     {
@@ -830,7 +760,7 @@ export const queryVariable = defineFeature(function(context is Context, id is Id
         setHighlightedEntities(context, { "entities" : query, "equivalentQueryPropagationOnly" : !definition.evaluateOnUse });
     }, { filterByBodyType : false });
 
-function mapSelectionTypeToQuery(context is Context, id is Id, definition is map) returns Query
+function mapSelectionTypeToQuery(context is Context, definition is map) returns Query
 {
     return switch (definition.selectionType)
         {
@@ -857,8 +787,7 @@ function mapSelectionTypeToQuery(context is Context, id is Id, definition is map
                 SelectionType.POSITIONAL_DIRECTIONAL : positionalDirectionalSelection(context, definition),
                 SelectionType.GEOMETRY : qGeometry(definition.geometrySeedEntities, definition.geometryType),
                 SelectionType.ALL_SOLID_BODIES : qAllSolidBodies(),
-                SelectionType.EDGE_CONVEXITY : qEdgeConvexityTypeFilter(qOwnedByBody(definition.seedBodies, EntityType.EDGE), definition.edgeConvexityType),
-                SelectionType.OPERATION_QUERIES : operationQuerySelection(context, id, definition)
+                SelectionType.EDGE_CONVEXITY : qEdgeConvexityTypeFilter(qOwnedByBody(definition.seedBodies, EntityType.EDGE), definition.edgeConvexityType)
             };
 }
 
@@ -1123,79 +1052,6 @@ function positionalDirectionalSelection(context is Context, definition is map) r
     }
 
     return qFacesParallelToDirection(candidateEntities, referenceDirection);
-}
-
-/**
- * Dispatches to the appropriate operation query based on the operation type.
- * Operation queries modify model geometry as a side effect of creating the query.
- * @param context {Context} : The execution context.
- * @param id {Id} : The feature ID to use for operations.
- * @param definition {map} : Parameters for the operation query.
- *      Expected keys: `operationQueryType` and type-specific parameters.
- */
-function operationQuerySelection(context is Context, id is Id, definition is map) returns Query
-{
-    const operationType = definition.operationQueryType as OperationQueryType;
-    
-    if (operationType == OperationQueryType.SHADOW_VISIBILITY)
-    {
-        return shadowVisibilitySelection(context, id, definition);
-    }
-    
-    throw regenError(ErrorStringEnum.INVALID_INPUT, ["operationQueryType"]);
-}
-
-/**
- * Performs shadow visibility analysis using opSplitBySelfShadow to return visible or invisible faces.
- * 
- * **IMPORTANT: This is an Operation Query** - it modifies the model geometry by calling opSplitBySelfShadow,
- * which adds shadow curve edges to the bodies. The shadow curves represent transitions between visible
- * and invisible regions on the faces. Each face is split so that the resulting faces are wholly visible
- * or wholly invisible from the given view direction.
- * 
- * @param context {Context} : The execution context.
- * @param id {Id} : The feature ID to use for the shadow operation.
- * @param definition {map} : Parameters for shadow visibility query.
- *      Expected keys: `shadowBodies`, `shadowViewDirection`, `shadowOppositeDirection`, `shadowVisibilityType`.
- */
-function shadowVisibilitySelection(context is Context, id is Id, definition is map) returns Query
-{
-    const bodies = definition.shadowBodies as Query;
-    const viewDirectionQuery = definition.shadowViewDirection as Query;
-    const visibilityType = definition.shadowVisibilityType as ShadowVisibilityType;
-    const oppositeDirection = definition.shadowOppositeDirection == true;
-
-    if (isQueryEmpty(context, bodies))
-    {
-        throw regenError(ErrorStringEnum.INVALID_INPUT, ["shadowBodies"]);
-    }
-
-    var viewDirection = evaluateDirectionReference(context, viewDirectionQuery, "shadowViewDirection");
-    
-    // Invert the direction by default for intuitive UX - when selecting a face, 
-    // users typically want to look at that face head-on from the viewport
-    viewDirection = -viewDirection;
-    
-    // Apply the opposite direction toggle if selected
-    if (oppositeDirection)
-    {
-        viewDirection = -viewDirection;
-    }
-
-    // Use the feature's ID as parent for the shadow operation
-    const shadowId = id + "shadowVisibility";
-
-    const shadowResult = opSplitBySelfShadow(context, shadowId, {
-                "bodies" : bodies,
-                "viewDirection" : viewDirection
-            });
-
-    if (visibilityType == ShadowVisibilityType.VISIBLE)
-    {
-        return qUnion(shadowResult.visibleFaces);
-    }
-
-    return qUnion(shadowResult.invisibleFaces);
 }
 
 function qMatchingBodies(context is Context, seedBodies is Query) returns Query
