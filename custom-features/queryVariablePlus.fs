@@ -1007,7 +1007,12 @@ function positionalDirectionalSelection(context is Context, definition is map) r
             return qCoincidesWithPlane(candidateEntities, referencePlane);
         }
 
-        return qInFrontOfPlane(candidateEntities, referencePlane);
+        if (positionalType == PositionalDirectionalType.IN_FRONT_OF_PLANE)
+        {
+            return qInFrontOfPlane(candidateEntities, referencePlane);
+        }
+
+        throw regenError(ErrorStringEnum.INVALID_INPUT, ["positionalMetricType"]);
     }
 
     if (positionalType == PositionalDirectionalType.INTERSECTS_LINE)
