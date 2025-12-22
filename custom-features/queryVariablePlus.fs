@@ -765,13 +765,13 @@ export const queryVariable = defineFeature(function(context is Context, id is Id
         }
         checkQueryVariableName(context, definition.name);
 
-        var query = mapSelectionTypeToQuery(context, definition);
+        var query = mapSelectionTypeToQuery(context, id, definition);
 
         if (definition.addAdditionalQueries)
         {
             for (var addQ in definition.additionalQueries)
             {
-                const innerQuery = mapSelectionTypeToQuery(context, remapAdditionalQuery(addQ));
+                const innerQuery = mapSelectionTypeToQuery(context, id, remapAdditionalQuery(addQ));
 
                 query = switch (addQ.booleanOperation)
                     {
@@ -800,7 +800,7 @@ export const queryVariable = defineFeature(function(context is Context, id is Id
         setHighlightedEntities(context, { "entities" : query, "equivalentQueryPropagationOnly" : !definition.evaluateOnUse });
     }, { filterByBodyType : false });
 
-function mapSelectionTypeToQuery(context is Context, definition is map) returns Query
+function mapSelectionTypeToQuery(context is Context, id is Id, definition is map) returns Query
 {
     return switch (definition.selectionType)
         {
@@ -828,7 +828,7 @@ function mapSelectionTypeToQuery(context is Context, definition is map) returns 
                 SelectionType.GEOMETRY : qGeometry(definition.geometrySeedEntities, definition.geometryType),
                 SelectionType.ALL_SOLID_BODIES : qAllSolidBodies(),
                 SelectionType.EDGE_CONVEXITY : qEdgeConvexityTypeFilter(qOwnedByBody(definition.seedBodies, EntityType.EDGE), definition.edgeConvexityType),
-                SelectionType.SHADOW_VISIBILITY : shadowVisibilitySelection(context, definition)
+                SelectionType.SHADOW_VISIBILITY : shadowVisibilitySelection(context, id, definition)
             };
 }
 
@@ -1098,10 +1098,11 @@ function positionalDirectionalSelection(context is Context, definition is map) r
 /**
  * Performs shadow visibility analysis using opSplitBySelfShadow to return visible or invisible faces.
  * @param context {Context} : The execution context.
+ * @param id {Id} : The feature ID to use for the shadow operation.
  * @param definition {map} : Parameters for shadow visibility query.
  *      Expected keys: `shadowBodies`, `shadowViewDirection`, `shadowVisibilityType`.
  */
-function shadowVisibilitySelection(context is Context, definition is map) returns Query
+function shadowVisibilitySelection(context is Context, id is Id, definition is map) returns Query
 {
     const bodies = definition.shadowBodies as Query;
     const viewDirectionQuery = definition.shadowViewDirection as Query;
@@ -1114,8 +1115,8 @@ function shadowVisibilitySelection(context is Context, definition is map) return
 
     const viewDirection = evaluateDirectionReference(context, viewDirectionQuery, "shadowViewDirection");
 
-    // Use a unique ID for the shadow operation
-    const shadowId = newId() + makeId("shadowVisibility");
+    // Use the feature's ID as parent for the shadow operation
+    const shadowId = id + "shadowVisibility";
 
     const shadowResult = opSplitBySelfShadow(context, shadowId, {
                 "bodies" : bodies,
