@@ -373,6 +373,9 @@ export predicate initialQueryPredicate(definition is map)
         annotation { "Name" : "View direction", "Filter" : EntityType.EDGE || QueryFilterCompound.ALLOWS_DIRECTION, "MaxNumberOfPicks" : 1 }
         definition.shadowViewDirection is Query;
 
+        annotation { "Name" : "Opposite direction", "UIHint" : UIHint.OPPOSITE_DIRECTION, "Default" : false }
+        definition.shadowOppositeDirection is boolean;
+
         annotation { "Name" : "Visibility type", "Default" : ShadowVisibilityType.VISIBLE }
         definition.shadowVisibilityType is ShadowVisibilityType;
     }
@@ -584,6 +587,9 @@ export predicate additionalQueryPredicate(addQ is map)
         annotation { "Name" : "View direction", "Filter" : EntityType.EDGE || QueryFilterCompound.ALLOWS_DIRECTION, "MaxNumberOfPicks" : 1 }
         addQ.addQshadowViewDirection is Query;
 
+        annotation { "Name" : "Opposite direction", "UIHint" : UIHint.OPPOSITE_DIRECTION, "Default" : false }
+        addQ.addQshadowOppositeDirection is boolean;
+
         annotation { "Name" : "Visibility type", "Default" : ShadowVisibilityType.VISIBLE }
         addQ.addQshadowVisibilityType is ShadowVisibilityType;
     }
@@ -691,6 +697,7 @@ export predicate additionalQueryPredicate(addQ is map)
  *      @field geometryType {GeometryType} : If selectionType is GEOMETRY, geometry category used to filter the seed entities.
  *      @field shadowBodies {Query} : If selectionType is SHADOW_VISIBILITY, bodies to analyze for shadow visibility.
  *      @field shadowViewDirection {Query} : If selectionType is SHADOW_VISIBILITY, direction from which to evaluate visibility.
+ *      @field shadowOppositeDirection {boolean} : If selectionType is SHADOW_VISIBILITY, whether to flip the view direction.
  *      @field shadowVisibilityType {ShadowVisibilityType} : If selectionType is SHADOW_VISIBILITY, whether to return visible or invisible faces.
  *      @field angleTolerance {ValueWithUnits} : If selectionType is TANGENT_CONNECTED and seedType is FACE,
  *          maximum angular deviation for considering faces tangent. Defaults to `0` degrees.
@@ -1100,20 +1107,27 @@ function positionalDirectionalSelection(context is Context, definition is map) r
  * @param context {Context} : The execution context.
  * @param id {Id} : The feature ID to use for the shadow operation.
  * @param definition {map} : Parameters for shadow visibility query.
- *      Expected keys: `shadowBodies`, `shadowViewDirection`, `shadowVisibilityType`.
+ *      Expected keys: `shadowBodies`, `shadowViewDirection`, `shadowOppositeDirection`, `shadowVisibilityType`.
  */
 function shadowVisibilitySelection(context is Context, id is Id, definition is map) returns Query
 {
     const bodies = definition.shadowBodies as Query;
     const viewDirectionQuery = definition.shadowViewDirection as Query;
     const visibilityType = definition.shadowVisibilityType as ShadowVisibilityType;
+    const oppositeDirection = definition.shadowOppositeDirection == true;
 
     if (isQueryEmpty(context, bodies))
     {
         throw regenError(ErrorStringEnum.INVALID_INPUT, ["shadowBodies"]);
     }
 
-    const viewDirection = evaluateDirectionReference(context, viewDirectionQuery, "shadowViewDirection");
+    var viewDirection = evaluateDirectionReference(context, viewDirectionQuery, "shadowViewDirection");
+    
+    // Flip the direction if opposite direction is selected
+    if (oppositeDirection)
+    {
+        viewDirection = -viewDirection;
+    }
 
     // Use the feature's ID as parent for the shadow operation
     const shadowId = id + "shadowVisibility";
