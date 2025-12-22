@@ -22,6 +22,7 @@ import(path : "onshape/std/containers.fs", version : "2815.0");
 import(path : "onshape/std/error.fs", version : "2815.0");
 import(path : "onshape/std/sketch.fs", version : "2815.0");
 import(path : "onshape/std/variable.fs", version : "2815.0");
+import(path : "onshape/std/geomOperations.fs", version : "2815.0");
 
 /**
  * Allowed selection types to create query variable.
@@ -69,7 +70,9 @@ export enum SelectionType
     annotation { "Name" : "All solid bodies" }
     ALL_SOLID_BODIES,
     annotation { "Name" : "Edge convexity" }
-    EDGE_CONVEXITY
+    EDGE_CONVEXITY,
+    annotation { "Name" : "Shadow visibility" }
+    SHADOW_VISIBILITY
 }
 
 /**
@@ -96,7 +99,8 @@ const SelectionTypeToLowercaseName = {
         SelectionType.POSITIONAL_DIRECTIONAL : "positional/directional",
         SelectionType.GEOMETRY : "geometry type",
         SelectionType.ALL_SOLID_BODIES : "all solid bodies",
-        SelectionType.EDGE_CONVEXITY : "edge convexity"
+        SelectionType.EDGE_CONVEXITY : "edge convexity",
+        SelectionType.SHADOW_VISIBILITY : "shadow visibility"
     };
 
 const MATCHING_BODY_CLUSTER_RELATIVE_TOLERANCE = 1e-4;
@@ -212,6 +216,17 @@ export enum PositionalDirectionalType
     FACE_PARALLEL_DIRECTION,
     annotation { "Name" : "In front of plane" }
     IN_FRONT_OF_PLANE
+}
+
+/**
+ * Defines whether to return visible or invisible faces from shadow visibility query.
+ */
+export enum ShadowVisibilityType
+{
+    annotation { "Name" : "Visible faces" }
+    VISIBLE,
+    annotation { "Name" : "Invisible faces" }
+    INVISIBLE
 }
 
 /**
@@ -349,6 +364,17 @@ export predicate initialQueryPredicate(definition is map)
 
         annotation { "Name" : "Geometry type" }
         definition.geometryType is GeometryType;
+    }
+    else if (definition.selectionType == SelectionType.SHADOW_VISIBILITY)
+    {
+        annotation { "Name" : "Bodies", "Filter" : EntityType.BODY }
+        definition.shadowBodies is Query;
+
+        annotation { "Name" : "View direction", "Filter" : EntityType.EDGE || QueryFilterCompound.ALLOWS_DIRECTION, "MaxNumberOfPicks" : 1 }
+        definition.shadowViewDirection is Query;
+
+        annotation { "Name" : "Visibility type", "Default" : ShadowVisibilityType.VISIBLE }
+        definition.shadowVisibilityType is ShadowVisibilityType;
     }
     if (definition.selectionType == SelectionType.TANGENT_CONNECTED && definition.seedType == SeedType.FACE)
     {
@@ -550,6 +576,17 @@ export predicate additionalQueryPredicate(addQ is map)
         annotation { "Name" : "Geometry type" }
         addQ.addQgeometryType is GeometryType;
     }
+    else if (addQ.addQselectionType == SelectionType.SHADOW_VISIBILITY)
+    {
+        annotation { "Name" : "Bodies", "Filter" : EntityType.BODY }
+        addQ.addQshadowBodies is Query;
+
+        annotation { "Name" : "View direction", "Filter" : EntityType.EDGE || QueryFilterCompound.ALLOWS_DIRECTION, "MaxNumberOfPicks" : 1 }
+        addQ.addQshadowViewDirection is Query;
+
+        annotation { "Name" : "Visibility type", "Default" : ShadowVisibilityType.VISIBLE }
+        addQ.addQshadowVisibilityType is ShadowVisibilityType;
+    }
     if (addQ.addQselectionType == SelectionType.TANGENT_CONNECTED && addQ.addQseedType == SeedType.FACE)
     {
         annotation { "Name" : "Angle tolerance", "Default" : 0 * degree }
@@ -652,6 +689,9 @@ export predicate additionalQueryPredicate(addQ is map)
  *      @field positionalDirection {Query} : If positionalMetricType requires a direction, the entity defining the direction.
  *      @field geometrySeedEntities {Query} : If selectionType is GEOMETRY, entities that will be filtered by geometry type.
  *      @field geometryType {GeometryType} : If selectionType is GEOMETRY, geometry category used to filter the seed entities.
+ *      @field shadowBodies {Query} : If selectionType is SHADOW_VISIBILITY, bodies to analyze for shadow visibility.
+ *      @field shadowViewDirection {Query} : If selectionType is SHADOW_VISIBILITY, direction from which to evaluate visibility.
+ *      @field shadowVisibilityType {ShadowVisibilityType} : If selectionType is SHADOW_VISIBILITY, whether to return visible or invisible faces.
  *      @field angleTolerance {ValueWithUnits} : If selectionType is TANGENT_CONNECTED and seedType is FACE,
  *          maximum angular deviation for considering faces tangent. Defaults to `0` degrees.
  *      @field seedEdgesOrFaces {Query} : If selectionType is LOOP_CHAIN_CONNECTED, faces or edges from which the loops are computed.
@@ -787,7 +827,8 @@ function mapSelectionTypeToQuery(context is Context, definition is map) returns 
                 SelectionType.POSITIONAL_DIRECTIONAL : positionalDirectionalSelection(context, definition),
                 SelectionType.GEOMETRY : qGeometry(definition.geometrySeedEntities, definition.geometryType),
                 SelectionType.ALL_SOLID_BODIES : qAllSolidBodies(),
-                SelectionType.EDGE_CONVEXITY : qEdgeConvexityTypeFilter(qOwnedByBody(definition.seedBodies, EntityType.EDGE), definition.edgeConvexityType)
+                SelectionType.EDGE_CONVEXITY : qEdgeConvexityTypeFilter(qOwnedByBody(definition.seedBodies, EntityType.EDGE), definition.edgeConvexityType),
+                SelectionType.SHADOW_VISIBILITY : shadowVisibilitySelection(context, definition)
             };
 }
 
@@ -1052,6 +1093,41 @@ function positionalDirectionalSelection(context is Context, definition is map) r
     }
 
     return qFacesParallelToDirection(candidateEntities, referenceDirection);
+}
+
+/**
+ * Performs shadow visibility analysis using opSplitBySelfShadow to return visible or invisible faces.
+ * @param context {Context} : The execution context.
+ * @param definition {map} : Parameters for shadow visibility query.
+ *      Expected keys: `shadowBodies`, `shadowViewDirection`, `shadowVisibilityType`.
+ */
+function shadowVisibilitySelection(context is Context, definition is map) returns Query
+{
+    const bodies = definition.shadowBodies as Query;
+    const viewDirectionQuery = definition.shadowViewDirection as Query;
+    const visibilityType = definition.shadowVisibilityType as ShadowVisibilityType;
+
+    if (isQueryEmpty(context, bodies))
+    {
+        throw regenError(ErrorStringEnum.INVALID_INPUT, ["shadowBodies"]);
+    }
+
+    const viewDirection = evaluateDirectionReference(context, viewDirectionQuery, "shadowViewDirection");
+
+    // Use a unique ID for the shadow operation within this feature context
+    const shadowId = toAttributeId(makeId("shadowVisibility"));
+
+    const shadowResult = opSplitBySelfShadow(context, shadowId, {
+                "bodies" : bodies,
+                "viewDirection" : viewDirection
+            });
+
+    if (visibilityType == ShadowVisibilityType.VISIBLE)
+    {
+        return qUnion(shadowResult.visibleFaces);
+    }
+
+    return qUnion(shadowResult.invisibleFaces);
 }
 
 function qMatchingBodies(context is Context, seedBodies is Query) returns Query
