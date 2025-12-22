@@ -1172,7 +1172,11 @@ function shadowVisibilitySelection(context is Context, id is Id, definition is m
 
     var viewDirection = evaluateDirectionReference(context, viewDirectionQuery, "shadowViewDirection");
     
-    // Flip the direction if opposite direction is selected
+    // Invert the direction by default for intuitive UX - when selecting a face, 
+    // users typically want to look at that face head-on from the viewport
+    viewDirection = -viewDirection;
+    
+    // Apply the opposite direction toggle if selected
     if (oppositeDirection)
     {
         viewDirection = -viewDirection;
