@@ -4,6 +4,19 @@ FeatureScript 2815;
  * The goal of this feature is to eventually allow all query types defined by the standard library or at least
  * the options available in the older Query Explorer feature to enable more advanced procedural workflows
  *
+ * ## Query Types
+ * 
+ * Most query types in this feature are pure queries that do not modify the underlying geometry.
+ * However, some query types are **Operation Queries** that perform geometry operations to generate
+ * the query results:
+ * 
+ * ### Operation Queries (modify geometry):
+ * - **SHADOW_VISIBILITY**: Uses `opSplitBySelfShadow` to split faces by shadow curves and return
+ *   visible or invisible faces. This operation adds shadow curve edges to the model.
+ * 
+ * When using operation queries, be aware that they will modify the model geometry as a side effect
+ * of creating the query variable.
+ *
  * Maintained by Derek Van Allen, to request updates message me on the forums in this thread:
  * https://forum.onshape.com/discussion/29012/custom-feature-query-variable
  */
@@ -1104,6 +1117,12 @@ function positionalDirectionalSelection(context is Context, definition is map) r
 
 /**
  * Performs shadow visibility analysis using opSplitBySelfShadow to return visible or invisible faces.
+ * 
+ * **IMPORTANT: This is an Operation Query** - it modifies the model geometry by calling opSplitBySelfShadow,
+ * which adds shadow curve edges to the bodies. The shadow curves represent transitions between visible
+ * and invisible regions on the faces. Each face is split so that the resulting faces are wholly visible
+ * or wholly invisible from the given view direction.
+ * 
  * @param context {Context} : The execution context.
  * @param id {Id} : The feature ID to use for the shadow operation.
  * @param definition {map} : Parameters for shadow visibility query.
