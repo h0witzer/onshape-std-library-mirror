@@ -1,14 +1,12 @@
 FeatureScript 2815;
-/** Query Variable Operation - Sister feature to Query Variable Plus for operations that modify geometry
+/** Query Variable Analysis - Shadow and Isocline analysis operations
  *
- * This feature creates query variables from operations that may modify model geometry while generating
- * query results. Unlike Query Variable Plus (pure queries), these operations perform geometry modifications
- * as a side effect but return useful query results that can be stored as variables.
+ * This feature creates query variables from shadow visibility and isocline (draft angle) analysis operations.
+ * These operations modify model geometry by splitting faces while generating useful query results.
  *
- * Current operation types:
- * - Shadow Visibility: Uses opSplitBySelfShadow to analyze visible/invisible faces from a view direction
- *
- * Future operations can be added (e.g., split by isocline, etc.)
+ * Operation types:
+ * - Shadow Visibility: Analyzes visible/invisible faces from a view direction
+ * - Isocline (Draft Analysis): Analyzes steep/non-steep faces at a specified draft angle
  */
 
 import(path : "onshape/std/common.fs", version : "2815.0");
@@ -17,6 +15,7 @@ import(path : "onshape/std/evaluate.fs", version : "2815.0");
 import(path : "onshape/std/geomOperations.fs", version : "2815.0");
 import(path : "onshape/std/query.fs", version : "2815.0");
 import(path : "onshape/std/variable.fs", version : "2815.0");
+import(path : "onshape/std/valueBounds.fs", version : "2815.0");
 
 /**
  * Defines the types of operations that can be performed.
@@ -24,7 +23,9 @@ import(path : "onshape/std/variable.fs", version : "2815.0");
 export enum OperationType
 {
     annotation { "Name" : "Shadow visibility" }
-    SHADOW_VISIBILITY
+    SHADOW_VISIBILITY,
+    annotation { "Name" : "Isocline (draft analysis)" }
+    ISOCLINE
 }
 
 /**
@@ -39,9 +40,20 @@ export enum ShadowVisibilityType
 }
 
 /**
- * Query Variable Operation feature creates query variables from operations that may modify geometry.
- * This is a sister feature to Query Variable Plus, specifically for operations that perform geometry
- * modifications while generating useful query results.
+ * Defines which faces to return from isocline analysis.
+ */
+export enum IsoclineResultType
+{
+    annotation { "Name" : "Steep faces" }
+    STEEP,
+    annotation { "Name" : "Non-steep faces" }
+    NON_STEEP,
+    annotation { "Name" : "Boundary edges" }
+    BOUNDARY_EDGES
+}
+
+/**
+ * Query Variable Operation feature creates query variables from shadow and isocline analysis operations.
  *
  * @param id : @autocomplete `id + "operationQuery1"`
  * @param definition {{
@@ -55,11 +67,18 @@ export enum ShadowVisibilityType
  *              Direction is automatically inverted for intuitive UX (selecting a face looks at it head-on).
  *      @field oppositeDirection {boolean} : Whether to flip the view direction (applied after automatic inversion).
  *      @field visibilityType {ShadowVisibilityType} : Whether to return visible or invisible faces.
+ *      
+ *      For ISOCLINE:
+ *      @field faces {Query} : The faces on which to imprint isoclines.
+ *      @field direction {Query} : The reference direction for draft angle analysis.
+ *      @field oppositeDirection {boolean} : Whether to flip the direction.
+ *      @field angle {ValueWithUnits} : The isocline angle with respect to the direction in the (-90, 90) degree range.
+ *      @field resultType {IsoclineResultType} : Which result to return (steep faces, non-steep faces, or boundary edges).
  * }}
  */
-annotation { "Feature Type Name" : "Query variable operation", "Feature Name Template" : "###name", "UIHint" : UIHint.NO_PREVIEW_PROVIDED,
+annotation { "Feature Type Name" : "Query variable analysis", "Feature Name Template" : "###name", "UIHint" : UIHint.NO_PREVIEW_PROVIDED,
         "Tooltip Template" : "###name #description" }
-export const queryVariableOperation = defineFeature(function(context is Context, id is Id, definition is map)
+export const queryVariableAnalysis = defineFeature(function(context is Context, id is Id, definition is map)
     precondition
     {
         annotation { "Name" : "Name", "UIHint" : [UIHint.UNCONFIGURABLE, UIHint.QUERY_VARIABLE_NAME], "MaxLength" : 10000 }
@@ -85,6 +104,23 @@ export const queryVariableOperation = defineFeature(function(context is Context,
             annotation { "Name" : "Visibility type", "Default" : ShadowVisibilityType.VISIBLE }
             definition.visibilityType is ShadowVisibilityType;
         }
+        else if (definition.operationType == OperationType.ISOCLINE)
+        {
+            annotation { "Name" : "Faces", "Filter" : EntityType.FACE && ConstructionObject.NO && SketchObject.NO }
+            definition.faces is Query;
+
+            annotation { "Name" : "Direction", "Filter" : QueryFilterCompound.ALLOWS_DIRECTION, "MaxNumberOfPicks" : 1 }
+            definition.direction is Query;
+
+            annotation { "Name" : "Opposite direction", "UIHint" : UIHint.OPPOSITE_DIRECTION, "Default" : false }
+            definition.oppositeDirection is boolean;
+
+            annotation { "Name" : "Angle" }
+            isAngle(definition.angle, ANGLE_STRICT_90_BOUNDS);
+
+            annotation { "Name" : "Result type", "Default" : IsoclineResultType.STEEP }
+            definition.resultType is IsoclineResultType;
+        }
     }
     {
         if (length(definition.name) == 0)
@@ -97,6 +133,10 @@ export const queryVariableOperation = defineFeature(function(context is Context,
         if (definition.operationType == OperationType.SHADOW_VISIBILITY)
         {
             query = performShadowVisibility(context, id, definition);
+        }
+        else if (definition.operationType == OperationType.ISOCLINE)
+        {
+            query = performIsocline(context, id, definition);
         }
         else
         {
@@ -152,6 +192,57 @@ function performShadowVisibility(context is Context, id is Id, definition is map
     }
     
     return qUnion(shadowResult.invisibleFaces);
+}
+
+/**
+ * Performs isocline (draft analysis) operation.
+ * @param context {Context} : The execution context.
+ * @param id {Id} : The feature ID to use for the isocline operation.
+ * @param definition {map} : Parameters for isocline analysis.
+ * @returns {Query} : Query containing the steep faces, non-steep faces, or boundary edges.
+ */
+function performIsocline(context is Context, id is Id, definition is map) returns Query
+{
+    const faces = definition.faces as Query;
+    const directionQuery = definition.direction as Query;
+    const oppositeDirection = definition.oppositeDirection == true;
+    const angle = definition.angle;
+    const resultType = definition.resultType as IsoclineResultType;
+
+    if (isQueryEmpty(context, faces))
+    {
+        throw regenError(ErrorStringEnum.INVALID_INPUT, ["faces"]);
+    }
+
+    var direction = evaluateDirectionReference(context, directionQuery, "direction");
+    
+    // Apply the opposite direction toggle if selected
+    if (oppositeDirection)
+    {
+        direction = -direction;
+    }
+
+    // Perform the isocline split operation
+    const isoclineId = id + "isoclineSplit";
+    const isoclineResult = opSplitByIsocline(context, isoclineId, {
+                "faces" : faces,
+                "direction" : direction,
+                "angle" : angle
+            });
+
+    // Return the appropriate result based on result type
+    if (resultType == IsoclineResultType.STEEP)
+    {
+        return qUnion(isoclineResult.steepFaces);
+    }
+    else if (resultType == IsoclineResultType.NON_STEEP)
+    {
+        return qUnion(isoclineResult.nonSteepFaces);
+    }
+    else // BOUNDARY_EDGES
+    {
+        return qUnion(isoclineResult.boundaryEdges);
+    }
 }
 
 /**
