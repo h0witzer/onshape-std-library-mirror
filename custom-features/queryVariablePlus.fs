@@ -180,7 +180,9 @@ export enum SizeComparisonType
     annotation { "Name" : "Larger than selection" }
     LARGER_THAN_SELECTION,
     annotation { "Name" : "Smaller than selection" }
-    SMALLER_THAN_SELECTION
+    SMALLER_THAN_SELECTION,
+    annotation { "Name" : "Equal to selection" }
+    EQUAL_TO_SELECTION
 }
 
 /**
@@ -207,7 +209,9 @@ export enum PositionalDirectionalType
     annotation { "Name" : "Plane parallel to direction" }
     PLANE_PARALLEL_DIRECTION,
     annotation { "Name" : "Face parallel to direction" }
-    FACE_PARALLEL_DIRECTION
+    FACE_PARALLEL_DIRECTION,
+    annotation { "Name" : "In front of plane" }
+    IN_FRONT_OF_PLANE
 }
 
 /**
@@ -282,13 +286,18 @@ export predicate initialQueryPredicate(definition is map)
         definition.sizeComparisonType is SizeComparisonType;
 
         if (definition.sizeComparisonType == SizeComparisonType.LARGER_THAN_SELECTION
-            || definition.sizeComparisonType == SizeComparisonType.SMALLER_THAN_SELECTION)
+            || definition.sizeComparisonType == SizeComparisonType.SMALLER_THAN_SELECTION
+            || definition.sizeComparisonType == SizeComparisonType.EQUAL_TO_SELECTION)
         {
             annotation { "Name" : "Reference selection", "Filter" : AllowMeshGeometry.YES && AllowFlattenedGeometry.YES, "MaxNumberOfPicks" : 1 }
             definition.sizeComparisonReference is Query;
 
-            annotation { "Name" : "Or equal to selection", "Default" : false }
-            definition.sizeComparisonAllowEqual is boolean;
+            if (definition.sizeComparisonType == SizeComparisonType.LARGER_THAN_SELECTION
+                || definition.sizeComparisonType == SizeComparisonType.SMALLER_THAN_SELECTION)
+            {
+                annotation { "Name" : "Or equal to selection", "Default" : false }
+                definition.sizeComparisonAllowEqual is boolean;
+            }
         }
     }
     else if (definition.selectionType == SelectionType.POSITIONAL_DIRECTIONAL)
@@ -301,7 +310,8 @@ export predicate initialQueryPredicate(definition is map)
 
         if (definition.positionalMetricType == PositionalDirectionalType.PLANE_NORMAL
             || definition.positionalMetricType == PositionalDirectionalType.INTERSECTS_PLANE
-            || definition.positionalMetricType == PositionalDirectionalType.COINCIDES_WITH_PLANE)
+            || definition.positionalMetricType == PositionalDirectionalType.COINCIDES_WITH_PLANE
+            || definition.positionalMetricType == PositionalDirectionalType.IN_FRONT_OF_PLANE)
         {
             annotation { "Name" : "Reference plane", "Filter" : EntityType.FACE && GeometryType.PLANE, "MaxNumberOfPicks" : 1 }
             definition.positionalPlane is Query;
@@ -476,13 +486,18 @@ export predicate additionalQueryPredicate(addQ is map)
         addQ.addQsizeComparisonType is SizeComparisonType;
 
         if (addQ.addQsizeComparisonType == SizeComparisonType.LARGER_THAN_SELECTION
-            || addQ.addQsizeComparisonType == SizeComparisonType.SMALLER_THAN_SELECTION)
+            || addQ.addQsizeComparisonType == SizeComparisonType.SMALLER_THAN_SELECTION
+            || addQ.addQsizeComparisonType == SizeComparisonType.EQUAL_TO_SELECTION)
         {
             annotation { "Name" : "Reference selection", "Filter" : AllowMeshGeometry.YES && AllowFlattenedGeometry.YES, "MaxNumberOfPicks" : 1 }
             addQ.addQsizeComparisonReference is Query;
 
-            annotation { "Name" : "Or equal to selection", "Default" : false }
-            addQ.addQsizeComparisonAllowEqual is boolean;
+            if (addQ.addQsizeComparisonType == SizeComparisonType.LARGER_THAN_SELECTION
+                || addQ.addQsizeComparisonType == SizeComparisonType.SMALLER_THAN_SELECTION)
+            {
+                annotation { "Name" : "Or equal to selection", "Default" : false }
+                addQ.addQsizeComparisonAllowEqual is boolean;
+            }
         }
     }
     else if (addQ.addQselectionType == SelectionType.POSITIONAL_DIRECTIONAL)
@@ -495,7 +510,8 @@ export predicate additionalQueryPredicate(addQ is map)
 
         if (addQ.addQpositionalMetricType == PositionalDirectionalType.PLANE_NORMAL
             || addQ.addQpositionalMetricType == PositionalDirectionalType.INTERSECTS_PLANE
-            || addQ.addQpositionalMetricType == PositionalDirectionalType.COINCIDES_WITH_PLANE)
+            || addQ.addQpositionalMetricType == PositionalDirectionalType.COINCIDES_WITH_PLANE
+            || addQ.addQpositionalMetricType == PositionalDirectionalType.IN_FRONT_OF_PLANE)
         {
             annotation { "Name" : "Reference plane", "Filter" : EntityType.FACE && GeometryType.PLANE, "MaxNumberOfPicks" : 1 }
             addQ.addQpositionalPlane is Query;
@@ -899,7 +915,8 @@ function sizeComparisonSelection(context is Context, definition is map) returns 
         const isSmaller = sizeDifference < 0 && !isEqual;
 
         if ((comparisonType == SizeComparisonType.LARGER_THAN_SELECTION && (isLarger || (allowEqualSize && isEqual)))
-            || (comparisonType == SizeComparisonType.SMALLER_THAN_SELECTION && (isSmaller || (allowEqualSize && isEqual))))
+            || (comparisonType == SizeComparisonType.SMALLER_THAN_SELECTION && (isSmaller || (allowEqualSize && isEqual)))
+            || (comparisonType == SizeComparisonType.EQUAL_TO_SELECTION && isEqual))
         {
             qualifyingEntities = append(qualifyingEntities, entity);
         }
@@ -971,7 +988,8 @@ function positionalDirectionalSelection(context is Context, definition is map) r
 
     if (positionalType == PositionalDirectionalType.PLANE_NORMAL
         || positionalType == PositionalDirectionalType.INTERSECTS_PLANE
-        || positionalType == PositionalDirectionalType.COINCIDES_WITH_PLANE)
+        || positionalType == PositionalDirectionalType.COINCIDES_WITH_PLANE
+        || positionalType == PositionalDirectionalType.IN_FRONT_OF_PLANE)
     {
         const referencePlane = evaluatePlaneReference(context, definition.positionalPlane as Query, "positionalPlane");
         if (positionalType == PositionalDirectionalType.PLANE_NORMAL)
@@ -984,7 +1002,12 @@ function positionalDirectionalSelection(context is Context, definition is map) r
             return qIntersectsPlane(candidateEntities, referencePlane);
         }
 
-        return qCoincidesWithPlane(candidateEntities, referencePlane);
+        if (positionalType == PositionalDirectionalType.COINCIDES_WITH_PLANE)
+        {
+            return qCoincidesWithPlane(candidateEntities, referencePlane);
+        }
+
+        return qInFrontOfPlane(candidateEntities, referencePlane);
     }
 
     if (positionalType == PositionalDirectionalType.INTERSECTS_LINE)
