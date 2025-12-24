@@ -1,8 +1,14 @@
 # Custom Font Support - TTF/OTF Import Guide
 
-## Direct Answer
+## Direct Answer to: "Can TTF files be saved as TXT and imported like SVG?"
 
 **YES**, TTF/OTF font files CAN be imported into Onshape FeatureScript by encoding them as base64 text, similar to how SVG files work, but with an encoding step.
+
+**The key difference from SVG:**
+- SVG files are already text (XML), so they can be renamed `.svg` → `.txt` directly
+- TTF/OTF files are binary, so they must be **base64-encoded** first, then saved as `.txt`
+
+This repository provides a complete implementation for importing and using custom fonts in Onshape.
 
 ## The Key Difference
 
