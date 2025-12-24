@@ -6,45 +6,38 @@ This is a step-by-step walkthrough showing exactly how to use custom TTF/OTF fon
 
 - An Onshape account
 - A custom font file (TTF or OTF)
-- One of the encoding scripts from the `scripts/` directory
+- A web browser (for the conversion tool)
 
-## Step 1: Encode Your Font File
+## Step 1: Convert Your Font File
 
-Choose your platform and run the appropriate script:
+**Easiest Method: Browser Tool**
 
-**Linux/Mac:**
-```bash
-cd scripts
-./encode-font.sh ~/Downloads/MyAwesomeFont-Regular.ttf
+1. Open `web-tool/font-converter.html` from this repository
+   - Just double-click it, or right-click and "Open With" your browser
+   - Works offline - no internet needed!
+
+2. Drag and drop your font file (e.g., `MyAwesomeFont-Regular.ttf`) onto the page
+   - Or click the box to browse for your file
+
+3. Click "Download as .txt file"
+
+**Result:**
+```
+✓ Conversion Complete!
+
+Original: MyAwesomeFont-Regular.ttf (156.8 KB)
+Encoded: MyAwesomeFont-Regular.txt (209.1 KB)
+
+[Download as .txt file]
 ```
 
-**Windows PowerShell:**
-```powershell
-cd scripts
-.\encode-font.ps1 C:\Users\YourName\Downloads\MyAwesomeFont-Regular.ttf
-```
+**Alternative: Online Converter**
 
-**Cross-platform Python:**
-```bash
-cd scripts
-python3 encode-font.py ~/Downloads/MyAwesomeFont-Regular.ttf
-```
-
-**Output:**
-```
-Encoding MyAwesomeFont-Regular.ttf to base64...
-
-✓ Success!
-
-Input file:  MyAwesomeFont-Regular.ttf (156,789 bytes)
-Output file: MyAwesomeFont-Regular.txt (209,052 bytes)
-
-Next steps:
-1. Upload MyAwesomeFont-Regular.txt to your Onshape document
-2. In FeatureScript, import it:
-   myFont::import(path : "doc-id/element-id", version : "version-id");
-3. Use the customFontText feature with myFont::BLOB_DATA
-```
+If you prefer not to download the HTML file:
+1. Go to https://base64.guru/converter/encode/file
+2. Upload your font file
+3. Download the result
+4. Save as `.txt` file
 
 ## Step 2: Upload to Onshape
 

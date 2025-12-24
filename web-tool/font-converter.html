@@ -1,0 +1,388 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>TTF/OTF to Text Converter for Onshape</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+        }
+
+        .container {
+            background: white;
+            border-radius: 12px;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+            max-width: 600px;
+            width: 100%;
+            padding: 40px;
+        }
+
+        h1 {
+            color: #333;
+            margin-bottom: 10px;
+            font-size: 28px;
+        }
+
+        .subtitle {
+            color: #666;
+            margin-bottom: 30px;
+            font-size: 14px;
+        }
+
+        .drop-zone {
+            border: 3px dashed #667eea;
+            border-radius: 8px;
+            padding: 60px 20px;
+            text-align: center;
+            background: #f8f9ff;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            margin-bottom: 20px;
+        }
+
+        .drop-zone:hover {
+            border-color: #764ba2;
+            background: #f0f1ff;
+        }
+
+        .drop-zone.dragover {
+            border-color: #764ba2;
+            background: #e8eaff;
+            transform: scale(1.02);
+        }
+
+        .drop-icon {
+            font-size: 48px;
+            margin-bottom: 10px;
+        }
+
+        .drop-text {
+            font-size: 18px;
+            color: #333;
+            margin-bottom: 5px;
+        }
+
+        .drop-subtext {
+            font-size: 14px;
+            color: #666;
+        }
+
+        #file-input {
+            display: none;
+        }
+
+        .btn {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            padding: 12px 30px;
+            border-radius: 6px;
+            font-size: 16px;
+            cursor: pointer;
+            transition: transform 0.2s ease;
+            width: 100%;
+            margin-top: 10px;
+        }
+
+        .btn:hover {
+            transform: translateY(-2px);
+        }
+
+        .btn:active {
+            transform: translateY(0);
+        }
+
+        .btn:disabled {
+            background: #ccc;
+            cursor: not-allowed;
+            transform: none;
+        }
+
+        .result {
+            margin-top: 30px;
+            padding: 20px;
+            background: #f8f9ff;
+            border-radius: 8px;
+            border-left: 4px solid #667eea;
+            display: none;
+        }
+
+        .result.show {
+            display: block;
+        }
+
+        .result h3 {
+            color: #333;
+            margin-bottom: 10px;
+            font-size: 18px;
+        }
+
+        .result p {
+            color: #666;
+            font-size: 14px;
+            line-height: 1.6;
+            margin-bottom: 15px;
+        }
+
+        .file-info {
+            background: white;
+            padding: 15px;
+            border-radius: 6px;
+            margin-bottom: 15px;
+            font-family: 'Courier New', monospace;
+            font-size: 13px;
+            color: #333;
+        }
+
+        .instructions {
+            background: #fff3cd;
+            border: 1px solid #ffc107;
+            border-radius: 6px;
+            padding: 15px;
+            margin-top: 20px;
+        }
+
+        .instructions h4 {
+            color: #856404;
+            margin-bottom: 10px;
+            font-size: 16px;
+        }
+
+        .instructions ol {
+            margin-left: 20px;
+            color: #856404;
+        }
+
+        .instructions li {
+            margin-bottom: 8px;
+            line-height: 1.5;
+        }
+
+        .error {
+            background: #ffebee;
+            border-left: 4px solid #f44336;
+            padding: 15px;
+            border-radius: 6px;
+            margin-top: 15px;
+            display: none;
+        }
+
+        .error.show {
+            display: block;
+        }
+
+        .error-text {
+            color: #c62828;
+            font-size: 14px;
+        }
+
+        .footer {
+            margin-top: 30px;
+            padding-top: 20px;
+            border-top: 1px solid #eee;
+            text-align: center;
+            color: #666;
+            font-size: 12px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🔤 Font to Text Converter</h1>
+        <p class="subtitle">Convert TTF/OTF fonts to text format for Onshape FeatureScript</p>
+
+        <div class="drop-zone" id="drop-zone">
+            <div class="drop-icon">📁</div>
+            <div class="drop-text">Drop your TTF or OTF file here</div>
+            <div class="drop-subtext">or click to browse</div>
+        </div>
+
+        <input type="file" id="file-input" accept=".ttf,.otf" />
+
+        <div class="result" id="result">
+            <h3>✅ Conversion Complete!</h3>
+            <div class="file-info" id="file-info"></div>
+            <p>Your font has been converted to text format. Click the button below to download the .txt file.</p>
+            <button class="btn" id="download-btn">Download as .txt file</button>
+        </div>
+
+        <div class="error" id="error">
+            <div class="error-text" id="error-text"></div>
+        </div>
+
+        <div class="instructions">
+            <h4>📋 Next Steps:</h4>
+            <ol>
+                <li>Click "Download as .txt file" above</li>
+                <li>Upload the .txt file to your Onshape document</li>
+                <li>Import it in your FeatureScript:<br>
+                    <code>myFont::import(path : "doc-id/element-id", version : "version");</code>
+                </li>
+                <li>Use it with the customFontText feature</li>
+            </ol>
+        </div>
+
+        <div class="footer">
+            No data is uploaded to any server. All conversion happens locally in your browser.
+        </div>
+    </div>
+
+    <script>
+        const dropZone = document.getElementById('drop-zone');
+        const fileInput = document.getElementById('file-input');
+        const result = document.getElementById('result');
+        const fileInfo = document.getElementById('file-info');
+        const downloadBtn = document.getElementById('download-btn');
+        const errorDiv = document.getElementById('error');
+        const errorText = document.getElementById('error-text');
+
+        let convertedData = null;
+        let fileName = '';
+
+        // Click to browse
+        dropZone.addEventListener('click', () => {
+            fileInput.click();
+        });
+
+        // File input change
+        fileInput.addEventListener('change', (e) => {
+            const file = e.target.files[0];
+            if (file) {
+                handleFile(file);
+            }
+        });
+
+        // Drag and drop
+        dropZone.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            dropZone.classList.add('dragover');
+        });
+
+        dropZone.addEventListener('dragleave', () => {
+            dropZone.classList.remove('dragover');
+        });
+
+        dropZone.addEventListener('drop', (e) => {
+            e.preventDefault();
+            dropZone.classList.remove('dragover');
+            
+            const file = e.dataTransfer.files[0];
+            if (file) {
+                handleFile(file);
+            }
+        });
+
+        // Handle file processing
+        function handleFile(file) {
+            // Reset UI
+            result.classList.remove('show');
+            errorDiv.classList.remove('show');
+
+            // Validate file type
+            const ext = file.name.toLowerCase().split('.').pop();
+            if (ext !== 'ttf' && ext !== 'otf') {
+                showError('Please select a valid TTF or OTF font file.');
+                return;
+            }
+
+            // Show loading state
+            dropZone.innerHTML = '<div class="drop-icon">⏳</div><div class="drop-text">Converting...</div>';
+
+            // Read file
+            const reader = new FileReader();
+            
+            reader.onload = function(e) {
+                try {
+                    // Get binary data
+                    const arrayBuffer = e.target.result;
+                    const bytes = new Uint8Array(arrayBuffer);
+                    
+                    // Convert to base64
+                    let binary = '';
+                    for (let i = 0; i < bytes.byteLength; i++) {
+                        binary += String.fromCharCode(bytes[i]);
+                    }
+                    const base64 = btoa(binary);
+                    
+                    // Format with line breaks (76 chars per line, MIME standard)
+                    const formatted = base64.match(/.{1,76}/g).join('\n');
+                    
+                    // Store result
+                    convertedData = formatted;
+                    fileName = file.name.replace(/\.(ttf|otf)$/i, '.txt');
+                    
+                    // Show result
+                    const sizeKB = (bytes.byteLength / 1024).toFixed(1);
+                    const encodedSizeKB = (formatted.length / 1024).toFixed(1);
+                    
+                    fileInfo.innerHTML = `
+                        <strong>Original:</strong> ${file.name} (${sizeKB} KB)<br>
+                        <strong>Encoded:</strong> ${fileName} (${encodedSizeKB} KB)
+                    `;
+                    
+                    result.classList.add('show');
+                    
+                    // Reset drop zone
+                    dropZone.innerHTML = `
+                        <div class="drop-icon">✓</div>
+                        <div class="drop-text">File converted successfully!</div>
+                        <div class="drop-subtext">Drop another file or click to browse</div>
+                    `;
+                    
+                } catch (error) {
+                    showError('Error converting file: ' + error.message);
+                    resetDropZone();
+                }
+            };
+            
+            reader.onerror = function() {
+                showError('Error reading file. Please try again.');
+                resetDropZone();
+            };
+            
+            reader.readAsArrayBuffer(file);
+        }
+
+        // Download converted file
+        downloadBtn.addEventListener('click', () => {
+            if (!convertedData) return;
+            
+            const blob = new Blob([convertedData], { type: 'text/plain' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = fileName;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+        });
+
+        function showError(message) {
+            errorText.textContent = message;
+            errorDiv.classList.add('show');
+        }
+
+        function resetDropZone() {
+            dropZone.innerHTML = `
+                <div class="drop-icon">📁</div>
+                <div class="drop-text">Drop your TTF or OTF file here</div>
+                <div class="drop-subtext">or click to browse</div>
+            `;
+        }
+    </script>
+</body>
+</html>

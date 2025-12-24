@@ -7,13 +7,18 @@
 - **SVG files**: Can be renamed `.svg` → `.txt` and imported directly (they're already text)
 - **TTF/OTF files**: Must be **base64-encoded first**, then saved as `.txt` and imported
 
-## The One-Line Solution
+## The Simple Solution
 
-```bash
-base64 MyFont.ttf > MyFont.txt
-```
+**Option 1: Browser Tool (No Installation)**
+1. Open `web-tool/font-converter.html` in any browser
+2. Drag and drop your font file
+3. Click "Download"
 
-Then upload `MyFont.txt` to Onshape and import it like any other resource.
+**Option 2: Online Converter**
+- Visit https://base64.guru/converter/encode/file
+- Upload your font, download the result, save as `.txt`
+
+Then upload the `.txt` file to Onshape and import it like any other resource.
 
 ## Why This Works
 
@@ -79,15 +84,16 @@ The forum question "can TTF be saved as TXT like SVG" has a nuanced answer:
 
 ## Get Started
 
-1. **Pick an encoding script:**
-   - Linux/Mac: `scripts/encode-font.sh`
-   - Windows: `scripts/encode-font.ps1`
-   - Cross-platform: `scripts/encode-font.py`
+**The simplest way to convert your font:**
 
-2. **Encode your font:**
-   ```bash
-   ./scripts/encode-font.sh YourFont.ttf
-   ```
+1. **Open the converter:**
+   - Download `web-tool/font-converter.html` from this repository
+   - Open it in your web browser (Chrome, Firefox, Safari, etc.)
+   - Or use an online tool: https://base64.guru/converter/encode/file
+
+2. **Convert your font:**
+   - Drag and drop your `.ttf` or `.otf` file
+   - Click "Download as .txt file"
 
 3. **Follow the guide:**
    - Quick start: [EXAMPLE_USAGE.md](EXAMPLE_USAGE.md)
@@ -95,7 +101,8 @@ The forum question "can TTF be saved as TXT like SVG" has a nuanced answer:
 
 ## See Also
 
-- [Scripts README](scripts/README.md) - Encoding tool documentation
+- [Web Tool README](web-tool/README.md) - Browser-based converter instructions
+- [Font Converter](web-tool/font-converter.html) - The conversion tool itself
 - [Font Parser](custom-features/fontParser.fs) - TTF/OTF parsing implementation
 - [Custom Font Text Feature](custom-features/customFontText.fs) - Complete working example
 

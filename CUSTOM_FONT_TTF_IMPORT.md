@@ -27,12 +27,26 @@ This repository provides a complete implementation for importing and using custo
 
 ### Step 1: Encode Your Font File
 
-You need to convert the binary TTF/OTF file to base64-encoded text:
+The easiest way is to use the browser-based converter (no installation needed):
+
+**Method 1: Browser Tool (Recommended - No Installation)**
+1. Open `web-tool/font-converter.html` from this repository in your browser
+2. Drag and drop your TTF/OTF file onto the page
+3. Click "Download as .txt file"
+4. Done! You now have a `.txt` file ready for Onshape
+
+**Method 2: Online Converter (No Download)**
+- Visit: https://base64.guru/converter/encode/file
+- Upload your TTF/OTF file
+- Download the base64-encoded text
+- Save as `.txt` file
+
+**Method 3: Command Line (For Advanced Users)**
+
+*Only use this if you're comfortable with terminal/command prompt:*
 
 **On Linux/Mac:**
 ```bash
-base64 MyCustomFont.ttf > MyCustomFont.txt
-# or with line wrapping
 base64 -w 76 MyCustomFont.ttf > MyCustomFont.txt
 ```
 
@@ -44,29 +58,11 @@ base64 -w 76 MyCustomFont.ttf > MyCustomFont.txt
 **Using Python:**
 ```python
 import base64
-
 with open('MyCustomFont.ttf', 'rb') as f:
-    font_data = f.read()
-    encoded = base64.b64encode(font_data)
-    
+    encoded = base64.b64encode(f.read())
 with open('MyCustomFont.txt', 'w') as f:
     f.write(encoded.decode('ascii'))
 ```
-
-**Using Node.js:**
-```javascript
-const fs = require('fs');
-
-const fontBuffer = fs.readFileSync('MyCustomFont.ttf');
-const base64Font = fontBuffer.toString('base64');
-fs.writeFileSync('MyCustomFont.txt', base64Font);
-```
-
-**Using Online Tools:**
-- Visit: https://base64.guru/converter/encode/file
-- Upload your TTF/OTF file
-- Download the base64-encoded text
-- Save as `.txt` file
 
 ### Step 2: Upload to Onshape
 
