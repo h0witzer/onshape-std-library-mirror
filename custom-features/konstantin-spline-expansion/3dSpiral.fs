@@ -118,14 +118,14 @@ export const spiral3d = defineFeature(function(context is Context, id is Id, def
             endDerivative = (25 * pointList[n] - 48 * pointList[n - 1] + 36 * pointList[n - 2] - 16 * pointList[n - 3] + 3 * pointList[n - 4]) / (12 * parameterSpacing);
             
             // Detect transition points by examining the rate of change in tangent direction along the path
-            // Add derivative constraints at and around points where the curvature of the path changes significantly
+            // Add derivative constraints sparingly at key transition points to avoid over-constraining
             const tangentLines = evPathTangentLines(context, path, range(0, 1, pointNumber)).tangentLines;
             
             // Threshold for detecting curvature discontinuities (empirically chosen to identify edge transitions)
             // This represents the magnitude of the second finite difference of tangent directions
-            const curvatureChangeThreshold = 0.005;
+            const curvatureChangeThreshold = 0.01;
             
-            // Track which indices should have derivative constraints
+            // Track detected transition regions and consolidate to avoid over-constraining
             var transitionIndices = [];
             
             // Calculate the "curvature" of the tangent path as the rate of change of tangent direction
@@ -151,28 +151,31 @@ export const spiral3d = defineFeature(function(context is Context, id is Id, def
                 }
             }
             
-            // For each detected transition, add derivative constraints in a neighborhood
-            // This provides better control over the spline fitting in transition regions
-            for (var transitionIdx in transitionIndices)
+            // Consolidate transition indices to avoid adding constraints at consecutive points
+            // This prevents over-constraining which can cause uneven control point distribution
+            var consolidatedTransitions = [];
+            if (size(transitionIndices) > 0)
             {
-                // Add constraint at the transition point itself
+                consolidatedTransitions = append(consolidatedTransitions, transitionIndices[0]);
+                
+                for (var i = 1; i < size(transitionIndices); i += 1)
+                {
+                    // Only add this transition if it's far enough from the previous one
+                    // Minimum spacing ensures we don't over-constrain nearby regions
+                    const minSpacing = max(5, floor(pointNumber / 20));
+                    if (transitionIndices[i] - consolidatedTransitions[size(consolidatedTransitions) - 1] >= minSpacing)
+                    {
+                        consolidatedTransitions = append(consolidatedTransitions, transitionIndices[i]);
+                    }
+                }
+            }
+            
+            // Add a single derivative constraint at each consolidated transition point
+            for (var transitionIdx in consolidatedTransitions)
+            {
+                // Use 5-point central difference for accurate derivative calculation
                 const derivative = (pointList[transitionIdx - 2] - 8 * pointList[transitionIdx - 1] + 8 * pointList[transitionIdx + 1] - pointList[transitionIdx + 2]) / (12 * parameterSpacing);
                 intermediateDerivatives[transitionIdx] = derivative;
-                
-                // Add constraints on both sides of the transition for smoother blending
-                // Before transition (if not already added and has enough neighbors)
-                if (transitionIdx >= 3 && transitionIdx - 1 >= 2)
-                {
-                    const derivBefore = (pointList[transitionIdx - 3] - 8 * pointList[transitionIdx - 2] + 8 * pointList[transitionIdx] - pointList[transitionIdx + 1]) / (12 * parameterSpacing);
-                    intermediateDerivatives[transitionIdx - 1] = derivBefore;
-                }
-                
-                // After transition (if not already added and has enough neighbors)
-                if (transitionIdx + 1 < pointNumber - 2 && transitionIdx + 3 < pointNumber)
-                {
-                    const derivAfter = (pointList[transitionIdx - 1] - 8 * pointList[transitionIdx] + 8 * pointList[transitionIdx + 2] - pointList[transitionIdx + 3]) / (12 * parameterSpacing);
-                    intermediateDerivatives[transitionIdx + 1] = derivAfter;
-                }
             }
         }
         else if (!path.closed && pointNumber >= 3)
