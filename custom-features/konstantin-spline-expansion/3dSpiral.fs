@@ -102,7 +102,6 @@ export const spiral3d = defineFeature(function(context is Context, id is Id, def
         // Use a hybrid approach: finite differences from many nearby points for robustness
         var startDerivative;
         var endDerivative;
-        var intermediateDerivatives = {};
         
         if (!path.closed && pointNumber >= 5)
         {
@@ -116,67 +115,6 @@ export const spiral3d = defineFeature(function(context is Context, id is Id, def
             // 5-point backward difference at end
             const n = pointNumber - 1;
             endDerivative = (25 * pointList[n] - 48 * pointList[n - 1] + 36 * pointList[n - 2] - 16 * pointList[n - 3] + 3 * pointList[n - 4]) / (12 * parameterSpacing);
-            
-            // Detect transition points by examining the rate of change in tangent direction along the path
-            // Add derivative constraints sparingly at key transition points to avoid over-constraining
-            const tangentLines = evPathTangentLines(context, path, range(0, 1, pointNumber)).tangentLines;
-            
-            // Threshold for detecting curvature discontinuities (empirically chosen to identify edge transitions)
-            // This represents the magnitude of the second finite difference of tangent directions
-            const curvatureChangeThreshold = 0.01;
-            
-            // Track detected transition regions and consolidate to avoid over-constraining
-            var transitionIndices = [];
-            
-            // Calculate the "curvature" of the tangent path as the rate of change of tangent direction
-            for (var i = 2; i < pointNumber - 2; i += 1)
-            {
-                // Look at three consecutive tangents to detect regions of changing curvature
-                const tang_im1 = tangentLines[i - 1].direction;
-                const tang_i = tangentLines[i].direction;
-                const tang_ip1 = tangentLines[i + 1].direction;
-                
-                // Calculate the "curvature" as the second finite difference of tangent direction
-                // This detects where the path itself has discontinuous curvature (like line-to-arc transitions)
-                const deltaTangent1 = tang_i - tang_im1;
-                const deltaTangent2 = tang_ip1 - tang_i;
-                const secondDeltaTangent = deltaTangent2 - deltaTangent1;
-                
-                const curvatureChange = norm(secondDeltaTangent);
-                
-                // If we detect a significant change in path curvature, mark this as a transition point
-                if (curvatureChange > curvatureChangeThreshold)
-                {
-                    transitionIndices = append(transitionIndices, i);
-                }
-            }
-            
-            // Consolidate transition indices to avoid adding constraints at consecutive points
-            // This prevents over-constraining which can cause uneven control point distribution
-            var consolidatedTransitions = [];
-            if (size(transitionIndices) > 0)
-            {
-                consolidatedTransitions = append(consolidatedTransitions, transitionIndices[0]);
-                
-                for (var i = 1; i < size(transitionIndices); i += 1)
-                {
-                    // Only add this transition if it's far enough from the previous one
-                    // Minimum spacing ensures we don't over-constrain nearby regions
-                    const minSpacing = max(5, floor(pointNumber / 20));
-                    if (transitionIndices[i] - consolidatedTransitions[size(consolidatedTransitions) - 1] >= minSpacing)
-                    {
-                        consolidatedTransitions = append(consolidatedTransitions, transitionIndices[i]);
-                    }
-                }
-            }
-            
-            // Add a single derivative constraint at each consolidated transition point
-            for (var transitionIdx in consolidatedTransitions)
-            {
-                // Use 5-point central difference for accurate derivative calculation
-                const derivative = (pointList[transitionIdx - 2] - 8 * pointList[transitionIdx - 1] + 8 * pointList[transitionIdx + 1] - pointList[transitionIdx + 2]) / (12 * parameterSpacing);
-                intermediateDerivatives[transitionIdx] = derivative;
-            }
         }
         else if (!path.closed && pointNumber >= 3)
         {
@@ -208,25 +146,22 @@ export const spiral3d = defineFeature(function(context is Context, id is Id, def
         }
         else
         {
-            // Build the definition with all available derivative information
-            var fitSplineDefinition = { "points" : pointList };
-            
-            if (startDerivative != undefined)
+            // Only include derivatives if they were calculated
+            if (startDerivative != undefined && endDerivative != undefined)
             {
-                fitSplineDefinition.startDerivative = startDerivative;
+                opFitSpline(context, id + "fitSplineSpiral", {
+                    "points" : pointList,
+                    "startDerivative" : startDerivative,
+                    "endDerivative" : endDerivative
+                });
             }
-            
-            if (endDerivative != undefined)
+            else
             {
-                fitSplineDefinition.endDerivative = endDerivative;
+                // Fall back to no derivatives if not enough points
+                opFitSpline(context, id + "fitSplineSpiral", {
+                    "points" : pointList
+                });
             }
-            
-            if (size(intermediateDerivatives) > 0)
-            {
-                fitSplineDefinition.derivatives = intermediateDerivatives;
-            }
-            
-            opFitSpline(context, id + "fitSplineSpiral", fitSplineDefinition);
         }
     },
     {
