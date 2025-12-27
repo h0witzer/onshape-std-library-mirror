@@ -114,7 +114,7 @@ export const spiral3d = defineFeature(function(context is Context, id is Id, def
         
         if (path.closed)
         {
-            // For closed paths, add the closure distance
+            // For closed paths, add the closure distance (from last point back to first)
             totalSpiralLength += norm(pointList[0] - pointList[size(pointList) - 1]);
         }
         
@@ -129,10 +129,15 @@ export const spiral3d = defineFeature(function(context is Context, id is Id, def
             const targetDistance = targetIndex * targetSpacing;
             
             // Find the segment containing the target distance
-            while (currentSourceIndex < size(pointList) - 1)
+            var found = false;
+            while (currentSourceIndex < size(pointList))
             {
+                // Get segment endpoints, handling wrap-around for closed paths
                 const segmentStart = pointList[currentSourceIndex];
-                const segmentEnd = pointList[currentSourceIndex + 1];
+                const segmentEnd = (currentSourceIndex == size(pointList) - 1 && path.closed) ? 
+                    pointList[0] : 
+                    (currentSourceIndex < size(pointList) - 1 ? pointList[currentSourceIndex + 1] : segmentStart);
+                
                 const segmentLength = norm(segmentEnd - segmentStart);
                 
                 if (accumulatedDistance + segmentLength >= targetDistance)
@@ -142,11 +147,29 @@ export const spiral3d = defineFeature(function(context is Context, id is Id, def
                     const t = segmentLength > (TOLERANCE.zeroLength * meter) ? remainingDistance / segmentLength : 0;
                     const interpolatedPoint = segmentStart + t * (segmentEnd - segmentStart);
                     resampledPoints = append(resampledPoints, interpolatedPoint);
+                    found = true;
                     break;
                 }
                 
                 accumulatedDistance += segmentLength;
                 currentSourceIndex += 1;
+                
+                // Stop if we've processed all segments including wrap-around
+                if (currentSourceIndex >= size(pointList) - 1 && !path.closed)
+                {
+                    break;
+                }
+                if (currentSourceIndex >= size(pointList) && path.closed)
+                {
+                    break;
+                }
+            }
+            
+            // Safety check: if we didn't find a point, something went wrong
+            if (!found && targetIndex < pointNumber - 1)
+            {
+                // Fallback: use the last available point
+                resampledPoints = append(resampledPoints, pointList[size(pointList) - 1]);
             }
         }
         
