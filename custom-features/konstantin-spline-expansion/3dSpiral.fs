@@ -223,7 +223,17 @@ export const spiral3d = defineFeature(function(context is Context, id is Id, def
         }
         else
         {
+            // Measure gap between last and first points
+            const lastPoint = resampledPoints[size(resampledPoints) - 1];
+            const firstPoint = resampledPoints[0];
+            const gapDistance = norm(lastPoint - firstPoint);
             println("Closed path - no additional endpoint needed");
+            println("Gap between last and first point: " ~ gapDistance);
+            println("Gap as % of target spacing: " ~ (gapDistance / targetSpacing * 100) ~ "%");
+            
+            // Debug visualization: draw start and end points
+            debug(context, id + "debugStart", DebugColor.RED, firstPoint);
+            debug(context, id + "debugEnd", DebugColor.BLUE, lastPoint);
         }
         
         println("=== END RESAMPLING DEBUG ===");
