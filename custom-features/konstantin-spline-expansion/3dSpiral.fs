@@ -176,7 +176,9 @@ export const spiral3d = defineFeature(function(context is Context, id is Id, def
                 }
                 
                 // Check if target distance falls within this segment
-                if (targetDistance >= segmentStartDist && targetDistance <= segmentEndDist)
+                // Use tolerance for boundary checks to handle floating point precision
+                const tolerance = TOLERANCE.zeroLength * meter;
+                if (targetDistance >= segmentStartDist - tolerance && targetDistance <= segmentEndDist + tolerance)
                 {
                     const segmentLength = segmentEndDist - segmentStartDist;
                     const distanceIntoSegment = targetDistance - segmentStartDist;
