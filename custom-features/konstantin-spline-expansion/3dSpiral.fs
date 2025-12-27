@@ -102,6 +102,7 @@ export const spiral3d = defineFeature(function(context is Context, id is Id, def
         // Use a hybrid approach: finite differences from many nearby points for robustness
         var startDerivative;
         var endDerivative;
+        var intermediateDerivatives = {};
         
         if (!path.closed && pointNumber >= 5)
         {
@@ -115,6 +116,31 @@ export const spiral3d = defineFeature(function(context is Context, id is Id, def
             // 5-point backward difference at end
             const n = pointNumber - 1;
             endDerivative = (25 * pointList[n] - 48 * pointList[n - 1] + 36 * pointList[n - 2] - 16 * pointList[n - 3] + 3 * pointList[n - 4]) / (12 * parameterSpacing);
+            
+            // Detect transition points by examining changes in tangent direction along the path
+            // Add derivative constraints at points where significant direction changes occur
+            const tangentLines = evPathTangentLines(context, path, range(0, 1, pointNumber)).tangentLines;
+            
+            for (var i = 2; i < pointNumber - 2; i += 1)
+            {
+                // Calculate the angular change between consecutive tangent segments
+                const prevTangent = tangentLines[i - 1].direction;
+                const currTangent = tangentLines[i].direction;
+                const nextTangent = tangentLines[i + 1].direction;
+                
+                // Measure angular deviation using cross product magnitude and dot product
+                const angularChange1 = norm(cross(prevTangent, currTangent));
+                const angularChange2 = norm(cross(currTangent, nextTangent));
+                
+                // If we detect a significant change in direction (potential edge transition),
+                // add a derivative constraint using 5-point central difference
+                if (angularChange1 > 0.01 || angularChange2 > 0.01)
+                {
+                    // 5-point central difference: f'(i) ≈ (f(i-2) - 8f(i-1) + 8f(i+1) - f(i+2)) / (12h)
+                    const derivative = (pointList[i - 2] - 8 * pointList[i - 1] + 8 * pointList[i + 1] - pointList[i + 2]) / (12 * parameterSpacing);
+                    intermediateDerivatives[i] = derivative;
+                }
+            }
         }
         else if (!path.closed && pointNumber >= 3)
         {
@@ -146,22 +172,25 @@ export const spiral3d = defineFeature(function(context is Context, id is Id, def
         }
         else
         {
-            // Only include derivatives if they were calculated
-            if (startDerivative != undefined && endDerivative != undefined)
+            // Build the definition with all available derivative information
+            var fitSplineDefinition = { "points" : pointList };
+            
+            if (startDerivative != undefined)
             {
-                opFitSpline(context, id + "fitSplineSpiral", {
-                    "points" : pointList,
-                    "startDerivative" : startDerivative,
-                    "endDerivative" : endDerivative
-                });
+                fitSplineDefinition.startDerivative = startDerivative;
             }
-            else
+            
+            if (endDerivative != undefined)
             {
-                // Fall back to no derivatives if not enough points
-                opFitSpline(context, id + "fitSplineSpiral", {
-                    "points" : pointList
-                });
+                fitSplineDefinition.endDerivative = endDerivative;
             }
+            
+            if (size(intermediateDerivatives) > 0)
+            {
+                fitSplineDefinition.derivatives = intermediateDerivatives;
+            }
+            
+            opFitSpline(context, id + "fitSplineSpiral", fitSplineDefinition);
         }
     },
     {
