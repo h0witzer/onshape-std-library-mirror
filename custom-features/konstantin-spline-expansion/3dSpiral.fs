@@ -118,12 +118,15 @@ export const spiral3d = defineFeature(function(context is Context, id is Id, def
             endDerivative = (25 * pointList[n] - 48 * pointList[n - 1] + 36 * pointList[n - 2] - 16 * pointList[n - 3] + 3 * pointList[n - 4]) / (12 * parameterSpacing);
             
             // Detect transition points by examining the rate of change in tangent direction along the path
-            // Add derivative constraints at points where the curvature of the path changes significantly
+            // Add derivative constraints at and around points where the curvature of the path changes significantly
             const tangentLines = evPathTangentLines(context, path, range(0, 1, pointNumber)).tangentLines;
             
             // Threshold for detecting curvature discontinuities (empirically chosen to identify edge transitions)
             // This represents the magnitude of the second finite difference of tangent directions
-            const curvatureChangeThreshold = 0.01;
+            const curvatureChangeThreshold = 0.005;
+            
+            // Track which indices should have derivative constraints
+            var transitionIndices = [];
             
             // Calculate the "curvature" of the tangent path as the rate of change of tangent direction
             for (var i = 2; i < pointNumber - 2; i += 1)
@@ -141,13 +144,34 @@ export const spiral3d = defineFeature(function(context is Context, id is Id, def
                 
                 const curvatureChange = norm(secondDeltaTangent);
                 
-                // If we detect a significant change in path curvature (potential edge transition),
-                // add a derivative constraint using 5-point central difference
+                // If we detect a significant change in path curvature, mark this as a transition point
                 if (curvatureChange > curvatureChangeThreshold)
                 {
-                    // 5-point central difference: f'(i) ≈ (f(i-2) - 8f(i-1) + 8f(i+1) - f(i+2)) / (12h)
-                    const derivative = (pointList[i - 2] - 8 * pointList[i - 1] + 8 * pointList[i + 1] - pointList[i + 2]) / (12 * parameterSpacing);
-                    intermediateDerivatives[i] = derivative;
+                    transitionIndices = append(transitionIndices, i);
+                }
+            }
+            
+            // For each detected transition, add derivative constraints in a neighborhood
+            // This provides better control over the spline fitting in transition regions
+            for (var transitionIdx in transitionIndices)
+            {
+                // Add constraint at the transition point itself
+                const derivative = (pointList[transitionIdx - 2] - 8 * pointList[transitionIdx - 1] + 8 * pointList[transitionIdx + 1] - pointList[transitionIdx + 2]) / (12 * parameterSpacing);
+                intermediateDerivatives[transitionIdx] = derivative;
+                
+                // Add constraints on both sides of the transition for smoother blending
+                // Before transition (if not already added and has enough neighbors)
+                if (transitionIdx >= 3 && transitionIdx - 1 >= 2)
+                {
+                    const derivBefore = (pointList[transitionIdx - 3] - 8 * pointList[transitionIdx - 2] + 8 * pointList[transitionIdx] - pointList[transitionIdx + 1]) / (12 * parameterSpacing);
+                    intermediateDerivatives[transitionIdx - 1] = derivBefore;
+                }
+                
+                // After transition (if not already added and has enough neighbors)
+                if (transitionIdx + 1 < pointNumber - 2 && transitionIdx + 3 < pointNumber)
+                {
+                    const derivAfter = (pointList[transitionIdx - 1] - 8 * pointList[transitionIdx] + 8 * pointList[transitionIdx + 2] - pointList[transitionIdx + 3]) / (12 * parameterSpacing);
+                    intermediateDerivatives[transitionIdx + 1] = derivAfter;
                 }
             }
         }
