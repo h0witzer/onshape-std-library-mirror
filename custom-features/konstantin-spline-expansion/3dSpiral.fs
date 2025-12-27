@@ -121,6 +121,10 @@ export const spiral3d = defineFeature(function(context is Context, id is Id, def
             // Add derivative constraints at points where the curvature of the path changes significantly
             const tangentLines = evPathTangentLines(context, path, range(0, 1, pointNumber)).tangentLines;
             
+            // Threshold for detecting curvature discontinuities (empirically chosen to identify edge transitions)
+            // This represents the magnitude of the second finite difference of tangent directions
+            const curvatureChangeThreshold = 0.01;
+            
             // Calculate the "curvature" of the tangent path as the rate of change of tangent direction
             for (var i = 2; i < pointNumber - 2; i += 1)
             {
@@ -139,8 +143,7 @@ export const spiral3d = defineFeature(function(context is Context, id is Id, def
                 
                 // If we detect a significant change in path curvature (potential edge transition),
                 // add a derivative constraint using 5-point central difference
-                // Threshold chosen empirically to detect line-to-arc and arc-to-line transitions
-                if (curvatureChange > 0.01)
+                if (curvatureChange > curvatureChangeThreshold)
                 {
                     // 5-point central difference: f'(i) ≈ (f(i-2) - 8f(i-1) + 8f(i+1) - f(i+2)) / (12h)
                     const derivative = (pointList[i - 2] - 8 * pointList[i - 1] + 8 * pointList[i + 1] - pointList[i + 2]) / (12 * parameterSpacing);
