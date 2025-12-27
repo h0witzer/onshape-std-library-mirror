@@ -117,24 +117,30 @@ export const spiral3d = defineFeature(function(context is Context, id is Id, def
             const n = pointNumber - 1;
             endDerivative = (25 * pointList[n] - 48 * pointList[n - 1] + 36 * pointList[n - 2] - 16 * pointList[n - 3] + 3 * pointList[n - 4]) / (12 * parameterSpacing);
             
-            // Detect transition points by examining changes in tangent direction along the path
-            // Add derivative constraints at points where significant direction changes occur
+            // Detect transition points by examining the rate of change in tangent direction along the path
+            // Add derivative constraints at points where the curvature of the path changes significantly
             const tangentLines = evPathTangentLines(context, path, range(0, 1, pointNumber)).tangentLines;
             
+            // Calculate the "curvature" of the tangent path as the rate of change of tangent direction
             for (var i = 2; i < pointNumber - 2; i += 1)
             {
-                // Calculate the angular change between consecutive tangent segments
-                const prevTangent = tangentLines[i - 1].direction;
-                const currTangent = tangentLines[i].direction;
-                const nextTangent = tangentLines[i + 1].direction;
+                // Look at three consecutive tangents to detect regions of changing curvature
+                const tang_im1 = tangentLines[i - 1].direction;
+                const tang_i = tangentLines[i].direction;
+                const tang_ip1 = tangentLines[i + 1].direction;
                 
-                // Measure angular deviation using cross product magnitude and dot product
-                const angularChange1 = norm(cross(prevTangent, currTangent));
-                const angularChange2 = norm(cross(currTangent, nextTangent));
+                // Calculate the "curvature" as the second finite difference of tangent direction
+                // This detects where the path itself has discontinuous curvature (like line-to-arc transitions)
+                const deltaTangent1 = tang_i - tang_im1;
+                const deltaTangent2 = tang_ip1 - tang_i;
+                const secondDeltaTangent = deltaTangent2 - deltaTangent1;
                 
-                // If we detect a significant change in direction (potential edge transition),
+                const curvatureChange = norm(secondDeltaTangent);
+                
+                // If we detect a significant change in path curvature (potential edge transition),
                 // add a derivative constraint using 5-point central difference
-                if (angularChange1 > 0.01 || angularChange2 > 0.01)
+                // Threshold chosen empirically to detect line-to-arc and arc-to-line transitions
+                if (curvatureChange > 0.01)
                 {
                     // 5-point central difference: f'(i) ≈ (f(i-2) - 8f(i-1) + 8f(i+1) - f(i+2)) / (12h)
                     const derivative = (pointList[i - 2] - 8 * pointList[i - 1] + 8 * pointList[i + 1] - pointList[i + 2]) / (12 * parameterSpacing);
