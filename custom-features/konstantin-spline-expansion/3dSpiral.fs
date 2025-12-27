@@ -102,71 +102,84 @@ export const spiral3d = defineFeature(function(context is Context, id is Id, def
         
         // Resample points to achieve uniform 3D arc-length spacing
         // This addresses non-uniform CP density caused by interaction between rotation and transformation
-        var resampledPoints = [];
-        resampledPoints = append(resampledPoints, pointList[0]);
         
-        // Calculate total spiral length
-        var totalSpiralLength = 0 * meter;
+        // Calculate cumulative distances along the original spiral
+        var cumulativeDistances = [0 * meter];
         for (var i = 1; i < size(pointList); i += 1)
         {
-            totalSpiralLength += norm(pointList[i] - pointList[i - 1]);
+            const segmentLength = norm(pointList[i] - pointList[i - 1]);
+            cumulativeDistances = append(cumulativeDistances, cumulativeDistances[i - 1] + segmentLength);
         }
+        
+        var totalSpiralLength = cumulativeDistances[size(cumulativeDistances) - 1];
         
         if (path.closed)
         {
             // For closed paths, add the closure distance (from last point back to first)
-            totalSpiralLength += norm(pointList[0] - pointList[size(pointList) - 1]);
+            const closureDistance = norm(pointList[0] - pointList[size(pointList) - 1]);
+            totalSpiralLength += closureDistance;
         }
         
         // Target spacing between points
         const targetSpacing = totalSpiralLength / (pointNumber - (path.closed ? 0 : 1));
         
-        var accumulatedDistance = 0 * meter;
-        var currentSourceIndex = 0;
+        // Resample at uniform intervals
+        var resampledPoints = [pointList[0]];
         
         for (var targetIndex = 1; targetIndex < pointNumber - (path.closed ? 0 : 1); targetIndex += 1)
         {
             const targetDistance = targetIndex * targetSpacing;
-            
-            // Find the segment containing the target distance
+            var interpolatedPoint;
             var found = false;
-            while (currentSourceIndex < size(pointList))
+            
+            // Find which segment contains this target distance
+            for (var segIdx = 0; segIdx < size(pointList); segIdx += 1)
             {
-                // Get segment endpoints, handling wrap-around for closed paths
-                const segmentStart = pointList[currentSourceIndex];
-                const segmentEnd = (currentSourceIndex == size(pointList) - 1 && path.closed) ? 
-                    pointList[0] : 
-                    (currentSourceIndex < size(pointList) - 1 ? pointList[currentSourceIndex + 1] : segmentStart);
+                var segmentStartDist;
+                var segmentEndDist;
+                var segmentStart;
+                var segmentEnd;
                 
-                const segmentLength = norm(segmentEnd - segmentStart);
-                
-                if (accumulatedDistance + segmentLength >= targetDistance)
+                if (segIdx < size(pointList) - 1)
                 {
-                    // Interpolate within this segment
-                    const remainingDistance = targetDistance - accumulatedDistance;
-                    const t = segmentLength > (TOLERANCE.zeroLength * meter) ? remainingDistance / segmentLength : 0;
-                    const interpolatedPoint = segmentStart + t * (segmentEnd - segmentStart);
-                    resampledPoints = append(resampledPoints, interpolatedPoint);
+                    // Normal segment
+                    segmentStartDist = cumulativeDistances[segIdx];
+                    segmentEndDist = cumulativeDistances[segIdx + 1];
+                    segmentStart = pointList[segIdx];
+                    segmentEnd = pointList[segIdx + 1];
+                }
+                else if (path.closed)
+                {
+                    // Wrap-around segment for closed paths
+                    segmentStartDist = cumulativeDistances[segIdx];
+                    segmentEndDist = totalSpiralLength;
+                    segmentStart = pointList[segIdx];
+                    segmentEnd = pointList[0];
+                }
+                else
+                {
+                    // No more segments for open paths
+                    break;
+                }
+                
+                // Check if target distance falls within this segment
+                if (targetDistance >= segmentStartDist && targetDistance <= segmentEndDist)
+                {
+                    const segmentLength = segmentEndDist - segmentStartDist;
+                    const distanceIntoSegment = targetDistance - segmentStartDist;
+                    const t = segmentLength > (TOLERANCE.zeroLength * meter) ? 
+                        distanceIntoSegment / segmentLength : 0;
+                    interpolatedPoint = segmentStart + t * (segmentEnd - segmentStart);
                     found = true;
-                    break;
-                }
-                
-                accumulatedDistance += segmentLength;
-                currentSourceIndex += 1;
-                
-                // Stop if we've processed all segments including wrap-around
-                if (currentSourceIndex >= size(pointList) - 1 && !path.closed)
-                {
-                    break;
-                }
-                if (currentSourceIndex >= size(pointList) && path.closed)
-                {
                     break;
                 }
             }
             
-            // Safety check: if we didn't find a point, something went wrong
-            if (!found && targetIndex < pointNumber - 1)
+            if (found)
+            {
+                resampledPoints = append(resampledPoints, interpolatedPoint);
+            }
+            else
             {
                 // Fallback: use the last available point
                 resampledPoints = append(resampledPoints, pointList[size(pointList) - 1]);
