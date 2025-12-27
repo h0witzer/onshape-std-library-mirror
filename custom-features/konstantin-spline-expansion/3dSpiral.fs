@@ -131,15 +131,15 @@ export const spiral3d = defineFeature(function(context is Context, id is Id, def
         println("Total spiral length: " ~ totalSpiralLength);
         
         // Target spacing between points
-        const targetSpacing = totalSpiralLength / (pointNumber - (path.closed ? 0 : 1));
+        const targetSpacing = totalSpiralLength / (pointNumber - 1);
         println("Target spacing: " ~ targetSpacing);
-        println("Number of resampled points to generate: " ~ (pointNumber - (path.closed ? 0 : 1)));
+        println("Number of resampled points to generate: " ~ (pointNumber - 1));
         
         // Resample at uniform intervals
         var resampledPoints = [pointList[0]];
         
         var notFoundCount = 0;
-        for (var targetIndex = 1; targetIndex < pointNumber - (path.closed ? 0 : 1); targetIndex += 1)
+        for (var targetIndex = 1; targetIndex < pointNumber; targetIndex += 1)
         {
             const targetDistance = targetIndex * targetSpacing;
             var interpolatedPoint;
@@ -212,11 +212,16 @@ export const spiral3d = defineFeature(function(context is Context, id is Id, def
         println("Points not found: " ~ notFoundCount);
         println("Final resampledPoints size: " ~ size(resampledPoints));
         
-        // Add the last point for non-closed paths
+        // For closed paths, the last resampled point should wrap back close to the start
+        // For open paths, add the final endpoint
         if (!path.closed)
         {
             resampledPoints = append(resampledPoints, pointList[size(pointList) - 1]);
             println("Added final point for open path. New size: " ~ size(resampledPoints));
+        }
+        else
+        {
+            println("Closed path - no additional endpoint needed");
         }
         
         println("=== END RESAMPLING DEBUG ===");
