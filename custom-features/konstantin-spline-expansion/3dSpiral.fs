@@ -82,6 +82,7 @@ export const spiral3d = defineFeature(function(context is Context, id is Id, def
         if (definition.flipDir)
             initTangent.direction *= -1;
 
+        // Generate transformations for uniformly spaced path parameters (arc-length based)
         const trArr = evPathTransfromArray(context, {
                     "path" : path,
                     "paramArr" : range(0, 1, pointNumber)
@@ -90,13 +91,73 @@ export const spiral3d = defineFeature(function(context is Context, id is Id, def
         const angleArr = range(0 * degree, 360 * degree * numberOfRevolutions, pointNumber);
 
         const initPoint = initTangent.origin + perpendicularVector(initTangent.direction) * spiralRadius;
+        
+        // Generate initial spiral points
         var pointList = [];
-
         for (var i = 0; i < pointNumber; i += 1)
         {
             var point = rotationAround(initTangent, angleArr[i]) * initPoint;
             pointList = append(pointList, trArr[i] * point);
         }
+        
+        // Resample points to achieve uniform 3D arc-length spacing
+        // This addresses non-uniform CP density caused by interaction between rotation and transformation
+        var resampledPoints = [];
+        resampledPoints = append(resampledPoints, pointList[0]);
+        
+        // Calculate total spiral length
+        var totalSpiralLength = 0 * meter;
+        for (var i = 1; i < size(pointList); i += 1)
+        {
+            totalSpiralLength += norm(pointList[i] - pointList[i - 1]);
+        }
+        
+        if (path.closed)
+        {
+            // For closed paths, add the closure distance
+            totalSpiralLength += norm(pointList[0] - pointList[size(pointList) - 1]);
+        }
+        
+        // Target spacing between points
+        const targetSpacing = totalSpiralLength / (pointNumber - (path.closed ? 0 : 1));
+        
+        var accumulatedDistance = 0 * meter;
+        var currentSourceIndex = 0;
+        
+        for (var targetIndex = 1; targetIndex < pointNumber - (path.closed ? 0 : 1); targetIndex += 1)
+        {
+            const targetDistance = targetIndex * targetSpacing;
+            
+            // Find the segment containing the target distance
+            while (currentSourceIndex < size(pointList) - 1)
+            {
+                const segmentStart = pointList[currentSourceIndex];
+                const segmentEnd = pointList[currentSourceIndex + 1];
+                const segmentLength = norm(segmentEnd - segmentStart);
+                
+                if (accumulatedDistance + segmentLength >= targetDistance)
+                {
+                    // Interpolate within this segment
+                    const remainingDistance = targetDistance - accumulatedDistance;
+                    const t = segmentLength > (TOLERANCE.zeroLength * meter) ? remainingDistance / segmentLength : 0;
+                    const interpolatedPoint = segmentStart + t * (segmentEnd - segmentStart);
+                    resampledPoints = append(resampledPoints, interpolatedPoint);
+                    break;
+                }
+                
+                accumulatedDistance += segmentLength;
+                currentSourceIndex += 1;
+            }
+        }
+        
+        // Add the last point for non-closed paths
+        if (!path.closed)
+        {
+            resampledPoints = append(resampledPoints, pointList[size(pointList) - 1]);
+        }
+        
+        // Use resampled points for the spline
+        pointList = resampledPoints;
 
         // Calculate first derivatives at start and end for better curvature continuity
         // Use a hybrid approach: finite differences from many nearby points for robustness
