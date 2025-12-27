@@ -17,13 +17,16 @@ precondition
                 definition.paramArr
             ).tangentLines;
 
-    var accumulatedTr = identityTransform();
-    var trArr = [accumulatedTr];
-    for (var i = 0; i < size(tangentLines) - 1; i += 1)
+    // Compute each transformation independently from the initial reference frame
+    // This eliminates accumulated drift and ensures loop closure consistency
+    const referenceTangent = tangentLines[0];
+    var trArr = [];
+    
+    for (var i = 0; i < size(tangentLines); i += 1)
     {
-        var tr = transform(tangentLines[i], tangentLines[i + 1]);
-        accumulatedTr = tr * accumulatedTr;
-        trArr = append(trArr, accumulatedTr);
+        // Each transformation is computed directly from the reference, not accumulated
+        var tr = transform(referenceTangent, tangentLines[i]);
+        trArr = append(trArr, tr);
     }
 
     return trArr;
