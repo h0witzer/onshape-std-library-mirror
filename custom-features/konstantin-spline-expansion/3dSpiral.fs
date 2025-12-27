@@ -103,6 +103,11 @@ export const spiral3d = defineFeature(function(context is Context, id is Id, def
         // Resample points to achieve uniform 3D arc-length spacing
         // This addresses non-uniform CP density caused by interaction between rotation and transformation
         
+        println("=== RESAMPLING DEBUG ===");
+        println("path.closed: " ~ path.closed);
+        println("Initial pointList size: " ~ size(pointList));
+        println("pointNumber: " ~ pointNumber);
+        
         // Calculate cumulative distances along the original spiral
         var cumulativeDistances = [0 * meter];
         for (var i = 1; i < size(pointList); i += 1)
@@ -112,20 +117,28 @@ export const spiral3d = defineFeature(function(context is Context, id is Id, def
         }
         
         var totalSpiralLength = cumulativeDistances[size(cumulativeDistances) - 1];
+        println("Length before closure: " ~ totalSpiralLength);
         
+        var closureDistance = 0 * meter;
         if (path.closed)
         {
             // For closed paths, add the closure distance (from last point back to first)
-            const closureDistance = norm(pointList[0] - pointList[size(pointList) - 1]);
+            closureDistance = norm(pointList[0] - pointList[size(pointList) - 1]);
             totalSpiralLength += closureDistance;
+            println("Closure distance: " ~ closureDistance);
         }
+        
+        println("Total spiral length: " ~ totalSpiralLength);
         
         // Target spacing between points
         const targetSpacing = totalSpiralLength / (pointNumber - (path.closed ? 0 : 1));
+        println("Target spacing: " ~ targetSpacing);
+        println("Number of resampled points to generate: " ~ (pointNumber - (path.closed ? 0 : 1)));
         
         // Resample at uniform intervals
         var resampledPoints = [pointList[0]];
         
+        var notFoundCount = 0;
         for (var targetIndex = 1; targetIndex < pointNumber - (path.closed ? 0 : 1); targetIndex += 1)
         {
             const targetDistance = targetIndex * targetSpacing;
@@ -171,6 +184,13 @@ export const spiral3d = defineFeature(function(context is Context, id is Id, def
                         distanceIntoSegment / segmentLength : 0;
                     interpolatedPoint = segmentStart + t * (segmentEnd - segmentStart);
                     found = true;
+                    
+                    // Debug last few points for closed paths
+                    if (path.closed && targetIndex >= pointNumber - 5)
+                    {
+                        println("Target " ~ targetIndex ~ ": distance=" ~ targetDistance ~ 
+                                ", segIdx=" ~ segIdx ~ ", t=" ~ t);
+                    }
                     break;
                 }
             }
@@ -181,16 +201,25 @@ export const spiral3d = defineFeature(function(context is Context, id is Id, def
             }
             else
             {
+                notFoundCount += 1;
                 // Fallback: use the last available point
                 resampledPoints = append(resampledPoints, pointList[size(pointList) - 1]);
+                println("WARNING: Could not find segment for target " ~ targetIndex ~ 
+                        " at distance " ~ targetDistance);
             }
         }
+        
+        println("Points not found: " ~ notFoundCount);
+        println("Final resampledPoints size: " ~ size(resampledPoints));
         
         // Add the last point for non-closed paths
         if (!path.closed)
         {
             resampledPoints = append(resampledPoints, pointList[size(pointList) - 1]);
+            println("Added final point for open path. New size: " ~ size(resampledPoints));
         }
+        
+        println("=== END RESAMPLING DEBUG ===");
         
         // Use resampled points for the spline
         pointList = resampledPoints;
