@@ -232,8 +232,8 @@ export const spiral3d = defineFeature(function(context is Context, id is Id, def
             println("Gap as % of target spacing: " ~ (gapDistance / targetSpacing * 100) ~ "%");
             
             // Debug visualization: draw start and end points
-            opPoint(context, id + "debugStart", { "point": firstPoint, "origin": DebugColor.RED });
-            opPoint(context, id + "debugEnd", { "point": lastPoint, "origin": DebugColor.BLUE });
+            opPoint(context, id + "debugStart", { "point": firstPoint });
+            opPoint(context, id + "debugEnd", { "point": lastPoint });
         }
         
         println("=== END RESAMPLING DEBUG ===");
@@ -276,24 +276,8 @@ export const spiral3d = defineFeature(function(context is Context, id is Id, def
 
         if (path.closed)
         {
-            println("=== CLOSED PATH PROCESSING ===");
-            println("pointList size before subArray: " ~ size(pointList));
-            println("Last point before processing: " ~ pointList[size(pointList) - 1]);
-            println("First point: " ~ pointList[0]);
-            println("Distance last to first before processing: " ~ norm(pointList[size(pointList) - 1] - pointList[0]));
-            
-            pointList = subArray(pointList, 0, size(pointList) - 2);
-            pointList = append(pointList, pointList[0]);
-            
-            println("pointList size after subArray+append: " ~ size(pointList));
-            println("Last point after processing: " ~ pointList[size(pointList) - 1]);
-            println("Distance new last to first: " ~ norm(pointList[size(pointList) - 1] - pointList[0]));
-            println("=== END CLOSED PATH PROCESSING ===");
-
-            opPoint(context, id + "initialPoint", {
-                        "point" : pointList[0]
-                    });
-            
+            // Arc-length resampling already created properly spaced points
+            // No manipulation needed - just pass directly to opFitSpline
             opFitSpline(context, id + "fitSplineSpiral", {
                         "points" : pointList
                     });
