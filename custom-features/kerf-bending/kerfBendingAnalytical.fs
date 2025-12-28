@@ -912,19 +912,12 @@ precondition
         });
         
         // The sketch plane should be perpendicular to the extrude direction
-        // Extrude direction is the minDirection (less curvy direction, into material thickness)
-        // Sketch plane orientation:
-        // - Normal: perpendicular to bend curve (extrude direction, the less curvy direction)
-        // - X-axis: along the bend curve (maxDirection, the curvier direction)
-        // - Y-axis: cut depth direction (into material)
+        // Sketch plane orientation (directly from face principal curvatures):
+        // - Normal: minDirection (perpendicular to bend, extrude direction through thickness)
+        // - X-axis: maxDirection (along the bend curve, the curvier direction)
+        // - Y-axis: cross(normal, X-axis) = direction for cut depth
+        const sketchNormal = faceCurvature.minDirection;
         const sketchXAxis = faceCurvature.maxDirection;
-        const faceNormalAtCut = faceTangentPlane.normal;
-        
-        // Use minDirection as base for sketch normal, but ensure correct orientation
-        // Check if minDirection points away from or into the material
-        // If it points outward (same direction as face normal), flip it
-        const baseminDirection = faceCurvature.minDirection;
-        const sketchNormal = (dot(baseminDirection, faceNormalAtCut) > 0) ? -baseminDirection : baseminDirection;
         
         const sketchPlane = plane(cutPosition, sketchNormal, sketchXAxis);
         
@@ -940,7 +933,13 @@ precondition
         //
         // For now, we'll use a rectangular approximation
         // Future enhancement: sample face curvature to create proper curved sides
-        // X-axis is along the bend curve, Y-axis is into the material (cut depth)
+        // 
+        // Sketch coordinate system:
+        // - Normal = minDirection (extrude direction through material thickness)
+        // - X-axis = maxDirection (along bend curve)
+        // - Y-axis = cross(normal, X) = perpendicular to both
+        // 
+        // Rectangle drawn in NEGATIVE Y direction (opposite of normal = INTO material):
         skLineSegment(cutSketch, "line1", {
             "start" : vector(-halfWidth, 0 * meter),
             "end" : vector(halfWidth, 0 * meter)
@@ -948,16 +947,16 @@ precondition
         
         skLineSegment(cutSketch, "line2", {
             "start" : vector(halfWidth, 0 * meter),
-            "end" : vector(halfWidth, cutDepth)
+            "end" : vector(halfWidth, -cutDepth)
         });
         
         skLineSegment(cutSketch, "line3", {
-            "start" : vector(halfWidth, cutDepth),
-            "end" : vector(-halfWidth, cutDepth)
+            "start" : vector(halfWidth, -cutDepth),
+            "end" : vector(-halfWidth, -cutDepth)
         });
         
         skLineSegment(cutSketch, "line4", {
-            "start" : vector(-halfWidth, cutDepth),
+            "start" : vector(-halfWidth, -cutDepth),
             "end" : vector(-halfWidth, 0 * meter)
         });
         
