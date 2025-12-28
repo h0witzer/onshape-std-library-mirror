@@ -136,37 +136,42 @@ export const spiral3d = defineFeature(function(context is Context, id is Id, def
         println("Number of resampled points to generate: " ~ (pointNumber - 1));
         
         // Resample at uniform intervals
+        // OPTIMIZED: Use sequential search instead of restarting from segment 0 each time
+        // Since target distances are monotonically increasing, we can continue from where we left off
         var resampledPoints = [pointList[0]];
         
         var notFoundCount = 0;
+        var currentSegmentIndex = 0;
+        const tolerance = TOLERANCE.zeroLength * meter;
+        
         for (var targetIndex = 1; targetIndex < pointNumber; targetIndex += 1)
         {
             const targetDistance = targetIndex * targetSpacing;
             var interpolatedPoint;
             var found = false;
             
-            // Find which segment contains this target distance
-            for (var segIdx = 0; segIdx < size(pointList); segIdx += 1)
+            // Move forward through segments until we find the one containing targetDistance
+            while (currentSegmentIndex < size(pointList))
             {
                 var segmentStartDist;
                 var segmentEndDist;
                 var segmentStart;
                 var segmentEnd;
                 
-                if (segIdx < size(pointList) - 1)
+                if (currentSegmentIndex < size(pointList) - 1)
                 {
                     // Normal segment
-                    segmentStartDist = cumulativeDistances[segIdx];
-                    segmentEndDist = cumulativeDistances[segIdx + 1];
-                    segmentStart = pointList[segIdx];
-                    segmentEnd = pointList[segIdx + 1];
+                    segmentStartDist = cumulativeDistances[currentSegmentIndex];
+                    segmentEndDist = cumulativeDistances[currentSegmentIndex + 1];
+                    segmentStart = pointList[currentSegmentIndex];
+                    segmentEnd = pointList[currentSegmentIndex + 1];
                 }
                 else if (path.closed)
                 {
                     // Wrap-around segment for closed paths
-                    segmentStartDist = cumulativeDistances[segIdx];
+                    segmentStartDist = cumulativeDistances[currentSegmentIndex];
                     segmentEndDist = totalSpiralLength;
-                    segmentStart = pointList[segIdx];
+                    segmentStart = pointList[currentSegmentIndex];
                     segmentEnd = pointList[0];
                 }
                 else
@@ -176,8 +181,6 @@ export const spiral3d = defineFeature(function(context is Context, id is Id, def
                 }
                 
                 // Check if target distance falls within this segment
-                // Use tolerance for boundary checks to handle floating point precision
-                const tolerance = TOLERANCE.zeroLength * meter;
                 if (targetDistance >= segmentStartDist - tolerance && targetDistance <= segmentEndDist + tolerance)
                 {
                     const segmentLength = segmentEndDist - segmentStartDist;
@@ -191,10 +194,19 @@ export const spiral3d = defineFeature(function(context is Context, id is Id, def
                     if (path.closed && targetIndex >= pointNumber - 5)
                     {
                         println("Target " ~ targetIndex ~ ": distance=" ~ targetDistance ~ 
-                                ", segIdx=" ~ segIdx ~ ", t=" ~ t);
+                                ", segIdx=" ~ currentSegmentIndex ~ ", t=" ~ t);
                     }
                     break;
                 }
+                
+                // Move to next segment
+                currentSegmentIndex += 1;
+            }
+            
+            // Back up one if we overshot (we're now past the segment we want)
+            if (!found && currentSegmentIndex > 0)
+            {
+                currentSegmentIndex -= 1;
             }
             
             if (found)
