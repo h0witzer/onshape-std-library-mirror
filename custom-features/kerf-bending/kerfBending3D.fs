@@ -94,45 +94,70 @@ export const kerfBending3D = defineFeature(function(context is Context, id is Id
         }
         
         // Automatically detect which direction (U or V) is curvier
-        // Evaluate face curvature directly at the center point
-        const faceCurvature = evFaceCurvature(context, {
-            "face" : definition.bendFace,
-            "parameter" : vector(0.5, 0.5)
-        });
+        // We need to actually create curves in both directions and measure their curvature
+        // because the principal curvature directions don't directly map to DIR1/DIR2
         
-        // The face has two principal curvatures (minCurvature and maxCurvature)
-        // The maxCurvature direction is what we want for bending (the curvier direction)
-        // The principal curvature directions correspond to DIR1 and DIR2, but we need to check which
-        const minCurvMagnitude = abs(faceCurvature.minCurvature);
-        const maxCurvMagnitude = abs(faceCurvature.maxCurvature);
+        // Create test curves in both directions
+        const testCurve1Id = id + "testCurve1";
+        const testCurve2Id = id + "testCurve2";
         
-        // We want the maximum curvature direction for bending
-        // Try both directions and see which one has higher curvature
-        const useMaxCurvatureDirection = maxCurvMagnitude > minCurvMagnitude;
-        
-        println("Face principal curvatures at (0.5, 0.5):");
-        println("  Min curvature: " ~ toString(faceCurvature.minCurvature));
-        println("  Max curvature: " ~ toString(faceCurvature.maxCurvature));
-        println("Using " ~ (useMaxCurvatureDirection ? "max" : "min") ~ " curvature direction as bend curve");
-        
-        // The maxDirection is aligned with one of the parametric directions
-        // We need to determine if maxDirection is closer to DIR1 or DIR2
-        // For simplicity, we'll use the maxCurvature direction by selecting the appropriate ISO curve
-        // The maxCurvature typically aligns with DIR2 for most surfaces, but we should check both
-        
-        // Create only the curve we need in the chosen direction using proper curveDefinition
-        const bendCurveId = id + "bendCurve";
-        // Use DIR2 if we want max curvature, DIR1 if we want min (this is a heuristic)
-        const faceCurveType = useMaxCurvatureDirection ? FaceCurveCreationType.DIR2_ISO : FaceCurveCreationType.DIR1_ISO;
-        const curveDef = curveOnFaceDefinition(definition.bendFace, faceCurveType, ["bendCurve"], [0.5]);
-        
-        opCreateCurvesOnFace(context, bendCurveId, {
-            "curveDefinition" : [curveDef],
-            "showCurves" : true,
+        const curveDef1 = curveOnFaceDefinition(definition.bendFace, FaceCurveCreationType.DIR1_ISO, ["testCurve1"], [0.5]);
+        opCreateCurvesOnFace(context, testCurve1Id, {
+            "curveDefinition" : [curveDef1],
+            "showCurves" : false,
             "useFaceParameter" : true
         });
         
-        const bendCurveEdge = qCreatedBy(bendCurveId, EntityType.EDGE);
+        const curveDef2 = curveOnFaceDefinition(definition.bendFace, FaceCurveCreationType.DIR2_ISO, ["testCurve2"], [0.5]);
+        opCreateCurvesOnFace(context, testCurve2Id, {
+            "curveDefinition" : [curveDef2],
+            "showCurves" : false,
+            "useFaceParameter" : true
+        });
+        
+        const curve1 = qCreatedBy(testCurve1Id, EntityType.EDGE);
+        const curve2 = qCreatedBy(testCurve2Id, EntityType.EDGE);
+        
+        // Measure curvature at midpoint of each curve
+        const curv1 = evEdgeCurvature(context, {
+            "edge" : curve1,
+            "parameter" : 0.5,
+            "arcLengthParameterization" : true
+        });
+        const curv2 = evEdgeCurvature(context, {
+            "edge" : curve2,
+            "parameter" : 0.5,
+            "arcLengthParameterization" : true
+        });
+        
+        // Compare absolute values of curvature
+        const curve1Curvature = abs(curv1.curvature);
+        const curve2Curvature = abs(curv2.curvature);
+        
+        // Select the curvier direction
+        const useDIR1 = curve1Curvature > curve2Curvature;
+        
+        println("Curve curvatures at midpoint:");
+        println("  DIR1 curvature: " ~ toString(curv1.curvature) ~ " (magnitude: " ~ toString(curve1Curvature) ~ ")");
+        println("  DIR2 curvature: " ~ toString(curv2.curvature) ~ " (magnitude: " ~ toString(curve2Curvature) ~ ")");
+        println("Using " ~ (useDIR1 ? "DIR1" : "DIR2") ~ " as bend curve (higher curvature magnitude)");
+        
+        // Use the curvier curve
+        const bendCurveEdge = useDIR1 ? curve1 : curve2;
+        
+        // Delete the unused test curve
+        if (useDIR1)
+        {
+            opDeleteBodies(context, id + "deleteTest2", {
+                "entities" : qCreatedBy(testCurve2Id, EntityType.BODY)
+            });
+        }
+        else
+        {
+            opDeleteBodies(context, id + "deleteTest1", {
+                "entities" : qCreatedBy(testCurve1Id, EntityType.BODY)
+            });
+        }
         
         // Use default minimum spacing if not specified
         const minimumCutSpacing = definition.showAdvanced ? 

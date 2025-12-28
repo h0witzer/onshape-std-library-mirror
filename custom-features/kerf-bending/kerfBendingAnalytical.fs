@@ -635,36 +635,26 @@ precondition
         const cutPosition = solution.cutPositions[cutIndex];
         const cutParameter = solution.cutParameters[cutIndex];
         
-        // Get tangent at this position
-        const tangentLine = evEdgeTangentLine(context, {
+        // Get the curvature at this position to establish proper coordinate frame
+        const edgeCurvature = evEdgeCurvature(context, {
             "edge" : bendCurve,
             "parameter" : cutParameter,
             "arcLengthParameterization" : true
         });
         
-        // Get face normal at this position for proper orientation
-        var faceNormal = vector(0, 0, 1);
-        var sketchNormal = tangentLine.direction;
+        // Use the curvature frame to get proper orientation
+        // tangent: along the curve
+        // normal: points toward center of curvature (in plane of curve)
+        // binormal: perpendicular to both (out of plane of curve)
+        const curveTangent = curvatureFrameTangent(edgeCurvature);
+        const curveNormal = curvatureFrameNormal(edgeCurvature);
+        const curveBinormal = curvatureFrameBinormal(edgeCurvature);
         
-        try
-        {
-            const facePlane = evFaceTangentPlane(context, {
-                "face" : bendFace,
-                "parameter" : vector(0.5, 0.5)
-            });
-            faceNormal = facePlane.normal;
-            
-            // The sketch plane should be on the same plane as the bend curve
-            // So the normal should be perpendicular to both the curve tangent and the face normal
-            sketchNormal = cross(tangentLine.direction, faceNormal);
-            // Normalize to ensure it's a unit vector
-            sketchNormal = normalize(sketchNormal);
-        }
-        
-        // Create a sketch plane at the cut position
-        // The plane should contain the bend curve (parallel to tangent)
-        // and be perpendicular to the surface (contain the face normal direction)
-        const sketchPlane = plane(cutPosition, sketchNormal, tangentLine.direction);
+        // For kerf cutting, we want the sketch plane to contain:
+        // - The curve tangent (X-axis in sketch, along the cut)
+        // - The binormal direction (Y-axis in sketch, into the material/cut depth)
+        // The sketch normal should be the curve normal (perpendicular to sketch)
+        const sketchPlane = plane(cutPosition, curveNormal, curveTangent);
         
         const sketchId = id + ("cutSketch" ~ cutIndex);
         var cutSketch = newSketchOnPlane(context, sketchId, {
