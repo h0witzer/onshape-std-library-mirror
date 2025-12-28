@@ -916,20 +916,16 @@ precondition
         // - X-axis: maxDirection (along the bend curve)
         // - Y-axis: cross(normal, x) (cut depth direction)
         const extrudeDirection = faceCurvature.minDirection;
-        const sketchNormal = extrudeDirection;
         const sketchXAxis = faceCurvature.maxDirection;
         
         // Ensure consistent orientation - face normal should point outward from material
         // The cut depth (Y-axis) should point into the material
         const faceNormalAtCut = faceTangentPlane.normal;
-        const sketchYAxis = cross(sketchNormal, sketchXAxis);
         
-        // Check if Y-axis points into material or away - we want it pointing into material
-        // If dot product with face normal is positive, Y points away, so flip the axes
-        if (dot(sketchYAxis, faceNormalAtCut) > 0)
-        {
-            sketchNormal = -sketchNormal;
-        }
+        // Compute Y-axis and check orientation relative to face normal
+        // If Y-axis points away from material (positive dot with face normal), flip the normal
+        const testYAxis = cross(extrudeDirection, sketchXAxis);
+        const sketchNormal = (dot(testYAxis, faceNormalAtCut) > 0) ? -extrudeDirection : extrudeDirection;
         
         const sketchPlane = plane(cutPosition, sketchNormal, sketchXAxis);
         
