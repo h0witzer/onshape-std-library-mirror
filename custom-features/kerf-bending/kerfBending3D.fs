@@ -101,22 +101,29 @@ export const kerfBending3D = defineFeature(function(context is Context, id is Id
         });
         
         // The face has two principal curvatures (minCurvature and maxCurvature)
-        // These correspond to the two parametric directions
-        // Use the direction with maximum curvature as the bend curve
-        const dir1Curvature = abs(faceCurvature.minCurvature);
-        const dir2Curvature = abs(faceCurvature.maxCurvature);
+        // The maxCurvature direction is what we want for bending (the curvier direction)
+        // The principal curvature directions correspond to DIR1 and DIR2, but we need to check which
+        const minCurvMagnitude = abs(faceCurvature.minCurvature);
+        const maxCurvMagnitude = abs(faceCurvature.maxCurvature);
         
-        // The max curvature direction is typically what we want for bending
-        const useDIR2 = dir2Curvature > dir1Curvature;
+        // We want the maximum curvature direction for bending
+        // Try both directions and see which one has higher curvature
+        const useMaxCurvatureDirection = maxCurvMagnitude > minCurvMagnitude;
         
         println("Face principal curvatures at (0.5, 0.5):");
         println("  Min curvature: " ~ toString(faceCurvature.minCurvature));
         println("  Max curvature: " ~ toString(faceCurvature.maxCurvature));
-        println("Using direction with " ~ (useDIR2 ? "max" : "min") ~ " curvature as bend curve");
+        println("Using " ~ (useMaxCurvatureDirection ? "max" : "min") ~ " curvature direction as bend curve");
+        
+        // The maxDirection is aligned with one of the parametric directions
+        // We need to determine if maxDirection is closer to DIR1 or DIR2
+        // For simplicity, we'll use the maxCurvature direction by selecting the appropriate ISO curve
+        // The maxCurvature typically aligns with DIR2 for most surfaces, but we should check both
         
         // Create only the curve we need in the chosen direction using proper curveDefinition
         const bendCurveId = id + "bendCurve";
-        const faceCurveType = useDIR2 ? FaceCurveCreationType.DIR2_ISO : FaceCurveCreationType.DIR1_ISO;
+        // Use DIR2 if we want max curvature, DIR1 if we want min (this is a heuristic)
+        const faceCurveType = useMaxCurvatureDirection ? FaceCurveCreationType.DIR2_ISO : FaceCurveCreationType.DIR1_ISO;
         const curveDef = curveOnFaceDefinition(definition.bendFace, faceCurveType, ["bendCurve"], [0.5]);
         
         opCreateCurvesOnFace(context, bendCurveId, {

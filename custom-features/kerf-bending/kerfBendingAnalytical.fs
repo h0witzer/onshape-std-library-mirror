@@ -643,7 +643,8 @@ precondition
         });
         
         // Get face normal at this position for proper orientation
-        var faceNormal = perpendicularVector(tangentLine.direction);
+        var faceNormal = vector(0, 0, 1);
+        var sketchNormal = tangentLine.direction;
         
         try
         {
@@ -652,11 +653,18 @@ precondition
                 "parameter" : vector(0.5, 0.5)
             });
             faceNormal = facePlane.normal;
+            
+            // The sketch plane should be on the same plane as the bend curve
+            // So the normal should be perpendicular to both the curve tangent and the face normal
+            sketchNormal = cross(tangentLine.direction, faceNormal);
+            // Normalize to ensure it's a unit vector
+            sketchNormal = normalize(sketchNormal);
         }
         
-        // Create a sketch plane at the cut position, perpendicular to the bend curve
-        // The plane should be oriented so we can draw the kerf profile
-        const sketchPlane = plane(cutPosition, tangentLine.direction, faceNormal);
+        // Create a sketch plane at the cut position
+        // The plane should contain the bend curve (parallel to tangent)
+        // and be perpendicular to the surface (contain the face normal direction)
+        const sketchPlane = plane(cutPosition, sketchNormal, tangentLine.direction);
         
         const sketchId = id + ("cutSketch" ~ cutIndex);
         var cutSketch = newSketchOnPlane(context, sketchId, {
@@ -718,17 +726,16 @@ precondition
         
         skSolve(cutSketch);
         
-        // Extrude the kerf profile through the board thickness
+        // Extrude the kerf profile perpendicular to the sketch plane
+        // This extrudes into the material along the face normal direction
         const extrudeId = id + ("cutExtrude" ~ cutIndex);
         
         try
         {
             opExtrude(context, extrudeId, {
                 "entities" : qSketchRegion(sketchId),
-                "direction" : tangentLine.direction,
                 "endBound" : BoundingType.BLIND,
-                "depth" : boardThickness,
-                "oppositeDirection" : false
+                "depth" : boardThickness
             });
             
             // Boolean subtract the cut from the solid body
