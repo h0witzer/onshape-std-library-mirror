@@ -107,19 +107,22 @@ export const kerfBending3D = defineFeature(function(context is Context, id is Id
         const dir2Curvature = abs(faceCurvature.maxCurvature);
         
         // The max curvature direction is typically what we want for bending
-        const useDIR1 = dir2Curvature > dir1Curvature;
+        const useDIR2 = dir2Curvature > dir1Curvature;
         
         println("Face principal curvatures at (0.5, 0.5):");
         println("  Min curvature: " ~ toString(faceCurvature.minCurvature));
         println("  Max curvature: " ~ toString(faceCurvature.maxCurvature));
-        println("Using direction with " ~ (useDIR1 ? "max" : "min") ~ " curvature as bend curve");
+        println("Using direction with " ~ (useDIR2 ? "max" : "min") ~ " curvature as bend curve");
         
-        // Create only the curve we need in the chosen direction
+        // Create only the curve we need in the chosen direction using proper curveDefinition
         const bendCurveId = id + "bendCurve";
+        const faceCurveType = useDIR2 ? FaceCurveCreationType.DIR2_ISO : FaceCurveCreationType.DIR1_ISO;
+        const curveDef = curveOnFaceDefinition(definition.bendFace, faceCurveType, ["bendCurve"], [0.5]);
+        
         opCreateCurvesOnFace(context, bendCurveId, {
-            "face" : definition.bendFace,
-            "curveCreationType" : useDIR1 ? FaceCurveCreationType.DIR2_ISO : FaceCurveCreationType.DIR1_ISO,
-            "parameters" : [0.5]
+            "curveDefinition" : [curveDef],
+            "showCurves" : true,
+            "useFaceParameter" : true
         });
         
         const bendCurveEdge = qCreatedBy(bendCurveId, EntityType.EDGE);
