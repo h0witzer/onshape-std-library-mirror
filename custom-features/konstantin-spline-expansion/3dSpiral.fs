@@ -214,26 +214,19 @@ export const spiral3d = defineFeature(function(context is Context, id is Id, def
         println("Points not found: " ~ notFoundCount);
         println("Final resampledPoints size: " ~ size(resampledPoints));
         
-        // For closed paths, the last resampled point should wrap back close to the start
-        // For open paths, add the final endpoint
-        if (!path.closed)
+        // Measure gap for closed paths, confirm endpoint for open paths
+        if (path.closed)
         {
-            resampledPoints = append(resampledPoints, pointList[size(pointList) - 1]);
-            println("Added final point for open path. New size: " ~ size(resampledPoints));
-        }
-        else
-        {
-            // Measure gap between last and first points
             const lastPoint = resampledPoints[size(resampledPoints) - 1];
             const firstPoint = resampledPoints[0];
             const gapDistance = norm(lastPoint - firstPoint);
             println("Closed path - no additional endpoint needed");
             println("Gap between last and first point: " ~ gapDistance);
             println("Gap as % of target spacing: " ~ (gapDistance / targetSpacing * 100) ~ "%");
-            
-            // Debug visualization: draw start and end points
-            opPoint(context, id + "debugStart", { "point": firstPoint });
-            opPoint(context, id + "debugEnd", { "point": lastPoint });
+        }
+        else
+        {
+            println("Open path - resampled " ~ size(resampledPoints) ~ " points including endpoints");
         }
         
         println("=== END RESAMPLING DEBUG ===");
