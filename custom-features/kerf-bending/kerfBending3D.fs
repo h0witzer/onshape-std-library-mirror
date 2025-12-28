@@ -94,71 +94,35 @@ export const kerfBending3D = defineFeature(function(context is Context, id is Id
         }
         
         // Automatically detect which direction (U or V) is curvier
-        // Create temporary curves in both directions and measure their curvature
-        const testCurve1Id = id + "testCurve1";
-        const testCurve2Id = id + "testCurve2";
-        
-        // Create DIR1 (U-like) curve
-        opCreateCurvesOnFace(context, testCurve1Id, {
+        // Evaluate face curvature directly at the center point
+        const faceCurvature = evFaceCurvature(context, {
             "face" : definition.bendFace,
-            "curveCreationType" : FaceCurveCreationType.DIR1_ISO,
+            "parameter" : vector(0.5, 0.5)
+        });
+        
+        // The face has two principal curvatures (minCurvature and maxCurvature)
+        // These correspond to the two parametric directions
+        // Use the direction with maximum curvature as the bend curve
+        const dir1Curvature = abs(faceCurvature.minCurvature);
+        const dir2Curvature = abs(faceCurvature.maxCurvature);
+        
+        // The max curvature direction is typically what we want for bending
+        const useDIR1 = dir2Curvature > dir1Curvature;
+        
+        println("Face principal curvatures at (0.5, 0.5):");
+        println("  Min curvature: " ~ toString(faceCurvature.minCurvature));
+        println("  Max curvature: " ~ toString(faceCurvature.maxCurvature));
+        println("Using direction with " ~ (useDIR1 ? "max" : "min") ~ " curvature as bend curve");
+        
+        // Create only the curve we need in the chosen direction
+        const bendCurveId = id + "bendCurve";
+        opCreateCurvesOnFace(context, bendCurveId, {
+            "face" : definition.bendFace,
+            "curveCreationType" : useDIR1 ? FaceCurveCreationType.DIR2_ISO : FaceCurveCreationType.DIR1_ISO,
             "parameters" : [0.5]
         });
         
-        // Create DIR2 (V-like) curve
-        opCreateCurvesOnFace(context, testCurve2Id, {
-            "face" : definition.bendFace,
-            "curveCreationType" : FaceCurveCreationType.DIR2_ISO,
-            "parameters" : [0.5]
-        });
-        
-        const curve1 = qCreatedBy(testCurve1Id, EntityType.EDGE);
-        const curve2 = qCreatedBy(testCurve2Id, EntityType.EDGE);
-        
-        // Measure curvature at the middle of each curve (parameter 0.5)
-        var curve1Curvature = 0 / meter;
-        var curve2Curvature = 0 / meter;
-        
-        try
-        {
-            const curv1 = evEdgeCurvature(context, {
-                "edge" : curve1,
-                "parameter" : 0.5,
-                "arcLengthParameterization" : true
-            });
-            curve1Curvature = abs(curv1.curvature);
-            
-            const curv2 = evEdgeCurvature(context, {
-                "edge" : curve2,
-                "parameter" : 0.5,
-                "arcLengthParameterization" : true
-            });
-            curve2Curvature = abs(curv2.curvature);
-        }
-        
-        // Choose the curvier direction
-        const useDIR1 = curve1Curvature > curve2Curvature;
-        
-        println("DIR1 curvature at midpoint: " ~ toString(curve1Curvature));
-        println("DIR2 curvature at midpoint: " ~ toString(curve2Curvature));
-        println("Using " ~ (useDIR1 ? "DIR1" : "DIR2") ~ " as bend curve (curvier direction)");
-        
-        // Use the curvier curve as our bend curve
-        const bendCurveEdge = useDIR1 ? curve1 : curve2;
-        
-        // Delete the unused test curve
-        if (useDIR1)
-        {
-            opDeleteBodies(context, id + "deleteTest2", {
-                "entities" : qCreatedBy(testCurve2Id, EntityType.BODY)
-            });
-        }
-        else
-        {
-            opDeleteBodies(context, id + "deleteTest1", {
-                "entities" : qCreatedBy(testCurve1Id, EntityType.BODY)
-            });
-        }
+        const bendCurveEdge = qCreatedBy(bendCurveId, EntityType.EDGE);
         
         // Use default minimum spacing if not specified
         const minimumCutSpacing = definition.showAdvanced ? 
