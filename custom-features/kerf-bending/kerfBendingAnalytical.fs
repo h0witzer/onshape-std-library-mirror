@@ -818,8 +818,8 @@ precondition
     // Calculate required total bend angle from curvature and arc length
     const totalBendAngle = abs(bendCurvature) * totalArcLength;
     
-    // Calculate number of cuts needed - explicitly convert to unitless for ceil()
-    const numberOfCuts = ceil((totalBendAngle / kerfAngle) / radian);
+    // Calculate number of cuts needed - multiply by radian to convert angle to unitless
+    const numberOfCuts = ceil((totalBendAngle / kerfAngle) * radian);
     
     // Calculate cut spacing
     const cutSpacing = totalArcLength / (numberOfCuts + 1);
@@ -917,13 +917,14 @@ precondition
         // - Normal: perpendicular to bend curve (extrude direction, the less curvy direction)
         // - X-axis: along the bend curve (maxDirection, the curvier direction)
         // - Y-axis: cut depth direction (into material)
-        const extrudeDirection = faceCurvature.minDirection;
         const sketchXAxis = faceCurvature.maxDirection;
         const faceNormalAtCut = faceTangentPlane.normal;
         
-        // Always use minDirection as sketch normal (extrude direction)
-        // This is perpendicular to the bend curve by definition of principal curvatures
-        const sketchNormal = extrudeDirection;
+        // Use minDirection as base for sketch normal, but ensure correct orientation
+        // Check if minDirection points away from or into the material
+        // If it points outward (same direction as face normal), flip it
+        const baseminDirection = faceCurvature.minDirection;
+        const sketchNormal = (dot(baseminDirection, faceNormalAtCut) > 0) ? -baseminDirection : baseminDirection;
         
         const sketchPlane = plane(cutPosition, sketchNormal, sketchXAxis);
         
@@ -969,6 +970,7 @@ precondition
         {
             opExtrude(context, extrudeId, {
                 "entities" : qSketchRegion(sketchId),
+                "startBound" : BoundingType.THROUGH_ALL,
                 "endBound" : BoundingType.THROUGH_ALL,
                 "operationType" : NewBodyOperationType.REMOVE,
                 "defaultScope" : false,
