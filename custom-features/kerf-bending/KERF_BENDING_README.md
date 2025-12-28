@@ -4,6 +4,8 @@
 
 The `kerfBendingAnalytical.fs` module provides high-performance FeatureScript utilities for calculating kerf bend patterns along curves using **adaptive tangent angle integration**. This analytical implementation delivers fast, accurate kerf bending calculations for all curve types including circles, arcs, and splines.
 
+**NEW:** Now includes 3D kerf geometry generation for CNC manufacturing on solid bodies!
+
 ## What is Kerf Bending?
 
 Kerf bending is a technique where cuts (kerfs) are made partway through a material, typically plywood, to create flexible hinge points. This allows flat panels to be bent into curved surfaces. By calculating the exact positions of these cuts, you can control the final curve shape of the bent material.
@@ -16,6 +18,14 @@ The **kerf angle** is the angle by which a single cut bends the material. This d
 - **Cut Depth**: How deep the cut goes (typically 10-15% less than material thickness)
 
 The formula is: `kerfAngle = 2 * atan2(bladeWidth, 2 * cutDepth)`
+
+### Board Thickness vs Cut Depth
+For CNC manufacturing on real boards:
+- **Board Thickness**: The total thickness of the material (e.g., 18mm plywood)
+- **Cut Depth**: How deep to cut (e.g., 16mm), leaving a flexible hinge region
+- **Flexible Layer**: The remaining material thickness (e.g., 2mm) that allows bending
+
+Example: For 18mm plywood cut to 16mm depth, you have a 2mm flexible layer.
 
 ### Analytical Approach
 
@@ -34,7 +44,7 @@ The implementation uses **geometry-aware optimization**:
 - 2-5x faster than fixed-step integration
 - ~100-200 evaluations per curve (vs ~500 with fixed stepping)
 
-## Main Function
+## Main Functions
 
 ### `generateAnalyticalKerfSolution(context, edge, bladeWidth, cutDepth, [minimumCutSpacing], [useHalfKerfOffset])`
 
@@ -71,61 +81,156 @@ println("Number of cuts: " ~ solution.numberOfCuts);
 println("Total length: " ~ solution.totalLength);
 ```
 
-## Complete Usage Example
+### `generate3DKerfCuts(context, id, solidBody, curveEdge, solution, cutWidth, cutDepth, boardThickness, [cutExtension])`
+
+**NEW:** Generate 3D kerf cut geometry on a solid body for CNC manufacturing.
+
+Creates rectangular cuts perpendicular to the curve at calculated positions. Each cut is created by:
+1. Creating a sketch plane perpendicular to the curve at each cut position
+2. Drawing a rectangular profile for the cut
+3. Extruding the profile to create a cutting solid
+4. Boolean subtracting from the target body
+
+**Parameters:**
+- `context` (Context): The Onshape context
+- `id` (Id): The feature ID for creating operations
+- `solidBody` (Query): Query for the solid body to cut
+- `curveEdge` (Query): Query for the curve edge defining the bend line
+- `solution` (KerfBendingSolution): The kerf bending solution containing cut positions
+- `cutWidth` (ValueWithUnits): The width of each cut (blade thickness) with length units
+- `cutDepth` (ValueWithUnits): The depth of each cut with length units
+- `boardThickness` (ValueWithUnits): The total thickness of the board with length units
+- `cutExtension` (ValueWithUnits, optional): Extension beyond the curve in perpendicular direction (defaults to 0)
+
+**Returns:** `boolean` - True if cuts were successfully created
+
+**Example:**
+```featurescript
+import(path : "kerfBendingAnalytical.fs", version : "");
+
+// First, generate the kerf solution
+const solution = generateAnalyticalKerfSolution(
+    context,
+    curveEdge,
+    2.7 * millimeter,  // Blade width
+    16 * millimeter    // Cut depth
+);
+
+// Then generate 3D cuts on the solid body
+generate3DKerfCuts(
+    context,
+    id + "cuts",
+    solidBody,
+    curveEdge,
+    solution,
+    2.7 * millimeter,  // Blade width
+    16 * millimeter,   // Cut depth
+    18 * millimeter    // Board thickness (leaving 2mm flexible layer)
+);
+```
+
+## Complete Usage Examples
+
+### Visualization Mode (2D Sketch)
 
 ```featurescript
 annotation { "Feature Type Name" : "Kerf Bending" }
 export const kerfBending = defineFeature(function(context is Context, id is Id, definition is map)
     precondition
     {
-        annotation { "Name" : "Curve", "Filter" : EntityType.EDGE, "MaxNumberOfPicks" : 1 }
-        definition.curve is Query;
-
+        annotation { "Name" : "Mode" }
+        definition.mode is KerfBendingMode;
+        
+        if (definition.mode == KerfBendingMode.VISUALIZATION)
+        {
+            annotation { "Name" : "Curve", "Filter" : EntityType.EDGE, "MaxNumberOfPicks" : 1 }
+            definition.curve is Query;
+        }
+        
         annotation { "Name" : "Blade Width" }
         isLength(definition.bladeWidth, BLEND_BOUNDS);
 
         annotation { "Name" : "Cut Depth" }
         isLength(definition.cutDepth, BLEND_BOUNDS);
-        
-        annotation { "Name" : "Advanced Options", "UIHint" : UIHint.COLLAPSED_BY_DEFAULT }
-        definition.showAdvanced is boolean;
-        
-        if (definition.showAdvanced)
-        {
-            annotation { "Name" : "Minimum Cut Spacing" }
-            isLength(definition.minimumCutSpacing, BLEND_BOUNDS);
-            
-            annotation { "Name" : "Use half-kerf offset on ends (circles only)" }
-            definition.useHalfKerfOffset is boolean;
-        }
     }
     {
-        // Generate solution
         const solution = generateAnalyticalKerfSolution(
             context,
             definition.curve,
             definition.bladeWidth,
-            definition.cutDepth,
-            definition.showAdvanced ? definition.minimumCutSpacing : undefined,
-            definition.showAdvanced ? definition.useHalfKerfOffset : false
+            definition.cutDepth
         );
         
-        // Print statistics
-        println("=== Kerf Bending Solution (Analytical) ===");
-        println("Number of cuts: " ~ solution.numberOfCuts);
-        println("Total length: " ~ solution.totalLength);
-        
-        // Create debug visualization
-        for (var i = 0; i < solution.numberOfCuts; i += 1)
-        {
-            const color = solution.curvatureSigns[i] > 0 ? Color.RED : Color.BLUE;
-            opPoint(context, id + ("point" ~ i), {
-                "point" : solution.cutPositions[i],
-                "color" : color
-            });
-        }
+        // Create 2D visualization sketch...
     });
 ```
+
+### 3D CNC Manufacturing Mode
+
+```featurescript
+annotation { "Feature Type Name" : "Kerf Bending 3D" }
+export const kerfBending3D = defineFeature(function(context is Context, id is Id, definition is map)
+    precondition
+    {
+        annotation { "Name" : "Solid body", "Filter" : EntityType.BODY && BodyType.SOLID }
+        definition.solidBody is Query;
+        
+        annotation { "Name" : "Curve edge", "Filter" : EntityType.EDGE }
+        definition.curveEdge is Query;
+        
+        annotation { "Name" : "Board thickness" }
+        isLength(definition.boardThickness, BLEND_BOUNDS);
+        
+        annotation { "Name" : "Blade width" }
+        isLength(definition.bladeWidth, BLEND_BOUNDS);
+        
+        annotation { "Name" : "Cut depth" }
+        isLength(definition.cutDepth, BLEND_BOUNDS);
+    }
+    {
+        // Generate the kerf solution
+        const solution = generateAnalyticalKerfSolution(
+            context,
+            definition.curveEdge,
+            definition.bladeWidth,
+            definition.cutDepth
+        );
+        
+        // Generate 3D cuts on the solid body
+        generate3DKerfCuts(
+            context,
+            id + "cuts",
+            definition.solidBody,
+            definition.curveEdge,
+            solution,
+            definition.bladeWidth,
+            definition.cutDepth,
+            definition.boardThickness
+        );
+    });
+```
+
+## Feature Modes
+
+The kerf bending feature supports two modes:
+
+### Visualization Mode
+- Creates a 2D sketch showing cut positions
+- Useful for planning and design review
+- Shows flattened layout of cuts
+- No modification to 3D geometry
+
+### Generate 3D Cuts Mode
+- Creates actual cut geometry on solid bodies
+- Ready for CNC manufacturing
+- Supports board thickness specification
+- Calculates flexible layer thickness
+- Oriented based on surface geometry
+
+**Key Parameters for 3D Mode:**
+- **Board Thickness**: Total material thickness (e.g., 18mm)
+- **Cut Depth**: How deep to cut (e.g., 16mm)
+- **Flexible Layer**: Remaining material = Board Thickness - Cut Depth (e.g., 2mm)
 
 ## Algorithm Details
 
@@ -214,16 +319,25 @@ Example (200mm curve, 2.7mm blade width):
 
 1. Single edge per operation
 2. Requires arc length parameterization support
-3. Debug visualization works best on planar curves
+3. 3D cuts work best when the curve edge is on a face of the solid body
 
 ## Future Enhancements
 
 - Multiple edges/curves support
-- Automatic cut geometry generation
 - Pattern mirroring for bidirectional cuts
 - Material thickness optimization
-- Geometry building utilities for 3d solids
 - Unfolding support for flipping from bent state to flattened state
+- Variable cut depth along the curve
+- Support for curved surfaces (non-planar boards)
+
+## Recent Additions
+
+**Version 2.0:**
+- ✅ 3D kerf geometry generation for CNC manufacturing
+- ✅ Board thickness parameter for real-world material specifications
+- ✅ Automatic cut orientation based on surface normal
+- ✅ Flexible layer thickness calculation
+- ✅ Cut extension option for better manufacturing results
 
 ## References
 
