@@ -102,7 +102,7 @@ export const kerfBending3D = defineFeature(function(context is Context, id is Id
         opCreateCurvesOnFace(context, curveFaceId, {
             "face" : definition.bendFace,
             "curveCreationType" : (definition.curveDirection == CurveDirection.U_DIRECTION) ? 
-                FaceCurveCreationType.ISO_U : FaceCurveCreationType.ISO_V,
+                FaceCurveCreationType.DIR1_ISO : FaceCurveCreationType.DIR2_ISO,
             "parameters" : [0.5]  // Middle of the face
         });
         
