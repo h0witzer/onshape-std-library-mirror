@@ -115,42 +115,32 @@ export const kerfBending3D = defineFeature(function(context is Context, id is Id
         const curve1 = qCreatedBy(testCurve1Id, EntityType.EDGE);
         const curve2 = qCreatedBy(testCurve2Id, EntityType.EDGE);
         
-        // Measure average curvature for both curves
-        var curve1AvgCurvature = 0 / meter;
-        var curve2AvgCurvature = 0 / meter;
+        // Measure curvature at the middle of each curve (parameter 0.5)
+        var curve1Curvature = 0 / meter;
+        var curve2Curvature = 0 / meter;
         
         try
         {
-            // Sample curvature at multiple points along each curve
-            const numSamples = 10;
-            for (var i = 0; i <= numSamples; i += 1)
-            {
-                const param = i / numSamples;
-                
-                const curv1 = evEdgeCurvature(context, {
-                    "edge" : curve1,
-                    "parameter" : param,
-                    "arcLengthParameterization" : true
-                });
-                curve1AvgCurvature += abs(curv1.curvature);
-                
-                const curv2 = evEdgeCurvature(context, {
-                    "edge" : curve2,
-                    "parameter" : param,
-                    "arcLengthParameterization" : true
-                });
-                curve2AvgCurvature += abs(curv2.curvature);
-            }
+            const curv1 = evEdgeCurvature(context, {
+                "edge" : curve1,
+                "parameter" : 0.5,
+                "arcLengthParameterization" : true
+            });
+            curve1Curvature = abs(curv1.curvature);
             
-            curve1AvgCurvature = curve1AvgCurvature / (numSamples + 1);
-            curve2AvgCurvature = curve2AvgCurvature / (numSamples + 1);
+            const curv2 = evEdgeCurvature(context, {
+                "edge" : curve2,
+                "parameter" : 0.5,
+                "arcLengthParameterization" : true
+            });
+            curve2Curvature = abs(curv2.curvature);
         }
         
         // Choose the curvier direction
-        const useDIR1 = curve1AvgCurvature > curve2AvgCurvature;
+        const useDIR1 = curve1Curvature > curve2Curvature;
         
-        println("DIR1 average curvature: " ~ toString(curve1AvgCurvature));
-        println("DIR2 average curvature: " ~ toString(curve2AvgCurvature));
+        println("DIR1 curvature at midpoint: " ~ toString(curve1Curvature));
+        println("DIR2 curvature at midpoint: " ~ toString(curve2Curvature));
         println("Using " ~ (useDIR1 ? "DIR1" : "DIR2") ~ " as bend curve (curvier direction)");
         
         // Use the curvier curve as our bend curve
