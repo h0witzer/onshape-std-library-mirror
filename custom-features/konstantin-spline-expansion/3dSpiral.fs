@@ -82,6 +82,7 @@ export const spiral3d = defineFeature(function(context is Context, id is Id, def
         if (definition.flipDir)
             initTangent.direction *= -1;
 
+        // Generate transformations for uniformly spaced path parameters (arc-length based)
         const trArr = evPathTransfromArray(context, {
                     "path" : path,
                     "paramArr" : range(0, 1, pointNumber)
@@ -90,13 +91,115 @@ export const spiral3d = defineFeature(function(context is Context, id is Id, def
         const angleArr = range(0 * degree, 360 * degree * numberOfRevolutions, pointNumber);
 
         const initPoint = initTangent.origin + perpendicularVector(initTangent.direction) * spiralRadius;
+        
+        // Generate initial spiral points
         var pointList = [];
-
         for (var i = 0; i < pointNumber; i += 1)
         {
             var point = rotationAround(initTangent, angleArr[i]) * initPoint;
             pointList = append(pointList, trArr[i] * point);
         }
+        
+        // Resample points to achieve uniform 3D arc-length spacing
+        // This addresses non-uniform CP density caused by interaction between rotation and transformation
+        
+        // Calculate cumulative distances along the original spiral
+        var cumulativeDistances = [0 * meter];
+        for (var i = 1; i < size(pointList); i += 1)
+        {
+            const segmentLength = norm(pointList[i] - pointList[i - 1]);
+            cumulativeDistances = append(cumulativeDistances, cumulativeDistances[i - 1] + segmentLength);
+        }
+        
+        var totalSpiralLength = cumulativeDistances[size(cumulativeDistances) - 1];
+        
+        if (path.closed)
+        {
+            // For closed paths, add the closure distance (from last point back to first)
+            const closureDistance = norm(pointList[0] - pointList[size(pointList) - 1]);
+            totalSpiralLength += closureDistance;
+        }
+        
+        // Target spacing between points
+        const targetSpacing = totalSpiralLength / (pointNumber - 1);
+        
+        // Resample at uniform intervals
+        // Use sequential search since target distances are monotonically increasing
+        var resampledPoints = [pointList[0]];
+        var currentSegmentIndex = 0;
+        const tolerance = TOLERANCE.zeroLength * meter;
+        
+        for (var targetIndex = 1; targetIndex < pointNumber; targetIndex += 1)
+        {
+            const targetDistance = targetIndex * targetSpacing;
+            var interpolatedPoint;
+            var found = false;
+            
+            // Move forward through segments until we find the one containing targetDistance
+            while (currentSegmentIndex < size(pointList))
+            {
+                var segmentStartDist;
+                var segmentEndDist;
+                var segmentStart;
+                var segmentEnd;
+                
+                if (currentSegmentIndex < size(pointList) - 1)
+                {
+                    // Normal segment
+                    segmentStartDist = cumulativeDistances[currentSegmentIndex];
+                    segmentEndDist = cumulativeDistances[currentSegmentIndex + 1];
+                    segmentStart = pointList[currentSegmentIndex];
+                    segmentEnd = pointList[currentSegmentIndex + 1];
+                }
+                else if (path.closed)
+                {
+                    // Wrap-around segment for closed paths
+                    segmentStartDist = cumulativeDistances[currentSegmentIndex];
+                    segmentEndDist = totalSpiralLength;
+                    segmentStart = pointList[currentSegmentIndex];
+                    segmentEnd = pointList[0];
+                }
+                else
+                {
+                    // No more segments for open paths
+                    break;
+                }
+                
+                // Check if target distance falls within this segment
+                if (targetDistance >= segmentStartDist - tolerance && targetDistance <= segmentEndDist + tolerance)
+                {
+                    const segmentLength = segmentEndDist - segmentStartDist;
+                    const distanceIntoSegment = targetDistance - segmentStartDist;
+                    const t = segmentLength > (TOLERANCE.zeroLength * meter) ? 
+                        distanceIntoSegment / segmentLength : 0;
+                     interpolatedPoint = segmentStart + t * (segmentEnd - segmentStart);
+                    found = true;
+                    break;
+                }
+                
+                // Move to next segment
+                currentSegmentIndex += 1;
+            }
+            
+            // Back up one if we overshot (we're now past the segment we want)
+            if (!found && currentSegmentIndex > 0)
+            {
+                currentSegmentIndex -= 1;
+            }
+            
+            if (found)
+            {
+                resampledPoints = append(resampledPoints, interpolatedPoint);
+            }
+            else
+            {
+                // Fallback: use the last available point
+                resampledPoints = append(resampledPoints, pointList[size(pointList) - 1]);
+            }
+        }
+        
+        // Use resampled points for the spline
+        pointList = resampledPoints;
 
         // Calculate first derivatives at start and end for better curvature continuity
         // Use a hybrid approach: finite differences from many nearby points for robustness
@@ -133,13 +236,8 @@ export const spiral3d = defineFeature(function(context is Context, id is Id, def
 
         if (path.closed)
         {
-            pointList = subArray(pointList, 0, size(pointList) - 2);
-            pointList = append(pointList, pointList[0]);
-
-            opPoint(context, id + "initialPoint", {
-                        "point" : pointList[0]
-                    });
-            
+            // Arc-length resampling already created properly spaced points
+            // No manipulation needed - just pass directly to opFitSpline
             opFitSpline(context, id + "fitSplineSpiral", {
                         "points" : pointList
                     });
