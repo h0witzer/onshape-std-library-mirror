@@ -6,7 +6,7 @@ import(path : "onshape/std/evaluate.fs", version : "2837.0");
 import(path : "onshape/std/query.fs", version : "2837.0");
 import(path : "onshape/std/vector.fs", version : "2837.0");
 import(path : "onshape/std/valueBounds.fs", version : "2837.0");
-import(path : "d206287863cb4400750c9aff", version : "36c04743534bad7be94aac56"); // kerfBendingAnalytical.fs
+import(path : "1e97dc34e0d8907329a69da7", version : "806f058e8aae45b01b222494"); // kerfBendingAnalytical.fs
 
 /**
  * 3D Kerf Bending feature for CNC manufacturing.

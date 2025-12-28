@@ -488,7 +488,7 @@ precondition
                 const face = qNthElement(adjacentFaces, 0);
                 
                 // Get the tangent plane of the face at the edge
-                const edgeTangentPlane = evEdgeTangentPlaneAtEdge(context, {
+                const edgeTangentPlane = evFaceTangentPlaneAtEdge(context, {
                     "edge" : curveEdge,
                     "face" : face,
                     "parameter" : cutParameter,
