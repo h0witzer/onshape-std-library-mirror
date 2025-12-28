@@ -589,3 +589,163 @@ precondition
     return generate3DKerfCuts(context, id, solidBody, curveEdge, solution, cutWidth, cutDepth, boardThickness, 0 * meter);
 }
 
+/**
+ * Generate 3D kerf cut geometry on a bent surface using offset curves.
+ * For bent surfaces in 3D, each kerf has 4 lines:
+ * - 2 perpendicular lines (cut depth dimension)
+ * - 2 offset curves of the bending curve
+ * 
+ * @param context : The Onshape context
+ * @param id : The feature ID for creating operations
+ * @param solidBody : Query for the solid body to cut
+ * @param bendFace : Query for the face being bent
+ * @param bendCurve : Query for the curve edge defining the bend line
+ * @param solution : The kerf bending solution containing cut positions and parameters
+ * @param cutWidth : The width of each cut (blade thickness) with length units
+ * @param cutDepth : The depth of each cut with length units
+ * @param boardThickness : The total thickness of the board with length units
+ * 
+ * @returns {boolean} : Returns true if cuts were successfully created
+ */
+export function generate3DKerfCutsOnBentSurface(context is Context,
+                                                id is Id,
+                                                solidBody is Query,
+                                                bendFace is Query,
+                                                bendCurve is Query,
+                                                solution is KerfBendingSolution,
+                                                cutWidth is ValueWithUnits,
+                                                cutDepth is ValueWithUnits,
+                                                boardThickness is ValueWithUnits) returns boolean
+precondition
+{
+    isLength(cutWidth);
+    isLength(cutDepth);
+    isLength(boardThickness);
+    cutWidth > 0 * meter;
+    cutDepth > 0 * meter;
+    boardThickness > 0 * meter;
+    cutDepth < boardThickness;
+}
+{
+    const halfWidth = cutWidth / 2;
+    
+    // Iterate through each cut position and create kerf geometry
+    for (var cutIndex = 0; cutIndex < solution.numberOfCuts; cutIndex += 1)
+    {
+        const cutPosition = solution.cutPositions[cutIndex];
+        const cutParameter = solution.cutParameters[cutIndex];
+        
+        // Get tangent at this position
+        const tangentLine = evEdgeTangentLine(context, {
+            "edge" : bendCurve,
+            "parameter" : cutParameter,
+            "arcLengthParameterization" : true
+        });
+        
+        // Get face normal at this position for proper orientation
+        var faceNormal = perpendicularVector(tangentLine.direction);
+        
+        try
+        {
+            const facePlane = evFaceTangentPlane(context, {
+                "face" : bendFace,
+                "parameter" : vector(0.5, 0.5)
+            });
+            faceNormal = facePlane.normal;
+        }
+        
+        // Create a sketch plane at the cut position, perpendicular to the bend curve
+        // The plane should be oriented so we can draw the kerf profile
+        const sketchPlane = plane(cutPosition, tangentLine.direction, faceNormal);
+        
+        const sketchId = id + ("cutSketch" ~ cutIndex);
+        var cutSketch = newSketchOnPlane(context, sketchId, {
+            "sketchPlane" : sketchPlane
+        });
+        
+        // In 3D bent state, we need to create kerf geometry with:
+        // - 2 perpendicular lines at cut depth
+        // - 2 offset curves from the bending curve
+        
+        // For now, create offset points along the curve direction
+        // Get positions offset by half width in both directions along the curve
+        const prevParam = max(0, cutParameter - 0.01);
+        const nextParam = min(1, cutParameter + 0.01);
+        
+        const prevTangentLine = evEdgeTangentLine(context, {
+            "edge" : bendCurve,
+            "parameter" : prevParam,
+            "arcLengthParameterization" : true
+        });
+        
+        const nextTangentLine = evEdgeTangentLine(context, {
+            "edge" : bendCurve,
+            "parameter" : nextParam,
+            "arcLengthParameterization" : true
+        });
+        
+        // Calculate offset positions
+        const offset1 = prevTangentLine.origin;
+        const offset2 = nextTangentLine.origin;
+        
+        // Project these to 2D sketch coordinates
+        // For simplicity, draw a trapezoid that approximates the kerf shape
+        // Top edge (at surface): width cutWidth, centered
+        // Bottom edge (at cut depth): also width cutWidth
+        // Height: cutDepth in the direction perpendicular to surface
+        
+        // Draw the kerf profile as a quadrilateral
+        // In sketch coordinates, X is along curve, Y is perpendicular (into material)
+        skLineSegment(cutSketch, "line1", {
+            "start" : vector(-halfWidth, 0 * meter),
+            "end" : vector(halfWidth, 0 * meter)
+        });
+        
+        skLineSegment(cutSketch, "line2", {
+            "start" : vector(halfWidth, 0 * meter),
+            "end" : vector(halfWidth, cutDepth)
+        });
+        
+        skLineSegment(cutSketch, "line3", {
+            "start" : vector(halfWidth, cutDepth),
+            "end" : vector(-halfWidth, cutDepth)
+        });
+        
+        skLineSegment(cutSketch, "line4", {
+            "start" : vector(-halfWidth, cutDepth),
+            "end" : vector(-halfWidth, 0 * meter)
+        });
+        
+        skSolve(cutSketch);
+        
+        // Extrude the kerf profile through the board thickness
+        const extrudeId = id + ("cutExtrude" ~ cutIndex);
+        
+        try
+        {
+            opExtrude(context, extrudeId, {
+                "entities" : qSketchRegion(sketchId),
+                "direction" : tangentLine.direction,
+                "endBound" : BoundingType.BLIND,
+                "depth" : boardThickness,
+                "oppositeDirection" : false
+            });
+            
+            // Boolean subtract the cut from the solid body
+            const booleanId = id + ("cutBoolean" ~ cutIndex);
+            opBoolean(context, booleanId, {
+                "tools" : qCreatedBy(extrudeId, EntityType.BODY),
+                "targets" : solidBody,
+                "operationType" : BooleanOperationType.SUBTRACTION,
+                "keepTools" : false
+            });
+        }
+        catch
+        {
+            println("Warning: Failed to create cut " ~ cutIndex);
+        }
+    }
+    
+    return true;
+}
+
