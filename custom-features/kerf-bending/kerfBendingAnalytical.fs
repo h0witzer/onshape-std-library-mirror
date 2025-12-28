@@ -920,6 +920,19 @@ precondition
         // The direction with minimum curvature magnitude is the extrude direction
         const isBendAlongMax = maxCurvMagnitude > minCurvMagnitude;
         
+        // Get the actual curvature value (with sign) for the bend direction
+        const actualBendCurvature = isBendAlongMax ? faceCurvature.maxCurvature : faceCurvature.minCurvature;
+        
+        // For negative curvature (concave from this face), we need to place cuts on opposite side of material
+        // because kerfs must be on the tighter (inside) radius of the bend
+        const faceNormal = faceTangentPlane.normal;
+        const isNegativeCurvature = actualBendCurvature < 0 * meter^-1;
+        
+        // Offset the cut position to opposite face if curvature is negative
+        const adjustedCutPosition = isNegativeCurvature ? 
+            cutPosition + (faceNormal * boardThickness) : 
+            cutPosition;
+        
         // The sketch plane should be perpendicular to the extrude direction
         // Sketch plane orientation:
         // - Normal: direction with MINIMUM curvature magnitude (perpendicular to bend, extrude direction)
@@ -928,7 +941,7 @@ precondition
         const sketchNormal = isBendAlongMax ? faceCurvature.minDirection : faceCurvature.maxDirection;
         const sketchXAxis = isBendAlongMax ? faceCurvature.maxDirection : faceCurvature.minDirection;
         
-        const sketchPlane = plane(cutPosition, sketchNormal, sketchXAxis);
+        const sketchPlane = plane(adjustedCutPosition, sketchNormal, sketchXAxis);
         
         const sketchId = id + ("cutSketch" ~ cutIndex);
         var cutSketch = newSketchOnPlane(context, sketchId, {
