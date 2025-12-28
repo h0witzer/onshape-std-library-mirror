@@ -549,9 +549,7 @@ precondition
             "entities" : qSketchRegion(sketchId),
             "direction" : cuttingPlaneNormal,
             "endBound" : BoundingType.BLIND,
-            "endDepth" : boardThickness,
-            "startBound" : BoundingType.BLIND,
-            "startDepth" : 0 * meter
+            "depth" : boardThickness
         });
         
         // Boolean subtract the cut from the solid body
