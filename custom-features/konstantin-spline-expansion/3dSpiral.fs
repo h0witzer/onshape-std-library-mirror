@@ -103,11 +103,6 @@ export const spiral3d = defineFeature(function(context is Context, id is Id, def
         // Resample points to achieve uniform 3D arc-length spacing
         // This addresses non-uniform CP density caused by interaction between rotation and transformation
         
-        println("=== RESAMPLING DEBUG ===");
-        println("path.closed: " ~ path.closed);
-        println("Initial pointList size: " ~ size(pointList));
-        println("pointNumber: " ~ pointNumber);
-        
         // Calculate cumulative distances along the original spiral
         var cumulativeDistances = [0 * meter];
         for (var i = 1; i < size(pointList); i += 1)
@@ -117,30 +112,20 @@ export const spiral3d = defineFeature(function(context is Context, id is Id, def
         }
         
         var totalSpiralLength = cumulativeDistances[size(cumulativeDistances) - 1];
-        println("Length before closure: " ~ totalSpiralLength);
         
-        var closureDistance = 0 * meter;
         if (path.closed)
         {
             // For closed paths, add the closure distance (from last point back to first)
-            closureDistance = norm(pointList[0] - pointList[size(pointList) - 1]);
+            const closureDistance = norm(pointList[0] - pointList[size(pointList) - 1]);
             totalSpiralLength += closureDistance;
-            println("Closure distance: " ~ closureDistance);
         }
-        
-        println("Total spiral length: " ~ totalSpiralLength);
         
         // Target spacing between points
         const targetSpacing = totalSpiralLength / (pointNumber - 1);
-        println("Target spacing: " ~ targetSpacing);
-        println("Number of resampled points to generate: " ~ (pointNumber - 1));
         
         // Resample at uniform intervals
-        // OPTIMIZED: Use sequential search instead of restarting from segment 0 each time
-        // Since target distances are monotonically increasing, we can continue from where we left off
+        // Use sequential search since target distances are monotonically increasing
         var resampledPoints = [pointList[0]];
-        
-        var notFoundCount = 0;
         var currentSegmentIndex = 0;
         const tolerance = TOLERANCE.zeroLength * meter;
         
@@ -187,15 +172,8 @@ export const spiral3d = defineFeature(function(context is Context, id is Id, def
                     const distanceIntoSegment = targetDistance - segmentStartDist;
                     const t = segmentLength > (TOLERANCE.zeroLength * meter) ? 
                         distanceIntoSegment / segmentLength : 0;
-                    interpolatedPoint = segmentStart + t * (segmentEnd - segmentStart);
+                     interpolatedPoint = segmentStart + t * (segmentEnd - segmentStart);
                     found = true;
-                    
-                    // Debug last few points for closed paths
-                    if (path.closed && targetIndex >= pointNumber - 5)
-                    {
-                        println("Target " ~ targetIndex ~ ": distance=" ~ targetDistance ~ 
-                                ", segIdx=" ~ currentSegmentIndex ~ ", t=" ~ t);
-                    }
                     break;
                 }
                 
@@ -215,33 +193,10 @@ export const spiral3d = defineFeature(function(context is Context, id is Id, def
             }
             else
             {
-                notFoundCount += 1;
                 // Fallback: use the last available point
                 resampledPoints = append(resampledPoints, pointList[size(pointList) - 1]);
-                println("WARNING: Could not find segment for target " ~ targetIndex ~ 
-                        " at distance " ~ targetDistance);
             }
         }
-        
-        println("Points not found: " ~ notFoundCount);
-        println("Final resampledPoints size: " ~ size(resampledPoints));
-        
-        // Measure gap for closed paths, confirm endpoint for open paths
-        if (path.closed)
-        {
-            const lastPoint = resampledPoints[size(resampledPoints) - 1];
-            const firstPoint = resampledPoints[0];
-            const gapDistance = norm(lastPoint - firstPoint);
-            println("Closed path - no additional endpoint needed");
-            println("Gap between last and first point: " ~ gapDistance);
-            println("Gap as % of target spacing: " ~ (gapDistance / targetSpacing * 100) ~ "%");
-        }
-        else
-        {
-            println("Open path - resampled " ~ size(resampledPoints) ~ " points including endpoints");
-        }
-        
-        println("=== END RESAMPLING DEBUG ===");
         
         // Use resampled points for the spline
         pointList = resampledPoints;
