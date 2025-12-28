@@ -113,27 +113,6 @@ export const kerfBending3D = defineFeature(function(context is Context, id is Id
         println("  Bend curvature magnitude: " ~ toString(bendCurvatureMagnitude));
         println("  Bend direction: " ~ toString(bendDirection));
         
-        // Determine which parametric direction (U or V) aligns with the bend direction
-        // We'll check the dot product of the bend direction with the parametric directions
-        // For now, use a heuristic: if maxDirection is more aligned with one parametric direction
-        // But we still need to create one curve temporarily to get arc length for solution calculation
-        // Create a temporary curve in the bend direction for arc length measurement
-        const useDIR1 = abs(dot(bendDirection, vector(1, 0, 0))) > abs(dot(bendDirection, vector(0, 1, 0)));
-        
-        println("Using " ~ (useDIR1 ? "DIR1" : "DIR2") ~ " as bend direction (based on principal curvature alignment)");
-        
-        const tempCurveId = id + "tempBendCurve";
-        const faceCurveType = useDIR1 ? FaceCurveCreationType.DIR1_ISO : FaceCurveCreationType.DIR2_ISO;
-        const curveDef = curveOnFaceDefinition(definition.bendFace, faceCurveType, ["tempBendCurve"], [0.5]);
-        
-        opCreateCurvesOnFace(context, tempCurveId, {
-            "curveDefinition" : [curveDef],
-            "showCurves" : false,
-            "useFaceParameter" : true
-        });
-        
-        const bendCurveEdge = qCreatedBy(tempCurveId, EntityType.EDGE);
-        
         // Use default minimum spacing if not specified
         const minimumCutSpacing = definition.showAdvanced ? 
             definition.minimumCutSpacing : 
@@ -141,10 +120,12 @@ export const kerfBending3D = defineFeature(function(context is Context, id is Id
         
         const useHalfKerfOffset = definition.showAdvanced && definition.useHalfKerfOffset;
         
-        // Generate the kerf bending solution using analytical approach
-        const solution = generateAnalyticalKerfSolution(
+        // Generate the kerf bending solution using face-based approach (no curve generation)
+        const solution = generateAnalyticalKerfSolutionFromFace(
             context,
-            bendCurveEdge,
+            definition.bendFace,
+            bendDirection,
+            bendCurvatureMagnitude,
             definition.bladeWidth,
             definition.cutDepth,
             minimumCutSpacing,
@@ -155,7 +136,7 @@ export const kerfBending3D = defineFeature(function(context is Context, id is Id
         const summary = createKerfBendingSummary(solution);
         
         // Display results
-        println("=== Kerf Bending 3D Solution ===");
+        println("=== Kerf Bending 3D Solution (Face-Based) ===");
         println("Blade width: " ~ toString(definition.bladeWidth));
         println("Cut depth: " ~ toString(definition.cutDepth));
         println("Board thickness (measured): " ~ toString(boardThickness));
@@ -177,20 +158,20 @@ export const kerfBending3D = defineFeature(function(context is Context, id is Id
             }
         }
         
-        // Generate 3D kerf cuts using the new geometry approach
-        generate3DKerfCutsOnBentSurface(
+        // Generate 3D kerf cuts using face parameters (no curve required)
+        generate3DKerfCutsFromFaceParameters(
             context,
             id + "cuts",
             solidBody,
             definition.bendFace,
-            bendCurveEdge,
+            bendDirection,
             solution,
             definition.bladeWidth,
             definition.cutDepth,
             boardThickness
         );
         
-        println("Successfully generated " ~ solution.numberOfCuts ~ " 3D kerf cuts");
+        println("Successfully generated " ~ solution.numberOfCuts ~ " 3D kerf cuts using face-based approach");
     },
     {
         bladeWidth : 2.7 * millimeter,
