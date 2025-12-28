@@ -472,12 +472,11 @@ precondition
             "arcLengthParameterization" : true
         });
         
-        // Get normal to the curve (perpendicular to tangent in the plane)
-        // We'll use the surface normal if the curve is on a face, otherwise use a perpendicular vector
-        var planeNormal = tangentLine.direction;
-        var planeXAxis = perpendicularVector(planeNormal);
+        // The cutting plane should be perpendicular to the curve tangent
+        // The sketch plane normal is perpendicular to the tangent (cutting across the curve)
+        var cuttingPlaneNormal = perpendicularVector(tangentLine.direction);
         
-        // Try to get the surface normal if the edge is part of a face to better orient the cut
+        // Try to get a better orientation using the surface normal if the edge is on a face
         try
         {
             const adjacentFaces = qAdjacent(curveEdge, AdjacencyType.EDGE, EntityType.FACE);
@@ -488,20 +487,30 @@ precondition
                 // Get the first adjacent face
                 const face = qNthElement(adjacentFaces, 0);
                 
-                // Evaluate the face tangent plane at the closest point
-                const faceTangentPlane = evFaceTangentPlane(context, {
+                // Get the tangent plane of the face at the edge
+                const edgeTangentPlane = evEdgeTangentPlaneAtEdge(context, {
+                    "edge" : curveEdge,
                     "face" : face,
-                    "parameter" : vector(0.5, 0.5)
+                    "parameter" : cutParameter,
+                    "arcLengthParameterization" : true
                 });
                 
-                // Use surface normal as the x-axis for the cutting plane
-                planeXAxis = faceTangentPlane.normal;
+                // Use the face normal as the cutting plane normal for better orientation
+                // This ensures cuts are perpendicular to the surface
+                cuttingPlaneNormal = edgeTangentPlane.normal;
             }
         }
         
-        // Create a plane perpendicular to the curve at the cut position
-        // The plane normal is along the tangent, and we'll sketch on this plane
-        const sketchPlane = plane(cutPosition, planeNormal, planeXAxis);
+        // For the x-axis of the sketch plane, use the tangent direction
+        // This way the rectangle width will be along the curve
+        const sketchXAxis = tangentLine.direction;
+        
+        // Create a sketch plane perpendicular to the curve at the cut position
+        // The plane is oriented with:
+        // - Normal: perpendicular to curve (into the material)
+        // - X-axis: along the curve tangent (for cut width)
+        // - Y-axis: will be perpendicular to both (for cut depth)
+        const sketchPlane = plane(cutPosition, cuttingPlaneNormal, sketchXAxis);
         
         // Create a sketch on this plane for the cut profile
         const sketchId = id + ("cutSketch" ~ cutIndex);
@@ -510,21 +519,18 @@ precondition
         });
         
         // Draw a rectangle representing the cut
-        // The rectangle should be:
-        // - Width: cutWidth (in the x direction of the sketch plane)
-        // - Height: cutDepth (in the y direction, going into the material)
-        // - Positioned so it goes from the surface down to cutDepth
+        // The rectangle is oriented:
+        // - X direction (horizontal): along the curve, width = cutWidth + extensions
+        // - Y direction (vertical): perpendicular to surface, depth = cutDepth
+        // - The cut starts at Y=0 (at the surface) and goes down to Y=cutDepth
         
-        // Calculate the half-width for centering the cut
-        const halfWidth = cutWidth / 2;
-        
-        // Calculate extension in perpendicular direction
+        // Calculate the total width including extensions
         const totalWidth = cutWidth + 2 * cutExtension;
         const halfTotalWidth = totalWidth / 2;
         
-        // Draw the rectangle
-        // Bottom left corner: (-halfWidth, 0)
-        // Top right corner: (halfWidth, cutDepth)
+        // Draw the rectangle for the cut profile
+        // Corner 1: (-halfWidth, 0) - top left at surface
+        // Corner 2: (halfWidth, cutDepth) - bottom right at cut depth
         skRectangle(cutSketch, "cutProfile", {
             "firstCorner" : vector(-halfTotalWidth, 0 * meter),
             "secondCorner" : vector(halfTotalWidth, cutDepth)
@@ -532,14 +538,16 @@ precondition
         
         skSolve(cutSketch);
         
-        // Extrude the sketch to create a solid that will be subtracted
+        // Extrude the sketch perpendicular to the sketch plane (into the material)
+        // This creates a solid body that will be subtracted from the board
         const extrudeId = id + ("cutExtrude" ~ cutIndex);
         
-        // Extrude in both directions perpendicular to the sketch plane
-        // This ensures the cut goes through the entire board thickness
+        // The extrude direction should be perpendicular to the sketch plane
+        // going into the board material (along the cutting plane normal)
+        // We need to extrude far enough to ensure the cut goes through the entire board
         opExtrude(context, extrudeId, {
             "entities" : qSketchRegion(sketchId),
-            "direction" : planeNormal,
+            "direction" : cuttingPlaneNormal,
             "endBound" : BoundingType.BLIND,
             "endDepth" : boardThickness,
             "startBound" : BoundingType.BLIND,
