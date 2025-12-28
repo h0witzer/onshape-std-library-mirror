@@ -818,9 +818,9 @@ precondition
     // Calculate required total bend angle from curvature and arc length
     const totalBendAngle = abs(bendCurvature) * totalArcLength;
     
-    // Calculate number of cuts needed (convert angle ratio to unitless number)
+    // Calculate number of cuts needed - division of angles gives unitless ratio
     const angleRatio = totalBendAngle / kerfAngle;
-    const numberOfCuts = ceil(angleRatio / radian * radian); // Convert to unitless then ceil
+    const numberOfCuts = ceil(angleRatio); // angleRatio is already unitless
     
     // Calculate cut spacing
     const cutSpacing = totalArcLength / (numberOfCuts + 1);
@@ -892,6 +892,9 @@ precondition
 {
     const halfWidth = cutWidth / 2;
     
+    // Track successful cuts
+    var successfulCuts = 0;
+    
     for (var cutIndex = 0; cutIndex < solution.numberOfCuts; cutIndex += 1)
     {
         const cutParameter = solution.cutParameters[cutIndex];
@@ -923,9 +926,11 @@ precondition
         const faceNormalAtCut = faceTangentPlane.normal;
         
         // Compute Y-axis and check orientation relative to face normal
-        // If Y-axis points away from material (positive dot with face normal), flip the normal
+        // Face normal points OUTWARD. Y-axis should point INTO material (negative dot product).
+        // If dot(testYAxis, faceNormal) < 0, Y points inward → correct orientation, use extrudeDirection
+        // If dot(testYAxis, faceNormal) > 0, Y points outward → wrong orientation, use -extrudeDirection
         const testYAxis = cross(extrudeDirection, sketchXAxis);
-        const sketchNormal = (dot(testYAxis, faceNormalAtCut) > 0) ? -extrudeDirection : extrudeDirection;
+        const sketchNormal = (dot(testYAxis, faceNormalAtCut) < 0) ? extrudeDirection : -extrudeDirection;
         
         const sketchPlane = plane(cutPosition, sketchNormal, sketchXAxis);
         
@@ -965,20 +970,21 @@ precondition
         skSolve(cutSketch);
         
         // Extrude the kerf profile through the board thickness
-        // Direction is the face normal (into the material)
+        // Face normal points OUTWARD from material, so extrude in positive normal direction to cut INTO material
         const extrudeId = id + ("cutExtrude" ~ cutIndex);
         
         try
         {
             opExtrude(context, extrudeId, {
                 "entities" : qSketchRegion(sketchId),
-                "direction" : -faceNormalAtCut,  // Extrude into the material
+                "direction" : faceNormalAtCut,  // Face normal points outward, so positive cuts inward
                 "endBound" : BoundingType.BLIND,
                 "depth" : boardThickness,
                 "operationType" : BooleanOperationType.SUBTRACTION,
                 "defaultScope" : false,
                 "booleanScope" : solidBody
             });
+            successfulCuts += 1;
         }
         catch
         {
@@ -986,7 +992,8 @@ precondition
         }
     }
     
-    return true;
+    // Return true only if at least one cut was successful
+    return successfulCuts > 0;
 }
 
 
