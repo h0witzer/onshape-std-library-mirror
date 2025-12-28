@@ -923,14 +923,62 @@ precondition
         // Get the actual curvature value (with sign) for the bend direction
         const actualBendCurvature = isBendAlongMax ? faceCurvature.maxCurvature : faceCurvature.minCurvature;
         
-        // For negative curvature (concave from this face), we need to place cuts on opposite side of material
-        // because kerfs must be on the tighter (inside) radius of the bend
+        // For positive curvature (convex from this face), the selected face is the tension side
+        // We need to place cuts on the opposite (compression) side
+        // For negative curvature (concave from this face), this face is already the compression side
         const faceNormal = faceTangentPlane.normal;
-        const isNegativeCurvature = actualBendCurvature < 0 * meter^-1;
+        const isPositiveCurvature = actualBendCurvature > 0 * meter^-1;
         
-        // Offset the cut position to opposite face if curvature is negative
-        const adjustedCutPosition = isNegativeCurvature ? 
-            cutPosition + (faceNormal * boardThickness) : 
+        // Measure actual board thickness using evDistance to opposite face
+        var measuredThickness = boardThickness; // fallback
+        
+        // Find opposite face for accurate thickness measurement
+        const ownerBody = qOwnerBody(bendFace);
+        const allFaces = qOwnedByBody(ownerBody, EntityType.FACE);
+        const candidateFaces = evaluateQuery(context, qSubtraction(allFaces, bendFace));
+        
+        var closestOppositeFace = undefined;
+        var minDistance = 1000000 * meter;
+        
+        for (var candidateFace in candidateFaces)
+        {
+            const candidatePlane = try silent(evFaceTangentPlane(context, {
+                "face" : candidateFace,
+                "parameter" : vector(0.5, 0.5)
+            }));
+            
+            if (candidatePlane != undefined)
+            {
+                const candidateNormal = candidatePlane.normal;
+                const candidatePoint = candidatePlane.origin;
+                
+                // Check if normals are anti-parallel (opposite face)
+                if (dot(faceNormal, candidateNormal) < -0.9)
+                {
+                    // Check if candidate is behind the selected face
+                    const directionVector = candidatePoint - cutPosition;
+                    if (dot(directionVector, faceNormal) < 0 * meter)
+                    {
+                        // Measure distance between faces
+                        const distanceResult = try silent(evDistance(context, {
+                            "side0" : bendFace,
+                            "side1" : candidateFace
+                        }));
+                        
+                        if (distanceResult != undefined && distanceResult.distance < minDistance)
+                        {
+                            minDistance = distanceResult.distance;
+                            closestOppositeFace = candidateFace;
+                            measuredThickness = distanceResult.distance;
+                        }
+                    }
+                }
+            }
+        }
+        
+        // Offset the cut position to opposite face if curvature is positive (convex)
+        const adjustedCutPosition = isPositiveCurvature ? 
+            cutPosition + (faceNormal * measuredThickness) : 
             cutPosition;
         
         // The sketch plane should be perpendicular to the extrude direction
@@ -957,11 +1005,11 @@ precondition
         // Future enhancement: sample face curvature to create proper curved sides
         // 
         // Sketch coordinate system:
-        // - Normal = minDirection (extrude direction through material thickness)
+        // - Normal = minDirection (extrude direction, points OUT of material)
         // - X-axis = maxDirection (along bend curve)
         // - Y-axis = cross(normal, X) = perpendicular to both
         // 
-        // Rectangle drawn in NEGATIVE Y direction (opposite of normal = INTO material):
+        // Rectangle drawn in POSITIVE Y direction (INTO material, opposite of normal):
         skLineSegment(cutSketch, "line1", {
             "start" : vector(-halfWidth, 0 * meter),
             "end" : vector(halfWidth, 0 * meter)
@@ -969,16 +1017,16 @@ precondition
         
         skLineSegment(cutSketch, "line2", {
             "start" : vector(halfWidth, 0 * meter),
-            "end" : vector(halfWidth, -cutDepth)
+            "end" : vector(halfWidth, cutDepth)
         });
         
         skLineSegment(cutSketch, "line3", {
-            "start" : vector(halfWidth, -cutDepth),
-            "end" : vector(-halfWidth, -cutDepth)
+            "start" : vector(halfWidth, cutDepth),
+            "end" : vector(-halfWidth, cutDepth)
         });
         
         skLineSegment(cutSketch, "line4", {
-            "start" : vector(-halfWidth, -cutDepth),
+            "start" : vector(-halfWidth, cutDepth),
             "end" : vector(-halfWidth, 0 * meter)
         });
         
