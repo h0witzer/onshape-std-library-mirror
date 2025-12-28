@@ -818,8 +818,9 @@ precondition
     // Calculate required total bend angle from curvature and arc length
     const totalBendAngle = abs(bendCurvature) * totalArcLength;
     
-    // Calculate number of cuts needed
-    const numberOfCuts = ceil(totalBendAngle / kerfAngle);
+    // Calculate number of cuts needed (convert angle ratio to unitless number)
+    const angleRatio = totalBendAngle / kerfAngle;
+    const numberOfCuts = ceil(angleRatio / radian * radian); // Convert to unitless then ceil
     
     // Calculate cut spacing
     const cutSpacing = totalArcLength / (numberOfCuts + 1);
@@ -909,12 +910,26 @@ precondition
         });
         
         // The sketch plane should be perpendicular to the extrude direction
-        // Extrude direction is the minDirection (less curvy direction, into material)
-        // So sketch normal = minDirection
-        // X-axis = maxDirection (along the curvy direction)
-        // Y-axis = face normal (for cut depth)
-        const sketchNormal = faceCurvature.minDirection;  // Less curvy direction (extrude direction)
-        const sketchXAxis = faceCurvature.maxDirection;    // Curvy direction (along bend)
+        // Extrude direction is the minDirection (less curvy direction, into material thickness)
+        // Sketch plane orientation:
+        // - Normal: minDirection (extrude direction, perpendicular to bend)
+        // - X-axis: maxDirection (along the bend curve)
+        // - Y-axis: cross(normal, x) (cut depth direction)
+        const extrudeDirection = faceCurvature.minDirection;
+        const sketchNormal = extrudeDirection;
+        const sketchXAxis = faceCurvature.maxDirection;
+        
+        // Ensure consistent orientation - face normal should point outward from material
+        // The cut depth (Y-axis) should point into the material
+        const faceNormalAtCut = faceTangentPlane.normal;
+        const sketchYAxis = cross(sketchNormal, sketchXAxis);
+        
+        // Check if Y-axis points into material or away - we want it pointing into material
+        // If dot product with face normal is positive, Y points away, so flip the axes
+        if (dot(sketchYAxis, faceNormalAtCut) > 0)
+        {
+            sketchNormal = -sketchNormal;
+        }
         
         const sketchPlane = plane(cutPosition, sketchNormal, sketchXAxis);
         
@@ -923,7 +938,13 @@ precondition
             "sketchPlane" : sketchPlane
         });
         
-        // Draw rectangular kerf profile in sketch coordinates
+        // Draw kerf profile for bent surface (not a simple rectangle)
+        // The geometry has 4 lines:
+        // - 2 perpendicular lines at cut depth dimension (top and bottom of kerf)
+        // - 2 offset curves from the bending curve (sides follow the bend)
+        //
+        // For now, we'll use a rectangular approximation
+        // Future enhancement: sample face curvature to create proper curved sides
         // X-axis is along the bend curve, Y-axis is into the material (cut depth)
         skLineSegment(cutSketch, "line1", {
             "start" : vector(-halfWidth, 0 * meter),
@@ -948,12 +969,14 @@ precondition
         skSolve(cutSketch);
         
         // Extrude the kerf profile through the board thickness
+        // Direction is the face normal (into the material)
         const extrudeId = id + ("cutExtrude" ~ cutIndex);
         
         try
         {
             opExtrude(context, extrudeId, {
                 "entities" : qSketchRegion(sketchId),
+                "direction" : -faceNormalAtCut,  // Extrude into the material
                 "endBound" : BoundingType.BLIND,
                 "depth" : boardThickness,
                 "operationType" : BooleanOperationType.SUBTRACTION,
