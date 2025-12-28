@@ -911,13 +911,22 @@ precondition
             "parameter" : vector(cutParameter, 0.5)
         });
         
+        // Determine which direction has greater curvature using absolute values
+        // (curvature can be negative, we care about magnitude)
+        const minCurvMagnitude = abs(faceCurvature.minCurvature);
+        const maxCurvMagnitude = abs(faceCurvature.maxCurvature);
+        
+        // The direction with maximum curvature magnitude is the bend direction
+        // The direction with minimum curvature magnitude is the extrude direction
+        const isBendAlongMax = maxCurvMagnitude > minCurvMagnitude;
+        
         // The sketch plane should be perpendicular to the extrude direction
-        // Sketch plane orientation (directly from face principal curvatures):
-        // - Normal: minDirection (perpendicular to bend, extrude direction through thickness)
-        // - X-axis: maxDirection (along the bend curve, the curvier direction)
+        // Sketch plane orientation:
+        // - Normal: direction with MINIMUM curvature magnitude (perpendicular to bend, extrude direction)
+        // - X-axis: direction with MAXIMUM curvature magnitude (along the bend curve, the curvier direction)
         // - Y-axis: cross(normal, X-axis) = direction for cut depth
-        const sketchNormal = faceCurvature.minDirection;
-        const sketchXAxis = faceCurvature.maxDirection;
+        const sketchNormal = isBendAlongMax ? faceCurvature.minDirection : faceCurvature.maxDirection;
+        const sketchXAxis = isBendAlongMax ? faceCurvature.maxDirection : faceCurvature.minDirection;
         
         const sketchPlane = plane(cutPosition, sketchNormal, sketchXAxis);
         
