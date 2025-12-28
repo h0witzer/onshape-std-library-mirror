@@ -17,7 +17,7 @@ import(path : "1e97dc34e0d8907329a69da7", version : "806f058e8aae45b01b222494");
 /**
  * 3D Kerf Bending feature for CNC manufacturing.
  * Generates kerf cuts on solid bodies by selecting a face to bend along.
- * Automatically determines board thickness and uses the face's U/V curve for bending.
+ * Automatically determines board thickness and detects the curvier U/V curve for bending.
  */
 annotation { "Feature Type Name" : "Kerf Bending 3D" }
 export const kerfBending3D = defineFeature(function(context is Context, id is Id, definition is map)
@@ -25,9 +25,6 @@ export const kerfBending3D = defineFeature(function(context is Context, id is Id
     {
         annotation { "Name" : "Bend face", "Filter" : EntityType.FACE, "MaxNumberOfPicks" : 1, "Description" : "Face defining the bend surface" }
         definition.bendFace is Query;
-        
-        annotation { "Name" : "Curve direction", "UIHint" : UIHint.SHOW_LABEL }
-        definition.curveDirection is CurveDirection;
         
         annotation { "Name" : "Blade width" }
         isLength(definition.bladeWidth, BLEND_BOUNDS);
@@ -96,17 +93,82 @@ export const kerfBending3D = defineFeature(function(context is Context, id is Id
             }
         }
         
-        // Create an isoparametric curve on the face (U or V direction)
-        // This will be our bending curve
-        const curveFaceId = id + "bendCurve";
-        opCreateCurvesOnFace(context, curveFaceId, {
+        // Automatically detect which direction (U or V) is curvier
+        // Create temporary curves in both directions and measure their curvature
+        const testCurve1Id = id + "testCurve1";
+        const testCurve2Id = id + "testCurve2";
+        
+        // Create DIR1 (U-like) curve
+        opCreateCurvesOnFace(context, testCurve1Id, {
             "face" : definition.bendFace,
-            "curveCreationType" : (definition.curveDirection == CurveDirection.U_DIRECTION) ? 
-                FaceCurveCreationType.DIR1_ISO : FaceCurveCreationType.DIR2_ISO,
-            "parameters" : [0.5]  // Middle of the face
+            "curveCreationType" : FaceCurveCreationType.DIR1_ISO,
+            "parameters" : [0.5]
         });
         
-        const bendCurveEdge = qCreatedBy(curveFaceId, EntityType.EDGE);
+        // Create DIR2 (V-like) curve
+        opCreateCurvesOnFace(context, testCurve2Id, {
+            "face" : definition.bendFace,
+            "curveCreationType" : FaceCurveCreationType.DIR2_ISO,
+            "parameters" : [0.5]
+        });
+        
+        const curve1 = qCreatedBy(testCurve1Id, EntityType.EDGE);
+        const curve2 = qCreatedBy(testCurve2Id, EntityType.EDGE);
+        
+        // Measure average curvature for both curves
+        var curve1AvgCurvature = 0 / meter;
+        var curve2AvgCurvature = 0 / meter;
+        
+        try
+        {
+            // Sample curvature at multiple points along each curve
+            const numSamples = 10;
+            for (var i = 0; i <= numSamples; i += 1)
+            {
+                const param = i / numSamples;
+                
+                const curv1 = evEdgeCurvature(context, {
+                    "edge" : curve1,
+                    "parameter" : param,
+                    "arcLengthParameterization" : true
+                });
+                curve1AvgCurvature += abs(curv1.curvature);
+                
+                const curv2 = evEdgeCurvature(context, {
+                    "edge" : curve2,
+                    "parameter" : param,
+                    "arcLengthParameterization" : true
+                });
+                curve2AvgCurvature += abs(curv2.curvature);
+            }
+            
+            curve1AvgCurvature = curve1AvgCurvature / (numSamples + 1);
+            curve2AvgCurvature = curve2AvgCurvature / (numSamples + 1);
+        }
+        
+        // Choose the curvier direction
+        const useDIR1 = curve1AvgCurvature > curve2AvgCurvature;
+        
+        println("DIR1 average curvature: " ~ toString(curve1AvgCurvature));
+        println("DIR2 average curvature: " ~ toString(curve2AvgCurvature));
+        println("Using " ~ (useDIR1 ? "DIR1" : "DIR2") ~ " as bend curve (curvier direction)");
+        
+        // Use the curvier curve as our bend curve
+        const bendCurveEdge = useDIR1 ? curve1 : curve2;
+        
+        // Delete the unused test curve
+        if (useDIR1)
+        {
+            opDeleteBodies(context, id + "deleteTest2", {
+                "entities" : qCreatedBy(testCurve2Id, EntityType.BODY)
+            });
+        }
+        else
+        {
+            opDeleteBodies(context, id + "deleteTest1", {
+                "entities" : qCreatedBy(testCurve1Id, EntityType.BODY)
+            });
+        }
         
         // Use default minimum spacing if not specified
         const minimumCutSpacing = definition.showAdvanced ? 
@@ -167,21 +229,10 @@ export const kerfBending3D = defineFeature(function(context is Context, id is Id
         println("Successfully generated " ~ solution.numberOfCuts ~ " 3D kerf cuts");
     },
     {
-        curveDirection : CurveDirection.U_DIRECTION,
         bladeWidth : 2.7 * millimeter,
         cutDepth : 16 * millimeter,
         showDebug : true,
         showAdvanced : false
     });
 
-/**
- * Enum for curve direction on face
- */
-export enum CurveDirection
-{
-    annotation { "Name" : "U direction" }
-    U_DIRECTION,
-    annotation { "Name" : "V direction" }
-    V_DIRECTION
-}
 
