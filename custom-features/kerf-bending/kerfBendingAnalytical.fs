@@ -818,9 +818,8 @@ precondition
     // Calculate required total bend angle from curvature and arc length
     const totalBendAngle = abs(bendCurvature) * totalArcLength;
     
-    // Calculate number of cuts needed - division of angles gives unitless ratio
-    const angleRatio = totalBendAngle / kerfAngle;
-    const numberOfCuts = ceil(angleRatio); // angleRatio is already unitless
+    // Calculate number of cuts needed - explicitly convert to unitless for ceil()
+    const numberOfCuts = ceil((totalBendAngle / kerfAngle) / radian);
     
     // Calculate cut spacing
     const cutSpacing = totalArcLength / (numberOfCuts + 1);
@@ -915,22 +914,16 @@ precondition
         // The sketch plane should be perpendicular to the extrude direction
         // Extrude direction is the minDirection (less curvy direction, into material thickness)
         // Sketch plane orientation:
-        // - Normal: minDirection (extrude direction, perpendicular to bend)
-        // - X-axis: maxDirection (along the bend curve)
-        // - Y-axis: cross(normal, x) (cut depth direction)
+        // - Normal: perpendicular to bend curve (extrude direction, the less curvy direction)
+        // - X-axis: along the bend curve (maxDirection, the curvier direction)
+        // - Y-axis: cut depth direction (into material)
         const extrudeDirection = faceCurvature.minDirection;
         const sketchXAxis = faceCurvature.maxDirection;
-        
-        // Ensure consistent orientation - face normal should point outward from material
-        // The cut depth (Y-axis) should point into the material
         const faceNormalAtCut = faceTangentPlane.normal;
         
-        // Compute Y-axis and check orientation relative to face normal
-        // Face normal points OUTWARD. Y-axis should point INTO material (negative dot product).
-        // If dot(testYAxis, faceNormal) < 0, Y points inward → correct orientation, use extrudeDirection
-        // If dot(testYAxis, faceNormal) > 0, Y points outward → wrong orientation, use -extrudeDirection
-        const testYAxis = cross(extrudeDirection, sketchXAxis);
-        const sketchNormal = (dot(testYAxis, faceNormalAtCut) < 0) ? extrudeDirection : -extrudeDirection;
+        // Always use minDirection as sketch normal (extrude direction)
+        // This is perpendicular to the bend curve by definition of principal curvatures
+        const sketchNormal = extrudeDirection;
         
         const sketchPlane = plane(cutPosition, sketchNormal, sketchXAxis);
         
@@ -969,18 +962,15 @@ precondition
         
         skSolve(cutSketch);
         
-        // Extrude the kerf profile through the board thickness
-        // Face normal points OUTWARD from material, so extrude in positive normal direction to cut INTO material
+        // Extrude the kerf profile through all material (testing mode)
         const extrudeId = id + ("cutExtrude" ~ cutIndex);
         
         try
         {
             opExtrude(context, extrudeId, {
                 "entities" : qSketchRegion(sketchId),
-                "direction" : faceNormalAtCut,  // Face normal points outward, so positive cuts inward
-                "endBound" : BoundingType.BLIND,
-                "depth" : boardThickness,
-                "operationType" : BooleanOperationType.SUBTRACTION,
+                "endBound" : BoundingType.THROUGH_ALL,
+                "operationType" : NewBodyOperationType.REMOVE,
                 "defaultScope" : false,
                 "booleanScope" : solidBody
             });
