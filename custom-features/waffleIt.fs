@@ -387,7 +387,7 @@ export function generateSlotsForSliceSets(context is Context, featureIdPrefix is
             const sliceBody = qCreatedBy(set0SliceIds[set0Index] + "extrudeRectangle", EntityType.BODY);
             if (!isQueryEmpty(context, sliceBody))
             {
-                const copyId = featureIdPrefix + sliceSets[0].setLabel + "Copy" + set0Index;
+                const copyId = featureIdPrefix + "slotCopy" + sliceSets[0].setLabel + set0Index;
                 opPattern(context, copyId, {
                             "entities" : sliceBody,
                             "transforms" : [identityTransform()],
@@ -402,7 +402,7 @@ export function generateSlotsForSliceSets(context is Context, featureIdPrefix is
             const sliceBody = qCreatedBy(set1SliceIds[set1Index] + "extrudeRectangle", EntityType.BODY);
             if (!isQueryEmpty(context, sliceBody))
             {
-                const copyId = featureIdPrefix + sliceSets[1].setLabel + "Copy" + set1Index;
+                const copyId = featureIdPrefix + "slotCopy" + sliceSets[1].setLabel + set1Index;
                 opPattern(context, copyId, {
                             "entities" : sliceBody,
                             "transforms" : [identityTransform()],
