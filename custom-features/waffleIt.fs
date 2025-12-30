@@ -17,6 +17,8 @@ import(path : "onshape/std/sheetMetalUtils.fs", version : "2815.0");
 import(path : "onshape/std/evaluate.fs", version : "2815.0");
 import(path : "onshape/std/topologyUtils.fs", version : "2815.0");
 import(path : "onshape/std/attributes.fs", version : "2815.0");
+import(path : "onshape/std/primitives.fs", version : "2815.0");
+import(path : "onshape/std/fillSurface.fs", version : "2815.0");
 
 annotation { "Feature Type Name" : "Waffle It" }
 export const sheetMetalStart = defineSheetMetalFeature(function(context is Context, id is Id, definition is map)
@@ -256,20 +258,15 @@ export function generateSliceSet(context is Context, sliceSetDefinition is map) 
     println("  Depth range: [" ~ minDepth ~ ", " ~ maxDepth ~ "]");
     
     // Create a bounding box body to intersect with (ensures properly sized slices)
-    // The bounding box is created in world coordinates by transforming the oriented box corners
+    // Transform the bounding box corners from reference frame to world coordinates
     const boundingBoxId = featureIdPrefix + setLabel + "BoundingBox";
-    const boxSizeX = orientedBoundingBox.maxCorner[0] - orientedBoundingBox.minCorner[0];
-    const boxSizeY = orientedBoundingBox.maxCorner[1] - orientedBoundingBox.minCorner[1];
-    const boxSizeZ = orientedBoundingBox.maxCorner[2] - orientedBoundingBox.minCorner[2];
+    const corner1World = referenceFrameToWorldTransform * orientedBoundingBox.minCorner;
+    const corner2World = referenceFrameToWorldTransform * orientedBoundingBox.maxCorner;
     
-    // Create a box using opBox centered at the bounding box center
-    const boxCenterWorld = referenceFrameToWorldTransform * boxCenter;
-    const boxTransform = transform(boxCenterWorld, referenceFrameToWorldTransform.linear);
-    
-    opBox(context, boundingBoxId, {
-                "corner1" : vector(-boxSizeX/2, -boxSizeY/2, -boxSizeZ/2),
-                "corner2" : vector(boxSizeX/2, boxSizeY/2, boxSizeZ/2),
-                "cSys" : boxTransform
+    // Create a box using fCuboid with the transformed corners
+    fCuboid(context, boundingBoxId, {
+                "corner1" : corner1World,
+                "corner2" : corner2World
             });
     
     const boundingBoxBody = qCreatedBy(boundingBoxId, EntityType.BODY);
@@ -638,12 +635,19 @@ export function generateSliceSheet(context is Context, sliceId is Id, slicePlane
     // DEBUG: Visualize the intersection curves
     debug(context, intersectionCurveBodies, DebugColor.GREEN);
     
-    // Get the edges from the intersection curve bodies for extrusion
+    // Get the edges from the intersection curve bodies
     const intersectionEdges = qOwnedByBody(intersectionCurveBodies, EntityType.EDGE);
     
-    // Extrude the intersection curves to create the slice body
+    // Fill the edges to create a surface/face for extrusion
+    opFillSurface(context, sliceId + "fillSurface", {
+                "edgesOrWire" : intersectionEdges
+            });
+    
+    const filledSurface = qCreatedBy(sliceId + "fillSurface", EntityType.FACE);
+    
+    // Extrude the filled surface to create the slice body
     opExtrude(context, sliceId + "extrudeSlice", {
-                "entities" : intersectionEdges,
+                "entities" : filledSurface,
                 "direction" : extrusionDirection,
                 "endBound" : BoundingType.BLIND,
                 "endDepth" : materialThickness / 2,
