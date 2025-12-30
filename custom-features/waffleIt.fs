@@ -1,4 +1,4 @@
-// Laser It slices a selected body into a grid of extruded rectangles to prepare geometry for laser cutting.
+// Waffle It slices a selected body into a grid of extruded rectangles to prepare geometry for laser cutting.
 // Inputs:
 //  - selectedBody : Body query to slice
 //  - planeSpacing : Distance between slicing planes along the X and Y axes of the reference frame
@@ -170,10 +170,15 @@ export function generateSliceSet(context is Context, sliceSetDefinition is map) 
     // Calculate a perpendicular vector to the normal for determining rectangle dimensions
     // Choose the perpendicular that's most aligned with the up vector
     var rectangleWidthVector = cross(normalVector, upVector);
+    var actualUpVector = upVector;
+    
     if (norm(rectangleWidthVector) < TOLERANCE.zeroLength)
     {
         // If normal and up are parallel, pick an arbitrary perpendicular
+        // and recalculate a proper up vector that's perpendicular to normal
         rectangleWidthVector = perpendicularVector(normalVector);
+        actualUpVector = cross(normalVector, rectangleWidthVector);
+        actualUpVector = normalize(actualUpVector);
     }
     else
     {
@@ -238,7 +243,9 @@ export function generateSliceSet(context is Context, sliceSetDefinition is map) 
                            (rectangleHeightVector * rectangleCenterHeight);
         
         // Create the plane and transform it to world coordinates
-        const localPlane = plane(sliceOrigin, normalVector, upVector);
+        // Use rectangleHeightVector (calculated from normal x width) as the actual up vector
+        // This ensures the plane orientation matches the rectangle orientation
+        const localPlane = plane(sliceOrigin, normalVector, rectangleHeightVector);
         const slicePlane = referenceFrameToWorldTransform * localPlane;
         
         const sliceId = featureIdPrefix + setLabel + planeCounter;
@@ -365,8 +372,14 @@ export function trimSliceSetsToSolid(context is Context, featureIdPrefix is Id, 
         }
         
         // Create a trimmed slice set with the same metadata but only valid slice IDs
-        var trimmedSet = sliceSet;
-        trimmedSet.sliceIds = validSliceIds;
+        // Use proper object copying to avoid modifying the original sliceSet
+        var trimmedSet = {
+            "sliceIds" : validSliceIds,
+            "slicePlanes" : sliceSet.slicePlanes,
+            "setLabel" : sliceSet.setLabel,
+            "normalVector" : sliceSet.normalVector,
+            "upVector" : sliceSet.upVector
+        };
         trimmedSliceSets = append(trimmedSliceSets, trimmedSet);
     }
     
