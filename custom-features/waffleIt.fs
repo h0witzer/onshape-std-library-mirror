@@ -614,6 +614,24 @@ export function generateSliceSheet(context is Context, sliceId is Id, slicePlane
             });
 
     skSolve(sliceSketch);
+    
+    // DEBUG: Visualize the slice rectangle corners in world coordinates
+    const rectCorner1 = slicePlane.origin + slicePlane.x * (-rectangleWidth / 2) + slicePlane.y * (-rectangleHeight / 2);
+    const rectCorner2 = slicePlane.origin + slicePlane.x * (rectangleWidth / 2) + slicePlane.y * (-rectangleHeight / 2);
+    const rectCorner3 = slicePlane.origin + slicePlane.x * (rectangleWidth / 2) + slicePlane.y * (rectangleHeight / 2);
+    const rectCorner4 = slicePlane.origin + slicePlane.x * (-rectangleWidth / 2) + slicePlane.y * (rectangleHeight / 2);
+    
+    // Draw the rectangle edges in green
+    debug(context, rectCorner1, rectCorner2, DebugColor.GREEN);
+    debug(context, rectCorner2, rectCorner3, DebugColor.GREEN);
+    debug(context, rectCorner3, rectCorner4, DebugColor.GREEN);
+    debug(context, rectCorner4, rectCorner1, DebugColor.GREEN);
+    
+    // Draw corner points in magenta
+    debug(context, rectCorner1, DebugColor.MAGENTA);
+    debug(context, rectCorner2, DebugColor.MAGENTA);
+    debug(context, rectCorner3, DebugColor.MAGENTA);
+    debug(context, rectCorner4, DebugColor.MAGENTA);
 
     // Extrude a rectangular slice surrounding the object symmetrically
     // Use startBound and endBound with equal depths to achieve symmetric extrusion
