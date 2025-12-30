@@ -6,6 +6,7 @@
 //  - defRefFrame : Boolean to select a mate connector as the slicing reference frame
 //  - referenceFrame : Mate connector query when defRefFrame is true, defines the placement of the slicing grid
 //  - outputSheetMetal : Boolean to output results as sheet metal bodies
+//  - deleteInputBody : Boolean to delete the input body after the waffling operation is completed
 FeatureScript 2815;
 // import(path : "onshape/std/geometry.fs", version : "2815.0");
 import(path : "onshape/std/common.fs", version : "2815.0");
