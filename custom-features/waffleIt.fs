@@ -170,21 +170,19 @@ export function generateSliceSet(context is Context, sliceSetDefinition is map) 
     // Calculate a perpendicular vector to the normal for determining rectangle dimensions
     // Choose the perpendicular that's most aligned with the up vector
     var rectangleWidthVector = cross(normalVector, upVector);
-    var actualUpVector = upVector;
     
     if (norm(rectangleWidthVector) < TOLERANCE.zeroLength)
     {
         // If normal and up are parallel, pick an arbitrary perpendicular
-        // and recalculate a proper up vector that's perpendicular to normal
         rectangleWidthVector = perpendicularVector(normalVector);
-        actualUpVector = cross(normalVector, rectangleWidthVector);
-        actualUpVector = normalize(actualUpVector);
     }
     else
     {
         rectangleWidthVector = normalize(rectangleWidthVector);
     }
     
+    // Calculate rectangle height vector perpendicular to both normal and width
+    // This will be used as the actual up vector for plane orientation
     var rectangleHeightVector = cross(normalVector, rectangleWidthVector);
     rectangleHeightVector = normalize(rectangleHeightVector);
     
@@ -243,8 +241,9 @@ export function generateSliceSet(context is Context, sliceSetDefinition is map) 
                            (rectangleHeightVector * rectangleCenterHeight);
         
         // Create the plane and transform it to world coordinates
-        // Use rectangleHeightVector (calculated from normal x width) as the actual up vector
-        // This ensures the plane orientation matches the rectangle orientation
+        // Use rectangleHeightVector as the up vector (calculated as normal x width)
+        // This ensures consistent plane orientation with the rectangle geometry,
+        // regardless of whether the input upVector was valid or parallel to normal
         const localPlane = plane(sliceOrigin, normalVector, rectangleHeightVector);
         const slicePlane = referenceFrameToWorldTransform * localPlane;
         
@@ -438,14 +437,12 @@ export function generateSlotsForSliceSets(context is Context, featureIdPrefix is
         const set1SliceIds = sliceSets[1].sliceIds;
         generateCrossSlotGeometryForSlices(context, featureIdPrefix, set0SliceIds, set1SliceIds, referenceFrame);
     }
-    else
+    else if (size(sliceSets) != 2)
     {
-        // TODO: Implement generic N-set slot generation
-        // This would need to:
-        // 1. Determine which sets should have slots cut between them
-        // 2. For each pair, copy slices and find intersections
-        // 3. Split intersection cells appropriately based on set orientations
-        // 4. Subtract slot geometry from appropriate slice sets
+        // N-set slot generation not yet implemented
+        // For now, slices will be created without cross-slots when using non-standard configurations
+        // This is acceptable for single-set or 3+ set scenarios where slotting logic differs
+        // TODO: Implement generic N-set slot generation when needed for curve-based slicing
     }
 }
 
