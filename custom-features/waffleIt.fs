@@ -87,16 +87,6 @@ export const sheetMetalStart = defineSheetMetalFeature(function(context is Conte
 
         var referenceFrameToWorldTransform = toWorld(referenceFrame);
 
-        // DEBUG: Visualize the oriented bounding box for diagnostics
-        // The bounding box minCorner and maxCorner are in reference frame coordinates
-        println("Bounding box in reference frame:");
-        println("  Min: " ~ orientedBoundingBox.minCorner);
-        println("  Max: " ~ orientedBoundingBox.maxCorner);
-        println("  X range: [" ~ orientedBoundingBox.minCorner[0] ~ ", " ~ orientedBoundingBox.maxCorner[0] ~ "] = " ~ (orientedBoundingBox.maxCorner[0] - orientedBoundingBox.minCorner[0]));
-        println("  Y range: [" ~ orientedBoundingBox.minCorner[1] ~ ", " ~ orientedBoundingBox.maxCorner[1] ~ "] = " ~ (orientedBoundingBox.maxCorner[1] - orientedBoundingBox.minCorner[1]));
-        println("  Z range: [" ~ orientedBoundingBox.minCorner[2] ~ ", " ~ orientedBoundingBox.maxCorner[2] ~ "] = " ~ (orientedBoundingBox.maxCorner[2] - orientedBoundingBox.minCorner[2]));
-        
-        // DEBUG: Create construction points at bounding box corners in world coordinates
         const bbCorners = [
             orientedBoundingBox.minCorner,
             vector([orientedBoundingBox.maxCorner[0], orientedBoundingBox.minCorner[1], orientedBoundingBox.minCorner[2]]),
@@ -107,30 +97,6 @@ export const sheetMetalStart = defineSheetMetalFeature(function(context is Conte
             vector([orientedBoundingBox.minCorner[0], orientedBoundingBox.maxCorner[1], orientedBoundingBox.maxCorner[2]]),
             orientedBoundingBox.maxCorner
         ];
-        
-        println("Bounding box corners in world coordinates:");
-        for (var i = 0; i < size(bbCorners); i += 1)
-        {
-            const worldCorner = referenceFrameToWorldTransform * bbCorners[i];
-            println("  Corner " ~ i ~ ": " ~ worldCorner);
-            debug(context, worldCorner, DebugColor.BLUE);
-        }
-        
-        // DEBUG: Visualize bounding box edges in world coordinates
-        const edgePairs = [
-            [0, 1], [0, 2], [0, 3], // edges from min corner
-            [1, 4], [1, 5], // edges from x-max corner
-            [2, 4], [2, 6], // edges from y-max corner  
-            [3, 5], [3, 6], // edges from z-max corner
-            [4, 7], [5, 7], [6, 7] // edges to max corner
-        ];
-        
-        for (var pair in edgePairs)
-        {
-            const worldStart = referenceFrameToWorldTransform * bbCorners[pair[0]];
-            const worldEnd = referenceFrameToWorldTransform * bbCorners[pair[1]];
-            debug(context, worldStart, worldEnd, DebugColor.RED);
-        }
 
         // Build slice sets for X and Y orientations
         const xSliceSetDefinition = {
@@ -199,16 +165,17 @@ export const sheetMetalStart = defineSheetMetalFeature(function(context is Conte
 
     }, {});
 
-// Generate a set of slice bodies based on a slice set definition with arbitrary orientation.
-// This is a generic function that can handle any slice orientation, not just orthogonal X/Y axes.
+// Generate a set of slice bodies by creating planes at regular intervals along a normal direction,
+// intersecting each plane with a bounding box to get the slice profile, and extruding to create bodies.
+// Supports arbitrary slice orientations for future curve-based slicing features.
 // Inputs:
 //  - context : Execution context
 //  - sliceSetDefinition : Map containing:
 //      - featureIdPrefix : Base id for naming geometry
-//      - setLabel : String label for this set (e.g., "X", "Y", "Set0")
+//      - setLabel : String label for this set (e.g., "X", "Y")
 //      - normalVector : Normal vector for the slicing planes in reference frame coordinates
-//      - upVector : Up vector for orienting the slice rectangles in reference frame coordinates
-//      - planeSpacing : Distance between slices
+//      - upVector : Up vector for orienting the slices in reference frame coordinates
+//      - planeSpacing : Distance between consecutive slices
 //      - referenceFrameToWorldTransform : Transform from reference frame to world coordinates
 //      - materialThickness : Extrusion depth for the slices
 //      - orientedBoundingBox : Tight bounding box of the target body in reference frame coordinates
@@ -252,10 +219,6 @@ export function generateSliceSet(context is Context, sliceSetDefinition is map) 
         minDepth = min(minDepth, depthProjection);
         maxDepth = max(maxDepth, depthProjection);
     }
-    
-    // DEBUG: Output slice generation info
-    println("Slice set " ~ setLabel ~ ":");
-    println("  Depth range: [" ~ minDepth ~ ", " ~ maxDepth ~ "]");
     
     // Create a bounding box body to intersect with (ensures properly sized slices)
     // Transform the bounding box corners from reference frame to world coordinates
@@ -574,21 +537,18 @@ export function generateSlotsForSliceSets(context is Context, featureIdPrefix is
     }
 }
 
-// Generate a slice by creating a construction plane and using opIntersectFaces to find where it
-// intersects the bounding box, then extruding the resulting intersection curves.
-// This approach works for arbitrary slice orientations and ensures slices are properly sized.
+// Generate a single slice body by intersecting a construction plane with the bounding box to create
+// a closed profile curve, filling the curve to create a surface, and extruding to the material thickness.
+// The resulting slice body has START and END cap faces tagged with attributes for later processing.
 // Inputs:
-//  - sliceId : Unique Id prefix used for operations
+//  - sliceId : Unique Id prefix for all operations in this function
 //  - slicePlane : Plane definition representing the slice location and orientation
-//  - boundingBoxBody : The bounding box body to intersect with (creates properly sized slices)
-//  - extrusionDirection : Direction vector for the slice thickening
+//  - boundingBoxBody : Query for the bounding box body to intersect with
+//  - extrusionDirection : Direction vector for the slice thickening (perpendicular to slice plane)
 //  - materialThickness : Extrusion depth matching the stock thickness
 // Returns: none
 export function generateSliceSheet(context is Context, sliceId is Id, slicePlane is Plane, boundingBoxBody is Query, extrusionDirection is Vector, materialThickness is ValueWithUnits)
 {
-    // DEBUG: Output slice info
-    println("Generating slice " ~ sliceId);
-    
     // Create a construction plane at the slice location
     // Planes are infinite, so size parameters are just for UI visualization
     opPlane(context, sliceId + "plane", {
@@ -612,7 +572,6 @@ export function generateSliceSheet(context is Context, sliceId is Id, slicePlane
     catch
     {
         // No intersection found - clean up and skip this slice
-        println("  No intersection found for slice " ~ sliceId);
         opDeleteBodies(context, sliceId + "cleanupPlane", {
                     "entities" : constructionPlane
                 });
@@ -624,15 +583,11 @@ export function generateSliceSheet(context is Context, sliceId is Id, slicePlane
     // Check if any intersection curves were created
     if (isQueryEmpty(context, intersectionCurveBodies))
     {
-        println("  No intersection curves for slice " ~ sliceId);
         opDeleteBodies(context, sliceId + "cleanupPlane2", {
                     "entities" : constructionPlane
                 });
         return;
     }
-    
-    // DEBUG: Visualize the intersection curves
-    debug(context, intersectionCurveBodies, DebugColor.GREEN);
     
     // The intersection creates wire bodies - opFillSurface needs edges from those wire bodies
     // that form closed loops (which plane-box intersections produce)
@@ -641,6 +596,7 @@ export function generateSliceSheet(context is Context, sliceId is Id, slicePlane
             });
     
     const filledSurface = qCreatedBy(sliceId + "fillSurface", EntityType.FACE);
+    const filledSurfaceBody = qCreatedBy(sliceId + "fillSurface", EntityType.BODY);
     
     // Extrude the filled surface to create the slice body
     opExtrude(context, sliceId + "extrudeSlice", {
@@ -653,9 +609,6 @@ export function generateSliceSheet(context is Context, sliceId is Id, slicePlane
             });
     
     const sliceBody = qCreatedBy(sliceId + "extrudeSlice", EntityType.BODY);
-    
-    // DEBUG: Visualize the extruded slice body
-    debug(context, sliceBody, DebugColor.CYAN);
     
     // Tag the START cap face with an attribute
     const startCapFace = qCapEntity(sliceId + "extrudeSlice", CapType.START, EntityType.FACE);
@@ -673,9 +626,9 @@ export function generateSliceSheet(context is Context, sliceId is Id, slicePlane
                 "attribute" : true
             });
     
-    // Clean up temporary geometry
+    // Clean up temporary geometry including the filled surface body
     opDeleteBodies(context, sliceId + "cleanupTemp", {
-                "entities" : qUnion([constructionPlane, intersectionCurveBodies])
+                "entities" : qUnion([constructionPlane, intersectionCurveBodies, filledSurfaceBody])
             });
 }
 
@@ -879,7 +832,6 @@ export function convertSlicesToSheetMetal(context is Context, id is Id, trimmedS
     // Verify we have faces to convert
     if (isQueryEmpty(context, allStartCapFaces))
     {
-        println("  ERROR: No START cap faces found - returning");
         return;
     }
 
