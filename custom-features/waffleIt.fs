@@ -139,6 +139,129 @@ export const sheetMetalStart = defineSheetMetalFeature(function(context is Conte
 
     }, {});
 
+// Generate a set of slice bodies based on a slice set definition with arbitrary orientation.
+// This is a generic function that can handle any slice orientation, not just orthogonal X/Y axes.
+// Inputs:
+//  - context : Execution context
+//  - sliceSetDefinition : Map containing:
+//      - featureIdPrefix : Base id for naming geometry
+//      - setLabel : String label for this set (e.g., "X", "Y", "Set0")
+//      - normalVector : Normal vector for the slicing planes in reference frame coordinates
+//      - upVector : Up vector for orienting the slice rectangles in reference frame coordinates
+//      - planeSpacing : Distance between slices
+//      - referenceFrameToWorldTransform : Transform from reference frame to world coordinates
+//      - materialThickness : Extrusion depth for the slices
+//      - orientedBoundingBox : Tight bounding box of the target body in reference frame coordinates
+// Returns: map containing { slicePlanes, sliceIds, setLabel, normalVector, upVector }
+export function generateSliceSet(context is Context, sliceSetDefinition is map) returns map
+{
+    const featureIdPrefix = sliceSetDefinition.featureIdPrefix;
+    const setLabel = sliceSetDefinition.setLabel;
+    const normalVector = sliceSetDefinition.normalVector;
+    const upVector = sliceSetDefinition.upVector;
+    const planeSpacing = sliceSetDefinition.planeSpacing;
+    const referenceFrameToWorldTransform = sliceSetDefinition.referenceFrameToWorldTransform;
+    const materialThickness = sliceSetDefinition.materialThickness;
+    const orientedBoundingBox = sliceSetDefinition.orientedBoundingBox;
+    
+    var slicePlanes = [] as array;
+    var sliceIds = [] as array;
+    
+    // Calculate a perpendicular vector to the normal for determining rectangle dimensions
+    // Choose the perpendicular that's most aligned with the up vector
+    var rectangleWidthVector = cross(normalVector, upVector);
+    if (norm(rectangleWidthVector) < TOLERANCE.zeroLength)
+    {
+        // If normal and up are parallel, pick an arbitrary perpendicular
+        rectangleWidthVector = perpendicularVector(normalVector);
+    }
+    else
+    {
+        rectangleWidthVector = normalize(rectangleWidthVector);
+    }
+    
+    var rectangleHeightVector = cross(normalVector, rectangleWidthVector);
+    rectangleHeightVector = normalize(rectangleHeightVector);
+    
+    // Project bounding box onto the slice plane coordinate system to find rectangle dimensions
+    // Rectangle should be large enough to cover the entire bounding box
+    const boundingBoxCorners = [
+        orientedBoundingBox.minCorner,
+        vector([orientedBoundingBox.maxCorner[0], orientedBoundingBox.minCorner[1], orientedBoundingBox.minCorner[2]]),
+        vector([orientedBoundingBox.minCorner[0], orientedBoundingBox.maxCorner[1], orientedBoundingBox.minCorner[2]]),
+        vector([orientedBoundingBox.minCorner[0], orientedBoundingBox.minCorner[1], orientedBoundingBox.maxCorner[2]]),
+        vector([orientedBoundingBox.maxCorner[0], orientedBoundingBox.maxCorner[1], orientedBoundingBox.minCorner[2]]),
+        vector([orientedBoundingBox.maxCorner[0], orientedBoundingBox.minCorner[1], orientedBoundingBox.maxCorner[2]]),
+        vector([orientedBoundingBox.minCorner[0], orientedBoundingBox.maxCorner[1], orientedBoundingBox.maxCorner[2]]),
+        orientedBoundingBox.maxCorner
+    ];
+    
+    // Find the extent of the bounding box along each axis
+    var minWidth = dot(boundingBoxCorners[0], rectangleWidthVector);
+    var maxWidth = minWidth;
+    var minHeight = dot(boundingBoxCorners[0], rectangleHeightVector);
+    var maxHeight = minHeight;
+    var minDepth = dot(boundingBoxCorners[0], normalVector);
+    var maxDepth = minDepth;
+    
+    for (var corner in boundingBoxCorners)
+    {
+        const widthProjection = dot(corner, rectangleWidthVector);
+        const heightProjection = dot(corner, rectangleHeightVector);
+        const depthProjection = dot(corner, normalVector);
+        
+        minWidth = min(minWidth, widthProjection);
+        maxWidth = max(maxWidth, widthProjection);
+        minHeight = min(minHeight, heightProjection);
+        maxHeight = max(maxHeight, heightProjection);
+        minDepth = min(minDepth, depthProjection);
+        maxDepth = max(maxDepth, depthProjection);
+    }
+    
+    const rectangleWidth = maxWidth - minWidth;
+    const rectangleHeight = maxHeight - minHeight;
+    const rectangleCenterWidth = (maxWidth + minWidth) / 2;
+    const rectangleCenterHeight = (maxHeight + minHeight) / 2;
+    
+    // Calculate which plane indices are needed to cover the bounding box along the normal direction
+    const firstPlaneIndex = ceil(minDepth / planeSpacing);
+    const lastPlaneIndex = floor(maxDepth / planeSpacing);
+    
+    var planeCounter = 0;
+    for (var planeIndex = firstPlaneIndex; planeIndex <= lastPlaneIndex; planeIndex += 1)
+    {
+        const planeDepth = planeIndex * planeSpacing;
+        
+        // Calculate the plane origin in reference frame coordinates
+        const sliceOrigin = (normalVector * planeDepth) + 
+                           (rectangleWidthVector * rectangleCenterWidth) + 
+                           (rectangleHeightVector * rectangleCenterHeight);
+        
+        // Create the plane and transform it to world coordinates
+        const localPlane = plane(sliceOrigin, normalVector, upVector);
+        const slicePlane = referenceFrameToWorldTransform * localPlane;
+        
+        const sliceId = featureIdPrefix + setLabel + planeCounter;
+        const extrusionDirectionWorld = referenceFrameToWorldTransform.linear * normalVector;
+        
+        generateSliceSheet(context, sliceId, slicePlane, rectangleWidth, rectangleHeight, extrusionDirectionWorld, materialThickness);
+        
+        slicePlanes = append(slicePlanes, slicePlane);
+        sliceIds = append(sliceIds, sliceId);
+        planeCounter += 1;
+    }
+    
+    return {
+        "slicePlanes" : slicePlanes,
+        "sliceIds" : sliceIds,
+        "setLabel" : setLabel,
+        "normalVector" : normalVector,
+        "upVector" : upVector
+    };
+}
+
+// DEPRECATED: Legacy wrapper for generateSliceSet() that uses X/Y axis labels.
+// Maintained for backward compatibility with existing code.
 // Create rectangular sheets along a specified axis, returning plane definitions for downstream trimming and rib generation.
 // Inputs:
 //  - featureIdPrefix : Base id used when naming all geometry created in this helper
@@ -150,65 +273,108 @@ export const sheetMetalStart = defineSheetMetalFeature(function(context is Conte
 // Returns: map containing the ordered list of slice planes
 export function generateSheets(context is Context, featureIdPrefix is Id, axisLabel is string, orientedBoundingBox is Box3d, planeSpacing is ValueWithUnits, referenceFrameToWorldTransform is Transform, materialThickness is ValueWithUnits)
 {
-    var slicePlanes = [] as array;
-    var sliceIds = [] as array;
-    var planeNormal = vector([1, 0, 0]);
-    var planeUpVector = vector([0, 1, 0]);
-    var rectangleWidth = orientedBoundingBox.maxCorner[1] - orientedBoundingBox.minCorner[1];
-    var rectangleHeight = orientedBoundingBox.maxCorner[2] - orientedBoundingBox.minCorner[2];
-    var rectangleCenterY = (orientedBoundingBox.maxCorner[1] + orientedBoundingBox.minCorner[1]) / 2;
-    var rectangleCenterZ = (orientedBoundingBox.maxCorner[2] + orientedBoundingBox.minCorner[2]) / 2;
-    var boundingMin = orientedBoundingBox.minCorner[0];
-    var boundingMax = orientedBoundingBox.maxCorner[0];
-
+    // Map legacy X/Y axis labels to normal and up vectors
+    var normalVector = vector([1, 0, 0]);
+    var upVector = vector([0, 1, 0]);
+    
     if (axisLabel == "Y")
     {
-        planeNormal = vector([0, 1, 0]);
-        planeUpVector = vector([0, 0, 1]);
-        rectangleWidth = orientedBoundingBox.maxCorner[2] - orientedBoundingBox.minCorner[2];
-        rectangleHeight = orientedBoundingBox.maxCorner[0] - orientedBoundingBox.minCorner[0];
-        rectangleCenterY = (orientedBoundingBox.maxCorner[0] + orientedBoundingBox.minCorner[0]) / 2;
-        rectangleCenterZ = (orientedBoundingBox.maxCorner[2] + orientedBoundingBox.minCorner[2]) / 2;
-        boundingMin = orientedBoundingBox.minCorner[1];
-        boundingMax = orientedBoundingBox.maxCorner[1];
+        normalVector = vector([0, 1, 0]);
+        upVector = vector([0, 0, 1]);
     }
-
-    // Calculate which plane indices are needed to cover the bounding box
-    // Reference frame origin is at position 0, planes are at positions index * spacing
-    // We need planes from the first one >= boundingMin to the last one <= boundingMax
-    var firstPlaneIndex = ceil(boundingMin / planeSpacing);
-    var lastPlaneIndex = floor(boundingMax / planeSpacing);
-
-    var planeCounter = 0;
-    for (var planeIndex = firstPlaneIndex; planeIndex <= lastPlaneIndex; planeIndex += 1)
-    {
-        // Position planes relative to the reference frame origin (0 in reference frame coordinates)
-        // Planes can be at negative, zero, or positive positions depending on bounding box
-        var planeLocation = planeIndex * planeSpacing;
-        var sliceOrigin = vector([0 * millimeter, 0 * millimeter, 0 * millimeter]);
-
-        if (axisLabel == "X")
-        {
-            sliceOrigin = vector([planeLocation, rectangleCenterY, rectangleCenterZ]);
-        }
-        else
-        {
-            sliceOrigin = vector([rectangleCenterY, planeLocation, rectangleCenterZ]);
-        }
-
-        var slicePlane = referenceFrameToWorldTransform * plane(sliceOrigin, planeNormal, planeUpVector);
-        var sliceId = featureIdPrefix + axisLabel + planeCounter;
-        // Transform the extrusion direction from local to world coordinates
-        var extrusionDirectionWorld = referenceFrameToWorldTransform.linear * planeNormal;
-        generateSliceSheet(context, sliceId, slicePlane, rectangleWidth, rectangleHeight, extrusionDirectionWorld, materialThickness);
-        slicePlanes = append(slicePlanes, slicePlane);
-        sliceIds = append(sliceIds, sliceId);
-        planeCounter += 1;
-    }
-
-    return { "slicePlanes" : slicePlanes, "sliceIds" : sliceIds };
+    
+    // Call the generic slice set generation function
+    const sliceSetDefinition = {
+        "featureIdPrefix" : featureIdPrefix,
+        "setLabel" : axisLabel,
+        "normalVector" : normalVector,
+        "upVector" : upVector,
+        "planeSpacing" : planeSpacing,
+        "referenceFrameToWorldTransform" : referenceFrameToWorldTransform,
+        "materialThickness" : materialThickness,
+        "orientedBoundingBox" : orientedBoundingBox
+    };
+    
+    return generateSliceSet(context, sliceSetDefinition);
 }
 
+// Trim an array of slice sets to the target body, removing any slices that don't intersect.
+// Generic function that works with an arbitrary number of slice sets with any orientations.
+// Inputs:
+//  - context : Execution context
+//  - featureIdPrefix : Base id for operations
+//  - sliceSets : Array of slice set result maps, each containing { sliceIds, setLabel, ... }
+//  - targetBody : Body query representing the part being sliced
+// Returns: Array of trimmed slice sets with the same structure as input, containing only valid slice IDs
+export function trimSliceSetsToSolid(context is Context, featureIdPrefix is Id, sliceSets is array, targetBody is Query) returns array
+{
+    var trimmedSliceSets = [] as array;
+    
+    // Build queries for all slice bodies across all sets
+    var allSliceBodiesArray = [] as array;
+    for (var sliceSet in sliceSets)
+    {
+        const setBodies = qUnion(mapArray(sliceSet.sliceIds, function(sliceId)
+                {
+                    return qCreatedBy(sliceId + "extrudeRectangle", EntityType.BODY);
+                }));
+        allSliceBodiesArray = append(allSliceBodiesArray, setBodies);
+    }
+    const allSliceBodies = qUnion(allSliceBodiesArray);
+    
+    // Perform single batch SUBTRACT_COMPLEMENT operation for all slices at once
+    // This preserves attributes and is much more efficient than iterative operations
+    opBoolean(context, featureIdPrefix + "batchIntersection", {
+                "tools" : targetBody,
+                "targets" : allSliceBodies,
+                "operationType" : BooleanOperationType.SUBTRACT_COMPLEMENT,
+                "keepTools" : true
+            });
+    
+    // Check each slice in each set to see if it survived and has valid caps
+    for (var sliceSet in sliceSets)
+    {
+        var validSliceIds = [] as array;
+        const originalSliceIds = sliceSet.sliceIds;
+        
+        for (var sliceIndex = 0; sliceIndex < size(originalSliceIds); sliceIndex += 1)
+        {
+            const sliceId = originalSliceIds[sliceIndex];
+            const sliceBody = qCreatedBy(sliceId + "extrudeRectangle", EntityType.BODY);
+            
+            if (!isQueryEmpty(context, sliceBody))
+            {
+                // Verify START/END caps still exist using cap entity queries
+                const startCapQuery = qCapEntity(sliceId + "extrudeRectangle", CapType.START, EntityType.FACE);
+                const endCapQuery = qCapEntity(sliceId + "extrudeRectangle", CapType.END, EntityType.FACE);
+                const remainingStartCaps = evaluateQuery(context, startCapQuery);
+                const remainingEndCaps = evaluateQuery(context, endCapQuery);
+                
+                // Delete body if we don't have at least one face of each cap type
+                if (size(remainingStartCaps) == 0 || size(remainingEndCaps) == 0)
+                {
+                    opDeleteBodies(context, featureIdPrefix + "delete" + sliceSet.setLabel + "Slice" + sliceIndex, {
+                                "entities" : sliceBody
+                            });
+                    continue;
+                }
+                
+                // Store the slice ID for later robust cap querying
+                validSliceIds = append(validSliceIds, sliceId);
+            }
+        }
+        
+        // Create a trimmed slice set with the same metadata but only valid slice IDs
+        var trimmedSet = sliceSet;
+        trimmedSet.sliceIds = validSliceIds;
+        trimmedSliceSets = append(trimmedSliceSets, trimmedSet);
+    }
+    
+    return trimmedSliceSets;
+}
+
+// DEPRECATED: Legacy wrapper for trimSliceSetsToSolid() that uses separate X/Y parameters.
+// Maintained for backward compatibility with existing code.
 // Intersect every raw sheet with the target body to keep only the in-bounds material for follow-on trimming.
 // Uses a single batch SUBTRACT_COMPLEMENT operation for all slices to preserve attributes and avoid iterative issues.
 // Inputs:
@@ -218,103 +384,60 @@ export function generateSheets(context is Context, featureIdPrefix is Id, axisLa
 // Returns: map containing the slice IDs for robust cap querying
 export function trimSheetsToSolid(context is Context, featureIdPrefix is Id, xSliceResult is map, ySliceResult is map, targetBody is Query)
 {
-    var xSliceIds = [] as array;
-    var ySliceIds = [] as array;
-
-    const xOriginalSliceIds = xSliceResult.sliceIds;
-    const yOriginalSliceIds = ySliceResult.sliceIds;
-
-    // Build queries for all X and Y slice bodies
-    const allXSliceBodies = qUnion(mapArray(xOriginalSliceIds, function(sliceId)
-            {
-                return qCreatedBy(sliceId + "extrudeRectangle", EntityType.BODY);
-            }));
-    const allYSliceBodies = qUnion(mapArray(yOriginalSliceIds, function(sliceId)
-            {
-                return qCreatedBy(sliceId + "extrudeRectangle", EntityType.BODY);
-            }));
-    const allSliceBodies = qUnion([allXSliceBodies, allYSliceBodies]);
-
-    // Perform single batch SUBTRACT_COMPLEMENT operation for all slices at once
-    // This preserves attributes and is much more efficient than iterative operations
-    opBoolean(context, featureIdPrefix + "batchIntersection", {
-                "tools" : targetBody,
-                "targets" : allSliceBodies,
-                "operationType" : BooleanOperationType.SUBTRACT_COMPLEMENT,
-                "keepTools" : true
-            });
-
-    // Now check each slice to see if it survived and has valid caps
-    for (var xPlaneIndex = 0; xPlaneIndex < size(xOriginalSliceIds); xPlaneIndex += 1)
-    {
-        var xSliceId = xOriginalSliceIds[xPlaneIndex];
-        const sliceBody = qCreatedBy(xSliceId + "extrudeRectangle", EntityType.BODY);
-
-        if (!isQueryEmpty(context, sliceBody))
-        {
-            // Check if attributes persisted (they should with SUBTRACT_COMPLEMENT)
-            const attributedStartCaps = evaluateQuery(context, qHasAttribute(qOwnedByBody(sliceBody, EntityType.FACE), "laserItStartCap"));
-
-            // Also verify START/END caps still exist using cap entity queries
-            const startCapQuery = qCapEntity(xSliceId + "extrudeRectangle", CapType.START, EntityType.FACE);
-            const endCapQuery = qCapEntity(xSliceId + "extrudeRectangle", CapType.END, EntityType.FACE);
-            const remainingStartCaps = evaluateQuery(context, startCapQuery);
-            const remainingEndCaps = evaluateQuery(context, endCapQuery);
-
-            // Delete body if we don't have at least one face of each cap type
-            if (size(remainingStartCaps) == 0 || size(remainingEndCaps) == 0)
-            {
-                opDeleteBodies(context, featureIdPrefix + "deleteXSlice" + xPlaneIndex, {
-                            "entities" : sliceBody
-                        });
-                continue;
-            }
-
-            // Store the slice ID for later robust cap querying
-            xSliceIds = append(xSliceIds, xSliceId);
-        }
-    }
-
-    for (var yPlaneIndex = 0; yPlaneIndex < size(yOriginalSliceIds); yPlaneIndex += 1)
-    {
-        var ySliceId = yOriginalSliceIds[yPlaneIndex];
-        const sliceBody = qCreatedBy(ySliceId + "extrudeRectangle", EntityType.BODY);
-
-        if (!isQueryEmpty(context, sliceBody))
-        {
-            // Check if attributes persisted (they should with SUBTRACT_COMPLEMENT)
-            const attributedStartCaps = evaluateQuery(context, qHasAttribute(qOwnedByBody(sliceBody, EntityType.FACE), "laserItStartCap"));
-
-            // Also verify START/END caps still exist using cap entity queries
-            const startCapQuery = qCapEntity(ySliceId + "extrudeRectangle", CapType.START, EntityType.FACE);
-            const endCapQuery = qCapEntity(ySliceId + "extrudeRectangle", CapType.END, EntityType.FACE);
-            const remainingStartCaps = evaluateQuery(context, startCapQuery);
-            const remainingEndCaps = evaluateQuery(context, endCapQuery);
-
-            // Delete body if we don't have at least one face of each cap type
-            if (size(remainingStartCaps) == 0 || size(remainingEndCaps) == 0)
-            {
-                opDeleteBodies(context, featureIdPrefix + "deleteYSlice" + yPlaneIndex, {
-                            "entities" : sliceBody
-                        });
-                continue;
-            }
-
-            // Store the slice ID for later robust cap querying
-            ySliceIds = append(ySliceIds, ySliceId);
-        }
-    }
-
-    // With SUBTRACT_COMPLEMENT, the bodies are the original extrusion bodies (modified in place)
-    // So we return the slice IDs for querying the bodies, not the intersection operation IDs
+    // Convert X and Y slice results to array of slice sets
+    const sliceSets = [xSliceResult, ySliceResult];
+    
+    // Call the generic trimming function
+    const trimmedSliceSets = trimSliceSetsToSolid(context, featureIdPrefix, sliceSets, targetBody);
+    
+    // Extract X and Y results from the trimmed sets
+    const trimmedXSet = trimmedSliceSets[0];
+    const trimmedYSet = trimmedSliceSets[1];
+    
+    // Return in the legacy format for backward compatibility
     return {
-            "xIntersectionIds" : xSliceIds, // These are now the extrusion slice IDs, not boolean operation IDs
-            "yIntersectionIds" : ySliceIds,
-            "xSliceIds" : xSliceIds,
-            "ySliceIds" : ySliceIds
+            "xIntersectionIds" : trimmedXSet.sliceIds,
+            "yIntersectionIds" : trimmedYSet.sliceIds,
+            "xSliceIds" : trimmedXSet.sliceIds,
+            "ySliceIds" : trimmedYSet.sliceIds
         };
 }
 
+// Generate slots between multiple slice sets where they intersect.
+// Generic function that can handle N slice sets with arbitrary orientations.
+// NOTE: Current implementation is a placeholder - actual generic slot generation is complex
+// and depends on the specific slotting strategy (perpendicular pairs, all-to-all, etc.)
+// For now, this delegates to the legacy two-set perpendicular implementation when applicable.
+// Inputs:
+//  - context : Execution context
+//  - featureIdPrefix : Base id for operations
+//  - sliceSets : Array of trimmed slice sets with metadata (sliceIds, normalVector, etc.)
+//  - referenceFrame : Coordinate system for splitting operations
+// Returns: None (modifies slice bodies in place)
+export function generateSlotsForSliceSets(context is Context, featureIdPrefix is Id, sliceSets is array, referenceFrame is CoordSystem)
+{
+    // For now, handle the common case of exactly 2 perpendicular slice sets
+    // Future: Implement generic N-set slotting with configurable pairing strategies
+    if (size(sliceSets) == 2)
+    {
+        // Delegate to the existing two-set implementation
+        const set0SliceIds = sliceSets[0].sliceIds;
+        const set1SliceIds = sliceSets[1].sliceIds;
+        generateCrossSlotGeometryForSlices(context, featureIdPrefix, set0SliceIds, set1SliceIds, referenceFrame);
+    }
+    else
+    {
+        // TODO: Implement generic N-set slot generation
+        // This would need to:
+        // 1. Determine which sets should have slots cut between them
+        // 2. For each pair, copy slices and find intersections
+        // 3. Split intersection cells appropriately based on set orientations
+        // 4. Subtract slot geometry from appropriate slice sets
+    }
+}
+
+// DEPRECATED: Legacy function for two perpendicular slice sets (specifically X and Y).
+// This function is retained for backward compatibility and as a reference implementation.
 // Copy all trimmed slices, then perform a single subtract-complement boolean using the copied X slices as tools and the copied Y slices as targets.
 // This trims the Y slice set against all X slices in one operation to reduce the number of booleans required for slot generation.
 // Then split the resultant slot intersection cells in half by a length averaging heuristic to determine placement and assign
