@@ -19,7 +19,6 @@ import(path : "onshape/std/topologyUtils.fs", version : "2815.0");
 import(path : "onshape/std/attributes.fs", version : "2815.0");
 import(path : "onshape/std/primitives.fs", version : "2815.0");
 import(path : "onshape/std/fillSurface.fs", version : "2815.0");
-import(path : "onshape/std/transform.fs", version : "2815.0");
 
 annotation { "Feature Type Name" : "Waffle It" }
 export const sheetMetalStart = defineSheetMetalFeature(function(context is Context, id is Id, definition is map)
@@ -78,26 +77,14 @@ export const sheetMetalStart = defineSheetMetalFeature(function(context is Conte
                     });
         }
 
-        // Use the coordinate system to define the bounding box (start and end of planes).
-        // The reference frame position directly controls where the slicing grid is placed.
-        var orientedBoundingBox = evBox3d(context, {
+        // Get a world-aligned bounding box for creating the cuboid to intersect with
+        // This avoids transformation complexity - the cuboid will always be axis-aligned
+        var worldBoundingBox = evBox3d(context, {
                 "topology" : definition.selectedBody,
-                "cSys" : referenceFrame,
                 "tight" : true
             });
 
         var referenceFrameToWorldTransform = toWorld(referenceFrame);
-
-        const bbCorners = [
-            orientedBoundingBox.minCorner,
-            vector([orientedBoundingBox.maxCorner[0], orientedBoundingBox.minCorner[1], orientedBoundingBox.minCorner[2]]),
-            vector([orientedBoundingBox.minCorner[0], orientedBoundingBox.maxCorner[1], orientedBoundingBox.minCorner[2]]),
-            vector([orientedBoundingBox.minCorner[0], orientedBoundingBox.minCorner[1], orientedBoundingBox.maxCorner[2]]),
-            vector([orientedBoundingBox.maxCorner[0], orientedBoundingBox.maxCorner[1], orientedBoundingBox.minCorner[2]]),
-            vector([orientedBoundingBox.maxCorner[0], orientedBoundingBox.minCorner[1], orientedBoundingBox.maxCorner[2]]),
-            vector([orientedBoundingBox.minCorner[0], orientedBoundingBox.maxCorner[1], orientedBoundingBox.maxCorner[2]]),
-            orientedBoundingBox.maxCorner
-        ];
 
         // Build slice sets for X and Y orientations
         const xSliceSetDefinition = {
@@ -108,7 +95,7 @@ export const sheetMetalStart = defineSheetMetalFeature(function(context is Conte
             "planeSpacing" : definition.planeSpacing,
             "referenceFrameToWorldTransform" : referenceFrameToWorldTransform,
             "materialThickness" : definition.matThick,
-            "orientedBoundingBox" : orientedBoundingBox,
+            "worldBoundingBox" : worldBoundingBox,
             "targetBody" : definition.selectedBody
         };
         
@@ -120,7 +107,7 @@ export const sheetMetalStart = defineSheetMetalFeature(function(context is Conte
             "planeSpacing" : definition.planeSpacing,
             "referenceFrameToWorldTransform" : referenceFrameToWorldTransform,
             "materialThickness" : definition.matThick,
-            "orientedBoundingBox" : orientedBoundingBox,
+            "worldBoundingBox" : worldBoundingBox,
             "targetBody" : definition.selectedBody
         };
         
@@ -179,7 +166,7 @@ export const sheetMetalStart = defineSheetMetalFeature(function(context is Conte
 //      - planeSpacing : Distance between consecutive slices
 //      - referenceFrameToWorldTransform : Transform from reference frame to world coordinates
 //      - materialThickness : Extrusion depth for the slices
-//      - orientedBoundingBox : Tight bounding box of the target body in reference frame coordinates
+//      - worldBoundingBox : World-aligned bounding box of the target body
 // Returns: map containing { slicePlanes, sliceIds, setLabel, normalVector, upVector }
 export function generateSliceSet(context is Context, sliceSetDefinition is map) returns map
 {
@@ -190,51 +177,55 @@ export function generateSliceSet(context is Context, sliceSetDefinition is map) 
     const planeSpacing = sliceSetDefinition.planeSpacing;
     const referenceFrameToWorldTransform = sliceSetDefinition.referenceFrameToWorldTransform;
     const materialThickness = sliceSetDefinition.materialThickness;
-    const orientedBoundingBox = sliceSetDefinition.orientedBoundingBox;
+    const worldBoundingBox = sliceSetDefinition.worldBoundingBox;
     const targetBody = sliceSetDefinition.targetBody;
     
     var slicePlanes = [] as array;
     var sliceIds = [] as array;
     
-    // Calculate the center of the bounding box
-    const boxCenter = (orientedBoundingBox.minCorner + orientedBoundingBox.maxCorner) / 2;
+    // Calculate the center of the bounding box in reference frame coordinates
+    const boxCenterWorld = (worldBoundingBox.minCorner + worldBoundingBox.maxCorner) / 2;
+    const worldToReferenceTransform = inverse(referenceFrameToWorldTransform);
+    const boxCenter = worldToReferenceTransform * boxCenterWorld;
     
-    // Find the extent of the bounding box along the normal direction to determine slice positions
-    const boundingBoxCorners = [
-        orientedBoundingBox.minCorner,
-        vector([orientedBoundingBox.maxCorner[0], orientedBoundingBox.minCorner[1], orientedBoundingBox.minCorner[2]]),
-        vector([orientedBoundingBox.minCorner[0], orientedBoundingBox.maxCorner[1], orientedBoundingBox.minCorner[2]]),
-        vector([orientedBoundingBox.minCorner[0], orientedBoundingBox.minCorner[1], orientedBoundingBox.maxCorner[2]]),
-        vector([orientedBoundingBox.maxCorner[0], orientedBoundingBox.maxCorner[1], orientedBoundingBox.minCorner[2]]),
-        vector([orientedBoundingBox.maxCorner[0], orientedBoundingBox.minCorner[1], orientedBoundingBox.maxCorner[2]]),
-        vector([orientedBoundingBox.minCorner[0], orientedBoundingBox.maxCorner[1], orientedBoundingBox.maxCorner[2]]),
-        orientedBoundingBox.maxCorner
+    // Find the extent of the world bounding box along the normal direction in reference frame
+    const boundingBoxCornersWorld = [
+        worldBoundingBox.minCorner,
+        vector([worldBoundingBox.maxCorner[0], worldBoundingBox.minCorner[1], worldBoundingBox.minCorner[2]]),
+        vector([worldBoundingBox.minCorner[0], worldBoundingBox.maxCorner[1], worldBoundingBox.minCorner[2]]),
+        vector([worldBoundingBox.minCorner[0], worldBoundingBox.minCorner[1], worldBoundingBox.maxCorner[2]]),
+        vector([worldBoundingBox.maxCorner[0], worldBoundingBox.maxCorner[1], worldBoundingBox.minCorner[2]]),
+        vector([worldBoundingBox.maxCorner[0], worldBoundingBox.minCorner[1], worldBoundingBox.maxCorner[2]]),
+        vector([worldBoundingBox.minCorner[0], worldBoundingBox.maxCorner[1], worldBoundingBox.maxCorner[2]]),
+        worldBoundingBox.maxCorner
     ];
     
-    var minDepth = dot(boundingBoxCorners[0], normalVector);
-    var maxDepth = minDepth;
+    var minDepth = undefined;
+    var maxDepth = undefined;
     
-    for (var corner in boundingBoxCorners)
+    for (var cornerWorld in boundingBoxCornersWorld)
     {
-        const depthProjection = dot(corner, normalVector);
-        minDepth = min(minDepth, depthProjection);
-        maxDepth = max(maxDepth, depthProjection);
+        const cornerLocal = worldToReferenceTransform * cornerWorld;
+        const depthProjection = dot(cornerLocal, normalVector);
+        if (minDepth == undefined)
+        {
+            minDepth = depthProjection;
+            maxDepth = depthProjection;
+        }
+        else
+        {
+            minDepth = min(minDepth, depthProjection);
+            maxDepth = max(maxDepth, depthProjection);
+        }
     }
     
-    // Create a bounding box body to intersect with (ensures properly sized slices)
-    // Create the box in reference frame coordinates (axis-aligned) then transform to world
+    // Create a world-aligned bounding box body to intersect with (ensures properly sized slices)
     const boundingBoxId = featureIdPrefix + setLabel + "BoundingBox";
     
-    // Create axis-aligned box in reference frame coordinates
+    // Create axis-aligned box directly in world coordinates
     fCuboid(context, boundingBoxId, {
-                "corner1" : orientedBoundingBox.minCorner,
-                "corner2" : orientedBoundingBox.maxCorner
-            });
-    
-    // Transform the box from reference frame to world coordinates
-    opTransform(context, boundingBoxId + "transform", {
-                "bodies" : qCreatedBy(boundingBoxId, EntityType.BODY),
-                "transform" : referenceFrameToWorldTransform
+                "corner1" : worldBoundingBox.minCorner,
+                "corner2" : worldBoundingBox.maxCorner
             });
     
     const boundingBoxBody = qCreatedBy(boundingBoxId, EntityType.BODY);
