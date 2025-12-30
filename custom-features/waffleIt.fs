@@ -139,7 +139,8 @@ export const sheetMetalStart = defineSheetMetalFeature(function(context is Conte
             "planeSpacing" : definition.planeSpacing,
             "referenceFrameToWorldTransform" : referenceFrameToWorldTransform,
             "materialThickness" : definition.matThick,
-            "orientedBoundingBox" : orientedBoundingBox
+            "orientedBoundingBox" : orientedBoundingBox,
+            "targetBody" : definition.selectedBody
         };
         
         const ySliceSetDefinition = {
@@ -150,7 +151,8 @@ export const sheetMetalStart = defineSheetMetalFeature(function(context is Conte
             "planeSpacing" : definition.planeSpacing,
             "referenceFrameToWorldTransform" : referenceFrameToWorldTransform,
             "materialThickness" : definition.matThick,
-            "orientedBoundingBox" : orientedBoundingBox
+            "orientedBoundingBox" : orientedBoundingBox,
+            "targetBody" : definition.selectedBody
         };
         
         var xSliceResult = generateSliceSet(context, xSliceSetDefinition);
@@ -219,31 +221,15 @@ export function generateSliceSet(context is Context, sliceSetDefinition is map) 
     const referenceFrameToWorldTransform = sliceSetDefinition.referenceFrameToWorldTransform;
     const materialThickness = sliceSetDefinition.materialThickness;
     const orientedBoundingBox = sliceSetDefinition.orientedBoundingBox;
+    const targetBody = sliceSetDefinition.targetBody;
     
     var slicePlanes = [] as array;
     var sliceIds = [] as array;
     
-    // Calculate perpendicular vectors for the rectangle in the slice plane
-    // The upVector should map to the rectangle height direction
-    // The width direction should be perpendicular to both normal and upVector
-    var rectangleHeightVector = cross(cross(normalVector, upVector), normalVector);
+    // Calculate the center of the bounding box
+    const boxCenter = (orientedBoundingBox.minCorner + orientedBoundingBox.maxCorner) / 2;
     
-    if (norm(rectangleHeightVector) < TOLERANCE.zeroLength)
-    {
-        // If normal and up are parallel, pick an arbitrary perpendicular
-        rectangleHeightVector = perpendicularVector(normalVector);
-    }
-    else
-    {
-        rectangleHeightVector = normalize(rectangleHeightVector);
-    }
-    
-    // Calculate rectangle width vector perpendicular to both normal and height
-    var rectangleWidthVector = cross(normalVector, rectangleHeightVector);
-    rectangleWidthVector = normalize(rectangleWidthVector);
-    
-    // Project bounding box onto the slice plane coordinate system to find rectangle dimensions
-    // Rectangle should be large enough to cover the entire bounding box
+    // Find the extent of the bounding box along the normal direction to determine slice positions
     const boundingBoxCorners = [
         orientedBoundingBox.minCorner,
         vector([orientedBoundingBox.maxCorner[0], orientedBoundingBox.minCorner[1], orientedBoundingBox.minCorner[2]]),
@@ -255,39 +241,18 @@ export function generateSliceSet(context is Context, sliceSetDefinition is map) 
         orientedBoundingBox.maxCorner
     ];
     
-    // Find the extent of the bounding box along each axis
-    var minWidth = dot(boundingBoxCorners[0], rectangleWidthVector);
-    var maxWidth = minWidth;
-    var minHeight = dot(boundingBoxCorners[0], rectangleHeightVector);
-    var maxHeight = minHeight;
     var minDepth = dot(boundingBoxCorners[0], normalVector);
     var maxDepth = minDepth;
     
     for (var corner in boundingBoxCorners)
     {
-        const widthProjection = dot(corner, rectangleWidthVector);
-        const heightProjection = dot(corner, rectangleHeightVector);
         const depthProjection = dot(corner, normalVector);
-        
-        minWidth = min(minWidth, widthProjection);
-        maxWidth = max(maxWidth, widthProjection);
-        minHeight = min(minHeight, heightProjection);
-        maxHeight = max(maxHeight, heightProjection);
         minDepth = min(minDepth, depthProjection);
         maxDepth = max(maxDepth, depthProjection);
     }
     
-    const rectangleWidth = maxWidth - minWidth;
-    const rectangleHeight = maxHeight - minHeight;
-    const rectangleCenterWidth = (maxWidth + minWidth) / 2;
-    const rectangleCenterHeight = (maxHeight + minHeight) / 2;
-    
-    // DEBUG: Output rectangle dimensions for diagnostics
-    println("Slice set " ~ setLabel ~ " rectangle dimensions:");
-    println("  Width: " ~ rectangleWidth);
-    println("  Height: " ~ rectangleHeight);
-    println("  Width range: [" ~ minWidth ~ ", " ~ maxWidth ~ "]");
-    println("  Height range: [" ~ minHeight ~ ", " ~ maxHeight ~ "]");
+    // DEBUG: Output slice generation info
+    println("Slice set " ~ setLabel ~ ":");
     println("  Depth range: [" ~ minDepth ~ ", " ~ maxDepth ~ "]");
     
     // Calculate which plane indices are needed to cover the bounding box along the normal direction
@@ -300,21 +265,18 @@ export function generateSliceSet(context is Context, sliceSetDefinition is map) 
         const planeDepth = planeIndex * planeSpacing;
         
         // Calculate the plane origin in reference frame coordinates
-        const sliceOrigin = (normalVector * planeDepth) + 
-                           (rectangleWidthVector * rectangleCenterWidth) + 
-                           (rectangleHeightVector * rectangleCenterHeight);
+        // Position slice plane at correct depth along normal, centered on bounding box
+        const sliceOrigin = boxCenter + (normalVector * (planeDepth - dot(boxCenter, normalVector)));
         
         // Create the plane and transform it to world coordinates
-        // Use rectangleHeightVector as the up vector (calculated as normal x width)
-        // This ensures consistent plane orientation with the rectangle geometry,
-        // regardless of whether the input upVector was valid or parallel to normal
-        const localPlane = plane(sliceOrigin, normalVector, rectangleHeightVector);
+        // Use the input upVector for plane orientation
+        const localPlane = plane(sliceOrigin, normalVector, upVector);
         const slicePlane = referenceFrameToWorldTransform * localPlane;
         
         const sliceId = featureIdPrefix + setLabel + planeCounter;
         const extrusionDirectionWorld = referenceFrameToWorldTransform.linear * normalVector;
         
-        generateSliceSheet(context, sliceId, slicePlane, rectangleWidth, rectangleHeight, extrusionDirectionWorld, materialThickness);
+        generateSliceSheet(context, sliceId, slicePlane, targetBody, extrusionDirectionWorld, materialThickness);
         
         slicePlanes = append(slicePlanes, slicePlane);
         sliceIds = append(sliceIds, sliceId);
@@ -591,38 +553,70 @@ export function generateSlotsForSliceSets(context is Context, featureIdPrefix is
     }
 }
 
-// Sketch and extrude a rectangular slice at the provided plane, retaining the untrimmed sheet for a later boolean against the target body.
+// Generate a slice by creating a construction plane and using opIntersectFaces to find where it
+// intersects the target body, then extruding the resulting intersection curves.
+// This approach works for arbitrary slice orientations.
 // Inputs:
-//  - sliceId : Unique Id prefix used for sketch and extrusion operations
+//  - sliceId : Unique Id prefix used for operations
 //  - slicePlane : Plane definition representing the slice location and orientation
-//  - rectangleWidth, rectangleHeight : Dimensions of the rectangle sketched on the plane
+//  - targetBody : The body to slice through
 //  - extrusionDirection : Direction vector for the slice thickening
 //  - materialThickness : Extrusion depth matching the stock thickness
 // Returns: none
-export function generateSliceSheet(context is Context, sliceId is Id, slicePlane is Plane, rectangleWidth is ValueWithUnits, rectangleHeight is ValueWithUnits, extrusionDirection is Vector, materialThickness is ValueWithUnits)
+export function generateSliceSheet(context is Context, sliceId is Id, slicePlane is Plane, targetBody is Query, extrusionDirection is Vector, materialThickness is ValueWithUnits)
 {
-    // DEBUG: Output slice dimensions
-    println("Generating slice " ~ sliceId ~ ": width=" ~ rectangleWidth ~ ", height=" ~ rectangleHeight);
+    // DEBUG: Output slice info
+    println("Generating slice " ~ sliceId);
     
-    var sliceSketch = newSketchOnPlane(context, sliceId + "sketch", {
-            "sketchPlane" : slicePlane
-        });
-
-    skRectangle(sliceSketch, "rectangle1", {
-                "firstCorner" : -vector([rectangleWidth, rectangleHeight]) / 2,
-                "secondCorner" : vector([rectangleWidth, rectangleHeight]) / 2
+    // Create a construction plane at the slice location
+    opPlane(context, sliceId + "plane", {
+                "plane" : slicePlane,
+                "width" : 1000 * meter,  // Large size to ensure intersection
+                "height" : 1000 * meter
             });
-
-    skSolve(sliceSketch);
     
-    // DEBUG: Visualize the sketch geometry before deletion
-    debug(context, qCreatedBy(sliceId + "sketch", EntityType.EDGE), DebugColor.GREEN);
-    debug(context, qCreatedBy(sliceId + "sketch", EntityType.VERTEX), DebugColor.MAGENTA);
-
-    // Extrude a rectangular slice surrounding the object symmetrically
-    // Use startBound and endBound with equal depths to achieve symmetric extrusion
-    opExtrude(context, sliceId + "extrudeRectangle", {
-                "entities" : qSketchRegion(sliceId + "sketch", false),
+    const constructionPlane = qCreatedBy(sliceId + "plane", EntityType.BODY);
+    const planeFace = qOwnedByBody(constructionPlane, EntityType.FACE);
+    
+    // Get all faces from the target body
+    const targetFaces = qOwnedByBody(targetBody, EntityType.FACE);
+    
+    // Create intersection curves where the plane intersects the target body
+    try
+    {
+        opIntersectFaces(context, sliceId + "intersect", {
+                    "tools" : planeFace,
+                    "targets" : targetFaces
+                });
+    }
+    catch
+    {
+        // No intersection found - clean up and skip this slice
+        println("  No intersection found for slice " ~ sliceId);
+        opDeleteBodies(context, sliceId + "cleanup", {
+                    "entities" : constructionPlane
+                });
+        return;
+    }
+    
+    const intersectionCurves = qCreatedBy(sliceId + "intersect", EntityType.BODY);
+    
+    // Check if any intersection curves were created
+    if (isQueryEmpty(context, intersectionCurves))
+    {
+        println("  No intersection curves for slice " ~ sliceId);
+        opDeleteBodies(context, sliceId + "cleanup", {
+                    "entities" : constructionPlane
+                });
+        return;
+    }
+    
+    // DEBUG: Visualize the intersection curves
+    debug(context, intersectionCurves, DebugColor.GREEN);
+    
+    // Extrude the intersection curves to create the slice body
+    opExtrude(context, sliceId + "extrudeSlice", {
+                "entities" : intersectionCurves,
                 "direction" : extrusionDirection,
                 "endBound" : BoundingType.BLIND,
                 "endDepth" : materialThickness / 2,
@@ -630,29 +624,30 @@ export function generateSliceSheet(context is Context, sliceId is Id, slicePlane
                 "startDepth" : materialThickness / 2
             });
     
-    // DEBUG: Visualize the extruded body
-    debug(context, qCreatedBy(sliceId + "extrudeRectangle", EntityType.BODY), DebugColor.CYAN);
-
-    // Tag the START cap face with an attribute so it can be reliably found after topology changes
-    const startCapFace = qCapEntity(sliceId + "extrudeRectangle", CapType.START, EntityType.FACE);
-    const startCapCount = size(evaluateQuery(context, startCapFace));
+    const sliceBody = qCreatedBy(sliceId + "extrudeSlice", EntityType.BODY);
+    
+    // DEBUG: Visualize the extruded slice body
+    debug(context, sliceBody, DebugColor.CYAN);
+    
+    // Tag the START cap face with an attribute
+    const startCapFace = qCapEntity(sliceId + "extrudeSlice", CapType.START, EntityType.FACE);
     setAttribute(context, {
                 "entities" : startCapFace,
                 "name" : "laserItStartCap",
                 "attribute" : true
             });
-
-    // Tag the END cap face with an attribute so it can be reliably found after topology changes
-    const endCapFace = qCapEntity(sliceId + "extrudeRectangle", CapType.END, EntityType.FACE);
-    const endCapCount = size(evaluateQuery(context, endCapFace));
+    
+    // Tag the END cap face with an attribute
+    const endCapFace = qCapEntity(sliceId + "extrudeSlice", CapType.END, EntityType.FACE);
     setAttribute(context, {
                 "entities" : endCapFace,
                 "name" : "laserItEndCap",
                 "attribute" : true
             });
-
-    opDeleteBodies(context, sliceId + "deleteSketch", {
-                "entities" : qCreatedBy(sliceId + "sketch")
+    
+    // Clean up temporary geometry
+    opDeleteBodies(context, sliceId + "cleanup", {
+                "entities" : qUnion([constructionPlane, intersectionCurves])
             });
 }
 
