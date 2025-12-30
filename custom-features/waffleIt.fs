@@ -130,7 +130,7 @@ export const sheetMetalStart = defineSheetMetalFeature(function(context is Conte
         }
 
         // Delete the input body if requested
-        if (definition.deleteInputBody == true)
+        if (definition.deleteInputBody)
         {
             opDeleteBodies(context, id + "deleteInputBody", {
                         "entities" : definition.selectedBody
