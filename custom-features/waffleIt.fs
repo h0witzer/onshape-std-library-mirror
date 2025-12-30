@@ -86,7 +86,13 @@ export const sheetMetalStart = defineSheetMetalFeature(function(context is Conte
         var referenceFrameToWorldTransform = toWorld(referenceFrame);
 
         // DEBUG: Visualize the oriented bounding box for diagnostics
-        debug(context, orientedBoundingBox);
+        // The bounding box minCorner and maxCorner are in reference frame coordinates
+        println("Bounding box in reference frame:");
+        println("  Min: " ~ orientedBoundingBox.minCorner);
+        println("  Max: " ~ orientedBoundingBox.maxCorner);
+        println("  X range: [" ~ orientedBoundingBox.minCorner[0] ~ ", " ~ orientedBoundingBox.maxCorner[0] ~ "] = " ~ (orientedBoundingBox.maxCorner[0] - orientedBoundingBox.minCorner[0]));
+        println("  Y range: [" ~ orientedBoundingBox.minCorner[1] ~ ", " ~ orientedBoundingBox.maxCorner[1] ~ "] = " ~ (orientedBoundingBox.maxCorner[1] - orientedBoundingBox.minCorner[1]));
+        println("  Z range: [" ~ orientedBoundingBox.minCorner[2] ~ ", " ~ orientedBoundingBox.maxCorner[2] ~ "] = " ~ (orientedBoundingBox.maxCorner[2] - orientedBoundingBox.minCorner[2]));
         
         // DEBUG: Create construction points at bounding box corners in world coordinates
         const bbCorners = [
@@ -100,10 +106,28 @@ export const sheetMetalStart = defineSheetMetalFeature(function(context is Conte
             orientedBoundingBox.maxCorner
         ];
         
+        println("Bounding box corners in world coordinates:");
         for (var i = 0; i < size(bbCorners); i += 1)
         {
             const worldCorner = referenceFrameToWorldTransform * bbCorners[i];
+            println("  Corner " ~ i ~ ": " ~ worldCorner);
             debug(context, worldCorner, DebugColor.BLUE);
+        }
+        
+        // DEBUG: Visualize bounding box edges in world coordinates
+        const edgePairs = [
+            [0, 1], [0, 2], [0, 3], // edges from min corner
+            [1, 4], [1, 5], // edges from x-max corner
+            [2, 4], [2, 6], // edges from y-max corner  
+            [3, 5], [3, 6], // edges from z-max corner
+            [4, 7], [5, 7], [6, 7] // edges to max corner
+        ];
+        
+        for (var pair in edgePairs)
+        {
+            const worldStart = referenceFrameToWorldTransform * bbCorners[pair[0]];
+            const worldEnd = referenceFrameToWorldTransform * bbCorners[pair[1]];
+            debug(context, worldStart, worldEnd, DebugColor.RED);
         }
 
         // Build slice sets for X and Y orientations
