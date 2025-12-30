@@ -635,13 +635,35 @@ export function generateSliceSheet(context is Context, sliceId is Id, slicePlane
     // DEBUG: Visualize the intersection curves
     debug(context, intersectionCurveBodies, DebugColor.GREEN);
     
-    // Get the edges from the intersection curve bodies
+    // opIntersectFaces creates wire bodies containing edges
+    // We need to query the edges from these wire bodies
     const intersectionEdges = qOwnedByBody(intersectionCurveBodies, EntityType.EDGE);
     
+    // Check if we have edges to fill
+    if (isQueryEmpty(context, intersectionEdges))
+    {
+        println("  No edges found in intersection curves for slice " ~ sliceId);
+        opDeleteBodies(context, sliceId + "cleanup", {
+                    "entities" : qUnion([constructionPlane, intersectionCurveBodies])
+                });
+        return;
+    }
+    
     // Fill the edges to create a surface/face for extrusion
-    opFillSurface(context, sliceId + "fillSurface", {
-                "edgesOrWire" : intersectionEdges
-            });
+    try
+    {
+        opFillSurface(context, sliceId + "fillSurface", {
+                    "edgesOrWire" : intersectionEdges
+                });
+    }
+    catch (error)
+    {
+        println("  Failed to fill surface for slice " ~ sliceId ~ ": " ~ error);
+        opDeleteBodies(context, sliceId + "cleanup", {
+                    "entities" : qUnion([constructionPlane, intersectionCurveBodies])
+                });
+        return;
+    }
     
     const filledSurface = qCreatedBy(sliceId + "fillSurface", EntityType.FACE);
     
@@ -678,7 +700,7 @@ export function generateSliceSheet(context is Context, sliceId is Id, slicePlane
     
     // Clean up temporary geometry
     opDeleteBodies(context, sliceId + "cleanup", {
-                "entities" : qUnion([constructionPlane, intersectionCurves])
+                "entities" : qUnion([constructionPlane, intersectionCurveBodies])
             });
 }
 
