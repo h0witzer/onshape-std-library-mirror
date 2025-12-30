@@ -223,24 +223,24 @@ export function generateSliceSet(context is Context, sliceSetDefinition is map) 
     var slicePlanes = [] as array;
     var sliceIds = [] as array;
     
-    // Calculate a perpendicular vector to the normal for determining rectangle dimensions
-    // Choose the perpendicular that's most aligned with the up vector
-    var rectangleWidthVector = cross(normalVector, upVector);
+    // Calculate perpendicular vectors for the rectangle in the slice plane
+    // The upVector should map to the rectangle height direction
+    // The width direction should be perpendicular to both normal and upVector
+    var rectangleHeightVector = cross(cross(normalVector, upVector), normalVector);
     
-    if (norm(rectangleWidthVector) < TOLERANCE.zeroLength)
+    if (norm(rectangleHeightVector) < TOLERANCE.zeroLength)
     {
         // If normal and up are parallel, pick an arbitrary perpendicular
-        rectangleWidthVector = perpendicularVector(normalVector);
+        rectangleHeightVector = perpendicularVector(normalVector);
     }
     else
     {
-        rectangleWidthVector = normalize(rectangleWidthVector);
+        rectangleHeightVector = normalize(rectangleHeightVector);
     }
     
-    // Calculate rectangle height vector perpendicular to both normal and width
-    // This will be used as the actual up vector for plane orientation
-    var rectangleHeightVector = cross(normalVector, rectangleWidthVector);
-    rectangleHeightVector = normalize(rectangleHeightVector);
+    // Calculate rectangle width vector perpendicular to both normal and height
+    var rectangleWidthVector = cross(normalVector, rectangleHeightVector);
+    rectangleWidthVector = normalize(rectangleWidthVector);
     
     // Project bounding box onto the slice plane coordinate system to find rectangle dimensions
     // Rectangle should be large enough to cover the entire bounding box
