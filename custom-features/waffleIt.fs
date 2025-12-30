@@ -85,6 +85,27 @@ export const sheetMetalStart = defineSheetMetalFeature(function(context is Conte
 
         var referenceFrameToWorldTransform = toWorld(referenceFrame);
 
+        // DEBUG: Visualize the oriented bounding box for diagnostics
+        debug(context, orientedBoundingBox);
+        
+        // DEBUG: Create construction points at bounding box corners in world coordinates
+        const bbCorners = [
+            orientedBoundingBox.minCorner,
+            vector([orientedBoundingBox.maxCorner[0], orientedBoundingBox.minCorner[1], orientedBoundingBox.minCorner[2]]),
+            vector([orientedBoundingBox.minCorner[0], orientedBoundingBox.maxCorner[1], orientedBoundingBox.minCorner[2]]),
+            vector([orientedBoundingBox.minCorner[0], orientedBoundingBox.minCorner[1], orientedBoundingBox.maxCorner[2]]),
+            vector([orientedBoundingBox.maxCorner[0], orientedBoundingBox.maxCorner[1], orientedBoundingBox.minCorner[2]]),
+            vector([orientedBoundingBox.maxCorner[0], orientedBoundingBox.minCorner[1], orientedBoundingBox.maxCorner[2]]),
+            vector([orientedBoundingBox.minCorner[0], orientedBoundingBox.maxCorner[1], orientedBoundingBox.maxCorner[2]]),
+            orientedBoundingBox.maxCorner
+        ];
+        
+        for (var i = 0; i < size(bbCorners); i += 1)
+        {
+            const worldCorner = referenceFrameToWorldTransform * bbCorners[i];
+            debug(context, worldCorner, DebugColor.BLUE);
+        }
+
         // Build slice sets for X and Y orientations
         const xSliceSetDefinition = {
             "featureIdPrefix" : id,
@@ -130,7 +151,7 @@ export const sheetMetalStart = defineSheetMetalFeature(function(context is Conte
                         {
                             return qCreatedBy(sliceId + "extrudeRectangle", EntityType.BODY);
                         }));
-                normalizeSliceGeometryForLasercutting(context, id + sliceSet.setLabel + "Normalize", allSliceBodies, definition.matThick);
+                normalizeSliceGeometryForLasercutting(context, id + "normalize" + sliceSet.setLabel, allSliceBodies, definition.matThick);
             }
         }
 
@@ -236,6 +257,14 @@ export function generateSliceSet(context is Context, sliceSetDefinition is map) 
     const rectangleHeight = maxHeight - minHeight;
     const rectangleCenterWidth = (maxWidth + minWidth) / 2;
     const rectangleCenterHeight = (maxHeight + minHeight) / 2;
+    
+    // DEBUG: Output rectangle dimensions for diagnostics
+    println("Slice set " ~ setLabel ~ " rectangle dimensions:");
+    println("  Width: " ~ rectangleWidth);
+    println("  Height: " ~ rectangleHeight);
+    println("  Width range: [" ~ minWidth ~ ", " ~ maxWidth ~ "]");
+    println("  Height range: [" ~ minHeight ~ ", " ~ maxHeight ~ "]");
+    println("  Depth range: [" ~ minDepth ~ ", " ~ maxDepth ~ "]");
     
     // Calculate which plane indices are needed to cover the bounding box along the normal direction
     const firstPlaneIndex = ceil(minDepth / planeSpacing);
@@ -548,6 +577,9 @@ export function generateSlotsForSliceSets(context is Context, featureIdPrefix is
 // Returns: none
 export function generateSliceSheet(context is Context, sliceId is Id, slicePlane is Plane, rectangleWidth is ValueWithUnits, rectangleHeight is ValueWithUnits, extrusionDirection is Vector, materialThickness is ValueWithUnits)
 {
+    // DEBUG: Output slice dimensions
+    println("Generating slice " ~ sliceId ~ ": width=" ~ rectangleWidth ~ ", height=" ~ rectangleHeight);
+    
     var sliceSketch = newSketchOnPlane(context, sliceId + "sketch", {
             "sketchPlane" : slicePlane
         });
