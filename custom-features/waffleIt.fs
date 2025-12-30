@@ -18,7 +18,7 @@ import(path : "onshape/std/evaluate.fs", version : "2815.0");
 import(path : "onshape/std/topologyUtils.fs", version : "2815.0");
 import(path : "onshape/std/attributes.fs", version : "2815.0");
 import(path : "onshape/std/primitives.fs", version : "2815.0");
-import(path : "onshape/std/loft.fs", version : "2815.0");
+import(path : "onshape/std/fillSurface.fs", version : "2815.0");
 
 annotation { "Feature Type Name" : "Waffle It" }
 export const sheetMetalStart = defineSheetMetalFeature(function(context is Context, id is Id, definition is map)
@@ -635,39 +635,24 @@ export function generateSliceSheet(context is Context, sliceId is Id, slicePlane
     // DEBUG: Visualize the intersection curves
     debug(context, intersectionCurveBodies, DebugColor.GREEN);
     
-    // opIntersectFaces creates wire bodies containing edges
-    // We need to query the edges from these wire bodies
-    const intersectionEdges = qOwnedByBody(intersectionCurveBodies, EntityType.EDGE);
-    
-    // Check if we have edges to fill
-    if (isQueryEmpty(context, intersectionEdges))
-    {
-        println("  No edges found in intersection curves for slice " ~ sliceId);
-        opDeleteBodies(context, sliceId + "cleanupCurves", {
-                    "entities" : qUnion([constructionPlane, intersectionCurveBodies])
-                });
-        return;
-    }
-    
-    // Use opLoft with a single profile to create a surface from the intersection curve
-    // This works better than opFillSurface for closed edge loops from plane-solid intersections
+    // The intersection creates wire bodies - opFillSurface works directly with wire bodies
+    // that form closed loops (which plane-box intersections produce)
     try
     {
-        opLoft(context, sliceId + "loftSurface", {
-                    "profileSubqueries" : [intersectionEdges],
-                    "makeSolid" : false
+        opFillSurface(context, sliceId + "fillSurface", {
+                    "edgesOrWire" : intersectionCurveBodies
                 });
     }
     catch (error)
     {
-        println("  Failed to loft surface for slice " ~ sliceId ~ ": " ~ error);
+        println("  Failed to fill surface for slice " ~ sliceId ~ ": " ~ error);
         opDeleteBodies(context, sliceId + "cleanupSurface", {
                     "entities" : qUnion([constructionPlane, intersectionCurveBodies])
                 });
         return;
     }
     
-    const filledSurface = qCreatedBy(sliceId + "loftSurface", EntityType.FACE);
+    const filledSurface = qCreatedBy(sliceId + "fillSurface", EntityType.FACE);
     
     // Extrude the filled surface to create the slice body
     opExtrude(context, sliceId + "extrudeSlice", {
