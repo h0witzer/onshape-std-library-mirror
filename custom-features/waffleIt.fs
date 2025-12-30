@@ -18,7 +18,6 @@ import(path : "onshape/std/evaluate.fs", version : "2815.0");
 import(path : "onshape/std/topologyUtils.fs", version : "2815.0");
 import(path : "onshape/std/attributes.fs", version : "2815.0");
 import(path : "onshape/std/primitives.fs", version : "2815.0");
-import(path : "onshape/std/fillSurface.fs", version : "2815.0");
 
 annotation { "Feature Type Name" : "Waffle It" }
 export const sheetMetalStart = defineSheetMetalFeature(function(context is Context, id is Id, definition is map)
@@ -590,86 +589,84 @@ export function generateSliceSheet(context is Context, sliceId is Id, slicePlane
     println("Generating slice " ~ sliceId);
     
     // Create a construction plane at the slice location
+    // Make it large enough to encompass the bounding box
     opPlane(context, sliceId + "plane", {
                 "plane" : slicePlane,
-                "width" : 1000 * meter,  // Large size to ensure intersection
+                "width" : 1000 * meter,
                 "height" : 1000 * meter
             });
     
     const constructionPlane = qCreatedBy(sliceId + "plane", EntityType.BODY);
     const planeFace = qOwnedByBody(constructionPlane, EntityType.FACE);
     
-    // Get all faces from the bounding box body
-    const boundingBoxFaces = qOwnedByBody(boundingBoxBody, EntityType.FACE);
+    // Extrude the plane face a tiny amount to create a thin solid sheet
+    // This allows us to use boolean intersection with the bounding box solid
+    opExtrude(context, sliceId + "thickenPlane", {
+                "entities" : planeFace,
+                "direction" : extrusionDirection,
+                "endBound" : BoundingType.BLIND,
+                "endDepth" : 0.001 * meter,  // Very thin temporary thickness
+                "startBound" : BoundingType.BLIND,
+                "startDepth" : 0.001 * meter
+            });
     
-    // Create intersection curves where the plane intersects the bounding box
+    const thickenedPlane = qCreatedBy(sliceId + "thickenPlane", EntityType.BODY);
+    
+    // Now use boolean intersection to trim the thickened plane to the bounding box
     try
     {
-        opIntersectFaces(context, sliceId + "intersect", {
-                    "tools" : planeFace,
-                    "targets" : boundingBoxFaces
-                });
-    }
-    catch
-    {
-        // No intersection found - clean up and skip this slice
-        println("  No intersection found for slice " ~ sliceId);
-        opDeleteBodies(context, sliceId + "cleanupPlane", {
-                    "entities" : constructionPlane
-                });
-        return;
-    }
-    
-    const intersectionCurveBodies = qCreatedBy(sliceId + "intersect", EntityType.BODY);
-    
-    // Check if any intersection curves were created
-    if (isQueryEmpty(context, intersectionCurveBodies))
-    {
-        println("  No intersection curves for slice " ~ sliceId);
-        opDeleteBodies(context, sliceId + "cleanupPlane2", {
-                    "entities" : constructionPlane
-                });
-        return;
-    }
-    
-    // DEBUG: Visualize the intersection curves
-    debug(context, intersectionCurveBodies, DebugColor.GREEN);
-    
-    // opIntersectFaces creates wire bodies containing edges
-    // We need to query the edges from these wire bodies
-    const intersectionEdges = qOwnedByBody(intersectionCurveBodies, EntityType.EDGE);
-    
-    // Check if we have edges to fill
-    if (isQueryEmpty(context, intersectionEdges))
-    {
-        println("  No edges found in intersection curves for slice " ~ sliceId);
-        opDeleteBodies(context, sliceId + "cleanupCurves", {
-                    "entities" : qUnion([constructionPlane, intersectionCurveBodies])
-                });
-        return;
-    }
-    
-    // Fill the edges to create a surface/face for extrusion
-    try
-    {
-        opFillSurface(context, sliceId + "fillSurface", {
-                    "edgesOrWire" : intersectionEdges
+        opBoolean(context, sliceId + "trimPlane", {
+                    "tools" : thickenedPlane,
+                    "targets" : boundingBoxBody,
+                    "operationType" : BooleanOperationType.INTERSECTION,
+                    "keepTools" : false,
+                    "keepTargets" : true
                 });
     }
     catch (error)
     {
-        println("  Failed to fill surface for slice " ~ sliceId ~ ": " ~ error);
-        opDeleteBodies(context, sliceId + "cleanupSurface", {
-                    "entities" : qUnion([constructionPlane, intersectionCurveBodies])
+        // No intersection - plane doesn't intersect bounding box
+        println("  No intersection with bounding box for slice " ~ sliceId ~ ": " ~ error);
+        return;
+    }
+    
+    const trimmedSolid = qCreatedBy(sliceId + "trimPlane", EntityType.BODY);
+    
+    // Check if trimming produced a result
+    if (isQueryEmpty(context, trimmedSolid))
+    {
+        println("  Trimmed solid is empty for slice " ~ sliceId);
+        return;
+    }
+    
+    // Now we need to delete the trimmed solid and re-extrude at the correct thickness
+    // First, get one of the planar faces from the trimmed solid as our slice profile
+    const trimmedFaces = qOwnedByBody(trimmedSolid, EntityType.FACE);
+    const planarFaces = qParallelPlane(trimmedFaces, slicePlane);
+    
+    if (isQueryEmpty(context, planarFaces))
+    {
+        println("  No planar faces found in trimmed solid for slice " ~ sliceId);
+        opDeleteBodies(context, sliceId + "cleanupTrimmed", {
+                    "entities" : trimmedSolid
                 });
         return;
     }
     
-    const filledSurface = qCreatedBy(sliceId + "fillSurface", EntityType.FACE);
+    // Use the first planar face as our slice profile
+    const sliceProfileFace = qNthElement(planarFaces, 0);
     
-    // Extrude the filled surface to create the slice body
+    // DEBUG: Visualize the slice profile
+    debug(context, qOwnerBody(sliceProfileFace), DebugColor.GREEN);
+    
+    // Delete the temporary trimmed solid, we only needed it to get the profile
+    opDeleteBodies(context, sliceId + "cleanupTrimmed", {
+                "entities" : trimmedSolid
+            });
+    
+    // Now extrude the profile face at the correct thickness to create the final slice
     opExtrude(context, sliceId + "extrudeSlice", {
-                "entities" : filledSurface,
+                "entities" : sliceProfileFace,
                 "direction" : extrusionDirection,
                 "endBound" : BoundingType.BLIND,
                 "endDepth" : materialThickness / 2,
@@ -696,11 +693,6 @@ export function generateSliceSheet(context is Context, sliceId is Id, slicePlane
                 "entities" : endCapFace,
                 "name" : "laserItEndCap",
                 "attribute" : true
-            });
-    
-    // Clean up temporary geometry
-    opDeleteBodies(context, sliceId + "cleanupTemp", {
-                "entities" : qUnion([constructionPlane, intersectionCurveBodies])
             });
 }
 
