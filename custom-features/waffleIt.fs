@@ -19,6 +19,7 @@ import(path : "onshape/std/topologyUtils.fs", version : "2815.0");
 import(path : "onshape/std/attributes.fs", version : "2815.0");
 import(path : "onshape/std/primitives.fs", version : "2815.0");
 import(path : "onshape/std/fillSurface.fs", version : "2815.0");
+import(path : "onshape/std/transform.fs", version : "2815.0");
 
 annotation { "Feature Type Name" : "Waffle It" }
 export const sheetMetalStart = defineSheetMetalFeature(function(context is Context, id is Id, definition is map)
@@ -221,15 +222,19 @@ export function generateSliceSet(context is Context, sliceSetDefinition is map) 
     }
     
     // Create a bounding box body to intersect with (ensures properly sized slices)
-    // Transform the bounding box corners from reference frame to world coordinates
+    // Create the box in reference frame coordinates (axis-aligned) then transform to world
     const boundingBoxId = featureIdPrefix + setLabel + "BoundingBox";
-    const corner1World = referenceFrameToWorldTransform * orientedBoundingBox.minCorner;
-    const corner2World = referenceFrameToWorldTransform * orientedBoundingBox.maxCorner;
     
-    // Create a box using fCuboid with the transformed corners
+    // Create axis-aligned box in reference frame coordinates
     fCuboid(context, boundingBoxId, {
-                "corner1" : corner1World,
-                "corner2" : corner2World
+                "corner1" : orientedBoundingBox.minCorner,
+                "corner2" : orientedBoundingBox.maxCorner
+            });
+    
+    // Transform the box from reference frame to world coordinates
+    opTransform(context, boundingBoxId + "transform", {
+                "bodies" : qCreatedBy(boundingBoxId, EntityType.BODY),
+                "transform" : referenceFrameToWorldTransform
             });
     
     const boundingBoxBody = qCreatedBy(boundingBoxId, EntityType.BODY);
