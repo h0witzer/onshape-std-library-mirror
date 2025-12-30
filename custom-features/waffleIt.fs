@@ -177,7 +177,7 @@ export const sheetMetalStart = defineSheetMetalFeature(function(context is Conte
             {
                 const allSliceBodies = qUnion(mapArray(sliceSet.sliceIds, function(sliceId)
                         {
-                            return qCreatedBy(sliceId + "extrudeRectangle", EntityType.BODY);
+                            return qCreatedBy(sliceId + "extrudeSlice", EntityType.BODY);
                         }));
                 normalizeSliceGeometryForLasercutting(context, id + "normalize" + sliceSet.setLabel, allSliceBodies, definition.matThick);
             }
@@ -331,7 +331,7 @@ export function trimSliceSetsToSolid(context is Context, featureIdPrefix is Id, 
     {
         const setBodies = qUnion(mapArray(sliceSet.sliceIds, function(sliceId)
                 {
-                    return qCreatedBy(sliceId + "extrudeRectangle", EntityType.BODY);
+                    return qCreatedBy(sliceId + "extrudeSlice", EntityType.BODY);
                 }));
         allSliceBodiesArray = append(allSliceBodiesArray, setBodies);
     }
@@ -355,13 +355,13 @@ export function trimSliceSetsToSolid(context is Context, featureIdPrefix is Id, 
         for (var sliceIndex = 0; sliceIndex < size(originalSliceIds); sliceIndex += 1)
         {
             const sliceId = originalSliceIds[sliceIndex];
-            const sliceBody = qCreatedBy(sliceId + "extrudeRectangle", EntityType.BODY);
+            const sliceBody = qCreatedBy(sliceId + "extrudeSlice", EntityType.BODY);
             
             if (!isQueryEmpty(context, sliceBody))
             {
                 // Verify START/END caps still exist using cap entity queries
-                const startCapQuery = qCapEntity(sliceId + "extrudeRectangle", CapType.START, EntityType.FACE);
-                const endCapQuery = qCapEntity(sliceId + "extrudeRectangle", CapType.END, EntityType.FACE);
+                const startCapQuery = qCapEntity(sliceId + "extrudeSlice", CapType.START, EntityType.FACE);
+                const endCapQuery = qCapEntity(sliceId + "extrudeSlice", CapType.END, EntityType.FACE);
                 const remainingStartCaps = evaluateQuery(context, startCapQuery);
                 const remainingEndCaps = evaluateQuery(context, endCapQuery);
                 
@@ -420,7 +420,7 @@ export function generateSlotsForSliceSets(context is Context, featureIdPrefix is
         // 1. Create Copies of both slice sets
         for (var set0Index = 0; set0Index < size(set0SliceIds); set0Index += 1)
         {
-            const sliceBody = qCreatedBy(set0SliceIds[set0Index] + "extrudeRectangle", EntityType.BODY);
+            const sliceBody = qCreatedBy(set0SliceIds[set0Index] + "extrudeSlice", EntityType.BODY);
             if (!isQueryEmpty(context, sliceBody))
             {
                 const copyId = featureIdPrefix + "slotCopy" + sliceSets[0].setLabel + set0Index;
@@ -435,7 +435,7 @@ export function generateSlotsForSliceSets(context is Context, featureIdPrefix is
 
         for (var set1Index = 0; set1Index < size(set1SliceIds); set1Index += 1)
         {
-            const sliceBody = qCreatedBy(set1SliceIds[set1Index] + "extrudeRectangle", EntityType.BODY);
+            const sliceBody = qCreatedBy(set1SliceIds[set1Index] + "extrudeSlice", EntityType.BODY);
             if (!isQueryEmpty(context, sliceBody))
             {
                 const copyId = featureIdPrefix + "slotCopy" + sliceSets[1].setLabel + set1Index;
@@ -526,12 +526,12 @@ export function generateSlotsForSliceSets(context is Context, featureIdPrefix is
         // 4. Perform Final Subtraction on Original Slices
         const originalSet0Slices = qUnion(mapArray(set0SliceIds, function(id)
                 {
-                    return qCreatedBy(id + "extrudeRectangle", EntityType.BODY);
+                    return qCreatedBy(id + "extrudeSlice", EntityType.BODY);
                 }));
 
         const originalSet1Slices = qUnion(mapArray(set1SliceIds, function(id)
                 {
-                    return qCreatedBy(id + "extrudeRectangle", EntityType.BODY);
+                    return qCreatedBy(id + "extrudeSlice", EntityType.BODY);
                 }));
 
         if (size(splitToolsForSet0) > 0)
@@ -590,10 +590,9 @@ export function generateSliceSheet(context is Context, sliceId is Id, slicePlane
     println("Generating slice " ~ sliceId);
     
     // Create a construction plane at the slice location
+    // Planes are infinite, so size parameters are just for UI visualization
     opPlane(context, sliceId + "plane", {
-                "plane" : slicePlane,
-                "width" : 1000 * meter,  // Large size to ensure intersection
-                "height" : 1000 * meter
+                "plane" : slicePlane
             });
     
     const constructionPlane = qCreatedBy(sliceId + "plane", EntityType.BODY);
@@ -635,22 +634,11 @@ export function generateSliceSheet(context is Context, sliceId is Id, slicePlane
     // DEBUG: Visualize the intersection curves
     debug(context, intersectionCurveBodies, DebugColor.GREEN);
     
-    // The intersection creates wire bodies - opFillSurface works directly with wire bodies
+    // The intersection creates wire bodies - opFillSurface needs edges from those wire bodies
     // that form closed loops (which plane-box intersections produce)
-    try
-    {
-        opFillSurface(context, sliceId + "fillSurface", {
-                    "edgesOrWire" : intersectionCurveBodies
-                });
-    }
-    catch (error)
-    {
-        println("  Failed to fill surface for slice " ~ sliceId ~ ": " ~ error);
-        opDeleteBodies(context, sliceId + "cleanupSurface", {
-                    "entities" : qUnion([constructionPlane, intersectionCurveBodies])
-                });
-        return;
-    }
+    opFillSurface(context, sliceId + "fillSurface", {
+                "edgesG0" : qOwnedByBody(intersectionCurveBodies, EntityType.EDGE)
+            });
     
     const filledSurface = qCreatedBy(sliceId + "fillSurface", EntityType.FACE);
     
@@ -876,7 +864,7 @@ export function convertSlicesToSheetMetal(context is Context, id is Id, trimmedS
     {
         const setBodies = qUnion(mapArray(sliceSet.sliceIds, function(sliceId)
                 {
-                    return qCreatedBy(sliceId + "extrudeRectangle", EntityType.BODY);
+                    return qCreatedBy(sliceId + "extrudeSlice", EntityType.BODY);
                 }));
         allBodiesArray = append(allBodiesArray, setBodies);
     }
