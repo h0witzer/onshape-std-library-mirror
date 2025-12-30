@@ -300,7 +300,7 @@ export function generateSliceSet(context is Context, sliceSetDefinition is map) 
     }
     
     // Clean up the bounding box body after all slices are generated
-    opDeleteBodies(context, boundingBoxId + "cleanup", {
+    opDeleteBodies(context, featureIdPrefix + "cleanupBoundingBox" + setLabel, {
                 "entities" : boundingBoxBody
             });
     
@@ -614,7 +614,7 @@ export function generateSliceSheet(context is Context, sliceId is Id, slicePlane
     {
         // No intersection found - clean up and skip this slice
         println("  No intersection found for slice " ~ sliceId);
-        opDeleteBodies(context, sliceId + "cleanup", {
+        opDeleteBodies(context, sliceId + "cleanupPlane", {
                     "entities" : constructionPlane
                 });
         return;
@@ -626,7 +626,7 @@ export function generateSliceSheet(context is Context, sliceId is Id, slicePlane
     if (isQueryEmpty(context, intersectionCurveBodies))
     {
         println("  No intersection curves for slice " ~ sliceId);
-        opDeleteBodies(context, sliceId + "cleanup", {
+        opDeleteBodies(context, sliceId + "cleanupPlane2", {
                     "entities" : constructionPlane
                 });
         return;
@@ -643,7 +643,7 @@ export function generateSliceSheet(context is Context, sliceId is Id, slicePlane
     if (isQueryEmpty(context, intersectionEdges))
     {
         println("  No edges found in intersection curves for slice " ~ sliceId);
-        opDeleteBodies(context, sliceId + "cleanup", {
+        opDeleteBodies(context, sliceId + "cleanupCurves", {
                     "entities" : qUnion([constructionPlane, intersectionCurveBodies])
                 });
         return;
@@ -659,7 +659,7 @@ export function generateSliceSheet(context is Context, sliceId is Id, slicePlane
     catch (error)
     {
         println("  Failed to fill surface for slice " ~ sliceId ~ ": " ~ error);
-        opDeleteBodies(context, sliceId + "cleanup", {
+        opDeleteBodies(context, sliceId + "cleanupSurface", {
                     "entities" : qUnion([constructionPlane, intersectionCurveBodies])
                 });
         return;
@@ -699,7 +699,7 @@ export function generateSliceSheet(context is Context, sliceId is Id, slicePlane
             });
     
     // Clean up temporary geometry
-    opDeleteBodies(context, sliceId + "cleanup", {
+    opDeleteBodies(context, sliceId + "cleanupTemp", {
                 "entities" : qUnion([constructionPlane, intersectionCurveBodies])
             });
 }
