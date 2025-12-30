@@ -59,6 +59,9 @@ export const sheetMetalStart = defineSheetMetalFeature(function(context is Conte
             isLength(definition.minimalClearance, SM_MINIMAL_CLEARANCE_BOUNDS);
         }
 
+        annotation { "Name" : "Delete input body" }
+        definition.deleteInputBody is boolean;
+
     }
     {
         // Establish the coordinate system used for slicing
@@ -123,6 +126,14 @@ export const sheetMetalStart = defineSheetMetalFeature(function(context is Conte
         if (definition.outputSheetMetal == true)
         {
             convertSlicesToSheetMetal(context, id, trimmedSheetsResult, definition);
+        }
+
+        // Delete the input body if requested
+        if (definition.deleteInputBody == true)
+        {
+            opDeleteBodies(context, id + "deleteInputBody", {
+                        "entities" : definition.selectedBody
+                    });
         }
 
     }, {});
