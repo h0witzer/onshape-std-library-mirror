@@ -300,7 +300,7 @@ export function generateSliceSet(context is Context, sliceSetDefinition is map) 
     }
     
     // Clean up the bounding box body after all slices are generated
-    opDeleteBodies(context, featureIdPrefix + "cleanupBoundingBox" + setLabel, {
+    opDeleteBodies(context, featureIdPrefix + setLabel + "cleanupBoundingBox", {
                 "entities" : boundingBoxBody
             });
     
