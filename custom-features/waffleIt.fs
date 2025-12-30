@@ -255,6 +255,25 @@ export function generateSliceSet(context is Context, sliceSetDefinition is map) 
     println("Slice set " ~ setLabel ~ ":");
     println("  Depth range: [" ~ minDepth ~ ", " ~ maxDepth ~ "]");
     
+    // Create a bounding box body to intersect with (ensures properly sized slices)
+    // The bounding box is created in world coordinates by transforming the oriented box corners
+    const boundingBoxId = featureIdPrefix + setLabel + "BoundingBox";
+    const boxSizeX = orientedBoundingBox.maxCorner[0] - orientedBoundingBox.minCorner[0];
+    const boxSizeY = orientedBoundingBox.maxCorner[1] - orientedBoundingBox.minCorner[1];
+    const boxSizeZ = orientedBoundingBox.maxCorner[2] - orientedBoundingBox.minCorner[2];
+    
+    // Create a box using opBox centered at the bounding box center
+    const boxCenterWorld = referenceFrameToWorldTransform * boxCenter;
+    const boxTransform = transform(boxCenterWorld, referenceFrameToWorldTransform.linear);
+    
+    opBox(context, boundingBoxId, {
+                "corner1" : vector(-boxSizeX/2, -boxSizeY/2, -boxSizeZ/2),
+                "corner2" : vector(boxSizeX/2, boxSizeY/2, boxSizeZ/2),
+                "cSys" : boxTransform
+            });
+    
+    const boundingBoxBody = qCreatedBy(boundingBoxId, EntityType.BODY);
+    
     // Calculate which plane indices are needed to cover the bounding box along the normal direction
     const firstPlaneIndex = ceil(minDepth / planeSpacing);
     const lastPlaneIndex = floor(maxDepth / planeSpacing);
@@ -276,12 +295,17 @@ export function generateSliceSet(context is Context, sliceSetDefinition is map) 
         const sliceId = featureIdPrefix + setLabel + planeCounter;
         const extrusionDirectionWorld = referenceFrameToWorldTransform.linear * normalVector;
         
-        generateSliceSheet(context, sliceId, slicePlane, targetBody, extrusionDirectionWorld, materialThickness);
+        generateSliceSheet(context, sliceId, slicePlane, boundingBoxBody, extrusionDirectionWorld, materialThickness);
         
         slicePlanes = append(slicePlanes, slicePlane);
         sliceIds = append(sliceIds, sliceId);
         planeCounter += 1;
     }
+    
+    // Clean up the bounding box body after all slices are generated
+    opDeleteBodies(context, boundingBoxId + "cleanup", {
+                "entities" : boundingBoxBody
+            });
     
     return {
         "slicePlanes" : slicePlanes,
@@ -554,16 +578,16 @@ export function generateSlotsForSliceSets(context is Context, featureIdPrefix is
 }
 
 // Generate a slice by creating a construction plane and using opIntersectFaces to find where it
-// intersects the target body, then extruding the resulting intersection curves.
-// This approach works for arbitrary slice orientations.
+// intersects the bounding box, then extruding the resulting intersection curves.
+// This approach works for arbitrary slice orientations and ensures slices are properly sized.
 // Inputs:
 //  - sliceId : Unique Id prefix used for operations
 //  - slicePlane : Plane definition representing the slice location and orientation
-//  - targetBody : The body to slice through
+//  - boundingBoxBody : The bounding box body to intersect with (creates properly sized slices)
 //  - extrusionDirection : Direction vector for the slice thickening
 //  - materialThickness : Extrusion depth matching the stock thickness
 // Returns: none
-export function generateSliceSheet(context is Context, sliceId is Id, slicePlane is Plane, targetBody is Query, extrusionDirection is Vector, materialThickness is ValueWithUnits)
+export function generateSliceSheet(context is Context, sliceId is Id, slicePlane is Plane, boundingBoxBody is Query, extrusionDirection is Vector, materialThickness is ValueWithUnits)
 {
     // DEBUG: Output slice info
     println("Generating slice " ~ sliceId);
@@ -578,15 +602,15 @@ export function generateSliceSheet(context is Context, sliceId is Id, slicePlane
     const constructionPlane = qCreatedBy(sliceId + "plane", EntityType.BODY);
     const planeFace = qOwnedByBody(constructionPlane, EntityType.FACE);
     
-    // Get all faces from the target body
-    const targetFaces = qOwnedByBody(targetBody, EntityType.FACE);
+    // Get all faces from the bounding box body
+    const boundingBoxFaces = qOwnedByBody(boundingBoxBody, EntityType.FACE);
     
-    // Create intersection curves where the plane intersects the target body
+    // Create intersection curves where the plane intersects the bounding box
     try
     {
         opIntersectFaces(context, sliceId + "intersect", {
                     "tools" : planeFace,
-                    "targets" : targetFaces
+                    "targets" : boundingBoxFaces
                 });
     }
     catch
@@ -599,10 +623,10 @@ export function generateSliceSheet(context is Context, sliceId is Id, slicePlane
         return;
     }
     
-    const intersectionCurves = qCreatedBy(sliceId + "intersect", EntityType.BODY);
+    const intersectionCurveBodies = qCreatedBy(sliceId + "intersect", EntityType.BODY);
     
     // Check if any intersection curves were created
-    if (isQueryEmpty(context, intersectionCurves))
+    if (isQueryEmpty(context, intersectionCurveBodies))
     {
         println("  No intersection curves for slice " ~ sliceId);
         opDeleteBodies(context, sliceId + "cleanup", {
@@ -612,11 +636,14 @@ export function generateSliceSheet(context is Context, sliceId is Id, slicePlane
     }
     
     // DEBUG: Visualize the intersection curves
-    debug(context, intersectionCurves, DebugColor.GREEN);
+    debug(context, intersectionCurveBodies, DebugColor.GREEN);
+    
+    // Get the edges from the intersection curve bodies for extrusion
+    const intersectionEdges = qOwnedByBody(intersectionCurveBodies, EntityType.EDGE);
     
     // Extrude the intersection curves to create the slice body
     opExtrude(context, sliceId + "extrudeSlice", {
-                "entities" : intersectionCurves,
+                "entities" : intersectionEdges,
                 "direction" : extrusionDirection,
                 "endBound" : BoundingType.BLIND,
                 "endDepth" : materialThickness / 2,
