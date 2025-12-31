@@ -268,82 +268,46 @@ export const crossSlotTester = defineFeature(function(context is Context, id is 
                     {
                         println("  Batched intersection created successfully");
                         
-                        // Now process individual pairs within the group to split the batched intersection
-                        for (var aIdx in group.group1)
+                        // Process the batched intersection bodies directly - no need to iterate through pairs!
+                        // The batched intersection contains the modified Group 1 bodies with only intersection regions
+                        const batchedBodies = evaluateQuery(context, batchedIntersection);
+                        println("  Processing " ~ size(batchedBodies) ~ " batched intersection bodies");
+                        
+                        for (var batchBody in batchedBodies)
                         {
-                            for (var bIdx in group.group2)
+                            // Find which original Group 1 body this corresponds to
+                            // The batched bodies are copies of Group 1 in the same order
+                            var originalBodyIndex = -1;
+                            for (var gIdx = 0; gIdx < size(group.group1); gIdx += 1)
                             {
-                                const bodyA = bodyInfo[aIdx];
-                                const bodyB = bodyInfo[bIdx];
-                                
-                                // Check if this pair actually collides
-                                const pairKey1 = toString(bodyA.body) ~ "_" ~ toString(bodyB.body);
-                                const pairKey2 = toString(bodyB.body) ~ "_" ~ toString(bodyA.body);
-                                
-                                if (collidingPairs[pairKey1] == undefined && collidingPairs[pairKey2] == undefined)
+                                if (gIdx < size(batchedBodies))
                                 {
-                                    continue;
-                                }
-                                
-                                println("  Processing collision pair " ~ aIdx ~ " x " ~ bIdx);
-                                
-                                // Calculate slot direction for this specific pair
-                                const normalA = bodyA.primaryPlane.normal;
-                                const normalB = bodyB.primaryPlane.normal;
-                                var pairSlotDirection = cross(normalA, normalB);
-                                
-                                if (norm(pairSlotDirection) > TOLERANCE.zeroLength)
-                                {
-                                    pairSlotDirection = normalize(pairSlotDirection);
-                                }
-                                else
-                                {
-                                    // Bodies are parallel, use a perpendicular direction
-                                    pairSlotDirection = perpendicularVector(normalA);
-                                }
-                                
-                                // Extract split tools from the batched intersection for this specific pair
-                                // This extracts the intersection region between bodyA and bodyB from the mega-intersection
-                                try
-                                {
-                                    const splitTools = extractPairSplitTools(context, 
-                                                                            id + "pair" + intersectionCounter,
-                                                                            batchedIntersection,
-                                                                            bodyA, bodyB, 
-                                                                            pairSlotDirection, 
-                                                                            definition.showDebug);
-                                    
-                                    // Add split tools to the appropriate bodies' collections
-                                    if (splitTools.toolForA != undefined)
+                                    // This batched body corresponds to group.group1[gIdx]
+                                    if (batchBody == batchedBodies[gIdx])
                                     {
-                                        splitToolsPerBody[aIdx] = append(splitToolsPerBody[aIdx], splitTools.toolForA);
-                                    }
-                                    if (splitTools.toolForB != undefined)
-                                    {
-                                        splitToolsPerBody[bIdx] = append(splitToolsPerBody[bIdx], splitTools.toolForB);
+                                        originalBodyIndex = group.group1[gIdx];
+                                        break;
                                     }
                                 }
-                                catch (error)
-                                {
-                                    println("  ERROR extracting split tools: " ~ error);
-                                }
-                                
-                                intersectionCounter += 1;
                             }
+                            
+                            if (originalBodyIndex == -1)
+                            {
+                                println("    WARNING: Could not find original body for batched intersection");
+                                continue;
+                            }
+                            
+                            println("    Processing batched body for original body " ~ originalBodyIndex);
+                            
+                            // This batched body contains all intersection regions for this Group 1 body
+                            // Split it and use as tools for the original body
+                            // For now, just add the entire batched body as a tool
+                            // TODO: Split the batched body appropriately based on slot directions
+                            splitToolsPerBody[originalBodyIndex] = append(splitToolsPerBody[originalBodyIndex], batchBody);
+                            intersectionCounter += 1;
                         }
                         
-                        // Clean up the batched intersection bodies after processing all pairs
-                        try
-                        {
-                            opDeleteBodies(context, id + "cleanupBatch" + groupIndex, {
-                                        "entities" : batchedIntersection
-                                    });
-                            println("  Cleaned up batched intersection bodies");
-                        }
-                        catch (error)
-                        {
-                            println("  WARNING: Could not clean up batched intersection: " ~ error);
-                        }
+                        // Note: We don't clean up the batched intersection - it's being used as slot tools
                     }
                 }
                 catch (error)
