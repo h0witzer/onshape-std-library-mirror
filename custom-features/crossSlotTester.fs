@@ -273,38 +273,66 @@ export const crossSlotTester = defineFeature(function(context is Context, id is 
                         const batchedBodies = evaluateQuery(context, batchedIntersection);
                         println("  Processing " ~ size(batchedBodies) ~ " batched intersection bodies");
                         
-                        for (var batchBody in batchedBodies)
+                        for (var gIdx = 0; gIdx < size(group.group1); gIdx += 1)
                         {
-                            // Find which original Group 1 body this corresponds to
-                            // The batched bodies are copies of Group 1 in the same order
-                            var originalBodyIndex = -1;
-                            for (var gIdx = 0; gIdx < size(group.group1); gIdx += 1)
+                            if (gIdx >= size(batchedBodies))
                             {
-                                if (gIdx < size(batchedBodies))
-                                {
-                                    // This batched body corresponds to group.group1[gIdx]
-                                    if (batchBody == batchedBodies[gIdx])
-                                    {
-                                        originalBodyIndex = group.group1[gIdx];
-                                        break;
-                                    }
-                                }
+                                break;
                             }
                             
-                            if (originalBodyIndex == -1)
-                            {
-                                println("    WARNING: Could not find original body for batched intersection");
-                                continue;
-                            }
+                            const batchBody = batchedBodies[gIdx];
+                            const originalBodyIndex = group.group1[gIdx];
+                            const originalBodyInfo = bodyInfo[originalBodyIndex];
                             
                             println("    Processing batched body for original body " ~ originalBodyIndex);
                             
                             // This batched body contains all intersection regions for this Group 1 body
-                            // Split it and use as tools for the original body
-                            // For now, just add the entire batched body as a tool
-                            // TODO: Split the batched body appropriately based on slot directions
-                            splitToolsPerBody[originalBodyIndex] = append(splitToolsPerBody[originalBodyIndex], batchBody);
-                            intersectionCounter += 1;
+                            // We need to split it and assign split parts to BOTH:
+                            // 1. The original Group 1 body
+                            // 2. All Group 2 bodies that collide with this Group 1 body
+                            
+                            // For each Group 2 body that collides with this Group 1 body,
+                            // we need to create slot tools for both bodies
+                            for (var group2Idx in group.group2)
+                            {
+                                const group2BodyInfo = bodyInfo[group2Idx];
+                                
+                                // Check if these two bodies actually collide
+                                const pairKey1 = toString(originalBodyInfo.body) ~ "_" ~ toString(group2BodyInfo.body);
+                                const pairKey2 = toString(group2BodyInfo.body) ~ "_" ~ toString(originalBodyInfo.body);
+                                
+                                if (collidingPairs[pairKey1] == undefined && collidingPairs[pairKey2] == undefined)
+                                {
+                                    continue;
+                                }
+                                
+                                println("      Pair: body " ~ originalBodyIndex ~ " x body " ~ group2Idx);
+                                
+                                // Calculate slot direction for this pair
+                                const normalA = originalBodyInfo.primaryPlane.normal;
+                                const normalB = group2BodyInfo.primaryPlane.normal;
+                                var pairSlotDirection = cross(normalA, normalB);
+                                
+                                if (norm(pairSlotDirection) > TOLERANCE.zeroLength)
+                                {
+                                    pairSlotDirection = normalize(pairSlotDirection);
+                                }
+                                else
+                                {
+                                    // Bodies are parallel, use a perpendicular direction
+                                    pairSlotDirection = perpendicularVector(normalA);
+                                }
+                                
+                                // For now, use the batched body as tool for the Group 1 body
+                                // TODO: Implement proper splitting to assign to both bodies
+                                splitToolsPerBody[originalBodyIndex] = append(splitToolsPerBody[originalBodyIndex], batchBody);
+                                
+                                // Also assign to the Group 2 body
+                                // This ensures both bodies get slotted
+                                splitToolsPerBody[group2Idx] = append(splitToolsPerBody[group2Idx], batchBody);
+                                
+                                intersectionCounter += 1;
+                            }
                         }
                         
                         // Note: We don't clean up the batched intersection - it's being used as slot tools
@@ -527,11 +555,13 @@ function generateBatchedIntersection(context is Context, id is Id, group1Query i
     
     // ONLY copy Group 1 - this is the key optimization
     // We use the copy as targets in SUBTRACT_COMPLEMENT
+    // Use setExternalDisambiguation to ensure proper tracking through the copy
     opPattern(context, id + "copyGroup1", {
                 "entities" : group1Query,
                 "transforms" : [identityTransform()],
                 "instanceNames" : ["group1Copy"]
             });
+    setExternalDisambiguation(context, id + "copyGroup1", group1Query);
     const copyGroup1 = qCreatedBy(id + "copyGroup1", EntityType.BODY);
     
     if (showDebug)
@@ -569,223 +599,4 @@ function generateBatchedIntersection(context is Context, id is Id, group1Query i
         // Return empty query on error
         return qNothing();
     }
-}
-
-// Extract split tools from a batched intersection for a specific body pair
-// This function takes the batched intersection and extracts/splits the relevant portion for one collision pair
-// Uses SUBTRACT_COMPLEMENT for efficient extraction
-//
-// Inputs:
-//  - batchedIntersection: Query for the batched intersection geometry (already computed)
-//  - bodyA, bodyB: Info maps containing body, primaryFace, primaryPlane, index
-//  - slotDirection: Vector indicating the direction for splitting the slot
-//  - showDebug: Whether to highlight debug geometry
-// Returns: Map with toolForA and toolForB queries
-function extractPairSplitTools(context is Context, id is Id, batchedIntersection is Query,
-                               bodyA is map, bodyB is map, slotDirection is Vector, showDebug is boolean) returns map
-{
-    // To extract the intersection specific to bodyA and bodyB from the batched intersection:
-    // 1. Use SUBTRACT_COMPLEMENT with bodyA as tool and batchedIntersection as target
-    //    This gives us the portions of batched intersection that overlap with bodyA
-    // 2. Use SUBTRACT_COMPLEMENT with bodyB as tool on that result
-    //    This gives us the intersection region specific to this pair
-    // 3. Split that region along the slot direction
-    
-    println("    Extracting intersection for specific pair");
-    
-    // Copy the batched intersection once for this pair
-    opPattern(context, id + "batchCopy", {
-                "entities" : batchedIntersection,
-                "transforms" : [identityTransform()],
-                "instanceNames" : ["pairBatch"]
-            });
-    const batchCopy = qCreatedBy(id + "batchCopy", EntityType.BODY);
-    
-    // First SUBTRACT_COMPLEMENT: extract portions overlapping bodyA
-    try
-    {
-        opBoolean(context, id + "extractA", {
-                    "tools" : bodyA.body,
-                    "targets" : batchCopy,
-                    "operationType" : BooleanOperationType.SUBTRACT_COMPLEMENT,
-                    "keepTools" : true,
-                    "recomputeMatches" : true
-                });
-    }
-    catch (error)
-    {
-        println("    WARNING: Could not extract intersection for body A: " ~ error);
-        try { opDeleteBodies(context, id + "cleanup", { "entities" : batchCopy }); } catch {}
-        return { "toolForA" : undefined, "toolForB" : undefined };
-    }
-    
-    // batchCopy now contains only the parts that overlap with bodyA
-    // Second SUBTRACT_COMPLEMENT: extract portions overlapping bodyB
-    try
-    {
-        opBoolean(context, id + "extractB", {
-                    "tools" : bodyB.body,
-                    "targets" : batchCopy,
-                    "operationType" : BooleanOperationType.SUBTRACT_COMPLEMENT,
-                    "keepTools" : true,
-                    "recomputeMatches" : true
-                });
-    }
-    catch (error)
-    {
-        println("    WARNING: Could not extract intersection for body B: " ~ error);
-        try { opDeleteBodies(context, id + "cleanup", { "entities" : batchCopy }); } catch {}
-        return { "toolForA" : undefined, "toolForB" : undefined };
-    }
-    
-    // batchCopy now contains only the intersection region for this specific pair
-    const pairIntersection = batchCopy;
-    const pairIntersectionBodies = evaluateQuery(context, pairIntersection);
-    
-    if (size(pairIntersectionBodies) == 0)
-    {
-        println("    No intersection found for this pair");
-        return { "toolForA" : undefined, "toolForB" : undefined };
-    }
-    
-    println("    Pair intersection: " ~ size(pairIntersectionBodies) ~ " bodies");
-    
-    // Now split the pair intersection as in the original function
-    // Find the slot-direction-aligned edges
-    var alignedEdges = [] as array;
-    for (var intersectionBody in pairIntersectionBodies)
-    {
-        const bodyEdges = evaluateQuery(context, qGeometry(qOwnedByBody(intersectionBody, EntityType.EDGE), GeometryType.LINE));
-        
-        for (var edge in bodyEdges)
-        {
-            try
-            {
-                const edgeLine = evLine(context, { "edge" : edge });
-                const alignment = abs(dot(edgeLine.direction, slotDirection));
-                
-                if (alignment > 0.9999)
-                {
-                    const edgeTangent = evEdgeTangentLine(context, {
-                                "edge" : edge,
-                                "parameter" : 0.5
-                            });
-                    alignedEdges = append(alignedEdges, {
-                                "edge" : edge,
-                                "position" : edgeTangent.origin
-                            });
-                    
-                    if (showDebug)
-                    {
-                        debug(context, edge, DebugColor.YELLOW);
-                    }
-                }
-            }
-            catch
-            {
-                // Edge might not be linear
-            }
-        }
-    }
-    
-    println("    Slot-direction-aligned edges found: " ~ size(alignedEdges));
-    
-    if (size(alignedEdges) == 0)
-    {
-        println("    No aligned edges found - can't determine split plane");
-        return { "toolForA" : undefined, "toolForB" : undefined };
-    }
-    
-    // Calculate split plane at the average position along slot direction
-    var positionAccumulator = 0 * meter;
-    for (var edgeInfo in alignedEdges)
-    {
-        positionAccumulator += dot(edgeInfo.position, slotDirection);
-    }
-    const avgPosition = positionAccumulator / size(alignedEdges);
-    
-    const splitPlaneOrigin = (slotDirection * avgPosition) / squaredNorm(slotDirection);
-    const splitPlane = plane(splitPlaneOrigin, slotDirection);
-    
-    // Create split plane and split the intersection bodies
-    opPlane(context, id + "splitPlane", {
-                "plane" : splitPlane
-            });
-    const splitPlaneBody = qCreatedBy(id + "splitPlane", EntityType.BODY);
-    
-    if (showDebug)
-    {
-        debug(context, splitPlaneBody, DebugColor.CYAN);
-    }
-    
-    // Split each intersection body
-    var splitToolsForA = [] as array;
-    var splitToolsForB = [] as array;
-    var cellIndex = 0;
-    
-    for (var intersectionBody in pairIntersectionBodies)
-    {
-        try
-        {
-            opSplitPart(context, id + "split" + cellIndex, {
-                        "targets" : intersectionBody,
-                        "tool" : splitPlaneBody
-                    });
-            
-            const splitBodies = qOwnerBody(qCreatedBy(id + "split" + cellIndex));
-            const splitBodiesArray = evaluateQuery(context, splitBodies);
-            
-            if (size(splitBodiesArray) > 0)
-            {
-                // Find which split goes to which body based on slot direction
-                const upperSplit = qFarthestAlong(splitBodies, slotDirection);
-                const lowerSplit = qFarthestAlong(splitBodies, -slotDirection);
-                
-                if (!isQueryEmpty(context, upperSplit))
-                {
-                    splitToolsForA = append(splitToolsForA, upperSplit);
-                    if (showDebug)
-                    {
-                        debug(context, upperSplit, DebugColor.MAGENTA);
-                    }
-                }
-                
-                if (!isQueryEmpty(context, lowerSplit))
-                {
-                    splitToolsForB = append(splitToolsForB, lowerSplit);
-                    if (showDebug)
-                    {
-                        debug(context, lowerSplit, DebugColor.ORANGE);
-                    }
-                }
-            }
-            
-            cellIndex += 1;
-        }
-        catch (error)
-        {
-            println("    ERROR splitting intersection body: " ~ error);
-        }
-    }
-    
-    // Clean up the split plane
-    if (!isQueryEmpty(context, splitPlaneBody))
-    {
-        try
-        {
-            opDeleteBodies(context, id + "cleanupPlane", {
-                        "entities" : splitPlaneBody
-                    });
-        }
-        catch {}
-    }
-    
-    println("    Split tools for body A: " ~ size(splitToolsForA));
-    println("    Split tools for body B: " ~ size(splitToolsForB));
-    
-    // Return queries for the split tools
-    return {
-        "toolForA" : size(splitToolsForA) > 0 ? qUnion(splitToolsForA) : undefined,
-        "toolForB" : size(splitToolsForB) > 0 ? qUnion(splitToolsForB) : undefined
-    };
 }
