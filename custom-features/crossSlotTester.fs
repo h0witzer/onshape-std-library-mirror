@@ -101,30 +101,6 @@ export const crossSlotTester = defineFeature(function(context is Context, id is 
             throw regenError("Need at least 2 bodies with planar primary faces");
         }
         
-        // Determine the slot direction (perpendicular to primary faces)
-        // The slot direction is the cross product of the two primary face normals
-        var slotDirection = undefined;
-        
-        if (size(bodyInfo) >= 2)
-        {
-            const normal1 = bodyInfo[0].primaryPlane.normal;
-            const normal2 = bodyInfo[1].primaryPlane.normal;
-            slotDirection = cross(normal1, normal2);
-            
-            // Normalize the direction
-            if (norm(slotDirection) > TOLERANCE.zeroLength)
-            {
-                slotDirection = normalize(slotDirection);
-                println("Detected slot direction: " ~ slotDirection);
-            }
-            else
-            {
-                // Bodies are parallel, use a perpendicular direction to both
-                slotDirection = perpendicularVector(normal1);
-                println("Bodies are parallel, using perpendicular direction: " ~ slotDirection);
-            }
-        }
-        
         // Generate slots for each pair of bodies
         var slotCounter = 0;
         for (var bodyAIndex = 0; bodyAIndex < size(bodyInfo); bodyAIndex += 1)
@@ -136,10 +112,28 @@ export const crossSlotTester = defineFeature(function(context is Context, id is 
                 const bodyA = bodyInfo[bodyAIndex];
                 const bodyB = bodyInfo[bodyBIndex];
                 
+                // Calculate slot direction for THIS SPECIFIC PAIR
+                // Each pair needs its own direction based on their orientations
+                const normalA = bodyA.primaryPlane.normal;
+                const normalB = bodyB.primaryPlane.normal;
+                var pairSlotDirection = cross(normalA, normalB);
+                
+                if (norm(pairSlotDirection) > TOLERANCE.zeroLength)
+                {
+                    pairSlotDirection = normalize(pairSlotDirection);
+                    println("  Pair slot direction: " ~ pairSlotDirection);
+                }
+                else
+                {
+                    // Bodies are parallel, use a perpendicular direction
+                    pairSlotDirection = perpendicularVector(normalA);
+                    println("  Bodies are parallel, using perpendicular direction: " ~ pairSlotDirection);
+                }
+                
                 // Check if the bodies intersect
                 try
                 {
-                    generateSlotForBodyPair(context, id + "slot" + slotCounter, bodyA, bodyB, slotDirection, definition.showDebug);
+                    generateSlotForBodyPair(context, id + "slot" + slotCounter, bodyA, bodyB, pairSlotDirection, definition.showDebug);
                     println("  Slot generated successfully");
                 }
                 catch (error)
