@@ -101,12 +101,29 @@ export const crossSlotTester = defineFeature(function(context is Context, id is 
             throw regenError("Need at least 2 bodies with planar primary faces");
         }
         
+        // Pre-compute bounding boxes for all bodies to optimize pair checking
+        println("Computing bounding boxes for clash detection...");
+        var bodyBoxes = [] as array;
+        for (var info in bodyInfo)
+        {
+            const bbox = evBox3d(context, { "topology" : info.body, "tight" : false });
+            bodyBoxes = append(bodyBoxes, bbox);
+        }
+        
         // Generate slots for each pair of bodies
         var slotCounter = 0;
+        var skippedPairs = 0;
         for (var bodyAIndex = 0; bodyAIndex < size(bodyInfo); bodyAIndex += 1)
         {
             for (var bodyBIndex = bodyAIndex + 1; bodyBIndex < size(bodyInfo); bodyBIndex += 1)
             {
+                // Clashbox optimization: Skip pairs whose bounding boxes don't overlap
+                if (!boxesIntersect(bodyBoxes[bodyAIndex], bodyBoxes[bodyBIndex]))
+                {
+                    skippedPairs += 1;
+                    continue;
+                }
+                
                 println("--- Generating Slot " ~ slotCounter ~ " (Body " ~ bodyAIndex ~ " x Body " ~ bodyBIndex ~ ") ---");
                 
                 const bodyA = bodyInfo[bodyAIndex];
@@ -147,7 +164,32 @@ export const crossSlotTester = defineFeature(function(context is Context, id is 
         
         println("=== CROSS-SLOT TESTER COMPLETE ===");
         println("Total slots attempted: " ~ slotCounter);
+        println("Pairs skipped (no bounding box overlap): " ~ skippedPairs);
     });
+
+// Check if two 3D bounding boxes intersect
+// Returns true if boxes overlap, false if they don't touch
+function boxesIntersect(boxA is Box3d, boxB is Box3d) returns boolean
+{
+    // Boxes intersect if they overlap in all three dimensions
+    // Check X axis
+    if (boxA.maxCorner[0] < boxB.minCorner[0] || boxB.maxCorner[0] < boxA.minCorner[0])
+    {
+        return false;
+    }
+    // Check Y axis
+    if (boxA.maxCorner[1] < boxB.minCorner[1] || boxB.maxCorner[1] < boxA.minCorner[1])
+    {
+        return false;
+    }
+    // Check Z axis
+    if (boxA.maxCorner[2] < boxB.minCorner[2] || boxB.maxCorner[2] < boxA.minCorner[2])
+    {
+        return false;
+    }
+    // Boxes overlap in all three dimensions
+    return true;
+}
 
 // Generate a slot where two bodies intersect
 // Inputs:
@@ -425,7 +467,33 @@ function generateSlotForBodyPair(context is Context, id is Id, bodyA is map, bod
     
     // Step 8: Clean up helper geometry
     println("  Cleaning up helper geometry...");
-    opDeleteBodies(context, id + "cleanup", {
-                "entities" : qUnion([copyA, copyB, splitPlaneBody])
-            });
+    try
+    {
+        // Build list of entities to delete, checking each exists
+        var entitiesToDelete = [] as array;
+        
+        if (!isQueryEmpty(context, copyA))
+        {
+            entitiesToDelete = append(entitiesToDelete, copyA);
+        }
+        if (!isQueryEmpty(context, copyB))
+        {
+            entitiesToDelete = append(entitiesToDelete, copyB);
+        }
+        if (!isQueryEmpty(context, splitPlaneBody))
+        {
+            entitiesToDelete = append(entitiesToDelete, splitPlaneBody);
+        }
+        
+        if (size(entitiesToDelete) > 0)
+        {
+            opDeleteBodies(context, id + "cleanup", {
+                        "entities" : qUnion(entitiesToDelete)
+                    });
+        }
+    }
+    catch (error)
+    {
+        println("  WARNING: Cleanup failed: " ~ error);
+    }
 }
