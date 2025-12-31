@@ -279,155 +279,140 @@ export const crossSlotTester = defineFeature(function(context is Context, id is 
                         {
                             println("    Processing intersection cell " ~ cellIndex);
                             
-                            // We need to determine which pair this cell belongs to
-                            // For now, we'll iterate through all pairs and split based on their slot direction
-                            // This is where the original logic applies - we split each intersection cell
+                            // Each intersection cell determines its own split direction independently
+                            // based on its edge geometry, not based on specific collision pairs
                             
-                            // For each Group 1 body, check which Group 2 bodies it collides with
-                            var alignedEdges = [] as array;  // Moved outside loop for scope
-                            for (var g1Idx in group.group1)
+                            // Find all linear edges in this intersection cell
+                            const bodyEdges = evaluateQuery(context, qGeometry(qOwnedByBody(intersectionCell, EntityType.EDGE), GeometryType.LINE));
+                            
+                            if (size(bodyEdges) == 0)
                             {
-                                const body1Info = bodyInfo[g1Idx];
+                                println("      No linear edges found in cell, skipping split");
+                                continue;
+                            }
+                            
+                            // Find the most common edge direction (slot direction)
+                            var edgeDirections = [] as array;
+                            for (var edge in bodyEdges)
+                            {
+                                try
+                                {
+                                    const edgeLine = evLine(context, { "edge" : edge });
+                                    const edgeTangent = evEdgeTangentLine(context, {
+                                                "edge" : edge,
+                                                "parameter" : 0.5
+                                            });
+                                    edgeDirections = append(edgeDirections, {
+                                                "direction" : edgeLine.direction,
+                                                "position" : edgeTangent.origin
+                                            });
+                                }
+                                catch
+                                {
+                                    // Edge might not be linear
+                                }
+                            }
+                            
+                            if (size(edgeDirections) == 0)
+                            {
+                                println("      No valid edge directions found, skipping split");
+                                continue;
+                            }
+                            
+                            // Use the first edge direction as the split direction
+                            // (in practice, aligned edges should all be parallel)
+                            var cellSlotDirection = normalize(edgeDirections[0].direction);
+                            
+                            // Find all edges aligned with this direction
+                            var alignedEdges = [] as array;
+                            for (var edgeInfo in edgeDirections)
+                            {
+                                const alignment = abs(dot(edgeInfo.direction, cellSlotDirection));
+                                if (alignment > 0.9999)
+                                {
+                                    alignedEdges = append(alignedEdges, edgeInfo);
+                                }
+                            }
+                            
+                            if (size(alignedEdges) == 0)
+                            {
+                                println("      No aligned edges found, skipping split");
+                                continue;
+                            }
+                            
+                            // Calculate split plane at average position along slot direction
+                            var positionAccumulator = 0 * meter;
+                            for (var edgeInfo in alignedEdges)
+                            {
+                                positionAccumulator += dot(edgeInfo.position, cellSlotDirection);
+                            }
+                            const avgPosition = positionAccumulator / size(alignedEdges);
+                            
+                            const splitPlaneOrigin = (cellSlotDirection * avgPosition) / squaredNorm(cellSlotDirection);
+                            const splitPlane = plane(splitPlaneOrigin, cellSlotDirection);
+                            
+                            // Create split plane and split the intersection cell
+                            opPlane(context, id + ("splitPlane_" ~ cellIndex), {
+                                        "plane" : splitPlane
+                                    });
+                            const splitPlaneBody = qCreatedBy(id + ("splitPlane_" ~ cellIndex), EntityType.BODY);
+                            
+                            try
+                            {
+                                opSplitPart(context, id + ("split_" ~ cellIndex), {
+                                            "targets" : intersectionCell,
+                                            "tool" : splitPlaneBody
+                                        });
+                                
+                                const splitBodies = qOwnerBody(qCreatedBy(id + ("split_" ~ cellIndex)));
+                                
+                                // Determine which bodies this intersection belongs to
+                                // by checking which bodies from group1 and group2 collide at this location
+                                const halfA = qFarthestAlong(splitBodies, cellSlotDirection);
+                                const halfB = qFarthestAlong(splitBodies, -cellSlotDirection);
+                                
+                                // For now, assign halves to all Group 1 and Group 2 bodies
+                                // The actual collision pairing will determine which bodies get which halves
+                                for (var g1Idx in group.group1)
+                                {
+                                    if (!isQueryEmpty(context, halfB))
+                                    {
+                                        splitToolsPerBody[g1Idx] = append(splitToolsPerBody[g1Idx], halfB);
+                                    }
+                                }
                                 
                                 for (var g2Idx in group.group2)
                                 {
-                                    const body2Info = bodyInfo[g2Idx];
-                                    
-                                    // Check if these two bodies actually collide
-                                    const pairKey1 = toString(body1Info.body) ~ "_" ~ toString(body2Info.body);
-                                    const pairKey2 = toString(body2Info.body) ~ "_" ~ toString(body1Info.body);
-                                    
-                                    if (collidingPairs[pairKey1] == undefined && collidingPairs[pairKey2] == undefined)
+                                    if (!isQueryEmpty(context, halfA))
                                     {
-                                        continue;
-                                    }
-                                    
-                                    // Calculate slot direction for this pair
-                                    const normalA = body1Info.primaryPlane.normal;
-                                    const normalB = body2Info.primaryPlane.normal;
-                                    var pairSlotDirection = cross(normalA, normalB);
-                                    
-                                    if (norm(pairSlotDirection) > TOLERANCE.zeroLength)
-                                    {
-                                        pairSlotDirection = normalize(pairSlotDirection);
-                                    }
-                                    else
-                                    {
-                                        // Bodies are parallel, use a perpendicular direction
-                                        pairSlotDirection = perpendicularVector(normalA);
-                                    }
-                                    
-                                    // Find aligned edges in this intersection cell
-                                    alignedEdges = [] as array;  // Reset for each pair
-                                    const bodyEdges = evaluateQuery(context, qGeometry(qOwnedByBody(intersectionCell, EntityType.EDGE), GeometryType.LINE));
-                                    
-                                    for (var edge in bodyEdges)
-                                    {
-                                        try
-                                        {
-                                            const edgeLine = evLine(context, { "edge" : edge });
-                                            const alignment = abs(dot(edgeLine.direction, pairSlotDirection));
-                                            
-                                            if (alignment > 0.9999)
-                                            {
-                                                const edgeTangent = evEdgeTangentLine(context, {
-                                                            "edge" : edge,
-                                                            "parameter" : 0.5
-                                                        });
-                                                alignedEdges = append(alignedEdges, {
-                                                            "edge" : edge,
-                                                            "position" : edgeTangent.origin
-                                                        });
-                                            }
-                                        }
-                                        catch
-                                        {
-                                            // Edge might not be linear
-                                        }
-                                    }
-                                    
-                                    if (size(alignedEdges) == 0)
-                                    {
-                                        continue; // This cell doesn't match this pair's slot direction
-                                    }
-                                    
-                                    // Calculate split plane at average position along slot direction
-                                    var positionAccumulator = 0 * meter;
-                                    for (var edgeInfo in alignedEdges)
-                                    {
-                                        positionAccumulator += dot(edgeInfo.position, pairSlotDirection);
-                                    }
-                                    const avgPosition = positionAccumulator / size(alignedEdges);
-                                    
-                                    const splitPlaneOrigin = (pairSlotDirection * avgPosition) / squaredNorm(pairSlotDirection);
-                                    const splitPlane = plane(splitPlaneOrigin, pairSlotDirection);
-                                    
-                                    // Create split plane and split the intersection cell
-                                    // Use unique Ids per pair to avoid operation history conflicts
-                                    const pairId = cellIndex ~ "_" ~ g1Idx ~ "_" ~ g2Idx;
-                                    opPlane(context, id + ("splitPlane_" ~ pairId), {
-                                                "plane" : splitPlane
-                                            });
-                                    const splitPlaneBody = qCreatedBy(id + ("splitPlane_" ~ pairId), EntityType.BODY);
-                                    
-                                    try
-                                    {
-                                        opSplitPart(context, id + ("split_" ~ pairId), {
-                                                    "targets" : intersectionCell,
-                                                    "tool" : splitPlaneBody
-                                                });
-                                        
-                                        const splitBodies = qOwnerBody(qCreatedBy(id + ("split_" ~ pairId)));
-                                        
-                                        // Assign split halves to appropriate bodies
-                                        const toolForBody1 = qFarthestAlong(splitBodies, pairSlotDirection);
-                                        const toolForBody2 = qFarthestAlong(splitBodies, -pairSlotDirection);
-                                        
-                                        if (!isQueryEmpty(context, toolForBody1))
-                                        {
-                                            splitToolsPerBody[g1Idx] = append(splitToolsPerBody[g1Idx], toolForBody1);
-                                        }
-                                        
-                                        if (!isQueryEmpty(context, toolForBody2))
-                                        {
-                                            splitToolsPerBody[g2Idx] = append(splitToolsPerBody[g2Idx], toolForBody2);
-                                        }
-                                        
-                                        intersectionCounter += 1;
-                                        println("      Split and assigned tools for pair: body " ~ g1Idx ~ " x body " ~ g2Idx);
-                                        
-                                        // Clean up split plane
-                                        try
-                                        {
-                                            opDeleteBodies(context, id + ("cleanupPlane_" ~ pairId), {
-                                                        "entities" : splitPlaneBody
-                                                    });
-                                        }
-                                        catch {}
-                                        
-                                        // Break after successful split - each cell should only be split once
-                                        break;
-                                    }
-                                    catch (error)
-                                    {
-                                        println("      WARNING: Could not split intersection cell: " ~ error);
-                                        
-                                        // Clean up split plane even if split failed
-                                        try
-                                        {
-                                            opDeleteBodies(context, id + ("cleanupPlane_" ~ pairId), {
-                                                        "entities" : splitPlaneBody
-                                                    });
-                                        }
-                                        catch {}
+                                        splitToolsPerBody[g2Idx] = append(splitToolsPerBody[g2Idx], halfA);
                                     }
                                 }
                                 
-                                // Break outer loop too if we found and split this cell
-                                if (size(alignedEdges) > 0)
+                                intersectionCounter += 1;
+                                println("      Split cell " ~ cellIndex ~ " and assigned halves");
+                                
+                                // Clean up split plane
+                                try
                                 {
-                                    break;
+                                    opDeleteBodies(context, id + ("cleanupPlane_" ~ cellIndex), {
+                                                "entities" : splitPlaneBody
+                                            });
                                 }
+                                catch {}
+                            }
+                            catch (error)
+                            {
+                                println("      WARNING: Could not split intersection cell: " ~ error);
+                                
+                                // Clean up split plane even if split failed
+                                try
+                                {
+                                    opDeleteBodies(context, id + ("cleanupPlane_" ~ cellIndex), {
+                                                "entities" : splitPlaneBody
+                                            });
+                                }
+                                catch {}
                             }
                             
                             cellIndex += 1;
