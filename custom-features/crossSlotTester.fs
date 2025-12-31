@@ -579,7 +579,7 @@ function generateBatchedIntersection(context is Context, id is Id, group1Query i
     println("  Calculating batched intersection geometry...");
     
     // Perform single SUBTRACT_COMPLEMENT for entire group
-    // Tools: Group 2 (original bodies, will be kept)
+    // Tools: Group 2 (original bodies, will be kept with keepTools)
     // Targets: Copy of Group 1 (will be modified to contain intersection)
     try
     {
@@ -587,7 +587,7 @@ function generateBatchedIntersection(context is Context, id is Id, group1Query i
                     "tools" : group2Query,
                     "targets" : copyGroup1,
                     "operationType" : BooleanOperationType.SUBTRACT_COMPLEMENT,
-                    "keepTargets" : true,
+                    "keepTools" : true,
                     "recomputeMatches" : true
                 });
         
@@ -644,7 +644,7 @@ function extractPairSplitTools(context is Context, id is Id, batchedIntersection
                     "tools" : bodyA.body,
                     "targets" : batchCopy,
                     "operationType" : BooleanOperationType.SUBTRACT_COMPLEMENT,
-                    "keepTargets" : true,
+                    "keepTools" : true,
                     "recomputeMatches" : true
                 });
     }
@@ -663,7 +663,7 @@ function extractPairSplitTools(context is Context, id is Id, batchedIntersection
                     "tools" : bodyB.body,
                     "targets" : batchCopy,
                     "operationType" : BooleanOperationType.SUBTRACT_COMPLEMENT,
-                    "keepTargets" : true,
+                    "keepTools" : true,
                     "recomputeMatches" : true
                 });
     }
