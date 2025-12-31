@@ -105,7 +105,15 @@ export const crossSlotTester = defineFeature(function(context is Context, id is 
         // Use evCollision to find which bodies actually intersect
         // This is much more efficient than checking all pairs
         println("Detecting collisions between bodies...");
-        const allBodies = qUnion(mapArray(bodyInfo, function(info) { return info.body; }));
+        
+        // Build array of body queries
+        var bodyQueries = [];
+        for (var info in bodyInfo)
+        {
+            bodyQueries = append(bodyQueries, info.body);
+        }
+        const allBodies = qUnion(bodyQueries);
+        
         const collisions = evCollision(context, {
                     "tools" : allBodies,
                     "targets" : allBodies
