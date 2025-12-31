@@ -118,9 +118,32 @@ export const sheetMetalStart = defineSheetMetalFeature(function(context is Conte
         const sliceSets = [xSliceResult, ySliceResult];
         const trimmedSliceSets = trimSliceSetsToSolid(context, id, sliceSets, definition.selectedBody);
 
+        // First normalization pass: Remove any geometry that would be deleted by normalization before generating
+        // cross-slot geometry. This prevents wasting computation on cross slots in regions that will be removed.
+        // The benefit outweighs the cost of running normalization twice, as avoiding unnecessary cross-slot
+        // computation in regions destined for removal provides a net performance gain.
+        if (definition.normalizeGeometry == true)
+        {
+            // Process all slice bodies together using attribute queries to find cap faces
+            for (var sliceSet in trimmedSliceSets)
+            {
+                const allSliceBodies = qUnion(mapArray(sliceSet.sliceIds, function(sliceId)
+                        {
+                            return qCreatedBy(sliceId + "extrudeSlice", EntityType.BODY);
+                        }));
+                normalizeSliceGeometryForLasercutting(context, id + "preNormalize" + sliceSet.setLabel, allSliceBodies, definition.matThick);
+            }
+        }
+
         // Generate cross-slot geometry
         generateSlotsForSliceSets(context, id, trimmedSliceSets, referenceFrame);
 
+        // Second normalization pass: Normalize any faces created by the cross-slot generation.
+        // The normalization function identifies "good" faces (START caps, END caps, vertical walls) based on
+        // their current attributes and geometry, and only processes faces that need normalization. After the first
+        // pass, most original faces are already in a normalized state (either caps, vertical walls, or flattened
+        // projections that now appear as vertical walls), so this pass primarily handles new geometry introduced
+        // during cross-slot generation.
         // After trimming the intersecting grid, find all non-cap faces on each slice and project their geometry to
         // the START cap face. Thicken the flattened projections and remove the results from the slice.
         // This subtractive operation guarantees the slices lie inside of the original target volume.
@@ -133,7 +156,7 @@ export const sheetMetalStart = defineSheetMetalFeature(function(context is Conte
                         {
                             return qCreatedBy(sliceId + "extrudeSlice", EntityType.BODY);
                         }));
-                normalizeSliceGeometryForLasercutting(context, id + "normalize" + sliceSet.setLabel, allSliceBodies, definition.matThick);
+                normalizeSliceGeometryForLasercutting(context, id + "postNormalize" + sliceSet.setLabel, allSliceBodies, definition.matThick);
             }
         }
 
@@ -373,10 +396,14 @@ export function generateSlotsForSliceSets(context is Context, featureIdPrefix is
         
         var set0CopyIds = [] as array;
         var set1CopyIds = [] as array;
+        var set0TargetCopyIds = [] as array;
+        var set1TargetCopyIds = [] as array;
         var splitPlaneIds = [] as array;
         var splitIds = [] as array;
 
         // 1. Create Copies of both slice sets
+        // Make two sets of copies: one for intersection calculation and one for subtraction targets
+        // This isolates the cross-slot generation from any pre-normalization that may have occurred
         for (var set0Index = 0; set0Index < size(set0SliceIds); set0Index += 1)
         {
             const sliceBody = qCreatedBy(set0SliceIds[set0Index] + "extrudeSlice", EntityType.BODY);
@@ -389,6 +416,15 @@ export function generateSlotsForSliceSets(context is Context, featureIdPrefix is
                             "instanceNames" : ["1"]
                         });
                 set0CopyIds = append(set0CopyIds, copyId);
+                
+                // Create additional copy for use as subtraction target
+                const targetCopyId = featureIdPrefix + "slotTargetCopy" + sliceSets[0].setLabel + set0Index;
+                opPattern(context, targetCopyId, {
+                            "entities" : sliceBody,
+                            "transforms" : [identityTransform()],
+                            "instanceNames" : ["1"]
+                        });
+                set0TargetCopyIds = append(set0TargetCopyIds, targetCopyId);
             }
         }
 
@@ -404,6 +440,15 @@ export function generateSlotsForSliceSets(context is Context, featureIdPrefix is
                             "instanceNames" : ["1"]
                         });
                 set1CopyIds = append(set1CopyIds, copyId);
+                
+                // Create additional copy for use as subtraction target
+                const targetCopyId = featureIdPrefix + "slotTargetCopy" + sliceSets[1].setLabel + set1Index;
+                opPattern(context, targetCopyId, {
+                            "entities" : sliceBody,
+                            "transforms" : [identityTransform()],
+                            "instanceNames" : ["1"]
+                        });
+                set1TargetCopyIds = append(set1TargetCopyIds, targetCopyId);
             }
         }
 
@@ -482,7 +527,37 @@ export function generateSlotsForSliceSets(context is Context, featureIdPrefix is
             cellIndex += 1;
         }
 
-        // 4. Perform Final Subtraction on Original Slices
+        // 4. Perform Subtraction on Target Copies, then replace original slices
+        const targetSet0Slices = qUnion(mapArray(set0TargetCopyIds, function(copyId)
+                {
+                    return qCreatedBy(copyId, EntityType.BODY);
+                }));
+
+        const targetSet1Slices = qUnion(mapArray(set1TargetCopyIds, function(copyId)
+                {
+                    return qCreatedBy(copyId, EntityType.BODY);
+                }));
+
+        if (size(splitToolsForSet0) > 0)
+        {
+            opBoolean(context, featureIdPrefix + "boolean" + sliceSets[0].setLabel + "Slots", {
+                        "tools" : qUnion(splitToolsForSet0),
+                        "targets" : targetSet0Slices,
+                        "operationType" : BooleanOperationType.SUBTRACTION
+                    });
+        }
+
+        if (size(splitToolsForSet1) > 0)
+        {
+            opBoolean(context, featureIdPrefix + "boolean" + sliceSets[1].setLabel + "Slots", {
+                        "tools" : qUnion(splitToolsForSet1),
+                        "targets" : targetSet1Slices,
+                        "operationType" : BooleanOperationType.SUBTRACTION
+                    });
+        }
+        
+        // 5. Replace original slices with the slotted copies
+        // Delete the original slices
         const originalSet0Slices = qUnion(mapArray(set0SliceIds, function(id)
                 {
                     return qCreatedBy(id + "extrudeSlice", EntityType.BODY);
@@ -492,23 +567,47 @@ export function generateSlotsForSliceSets(context is Context, featureIdPrefix is
                 {
                     return qCreatedBy(id + "extrudeSlice", EntityType.BODY);
                 }));
-
-        if (size(splitToolsForSet0) > 0)
+        
+        opDeleteBodies(context, featureIdPrefix + "deleteOriginalSlices", {
+                    "entities" : qUnion([originalSet0Slices, originalSet1Slices])
+                });
+        
+        // Rename the target copies to match the original IDs by using opPattern with the correct ID
+        // This ensures downstream operations can still find the bodies using the expected IDs
+        for (var set0Index = 0; set0Index < size(set0TargetCopyIds); set0Index += 1)
         {
-            opBoolean(context, featureIdPrefix + "boolean" + sliceSets[0].setLabel + "Slots", {
-                        "tools" : qUnion(splitToolsForSet0),
-                        "targets" : originalSet0Slices,
-                        "operationType" : BooleanOperationType.SUBTRACTION
-                    });
+            const targetCopyBody = qCreatedBy(set0TargetCopyIds[set0Index], EntityType.BODY);
+            if (!isQueryEmpty(context, targetCopyBody))
+            {
+                // Copy to the original slice ID
+                opPattern(context, set0SliceIds[set0Index] + "extrudeSlice", {
+                            "entities" : targetCopyBody,
+                            "transforms" : [identityTransform()],
+                            "instanceNames" : ["1"]
+                        });
+                // Delete the target copy
+                opDeleteBodies(context, featureIdPrefix + "deleteTargetCopy" + sliceSets[0].setLabel + set0Index, {
+                            "entities" : targetCopyBody
+                        });
+            }
         }
-
-        if (size(splitToolsForSet1) > 0)
+        
+        for (var set1Index = 0; set1Index < size(set1TargetCopyIds); set1Index += 1)
         {
-            opBoolean(context, featureIdPrefix + "boolean" + sliceSets[1].setLabel + "Slots", {
-                        "tools" : qUnion(splitToolsForSet1),
-                        "targets" : originalSet1Slices,
-                        "operationType" : BooleanOperationType.SUBTRACTION
-                    });
+            const targetCopyBody = qCreatedBy(set1TargetCopyIds[set1Index], EntityType.BODY);
+            if (!isQueryEmpty(context, targetCopyBody))
+            {
+                // Copy to the original slice ID
+                opPattern(context, set1SliceIds[set1Index] + "extrudeSlice", {
+                            "entities" : targetCopyBody,
+                            "transforms" : [identityTransform()],
+                            "instanceNames" : ["1"]
+                        });
+                // Delete the target copy
+                opDeleteBodies(context, featureIdPrefix + "deleteTargetCopy" + sliceSets[1].setLabel + set1Index, {
+                            "entities" : targetCopyBody
+                        });
+            }
         }
 
         const splitPlanes = qUnion(mapArray(splitPlaneIds, function(splitPlaneId)
