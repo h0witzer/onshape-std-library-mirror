@@ -27,20 +27,20 @@ export const crossSlotTester = defineFeature(function(context is Context, id is 
         annotation { "Name" : "Bodies to slot", "Filter" : EntityType.BODY, "MaxNumberOfPicks" : 100 }
         definition.bodiesToSlot is Query;
         
-        annotation { "Name" : "Reference Frame", "Filter" : BodyType.MATE_CONNECTOR, "MaxNumberOfPicks" : 1 }
-        definition.referenceFrame is Query;
+        annotation { "Name" : "Use Custom Reference Frame" }
+        definition.useCustomFrame is boolean;
+        
+        if (definition.useCustomFrame)
+        {
+            annotation { "Name" : "Reference Frame", "Filter" : BodyType.MATE_CONNECTOR, "MaxNumberOfPicks" : 1 }
+            definition.referenceFrame is Query;
+        }
         
         annotation { "Name" : "Show Debug Info" }
         definition.showDebug is boolean;
     }
     {
         println("=== CROSS-SLOT TESTER START ===");
-        
-        // Get the reference frame
-        const referenceFrame = evMateConnector(context, {
-                    "mateConnector" : definition.referenceFrame
-                });
-        println("Reference Frame: origin = " ~ referenceFrame.origin ~ ", zAxis = " ~ referenceFrame.zAxis);
         
         // Evaluate the bodies
         const bodies = evaluateQuery(context, definition.bodiesToSlot);
@@ -58,31 +58,28 @@ export const crossSlotTester = defineFeature(function(context is Context, id is 
         {
             println("--- Analyzing Body " ~ bodyCounter ~ " ---");
             
-            const bodyFaces = evaluateQuery(context, qOwnedByBody(body, EntityType.FACE));
-            println("  Number of faces: " ~ size(bodyFaces));
+            const bodyFaces = qOwnedByBody(body, EntityType.FACE);
+            println("  Number of faces: " ~ size(evaluateQuery(context, bodyFaces)));
             
-            var largestFace = undefined;
-            var largestArea = 0 * meter^2;
+            // Use qLargest to find the largest face by area
+            const largestFaceQuery = qLargest(bodyFaces);
+            const largestFaceArray = evaluateQuery(context, largestFaceQuery);
             
-            for (var face in bodyFaces)
+            if (size(largestFaceArray) > 0)
             {
+                const largestFace = largestFaceArray[0];
+                
                 try
                 {
-                    const faceArea = evApproximateCentroid(context, {
-                                "entities" : face
-                            }).mass;
-                    
-                    if (faceArea > largestArea)
-                    {
-                        largestArea = faceArea;
-                        largestFace = face;
-                    }
+                    const faceArea = evArea(context, {
+                                "entities" : largestFace
+                            });
+                    println("  Largest face area: " ~ faceArea);
                 }
-            }
-            
-            if (largestFace != undefined)
-            {
-                println("  Largest face area: " ~ largestArea);
+                catch
+                {
+                    println("  Could not evaluate area");
+                }
                 
                 // Get the plane of the largest face
                 try
@@ -114,6 +111,10 @@ export const crossSlotTester = defineFeature(function(context is Context, id is 
                     println("  WARNING: Could not get plane for largest face");
                 }
             }
+            else
+            {
+                println("  WARNING: No faces found on body");
+            }
             
             bodyCounter += 1;
         }
@@ -123,6 +124,42 @@ export const crossSlotTester = defineFeature(function(context is Context, id is 
         if (size(bodyInfo) < 2)
         {
             throw regenError("Need at least 2 bodies with planar primary faces");
+        }
+        
+        // Determine the slot direction (perpendicular to primary faces)
+        // For sheet bodies, the slot direction is the cross product of the two primary face normals
+        var slotDirection = undefined;
+        
+        if (definition.useCustomFrame)
+        {
+            const referenceFrame = evMateConnector(context, {
+                        "mateConnector" : definition.referenceFrame
+                    });
+            slotDirection = referenceFrame.zAxis;
+            println("Using custom reference frame, slot direction: " ~ slotDirection);
+        }
+        else
+        {
+            // Auto-detect slot direction from the first two bodies
+            if (size(bodyInfo) >= 2)
+            {
+                const normal1 = bodyInfo[0].primaryPlane.normal;
+                const normal2 = bodyInfo[1].primaryPlane.normal;
+                slotDirection = cross(normal1, normal2);
+                
+                // Normalize the direction
+                if (norm(slotDirection) > TOLERANCE.zeroLength)
+                {
+                    slotDirection = normalize(slotDirection);
+                    println("Auto-detected slot direction: " ~ slotDirection);
+                }
+                else
+                {
+                    // Bodies are parallel, use a perpendicular direction to both
+                    slotDirection = perpendicularVector(normal1);
+                    println("Bodies are parallel, using perpendicular direction: " ~ slotDirection);
+                }
+            }
         }
         
         // Generate slots for each pair of bodies
@@ -141,7 +178,7 @@ export const crossSlotTester = defineFeature(function(context is Context, id is 
                 
                 try
                 {
-                    generateSlotForBodyPair(context, slotId, bodyA, bodyB, referenceFrame, definition.showDebug);
+                    generateSlotForBodyPair(context, slotId, bodyA, bodyB, slotDirection, definition.showDebug);
                     println("  Slot generated successfully");
                 }
                 catch (error)
@@ -160,9 +197,9 @@ export const crossSlotTester = defineFeature(function(context is Context, id is 
 // Generate a slot where two bodies intersect
 // Inputs:
 //  - bodyA, bodyB: Info maps containing body, primaryFace, primaryPlane, index
-//  - referenceFrame: Coordinate system for splitting operations
+//  - slotDirection: Vector indicating the direction for splitting the slot
 //  - showDebug: Whether to highlight debug geometry
-function generateSlotForBodyPair(context is Context, id is Id, bodyA is map, bodyB is map, referenceFrame is CoordSystem, showDebug is boolean)
+function generateSlotForBodyPair(context is Context, id is Id, bodyA is map, bodyB is map, slotDirection is Vector, showDebug is boolean)
 {
     println("  Creating copies for intersection calculation...");
     
@@ -223,8 +260,8 @@ function generateSlotForBodyPair(context is Context, id is Id, bodyA is map, bod
         return;
     }
     
-    // Step 4: Find the Z-aligned edges in the intersection
-    var zAlignedEdges = [] as array;
+    // Step 4: Find the slot-direction-aligned edges in the intersection
+    var alignedEdges = [] as array;
     for (var intersectionBody in intersectionBodies)
     {
         const bodyEdges = evaluateQuery(context, qGeometry(qOwnedByBody(intersectionBody, EntityType.EDGE), GeometryType.LINE));
@@ -234,7 +271,7 @@ function generateSlotForBodyPair(context is Context, id is Id, bodyA is map, bod
             try
             {
                 const edgeLine = evLine(context, { "edge" : edge });
-                const alignment = abs(dot(edgeLine.direction, referenceFrame.zAxis));
+                const alignment = abs(dot(edgeLine.direction, slotDirection));
                 
                 if (alignment > 0.9999)
                 {
@@ -242,7 +279,7 @@ function generateSlotForBodyPair(context is Context, id is Id, bodyA is map, bod
                                 "edge" : edge,
                                 "parameter" : 0.5
                             });
-                    zAlignedEdges = append(zAlignedEdges, {
+                    alignedEdges = append(alignedEdges, {
                                 "edge" : edge,
                                 "position" : edgeTangent.origin
                             });
@@ -260,29 +297,29 @@ function generateSlotForBodyPair(context is Context, id is Id, bodyA is map, bod
         }
     }
     
-    println("  Z-aligned edges found: " ~ size(zAlignedEdges));
+    println("  Slot-direction-aligned edges found: " ~ size(alignedEdges));
     
-    if (size(zAlignedEdges) == 0)
+    if (size(alignedEdges) == 0)
     {
-        println("  No Z-aligned edges found - can't determine split plane");
+        println("  No aligned edges found - can't determine split plane");
         opDeleteBodies(context, id + "cleanupCopies", {
                     "entities" : qUnion([copyA, copyB])
                 });
         return;
     }
     
-    // Step 5: Calculate split plane at the average Z position
-    var zAccumulator = 0 * meter;
-    for (var edgeInfo in zAlignedEdges)
+    // Step 5: Calculate split plane at the average position along slot direction
+    var positionAccumulator = 0 * meter;
+    for (var edgeInfo in alignedEdges)
     {
-        zAccumulator += dot(edgeInfo.position, referenceFrame.zAxis);
+        positionAccumulator += dot(edgeInfo.position, slotDirection);
     }
-    const avgZ = zAccumulator / size(zAlignedEdges);
+    const avgPosition = positionAccumulator / size(alignedEdges);
     
-    const splitPlaneOrigin = (referenceFrame.zAxis * avgZ) / squaredNorm(referenceFrame.zAxis);
-    const splitPlane = plane(splitPlaneOrigin, referenceFrame.zAxis);
+    const splitPlaneOrigin = (slotDirection * avgPosition) / squaredNorm(slotDirection);
+    const splitPlane = plane(splitPlaneOrigin, slotDirection);
     
-    println("  Split plane Z position: " ~ avgZ);
+    println("  Split plane position along slot direction: " ~ avgPosition);
     
     // Step 6: Create split plane and split the intersection bodies
     opPlane(context, id + "splitPlane", {
@@ -311,9 +348,9 @@ function generateSlotForBodyPair(context is Context, id is Id, bodyA is map, bod
             
             const splitBodies = qCreatedBy(id + "split" ~ cellIndex, EntityType.BODY);
             
-            // Find which split goes to which body
-            const upperSplit = qFarthestAlong(splitBodies, referenceFrame.zAxis);
-            const lowerSplit = qFarthestAlong(splitBodies, -referenceFrame.zAxis);
+            // Find which split goes to which body based on slot direction
+            const upperSplit = qFarthestAlong(splitBodies, slotDirection);
+            const lowerSplit = qFarthestAlong(splitBodies, -slotDirection);
             
             if (!isQueryEmpty(context, upperSplit))
             {
