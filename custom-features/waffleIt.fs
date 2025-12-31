@@ -118,9 +118,32 @@ export const sheetMetalStart = defineSheetMetalFeature(function(context is Conte
         const sliceSets = [xSliceResult, ySliceResult];
         const trimmedSliceSets = trimSliceSetsToSolid(context, id, sliceSets, definition.selectedBody);
 
+        // First normalization pass: Remove any geometry that would be deleted by normalization before generating
+        // cross-slot geometry. This prevents wasting computation on cross slots in regions that will be removed.
+        // The benefit outweighs the cost of running normalization twice, as avoiding unnecessary cross-slot
+        // computation in regions destined for removal provides a net performance gain.
+        if (definition.normalizeGeometry == true)
+        {
+            // Process all slice bodies together using attribute queries to find cap faces
+            for (var sliceSet in trimmedSliceSets)
+            {
+                const allSliceBodies = qUnion(mapArray(sliceSet.sliceIds, function(sliceId)
+                        {
+                            return qCreatedBy(sliceId + "extrudeSlice", EntityType.BODY);
+                        }));
+                normalizeSliceGeometryForLasercutting(context, id + "preNormalize" + sliceSet.setLabel, allSliceBodies, definition.matThick);
+            }
+        }
+
         // Generate cross-slot geometry
         generateSlotsForSliceSets(context, id, trimmedSliceSets, referenceFrame);
 
+        // Second normalization pass: Normalize any faces created by the cross-slot generation.
+        // The normalization function identifies "good" faces (START caps, END caps, vertical walls) based on
+        // their current attributes and geometry, and only processes faces that need normalization. After the first
+        // pass, most original faces are already in a normalized state (either caps, vertical walls, or flattened
+        // projections that now appear as vertical walls), so this pass primarily handles new geometry introduced
+        // during cross-slot generation.
         // After trimming the intersecting grid, find all non-cap faces on each slice and project their geometry to
         // the START cap face. Thicken the flattened projections and remove the results from the slice.
         // This subtractive operation guarantees the slices lie inside of the original target volume.
@@ -133,7 +156,7 @@ export const sheetMetalStart = defineSheetMetalFeature(function(context is Conte
                         {
                             return qCreatedBy(sliceId + "extrudeSlice", EntityType.BODY);
                         }));
-                normalizeSliceGeometryForLasercutting(context, id + "normalize" + sliceSet.setLabel, allSliceBodies, definition.matThick);
+                normalizeSliceGeometryForLasercutting(context, id + "postNormalize" + sliceSet.setLabel, allSliceBodies, definition.matThick);
             }
         }
 
@@ -768,13 +791,16 @@ export function normalizeSliceGeometryForLasercutting(context is Context, idPref
 
         // Subtract the thickened projection from the current body being normalized
         // Target only the specific body being processed, not all slice bodies
+        // Use recomputeMatches to ensure robust boolean operation that won't create
+        // geometry incompatible with subsequent boolean operations
         try
         {
             opBoolean(context, bodyId + "subtract", {
                         "tools" : thickenedBodies,
                         "targets" : body,
                         "operationType" : BooleanOperationType.SUBTRACTION,
-                        "keepTools" : false
+                        "keepTools" : false,
+                        "recomputeMatches" : true
                     });
         }
         catch
