@@ -410,7 +410,59 @@ export const crossSlotTester = defineFeature(function(context is Context, id is 
                             cellIndex += 1;
                         }
                         
-                        // Note: We don't clean up the batched intersection - it's being used as slot tools
+                        // Perform batched subtraction following WaffleIt pattern (lines 496-512)
+                        println("  Performing batched subtraction operations");
+                        
+                        // Build queries for all Group 1 and Group 2 bodies
+                        const group1Bodies = qUnion(mapArray(group.group1, function(bodyIdx)
+                                {
+                                    return bodyInfo[bodyIdx].body;
+                                }));
+                        
+                        const group2Bodies = qUnion(mapArray(group.group2, function(bodyIdx)
+                                {
+                                    return bodyInfo[bodyIdx].body;
+                                }));
+                        
+                        // Subtract split tools from Group 1 bodies in one batched operation
+                        if (size(splitToolsForGroup1) > 0)
+                        {
+                            println("  Subtracting " ~ size(splitToolsForGroup1) ~ " tools from Group 1 bodies");
+                            try
+                            {
+                                opBoolean(context, id + "subtractGroup1Slots", {
+                                            "tools" : qUnion(splitToolsForGroup1),
+                                            "targets" : group1Bodies,
+                                            "operationType" : BooleanOperationType.SUBTRACTION,
+                                            "keepTools" : false
+                                        });
+                                println("  Group 1 slots cut successfully");
+                            }
+                            catch (error)
+                            {
+                                println("  ERROR cutting Group 1 slots: " ~ error);
+                            }
+                        }
+                        
+                        // Subtract split tools from Group 2 bodies in one batched operation
+                        if (size(splitToolsForGroup2) > 0)
+                        {
+                            println("  Subtracting " ~ size(splitToolsForGroup2) ~ " tools from Group 2 bodies");
+                            try
+                            {
+                                opBoolean(context, id + "subtractGroup2Slots", {
+                                            "tools" : qUnion(splitToolsForGroup2),
+                                            "targets" : group2Bodies,
+                                            "operationType" : BooleanOperationType.SUBTRACTION,
+                                            "keepTools" : false
+                                        });
+                                println("  Group 2 slots cut successfully");
+                            }
+                            catch (error)
+                            {
+                                println("  ERROR cutting Group 2 slots: " ~ error);
+                            }
+                        }
                     }
                 }
                 catch (error)
@@ -421,38 +473,8 @@ export const crossSlotTester = defineFeature(function(context is Context, id is 
         }
         
         println("=== Batched slot subtraction ===");
-        println("Processed " ~ intersectionCounter ~ " intersection pairs");
-        println("SUBTRACT_COMPLEMENT operations: " ~ subtractComplementCounter ~ " (optimized from " ~ intersectionCounter ~ ")");
-        
-        // Now perform batched subtraction for each body
-        for (var bodyIndex = 0; bodyIndex < size(bodyInfo); bodyIndex += 1)
-        {
-            const toolArray = splitToolsPerBody[bodyIndex];
-            if (size(toolArray) > 0)
-            {
-                println("Body " ~ bodyIndex ~ ": subtracting " ~ size(toolArray) ~ " slot tools");
-                
-                // Batch all tools into single subtraction
-                const allTools = qUnion(toolArray);
-                const targetBody = bodyInfo[bodyIndex].body;
-                
-                try
-                {
-                    opBoolean(context, id + "subtractSlots" + bodyIndex, {
-                                "tools" : allTools,
-                                "targets" : targetBody,
-                                "operationType" : BooleanOperationType.SUBTRACTION,
-                                "keepTools" : false,
-                                "recomputeMatches" : true
-                            });
-                    println("  Slots cut successfully");
-                }
-                catch (error)
-                {
-                    println("  ERROR cutting slots: " ~ error);
-                }
-            }
-        }
+        println("Processed " ~ intersectionCounter ~ " intersection cells");
+        println("SUBTRACT_COMPLEMENT operations: " ~ subtractComplementCounter ~ " (optimized from " ~ size(collisionPairs) ~ " pairs)")
         
         println("=== CROSS-SLOT TESTER COMPLETE ===");
     });
