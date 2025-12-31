@@ -101,34 +101,63 @@ export const crossSlotTester = defineFeature(function(context is Context, id is 
             throw regenError("Need at least 2 bodies with planar primary faces");
         }
         
-        // Pre-compute bounding boxes for all bodies to optimize pair checking
-        println("Computing bounding boxes for clash detection...");
-        var bodyBoxes = [] as array;
-        for (var info in bodyInfo)
+        // Use evCollision to find which bodies actually intersect
+        // This is much more efficient than checking all pairs
+        println("Detecting collisions between bodies...");
+        const allBodies = qUnion(mapArray(bodyInfo, function(info) { return info.body; }));
+        const collisions = evCollision(context, {
+                    "tools" : allBodies,
+                    "targets" : allBodies
+                });
+        
+        // Build a map of which bodies collide with which
+        var collidingPairs = {} as map;
+        for (var collision in collisions)
         {
-            const bbox = evBox3d(context, { "topology" : info.body, "tight" : false });
-            bodyBoxes = append(bodyBoxes, bbox);
+            // Skip self-collisions
+            if (collision.toolBody == collision.targetBody)
+            {
+                continue;
+            }
+            
+            const clashType = collision.type;
+            // Only process actual intersections (not just touching)
+            if (clashType == ClashType.INTERFERE ||
+                clashType == ClashType.TARGET_IN_TOOL ||
+                clashType == ClashType.TOOL_IN_TARGET)
+            {
+                // Store collision (use sorted pair to avoid duplicates)
+                const toolIndex = collision.toolBody;
+                const targetIndex = collision.targetBody;
+                const pairKey = toString(toolIndex) ~ "_" ~ toString(targetIndex);
+                collidingPairs[pairKey] = true;
+            }
         }
         
-        // Generate slots for each pair of bodies
+        println("Found " ~ size(collisions) ~ " collision checks, " ~ size(collidingPairs) ~ " actual intersections");
+        
+        // Generate slots only for pairs that actually collide
         var slotCounter = 0;
         var skippedPairs = 0;
         for (var bodyAIndex = 0; bodyAIndex < size(bodyInfo); bodyAIndex += 1)
         {
             for (var bodyBIndex = bodyAIndex + 1; bodyBIndex < size(bodyInfo); bodyBIndex += 1)
             {
-                // Clashbox optimization: Skip pairs whose bounding boxes don't overlap
-                if (!boxesIntersect(bodyBoxes[bodyAIndex], bodyBoxes[bodyBIndex]))
+                const bodyA = bodyInfo[bodyAIndex];
+                const bodyB = bodyInfo[bodyBIndex];
+                
+                // Check if this pair was detected as colliding
+                // evCollision uses body queries, so we need to check both orderings
+                const pairKey1 = toString(bodyA.body) ~ "_" ~ toString(bodyB.body);
+                const pairKey2 = toString(bodyB.body) ~ "_" ~ toString(bodyA.body);
+                
+                if (collidingPairs[pairKey1] == undefined && collidingPairs[pairKey2] == undefined)
                 {
                     skippedPairs += 1;
                     continue;
                 }
                 
                 println("--- Generating Slot " ~ slotCounter ~ " (Body " ~ bodyAIndex ~ " x Body " ~ bodyBIndex ~ ") ---");
-                
-                const bodyA = bodyInfo[bodyAIndex];
-                const bodyB = bodyInfo[bodyBIndex];
-                
                 // Calculate slot direction for THIS SPECIFIC PAIR
                 // Each pair needs its own direction based on their orientations
                 const normalA = bodyA.primaryPlane.normal;
@@ -164,32 +193,8 @@ export const crossSlotTester = defineFeature(function(context is Context, id is 
         
         println("=== CROSS-SLOT TESTER COMPLETE ===");
         println("Total slots attempted: " ~ slotCounter);
-        println("Pairs skipped (no bounding box overlap): " ~ skippedPairs);
+        println("Pairs skipped (no collision detected): " ~ skippedPairs);
     });
-
-// Check if two 3D bounding boxes intersect
-// Returns true if boxes overlap, false if they don't touch
-function boxesIntersect(boxA is Box3d, boxB is Box3d) returns boolean
-{
-    // Boxes intersect if they overlap in all three dimensions
-    // Check X axis
-    if (boxA.maxCorner[0] < boxB.minCorner[0] || boxB.maxCorner[0] < boxA.minCorner[0])
-    {
-        return false;
-    }
-    // Check Y axis
-    if (boxA.maxCorner[1] < boxB.minCorner[1] || boxB.maxCorner[1] < boxA.minCorner[1])
-    {
-        return false;
-    }
-    // Check Z axis
-    if (boxA.maxCorner[2] < boxB.minCorner[2] || boxB.maxCorner[2] < boxA.minCorner[2])
-    {
-        return false;
-    }
-    // Boxes overlap in all three dimensions
-    return true;
-}
 
 // Generate a slot where two bodies intersect
 // Inputs:
