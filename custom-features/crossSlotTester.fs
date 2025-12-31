@@ -27,15 +27,6 @@ export const crossSlotTester = defineFeature(function(context is Context, id is 
         annotation { "Name" : "Bodies to slot", "Filter" : EntityType.BODY, "MaxNumberOfPicks" : 100 }
         definition.bodiesToSlot is Query;
         
-        annotation { "Name" : "Use Custom Reference Frame" }
-        definition.useCustomFrame is boolean;
-        
-        if (definition.useCustomFrame)
-        {
-            annotation { "Name" : "Reference Frame", "Filter" : BodyType.MATE_CONNECTOR, "MaxNumberOfPicks" : 1 }
-            definition.referenceFrame is Query;
-        }
-        
         annotation { "Name" : "Show Debug Info" }
         definition.showDebug is boolean;
     }
@@ -69,18 +60,6 @@ export const crossSlotTester = defineFeature(function(context is Context, id is 
             {
                 const largestFace = largestFaceArray[0];
                 
-                try
-                {
-                    const faceArea = evArea(context, {
-                                "entities" : largestFace
-                            });
-                    println("  Largest face area: " ~ faceArea);
-                }
-                catch
-                {
-                    println("  Could not evaluate area");
-                }
-                
                 // Get the plane of the largest face
                 try
                 {
@@ -93,10 +72,6 @@ export const crossSlotTester = defineFeature(function(context is Context, id is 
                     if (definition.showDebug)
                     {
                         debug(context, largestFace, DebugColor.GREEN);
-                        setFeatureComputedParameter(context, id, {
-                                    "name" : "body" ~ bodyCounter ~ "PrimaryFace",
-                                    "value" : largestFace
-                                });
                     }
                     
                     bodyInfo = append(bodyInfo, {
@@ -127,38 +102,26 @@ export const crossSlotTester = defineFeature(function(context is Context, id is 
         }
         
         // Determine the slot direction (perpendicular to primary faces)
-        // For sheet bodies, the slot direction is the cross product of the two primary face normals
+        // The slot direction is the cross product of the two primary face normals
         var slotDirection = undefined;
         
-        if (definition.useCustomFrame)
+        if (size(bodyInfo) >= 2)
         {
-            const referenceFrame = evMateConnector(context, {
-                        "mateConnector" : definition.referenceFrame
-                    });
-            slotDirection = referenceFrame.zAxis;
-            println("Using custom reference frame, slot direction: " ~ slotDirection);
-        }
-        else
-        {
-            // Auto-detect slot direction from the first two bodies
-            if (size(bodyInfo) >= 2)
+            const normal1 = bodyInfo[0].primaryPlane.normal;
+            const normal2 = bodyInfo[1].primaryPlane.normal;
+            slotDirection = cross(normal1, normal2);
+            
+            // Normalize the direction
+            if (norm(slotDirection) > TOLERANCE.zeroLength)
             {
-                const normal1 = bodyInfo[0].primaryPlane.normal;
-                const normal2 = bodyInfo[1].primaryPlane.normal;
-                slotDirection = cross(normal1, normal2);
-                
-                // Normalize the direction
-                if (norm(slotDirection) > TOLERANCE.zeroLength)
-                {
-                    slotDirection = normalize(slotDirection);
-                    println("Auto-detected slot direction: " ~ slotDirection);
-                }
-                else
-                {
-                    // Bodies are parallel, use a perpendicular direction to both
-                    slotDirection = perpendicularVector(normal1);
-                    println("Bodies are parallel, using perpendicular direction: " ~ slotDirection);
-                }
+                slotDirection = normalize(slotDirection);
+                println("Detected slot direction: " ~ slotDirection);
+            }
+            else
+            {
+                // Bodies are parallel, use a perpendicular direction to both
+                slotDirection = perpendicularVector(normal1);
+                println("Bodies are parallel, using perpendicular direction: " ~ slotDirection);
             }
         }
         
@@ -174,11 +137,9 @@ export const crossSlotTester = defineFeature(function(context is Context, id is 
                 const bodyB = bodyInfo[bodyBIndex];
                 
                 // Check if the bodies intersect
-                const slotId = id + "slot" ~ slotCounter;
-                
                 try
                 {
-                    generateSlotForBodyPair(context, slotId, bodyA, bodyB, slotDirection, definition.showDebug);
+                    generateSlotForBodyPair(context, id + ("slot" ~ slotCounter), bodyA, bodyB, slotDirection, definition.showDebug);
                     println("  Slot generated successfully");
                 }
                 catch (error)
