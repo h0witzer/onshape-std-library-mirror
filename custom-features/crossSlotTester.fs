@@ -549,16 +549,20 @@ function computeCollisionGroups(collisionNeighbors is map, totalBodies is number
 // Performs a single SUBTRACT_COMPLEMENT operation for all Group 1 bodies vs all Group 2 bodies
 // This is the key optimization that reduces the number of boolean operations
 //
+// Key insight: Copy GROUP 1 ONLY, use copy as targets, Group 2 as tools
+// This preserves original bodies and the intersection results come from the copy operation
+//
 // Inputs:
 //  - group1Query: Query for all bodies in Group 1 (non-colliding with each other)
 //  - group2Query: Query for all bodies in Group 2 (neighbors of Group 1)
 //  - showDebug: Whether to highlight debug geometry
-// Returns: Query for the batched intersection geometry, or undefined if failed
+// Returns: Query for the batched intersection geometry
 function generateBatchedIntersection(context is Context, id is Id, group1Query is Query, group2Query is Query, showDebug is boolean) returns Query
 {
-    println("  Creating copies for batched intersection...");
+    println("  Creating copy of Group 1 for batched intersection...");
     
-    // Create copies of both groups
+    // ONLY copy Group 1 - this is the key optimization
+    // We use the copy as targets in SUBTRACT_COMPLEMENT
     opPattern(context, id + "copyGroup1", {
                 "entities" : group1Query,
                 "transforms" : [identityTransform()],
@@ -566,35 +570,30 @@ function generateBatchedIntersection(context is Context, id is Id, group1Query i
             });
     const copyGroup1 = qCreatedBy(id + "copyGroup1", EntityType.BODY);
     
-    opPattern(context, id + "copyGroup2", {
-                "entities" : group2Query,
-                "transforms" : [identityTransform()],
-                "instanceNames" : ["group2Copy"]
-            });
-    const copyGroup2 = qCreatedBy(id + "copyGroup2", EntityType.BODY);
-    
     if (showDebug)
     {
         debug(context, copyGroup1, DebugColor.BLUE);
-        debug(context, copyGroup2, DebugColor.RED);
+        debug(context, group2Query, DebugColor.RED);
     }
     
     println("  Calculating batched intersection geometry...");
     
     // Perform single SUBTRACT_COMPLEMENT for entire group
+    // Tools: Group 2 (original bodies, will be kept)
+    // Targets: Copy of Group 1 (will be modified to contain intersection)
     try
     {
         opBoolean(context, id + "batchIntersection", {
-                    "tools" : copyGroup1,
-                    "targets" : copyGroup2,
+                    "tools" : group2Query,
+                    "targets" : copyGroup1,
                     "operationType" : BooleanOperationType.SUBTRACT_COMPLEMENT,
                     "keepTargets" : true,
                     "recomputeMatches" : true
                 });
         
-        // SUBTRACT_COMPLEMENT modifies the target bodies in place to become the intersection
-        // No new bodies are created - the copyGroup2 bodies ARE the intersection results
-        const intersectionBodies = copyGroup2;
+        // The copyGroup1 bodies are now modified to contain only the intersection regions
+        // These bodies were created by the copy operation above
+        const intersectionBodies = copyGroup1;
         const intersectionCount = size(evaluateQuery(context, intersectionBodies));
         println("  Batched intersection created " ~ intersectionCount ~ " bodies");
         
