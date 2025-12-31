@@ -363,19 +363,21 @@ export const crossSlotTester = defineFeature(function(context is Context, id is 
                                     const splitPlane = plane(splitPlaneOrigin, pairSlotDirection);
                                     
                                     // Create split plane and split the intersection cell
-                                    opPlane(context, id + "splitPlane" + cellIndex, {
+                                    // Use unique Ids per pair to avoid operation history conflicts
+                                    const pairId = cellIndex ~ "_" ~ g1Idx ~ "_" ~ g2Idx;
+                                    opPlane(context, id + ("splitPlane_" ~ pairId), {
                                                 "plane" : splitPlane
                                             });
-                                    const splitPlaneBody = qCreatedBy(id + "splitPlane" + cellIndex, EntityType.BODY);
+                                    const splitPlaneBody = qCreatedBy(id + ("splitPlane_" ~ pairId), EntityType.BODY);
                                     
                                     try
                                     {
-                                        opSplitPart(context, id + "split" + cellIndex, {
+                                        opSplitPart(context, id + ("split_" ~ pairId), {
                                                     "targets" : intersectionCell,
                                                     "tool" : splitPlaneBody
                                                 });
                                         
-                                        const splitBodies = qOwnerBody(qCreatedBy(id + "split" + cellIndex));
+                                        const splitBodies = qOwnerBody(qCreatedBy(id + ("split_" ~ pairId)));
                                         
                                         // Assign split halves to appropriate bodies
                                         const toolForBody1 = qFarthestAlong(splitBodies, pairSlotDirection);
@@ -393,26 +395,35 @@ export const crossSlotTester = defineFeature(function(context is Context, id is 
                                         
                                         intersectionCounter += 1;
                                         println("      Split and assigned tools for pair: body " ~ g1Idx ~ " x body " ~ g2Idx);
+                                        
+                                        // Clean up split plane
+                                        try
+                                        {
+                                            opDeleteBodies(context, id + ("cleanupPlane_" ~ pairId), {
+                                                        "entities" : splitPlaneBody
+                                                    });
+                                        }
+                                        catch {}
+                                        
+                                        // Break after successful split - each cell should only be split once
+                                        break;
                                     }
                                     catch (error)
                                     {
                                         println("      WARNING: Could not split intersection cell: " ~ error);
+                                        
+                                        // Clean up split plane even if split failed
+                                        try
+                                        {
+                                            opDeleteBodies(context, id + ("cleanupPlane_" ~ pairId), {
+                                                        "entities" : splitPlaneBody
+                                                    });
+                                        }
+                                        catch {}
                                     }
-                                    
-                                    // Clean up split plane
-                                    try
-                                    {
-                                        opDeleteBodies(context, id + ("cleanupPlane" ~ cellIndex), {
-                                                    "entities" : splitPlaneBody
-                                                });
-                                    }
-                                    catch {}
-                                    
-                                    // Only process this cell once
-                                    break;
                                 }
                                 
-                                // Break outer loop too if we processed this cell
+                                // Break outer loop too if we found and split this cell
                                 if (size(alignedEdges) > 0)
                                 {
                                     break;
