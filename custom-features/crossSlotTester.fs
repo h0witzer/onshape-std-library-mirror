@@ -19,6 +19,7 @@ import(path : "onshape/std/topologyUtils.fs", version : "2837.0");
 import(path : "onshape/std/coordSystem.fs", version : "2837.0");
 import(path : "onshape/std/vector.fs", version : "2837.0");
 import(path : "onshape/std/debug.fs", version : "2837.0");
+import(path : "onshape/std/containers.fs", version : "2837.0");
 
 annotation { "Feature Type Name" : "Cross-Slot Tester" }
 export const crossSlotTester = defineFeature(function(context is Context, id is Id, definition is map)
