@@ -167,13 +167,15 @@ export const crossSlotTester = defineFeature(function(context is Context, id is 
                 
                 if (toolBodyIndex != -1 && targetBodyIndex != -1)
                 {
-                    // Add to adjacency lists
+                    // Add to adjacency lists (both directions)
                     collisionNeighbors[toolBodyIndex] = append(collisionNeighbors[toolBodyIndex], targetBodyIndex);
                     collisionNeighbors[targetBodyIndex] = append(collisionNeighbors[targetBodyIndex], toolBodyIndex);
                     
-                    // Store collision pair for later lookup
-                    const pairKey = toString(collision.toolBody) ~ "_" ~ toString(collision.targetBody);
-                    collidingPairs[pairKey] = true;
+                    // Store collision pair for later lookup (both directions)
+                    const pairKey1 = toString(collision.toolBody) ~ "_" ~ toString(collision.targetBody);
+                    const pairKey2 = toString(collision.targetBody) ~ "_" ~ toString(collision.toolBody);
+                    collidingPairs[pairKey1] = true;
+                    collidingPairs[pairKey2] = true;
                 }
             }
         }
@@ -193,6 +195,13 @@ export const crossSlotTester = defineFeature(function(context is Context, id is 
         println("=== Grouping bodies for batched operations ===");
         const bodyGroups = computeCollisionGroups(collisionNeighbors, size(bodyInfo));
         println("Created " ~ size(bodyGroups) ~ " body groups for processing");
+        
+        // Log group details for verification
+        for (var gIdx = 0; gIdx < size(bodyGroups); gIdx += 1)
+        {
+            const group = bodyGroups[gIdx];
+            println("Group " ~ gIdx ~ ": Group1=" ~ size(group.group1) ~ " bodies, Group2=" ~ size(group.group2) ~ " bodies");
+        }
         
         // BATCHED APPROACH: Collect all split tools per body, then subtract all at once
         // This dramatically reduces boolean operation count
@@ -596,12 +605,14 @@ function extractPairSplitTools(context is Context, id is Id, batchedIntersection
 {
     // To extract the intersection specific to bodyA and bodyB from the batched intersection:
     // 1. Copy bodyA and bodyB
-    // 2. Intersect each with the batched intersection to get their specific overlap regions
-    // 3. Split those regions as normal
+    // 2. Copy portions of the batched intersection to work with
+    // 3. Intersect each with their batched intersection copy to get their specific overlap regions
+    // 4. Find the intersection of those two regions
+    // 5. Split that final intersection as normal
     
     println("    Extracting intersection for specific pair");
     
-    // Create temporary copies of bodyA and bodyB to intersect with batched result
+    // Create temporary copies of bodyA and bodyB
     opPattern(context, id + "copyA", {
                 "entities" : bodyA.body,
                 "transforms" : [identityTransform()],
@@ -616,14 +627,30 @@ function extractPairSplitTools(context is Context, id is Id, batchedIntersection
             });
     const copyB = qCreatedBy(id + "copyB", EntityType.BODY);
     
-    // Intersect copyA with batched intersection to get the portion that belongs to this pair
+    // Create copies of the batched intersection for separate operations
+    opPattern(context, id + "batchCopyA", {
+                "entities" : batchedIntersection,
+                "transforms" : [identityTransform()],
+                "instanceNames" : ["batchForA"]
+            });
+    const batchForA = qCreatedBy(id + "batchCopyA", EntityType.BODY);
+    
+    opPattern(context, id + "batchCopyB", {
+                "entities" : batchedIntersection,
+                "transforms" : [identityTransform()],
+                "instanceNames" : ["batchForB"]
+            });
+    const batchForB = qCreatedBy(id + "batchCopyB", EntityType.BODY);
+    
+    // Intersect copyA with its batch copy to get the portion that overlaps bodyA
     try
     {
         opBoolean(context, id + "extractA", {
                     "tools" : copyA,
-                    "targets" : batchedIntersection,
+                    "targets" : batchForA,
                     "operationType" : BooleanOperationType.INTERSECTION,
                     "keepTools" : false,
+                    "keepTargets" : false,
                     "recomputeMatches" : true
                 });
     }
@@ -631,18 +658,19 @@ function extractPairSplitTools(context is Context, id is Id, batchedIntersection
     {
         println("    WARNING: Could not extract intersection for body A: " ~ error);
         // Clean up
-        try { opDeleteBodies(context, id + "cleanup", { "entities" : qUnion([copyA, copyB]) }); } catch {}
+        try { opDeleteBodies(context, id + "cleanup", { "entities" : qUnion([copyA, copyB, batchForA, batchForB]) }); } catch {}
         return { "toolForA" : undefined, "toolForB" : undefined };
     }
     
-    // Similarly intersect copyB with batched intersection
+    // Similarly intersect copyB with its batch copy to get the portion that overlaps bodyB
     try
     {
         opBoolean(context, id + "extractB", {
                     "tools" : copyB,
-                    "targets" : batchedIntersection,
+                    "targets" : batchForB,
                     "operationType" : BooleanOperationType.INTERSECTION,
                     "keepTools" : false,
+                    "keepTargets" : false,
                     "recomputeMatches" : true
                 });
     }
