@@ -610,7 +610,7 @@ function generateBatchedIntersection(context is Context, id is Id, group1Query i
 
 // Extract split tools from a batched intersection for a specific body pair
 // This function takes the batched intersection and extracts/splits the relevant portion for one collision pair
-// This uses INTERSECTION operations (not SUBTRACT_COMPLEMENT) to isolate the specific pair geometry
+// Uses SUBTRACT_COMPLEMENT for efficient extraction
 //
 // Inputs:
 //  - batchedIntersection: Query for the batched intersection geometry (already computed)
@@ -622,112 +622,61 @@ function extractPairSplitTools(context is Context, id is Id, batchedIntersection
                                bodyA is map, bodyB is map, slotDirection is Vector, showDebug is boolean) returns map
 {
     // To extract the intersection specific to bodyA and bodyB from the batched intersection:
-    // 1. Copy bodyA and bodyB
-    // 2. Copy portions of the batched intersection to work with
-    // 3. Intersect each with their batched intersection copy to get their specific overlap regions
-    // 4. Find the intersection of those two regions
-    // 5. Split that final intersection as normal
+    // 1. Use SUBTRACT_COMPLEMENT with bodyA as tool and batchedIntersection as target
+    //    This gives us the portions of batched intersection that overlap with bodyA
+    // 2. Use SUBTRACT_COMPLEMENT with bodyB as tool on that result
+    //    This gives us the intersection region specific to this pair
+    // 3. Split that region along the slot direction
     
     println("    Extracting intersection for specific pair");
     
-    // Create temporary copies of bodyA and bodyB
-    opPattern(context, id + "copyA", {
-                "entities" : bodyA.body,
-                "transforms" : [identityTransform()],
-                "instanceNames" : ["pairCopyA"]
-            });
-    const copyA = qCreatedBy(id + "copyA", EntityType.BODY);
-    
-    opPattern(context, id + "copyB", {
-                "entities" : bodyB.body,
-                "transforms" : [identityTransform()],
-                "instanceNames" : ["pairCopyB"]
-            });
-    const copyB = qCreatedBy(id + "copyB", EntityType.BODY);
-    
-    // Create copies of the batched intersection for separate operations
-    opPattern(context, id + "batchCopyA", {
+    // Copy the batched intersection once for this pair
+    opPattern(context, id + "batchCopy", {
                 "entities" : batchedIntersection,
                 "transforms" : [identityTransform()],
-                "instanceNames" : ["batchForA"]
+                "instanceNames" : ["pairBatch"]
             });
-    const batchForA = qCreatedBy(id + "batchCopyA", EntityType.BODY);
+    const batchCopy = qCreatedBy(id + "batchCopy", EntityType.BODY);
     
-    opPattern(context, id + "batchCopyB", {
-                "entities" : batchedIntersection,
-                "transforms" : [identityTransform()],
-                "instanceNames" : ["batchForB"]
-            });
-    const batchForB = qCreatedBy(id + "batchCopyB", EntityType.BODY);
-    
-    // Intersect copyA with its batch copy to get the portion that overlaps bodyA
+    // First SUBTRACT_COMPLEMENT: extract portions overlapping bodyA
     try
     {
         opBoolean(context, id + "extractA", {
-                    "tools" : copyA,
-                    "targets" : batchForA,
-                    "operationType" : BooleanOperationType.INTERSECTION,
-                    "keepTools" : false,
-                    "keepTargets" : false,
-                    "recomputeMatches" : true
-                });
-    }
-    catch (error)
-    {
-        println("    WARNING: Could not extract intersection for body A: " ~ error);
-        // Clean up
-        try { opDeleteBodies(context, id + "cleanup", { "entities" : qUnion([copyA, copyB, batchForA, batchForB]) }); } catch {}
-        return { "toolForA" : undefined, "toolForB" : undefined };
-    }
-    
-    // Similarly intersect copyB with its batch copy to get the portion that overlaps bodyB
-    try
-    {
-        opBoolean(context, id + "extractB", {
-                    "tools" : copyB,
-                    "targets" : batchForB,
-                    "operationType" : BooleanOperationType.INTERSECTION,
-                    "keepTools" : false,
-                    "keepTargets" : false,
-                    "recomputeMatches" : true
-                });
-    }
-    catch (error)
-    {
-        println("    WARNING: Could not extract intersection for body B: " ~ error);
-        return { "toolForA" : undefined, "toolForB" : undefined };
-    }
-    
-    // Now intersect the two extracted regions to get the actual pair intersection
-    const extractedA = qCreatedBy(id + "extractA", EntityType.BODY);
-    const extractedB = qCreatedBy(id + "extractB", EntityType.BODY);
-    
-    // Check if we got valid extractions
-    if (isQueryEmpty(context, extractedA) || isQueryEmpty(context, extractedB))
-    {
-        println("    No overlap found for this specific pair");
-        return { "toolForA" : undefined, "toolForB" : undefined };
-    }
-    
-    // Find the actual intersection between the two extractions
-    try
-    {
-        opBoolean(context, id + "pairIntersect", {
-                    "tools" : extractedA,
-                    "targets" : extractedB,
-                    "operationType" : BooleanOperationType.INTERSECTION,
-                    "keepTools" : false,
+                    "tools" : bodyA.body,
+                    "targets" : batchCopy,
+                    "operationType" : BooleanOperationType.SUBTRACT_COMPLEMENT,
                     "keepTargets" : true,
                     "recomputeMatches" : true
                 });
     }
     catch (error)
     {
-        println("    ERROR finding pair intersection: " ~ error);
+        println("    WARNING: Could not extract intersection for body A: " ~ error);
+        try { opDeleteBodies(context, id + "cleanup", { "entities" : batchCopy }); } catch {}
         return { "toolForA" : undefined, "toolForB" : undefined };
     }
     
-    const pairIntersection = qCreatedBy(id + "pairIntersect", EntityType.BODY);
+    // batchCopy now contains only the parts that overlap with bodyA
+    // Second SUBTRACT_COMPLEMENT: extract portions overlapping bodyB
+    try
+    {
+        opBoolean(context, id + "extractB", {
+                    "tools" : bodyB.body,
+                    "targets" : batchCopy,
+                    "operationType" : BooleanOperationType.SUBTRACT_COMPLEMENT,
+                    "keepTargets" : true,
+                    "recomputeMatches" : true
+                });
+    }
+    catch (error)
+    {
+        println("    WARNING: Could not extract intersection for body B: " ~ error);
+        try { opDeleteBodies(context, id + "cleanup", { "entities" : batchCopy }); } catch {}
+        return { "toolForA" : undefined, "toolForB" : undefined };
+    }
+    
+    // batchCopy now contains only the intersection region for this specific pair
+    const pairIntersection = batchCopy;
     const pairIntersectionBodies = evaluateQuery(context, pairIntersection);
     
     if (size(pairIntersectionBodies) == 0)
