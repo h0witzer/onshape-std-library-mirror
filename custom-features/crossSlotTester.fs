@@ -657,16 +657,15 @@ function generateBatchedIntersection(context is Context, id is Id, group1Query i
     println("  Calculating batched intersection geometry...");
     
     // Perform single SUBTRACT_COMPLEMENT for entire group
-    // Tools: Group 2 (original bodies)
+    // Tools: Group 2 (original bodies, preserved with keepTools: true)
     // Targets: Copy of Group 1 (will be modified to contain intersection)
-    // keepTargets: true preserves the modified target bodies
     try
     {
         opBoolean(context, id + "batchIntersection", {
                     "tools" : group2Query,
                     "targets" : copyGroup1,
                     "operationType" : BooleanOperationType.SUBTRACT_COMPLEMENT,
-                    "keepTargets" : true,
+                    "keepTools" : true,
                     "recomputeMatches" : true
                 });
         
