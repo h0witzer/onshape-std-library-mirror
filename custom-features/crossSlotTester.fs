@@ -284,6 +284,7 @@ export const crossSlotTester = defineFeature(function(context is Context, id is 
                             // This is where the original logic applies - we split each intersection cell
                             
                             // For each Group 1 body, check which Group 2 bodies it collides with
+                            var alignedEdges = [] as array;  // Moved outside loop for scope
                             for (var g1Idx in group.group1)
                             {
                                 const body1Info = bodyInfo[g1Idx];
@@ -317,7 +318,7 @@ export const crossSlotTester = defineFeature(function(context is Context, id is 
                                     }
                                     
                                     // Find aligned edges in this intersection cell
-                                    var alignedEdges = [] as array;
+                                    alignedEdges = [] as array;  // Reset for each pair
                                     const bodyEdges = evaluateQuery(context, qGeometry(qOwnedByBody(intersectionCell, EntityType.EDGE), GeometryType.LINE));
                                     
                                     for (var edge in bodyEdges)
@@ -401,7 +402,7 @@ export const crossSlotTester = defineFeature(function(context is Context, id is 
                                     // Clean up split plane
                                     try
                                     {
-                                        opDeleteBodies(context, id + "cleanupPlane" ~ cellIndex, {
+                                        opDeleteBodies(context, id + ("cleanupPlane" ~ cellIndex), {
                                                     "entities" : splitPlaneBody
                                                 });
                                     }
