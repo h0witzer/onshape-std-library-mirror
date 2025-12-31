@@ -118,9 +118,28 @@ export const sheetMetalStart = defineSheetMetalFeature(function(context is Conte
         const sliceSets = [xSliceResult, ySliceResult];
         const trimmedSliceSets = trimSliceSetsToSolid(context, id, sliceSets, definition.selectedBody);
 
+        // First normalization pass: Remove any geometry that would be deleted by normalization before generating
+        // cross-slot geometry. This prevents wasting computation on cross slots in regions that will be removed.
+        // Since normalization is already iterative, there is no performance penalty for running it twice.
+        if (definition.normalizeGeometry == true)
+        {
+            // Process all slice bodies together using attribute queries to find cap faces
+            for (var sliceSet in trimmedSliceSets)
+            {
+                const allSliceBodies = qUnion(mapArray(sliceSet.sliceIds, function(sliceId)
+                        {
+                            return qCreatedBy(sliceId + "extrudeSlice", EntityType.BODY);
+                        }));
+                normalizeSliceGeometryForLasercutting(context, id + "preNormalize" + sliceSet.setLabel, allSliceBodies, definition.matThick);
+            }
+        }
+
         // Generate cross-slot geometry
         generateSlotsForSliceSets(context, id, trimmedSliceSets, referenceFrame);
 
+        // Second normalization pass: Normalize any faces created by the cross-slot generation.
+        // This pass will skip faces that were already normalized in the first pass (START caps, END caps, and
+        // vertical walls), so it only processes new geometry created during cross-slot generation.
         // After trimming the intersecting grid, find all non-cap faces on each slice and project their geometry to
         // the START cap face. Thicken the flattened projections and remove the results from the slice.
         // This subtractive operation guarantees the slices lie inside of the original target volume.
@@ -133,7 +152,7 @@ export const sheetMetalStart = defineSheetMetalFeature(function(context is Conte
                         {
                             return qCreatedBy(sliceId + "extrudeSlice", EntityType.BODY);
                         }));
-                normalizeSliceGeometryForLasercutting(context, id + "normalize" + sliceSet.setLabel, allSliceBodies, definition.matThick);
+                normalizeSliceGeometryForLasercutting(context, id + "postNormalize" + sliceSet.setLabel, allSliceBodies, definition.matThick);
             }
         }
 
