@@ -1,4 +1,4 @@
-// Laser It slices a selected body into a grid of extruded rectangles to prepare geometry for laser cutting.
+// Waffle It slices a selected body into a grid of extruded rectangles to prepare geometry for laser cutting.
 // Inputs:
 //  - selectedBody : Body query to slice
 //  - planeSpacing : Distance between slicing planes along the X and Y axes of the reference frame
@@ -6,6 +6,7 @@
 //  - defRefFrame : Boolean to select a mate connector as the slicing reference frame
 //  - referenceFrame : Mate connector query when defRefFrame is true, defines the placement of the slicing grid
 //  - outputSheetMetal : Boolean to output results as sheet metal bodies
+//  - deleteInputBody : Boolean to delete the input body after the waffling operation is completed
 FeatureScript 2815;
 // import(path : "onshape/std/geometry.fs", version : "2815.0");
 import(path : "onshape/std/common.fs", version : "2815.0");
@@ -16,6 +17,8 @@ import(path : "onshape/std/sheetMetalUtils.fs", version : "2815.0");
 import(path : "onshape/std/evaluate.fs", version : "2815.0");
 import(path : "onshape/std/topologyUtils.fs", version : "2815.0");
 import(path : "onshape/std/attributes.fs", version : "2815.0");
+import(path : "onshape/std/primitives.fs", version : "2815.0");
+import(path : "onshape/std/fillSurface.fs", version : "2815.0");
 
 annotation { "Feature Type Name" : "Waffle It" }
 export const sheetMetalStart = defineSheetMetalFeature(function(context is Context, id is Id, definition is map)
@@ -59,6 +62,9 @@ export const sheetMetalStart = defineSheetMetalFeature(function(context is Conte
             isLength(definition.minimalClearance, SM_MINIMAL_CLEARANCE_BOUNDS);
         }
 
+        annotation { "Name" : "Delete input body" }
+        definition.deleteInputBody is boolean;
+
     }
     {
         // Establish the coordinate system used for slicing
@@ -71,158 +77,225 @@ export const sheetMetalStart = defineSheetMetalFeature(function(context is Conte
                     });
         }
 
-        // Use the coordinate system to define the bounding box (start and end of planes).
-        // The reference frame position directly controls where the slicing grid is placed.
-        var orientedBoundingBox = evBox3d(context, {
+        // Get a world-aligned bounding box for creating the cuboid to intersect with
+        // This avoids transformation complexity - the cuboid will always be axis-aligned
+        var worldBoundingBox = evBox3d(context, {
                 "topology" : definition.selectedBody,
-                "cSys" : referenceFrame,
                 "tight" : true
             });
 
         var referenceFrameToWorldTransform = toWorld(referenceFrame);
 
-        // Build a stack of slicing planes perpendicular to X, then Y, that span the oriented bounding box of the target body.
-        // The function calculates which planes are needed based on the bounding box and spacing.
-        // Each loop: create a sketch-sized rectangle around the body, extrude it to the material thickness, and retain the raw
-        // sheets for a later trimming pass against the selected part.
-        var xSliceResult = generateSheets(context, id, "X", orientedBoundingBox, definition.planeSpacing, referenceFrameToWorldTransform, definition.matThick);
-
-        var ySliceResult = generateSheets(context, id, "Y", orientedBoundingBox, definition.planeSpacing, referenceFrameToWorldTransform, definition.matThick);
+        // Build slice sets for X and Y orientations
+        const xSliceSetDefinition = {
+            "featureIdPrefix" : id,
+            "setLabel" : "X",
+            "normalVector" : vector([1, 0, 0]),
+            "upVector" : vector([0, 1, 0]),
+            "planeSpacing" : definition.planeSpacing,
+            "referenceFrameToWorldTransform" : referenceFrameToWorldTransform,
+            "materialThickness" : definition.matThick,
+            "worldBoundingBox" : worldBoundingBox,
+            "targetBody" : definition.selectedBody
+        };
+        
+        const ySliceSetDefinition = {
+            "featureIdPrefix" : id,
+            "setLabel" : "Y",
+            "normalVector" : vector([0, 1, 0]),
+            "upVector" : vector([0, 0, 1]),
+            "planeSpacing" : definition.planeSpacing,
+            "referenceFrameToWorldTransform" : referenceFrameToWorldTransform,
+            "materialThickness" : definition.matThick,
+            "worldBoundingBox" : worldBoundingBox,
+            "targetBody" : definition.selectedBody
+        };
+        
+        var xSliceResult = generateSliceSet(context, xSliceSetDefinition);
+        var ySliceResult = generateSliceSet(context, ySliceSetDefinition);
 
         // Intersect each sheet with the target solid to retain only in-bounds material before generating cross-slot geometry.
-        var trimmedSheetsResult = trimSheetsToSolid(context, id, xSliceResult, ySliceResult, definition.selectedBody);
+        const sliceSets = [xSliceResult, ySliceResult];
+        const trimmedSliceSets = trimSliceSetsToSolid(context, id, sliceSets, definition.selectedBody);
 
-        // The XY nested loop takes every X slice and intersects it with every Y slice to form individual grid cells.
-        // For each cell, it resolves all intersecting bodies, averages aligned edges to infer a mid-surface, and splits the
-        // cell into two halves so the original X and Y slice sets can be trimmed against each other.
-        generateCrossSlotGeometryForSlices(context, id, trimmedSheetsResult.xIntersectionIds, trimmedSheetsResult.yIntersectionIds, referenceFrame);
+        // Generate cross-slot geometry
+        generateSlotsForSliceSets(context, id, trimmedSliceSets, referenceFrame);
 
         // After trimming the intersecting grid, find all non-cap faces on each slice and project their geometry to
         // the START cap face. Thicken the flattened projections and remove the results from the slice.
         // This subtractive operation guarantees the slices lie inside of the original target volume.
         if (definition.normalizeGeometry == true)
         {
-            // Process all X slice bodies together using attribute queries to find cap faces
-            // After SUBTRACT_COMPLEMENT change, xIntersectionIds contains slice IDs (extrusion IDs)
-            const allXSliceBodies = qUnion(mapArray(trimmedSheetsResult.xIntersectionIds, function(xSliceId)
-                    {
-                        return qCreatedBy(xSliceId + "extrudeRectangle", EntityType.BODY);
-                    }));
-            normalizeSliceGeometryForLasercutting(context, id + "XNormalize", allXSliceBodies, definition.matThick);
-
-            // Process all Y slice bodies together using attribute queries to find cap faces
-            // After SUBTRACT_COMPLEMENT change, yIntersectionIds contains slice IDs (extrusion IDs)
-            const allYSliceBodies = qUnion(mapArray(trimmedSheetsResult.yIntersectionIds, function(ySliceId)
-                    {
-                        return qCreatedBy(ySliceId + "extrudeRectangle", EntityType.BODY);
-                    }));
-            normalizeSliceGeometryForLasercutting(context, id + "YNormalize", allYSliceBodies, definition.matThick);
+            // Process all slice bodies together using attribute queries to find cap faces
+            for (var sliceSet in trimmedSliceSets)
+            {
+                const allSliceBodies = qUnion(mapArray(sliceSet.sliceIds, function(sliceId)
+                        {
+                            return qCreatedBy(sliceId + "extrudeSlice", EntityType.BODY);
+                        }));
+                normalizeSliceGeometryForLasercutting(context, id + "normalize" + sliceSet.setLabel, allSliceBodies, definition.matThick);
+            }
         }
 
         // Convert to sheet metal if requested
         if (definition.outputSheetMetal == true)
         {
-            convertSlicesToSheetMetal(context, id, trimmedSheetsResult, definition);
+            convertSlicesToSheetMetal(context, id, trimmedSliceSets, definition);
+        }
+
+        // Delete the input body if requested
+        if (definition.deleteInputBody)
+        {
+            opDeleteBodies(context, id + "deleteInputBody", {
+                        "entities" : definition.selectedBody
+                    });
         }
 
     }, {});
 
-// Create rectangular sheets along a specified axis, returning plane definitions for downstream trimming and rib generation.
+// Generate a set of slice bodies by creating planes at regular intervals along a normal direction,
+// intersecting each plane with a bounding box to get the slice profile, and extruding to create bodies.
+// Supports arbitrary slice orientations for future curve-based slicing features.
 // Inputs:
-//  - featureIdPrefix : Base id used when naming all geometry created in this helper
-//  - axisLabel : Either "X" or "Y" to select the normal and sketch dimensions for the slicing plane
-//  - orientedBoundingBox : Tight bounding box for the selected body in the reference frame
-//  - planeSpacing : Distance between slices
-//  - referenceFrameToWorldTransform : Transform aligning the local slice planes with world coordinates
-//  - materialThickness : Extrusion depth for the raw sheet
-// Returns: map containing the ordered list of slice planes
-export function generateSheets(context is Context, featureIdPrefix is Id, axisLabel is string, orientedBoundingBox is Box3d, planeSpacing is ValueWithUnits, referenceFrameToWorldTransform is Transform, materialThickness is ValueWithUnits)
+//  - context : Execution context
+//  - sliceSetDefinition : Map containing:
+//      - featureIdPrefix : Base id for naming geometry
+//      - setLabel : String label for this set (e.g., "X", "Y")
+//      - normalVector : Normal vector for the slicing planes in reference frame coordinates
+//      - upVector : Up vector for orienting the slices in reference frame coordinates
+//      - planeSpacing : Distance between consecutive slices
+//      - referenceFrameToWorldTransform : Transform from reference frame to world coordinates
+//      - materialThickness : Extrusion depth for the slices
+//      - worldBoundingBox : World-aligned bounding box of the target body
+// Returns: map containing { slicePlanes, sliceIds, setLabel, normalVector, upVector }
+export function generateSliceSet(context is Context, sliceSetDefinition is map) returns map
 {
+    const featureIdPrefix = sliceSetDefinition.featureIdPrefix;
+    const setLabel = sliceSetDefinition.setLabel;
+    const normalVector = sliceSetDefinition.normalVector;
+    const upVector = sliceSetDefinition.upVector;
+    const planeSpacing = sliceSetDefinition.planeSpacing;
+    const referenceFrameToWorldTransform = sliceSetDefinition.referenceFrameToWorldTransform;
+    const materialThickness = sliceSetDefinition.materialThickness;
+    const worldBoundingBox = sliceSetDefinition.worldBoundingBox;
+    const targetBody = sliceSetDefinition.targetBody;
+    
     var slicePlanes = [] as array;
     var sliceIds = [] as array;
-    var planeNormal = vector([1, 0, 0]);
-    var planeUpVector = vector([0, 1, 0]);
-    var rectangleWidth = orientedBoundingBox.maxCorner[1] - orientedBoundingBox.minCorner[1];
-    var rectangleHeight = orientedBoundingBox.maxCorner[2] - orientedBoundingBox.minCorner[2];
-    var rectangleCenterY = (orientedBoundingBox.maxCorner[1] + orientedBoundingBox.minCorner[1]) / 2;
-    var rectangleCenterZ = (orientedBoundingBox.maxCorner[2] + orientedBoundingBox.minCorner[2]) / 2;
-    var boundingMin = orientedBoundingBox.minCorner[0];
-    var boundingMax = orientedBoundingBox.maxCorner[0];
-
-    if (axisLabel == "Y")
+    
+    // Calculate the center of the bounding box in reference frame coordinates
+    const boxCenterWorld = (worldBoundingBox.minCorner + worldBoundingBox.maxCorner) / 2;
+    const worldToReferenceTransform = inverse(referenceFrameToWorldTransform);
+    const boxCenter = worldToReferenceTransform * boxCenterWorld;
+    
+    // Find the extent of the world bounding box along the normal direction in reference frame
+    const boundingBoxCornersWorld = [
+        worldBoundingBox.minCorner,
+        vector([worldBoundingBox.maxCorner[0], worldBoundingBox.minCorner[1], worldBoundingBox.minCorner[2]]),
+        vector([worldBoundingBox.minCorner[0], worldBoundingBox.maxCorner[1], worldBoundingBox.minCorner[2]]),
+        vector([worldBoundingBox.minCorner[0], worldBoundingBox.minCorner[1], worldBoundingBox.maxCorner[2]]),
+        vector([worldBoundingBox.maxCorner[0], worldBoundingBox.maxCorner[1], worldBoundingBox.minCorner[2]]),
+        vector([worldBoundingBox.maxCorner[0], worldBoundingBox.minCorner[1], worldBoundingBox.maxCorner[2]]),
+        vector([worldBoundingBox.minCorner[0], worldBoundingBox.maxCorner[1], worldBoundingBox.maxCorner[2]]),
+        worldBoundingBox.maxCorner
+    ];
+    
+    var minDepth = undefined;
+    var maxDepth = undefined;
+    
+    for (var cornerWorld in boundingBoxCornersWorld)
     {
-        planeNormal = vector([0, 1, 0]);
-        planeUpVector = vector([0, 0, 1]);
-        rectangleWidth = orientedBoundingBox.maxCorner[2] - orientedBoundingBox.minCorner[2];
-        rectangleHeight = orientedBoundingBox.maxCorner[0] - orientedBoundingBox.minCorner[0];
-        rectangleCenterY = (orientedBoundingBox.maxCorner[0] + orientedBoundingBox.minCorner[0]) / 2;
-        rectangleCenterZ = (orientedBoundingBox.maxCorner[2] + orientedBoundingBox.minCorner[2]) / 2;
-        boundingMin = orientedBoundingBox.minCorner[1];
-        boundingMax = orientedBoundingBox.maxCorner[1];
-    }
-
-    // Calculate which plane indices are needed to cover the bounding box
-    // Reference frame origin is at position 0, planes are at positions index * spacing
-    // We need planes from the first one >= boundingMin to the last one <= boundingMax
-    var firstPlaneIndex = ceil(boundingMin / planeSpacing);
-    var lastPlaneIndex = floor(boundingMax / planeSpacing);
-
-    var planeCounter = 0;
-    for (var planeIndex = firstPlaneIndex; planeIndex <= lastPlaneIndex; planeIndex += 1)
-    {
-        // Position planes relative to the reference frame origin (0 in reference frame coordinates)
-        // Planes can be at negative, zero, or positive positions depending on bounding box
-        var planeLocation = planeIndex * planeSpacing;
-        var sliceOrigin = vector([0 * millimeter, 0 * millimeter, 0 * millimeter]);
-
-        if (axisLabel == "X")
+        const cornerLocal = worldToReferenceTransform * cornerWorld;
+        const depthProjection = dot(cornerLocal, normalVector);
+        if (minDepth == undefined)
         {
-            sliceOrigin = vector([planeLocation, rectangleCenterY, rectangleCenterZ]);
+            minDepth = depthProjection;
+            maxDepth = depthProjection;
         }
         else
         {
-            sliceOrigin = vector([rectangleCenterY, planeLocation, rectangleCenterZ]);
+            minDepth = min(minDepth, depthProjection);
+            maxDepth = max(maxDepth, depthProjection);
         }
-
-        var slicePlane = referenceFrameToWorldTransform * plane(sliceOrigin, planeNormal, planeUpVector);
-        var sliceId = featureIdPrefix + axisLabel + planeCounter;
-        // Transform the extrusion direction from local to world coordinates
-        var extrusionDirectionWorld = referenceFrameToWorldTransform.linear * planeNormal;
-        generateSliceSheet(context, sliceId, slicePlane, rectangleWidth, rectangleHeight, extrusionDirectionWorld, materialThickness);
+    }
+    
+    // Create a world-aligned bounding box body to intersect with (ensures properly sized slices)
+    const boundingBoxId = featureIdPrefix + setLabel + "BoundingBox";
+    
+    // Create axis-aligned box directly in world coordinates
+    fCuboid(context, boundingBoxId, {
+                "corner1" : worldBoundingBox.minCorner,
+                "corner2" : worldBoundingBox.maxCorner
+            });
+    
+    const boundingBoxBody = qCreatedBy(boundingBoxId, EntityType.BODY);
+    
+    // Calculate which plane indices are needed to cover the bounding box along the normal direction
+    const firstPlaneIndex = ceil(minDepth / planeSpacing);
+    const lastPlaneIndex = floor(maxDepth / planeSpacing);
+    
+    var planeCounter = 0;
+    for (var planeIndex = firstPlaneIndex; planeIndex <= lastPlaneIndex; planeIndex += 1)
+    {
+        const planeDepth = planeIndex * planeSpacing;
+        
+        // Calculate the plane origin in reference frame coordinates
+        // Position slice plane at correct depth along normal, centered on bounding box
+        const sliceOrigin = boxCenter + (normalVector * (planeDepth - dot(boxCenter, normalVector)));
+        
+        // Create the plane and transform it to world coordinates
+        // Use the input upVector for plane orientation
+        const localPlane = plane(sliceOrigin, normalVector, upVector);
+        const slicePlane = referenceFrameToWorldTransform * localPlane;
+        
+        const sliceId = featureIdPrefix + setLabel + planeCounter;
+        const extrusionDirectionWorld = referenceFrameToWorldTransform.linear * normalVector;
+        
+        generateSliceSheet(context, sliceId, slicePlane, boundingBoxBody, extrusionDirectionWorld, materialThickness);
+        
         slicePlanes = append(slicePlanes, slicePlane);
         sliceIds = append(sliceIds, sliceId);
         planeCounter += 1;
     }
-
-    return { "slicePlanes" : slicePlanes, "sliceIds" : sliceIds };
+    
+    // Clean up the bounding box body after all slices are generated
+    opDeleteBodies(context, featureIdPrefix + setLabel + "cleanupBoundingBox", {
+                "entities" : boundingBoxBody
+            });
+    
+    return {
+        "slicePlanes" : slicePlanes,
+        "sliceIds" : sliceIds,
+        "setLabel" : setLabel,
+        "normalVector" : normalVector,
+        "upVector" : upVector
+    };
 }
 
-// Intersect every raw sheet with the target body to keep only the in-bounds material for follow-on trimming.
-// Uses a single batch SUBTRACT_COMPLEMENT operation for all slices to preserve attributes and avoid iterative issues.
+// Trim an array of slice sets to the target body, removing any slices that don't intersect.
+// Generic function that works with an arbitrary number of slice sets with any orientations.
 // Inputs:
-//  - featureIdPrefix : Base id used to regenerate the X/Y identifiers for each slice
-//  - xSliceResult, ySliceResult : Maps containing sliceIds arrays for X- and Y-oriented slices
+//  - context : Execution context
+//  - featureIdPrefix : Base id for operations
+//  - sliceSets : Array of slice set result maps, each containing { sliceIds, setLabel, ... }
 //  - targetBody : Body query representing the part being sliced
-// Returns: map containing the slice IDs for robust cap querying
-export function trimSheetsToSolid(context is Context, featureIdPrefix is Id, xSliceResult is map, ySliceResult is map, targetBody is Query)
+// Returns: Array of trimmed slice sets with the same structure as input, containing only valid slice IDs
+export function trimSliceSetsToSolid(context is Context, featureIdPrefix is Id, sliceSets is array, targetBody is Query) returns array
 {
-    var xSliceIds = [] as array;
-    var ySliceIds = [] as array;
-
-    const xOriginalSliceIds = xSliceResult.sliceIds;
-    const yOriginalSliceIds = ySliceResult.sliceIds;
-
-    // Build queries for all X and Y slice bodies
-    const allXSliceBodies = qUnion(mapArray(xOriginalSliceIds, function(sliceId)
-            {
-                return qCreatedBy(sliceId + "extrudeRectangle", EntityType.BODY);
-            }));
-    const allYSliceBodies = qUnion(mapArray(yOriginalSliceIds, function(sliceId)
-            {
-                return qCreatedBy(sliceId + "extrudeRectangle", EntityType.BODY);
-            }));
-    const allSliceBodies = qUnion([allXSliceBodies, allYSliceBodies]);
-
+    var trimmedSliceSets = [] as array;
+    
+    // Build queries for all slice bodies across all sets
+    var allSliceBodiesArray = [] as array;
+    for (var sliceSet in sliceSets)
+    {
+        const setBodies = qUnion(mapArray(sliceSet.sliceIds, function(sliceId)
+                {
+                    return qCreatedBy(sliceId + "extrudeSlice", EntityType.BODY);
+                }));
+        allSliceBodiesArray = append(allSliceBodiesArray, setBodies);
+    }
+    const allSliceBodies = qUnion(allSliceBodiesArray);
+    
     // Perform single batch SUBTRACT_COMPLEMENT operation for all slices at once
     // This preserves attributes and is much more efficient than iterative operations
     opBoolean(context, featureIdPrefix + "batchIntersection", {
@@ -231,306 +304,327 @@ export function trimSheetsToSolid(context is Context, featureIdPrefix is Id, xSl
                 "operationType" : BooleanOperationType.SUBTRACT_COMPLEMENT,
                 "keepTools" : true
             });
-
-    // Now check each slice to see if it survived and has valid caps
-    for (var xPlaneIndex = 0; xPlaneIndex < size(xOriginalSliceIds); xPlaneIndex += 1)
+    
+    // Check each slice in each set to see if it survived and has valid caps
+    for (var sliceSet in sliceSets)
     {
-        var xSliceId = xOriginalSliceIds[xPlaneIndex];
-        const sliceBody = qCreatedBy(xSliceId + "extrudeRectangle", EntityType.BODY);
-
-        if (!isQueryEmpty(context, sliceBody))
+        var validSliceIds = [] as array;
+        const originalSliceIds = sliceSet.sliceIds;
+        
+        for (var sliceIndex = 0; sliceIndex < size(originalSliceIds); sliceIndex += 1)
         {
-            // Check if attributes persisted (they should with SUBTRACT_COMPLEMENT)
-            const attributedStartCaps = evaluateQuery(context, qHasAttribute(qOwnedByBody(sliceBody, EntityType.FACE), "laserItStartCap"));
-
-            // Also verify START/END caps still exist using cap entity queries
-            const startCapQuery = qCapEntity(xSliceId + "extrudeRectangle", CapType.START, EntityType.FACE);
-            const endCapQuery = qCapEntity(xSliceId + "extrudeRectangle", CapType.END, EntityType.FACE);
-            const remainingStartCaps = evaluateQuery(context, startCapQuery);
-            const remainingEndCaps = evaluateQuery(context, endCapQuery);
-
-            // Delete body if we don't have at least one face of each cap type
-            if (size(remainingStartCaps) == 0 || size(remainingEndCaps) == 0)
+            const sliceId = originalSliceIds[sliceIndex];
+            const sliceBody = qCreatedBy(sliceId + "extrudeSlice", EntityType.BODY);
+            
+            if (!isQueryEmpty(context, sliceBody))
             {
-                opDeleteBodies(context, featureIdPrefix + "deleteXSlice" + xPlaneIndex, {
-                            "entities" : sliceBody
-                        });
-                continue;
+                // Verify START/END caps still exist using cap entity queries
+                const startCapQuery = qCapEntity(sliceId + "extrudeSlice", CapType.START, EntityType.FACE);
+                const endCapQuery = qCapEntity(sliceId + "extrudeSlice", CapType.END, EntityType.FACE);
+                const remainingStartCaps = evaluateQuery(context, startCapQuery);
+                const remainingEndCaps = evaluateQuery(context, endCapQuery);
+                
+                // Delete body if we don't have at least one face of each cap type
+                if (size(remainingStartCaps) == 0 || size(remainingEndCaps) == 0)
+                {
+                    opDeleteBodies(context, featureIdPrefix + "delete" + sliceSet.setLabel + "Slice" + sliceIndex, {
+                                "entities" : sliceBody
+                            });
+                    continue;
+                }
+                
+                // Store the slice ID for later robust cap querying
+                validSliceIds = append(validSliceIds, sliceId);
             }
-
-            // Store the slice ID for later robust cap querying
-            xSliceIds = append(xSliceIds, xSliceId);
         }
-    }
-
-    for (var yPlaneIndex = 0; yPlaneIndex < size(yOriginalSliceIds); yPlaneIndex += 1)
-    {
-        var ySliceId = yOriginalSliceIds[yPlaneIndex];
-        const sliceBody = qCreatedBy(ySliceId + "extrudeRectangle", EntityType.BODY);
-
-        if (!isQueryEmpty(context, sliceBody))
-        {
-            // Check if attributes persisted (they should with SUBTRACT_COMPLEMENT)
-            const attributedStartCaps = evaluateQuery(context, qHasAttribute(qOwnedByBody(sliceBody, EntityType.FACE), "laserItStartCap"));
-
-            // Also verify START/END caps still exist using cap entity queries
-            const startCapQuery = qCapEntity(ySliceId + "extrudeRectangle", CapType.START, EntityType.FACE);
-            const endCapQuery = qCapEntity(ySliceId + "extrudeRectangle", CapType.END, EntityType.FACE);
-            const remainingStartCaps = evaluateQuery(context, startCapQuery);
-            const remainingEndCaps = evaluateQuery(context, endCapQuery);
-
-            // Delete body if we don't have at least one face of each cap type
-            if (size(remainingStartCaps) == 0 || size(remainingEndCaps) == 0)
-            {
-                opDeleteBodies(context, featureIdPrefix + "deleteYSlice" + yPlaneIndex, {
-                            "entities" : sliceBody
-                        });
-                continue;
-            }
-
-            // Store the slice ID for later robust cap querying
-            ySliceIds = append(ySliceIds, ySliceId);
-        }
-    }
-
-    // With SUBTRACT_COMPLEMENT, the bodies are the original extrusion bodies (modified in place)
-    // So we return the slice IDs for querying the bodies, not the intersection operation IDs
-    return {
-            "xIntersectionIds" : xSliceIds, // These are now the extrusion slice IDs, not boolean operation IDs
-            "yIntersectionIds" : ySliceIds,
-            "xSliceIds" : xSliceIds,
-            "ySliceIds" : ySliceIds
+        
+        // Create a trimmed slice set with the same metadata but only valid slice IDs
+        // Use proper object copying to avoid modifying the original sliceSet
+        var trimmedSet = {
+            "sliceIds" : validSliceIds,
+            "slicePlanes" : sliceSet.slicePlanes,
+            "setLabel" : sliceSet.setLabel,
+            "normalVector" : sliceSet.normalVector,
+            "upVector" : sliceSet.upVector
         };
+        trimmedSliceSets = append(trimmedSliceSets, trimmedSet);
+    }
+    
+    return trimmedSliceSets;
 }
 
-// Copy all trimmed slices, then perform a single subtract-complement boolean using the copied X slices as tools and the copied Y slices as targets.
-// This trims the Y slice set against all X slices in one operation to reduce the number of booleans required for slot generation.
-// Then split the resultant slot intersection cells in half by a length averaging heuristic to determine placement and assign
-// each split cell half to a slice set for boolean subtraction. Finally remove the slot geometry from the slices in one subtraction operation per slice set.
+// Generate slots between multiple slice sets where they intersect.
+// Generic function that can handle N slice sets with arbitrary orientations.
+// NOTE: Current implementation handles the two perpendicular slice set case directly.
+// Future: Implement generic N-set slotting with configurable pairing strategies.
 // Inputs:
-//  - featureIdPrefix : Base id used to regenerate the X/Y boolean identifiers for each intersection cell
-//  - xIntersectionIds, yIntersectionIds : Ordered identifiers for the trimmed X and Y slice bodies
-//  - referenceFrame : Coordinate system establishing the Z axis for mid-plane evaluation (retained for compatibility)
-// Returns: map containing the copied slot ids used downstream
-export function generateCrossSlotGeometryForSlices(context is Context, featureIdPrefix is Id, xIntersectionIds is array, yIntersectionIds is array, referenceFrame is CoordSystem)
+//  - context : Execution context
+//  - featureIdPrefix : Base id for operations
+//  - sliceSets : Array of trimmed slice sets with metadata (sliceIds, normalVector, etc.)
+//  - referenceFrame : Coordinate system for splitting operations
+// Returns: None (modifies slice bodies in place)
+export function generateSlotsForSliceSets(context is Context, featureIdPrefix is Id, sliceSets is array, referenceFrame is CoordSystem)
 {
-    var xSlotIds = [] as array;
-    var ySlotIds = [] as array;
-    var splitPlaneIds = [] as array;
-    var splitIds = [] as array;
-
-
-    // 1. Create Copies
-    // xIntersectionIds and yIntersectionIds now contain slice IDs (extrusion IDs) after SUBTRACT_COMPLEMENT change
-    for (var xPlaneIndex = 0; xPlaneIndex < size(xIntersectionIds); xPlaneIndex += 1)
+    // Handle the common case of exactly 2 perpendicular slice sets
+    if (size(sliceSets) == 2)
     {
-        const xSliceBody = qCreatedBy(xIntersectionIds[xPlaneIndex] + "extrudeRectangle", EntityType.BODY);
-        // Skip if body doesn't exist (was deleted during intersection)
-        if (!isQueryEmpty(context, xSliceBody))
+        const set0SliceIds = sliceSets[0].sliceIds;
+        const set1SliceIds = sliceSets[1].sliceIds;
+        
+        var set0CopyIds = [] as array;
+        var set1CopyIds = [] as array;
+        var splitPlaneIds = [] as array;
+        var splitIds = [] as array;
+
+        // 1. Create Copies of both slice sets
+        for (var set0Index = 0; set0Index < size(set0SliceIds); set0Index += 1)
         {
-            const xCopyId = featureIdPrefix + "XCopy" + xPlaneIndex;
-            opPattern(context, xCopyId, {
-                        "entities" : xSliceBody,
-                        "transforms" : [identityTransform()],
-                        "instanceNames" : ["1"]
-                    });
-            xSlotIds = append(xSlotIds, xCopyId);
-        }
-    }
-
-    for (var yPlaneIndex = 0; yPlaneIndex < size(yIntersectionIds); yPlaneIndex += 1)
-    {
-        const ySliceBody = qCreatedBy(yIntersectionIds[yPlaneIndex] + "extrudeRectangle", EntityType.BODY);
-        // Skip if body doesn't exist (was deleted during intersection)
-        if (!isQueryEmpty(context, ySliceBody))
-        {
-            const yCopyId = featureIdPrefix + "YCopy" + yPlaneIndex;
-            opPattern(context, yCopyId, {
-                        "entities" : ySliceBody,
-                        "transforms" : [identityTransform()],
-                        "instanceNames" : ["1"]
-                    });
-            ySlotIds = append(ySlotIds, yCopyId);
-        }
-    }
-
-    const copiedXSlices = qUnion(mapArray(xSlotIds, function(slotId)
+            const sliceBody = qCreatedBy(set0SliceIds[set0Index] + "extrudeSlice", EntityType.BODY);
+            if (!isQueryEmpty(context, sliceBody))
             {
-                return qCreatedBy(slotId, EntityType.BODY);
-            }));
-    const copiedYSlices = qUnion(mapArray(ySlotIds, function(slotId)
-            {
-                return qCreatedBy(slotId, EntityType.BODY);
-            }));
-
-    // 2. Generate Intersection Geometry (Subtract Complement)
-    opBoolean(context, featureIdPrefix + "BatchCrossSlots", {
-                "tools" : copiedXSlices,
-                "targets" : copiedYSlices,
-                "operationType" : BooleanOperationType.SUBTRACT_COMPLEMENT,
-                "keepTargets" : true
-            });
-
-    var splitToolsForX = [] as array;
-    var splitToolsForY = [] as array;
-
-    // 3. Evaluate Intersections and Split them
-    var intersectionCells = evaluateQuery(context, copiedYSlices);
-    var cellIndex = 0;
-    for (var intersectionCell in intersectionCells)
-    {
-        var allIntersectionEdges = evaluateQuery(context, qGeometry(qOwnedByBody(intersectionCell, EntityType.EDGE), GeometryType.LINE));
-        var zCoordinateAccumulator = 0 * millimeter;
-        var numberOfAlignedEdges = 0;
-
-        for (var intersectionEdge in allIntersectionEdges)
-        {
-            try
-            {
-                var evaluatedEdgeLine = evLine(context, {
-                        "edge" : intersectionEdge
-                    });
-                if (abs(dot(evaluatedEdgeLine.direction, referenceFrame.zAxis)) > .9999)
-                {
-                    var edgeTangentLine = evEdgeTangentLine(context, {
-                            "edge" : intersectionEdge,
-                            "parameter" : .5
+                const copyId = featureIdPrefix + "slotCopy" + sliceSets[0].setLabel + set0Index;
+                opPattern(context, copyId, {
+                            "entities" : sliceBody,
+                            "transforms" : [identityTransform()],
+                            "instanceNames" : ["1"]
                         });
-                    numberOfAlignedEdges += 1;
-                    zCoordinateAccumulator += dot(edgeTangentLine.origin, referenceFrame.zAxis);
+                set0CopyIds = append(set0CopyIds, copyId);
+            }
+        }
+
+        for (var set1Index = 0; set1Index < size(set1SliceIds); set1Index += 1)
+        {
+            const sliceBody = qCreatedBy(set1SliceIds[set1Index] + "extrudeSlice", EntityType.BODY);
+            if (!isQueryEmpty(context, sliceBody))
+            {
+                const copyId = featureIdPrefix + "slotCopy" + sliceSets[1].setLabel + set1Index;
+                opPattern(context, copyId, {
+                            "entities" : sliceBody,
+                            "transforms" : [identityTransform()],
+                            "instanceNames" : ["1"]
+                        });
+                set1CopyIds = append(set1CopyIds, copyId);
+            }
+        }
+
+        const copiedSet0Slices = qUnion(mapArray(set0CopyIds, function(copyId)
+                {
+                    return qCreatedBy(copyId, EntityType.BODY);
+                }));
+        const copiedSet1Slices = qUnion(mapArray(set1CopyIds, function(copyId)
+                {
+                    return qCreatedBy(copyId, EntityType.BODY);
+                }));
+
+        // 2. Generate Intersection Geometry (Subtract Complement)
+        opBoolean(context, featureIdPrefix + "BatchCrossSlots", {
+                    "tools" : copiedSet0Slices,
+                    "targets" : copiedSet1Slices,
+                    "operationType" : BooleanOperationType.SUBTRACT_COMPLEMENT,
+                    "keepTargets" : true
+                });
+
+        var splitToolsForSet0 = [] as array;
+        var splitToolsForSet1 = [] as array;
+
+        // 3. Evaluate Intersections and Split them
+        var intersectionCells = evaluateQuery(context, copiedSet1Slices);
+        var cellIndex = 0;
+        for (var intersectionCell in intersectionCells)
+        {
+            var allIntersectionEdges = evaluateQuery(context, qGeometry(qOwnedByBody(intersectionCell, EntityType.EDGE), GeometryType.LINE));
+            var zCoordinateAccumulator = 0 * millimeter;
+            var numberOfAlignedEdges = 0;
+
+            for (var intersectionEdge in allIntersectionEdges)
+            {
+                try
+                {
+                    var evaluatedEdgeLine = evLine(context, {
+                            "edge" : intersectionEdge
+                        });
+                    if (abs(dot(evaluatedEdgeLine.direction, referenceFrame.zAxis)) > .9999)
+                    {
+                        var edgeTangentLine = evEdgeTangentLine(context, {
+                                "edge" : intersectionEdge,
+                                "parameter" : .5
+                            });
+                        numberOfAlignedEdges += 1;
+                        zCoordinateAccumulator += dot(edgeTangentLine.origin, referenceFrame.zAxis);
+                    }
                 }
             }
-        }
 
+            if (numberOfAlignedEdges == 0)
+            {
+                cellIndex += 1;
+                continue;
+            }
 
-        if (numberOfAlignedEdges == 0)
-        {
+            var slicePlaneOrigin = (referenceFrame.zAxis * zCoordinateAccumulator / numberOfAlignedEdges) / squaredNorm(referenceFrame.zAxis);
+            var slicePlane = plane(slicePlaneOrigin, referenceFrame.zAxis);
+            const planeId = featureIdPrefix + "intersection" + cellIndex + "plane";
+            opPlane(context, planeId, {
+                        "plane" : slicePlane
+                    });
+            const splitId = featureIdPrefix + "intersection" + cellIndex + "split";
+            opSplitPart(context, splitId, {
+                        "targets" : intersectionCell,
+                        "tool" : qCreatedBy(planeId, EntityType.BODY)
+                    });
+
+            splitToolsForSet0 = append(splitToolsForSet0, qFarthestAlong(qOwnerBody(qCreatedBy(splitId)), referenceFrame.zAxis));
+            splitToolsForSet1 = append(splitToolsForSet1, qFarthestAlong(qOwnerBody(qCreatedBy(splitId)), -referenceFrame.zAxis));
+
+            splitPlaneIds = append(splitPlaneIds, planeId);
+            splitIds = append(splitIds, splitId);
+
             cellIndex += 1;
-            continue;
         }
 
-        var slicePlaneOrigin = (referenceFrame.zAxis * zCoordinateAccumulator / numberOfAlignedEdges) / squaredNorm(referenceFrame.zAxis);
-        var slicePlane = plane(slicePlaneOrigin, referenceFrame.zAxis);
-        const planeId = featureIdPrefix + "XY" + cellIndex + "plane1";
-        opPlane(context, planeId, {
-                    "plane" : slicePlane
+        // 4. Perform Final Subtraction on Original Slices
+        const originalSet0Slices = qUnion(mapArray(set0SliceIds, function(id)
+                {
+                    return qCreatedBy(id + "extrudeSlice", EntityType.BODY);
+                }));
+
+        const originalSet1Slices = qUnion(mapArray(set1SliceIds, function(id)
+                {
+                    return qCreatedBy(id + "extrudeSlice", EntityType.BODY);
+                }));
+
+        if (size(splitToolsForSet0) > 0)
+        {
+            opBoolean(context, featureIdPrefix + "boolean" + sliceSets[0].setLabel + "Slots", {
+                        "tools" : qUnion(splitToolsForSet0),
+                        "targets" : originalSet0Slices,
+                        "operationType" : BooleanOperationType.SUBTRACTION
+                    });
+        }
+
+        if (size(splitToolsForSet1) > 0)
+        {
+            opBoolean(context, featureIdPrefix + "boolean" + sliceSets[1].setLabel + "Slots", {
+                        "tools" : qUnion(splitToolsForSet1),
+                        "targets" : originalSet1Slices,
+                        "operationType" : BooleanOperationType.SUBTRACTION
+                    });
+        }
+
+        const splitPlanes = qUnion(mapArray(splitPlaneIds, function(splitPlaneId)
+                {
+                    return qCreatedBy(splitPlaneId, EntityType.BODY);
+                }));
+        const splitBodies = qUnion(mapArray(splitIds, function(splitId)
+                {
+                    return qCreatedBy(splitId, EntityType.BODY);
+                }));
+
+        opDeleteBodies(context, featureIdPrefix + "deleteCrossSlotHelpers", {
+                    "entities" : qUnion([copiedSet0Slices, copiedSet1Slices, splitPlanes, splitBodies])
                 });
-        const splitId = featureIdPrefix + "XY" + cellIndex + "splitPart1";
-        opSplitPart(context, splitId, {
-                    "targets" : intersectionCell,
-                    "tool" : qCreatedBy(planeId, EntityType.BODY)
-                });
-
-        splitToolsForX = append(splitToolsForX, qFarthestAlong(qOwnerBody(qCreatedBy(splitId)), referenceFrame.zAxis));
-        splitToolsForY = append(splitToolsForY, qFarthestAlong(qOwnerBody(qCreatedBy(splitId)), -referenceFrame.zAxis));
-
-        splitPlaneIds = append(splitPlaneIds, planeId);
-        splitIds = append(splitIds, splitId);
-
-        cellIndex += 1;
     }
-
-    // 4. Perform Final Subtraction on Original Slices
-
-    // Helper to resolve slice IDs to Body queries (after SUBTRACT_COMPLEMENT change, these are extrusion IDs)
-    const originalXSlices = qUnion(mapArray(xIntersectionIds, function(id)
-            {
-                return qCreatedBy(id + "extrudeRectangle", EntityType.BODY);
-            }));
-
-    const originalYSlices = qUnion(mapArray(yIntersectionIds, function(id)
-            {
-                return qCreatedBy(id + "extrudeRectangle", EntityType.BODY);
-            }));
-
-    if (size(splitToolsForX) > 0)
+    else if (size(sliceSets) != 2)
     {
-        opBoolean(context, featureIdPrefix + "booleanXSlots", {
-                    "tools" : qUnion(splitToolsForX),
-                    "targets" : originalXSlices, // Target the original X slices
-                    "operationType" : BooleanOperationType.SUBTRACTION
-                });
+        // N-set slot generation not yet implemented
+        // For now, slices will be created without cross-slots when using non-standard configurations
+        // This is acceptable for single-set or 3+ set scenarios where slotting logic differs
+        // TODO: Implement generic N-set slot generation when needed for curve-based slicing
     }
-    // const xSlotFaces = qCreatedBy(featureIdPrefix + "booleanXSlots", EntityType.FACE); // Potential future clearance support
-
-    if (size(splitToolsForY) > 0)
-    {
-        opBoolean(context, featureIdPrefix + "booleanYSlots", {
-                    "tools" : qUnion(splitToolsForY),
-                    "targets" : originalYSlices, // Target the original Y slices
-                    "operationType" : BooleanOperationType.SUBTRACTION
-                });
-    }
-    // const ySlotFaces = qCreatedBy(featureIdPrefix + "booleanYSlots", EntityType.FACE); // Potential future clearance support
-
-    const splitPlanes = qUnion(mapArray(splitPlaneIds, function(splitPlaneId)
-            {
-                return qCreatedBy(splitPlaneId, EntityType.BODY);
-            }));
-    const splitBodies = qUnion(mapArray(splitIds, function(splitId)
-            {
-                return qCreatedBy(splitId, EntityType.BODY);
-            }));
-
-    opDeleteBodies(context, featureIdPrefix + "deleteCrossSlotHelpers", {
-                "entities" : qUnion([copiedXSlices, copiedYSlices, splitPlanes, splitBodies])
-            });
-
-    return { "xSlotIds" : xSlotIds, "ySlotIds" : ySlotIds };
 }
 
-// Sketch and extrude a rectangular slice at the provided plane, retaining the untrimmed sheet for a later boolean against the target body.
+// Generate a single slice body by intersecting a construction plane with the bounding box to create
+// a closed profile curve, filling the curve to create a surface, and extruding to the material thickness.
+// The resulting slice body has START and END cap faces tagged with attributes for later processing.
 // Inputs:
-//  - sliceId : Unique Id prefix used for sketch and extrusion operations
+//  - sliceId : Unique Id prefix for all operations in this function
 //  - slicePlane : Plane definition representing the slice location and orientation
-//  - rectangleWidth, rectangleHeight : Dimensions of the rectangle sketched on the plane
-//  - extrusionDirection : Direction vector for the slice thickening
+//  - boundingBoxBody : Query for the bounding box body to intersect with
+//  - extrusionDirection : Direction vector for the slice thickening (perpendicular to slice plane)
 //  - materialThickness : Extrusion depth matching the stock thickness
 // Returns: none
-export function generateSliceSheet(context is Context, sliceId is Id, slicePlane is Plane, rectangleWidth is ValueWithUnits, rectangleHeight is ValueWithUnits, extrusionDirection is Vector, materialThickness is ValueWithUnits)
+export function generateSliceSheet(context is Context, sliceId is Id, slicePlane is Plane, boundingBoxBody is Query, extrusionDirection is Vector, materialThickness is ValueWithUnits)
 {
-    var sliceSketch = newSketchOnPlane(context, sliceId + "sketch", {
-            "sketchPlane" : slicePlane
-        });
-
-    skRectangle(sliceSketch, "rectangle1", {
-                "firstCorner" : -vector([rectangleWidth, rectangleHeight]) / 2,
-                "secondCorner" : vector([rectangleWidth, rectangleHeight]) / 2
+    // Create a construction plane at the slice location
+    // Planes are infinite, so size parameters are just for UI visualization
+    opPlane(context, sliceId + "plane", {
+                "plane" : slicePlane
             });
-
-    skSolve(sliceSketch);
-
-    // Extrude a rectangular slice surrounding the object symmetrically
-    // Use startBound and endBound with equal depths to achieve symmetric extrusion
-    opExtrude(context, sliceId + "extrudeRectangle", {
-                "entities" : qSketchRegion(sliceId + "sketch", false),
+    
+    const constructionPlane = qCreatedBy(sliceId + "plane", EntityType.BODY);
+    const planeFace = qOwnedByBody(constructionPlane, EntityType.FACE);
+    
+    // Get all faces from the bounding box body
+    const boundingBoxFaces = qOwnedByBody(boundingBoxBody, EntityType.FACE);
+    
+    // Create intersection curves where the plane intersects the bounding box
+    try
+    {
+        opIntersectFaces(context, sliceId + "intersect", {
+                    "tools" : planeFace,
+                    "targets" : boundingBoxFaces
+                });
+    }
+    catch
+    {
+        // No intersection found - clean up and skip this slice
+        opDeleteBodies(context, sliceId + "cleanupPlane", {
+                    "entities" : constructionPlane
+                });
+        return;
+    }
+    
+    const intersectionCurveBodies = qCreatedBy(sliceId + "intersect", EntityType.BODY);
+    
+    // Check if any intersection curves were created
+    if (isQueryEmpty(context, intersectionCurveBodies))
+    {
+        opDeleteBodies(context, sliceId + "cleanupPlane2", {
+                    "entities" : constructionPlane
+                });
+        return;
+    }
+    
+    // The intersection creates wire bodies - opFillSurface needs edges from those wire bodies
+    // that form closed loops (which plane-box intersections produce)
+    opFillSurface(context, sliceId + "fillSurface", {
+                "edgesG0" : qOwnedByBody(intersectionCurveBodies, EntityType.EDGE)
+            });
+    
+    const filledSurface = qCreatedBy(sliceId + "fillSurface", EntityType.FACE);
+    const filledSurfaceBody = qCreatedBy(sliceId + "fillSurface", EntityType.BODY);
+    
+    // Extrude the filled surface to create the slice body
+    opExtrude(context, sliceId + "extrudeSlice", {
+                "entities" : filledSurface,
                 "direction" : extrusionDirection,
                 "endBound" : BoundingType.BLIND,
                 "endDepth" : materialThickness / 2,
                 "startBound" : BoundingType.BLIND,
                 "startDepth" : materialThickness / 2
             });
-
-    // Tag the START cap face with an attribute so it can be reliably found after topology changes
-    const startCapFace = qCapEntity(sliceId + "extrudeRectangle", CapType.START, EntityType.FACE);
-    const startCapCount = size(evaluateQuery(context, startCapFace));
+    
+    const sliceBody = qCreatedBy(sliceId + "extrudeSlice", EntityType.BODY);
+    
+    // Tag the START cap face with an attribute
+    const startCapFace = qCapEntity(sliceId + "extrudeSlice", CapType.START, EntityType.FACE);
     setAttribute(context, {
                 "entities" : startCapFace,
                 "name" : "laserItStartCap",
                 "attribute" : true
             });
-
-    // Tag the END cap face with an attribute so it can be reliably found after topology changes
-    const endCapFace = qCapEntity(sliceId + "extrudeRectangle", CapType.END, EntityType.FACE);
-    const endCapCount = size(evaluateQuery(context, endCapFace));
+    
+    // Tag the END cap face with an attribute
+    const endCapFace = qCapEntity(sliceId + "extrudeSlice", CapType.END, EntityType.FACE);
     setAttribute(context, {
                 "entities" : endCapFace,
                 "name" : "laserItEndCap",
                 "attribute" : true
             });
-
-    opDeleteBodies(context, sliceId + "deleteSketch", {
-                "entities" : qCreatedBy(sliceId + "sketch")
+    
+    // Clean up temporary geometry including the filled surface body
+    opDeleteBodies(context, sliceId + "cleanupTemp", {
+                "entities" : qUnion([constructionPlane, intersectionCurveBodies, filledSurfaceBody])
             });
 }
 
@@ -707,28 +801,24 @@ export function normalizeSliceGeometryForLasercutting(context is Context, idPref
 // Inputs:
 //  - context : Execution context
 //  - id : Feature ID for sheet metal operations (base ID, not sub-ID)
-//  - trimmedSheetsResult : Map containing xIntersectionIds and yIntersectionIds arrays
+//  - trimmedSliceSets : Array of trimmed slice sets, each containing sliceIds arrays
 //  - definition : Feature definition containing sheet metal parameters (bendRadius, matThick, kFactor, minimalClearance)
 // Returns: none
-export function convertSlicesToSheetMetal(context is Context, id is Id, trimmedSheetsResult is map, definition is map)
+export function convertSlicesToSheetMetal(context is Context, id is Id, trimmedSliceSets is array, definition is map)
 {
-
     // Step 1: Collect all START cap faces from all slice bodies using attribute queries
-    const xIntersectionIds = trimmedSheetsResult.xIntersectionIds;
-    const yIntersectionIds = trimmedSheetsResult.yIntersectionIds;
-
-    // Get all bodies from X and Y slices (after SUBTRACT_COMPLEMENT change, these are extrusion IDs)
-    const allXBodies = qUnion(mapArray(xIntersectionIds, function(xId)
-            {
-                return qCreatedBy(xId + "extrudeRectangle", EntityType.BODY);
-            }));
-    const allYBodies = qUnion(mapArray(yIntersectionIds, function(yId)
-            {
-                return qCreatedBy(yId + "extrudeRectangle", EntityType.BODY);
-            }));
-    const allBodies = qUnion([allXBodies, allYBodies]);
-
-    const totalBodies = size(evaluateQuery(context, allBodies));
+    var allBodiesArray = [] as array;
+    
+    for (var sliceSet in trimmedSliceSets)
+    {
+        const setBodies = qUnion(mapArray(sliceSet.sliceIds, function(sliceId)
+                {
+                    return qCreatedBy(sliceId + "extrudeSlice", EntityType.BODY);
+                }));
+        allBodiesArray = append(allBodiesArray, setBodies);
+    }
+    
+    const allBodies = qUnion(allBodiesArray);
 
     // Query all START cap faces using the attribute across all bodies
     const allStartCapFaces = qHasAttribute(qOwnedByBody(allBodies, EntityType.FACE), "laserItStartCap");
@@ -738,7 +828,6 @@ export function convertSlicesToSheetMetal(context is Context, id is Id, trimmedS
     // Verify we have faces to convert
     if (isQueryEmpty(context, allStartCapFaces))
     {
-        println("  ERROR: No START cap faces found - returning");
         return;
     }
 
@@ -760,19 +849,10 @@ export function convertSlicesToSheetMetal(context is Context, id is Id, trimmedS
 
     // Step 3: Delete original solid bodies BEFORE annotation
     // This ensures qCreatedBy(id, EntityType.BODY) only finds the extracted surfaces
-    const allXSliceBodies = qUnion(mapArray(xIntersectionIds, function(xSliceId)
-            {
-                return qCreatedBy(xSliceId + "extrudeRectangle", EntityType.BODY);
-            }));
-    const allYSliceBodies = qUnion(mapArray(yIntersectionIds, function(ySliceId)
-            {
-                return qCreatedBy(ySliceId + "extrudeRectangle", EntityType.BODY);
-            }));
-
     try
     {
         opDeleteBodies(context, id + "deleteBodies", {
-                    "entities" : qUnion([allXSliceBodies, allYSliceBodies])
+                    "entities" : allBodies
                 });
     }
     catch
