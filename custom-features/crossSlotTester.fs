@@ -129,7 +129,7 @@ export const crossSlotTester = defineFeature(function(context is Context, id is 
                 continue;
             }
             
-            const clashType = collision.type;
+            const clashType = collision['type'];
             // Only process actual intersections (not just touching)
             if (clashType == ClashType.INTERFERE ||
                 clashType == ClashType.TARGET_IN_TOOL ||
