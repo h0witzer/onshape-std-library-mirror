@@ -396,14 +396,10 @@ export function generateSlotsForSliceSets(context is Context, featureIdPrefix is
         
         var set0CopyIds = [] as array;
         var set1CopyIds = [] as array;
-        var set0TargetCopyIds = [] as array;
-        var set1TargetCopyIds = [] as array;
         var splitPlaneIds = [] as array;
         var splitIds = [] as array;
 
         // 1. Create Copies of both slice sets
-        // Make two sets of copies: one for intersection calculation and one for subtraction targets
-        // This isolates the cross-slot generation from any pre-normalization that may have occurred
         for (var set0Index = 0; set0Index < size(set0SliceIds); set0Index += 1)
         {
             const sliceBody = qCreatedBy(set0SliceIds[set0Index] + "extrudeSlice", EntityType.BODY);
@@ -416,15 +412,6 @@ export function generateSlotsForSliceSets(context is Context, featureIdPrefix is
                             "instanceNames" : ["1"]
                         });
                 set0CopyIds = append(set0CopyIds, copyId);
-                
-                // Create additional copy for use as subtraction target
-                const targetCopyId = featureIdPrefix + "slotTargetCopy" + sliceSets[0].setLabel + set0Index;
-                opPattern(context, targetCopyId, {
-                            "entities" : sliceBody,
-                            "transforms" : [identityTransform()],
-                            "instanceNames" : ["1"]
-                        });
-                set0TargetCopyIds = append(set0TargetCopyIds, targetCopyId);
             }
         }
 
@@ -440,15 +427,6 @@ export function generateSlotsForSliceSets(context is Context, featureIdPrefix is
                             "instanceNames" : ["1"]
                         });
                 set1CopyIds = append(set1CopyIds, copyId);
-                
-                // Create additional copy for use as subtraction target
-                const targetCopyId = featureIdPrefix + "slotTargetCopy" + sliceSets[1].setLabel + set1Index;
-                opPattern(context, targetCopyId, {
-                            "entities" : sliceBody,
-                            "transforms" : [identityTransform()],
-                            "instanceNames" : ["1"]
-                        });
-                set1TargetCopyIds = append(set1TargetCopyIds, targetCopyId);
             }
         }
 
@@ -527,37 +505,7 @@ export function generateSlotsForSliceSets(context is Context, featureIdPrefix is
             cellIndex += 1;
         }
 
-        // 4. Perform Subtraction on Target Copies, then replace original slices
-        const targetSet0Slices = qUnion(mapArray(set0TargetCopyIds, function(copyId)
-                {
-                    return qCreatedBy(copyId, EntityType.BODY);
-                }));
-
-        const targetSet1Slices = qUnion(mapArray(set1TargetCopyIds, function(copyId)
-                {
-                    return qCreatedBy(copyId, EntityType.BODY);
-                }));
-
-        if (size(splitToolsForSet0) > 0)
-        {
-            opBoolean(context, featureIdPrefix + "boolean" + sliceSets[0].setLabel + "Slots", {
-                        "tools" : qUnion(splitToolsForSet0),
-                        "targets" : targetSet0Slices,
-                        "operationType" : BooleanOperationType.SUBTRACTION
-                    });
-        }
-
-        if (size(splitToolsForSet1) > 0)
-        {
-            opBoolean(context, featureIdPrefix + "boolean" + sliceSets[1].setLabel + "Slots", {
-                        "tools" : qUnion(splitToolsForSet1),
-                        "targets" : targetSet1Slices,
-                        "operationType" : BooleanOperationType.SUBTRACTION
-                    });
-        }
-        
-        // 5. Replace original slices with the slotted copies
-        // Delete the original slices
+        // 4. Perform Final Subtraction on Original Slices
         const originalSet0Slices = qUnion(mapArray(set0SliceIds, function(id)
                 {
                     return qCreatedBy(id + "extrudeSlice", EntityType.BODY);
@@ -567,47 +515,23 @@ export function generateSlotsForSliceSets(context is Context, featureIdPrefix is
                 {
                     return qCreatedBy(id + "extrudeSlice", EntityType.BODY);
                 }));
-        
-        opDeleteBodies(context, featureIdPrefix + "deleteOriginalSlices", {
-                    "entities" : qUnion([originalSet0Slices, originalSet1Slices])
-                });
-        
-        // Rename the target copies to match the original IDs by using opPattern with the correct ID
-        // This ensures downstream operations can still find the bodies using the expected IDs
-        for (var set0Index = 0; set0Index < size(set0TargetCopyIds); set0Index += 1)
+
+        if (size(splitToolsForSet0) > 0)
         {
-            const targetCopyBody = qCreatedBy(set0TargetCopyIds[set0Index], EntityType.BODY);
-            if (!isQueryEmpty(context, targetCopyBody))
-            {
-                // Copy to the original slice ID
-                opPattern(context, set0SliceIds[set0Index] + "extrudeSlice", {
-                            "entities" : targetCopyBody,
-                            "transforms" : [identityTransform()],
-                            "instanceNames" : ["1"]
-                        });
-                // Delete the target copy
-                opDeleteBodies(context, featureIdPrefix + "deleteTargetCopy" + sliceSets[0].setLabel + set0Index, {
-                            "entities" : targetCopyBody
-                        });
-            }
+            opBoolean(context, featureIdPrefix + "boolean" + sliceSets[0].setLabel + "Slots", {
+                        "tools" : qUnion(splitToolsForSet0),
+                        "targets" : originalSet0Slices,
+                        "operationType" : BooleanOperationType.SUBTRACTION
+                    });
         }
-        
-        for (var set1Index = 0; set1Index < size(set1TargetCopyIds); set1Index += 1)
+
+        if (size(splitToolsForSet1) > 0)
         {
-            const targetCopyBody = qCreatedBy(set1TargetCopyIds[set1Index], EntityType.BODY);
-            if (!isQueryEmpty(context, targetCopyBody))
-            {
-                // Copy to the original slice ID
-                opPattern(context, set1SliceIds[set1Index] + "extrudeSlice", {
-                            "entities" : targetCopyBody,
-                            "transforms" : [identityTransform()],
-                            "instanceNames" : ["1"]
-                        });
-                // Delete the target copy
-                opDeleteBodies(context, featureIdPrefix + "deleteTargetCopy" + sliceSets[1].setLabel + set1Index, {
-                            "entities" : targetCopyBody
-                        });
-            }
+            opBoolean(context, featureIdPrefix + "boolean" + sliceSets[1].setLabel + "Slots", {
+                        "tools" : qUnion(splitToolsForSet1),
+                        "targets" : originalSet1Slices,
+                        "operationType" : BooleanOperationType.SUBTRACTION
+                    });
         }
 
         const splitPlanes = qUnion(mapArray(splitPlaneIds, function(splitPlaneId)
@@ -867,13 +791,16 @@ export function normalizeSliceGeometryForLasercutting(context is Context, idPref
 
         // Subtract the thickened projection from the current body being normalized
         // Target only the specific body being processed, not all slice bodies
+        // Use recomputeMatches to ensure robust boolean operation that won't create
+        // geometry incompatible with subsequent boolean operations
         try
         {
             opBoolean(context, bodyId + "subtract", {
                         "tools" : thickenedBodies,
                         "targets" : body,
                         "operationType" : BooleanOperationType.SUBTRACTION,
-                        "keepTools" : false
+                        "keepTools" : false,
+                        "recomputeMatches" : true
                     });
         }
         catch
