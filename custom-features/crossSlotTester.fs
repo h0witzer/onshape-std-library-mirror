@@ -592,7 +592,9 @@ function generateBatchedIntersection(context is Context, id is Id, group1Query i
                     "recomputeMatches" : true
                 });
         
-        const intersectionBodies = qCreatedBy(id + "batchIntersection", EntityType.BODY);
+        // SUBTRACT_COMPLEMENT modifies the target bodies in place to become the intersection
+        // No new bodies are created - the copyGroup2 bodies ARE the intersection results
+        const intersectionBodies = copyGroup2;
         const intersectionCount = size(evaluateQuery(context, intersectionBodies));
         println("  Batched intersection created " ~ intersectionCount ~ " bodies");
         
