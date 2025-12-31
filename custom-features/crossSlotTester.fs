@@ -145,9 +145,21 @@ export const crossSlotTester = defineFeature(function(context is Context, id is 
         
         println("Found " ~ size(collisions) ~ " collision checks, " ~ size(collidingPairs) ~ " actual intersections");
         
-        // Generate slots only for pairs that actually collide
-        var slotCounter = 0;
+        // BATCHED APPROACH: Collect all split tools per body, then subtract all at once
+        // This dramatically reduces boolean operation count
+        println("=== Computing intersection geometries ===");
+        
+        // Maps to collect split tools for each body
+        var splitToolsPerBody = {} as map;  // bodyIndex -> array of tool queries
+        for (var bodyIndex = 0; bodyIndex < size(bodyInfo); bodyIndex += 1)
+        {
+            splitToolsPerBody[bodyIndex] = [];
+        }
+        
+        var intersectionCounter = 0;
         var skippedPairs = 0;
+        
+        // Process all colliding pairs to generate split tools
         for (var bodyAIndex = 0; bodyAIndex < size(bodyInfo); bodyAIndex += 1)
         {
             for (var bodyBIndex = bodyAIndex + 1; bodyBIndex < size(bodyInfo); bodyBIndex += 1)
@@ -156,7 +168,6 @@ export const crossSlotTester = defineFeature(function(context is Context, id is 
                 const bodyB = bodyInfo[bodyBIndex];
                 
                 // Check if this pair was detected as colliding
-                // evCollision uses body queries, so we need to check both orderings
                 const pairKey1 = toString(bodyA.body) ~ "_" ~ toString(bodyB.body);
                 const pairKey2 = toString(bodyB.body) ~ "_" ~ toString(bodyA.body);
                 
@@ -166,9 +177,9 @@ export const crossSlotTester = defineFeature(function(context is Context, id is 
                     continue;
                 }
                 
-                println("--- Generating Slot " ~ slotCounter ~ " (Body " ~ bodyAIndex ~ " x Body " ~ bodyBIndex ~ ") ---");
-                // Calculate slot direction for THIS SPECIFIC PAIR
-                // Each pair needs its own direction based on their orientations
+                println("--- Processing Pair " ~ intersectionCounter ~ " (Body " ~ bodyAIndex ~ " x Body " ~ bodyBIndex ~ ") ---");
+                
+                // Calculate slot direction for this specific pair
                 const normalA = bodyA.primaryPlane.normal;
                 const normalB = bodyB.primaryPlane.normal;
                 var pairSlotDirection = cross(normalA, normalB);
@@ -182,35 +193,80 @@ export const crossSlotTester = defineFeature(function(context is Context, id is 
                 {
                     // Bodies are parallel, use a perpendicular direction
                     pairSlotDirection = perpendicularVector(normalA);
-                    println("  Bodies are parallel, using perpendicular direction: " ~ pairSlotDirection);
+                    println("  Bodies are parallel, using perpendicular: " ~ pairSlotDirection);
                 }
                 
-                // Check if the bodies intersect
+                // Generate intersection and split it, collecting tools for both bodies
                 try
                 {
-                    generateSlotForBodyPair(context, id + "slot" + slotCounter, bodyA, bodyB, pairSlotDirection, definition.showDebug);
-                    println("  Slot generated successfully");
+                    const splitTools = generateIntersectionSplitTools(context, id + "pair" + intersectionCounter, 
+                                                                       bodyA, bodyB, pairSlotDirection, definition.showDebug);
+                    
+                    // Add split tools to the appropriate bodies' collections
+                    if (splitTools.toolForA != undefined)
+                    {
+                        splitToolsPerBody[bodyAIndex] = append(splitToolsPerBody[bodyAIndex], splitTools.toolForA);
+                    }
+                    if (splitTools.toolForB != undefined)
+                    {
+                        splitToolsPerBody[bodyBIndex] = append(splitToolsPerBody[bodyBIndex], splitTools.toolForB);
+                    }
+                    
+                    println("  Intersection processed successfully");
                 }
                 catch (error)
                 {
-                    println("  ERROR generating slot: " ~ error);
+                    println("  ERROR processing intersection: " ~ error);
                 }
                 
-                slotCounter += 1;
+                intersectionCounter += 1;
+            }
+        }
+        
+        println("=== Batched slot subtraction ===");
+        println("Processed " ~ intersectionCounter ~ " intersections");
+        println("Pairs skipped (no collision): " ~ skippedPairs);
+        
+        // Now perform batched subtraction for each body
+        for (var bodyIndex = 0; bodyIndex < size(bodyInfo); bodyIndex += 1)
+        {
+            const toolArray = splitToolsPerBody[bodyIndex];
+            if (size(toolArray) > 0)
+            {
+                println("Body " ~ bodyIndex ~ ": subtracting " ~ size(toolArray) ~ " slot tools");
+                
+                // Batch all tools into single subtraction
+                const allTools = qUnion(toolArray);
+                const targetBody = bodyInfo[bodyIndex].body;
+                
+                try
+                {
+                    opBoolean(context, id + "subtractSlots" + bodyIndex, {
+                                "tools" : allTools,
+                                "targets" : targetBody,
+                                "operationType" : BooleanOperationType.SUBTRACTION,
+                                "keepTools" : false,
+                                "recomputeMatches" : true
+                            });
+                    println("  Slots cut successfully");
+                }
+                catch (error)
+                {
+                    println("  ERROR cutting slots: " ~ error);
+                }
             }
         }
         
         println("=== CROSS-SLOT TESTER COMPLETE ===");
-        println("Total slots attempted: " ~ slotCounter);
-        println("Pairs skipped (no collision detected): " ~ skippedPairs);
     });
 
-// Generate a slot where two bodies intersect
+// Generate intersection and split tools for a body pair
+// Returns a map with toolForA and toolForB queries (the split halves to subtract from each body)
 // Inputs:
 //  - bodyA, bodyB: Info maps containing body, primaryFace, primaryPlane, index
 //  - slotDirection: Vector indicating the direction for splitting the slot
 //  - showDebug: Whether to highlight debug geometry
-function generateSlotForBodyPair(context is Context, id is Id, bodyA is map, bodyB is map, slotDirection is Vector, showDebug is boolean)
+function generateIntersectionSplitTools(context is Context, id is Id, bodyA is map, bodyB is map, slotDirection is Vector, showDebug is boolean) returns map
 {
     println("  Creating copies for intersection calculation...");
     
@@ -255,7 +311,7 @@ function generateSlotForBodyPair(context is Context, id is Id, bodyA is map, bod
         opDeleteBodies(context, id + "cleanupCopies", {
                     "entities" : qUnion([copyA, copyB])
                 });
-        return;
+        return { "toolForA" : undefined, "toolForB" : undefined };
     }
     
     // Step 3: Check if intersection exists
@@ -268,7 +324,7 @@ function generateSlotForBodyPair(context is Context, id is Id, bodyA is map, bod
         opDeleteBodies(context, id + "cleanupCopies", {
                     "entities" : qUnion([copyA, copyB])
                 });
-        return;
+        return { "toolForA" : undefined, "toolForB" : undefined };
     }
     
     // Step 4: Find the slot-direction-aligned edges in the intersection
@@ -327,7 +383,7 @@ function generateSlotForBodyPair(context is Context, id is Id, bodyA is map, bod
         opDeleteBodies(context, id + "cleanupCopies", {
                     "entities" : qUnion([copyA, copyB])
                 });
-        return;
+        return { "toolForA" : undefined, "toolForB" : undefined };
     }
     
     // Step 5: Calculate split plane at the average position along slot direction
@@ -440,74 +496,26 @@ function generateSlotForBodyPair(context is Context, id is Id, bodyA is map, bod
     println("  Split tools for body A: " ~ size(splitToolsForA));
     println("  Split tools for body B: " ~ size(splitToolsForB));
     
-    // Step 7: Subtract the split tools from the original bodies
-    if (size(splitToolsForA) > 0)
+    // Return the split tools for batched subtraction later
+    // Don't delete the copies - they are the tools we'll use for subtraction
+    // Only delete the split plane
+    if (!isQueryEmpty(context, splitPlaneBody))
     {
-        println("  Subtracting from body A...");
         try
         {
-            opBoolean(context, id + "subtractA", {
-                        "tools" : qUnion(splitToolsForA),
-                        "targets" : bodyA.body,
-                        "operationType" : BooleanOperationType.SUBTRACTION,
-                        "recomputeMatches" : true
+            opDeleteBodies(context, id + "cleanupPlane", {
+                        "entities" : splitPlaneBody
                     });
-            println("  Subtraction from body A successful");
         }
         catch (error)
         {
-            println("  ERROR subtracting from body A: " ~ error);
+            println("  WARNING: Plane cleanup failed: " ~ error);
         }
     }
     
-    if (size(splitToolsForB) > 0)
-    {
-        println("  Subtracting from body B...");
-        try
-        {
-            opBoolean(context, id + "subtractB", {
-                        "tools" : qUnion(splitToolsForB),
-                        "targets" : bodyB.body,
-                        "operationType" : BooleanOperationType.SUBTRACTION,
-                        "recomputeMatches" : true
-                    });
-            println("  Subtraction from body B successful");
-        }
-        catch (error)
-        {
-            println("  ERROR subtracting from body B: " ~ error);
-        }
-    }
-    
-    // Step 8: Clean up helper geometry
-    println("  Cleaning up helper geometry...");
-    try
-    {
-        // Build list of entities to delete, checking each exists
-        var entitiesToDelete = [] as array;
-        
-        if (!isQueryEmpty(context, copyA))
-        {
-            entitiesToDelete = append(entitiesToDelete, copyA);
-        }
-        if (!isQueryEmpty(context, copyB))
-        {
-            entitiesToDelete = append(entitiesToDelete, copyB);
-        }
-        if (!isQueryEmpty(context, splitPlaneBody))
-        {
-            entitiesToDelete = append(entitiesToDelete, splitPlaneBody);
-        }
-        
-        if (size(entitiesToDelete) > 0)
-        {
-            opDeleteBodies(context, id + "cleanup", {
-                        "entities" : qUnion(entitiesToDelete)
-                    });
-        }
-    }
-    catch (error)
-    {
-        println("  WARNING: Cleanup failed: " ~ error);
-    }
+    // Return queries for the split tools
+    return {
+        "toolForA" : size(splitToolsForA) > 0 ? qUnion(splitToolsForA) : undefined,
+        "toolForB" : size(splitToolsForB) > 0 ? qUnion(splitToolsForB) : undefined
+    };
 }
