@@ -313,6 +313,17 @@ function generateSlotForBodyPair(context is Context, id is Id, bodyA is map, bod
     {
         println("  Attempting to split intersection body " ~ cellIndex);
         
+        // Debug: Check if we can even evaluate the intersection body
+        try
+        {
+            const intersectionBodyArray = evaluateQuery(context, intersectionBody);
+            println("  Intersection body evaluates to " ~ size(intersectionBodyArray) ~ " entity/entities");
+        }
+        catch (error)
+        {
+            println("  ERROR evaluating intersection body: " ~ error);
+        }
+        
         try
         {
             // NOTE: opSplitPart only works on solid bodies, not sheet bodies
@@ -322,19 +333,30 @@ function generateSlotForBodyPair(context is Context, id is Id, bodyA is map, bod
                         "tool" : splitPlaneBody
                     });
             
+            // Try using qOwnerBody like waffleIt does
+            const splitBodiesViaOwnerBody = qOwnerBody(qCreatedBy(id + "split" + cellIndex));
+            const splitBodiesViaOwnerBodyArray = evaluateQuery(context, splitBodiesViaOwnerBody);
+            println("  Split via qOwnerBody: " ~ size(splitBodiesViaOwnerBodyArray) ~ " bodies");
+            
             const splitBodies = qCreatedBy(id + "split" + cellIndex, EntityType.BODY);
             const splitBodiesArray = evaluateQuery(context, splitBodies);
-            println("  Split created " ~ size(splitBodiesArray) ~ " bodies");
+            println("  Split via qCreatedBy: " ~ size(splitBodiesArray) ~ " bodies");
             
-            if (size(splitBodiesArray) == 0)
+            if (size(splitBodiesArray) == 0 && size(splitBodiesViaOwnerBodyArray) == 0)
             {
-                println("  WARNING: Split created no bodies - intersection might be a sheet body, not solid");
-                println("  opSplitPart requires solid bodies to work");
+                println("  WARNING: Split created no bodies");
+                println("  Possible causes:");
+                println("    - Split plane doesn't intersect the body");
+                println("    - Body is a sheet/surface (opSplitPart requires solid)");
+                println("    - Geometric issue with split operation");
             }
             
+            // Use whichever query found bodies
+            const splitBodiesToUse = size(splitBodiesViaOwnerBodyArray) > 0 ? splitBodiesViaOwnerBody : splitBodies;
+            
             // Find which split goes to which body based on slot direction
-            const upperSplit = qFarthestAlong(splitBodies, slotDirection);
-            const lowerSplit = qFarthestAlong(splitBodies, -slotDirection);
+            const upperSplit = qFarthestAlong(splitBodiesToUse, slotDirection);
+            const lowerSplit = qFarthestAlong(splitBodiesToUse, -slotDirection);
             
             println("  Upper split empty: " ~ isQueryEmpty(context, upperSplit));
             println("  Lower split empty: " ~ isQueryEmpty(context, lowerSplit));
