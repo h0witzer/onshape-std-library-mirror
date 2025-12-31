@@ -273,6 +273,10 @@ export const crossSlotTester = defineFeature(function(context is Context, id is 
                         const intersectionCells = evaluateQuery(context, batchedIntersection);
                         println("  Processing " ~ size(intersectionCells) ~ " intersection cells");
                         
+                        // Initialize arrays to collect split tools for batched subtraction (following WaffleIt pattern)
+                        var splitToolsForGroup1 = [];
+                        var splitToolsForGroup2 = [];
+                        
                         // Process each intersection cell - split and assign to appropriate bodies
                         var cellIndex = 0;
                         for (var intersectionCell in intersectionCells)
@@ -368,26 +372,14 @@ export const crossSlotTester = defineFeature(function(context is Context, id is 
                                 
                                 // Determine which bodies this intersection belongs to
                                 // by checking which bodies from group1 and group2 collide at this location
+                                // Collect split halves for batched subtraction (following WaffleIt pattern)
                                 const halfA = qFarthestAlong(splitBodies, cellSlotDirection);
                                 const halfB = qFarthestAlong(splitBodies, -cellSlotDirection);
                                 
-                                // For now, assign halves to all Group 1 and Group 2 bodies
-                                // The actual collision pairing will determine which bodies get which halves
-                                for (var g1Idx in group.group1)
-                                {
-                                    if (!isQueryEmpty(context, halfB))
-                                    {
-                                        splitToolsPerBody[g1Idx] = append(splitToolsPerBody[g1Idx], halfB);
-                                    }
-                                }
-                                
-                                for (var g2Idx in group.group2)
-                                {
-                                    if (!isQueryEmpty(context, halfA))
-                                    {
-                                        splitToolsPerBody[g2Idx] = append(splitToolsPerBody[g2Idx], halfA);
-                                    }
-                                }
+                                // halfB goes to Group 1 bodies (opposite direction)
+                                // halfA goes to Group 2 bodies (slot direction)
+                                splitToolsForGroup1 = append(splitToolsForGroup1, halfB);
+                                splitToolsForGroup2 = append(splitToolsForGroup2, halfA);
                                 
                                 intersectionCounter += 1;
                                 println("      Split cell " ~ cellIndex ~ " and assigned halves");
