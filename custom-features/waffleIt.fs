@@ -120,7 +120,8 @@ export const sheetMetalStart = defineSheetMetalFeature(function(context is Conte
 
         // First normalization pass: Remove any geometry that would be deleted by normalization before generating
         // cross-slot geometry. This prevents wasting computation on cross slots in regions that will be removed.
-        // Since normalization is already iterative, there is no performance penalty for running it twice.
+        // The benefit outweighs the cost of running normalization twice, as avoiding unnecessary cross-slot
+        // computation in regions destined for removal provides a net performance gain.
         if (definition.normalizeGeometry == true)
         {
             // Process all slice bodies together using attribute queries to find cap faces
@@ -138,8 +139,11 @@ export const sheetMetalStart = defineSheetMetalFeature(function(context is Conte
         generateSlotsForSliceSets(context, id, trimmedSliceSets, referenceFrame);
 
         // Second normalization pass: Normalize any faces created by the cross-slot generation.
-        // This pass will skip faces that were already normalized in the first pass (START caps, END caps, and
-        // vertical walls), so it only processes new geometry created during cross-slot generation.
+        // The normalization function identifies "good" faces (START caps, END caps, vertical walls) based on
+        // their current attributes and geometry, and only processes faces that need normalization. After the first
+        // pass, most original faces are already in a normalized state (either caps, vertical walls, or flattened
+        // projections that now appear as vertical walls), so this pass primarily handles new geometry introduced
+        // during cross-slot generation.
         // After trimming the intersecting grid, find all non-cap faces on each slice and project their geometry to
         // the START cap face. Thicken the flattened projections and remove the results from the slice.
         // This subtractive operation guarantees the slices lie inside of the original target volume.
