@@ -136,6 +136,8 @@ export const crossSlotTester = defineFeature(function(context is Context, id is 
         }
         
         var collidingPairs = {} as map;
+        var processedPairs = {} as map;  // Track which pairs we've already added to avoid duplicates
+        
         for (var collision in collisions)
         {
             // Skip self-collisions
@@ -167,15 +169,26 @@ export const crossSlotTester = defineFeature(function(context is Context, id is 
                 
                 if (toolBodyIndex != -1 && targetBodyIndex != -1)
                 {
-                    // Add to adjacency lists (both directions)
-                    collisionNeighbors[toolBodyIndex] = append(collisionNeighbors[toolBodyIndex], targetBodyIndex);
-                    collisionNeighbors[targetBodyIndex] = append(collisionNeighbors[targetBodyIndex], toolBodyIndex);
+                    // Create a canonical pair key (always smaller index first) to avoid duplicates
+                    const minIndex = toolBodyIndex < targetBodyIndex ? toolBodyIndex : targetBodyIndex;
+                    const maxIndex = toolBodyIndex < targetBodyIndex ? targetBodyIndex : toolBodyIndex;
+                    const canonicalPairKey = minIndex ~ "_" ~ maxIndex;
                     
-                    // Store collision pair for later lookup (both directions)
-                    const pairKey1 = toString(collision.toolBody) ~ "_" ~ toString(collision.targetBody);
-                    const pairKey2 = toString(collision.targetBody) ~ "_" ~ toString(collision.toolBody);
-                    collidingPairs[pairKey1] = true;
-                    collidingPairs[pairKey2] = true;
+                    // Only process each unique pair once
+                    if (processedPairs[canonicalPairKey] == undefined)
+                    {
+                        processedPairs[canonicalPairKey] = true;
+                        
+                        // Add to adjacency lists (both directions)
+                        collisionNeighbors[toolBodyIndex] = append(collisionNeighbors[toolBodyIndex], targetBodyIndex);
+                        collisionNeighbors[targetBodyIndex] = append(collisionNeighbors[targetBodyIndex], toolBodyIndex);
+                        
+                        // Store collision pair for later lookup (both directions)
+                        const pairKey1 = toString(collision.toolBody) ~ "_" ~ toString(collision.targetBody);
+                        const pairKey2 = toString(collision.targetBody) ~ "_" ~ toString(collision.toolBody);
+                        collidingPairs[pairKey1] = true;
+                        collidingPairs[pairKey2] = true;
+                    }
                 }
             }
         }
