@@ -127,6 +127,13 @@ export const crossSlotTester = defineFeature(function(context is Context, id is 
                     "targets" : allBodies
                 });
         
+        // Build a map from body query string to body index for efficient lookup
+        var bodyToIndex = {} as map;
+        for (var i = 0; i < size(bodyInfo); i += 1)
+        {
+            bodyToIndex[toString(bodyInfo[i].body)] = i;
+        }
+        
         // Build collision adjacency data structure
         // collisionNeighbors[bodyIndex] = array of body indices that collide with bodyIndex
         var collisionNeighbors = {} as map;
@@ -152,22 +159,11 @@ export const crossSlotTester = defineFeature(function(context is Context, id is 
                 clashType == ClashType.TARGET_IN_TOOL ||
                 clashType == ClashType.TOOL_IN_TARGET)
             {
-                // Find the body indices for these bodies
-                var toolBodyIndex = -1;
-                var targetBodyIndex = -1;
-                for (var i = 0; i < size(bodyInfo); i += 1)
-                {
-                    if (toString(bodyInfo[i].body) == toString(collision.toolBody))
-                    {
-                        toolBodyIndex = i;
-                    }
-                    if (toString(bodyInfo[i].body) == toString(collision.targetBody))
-                    {
-                        targetBodyIndex = i;
-                    }
-                }
+                // Look up body indices using the map (O(1) instead of O(n))
+                const toolBodyIndex = bodyToIndex[toString(collision.toolBody)];
+                const targetBodyIndex = bodyToIndex[toString(collision.targetBody)];
                 
-                if (toolBodyIndex != -1 && targetBodyIndex != -1)
+                if (toolBodyIndex != undefined && targetBodyIndex != undefined)
                 {
                     // Create a canonical pair key (always smaller index first) to avoid duplicates
                     const minIndex = toolBodyIndex < targetBodyIndex ? toolBodyIndex : targetBodyIndex;
@@ -334,6 +330,19 @@ export const crossSlotTester = defineFeature(function(context is Context, id is 
                                 
                                 intersectionCounter += 1;
                             }
+                        }
+                        
+                        // Clean up the batched intersection bodies after processing all pairs
+                        try
+                        {
+                            opDeleteBodies(context, id + "cleanupBatch" + groupIndex, {
+                                        "entities" : batchedIntersection
+                                    });
+                            println("  Cleaned up batched intersection bodies");
+                        }
+                        catch (error)
+                        {
+                            println("  WARNING: Could not clean up batched intersection: " ~ error);
                         }
                     }
                 }
