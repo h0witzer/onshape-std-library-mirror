@@ -225,6 +225,17 @@ function generateSlotForBodyPair(context is Context, id is Id, bodyA is map, bod
     var alignedEdges = [] as array;
     for (var intersectionBody in intersectionBodies)
     {
+        // Check body type for debugging
+        const bodyType = evaluateQuery(context, qBodyType(intersectionBody, BodyType.SOLID));
+        if (size(bodyType) > 0)
+        {
+            println("  Intersection body is SOLID");
+        }
+        else
+        {
+            println("  Intersection body is SHEET/SURFACE (not solid)");
+        }
+        
         const bodyEdges = evaluateQuery(context, qGeometry(qOwnedByBody(intersectionBody, EntityType.EDGE), GeometryType.LINE));
         
         for (var edge in bodyEdges)
@@ -300,8 +311,12 @@ function generateSlotForBodyPair(context is Context, id is Id, bodyA is map, bod
     
     for (var intersectionBody in intersectionBodies)
     {
+        println("  Attempting to split intersection body " ~ cellIndex);
+        
         try
         {
+            // NOTE: opSplitPart only works on solid bodies, not sheet bodies
+            // If the intersection is a sheet body, this will create 0 bodies
             opSplitPart(context, id + "split" + cellIndex, {
                         "targets" : intersectionBody,
                         "tool" : splitPlaneBody
@@ -310,6 +325,12 @@ function generateSlotForBodyPair(context is Context, id is Id, bodyA is map, bod
             const splitBodies = qCreatedBy(id + "split" + cellIndex, EntityType.BODY);
             const splitBodiesArray = evaluateQuery(context, splitBodies);
             println("  Split created " ~ size(splitBodiesArray) ~ " bodies");
+            
+            if (size(splitBodiesArray) == 0)
+            {
+                println("  WARNING: Split created no bodies - intersection might be a sheet body, not solid");
+                println("  opSplitPart requires solid bodies to work");
+            }
             
             // Find which split goes to which body based on slot direction
             const upperSplit = qFarthestAlong(splitBodies, slotDirection);
