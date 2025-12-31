@@ -139,7 +139,7 @@ export const crossSlotTester = defineFeature(function(context is Context, id is 
                 // Check if the bodies intersect
                 try
                 {
-                    generateSlotForBodyPair(context, id + ("slot" + slotCounter), bodyA, bodyB, slotDirection, definition.showDebug);
+                    generateSlotForBodyPair(context, id + "slot" + slotCounter, bodyA, bodyB, slotDirection, definition.showDebug);
                     println("  Slot generated successfully");
                 }
                 catch (error)
@@ -302,12 +302,12 @@ function generateSlotForBodyPair(context is Context, id is Id, bodyA is map, bod
     {
         try
         {
-            opSplitPart(context, id + ("split" + cellIndex), {
+            opSplitPart(context, id + "split" + cellIndex, {
                         "targets" : intersectionBody,
                         "tool" : splitPlaneBody
                     });
             
-            const splitBodies = qCreatedBy(id + ("split" + cellIndex), EntityType.BODY);
+            const splitBodies = qCreatedBy(id + "split" + cellIndex, EntityType.BODY);
             const splitBodiesArray = evaluateQuery(context, splitBodies);
             println("  Split created " ~ size(splitBodiesArray) ~ " bodies");
             
