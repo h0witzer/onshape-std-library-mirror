@@ -255,7 +255,7 @@ export const crossSlotTester = defineFeature(function(context is Context, id is 
                                                                             group1Query, group2Query, definition.showDebug);
                     subtractComplementCounter += 1;
                     
-                    if (batchedIntersection != undefined && !isQueryEmpty(context, batchedIntersection))
+                    if (!isQueryEmpty(context, batchedIntersection))
                     {
                         println("  Batched intersection created successfully");
                         
@@ -574,25 +574,19 @@ function generateBatchedIntersection(context is Context, id is Id, group1Query i
         const intersectionCount = size(evaluateQuery(context, intersectionBodies));
         println("  Batched intersection created " ~ intersectionCount ~ " bodies");
         
-        if (intersectionCount > 0)
-        {
-            return intersectionBodies;
-        }
-        else
-        {
-            return undefined;
-        }
+        return intersectionBodies;
     }
     catch (error)
     {
         println("  ERROR in batched intersection: " ~ error);
-        return undefined;
+        // Return empty query on error
+        return qNothing();
     }
 }
 
 // Extract split tools from a batched intersection for a specific body pair
 // This function takes the batched intersection and extracts/splits the relevant portion for one collision pair
-// Unlike generateIntersectionSplitTools, this doesn't create new copies or run SUBTRACT_COMPLEMENT
+// This uses INTERSECTION operations (not SUBTRACT_COMPLEMENT) to isolate the specific pair geometry
 //
 // Inputs:
 //  - batchedIntersection: Query for the batched intersection geometry (already computed)
@@ -852,266 +846,6 @@ function extractPairSplitTools(context is Context, id is Id, batchedIntersection
     
     println("    Split tools for body A: " ~ size(splitToolsForA));
     println("    Split tools for body B: " ~ size(splitToolsForB));
-    
-    // Return queries for the split tools
-    return {
-        "toolForA" : size(splitToolsForA) > 0 ? qUnion(splitToolsForA) : undefined,
-        "toolForB" : size(splitToolsForB) > 0 ? qUnion(splitToolsForB) : undefined
-    };
-}
-
-// Generate intersection and split tools for a body pair
-// Returns a map with toolForA and toolForB queries (the split halves to subtract from each body)
-// Inputs:
-//  - bodyA, bodyB: Info maps containing body, primaryFace, primaryPlane, index
-//  - slotDirection: Vector indicating the direction for splitting the slot
-//  - showDebug: Whether to highlight debug geometry
-function generateIntersectionSplitTools(context is Context, id is Id, bodyA is map, bodyB is map, slotDirection is Vector, showDebug is boolean) returns map
-{
-    println("  Creating copies for intersection calculation...");
-    
-    // Step 1: Create copies of both bodies
-    opPattern(context, id + "copyA", {
-                "entities" : bodyA.body,
-                "transforms" : [identityTransform()],
-                "instanceNames" : ["copyA"]
-            });
-    const copyA = qCreatedBy(id + "copyA", EntityType.BODY);
-    
-    opPattern(context, id + "copyB", {
-                "entities" : bodyB.body,
-                "transforms" : [identityTransform()],
-                "instanceNames" : ["copyB"]
-            });
-    const copyB = qCreatedBy(id + "copyB", EntityType.BODY);
-    
-    if (showDebug)
-    {
-        debug(context, copyA, DebugColor.BLUE);
-        debug(context, copyB, DebugColor.RED);
-    }
-    
-    println("  Calculating intersection geometry...");
-    
-    // Step 2: Find intersection using SUBTRACT_COMPLEMENT
-    try
-    {
-        opBoolean(context, id + "intersection", {
-                    "tools" : copyA,
-                    "targets" : copyB,
-                    "operationType" : BooleanOperationType.SUBTRACT_COMPLEMENT,
-                    "keepTargets" : true,
-                    "recomputeMatches" : true
-                });
-    }
-    catch (error)
-    {
-        println("  ERROR in intersection boolean: " ~ error);
-        // Clean up
-        opDeleteBodies(context, id + "cleanupCopies", {
-                    "entities" : qUnion([copyA, copyB])
-                });
-        return { "toolForA" : undefined, "toolForB" : undefined };
-    }
-    
-    // Step 3: Check if intersection exists
-    const intersectionBodies = evaluateQuery(context, copyB);
-    println("  Intersection bodies found: " ~ size(intersectionBodies));
-    
-    if (size(intersectionBodies) == 0)
-    {
-        println("  No intersection found - bodies don't overlap");
-        opDeleteBodies(context, id + "cleanupCopies", {
-                    "entities" : qUnion([copyA, copyB])
-                });
-        return { "toolForA" : undefined, "toolForB" : undefined };
-    }
-    
-    // Step 4: Find the slot-direction-aligned edges in the intersection
-    var alignedEdges = [] as array;
-    for (var intersectionBody in intersectionBodies)
-    {
-        // Check body type for debugging
-        const bodyType = evaluateQuery(context, qBodyType(intersectionBody, BodyType.SOLID));
-        if (size(bodyType) > 0)
-        {
-            println("  Intersection body is SOLID");
-        }
-        else
-        {
-            println("  Intersection body is SHEET/SURFACE (not solid)");
-        }
-        
-        const bodyEdges = evaluateQuery(context, qGeometry(qOwnedByBody(intersectionBody, EntityType.EDGE), GeometryType.LINE));
-        
-        for (var edge in bodyEdges)
-        {
-            try
-            {
-                const edgeLine = evLine(context, { "edge" : edge });
-                const alignment = abs(dot(edgeLine.direction, slotDirection));
-                
-                if (alignment > 0.9999)
-                {
-                    const edgeTangent = evEdgeTangentLine(context, {
-                                "edge" : edge,
-                                "parameter" : 0.5
-                            });
-                    alignedEdges = append(alignedEdges, {
-                                "edge" : edge,
-                                "position" : edgeTangent.origin
-                            });
-                    
-                    if (showDebug)
-                    {
-                        debug(context, edge, DebugColor.YELLOW);
-                    }
-                }
-            }
-            catch
-            {
-                // Edge might not be linear
-            }
-        }
-    }
-    
-    println("  Slot-direction-aligned edges found: " ~ size(alignedEdges));
-    
-    if (size(alignedEdges) == 0)
-    {
-        println("  No aligned edges found - can't determine split plane");
-        opDeleteBodies(context, id + "cleanupCopies", {
-                    "entities" : qUnion([copyA, copyB])
-                });
-        return { "toolForA" : undefined, "toolForB" : undefined };
-    }
-    
-    // Step 5: Calculate split plane at the average position along slot direction
-    var positionAccumulator = 0 * meter;
-    for (var edgeInfo in alignedEdges)
-    {
-        positionAccumulator += dot(edgeInfo.position, slotDirection);
-    }
-    const avgPosition = positionAccumulator / size(alignedEdges);
-    
-    const splitPlaneOrigin = (slotDirection * avgPosition) / squaredNorm(slotDirection);
-    const splitPlane = plane(splitPlaneOrigin, slotDirection);
-    
-    println("  Split plane position along slot direction: " ~ avgPosition);
-    
-    // Step 6: Create split plane and split the intersection bodies
-    opPlane(context, id + "splitPlane", {
-                "plane" : splitPlane
-            });
-    const splitPlaneBody = qCreatedBy(id + "splitPlane", EntityType.BODY);
-    
-    if (showDebug)
-    {
-        debug(context, splitPlaneBody, DebugColor.CYAN);
-    }
-    
-    // Split each intersection body
-    var splitToolsForA = [] as array;
-    var splitToolsForB = [] as array;
-    var cellIndex = 0;
-    
-    for (var intersectionBody in intersectionBodies)
-    {
-        println("  Attempting to split intersection body " ~ cellIndex);
-        
-        // Debug: Check if we can even evaluate the intersection body
-        try
-        {
-            const intersectionBodyArray = evaluateQuery(context, intersectionBody);
-            println("  Intersection body evaluates to " ~ size(intersectionBodyArray) ~ " entity/entities");
-        }
-        catch (error)
-        {
-            println("  ERROR evaluating intersection body: " ~ error);
-        }
-        
-        try
-        {
-            // NOTE: opSplitPart only works on solid bodies, not sheet bodies
-            // If the intersection is a sheet body, this will create 0 bodies
-            opSplitPart(context, id + "split" + cellIndex, {
-                        "targets" : intersectionBody,
-                        "tool" : splitPlaneBody
-                    });
-            
-            // Try using qOwnerBody like waffleIt does
-            const splitBodiesViaOwnerBody = qOwnerBody(qCreatedBy(id + "split" + cellIndex));
-            const splitBodiesViaOwnerBodyArray = evaluateQuery(context, splitBodiesViaOwnerBody);
-            println("  Split via qOwnerBody: " ~ size(splitBodiesViaOwnerBodyArray) ~ " bodies");
-            
-            const splitBodies = qCreatedBy(id + "split" + cellIndex, EntityType.BODY);
-            const splitBodiesArray = evaluateQuery(context, splitBodies);
-            println("  Split via qCreatedBy: " ~ size(splitBodiesArray) ~ " bodies");
-            
-            if (size(splitBodiesArray) == 0 && size(splitBodiesViaOwnerBodyArray) == 0)
-            {
-                println("  WARNING: Split created no bodies");
-                println("  Possible causes:");
-                println("    - Split plane doesn't intersect the body");
-                println("    - Body is a sheet/surface (opSplitPart requires solid)");
-                println("    - Geometric issue with split operation");
-            }
-            
-            // Use whichever query found bodies
-            const splitBodiesToUse = size(splitBodiesViaOwnerBodyArray) > 0 ? splitBodiesViaOwnerBody : splitBodies;
-            
-            // Find which split goes to which body based on slot direction
-            const upperSplit = qFarthestAlong(splitBodiesToUse, slotDirection);
-            const lowerSplit = qFarthestAlong(splitBodiesToUse, -slotDirection);
-            
-            println("  Upper split empty: " ~ isQueryEmpty(context, upperSplit));
-            println("  Lower split empty: " ~ isQueryEmpty(context, lowerSplit));
-            
-            if (!isQueryEmpty(context, upperSplit))
-            {
-                splitToolsForA = append(splitToolsForA, upperSplit);
-                if (showDebug)
-                {
-                    debug(context, upperSplit, DebugColor.MAGENTA);
-                }
-            }
-            
-            if (!isQueryEmpty(context, lowerSplit))
-            {
-                splitToolsForB = append(splitToolsForB, lowerSplit);
-                if (showDebug)
-                {
-                    debug(context, lowerSplit, DebugColor.ORANGE);
-                }
-            }
-            
-            cellIndex += 1;
-        }
-        catch (error)
-        {
-            println("  ERROR splitting intersection body " ~ cellIndex ~ ": " ~ error);
-        }
-    }
-    
-    println("  Split tools for body A: " ~ size(splitToolsForA));
-    println("  Split tools for body B: " ~ size(splitToolsForB));
-    
-    // Return the split tools for batched subtraction later
-    // Don't delete the copies - they are the tools we'll use for subtraction
-    // Only delete the split plane
-    if (!isQueryEmpty(context, splitPlaneBody))
-    {
-        try
-        {
-            opDeleteBodies(context, id + "cleanupPlane", {
-                        "entities" : splitPlaneBody
-                    });
-        }
-        catch (error)
-        {
-            println("  WARNING: Plane cleanup failed: " ~ error);
-        }
-    }
     
     // Return queries for the split tools
     return {
