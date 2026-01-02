@@ -140,8 +140,12 @@ export const tabAndSlotBossDisplay = defineFeature(function(context is Context, 
             throw regenError("No tabs can fit with the specified parameters", ["tabWidth", "spacing"]);
         }
 
-        // Track the original edges before splitting so we can query all split edges afterward
-        const trackedEdges = startTracking(context, orderedEdgeQuery);
+        // Use mixInTracking pattern: union the original query with a tracking query
+        // This ensures we capture both affected (split) and unaffected edges
+        const trackedEdges = qUnion([orderedEdgeQuery, startTracking(context, orderedEdgeQuery)]);
+        
+        // Debug: Display the input chain to verify correct identification
+        debug(context, orderedEdgeQuery, DebugColor.CYAN);
 
         // Split the edges at tab boundaries
         const splitParameters = calculateSplitParametersFromTabDomains(tabDomains);
@@ -172,10 +176,15 @@ export const tabAndSlotBossDisplay = defineFeature(function(context is Context, 
         }
 
         // Identify tab segment edges by checking which domain each edge's midpoint falls into
-        // Use the tracked edges query which automatically includes all split edges
-        const allSplitEdges = qEntityFilter(trackedEdges, EntityType.EDGE);
+        // Use mixInTracking pattern: union original with tracked edges to ensure nothing is missed
+        // Filter to edges only and combine with original to handle both split and unsplit edges
+        const allEdgesAfterSplit = qEntityFilter(qUnion([orderedEdgeQuery, trackedEdges]), EntityType.EDGE);
         
-        const tabSegmentEdges = identifyTabSegmentsByEdgeMidpoints(context, allSplitEdges, path, totalLength, tabDomains);
+        // Debug: Display the edges after split to verify all are captured
+        debug(context, allEdgesAfterSplit, DebugColor.RED);
+        println("Edges after split: " ~ toString(size(evaluateQuery(context, allEdgesAfterSplit))));
+        
+        const tabSegmentEdges = identifyTabSegmentsByEdgeMidpoints(context, allEdgesAfterSplit, path, totalLength, tabDomains);
         
         // Debug output: Report how many tab segments were identified
         const tabSegmentCount = size(evaluateQuery(context, tabSegmentEdges));
@@ -498,6 +507,10 @@ function identifyTabSegmentsByEdgeMidpoints(context is Context, allSplitEdges is
     {
         orderedEdges = orderedPath.edges;
         println("identifyTabSegmentsByEdgeMidpoints: Successfully ordered edges into path");
+        
+        // Verify the path length matches the original
+        const reconstructedLength = evLength(context, { "entities" : qUnion(orderedEdges) });
+        println("identifyTabSegmentsByEdgeMidpoints: Original length = " ~ toString(totalLength) ~ ", Reconstructed length = " ~ toString(reconstructedLength));
     }
     else
     {
