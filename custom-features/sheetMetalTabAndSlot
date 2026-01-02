@@ -140,6 +140,9 @@ export const tabAndSlotBossDisplay = defineFeature(function(context is Context, 
             throw regenError("No tabs can fit with the specified parameters", ["tabWidth", "spacing"]);
         }
 
+        // Track the original edges before splitting so we can query all split edges afterward
+        const trackedEdges = startTracking(context, orderedEdgeQuery);
+
         // Split the edges at tab boundaries
         const splitParameters = calculateSplitParametersFromTabDomains(tabDomains);
         const splitInstructions = calculateEdgeSplitInstructionsFromParameters(context, path, splitParameters);
@@ -169,13 +172,8 @@ export const tabAndSlotBossDisplay = defineFeature(function(context is Context, 
         }
 
         // Identify tab segment edges by checking which domain each edge's midpoint falls into
-        // Collect all split edges from all split operations
-        var allSplitEdgeQueries = [];
-        for (var i = 0; i < splitOperationIndex; i += 1)
-        {
-            allSplitEdgeQueries = append(allSplitEdgeQueries, qSplitBy(splitOperationId + ("split" ~ toString(i)), EntityType.EDGE, false));
-        }
-        const allSplitEdges = qUnion(allSplitEdgeQueries);
+        // Use the tracked edges query which automatically includes all split edges
+        const allSplitEdges = qEntityFilter(trackedEdges, EntityType.EDGE);
         
         const tabSegmentEdges = identifyTabSegmentsByEdgeMidpoints(context, allSplitEdges, path, totalLength, tabDomains);
         
