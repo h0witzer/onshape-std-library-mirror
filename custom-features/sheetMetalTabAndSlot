@@ -263,18 +263,11 @@ export const tabAndSlotBossDisplay = defineFeature(function(context is Context, 
 
         // Phase 4: Merge the extended surface bodies back with the sheet metal model
         // Call mergeTabSurfacesWithSheetMetal to integrate the surface bodies using sheetMetalTabModified
+        // The wallFaces we extracted from are the sheet metal definition faces to add material to
         
-        if (!isQueryEmpty(context, extractedBodies) && !isQueryEmpty(context, definition.mergeScope))
+        if (!isQueryEmpty(context, extractedBodies))
         {
-            mergeTabSurfacesWithSheetMetal(context, id + "mergeTabsWithModel", extractedBodies, definition);
-        }
-        else
-        {
-            if (isQueryEmpty(context, definition.mergeScope))
-            {
-                println("Warning: No merge scope specified. Extended surfaces will not be merged with sheet metal model.\n" ~
-                        "Specify sheet metal bodies in the 'Merge Scope' parameter to complete the tab integration.");
-            }
+            mergeTabSurfacesWithSheetMetal(context, id + "mergeTabsWithModel", extractedBodies, wallFaces, definition);
         }
     });
 
@@ -600,9 +593,10 @@ function identifyTabSegmentsByEdgeMidpoints(context is Context, allSplitEdges is
  *   context - The evaluation context
  *   id - Operation ID for this merge operation
  *   tabSurfaceBodies - Query for the surface bodies to merge (created by extracting and extending wall faces)
- *   definition - The feature definition containing merge scope and slot margin parameters
+ *   targetWallFaces - The sheet metal wall faces to add material to (automatically determined from adjacent faces)
+ *   definition - The feature definition containing merge scope (for slot subtraction) and slot margin parameters
  */
-function mergeTabSurfacesWithSheetMetal(context is Context, id is Id, tabSurfaceBodies is Query, definition is map)
+function mergeTabSurfacesWithSheetMetal(context is Context, id is Id, tabSurfaceBodies is Query, targetWallFaces is Query, definition is map)
 {
     // Get all faces from the tab surface bodies to pass as tabFaces
     const tabFaces = qOwnedByBody(tabSurfaceBodies, EntityType.FACE);
@@ -615,24 +609,27 @@ function mergeTabSurfacesWithSheetMetal(context is Context, id is Id, tabSurface
         throw regenError("No tab surface faces found to merge. Check that edges were properly split and extended.", ["edges"]);
     }
     
-    // Convert the merge scope bodies to sheet metal definition faces
-    // The sheetMetalTab feature expects SheetMetalDefinitionEntityType.FACE, not just bodies
-    const mergeScopeFaces = qOwnedByBody(definition.mergeScope, EntityType.FACE);
-    const mergeScopeFaceCount = size(evaluateQuery(context, mergeScopeFaces));
+    // Use the wall faces that were extracted from as the union scope
+    // These are the sheet metal definition faces we want to add material to
+    const wallFaceCount = size(evaluateQuery(context, targetWallFaces));
     
-    if (mergeScopeFaceCount == 0)
+    if (wallFaceCount == 0)
     {
-        throw regenError("No faces found in merge scope bodies", ["mergeScope"]);
+        throw regenError("No wall faces found to merge with", ["edges"]);
     }
     
-    println("Target merge scope has " ~ toString(mergeScopeFaceCount) ~ " faces");
+    println("Target wall faces for merge: " ~ toString(wallFaceCount) ~ " faces");
+    
+    // mergeScope is for slot bodies (subtraction), not for the union operation
+    // If mergeScope is provided, use it for booleanSubtractScope
+    const subtractScope = !isQueryEmpty(context, definition.mergeScope) ? definition.mergeScope : qNothing();
     
     // Create the definition for the sheetMetalTab feature call
     const tabDefinition = {
         "tabFaces" : tabFaces,
-        "booleanUnionScope" : mergeScopeFaces,
+        "booleanUnionScope" : targetWallFaces,  // Automatically determined wall faces
         "booleanOffset" : definition.slotMargin,
-        "booleanSubtractScope" : qNothing()
+        "booleanSubtractScope" : subtractScope  // Slot bodies from mergeScope
     };
     
     try
@@ -643,6 +640,6 @@ function mergeTabSurfacesWithSheetMetal(context is Context, id is Id, tabSurface
     }
     catch (error)
     {
-        throw regenError("Failed to merge tab surfaces with sheet metal model: " ~ toString(error), ["mergeScope"]);
+        throw regenError("Failed to merge tab surfaces with sheet metal model: " ~ toString(error), ["edges"]);
     }
 }
