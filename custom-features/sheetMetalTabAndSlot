@@ -140,6 +140,21 @@ export const tabAndSlotBossDisplay = defineFeature(function(context is Context, 
             throw regenError("No tabs can fit with the specified parameters", ["tabWidth", "spacing"]);
         }
 
+        // Calculate 3D midpoint locations for each tab domain BEFORE splitting
+        // This is necessary because the original path edges will be replaced after splitting
+        var tabMidpointLocations = [];
+        for (var domain in tabDomains)
+        {
+            const tabMidpointParameter = (domain.start + domain.end) / 2;
+            const tangentLineResult = evPathTangentLines(context, path, [tabMidpointParameter]);
+            if (size(tangentLineResult.tangentLines) > 0)
+            {
+                tabMidpointLocations = append(tabMidpointLocations, tangentLineResult.tangentLines[0].origin);
+            }
+        }
+        
+        println("Calculated " ~ toString(size(tabMidpointLocations)) ~ " tab midpoint locations before splitting");
+
         // Split the edges at tab boundaries
         const splitParameters = calculateSplitParametersFromTabDomains(tabDomains);
         const splitInstructions = calculateEdgeSplitInstructionsFromParameters(context, path, splitParameters);
@@ -177,7 +192,7 @@ export const tabAndSlotBossDisplay = defineFeature(function(context is Context, 
         }
         const allSplitEdges = qUnion(allSplitEdgeQueries);
         
-        const tabSegmentEdges = identifyTabSegmentsUsingPointQueries(context, allSplitEdges, path, totalLength, tabDomains);
+        const tabSegmentEdges = identifyTabSegmentsUsingPointQueries(context, allSplitEdges, tabMidpointLocations);
         
         // Debug output: Report how many tab segments were identified
         const tabSegmentCount = size(evaluateQuery(context, tabSegmentEdges));
@@ -467,18 +482,16 @@ function calculateEdgeSplitInstructionsFromParameters(context is Context, path i
 }
 
 // Identifies edges that correspond to tab segments using point-based queries after splitting.
-// Uses qSplitBy combined with qContainsPoint to robustly identify tab segment edges.
+// Uses qContainsPoint to robustly identify tab segment edges at pre-calculated locations.
 // Inputs: 
 //   allSplitEdges - Query for all edges created by split operations
-//   path - Original path before splitting
-//   totalLength - Total length of the edge chain
-//   tabDomains - Array of {start, end} maps with normalized parameters for each tab
+//   tabMidpointLocations - Array of 3D vectors representing the midpoint of each tab
 // Outputs: Query containing edges that correspond to tab segments
-function identifyTabSegmentsUsingPointQueries(context is Context, allSplitEdges is Query, path is Path, totalLength is ValueWithUnits, tabDomains is array) returns Query
+function identifyTabSegmentsUsingPointQueries(context is Context, allSplitEdges is Query, tabMidpointLocations is array) returns Query
 {
-    if (size(tabDomains) == 0)
+    if (size(tabMidpointLocations) == 0)
     {
-        println("identifyTabSegmentsUsingPointQueries: No tab domains provided");
+        println("identifyTabSegmentsUsingPointQueries: No tab midpoint locations provided");
         return qNothing();
     }
 
@@ -486,45 +499,28 @@ function identifyTabSegmentsUsingPointQueries(context is Context, allSplitEdges 
     const allSplitEdgesCount = size(evaluateQuery(context, allSplitEdges));
     println("identifyTabSegmentsUsingPointQueries: Total split edges = " ~ toString(allSplitEdgesCount));
     
-    // For each tab domain, find the edge at the tab's midpoint
+    // For each tab midpoint location, find the edge at that point
     var tabEdgeQueries = [];
     
-    for (var i = 0; i < size(tabDomains); i += 1)
+    for (var i = 0; i < size(tabMidpointLocations); i += 1)
     {
-        const domain = tabDomains[i];
+        const tabMidpoint3D = tabMidpointLocations[i];
         
-        // Calculate the midpoint of this tab in normalized coordinates
-        const tabMidpointParameter = (domain.start + domain.end) / 2;
+        println("Tab " ~ toString(i) ~ ": 3D midpoint = " ~ toString(tabMidpoint3D));
         
-        println("Tab " ~ toString(i) ~ ": domain [" ~ toString(domain.start) ~ ", " ~ toString(domain.end) ~ "], midpoint = " ~ toString(tabMidpointParameter));
+        // Query for edges that contain this point
+        const edgeAtTabMidpoint = qContainsPoint(allSplitEdges, tabMidpoint3D);
         
-        // Evaluate the 3D point at this parameter along the original path
-        const tangentLineResult = evPathTangentLines(context, path, [tabMidpointParameter]);
-        
-        if (size(tangentLineResult.tangentLines) > 0)
+        // Verify that we found an edge at this location
+        const foundEdges = evaluateQuery(context, edgeAtTabMidpoint);
+        if (size(foundEdges) > 0)
         {
-            const tabMidpoint3D = tangentLineResult.tangentLines[0].origin;
-            
-            println("Tab " ~ toString(i) ~ ": 3D midpoint = " ~ toString(tabMidpoint3D));
-            
-            // Query for edges that contain this point
-            const edgeAtTabMidpoint = qContainsPoint(allSplitEdges, tabMidpoint3D);
-            
-            // Verify that we found an edge at this location
-            const foundEdges = evaluateQuery(context, edgeAtTabMidpoint);
-            if (size(foundEdges) > 0)
-            {
-                println("Tab " ~ toString(i) ~ ": Found " ~ toString(size(foundEdges)) ~ " edge(s) at midpoint");
-                tabEdgeQueries = append(tabEdgeQueries, edgeAtTabMidpoint);
-            }
-            else
-            {
-                println("WARNING Tab " ~ toString(i) ~ ": No edge found at tab midpoint");
-            }
+            println("Tab " ~ toString(i) ~ ": Found " ~ toString(size(foundEdges)) ~ " edge(s) at midpoint");
+            tabEdgeQueries = append(tabEdgeQueries, edgeAtTabMidpoint);
         }
         else
         {
-            println("ERROR Tab " ~ toString(i) ~ ": Failed to evaluate tangent line at parameter " ~ toString(tabMidpointParameter));
+            println("WARNING Tab " ~ toString(i) ~ ": No edge found at tab midpoint");
         }
     }
     
