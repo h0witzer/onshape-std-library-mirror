@@ -195,8 +195,8 @@ export const tabAndSlotBossDisplay = defineFeature(function(context is Context, 
         debug(context, tabSegmentEdges, DebugColor.YELLOW);
 
         // Phase 2: Copy adjacent sheet metal wall surfaces
-        // Use the already computed allSplitEdges query
-        const adjacentFaces = qAdjacent(allSplitEdges, AdjacencyType.EDGE, EntityType.FACE);
+        // Use the identified tab segment edges to find adjacent faces
+        const adjacentFaces = qAdjacent(tabSegmentEdges, AdjacencyType.EDGE, EntityType.FACE);
         const wallFaces = filterSheetMetalWallFaces(context, adjacentFaces);
         
         if (size(evaluateQuery(context, wallFaces)) == 0)
