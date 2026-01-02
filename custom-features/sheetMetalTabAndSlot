@@ -612,19 +612,24 @@ function mergeTabSurfacesWithSheetMetal(context is Context, id is Id, tabSurface
     const tabFaces = qOwnedByBody(tabSurfaceBodies, EntityType.FACE);
     
     const tabFaceCount = size(evaluateQuery(context, tabFaces));
-    const mergeScopeCount = size(evaluateQuery(context, definition.mergeScope));
-    
-    println("Merging " ~ toString(tabFaceCount) ~ " tab surface faces with " ~ toString(mergeScopeCount) ~ " sheet metal bodies");
+    println("Preparing to merge " ~ toString(tabFaceCount) ~ " tab surface faces with sheet metal model");
     
     if (tabFaceCount == 0)
     {
         throw regenError("No tab surface faces found to merge", ["edges"]);
     }
     
-    if (mergeScopeCount == 0)
+    // Convert the merge scope bodies to sheet metal definition faces
+    // The sheetMetalTab feature expects SheetMetalDefinitionEntityType.FACE, not just bodies
+    const mergeScopeFaces = qOwnedByBody(definition.mergeScope, EntityType.FACE);
+    const mergeScopeFaceCount = size(evaluateQuery(context, mergeScopeFaces));
+    
+    if (mergeScopeFaceCount == 0)
     {
-        throw regenError("No sheet metal bodies specified for merge scope", ["mergeScope"]);
+        throw regenError("No faces found in merge scope bodies", ["mergeScope"]);
     }
+    
+    println("Target merge scope has " ~ toString(mergeScopeFaceCount) ~ " faces");
     
     // ============================================================================
     // INTEGRATION POINT: Call sheetMetalTab from sheetMetalTabModified.fs
@@ -639,13 +644,14 @@ function mergeTabSurfacesWithSheetMetal(context is Context, id is Id, tabSurface
     //
     // const tabDefinition = {
     //     "tabFaces" : tabFaces,
-    //     "booleanUnionScope" : definition.mergeScope,
-    //     "booleanOffset" : definition.slotMargin,
-    //     "booleanSubtractScope" : qNothing()
+    //     "booleanUnionScope" : mergeScopeFaces,  // Sheet metal faces to merge with
+    //     "booleanOffset" : definition.slotMargin,  // Clearance for slot width
+    //     "booleanSubtractScope" : qNothing()  // No subtraction needed for tabs
     // };
     // 
     // try
     // {
+    //     // Call the imported sheetMetalTab feature
     //     sheetMetalTab(context, id, tabDefinition);
     //     println("Successfully merged tab surfaces with sheet metal model");
     // }
@@ -655,12 +661,23 @@ function mergeTabSurfacesWithSheetMetal(context is Context, id is Id, tabSurface
     // }
     //
     // ============================================================================
+    //
+    // IMPORTANT NOTES FOR INTEGRATION:
+    // - The sheetMetalTab function is exported from sheetMetalTabModified.fs
+    // - It accepts surface bodies (not just planar faces) due to the modified precondition filter
+    // - The key difference from standard sheetMetalTab is line 36: removes GeometryType.PLANE filter
+    // - This allows the extended surface bodies created by TabAndSlot to be merged with the sheet metal model
+    // - The merge operation will properly integrate the tabs with the sheet metal definition
+    //
+    // ============================================================================
     
     // For development/testing without the actual import:
     println("Tab surface bodies created and ready for merge.");
-    println("To complete: Import sheetMetalTabModified.fs and call sheetMetalTab with the parameters shown above.");
-    println("The surface bodies will remain in the model until the merge is completed.");
-    
-    // Note: In a production environment, you would uncomment the code above to perform the actual merge.
-    // The commented code shows exactly how to call the sheetMetalTab feature with the correct parameters.
+    println("Integration steps:");
+    println("  1. Import sheetMetalTabModified.fs using its Onshape document ID");
+    println("  2. Uncomment the sheetMetalTab call above");
+    println("  3. The surface bodies will be automatically merged with the sheet metal model");
+    println("");
+    println("The commented code above shows the exact parameters and calling pattern.");
+    println("Surface bodies will remain visible in the model until the merge is completed.");
 }
