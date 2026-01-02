@@ -140,8 +140,12 @@ export const tabAndSlotBossDisplay = defineFeature(function(context is Context, 
             throw regenError("No tabs can fit with the specified parameters", ["tabWidth", "spacing"]);
         }
 
-        // Track original edges before splitting
-        const trackedEdges = startTracking(context, orderedEdgeQuery);
+        // Use mixInTracking pattern: union the original query with a tracking query
+        // This ensures we capture both affected (split) and unaffected edges
+        const trackedEdges = qUnion([orderedEdgeQuery, startTracking(context, orderedEdgeQuery)]);
+        
+        // Debug: Display the input chain to verify correct identification
+        debug(context, orderedEdgeQuery, DebugColor.CYAN);
 
         // Split the edges at tab boundaries
         const splitParameters = calculateSplitParametersFromTabDomains(tabDomains);
@@ -152,12 +156,14 @@ export const tabAndSlotBossDisplay = defineFeature(function(context is Context, 
             throw regenError("Unable to calculate edge split locations", ["edges"]);
         }
 
+        // Perform all split operations and collect their IDs
+        const splitOperationId = id + "splitAllEdges";
         var splitOperationIndex = 0;
         for (var instruction in splitInstructions)
         {
             try
             {
-                @opSplitEdges(context, id + ("split" ~ toString(splitOperationIndex)), {
+                @opSplitEdges(context, splitOperationId + ("split" ~ toString(splitOperationIndex)), {
                             "edges" : instruction.edge,
                             "parameters" : [instruction.parameters]
                         });
@@ -169,15 +175,28 @@ export const tabAndSlotBossDisplay = defineFeature(function(context is Context, 
             splitOperationIndex += 1;
         }
 
-        // Get the split edges
-        const splitEdges = qEntityFilter(trackedEdges, EntityType.EDGE);
-        const tabSegmentEdges = identifyTabSegmentEdgesFromDomains(context, splitEdges, path, totalLength, tabDomains);
+        // Identify tab segment edges by checking which domain each edge's midpoint falls into
+        // Use mixInTracking pattern: union original with tracked edges to ensure nothing is missed
+        // Filter to edges only and combine with original to handle both split and unsplit edges
+        const allEdgesAfterSplit = qEntityFilter(qUnion([orderedEdgeQuery, trackedEdges]), EntityType.EDGE);
+        
+        // Debug: Display the edges after split to verify all are captured
+        debug(context, allEdgesAfterSplit, DebugColor.RED);
+        println("Edges after split: " ~ toString(size(evaluateQuery(context, allEdgesAfterSplit))));
+        
+        const tabSegmentEdges = identifyTabSegmentsByEdgeMidpoints(context, allEdgesAfterSplit, path, totalLength, tabDomains);
+        
+        // Debug output: Report how many tab segments were identified
+        const tabSegmentCount = size(evaluateQuery(context, tabSegmentEdges));
+        println("Tab domains count: " ~ toString(size(tabDomains)));
+        println("Tab segment edges identified: " ~ toString(tabSegmentCount));
         
         // Debug: Highlight tab segment edges to verify identification
         debug(context, tabSegmentEdges, DebugColor.YELLOW);
 
         // Phase 2: Copy adjacent sheet metal wall surfaces
-        const adjacentFaces = qAdjacent(splitEdges, AdjacencyType.EDGE, EntityType.FACE);
+        // Use the identified tab segment edges to find adjacent faces
+        const adjacentFaces = qAdjacent(tabSegmentEdges, AdjacencyType.EDGE, EntityType.FACE);
         const wallFaces = filterSheetMetalWallFaces(context, adjacentFaces);
         
         if (size(evaluateQuery(context, wallFaces)) == 0)
@@ -454,61 +473,98 @@ function calculateEdgeSplitInstructionsFromParameters(context is Context, path i
     return splitInstructions;
 }
 
-// Identifies edges that correspond to tab segments based on tab domains.
-// Checks which edges fall within the tab domain ranges after splitting.
-function identifyTabSegmentEdgesFromDomains(context is Context, splitEdges is Query, path is Path, totalLength is ValueWithUnits, tabDomains is array) returns Query
+// Identifies edges that correspond to tab segments by checking edge midpoints against tab domains.
+// For each edge, calculates its midpoint position along the edge chain and checks if it falls
+// within any tab domain. This works for all edges after splitting.
+// Inputs: 
+//   allSplitEdges - Query for all edges created by split operations
+//   path - Original path before splitting (used for reference)
+//   totalLength - Total length of the edge chain
+//   tabDomains - Array of {start, end} maps with normalized parameters for each tab
+// Outputs: Query containing all edges that fall within tab domains
+function identifyTabSegmentsByEdgeMidpoints(context is Context, allSplitEdges is Query, path is Path, totalLength is ValueWithUnits, tabDomains is array) returns Query
 {
     if (size(tabDomains) == 0)
     {
+        println("identifyTabSegmentsByEdgeMidpoints: No tab domains provided");
         return qNothing();
     }
 
-    const edges = evaluateQuery(context, splitEdges);
-    if (size(edges) == 0)
+    // Get all split edges and try to reconstruct them into an ordered path
+    const edges = evaluateQuery(context, allSplitEdges);
+    const edgeCount = size(edges);
+    println("identifyTabSegmentsByEdgeMidpoints: Checking " ~ toString(edgeCount) ~ " edges");
+    
+    if (edgeCount == 0)
     {
         return qNothing();
     }
-
-    // Try to construct a path to get ordered edges
+    
+    // Try to construct a path from the split edges to get them in order
     const orderedPath = try silent(constructPath(context, qUnion(edges)));
     var orderedEdges = edges;
     if (orderedPath != undefined)
     {
         orderedEdges = orderedPath.edges;
+        println("identifyTabSegmentsByEdgeMidpoints: Successfully ordered edges into path");
+        
+        // Verify the path length matches the original
+        const reconstructedLength = evLength(context, { "entities" : qUnion(orderedEdges) });
+        println("identifyTabSegmentsByEdgeMidpoints: Original length = " ~ toString(totalLength) ~ ", Reconstructed length = " ~ toString(reconstructedLength));
     }
-
-    // Calculate cumulative lengths to determine position of each edge
-    var edgeMidpoints = [];
+    else
+    {
+        println("identifyTabSegmentsByEdgeMidpoints: Could not order edges, using original order");
+    }
+    
+    // Calculate the normalized position (0 to 1) of each edge's midpoint along the chain
+    var edgeMidpointParameters = [];
     var accumulatedLength = 0 * meter;
     
     for (var edge in orderedEdges)
     {
         const edgeLength = evLength(context, { "entities" : edge });
-        const midpoint = (accumulatedLength + edgeLength / 2) / totalLength;
-        edgeMidpoints = append(edgeMidpoints, midpoint);
+        const midpointParameter = (accumulatedLength + edgeLength / 2) / totalLength;
+        edgeMidpointParameters = append(edgeMidpointParameters, midpointParameter);
         accumulatedLength += edgeLength;
     }
-
-    // Identify which edges fall within tab domains
+    
+    // Check which edges fall within tab domains
     var tabEdgeQueries = [];
+    
     for (var i = 0; i < size(orderedEdges); i += 1)
     {
-        const midpoint = edgeMidpoints[i];
-        for (var domain in tabDomains)
+        const edge = orderedEdges[i];
+        const midpointParameter = edgeMidpointParameters[i];
+        
+        // Check if this parameter falls within any tab domain
+        var isInTabDomain = false;
+        var domainIndex = -1;
+        for (var j = 0; j < size(tabDomains); j += 1)
         {
-            if (midpoint >= domain.start && midpoint <= domain.end)
+            const domain = tabDomains[j];
+            if (midpointParameter >= domain.start && midpointParameter <= domain.end)
             {
-                tabEdgeQueries = append(tabEdgeQueries, orderedEdges[i]);
+                isInTabDomain = true;
+                domainIndex = j;
                 break;
             }
         }
+        
+        if (isInTabDomain)
+        {
+            println("Edge " ~ toString(i) ~ " at parameter " ~ toString(midpointParameter) ~ " is in tab domain " ~ toString(domainIndex));
+            tabEdgeQueries = append(tabEdgeQueries, edge);
+        }
     }
-
+    
+    println("identifyTabSegmentsByEdgeMidpoints: Found " ~ toString(size(tabEdgeQueries)) ~ " edges in tab domains");
+    
     if (size(tabEdgeQueries) == 0)
     {
         return qNothing();
     }
-
+    
     return qUnion(tabEdgeQueries);
 }
 
