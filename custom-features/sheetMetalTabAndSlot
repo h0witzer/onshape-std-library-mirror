@@ -14,7 +14,8 @@ import(path : "onshape/std/extendendtype.gen.fs", version : "2837.0");
 import(path : "onshape/std/extendsheetshapetype.gen.fs", version : "2837.0");
 import(path : "onshape/std/edgetopology.gen.fs", version : "2837.0");
 // Import the modified sheet metal tab feature that can work with surface bodies
-// In Onshape environment, this would be: import(path : "{document_id}", version : "{version_id}");
+// In Onshape environment, this would be:
+// import(path : "{SHEET_METAL_TAB_MODIFIED_DOC_ID}", version : "{SHEET_METAL_TAB_MODIFIED_VERSION}");
 // For development/testing, the sheetMetalTab function from sheetMetalTabModified.fs should be available
 // Written by Caden Armstrong - SmartBench Software
 // Hacked by Derek Van Allen - Boss Display
@@ -273,8 +274,8 @@ export const tabAndSlotBossDisplay = defineFeature(function(context is Context, 
         {
             if (isQueryEmpty(context, definition.mergeScope))
             {
-                println("Warning: No merge scope specified. Extended surfaces will not be merged with sheet metal model.");
-                println("Specify sheet metal bodies in the 'Merge Scope' parameter to complete the tab integration.");
+                println("Warning: No merge scope specified. Extended surfaces will not be merged with sheet metal model.\n" ~
+                        "Specify sheet metal bodies in the 'Merge Scope' parameter to complete the tab integration.");
             }
         }
     });
@@ -672,12 +673,11 @@ function mergeTabSurfacesWithSheetMetal(context is Context, id is Id, tabSurface
     // ============================================================================
     
     // For development/testing without the actual import:
-    println("Tab surface bodies created and ready for merge.");
-    println("Integration steps:");
-    println("  1. Import sheetMetalTabModified.fs using its Onshape document ID");
-    println("  2. Uncomment the sheetMetalTab call above");
-    println("  3. The surface bodies will be automatically merged with the sheet metal model");
-    println("");
-    println("The commented code above shows the exact parameters and calling pattern.");
-    println("Surface bodies will remain visible in the model until the merge is completed.");
+    println("Tab surface bodies created and ready for merge.\n" ~
+            "Integration steps:\n" ~
+            "  1. Import sheetMetalTabModified.fs using its Onshape document ID\n" ~
+            "  2. Uncomment the sheetMetalTab call above\n" ~
+            "  3. The surface bodies will be automatically merged with the sheet metal model\n\n" ~
+            "The commented code above shows the exact parameters and calling pattern.\n" ~
+            "Surface bodies will remain visible in the model until the merge is completed.");
 }

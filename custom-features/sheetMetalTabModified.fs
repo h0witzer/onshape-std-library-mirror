@@ -2,7 +2,9 @@ FeatureScript 2837;
 // This module is part of the FeatureScript Standard Library and is distributed under the MIT License.
 // See the LICENSE tab for the license text.
 // Copyright (c) 2013-Present PTC Inc.
-// Modified to accept surface bodies (not just planar faces) for Boss Display integration
+// Modified to accept surface bodies in addition to planar faces for Boss Display integration.
+// Key modification: Line 36 precondition filter removes GeometryType.PLANE restriction,
+// allowing non-planar surface bodies (e.g., cylindrical, conical surfaces) to be used as tab profiles.
 
 // Imports used in interface
 export import(path : "onshape/std/query.fs", version : "2837.0");
