@@ -23,7 +23,6 @@ import(path : "onshape/std/edgetopology.gen.fs", version : "2837.0");
 const EDGE_LENGTH_TOLERANCE = 1e-9 * meter;
 const EDGE_PARAMETER_TOLERANCE = 1e-6;
 const FRACTION_TOLERANCE = 1e-9;
-const EDGE_MATCH_DISTANCE_TOLERANCE = 1e-6 * meter;  // Tolerance for matching edges by position after extraction
 
 export const SPACING_BOUNDS =
 {
@@ -186,10 +185,10 @@ export const tabAndSlotBossDisplay = defineFeature(function(context is Context, 
             throw regenError("No adjacent wall surfaces found to copy", ["edges"]);
         }
 
-        // Phase 3: Use distance-based collision detection to identify correct edges on extracted surfaces
+        // Phase 3: Use query-based matching to identify correct edges on extracted surfaces
         // Store geometric information about tab segments before extraction for reliable matching
         
-        // Store midpoint positions of tab segment edges for distance-based identification
+        // Store midpoint positions of tab segment edges for query-based identification
         const tabSegmentEdgesList = evaluateQuery(context, tabSegmentEdges);
         var tabSegmentMidpoints = [];
         
@@ -217,38 +216,25 @@ export const tabAndSlotBossDisplay = defineFeature(function(context is Context, 
             throw regenError("Failed to extract adjacent wall surfaces", ["edges"]);
         }
 
-        // After extraction, use distance-based matching to find edges on extracted surfaces
+        // After extraction, use query-based matching to find edges on extracted surfaces
         // that correspond to the original tab segment positions
         const extractedBodies = qCreatedBy(id + "extractWalls", EntityType.BODY);
         const extractedEdges = qOwnedByBody(extractedBodies, EntityType.EDGE);
         
-        // Find edges on extracted surfaces that match tab segment midpoint positions
+        // Use qClosestTo to find edges on extracted surfaces that match tab segment positions
         var edgesToExtendQueries = [];
-        const evaluatedExtractedEdges = evaluateQuery(context, extractedEdges);
         
         for (var midpoint in tabSegmentMidpoints)
         {
-            // Find the closest edge to this midpoint position
-            var closestEdge = undefined;
-            var closestDistance = 1e10 * meter;
+            // Use query-based qClosestTo to find the edge closest to this midpoint
+            const closestEdgeQuery = qClosestTo(extractedEdges, midpoint);
+            const closestEdgesList = evaluateQuery(context, closestEdgeQuery);
             
-            for (var extractedEdge in evaluatedExtractedEdges)
+            if (size(closestEdgesList) > 0)
             {
-                const distResult = evDistance(context, {
-                            "side0" : midpoint,
-                            "side1" : extractedEdge
-                        });
+                // qClosestTo returns the closest edge(s) - take the first one
+                const closestEdge = closestEdgesList[0];
                 
-                if (distResult.distance < closestDistance)
-                {
-                    closestDistance = distResult.distance;
-                    closestEdge = extractedEdge;
-                }
-            }
-            
-            // If we found an edge very close to the midpoint, add it to the list
-            if (closestEdge != undefined && closestDistance < EDGE_MATCH_DISTANCE_TOLERANCE)
-            {
                 // Check if this edge is laminar (one-sided/boundary edge)
                 const edgeTopology = qEdgeTopologyFilter(closestEdge, EdgeTopology.ONE_SIDED);
                 if (size(evaluateQuery(context, edgeTopology)) > 0)
