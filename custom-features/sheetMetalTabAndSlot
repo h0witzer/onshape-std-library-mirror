@@ -140,28 +140,6 @@ export const tabAndSlotBossDisplay = defineFeature(function(context is Context, 
             throw regenError("No tabs can fit with the specified parameters", ["tabWidth", "spacing"]);
         }
 
-        // Calculate 3D positions for tab start and end boundaries BEFORE splitting
-        // This is necessary because the original path edges will be replaced after splitting
-        // We store the exact boundary positions (start and end) for each tab domain
-        var tabBoundaryPositions = [];
-        for (var domain in tabDomains)
-        {
-            // Calculate 3D positions at the start and end of each tab
-            const startTangent = evPathTangentLines(context, path, [domain.start]);
-            const endTangent = evPathTangentLines(context, path, [domain.end]);
-            
-            if (size(startTangent.tangentLines) > 0 && size(endTangent.tangentLines) > 0)
-            {
-                tabBoundaryPositions = append(tabBoundaryPositions, {
-                    "domain" : domain,
-                    "startPoint" : startTangent.tangentLines[0].origin,
-                    "endPoint" : endTangent.tangentLines[0].origin
-                });
-            }
-        }
-        
-        println("Calculated boundary positions for " ~ toString(size(tabBoundaryPositions)) ~ " tabs");
-
         // Split the edges at tab boundaries
         const splitParameters = calculateSplitParametersFromTabDomains(tabDomains);
         const splitInstructions = calculateEdgeSplitInstructionsFromParameters(context, path, splitParameters);
@@ -190,7 +168,7 @@ export const tabAndSlotBossDisplay = defineFeature(function(context is Context, 
             splitOperationIndex += 1;
         }
 
-        // Identify tab segment edges using qSplitBy and connectivity-based queries
+        // Identify tab segment edges by checking which domain each edge's midpoint falls into
         // Collect all split edges from all split operations
         var allSplitEdgeQueries = [];
         for (var i = 0; i < splitOperationIndex; i += 1)
@@ -199,7 +177,7 @@ export const tabAndSlotBossDisplay = defineFeature(function(context is Context, 
         }
         const allSplitEdges = qUnion(allSplitEdgeQueries);
         
-        const tabSegmentEdges = identifyTabSegmentsUsingBoundaryVertices(context, allSplitEdges, tabBoundaryPositions);
+        const tabSegmentEdges = identifyTabSegmentsByEdgeMidpoints(context, allSplitEdges, path, totalLength, tabDomains);
         
         // Debug output: Report how many tab segments were identified
         const tabSegmentCount = size(evaluateQuery(context, tabSegmentEdges));
@@ -488,176 +466,95 @@ function calculateEdgeSplitInstructionsFromParameters(context is Context, path i
     return splitInstructions;
 }
 
-// Identifies edges that correspond to tab segments using boundary vertex connectivity.
-// Uses vertex queries at tab boundaries and edge connectivity to identify ALL segments within each tab.
-// This robustly handles tabs that span multiple connected edge segments without arbitrary sampling.
+// Identifies edges that correspond to tab segments by checking edge midpoints against tab domains.
+// For each edge, calculates its midpoint position along the edge chain and checks if it falls
+// within any tab domain. This works for all edges after splitting.
 // Inputs: 
 //   allSplitEdges - Query for all edges created by split operations
-//   tabBoundaryPositions - Array of maps with domain, startPoint, and endPoint for each tab
-// Outputs: Query containing all edges that correspond to tab segments
-function identifyTabSegmentsUsingBoundaryVertices(context is Context, allSplitEdges is Query, tabBoundaryPositions is array) returns Query
+//   path - Original path before splitting (used for reference)
+//   totalLength - Total length of the edge chain
+//   tabDomains - Array of {start, end} maps with normalized parameters for each tab
+// Outputs: Query containing all edges that fall within tab domains
+function identifyTabSegmentsByEdgeMidpoints(context is Context, allSplitEdges is Query, path is Path, totalLength is ValueWithUnits, tabDomains is array) returns Query
 {
-    if (size(tabBoundaryPositions) == 0)
+    if (size(tabDomains) == 0)
     {
-        println("identifyTabSegmentsUsingBoundaryVertices: No tab boundary positions provided");
+        println("identifyTabSegmentsByEdgeMidpoints: No tab domains provided");
         return qNothing();
     }
 
-    // Get count of split edges for debugging
-    const allSplitEdgesCount = size(evaluateQuery(context, allSplitEdges));
-    println("identifyTabSegmentsUsingBoundaryVertices: Total split edges = " ~ toString(allSplitEdgesCount));
+    // Get all split edges and try to reconstruct them into an ordered path
+    const edges = evaluateQuery(context, allSplitEdges);
+    const edgeCount = size(edges);
+    println("identifyTabSegmentsByEdgeMidpoints: Checking " ~ toString(edgeCount) ~ " edges");
     
-    // Get all vertices from the split edges
-    const allVertices = qAdjacent(allSplitEdges, AdjacencyType.VERTEX, EntityType.VERTEX);
-    
-    // For each tab, find edges between the start and end boundary vertices
-    var allTabEdgeQueries = [];
-    
-    for (var i = 0; i < size(tabBoundaryPositions); i += 1)
+    if (edgeCount == 0)
     {
-        const tabBoundary = tabBoundaryPositions[i];
-        const startPoint = tabBoundary.startPoint;
-        const endPoint = tabBoundary.endPoint;
-        
-        println("Tab " ~ toString(i) ~ ": Finding edges between start and end vertices");
-        
-        // Find vertices at the tab start and end positions
-        const startVertex = qContainsPoint(allVertices, startPoint);
-        const endVertex = qContainsPoint(allVertices, endPoint);
-        
-        const startVertexCount = size(evaluateQuery(context, startVertex));
-        const endVertexCount = size(evaluateQuery(context, endVertex));
-        
-        println("Tab " ~ toString(i) ~ ": Start vertex count = " ~ toString(startVertexCount) ~ ", End vertex count = " ~ toString(endVertexCount));
-        
-        if (startVertexCount == 0 || endVertexCount == 0)
-        {
-            println("WARNING Tab " ~ toString(i) ~ ": Could not find boundary vertices");
-            continue;
-        }
-        
-        // Find all edges connected to the start vertex
-        const edgesFromStart = qAdjacent(startVertex, AdjacencyType.VERTEX, EntityType.EDGE);
-        
-        // Filter to only include edges from our split edges set
-        const candidateEdges = qIntersection([edgesFromStart, allSplitEdges]);
-        
-        // Now traverse from start vertex to end vertex, collecting all connected edges
-        const tabEdges = findConnectedEdgesBetweenVertices(context, candidateEdges, startVertex, endVertex, allSplitEdges);
-        
-        if (size(evaluateQuery(context, tabEdges)) > 0)
-        {
-            const edgeCount = size(evaluateQuery(context, tabEdges));
-            println("Tab " ~ toString(i) ~ ": Found " ~ toString(edgeCount) ~ " connected edge(s)");
-            allTabEdgeQueries = append(allTabEdgeQueries, tabEdges);
-        }
-        else
-        {
-            println("WARNING Tab " ~ toString(i) ~ ": No connected edges found between boundary vertices");
-        }
-    }
-    
-    if (size(allTabEdgeQueries) == 0)
-    {
-        println("identifyTabSegmentsUsingBoundaryVertices: No tab edges identified");
         return qNothing();
     }
     
-    println("identifyTabSegmentsUsingBoundaryVertices: Successfully identified edges for " ~ toString(size(allTabEdgeQueries)) ~ " tabs");
-    return qUnion(allTabEdgeQueries);
-}
-
-// Finds all edges in a connected path between two vertices.
-// Uses breadth-first traversal to find all edges that connect startVertex to endVertex.
-// Inputs:
-//   startEdges - Initial edges connected to startVertex
-//   startVertex - Starting vertex query
-//   endVertex - Ending vertex query  
-//   validEdges - Set of edges to consider (limits search space)
-// Outputs: Query containing all edges in the connected path
-function findConnectedEdgesBetweenVertices(context is Context, startEdges is Query, startVertex is Query, endVertex is Query, validEdges is Query) returns Query
-{
-    // Start with edges adjacent to the start vertex
-    var edgesToExplore = evaluateQuery(context, startEdges);
-    var exploredEdges = [];
-    var currentFrontier = edgesToExplore;
-    
-    const maxIterations = 100;  // Safety limit to prevent infinite loops
-    var iteration = 0;
-    
-    while (size(currentFrontier) > 0 && iteration < maxIterations)
+    // Try to construct a path from the split edges to get them in order
+    const orderedPath = try silent(constructPath(context, qUnion(edges)));
+    var orderedEdges = edges;
+    if (orderedPath != undefined)
     {
-        iteration += 1;
-        var nextFrontier = [];
+        orderedEdges = orderedPath.edges;
+        println("identifyTabSegmentsByEdgeMidpoints: Successfully ordered edges into path");
+    }
+    else
+    {
+        println("identifyTabSegmentsByEdgeMidpoints: Could not order edges, using original order");
+    }
+    
+    // Calculate the normalized position (0 to 1) of each edge's midpoint along the chain
+    var edgeMidpointParameters = [];
+    var accumulatedLength = 0 * meter;
+    
+    for (var edge in orderedEdges)
+    {
+        const edgeLength = evLength(context, { "entities" : edge });
+        const midpointParameter = (accumulatedLength + edgeLength / 2) / totalLength;
+        edgeMidpointParameters = append(edgeMidpointParameters, midpointParameter);
+        accumulatedLength += edgeLength;
+    }
+    
+    // Check which edges fall within tab domains
+    var tabEdgeQueries = [];
+    
+    for (var i = 0; i < size(orderedEdges); i += 1)
+    {
+        const edge = orderedEdges[i];
+        const midpointParameter = edgeMidpointParameters[i];
         
-        for (var edge in currentFrontier)
+        // Check if this parameter falls within any tab domain
+        var isInTabDomain = false;
+        var domainIndex = -1;
+        for (var j = 0; j < size(tabDomains); j += 1)
         {
-            // Add this edge to explored set
-            exploredEdges = append(exploredEdges, edge);
-            
-            // Get vertices of this edge
-            const edgeVertices = qAdjacent(edge, AdjacencyType.EDGE, EntityType.VERTEX);
-            
-            // Check if we've reached the end vertex
-            const reachedEnd = size(evaluateQuery(context, qIntersection([edgeVertices, endVertex]))) > 0;
-            
-            if (reachedEnd)
+            const domain = tabDomains[j];
+            if (midpointParameter >= domain.start && midpointParameter <= domain.end)
             {
-                // Found path to end vertex - return all explored edges
-                println("findConnectedEdgesBetweenVertices: Found path after " ~ toString(iteration) ~ " iterations");
-                return qUnion(exploredEdges);
-            }
-            
-            // Get adjacent edges to continue traversal
-            const adjacentEdges = qAdjacent(edgeVertices, AdjacencyType.VERTEX, EntityType.EDGE);
-            const nextEdges = qIntersection([adjacentEdges, validEdges]);
-            const nextEdgesEvaluated = evaluateQuery(context, nextEdges);
-            
-            // Add new edges to next frontier (excluding already explored)
-            for (var nextEdge in nextEdgesEvaluated)
-            {
-                var alreadyExplored = false;
-                for (var exploredEdge in exploredEdges)
-                {
-                    if (nextEdge == exploredEdge)
-                    {
-                        alreadyExplored = true;
-                        break;
-                    }
-                }
-                
-                if (!alreadyExplored)
-                {
-                    var alreadyInFrontier = false;
-                    for (var frontierEdge in nextFrontier)
-                    {
-                        if (nextEdge == frontierEdge)
-                        {
-                            alreadyInFrontier = true;
-                            break;
-                        }
-                    }
-                    
-                    if (!alreadyInFrontier)
-                    {
-                        nextFrontier = append(nextFrontier, nextEdge);
-                    }
-                }
+                isInTabDomain = true;
+                domainIndex = j;
+                break;
             }
         }
         
-        currentFrontier = nextFrontier;
+        if (isInTabDomain)
+        {
+            println("Edge " ~ toString(i) ~ " at parameter " ~ toString(midpointParameter) ~ " is in tab domain " ~ toString(domainIndex));
+            tabEdgeQueries = append(tabEdgeQueries, edge);
+        }
     }
     
-    println("WARNING findConnectedEdgesBetweenVertices: Did not find path to end vertex after " ~ toString(iteration) ~ " iterations");
+    println("identifyTabSegmentsByEdgeMidpoints: Found " ~ toString(size(tabEdgeQueries)) ~ " edges in tab domains");
     
-    // Return what we found even if we didn't reach the end
-    if (size(exploredEdges) > 0)
+    if (size(tabEdgeQueries) == 0)
     {
-        return qUnion(exploredEdges);
+        return qNothing();
     }
     
-    return qNothing();
+    return qUnion(tabEdgeQueries);
 }
 
 // Identifies wall edges that should be extended based on tab domains.
