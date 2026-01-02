@@ -612,7 +612,7 @@ function mergeTabSurfacesWithSheetMetal(context is Context, id is Id, tabSurface
     
     if (tabFaceCount == 0)
     {
-        throw regenError("No tab surface faces found to merge", ["edges"]);
+        throw regenError("No tab surface faces found to merge. Check that edges were properly split and extended.", ["edges"]);
     }
     
     // Convert the merge scope bodies to sheet metal definition faces
