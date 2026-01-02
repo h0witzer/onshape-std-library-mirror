@@ -185,14 +185,23 @@ export const tabAndSlotBossDisplay = defineFeature(function(context is Context, 
             throw regenError("No adjacent wall surfaces found to copy", ["edges"]);
         }
 
-        // Phase 3: Track tab segment edges directly through extraction
-        // Instead of trying to identify wall edges geometrically, we'll track the tab segments
-        // and find the corresponding edges on the extracted surfaces
+        // Phase 3: Use distance-based collision detection to identify correct edges on extracted surfaces
+        // Store geometric information about tab segments before extraction for reliable matching
         
-        // Track the tab segment edges themselves
-        const trackedTabSegments = startTracking(context, tabSegmentEdges);
+        // Store midpoint positions of tab segment edges for distance-based identification
+        const tabSegmentEdgesList = evaluateQuery(context, tabSegmentEdges);
+        var tabSegmentMidpoints = [];
         
-        println("Tab segment edges count (before extraction): " ~ toString(size(evaluateQuery(context, tabSegmentEdges))));
+        for (var tabEdge in tabSegmentEdgesList)
+        {
+            const edgeMidpoint = evEdgeTangentLine(context, {
+                        "edge" : tabEdge,
+                        "parameter" : 0.5
+                    });
+            tabSegmentMidpoints = append(tabSegmentMidpoints, edgeMidpoint.origin);
+        }
+        
+        println("Tab segment edges count (before extraction): " ~ toString(size(tabSegmentEdgesList)));
 
         try
         {
@@ -207,15 +216,51 @@ export const tabAndSlotBossDisplay = defineFeature(function(context is Context, 
             throw regenError("Failed to extract adjacent wall surfaces", ["edges"]);
         }
 
-        // After extraction, find edges on extracted surfaces that correspond directly to the tab segments
+        // After extraction, use distance-based matching to find edges on extracted surfaces
+        // that correspond to the original tab segment positions
         const extractedBodies = qCreatedBy(id + "extractWalls", EntityType.BODY);
         const extractedEdges = qOwnedByBody(extractedBodies, EntityType.EDGE);
         
-        // Find the tracked tab segments after extraction
-        const trackedTabSegmentsAfterExtraction = qEntityFilter(trackedTabSegments, EntityType.EDGE);
+        // Find edges on extracted surfaces that match tab segment midpoint positions
+        var edgesToExtendQueries = [];
+        const evaluatedExtractedEdges = evaluateQuery(context, extractedEdges);
+        const distanceTolerance = 1e-6 * meter;  // Tight tolerance for matching edges
         
-        // Filter to only laminar (one-sided/boundary) edges to avoid EXTEND_NON_LAMINAR error
-        const extractedEdgesToExtend = qEdgeTopologyFilter(trackedTabSegmentsAfterExtraction, EdgeTopology.ONE_SIDED);
+        for (var midpoint in tabSegmentMidpoints)
+        {
+            // Find the closest edge to this midpoint position
+            var closestEdge = undefined;
+            var closestDistance = 1e10 * meter;
+            
+            for (var extractedEdge in evaluatedExtractedEdges)
+            {
+                const distResult = evDistance(context, {
+                            "side0" : midpoint,
+                            "side1" : extractedEdge
+                        });
+                
+                if (distResult.distance < closestDistance)
+                {
+                    closestDistance = distResult.distance;
+                    closestEdge = extractedEdge;
+                }
+            }
+            
+            // If we found an edge very close to the midpoint, add it to the list
+            if (closestEdge != undefined && closestDistance < distanceTolerance)
+            {
+                // Check if this edge is laminar (one-sided/boundary edge)
+                const edgeTopology = qEdgeTopologyFilter(closestEdge, EdgeTopology.ONE_SIDED);
+                if (size(evaluateQuery(context, edgeTopology)) > 0)
+                {
+                    edgesToExtendQueries = append(edgesToExtendQueries, closestEdge);
+                }
+            }
+        }
+        
+        println("Edges to extend found: " ~ toString(size(edgesToExtendQueries)));
+        
+        const extractedEdgesToExtend = (size(edgesToExtendQueries) > 0) ? qUnion(edgesToExtendQueries) : qNothing();
         
         if (size(evaluateQuery(context, extractedEdgesToExtend)) > 0)
         {
