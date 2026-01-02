@@ -470,7 +470,7 @@ function identifyTabSegmentEdgesFromDomains(context is Context, splitEdges is Qu
     const orderedPath = try silent(constructPath(context, qUnion(edges)));
     if (orderedPath == undefined)
     {
-        throw regenError("Unable to reconstruct ordered path from split edges", ["edges"]);
+        throw regenError("Unable to maintain edge chain ordering after splitting. This affects tab positioning accuracy.", ["edges"]);
     }
     const orderedEdges = orderedPath.edges;
 
