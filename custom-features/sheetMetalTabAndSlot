@@ -496,12 +496,20 @@ function identifyTabSegmentEdgesFromDomains(context is Context, splitOperationId
     {
         return qNothing();
     }
+    
+    if (size(path.edges) == 0)
+    {
+        throw regenError("Path has no edges to process", ["edges"]);
+    }
 
     // Calculate geometric midpoint positions for each tab domain along the original path
     var tabMidpoints = [];
     for (var domain in tabDomains)
     {
         const domainMidParameter = (domain.start + domain.end) / 2;
+        
+        println("Looking for domain midpoint at parameter: " ~ toString(domainMidParameter));
+        println("Path has " ~ toString(size(path.edges)) ~ " edges");
         
         // Find which edge in the original path this parameter falls on
         var accumulatedFraction = 0;
@@ -515,9 +523,12 @@ function identifyTabSegmentEdgesFromDomains(context is Context, splitOperationId
             const edgeStart = accumulatedFraction;
             const edgeEnd = accumulatedFraction + edgeFraction;
             
+            println("Edge " ~ toString(edgeIndex) ~ ": start=" ~ toString(edgeStart) ~ ", end=" ~ toString(edgeEnd) ~ ", fraction=" ~ toString(edgeFraction));
+            
             // Skip zero-length edges
             if (edgeFraction < FRACTION_TOLERANCE)
             {
+                println("Skipping zero-length edge");
                 accumulatedFraction += edgeFraction;
                 continue;
             }
@@ -531,6 +542,8 @@ function identifyTabSegmentEdgesFromDomains(context is Context, splitOperationId
                                        (domainMidParameter >= edgeStart - FRACTION_TOLERANCE) &&
                                        (domainMidParameter <= 1.0 + FRACTION_TOLERANCE);
             
+            println("isWithinEdge=" ~ toString(isWithinEdge) ~ ", isLastEdgeAndClose=" ~ toString(isLastEdgeAndClose));
+            
             if (isWithinEdge || isLastEdgeAndClose)
             {
                 // Calculate parameter along this specific edge
@@ -538,6 +551,8 @@ function identifyTabSegmentEdgesFromDomains(context is Context, splitOperationId
                 // Clamp to [0, 1] to handle tolerance edge cases
                 localParameter = max(0, min(1, localParameter));
                 const adjustedParameter = path.flipped[edgeIndex] ? (1 - localParameter) : localParameter;
+                
+                println("Found midpoint on edge " ~ toString(edgeIndex) ~ " at local parameter " ~ toString(localParameter));
                 
                 // Get geometric midpoint position
                 const tangentLine = evEdgeTangentLine(context, {
