@@ -23,6 +23,7 @@ import(path : "onshape/std/edgetopology.gen.fs", version : "2837.0");
 const EDGE_LENGTH_TOLERANCE = 1e-9 * meter;
 const EDGE_PARAMETER_TOLERANCE = 1e-6;
 const FRACTION_TOLERANCE = 1e-9;
+const EDGE_MATCH_DISTANCE_TOLERANCE = 1e-6 * meter;  // Tolerance for matching edges by position after extraction
 
 export const SPACING_BOUNDS =
 {
@@ -224,7 +225,6 @@ export const tabAndSlotBossDisplay = defineFeature(function(context is Context, 
         // Find edges on extracted surfaces that match tab segment midpoint positions
         var edgesToExtendQueries = [];
         const evaluatedExtractedEdges = evaluateQuery(context, extractedEdges);
-        const distanceTolerance = 1e-6 * meter;  // Tight tolerance for matching edges
         
         for (var midpoint in tabSegmentMidpoints)
         {
@@ -247,7 +247,7 @@ export const tabAndSlotBossDisplay = defineFeature(function(context is Context, 
             }
             
             // If we found an edge very close to the midpoint, add it to the list
-            if (closestEdge != undefined && closestDistance < distanceTolerance)
+            if (closestEdge != undefined && closestDistance < EDGE_MATCH_DISTANCE_TOLERANCE)
             {
                 // Check if this edge is laminar (one-sided/boundary edge)
                 const edgeTopology = qEdgeTopologyFilter(closestEdge, EdgeTopology.ONE_SIDED);
