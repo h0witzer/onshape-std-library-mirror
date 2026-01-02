@@ -515,10 +515,20 @@ function identifyTabSegmentEdgesFromDomains(context is Context, splitOperationId
             const edgeStart = accumulatedFraction;
             const edgeEnd = accumulatedFraction + edgeFraction;
             
-            if (domainMidParameter >= edgeStart && domainMidParameter <= edgeEnd)
+            // Use tolerance for floating point comparison
+            const isWithinEdge = (domainMidParameter >= edgeStart - FRACTION_TOLERANCE) && 
+                                 (domainMidParameter <= edgeEnd + FRACTION_TOLERANCE);
+            
+            // Special case: if this is the last edge and midpoint is close to or past 1.0, use this edge
+            const isLastEdgeAndClose = (edgeIndex == size(path.edges) - 1) && 
+                                       (domainMidParameter >= edgeStart - FRACTION_TOLERANCE);
+            
+            if (isWithinEdge || isLastEdgeAndClose)
             {
                 // Calculate parameter along this specific edge
-                const localParameter = (domainMidParameter - edgeStart) / edgeFraction;
+                var localParameter = (domainMidParameter - edgeStart) / edgeFraction;
+                // Clamp to [0, 1] to handle tolerance edge cases
+                localParameter = max(0, min(1, localParameter));
                 const adjustedParameter = path.flipped[edgeIndex] ? (1 - localParameter) : localParameter;
                 
                 // Get geometric midpoint position
@@ -536,7 +546,7 @@ function identifyTabSegmentEdgesFromDomains(context is Context, splitOperationId
         
         if (!foundMidpoint)
         {
-            throw regenError("Unable to calculate tab midpoint for domain", ["edges"]);
+            throw regenError("Unable to calculate tab midpoint for domain at parameter " ~ toString(domainMidParameter), ["edges"]);
         }
     }
     
