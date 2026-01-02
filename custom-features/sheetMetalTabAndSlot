@@ -515,13 +515,21 @@ function identifyTabSegmentEdgesFromDomains(context is Context, splitOperationId
             const edgeStart = accumulatedFraction;
             const edgeEnd = accumulatedFraction + edgeFraction;
             
+            // Skip zero-length edges
+            if (edgeFraction < FRACTION_TOLERANCE)
+            {
+                accumulatedFraction += edgeFraction;
+                continue;
+            }
+            
             // Use tolerance for floating point comparison
             const isWithinEdge = (domainMidParameter >= edgeStart - FRACTION_TOLERANCE) && 
                                  (domainMidParameter <= edgeEnd + FRACTION_TOLERANCE);
             
             // Special case: if this is the last edge and midpoint is close to or past 1.0, use this edge
             const isLastEdgeAndClose = (edgeIndex == size(path.edges) - 1) && 
-                                       (domainMidParameter >= edgeStart - FRACTION_TOLERANCE);
+                                       (domainMidParameter >= edgeStart - FRACTION_TOLERANCE) &&
+                                       (domainMidParameter <= 1.0 + FRACTION_TOLERANCE);
             
             if (isWithinEdge || isLastEdgeAndClose)
             {
