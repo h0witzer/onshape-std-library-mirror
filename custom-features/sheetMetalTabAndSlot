@@ -14,9 +14,7 @@ import(path : "onshape/std/extendendtype.gen.fs", version : "2837.0");
 import(path : "onshape/std/extendsheetshapetype.gen.fs", version : "2837.0");
 import(path : "onshape/std/edgetopology.gen.fs", version : "2837.0");
 // Import the modified sheet metal tab feature that can work with surface bodies
-// In Onshape environment, this would be:
-// import(path : "{SHEET_METAL_TAB_MODIFIED_DOC_ID}", version : "{SHEET_METAL_TAB_MODIFIED_VERSION}");
-// For development/testing, the sheetMetalTab function from sheetMetalTabModified.fs should be available
+modifiedSmTab::import(path : "2f2f9dfa5cbbe76a5bc2ed2e", version : "c4f2f881ed297d6578bf4919");//modified Sheet Metal Tab Feature
 // Written by Caden Armstrong - SmartBench Software
 // Hacked by Derek Van Allen - Boss Display
 // Created for Boss Display
@@ -595,17 +593,14 @@ function identifyTabSegmentsByEdgeMidpoints(context is Context, allSplitEdges is
 
 /**
  * Merges the generated tab surface bodies with the sheet metal model using sheetMetalTabModified.
- * This function encapsulates the call to the modified sheet metal tab feature which can work with
- * surface bodies (not just planar sketches).
+ * This function calls the modified sheet metal tab feature which can work with surface bodies
+ * (not just planar sketches).
  * 
  * Inputs:
  *   context - The evaluation context
  *   id - Operation ID for this merge operation
  *   tabSurfaceBodies - Query for the surface bodies to merge (created by extracting and extending wall faces)
  *   definition - The feature definition containing merge scope and slot margin parameters
- * 
- * In an Onshape environment, this would call the imported sheetMetalTab function from sheetMetalTabModified.fs
- * For this development mirror, the integration pattern is documented below.
  */
 function mergeTabSurfacesWithSheetMetal(context is Context, id is Id, tabSurfaceBodies is Query, definition is map)
 {
@@ -632,52 +627,22 @@ function mergeTabSurfacesWithSheetMetal(context is Context, id is Id, tabSurface
     
     println("Target merge scope has " ~ toString(mergeScopeFaceCount) ~ " faces");
     
-    // ============================================================================
-    // INTEGRATION POINT: Call sheetMetalTab from sheetMetalTabModified.fs
-    // ============================================================================
-    // 
-    // To complete the integration in an Onshape environment:
-    //
-    // 1. Import sheetMetalTabModified.fs at the top of this file:
-    //    import(path : "{document_id_of_sheetMetalTabModified}", version : "{version_id}");
-    //
-    // 2. Uncomment and use the following code:
-    //
-    // const tabDefinition = {
-    //     "tabFaces" : tabFaces,
-    //     "booleanUnionScope" : mergeScopeFaces,  // Sheet metal faces to merge with
-    //     "booleanOffset" : definition.slotMargin,  // Clearance for slot width
-    //     "booleanSubtractScope" : qNothing()  // No subtraction needed for tabs
-    // };
-    // 
-    // try
-    // {
-    //     // Call the imported sheetMetalTab feature
-    //     sheetMetalTab(context, id, tabDefinition);
-    //     println("Successfully merged tab surfaces with sheet metal model");
-    // }
-    // catch (error)
-    // {
-    //     throw regenError("Failed to merge tab surfaces with sheet metal model", ["mergeScope"]);
-    // }
-    //
-    // ============================================================================
-    //
-    // IMPORTANT NOTES FOR INTEGRATION:
-    // - The sheetMetalTab function is exported from sheetMetalTabModified.fs
-    // - It accepts surface bodies (not just planar faces) due to the modified precondition filter
-    // - The key difference from standard sheetMetalTab is line 36: removes GeometryType.PLANE filter
-    // - This allows the extended surface bodies created by TabAndSlot to be merged with the sheet metal model
-    // - The merge operation will properly integrate the tabs with the sheet metal definition
-    //
-    // ============================================================================
+    // Create the definition for the sheetMetalTab feature call
+    const tabDefinition = {
+        "tabFaces" : tabFaces,
+        "booleanUnionScope" : mergeScopeFaces,
+        "booleanOffset" : definition.slotMargin,
+        "booleanSubtractScope" : qNothing()
+    };
     
-    // For development/testing without the actual import:
-    println("Tab surface bodies created and ready for merge.\n" ~
-            "Integration steps:\n" ~
-            "  1. Import sheetMetalTabModified.fs using its Onshape document ID\n" ~
-            "  2. Uncomment the sheetMetalTab call above\n" ~
-            "  3. The surface bodies will be automatically merged with the sheet metal model\n\n" ~
-            "The commented code above shows the exact parameters and calling pattern.\n" ~
-            "Surface bodies will remain visible in the model until the merge is completed.");
+    try
+    {
+        // Call the imported sheetMetalTab feature from the modifiedSmTab namespace
+        modifiedSmTab::sheetMetalTab(context, id, tabDefinition);
+        println("Successfully merged tab surfaces with sheet metal model");
+    }
+    catch (error)
+    {
+        throw regenError("Failed to merge tab surfaces with sheet metal model: " ~ toString(error), ["mergeScope"]);
+    }
 }
