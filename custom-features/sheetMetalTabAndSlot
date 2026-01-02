@@ -13,6 +13,9 @@ import(path : "onshape/std/feature.fs", version : "2837.0");
 import(path : "onshape/std/extendendtype.gen.fs", version : "2837.0");
 import(path : "onshape/std/extendsheetshapetype.gen.fs", version : "2837.0");
 import(path : "onshape/std/edgetopology.gen.fs", version : "2837.0");
+// Import the modified sheet metal tab feature that can work with surface bodies
+// In Onshape environment, this would be: import(path : "{document_id}", version : "{version_id}");
+// For development/testing, the sheetMetalTab function from sheetMetalTabModified.fs should be available
 // Written by Caden Armstrong - SmartBench Software
 // Hacked by Derek Van Allen - Boss Display
 // Created for Boss Display
@@ -257,6 +260,22 @@ export const tabAndSlotBossDisplay = defineFeature(function(context is Context, 
         else
         {
             println("Warning: No edges found to extend");
+        }
+
+        // Phase 4: Merge the extended surface bodies back with the sheet metal model
+        // Call mergeTabSurfacesWithSheetMetal to integrate the surface bodies using sheetMetalTabModified
+        
+        if (!isQueryEmpty(context, extractedBodies) && !isQueryEmpty(context, definition.mergeScope))
+        {
+            mergeTabSurfacesWithSheetMetal(context, id + "mergeTabsWithModel", extractedBodies, definition);
+        }
+        else
+        {
+            if (isQueryEmpty(context, definition.mergeScope))
+            {
+                println("Warning: No merge scope specified. Extended surfaces will not be merged with sheet metal model.");
+                println("Specify sheet metal bodies in the 'Merge Scope' parameter to complete the tab integration.");
+            }
         }
     });
 
@@ -572,3 +591,76 @@ function identifyTabSegmentsByEdgeMidpoints(context is Context, allSplitEdges is
 // Finds edges on wall faces that are perpendicular to the input edge chain and within tab positions.
 // Inputs: wallEdges (all edges on wall faces), splitEdges (edges on input chain), path, totalLength, tabDomains
 // Outputs: Query containing wall edges that should be extended at tab locations
+
+/**
+ * Merges the generated tab surface bodies with the sheet metal model using sheetMetalTabModified.
+ * This function encapsulates the call to the modified sheet metal tab feature which can work with
+ * surface bodies (not just planar sketches).
+ * 
+ * Inputs:
+ *   context - The evaluation context
+ *   id - Operation ID for this merge operation
+ *   tabSurfaceBodies - Query for the surface bodies to merge (created by extracting and extending wall faces)
+ *   definition - The feature definition containing merge scope and slot margin parameters
+ * 
+ * In an Onshape environment, this would call the imported sheetMetalTab function from sheetMetalTabModified.fs
+ * For this development mirror, the integration pattern is documented below.
+ */
+function mergeTabSurfacesWithSheetMetal(context is Context, id is Id, tabSurfaceBodies is Query, definition is map)
+{
+    // Get all faces from the tab surface bodies to pass as tabFaces
+    const tabFaces = qOwnedByBody(tabSurfaceBodies, EntityType.FACE);
+    
+    const tabFaceCount = size(evaluateQuery(context, tabFaces));
+    const mergeScopeCount = size(evaluateQuery(context, definition.mergeScope));
+    
+    println("Merging " ~ toString(tabFaceCount) ~ " tab surface faces with " ~ toString(mergeScopeCount) ~ " sheet metal bodies");
+    
+    if (tabFaceCount == 0)
+    {
+        throw regenError("No tab surface faces found to merge", ["edges"]);
+    }
+    
+    if (mergeScopeCount == 0)
+    {
+        throw regenError("No sheet metal bodies specified for merge scope", ["mergeScope"]);
+    }
+    
+    // ============================================================================
+    // INTEGRATION POINT: Call sheetMetalTab from sheetMetalTabModified.fs
+    // ============================================================================
+    // 
+    // To complete the integration in an Onshape environment:
+    //
+    // 1. Import sheetMetalTabModified.fs at the top of this file:
+    //    import(path : "{document_id_of_sheetMetalTabModified}", version : "{version_id}");
+    //
+    // 2. Uncomment and use the following code:
+    //
+    // const tabDefinition = {
+    //     "tabFaces" : tabFaces,
+    //     "booleanUnionScope" : definition.mergeScope,
+    //     "booleanOffset" : definition.slotMargin,
+    //     "booleanSubtractScope" : qNothing()
+    // };
+    // 
+    // try
+    // {
+    //     sheetMetalTab(context, id, tabDefinition);
+    //     println("Successfully merged tab surfaces with sheet metal model");
+    // }
+    // catch (error)
+    // {
+    //     throw regenError("Failed to merge tab surfaces with sheet metal model", ["mergeScope"]);
+    // }
+    //
+    // ============================================================================
+    
+    // For development/testing without the actual import:
+    println("Tab surface bodies created and ready for merge.");
+    println("To complete: Import sheetMetalTabModified.fs and call sheetMetalTab with the parameters shown above.");
+    println("The surface bodies will remain in the model until the merge is completed.");
+    
+    // Note: In a production environment, you would uncomment the code above to perform the actual merge.
+    // The commented code shows exactly how to call the sheetMetalTab feature with the correct parameters.
+}
