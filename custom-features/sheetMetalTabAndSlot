@@ -169,7 +169,15 @@ export const tabAndSlotBossDisplay = defineFeature(function(context is Context, 
         }
 
         // Identify tab segment edges using qSplitBy and point queries
-        const tabSegmentEdges = identifyTabSegmentsUsingPointQueries(context, splitOperationId, path, totalLength, tabDomains);
+        // Collect all split edges from all split operations
+        var allSplitEdgeQueries = [];
+        for (var i = 0; i < splitOperationIndex; i += 1)
+        {
+            allSplitEdgeQueries = append(allSplitEdgeQueries, qSplitBy(splitOperationId + ("split" ~ toString(i)), EntityType.EDGE, false));
+        }
+        const allSplitEdges = qUnion(allSplitEdgeQueries);
+        
+        const tabSegmentEdges = identifyTabSegmentsUsingPointQueries(context, allSplitEdges, path, totalLength, tabDomains);
         
         // Debug output: Report how many tab segments were identified
         const tabSegmentCount = size(evaluateQuery(context, tabSegmentEdges));
@@ -180,8 +188,7 @@ export const tabAndSlotBossDisplay = defineFeature(function(context is Context, 
         debug(context, tabSegmentEdges, DebugColor.YELLOW);
 
         // Phase 2: Copy adjacent sheet metal wall surfaces
-        // Get all edges created by the split operations
-        const allSplitEdges = qSplitBy(splitOperationId, EntityType.EDGE, false);
+        // Use the already computed allSplitEdges query
         const adjacentFaces = qAdjacent(allSplitEdges, AdjacencyType.EDGE, EntityType.FACE);
         const wallFaces = filterSheetMetalWallFaces(context, adjacentFaces);
         
@@ -462,12 +469,12 @@ function calculateEdgeSplitInstructionsFromParameters(context is Context, path i
 // Identifies edges that correspond to tab segments using point-based queries after splitting.
 // Uses qSplitBy combined with qContainsPoint to robustly identify tab segment edges.
 // Inputs: 
-//   splitOperationId - Base ID used for all split operations
+//   allSplitEdges - Query for all edges created by split operations
 //   path - Original path before splitting
 //   totalLength - Total length of the edge chain
 //   tabDomains - Array of {start, end} maps with normalized parameters for each tab
 // Outputs: Query containing edges that correspond to tab segments
-function identifyTabSegmentsUsingPointQueries(context is Context, splitOperationId is Id, path is Path, totalLength is ValueWithUnits, tabDomains is array) returns Query
+function identifyTabSegmentsUsingPointQueries(context is Context, allSplitEdges is Query, path is Path, totalLength is ValueWithUnits, tabDomains is array) returns Query
 {
     if (size(tabDomains) == 0)
     {
@@ -475,8 +482,7 @@ function identifyTabSegmentsUsingPointQueries(context is Context, splitOperation
         return qNothing();
     }
 
-    // Get all edges created by split operations
-    const allSplitEdges = qSplitBy(splitOperationId, EntityType.EDGE, false);
+    // Get count of split edges for debugging
     const allSplitEdgesCount = size(evaluateQuery(context, allSplitEdges));
     println("identifyTabSegmentsUsingPointQueries: Total split edges = " ~ toString(allSplitEdgesCount));
     
