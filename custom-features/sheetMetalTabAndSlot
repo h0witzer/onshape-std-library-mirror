@@ -238,9 +238,6 @@ export const tabAndSlotBossDisplay = defineFeature(function(context is Context, 
         // Filter to only laminar (one-sided/boundary) edges to avoid EXTEND_NON_LAMINAR error
         const extractedEdgesToExtend = qEdgeTopologyFilter(trackedTabSegmentsAfterExtraction, EdgeTopology.ONE_SIDED);
         
-        // Track the edges we're about to extend to find the resulting faces later
-        const trackedExtensionEdges = startTracking(context, extractedEdgesToExtend);
-        
         if (size(evaluateQuery(context, extractedEdgesToExtend)) > 0)
         {
             try
@@ -270,9 +267,13 @@ export const tabAndSlotBossDisplay = defineFeature(function(context is Context, 
         
         if (!isQueryEmpty(context, extractedBodies))
         {
-            // Find faces created by the extension operation by querying faces adjacent to the tracked extension edges
-            // These are the faces we want to offset for slot clearance
-            const tabDepthFaces = qAdjacent(trackedExtensionEdges, AdjacencyType.EDGE, EntityType.FACE);
+            // Find faces created by the extension operation using qCreatedBy
+            // These are the new faces added to the surface bodies by the extension, not the original wall faces
+            // We want to offset only these faces for slot clearance
+            const tabDepthFaces = qCreatedBy(id + "extendTabs", EntityType.FACE);
+            
+            const tabDepthFaceCount = size(evaluateQuery(context, tabDepthFaces));
+            println("Tab depth faces identified from extension operation: " ~ toString(tabDepthFaceCount));
             
             mergeTabSurfacesWithSheetMetal(context, id + "mergeTabsWithModel", extractedBodies, wallFaces, tabDepthFaces, definition);
         }
