@@ -1064,9 +1064,9 @@ function mergeTabSurfacesWithSheetMetal(context is Context, id is Id, tabSurface
     // Prepare data for sheet metal tab merge using ported logic from sheetMetalTabModified.fs
     // This replaces the call to modifiedSmTab::sheetMetalTab with inline implementation
     
-    // NOTE: Unlike the original sheetMetalTabModified which calls createTools to extract surfaces,
-    // we already have extracted and extended surface bodies (tabSurfaceBodies) from earlier operations.
-    // So we skip the createTools call and use the existing bodies directly.
+    // Extract clean surface tool bodies from the tab faces
+    // This creates new bodies that are properly formatted for the boolean operations
+    createTools(context, id + "extract", tabFaces);
     
     const unionEntities = try silent(getSMDefinitionEntities(context, sourceWallFaces));
     if (unionEntities == undefined || unionEntities == [])
@@ -1107,8 +1107,8 @@ function mergeTabSurfacesWithSheetMetal(context is Context, id is Id, tabSurface
     
     for (var pair in selectionsByModelId)
     {
-        // Use tabFaces directly - these are already the extracted/extended surface faces
-        oneSuccess = applyTab(context, id + unstableIdComponent(index), tabMergeDefinition, tabFaces, pair.value, id) || oneSuccess;
+        // Use the faces from the extracted tool bodies created by createTools
+        oneSuccess = applyTab(context, id + unstableIdComponent(index), tabMergeDefinition, qCreatedBy(id + "extract", EntityType.FACE), pair.value, id) || oneSuccess;
         index += 1;
     }
 
@@ -1117,7 +1117,10 @@ function mergeTabSurfacesWithSheetMetal(context is Context, id is Id, tabSurface
         throw regenError("Tab merge had no effect", ["edges"]);
     }
 
-    // Don't delete the tab surface bodies - they get consumed by the boolean operations in applyTab
+    // Delete the extracted tool bodies after they've been used
+    opDeleteBodies(context, id + "deleteBodies", {
+                "entities" : qCreatedBy(id + "extract", EntityType.BODY)
+            });
 
     const toUpdate = assignSMAttributesToNewOrSplitEntities(context, sheetMetalBodiesQuery, initialData, id);
 
