@@ -1199,7 +1199,7 @@ function mergeTabSurfacesWithSheetMetal(context is Context, id is Id, tabSurface
     {
         // Check if this is a boolean error that might be caused by overlapping bodies
         const errorString = toString(error);
-        if (errorString->find("BOOLEAN") != -1 && isQueryEmpty(context, definition.mergeScope))
+        if (indexOf(errorString, "BOOLEAN") != -1 && isQueryEmpty(context, definition.mergeScope))
         {
             throw regenError("Failed to merge tab surfaces: Tabs may be overlapping with other sheet metal bodies. " ~
                            "Specify slot bodies in the 'Merge Scope' parameter to enable automatic slot creation for overlapping areas.", 
