@@ -1097,8 +1097,9 @@ function mergeTabSurfacesWithSheetMetal(context is Context, id is Id, tabSurface
     var index = 0;
     var oneSuccess = false;
     
-    // Build definition for applyTab using slotMargin as booleanOffset
-    const tabMergeDefinition = definition + {
+    // Build definition for applyTab that matches what sheetMetalTab expects
+    // We need booleanOffset and booleanSubtractScope fields
+    const tabMergeDefinition = {
         "booleanOffset" : definition.slotMargin,
         "booleanSubtractScope" : subtractScope
     };
