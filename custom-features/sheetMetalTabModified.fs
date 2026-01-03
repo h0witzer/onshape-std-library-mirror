@@ -28,11 +28,7 @@ import(path : "onshape/std/vector.fs", version : "2837.0");
 
 /**
  * Feature adding tabs to sheet metal faces using supplied surface geometry.
- * 
- * Optional parameter: facesToOffset (Query)
- *   When provided, only the specified faces will be offset during the slot creation operation.
- *   This allows for localized offset application (e.g., only offsetting tab depth faces).
- *   When undefined (default), all faces created by the thicken operation are offset (backward compatible behavior).
+ *
  */
 annotation { "Feature Type Name" : "Tab",
         "Editing Logic Function" : "sheetMetalTabEditingLogic" }
@@ -110,7 +106,7 @@ export const sheetMetalTab = defineSheetMetalFeature(function(context is Context
                     "entities" : qUnion([toUpdate.modifiedEntities, unionEntityPersistantQuery]),
                     "deletedAttributes" : toUpdate.deletedAttributes,
                     "associatedChanges" : associateChanges });
-    }, { booleanSubtractScope : qNothing(), facesToOffset : undefined });
+    }, { booleanSubtractScope : qNothing() });
 
 function applyTab(context is Context, id is Id, definition is map, tabQuery is Query, unionEntities is array, rootId is Id) returns boolean
 {
@@ -428,15 +424,6 @@ function subtractTab(context is Context, id is Id, definition is map, subtractQu
     if (modelParameters is undefined)
         throw regenError(ErrorStringEnum.REGEN_ERROR);
 
-    // If facesToOffset is specified, track them before thickening so we can find them after
-    var trackedFacesToOffset;
-    if (definition.facesToOffset != undefined && !isQueryEmpty(context, definition.facesToOffset))
-    {
-        // Track the specific faces we want to offset through the thicken operation
-        trackedFacesToOffset = startTracking(context, definition.facesToOffset);
-        println("Started tracking tab depth faces before thicken operation");
-    }
-
     callSubfeatureAndProcessStatus(rootId, opThicken, context, id + "thicken", {
                 "entities" : qOwnedByBody(coincidentGrouping.tabBody, EntityType.FACE),
                 "thickness1" : modelParameters.frontThickness,
@@ -466,39 +453,13 @@ function subtractTab(context is Context, id is Id, definition is map, subtractQu
     {
         if (definition.booleanOffset > 0 * meter)
         {
-            // Determine which faces to offset based on trackedFacesToOffset
-            // If trackedFacesToOffset is defined, use only those faces
-            // Otherwise, use all faces created by thicken (backward compatibility)
-            var facesToOffsetQuery = qCreatedBy(id + "thicken", EntityType.FACE);
-            
-            if (trackedFacesToOffset != undefined)
-            {
-                // Filter tracked faces to only those on the thickened body
-                const thickenedBodies = qCreatedBy(id + "thicken", EntityType.BODY);
-                facesToOffsetQuery = qIntersection([
-                    trackedFacesToOffset,
-                    qOwnedByBody(thickenedBodies, EntityType.FACE)
-                ]);
-                
-                const offsetFaceCount = size(evaluateQuery(context, facesToOffsetQuery));
-                println("Offsetting " ~ toString(offsetFaceCount) ~ " tracked tab depth faces");
-            }
-            else
-            {
-                println("No facesToOffset specified, offsetting all thickened faces (backward compatibility)");
-            }
-            
-            // Only perform the offset if we have faces to offset
-            if (!isQueryEmpty(context, facesToOffsetQuery))
-            {
-                const moveFaceDefinition = {
-                        "moveFaces" : facesToOffsetQuery,
-                        "moveFaceType" : MoveFaceType.OFFSET,
-                        "offsetDistance" : definition.booleanOffset,
-                        "reFillet" : false };
+            const moveFaceDefinition = {
+                    "moveFaces" : qCreatedBy(id + "thicken", EntityType.FACE),
+                    "moveFaceType" : MoveFaceType.OFFSET,
+                    "offsetDistance" : definition.booleanOffset,
+                    "reFillet" : false };
 
-                opOffsetFace(context, id + "move", moveFaceDefinition);
-            }
+            opOffsetFace(context, id + "move", moveFaceDefinition);
         }
         smSubtractTab(context, id + "sm", qCreatedBy(id + "thicken", EntityType.BODY), subtractSMFaces);
         solidSubtractTab(context, id + "solid", qCreatedBy(id + "thicken", EntityType.BODY), subtractQueries.nonSheetMetalQueries);

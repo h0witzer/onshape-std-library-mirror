@@ -13,6 +13,7 @@ import(path : "onshape/std/feature.fs", version : "2837.0");
 import(path : "onshape/std/extendendtype.gen.fs", version : "2837.0");
 import(path : "onshape/std/extendsheetshapetype.gen.fs", version : "2837.0");
 import(path : "onshape/std/edgetopology.gen.fs", version : "2837.0");
+import(path : "onshape/std/moveFace.fs", version : "2837.0");
 // Import the modified sheet metal tab feature that can work with surface bodies
 modifiedSmTab::import(path : "2f2f9dfa5cbbe76a5bc2ed2e", version : "c4f2f881ed297d6578bf4919");//modified Sheet Metal Tab Feature
 // Written by Caden Armstrong - SmartBench Software
@@ -634,18 +635,37 @@ function mergeTabSurfacesWithSheetMetal(context is Context, id is Id, tabSurface
     const tabDepthFaceCount = size(evaluateQuery(context, tabDepthFaces));
     println("Tab depth faces to offset: " ~ toString(tabDepthFaceCount) ~ " faces");
     
+    // Apply offset directly to the tab depth faces on the surface bodies BEFORE merging
+    // This localizes the offset operation to just the tab depth geometry
+    if (definition.slotMargin > 0 * meter && tabDepthFaceCount > 0)
+    {
+        try
+        {
+            opOffsetFace(context, id + "offsetTabDepthFaces", {
+                "moveFaces" : tabDepthFaces,
+                "moveFaceType" : MoveFaceType.OFFSET,
+                "offsetDistance" : definition.slotMargin,
+                "reFillet" : false
+            });
+            println("Applied offset of " ~ toString(definition.slotMargin) ~ " to " ~ toString(tabDepthFaceCount) ~ " tab depth faces");
+        }
+        catch (error)
+        {
+            throw regenError("Failed to offset tab depth faces: " ~ toString(error), ["slotMargin"]);
+        }
+    }
+    
     // mergeScope is for slot bodies (subtraction), not for the union operation
     // If mergeScope is provided, use it for booleanSubtractScope
     const subtractScope = !isQueryEmpty(context, definition.mergeScope) ? definition.mergeScope : qNothing();
     
     // Create the definition for the sheetMetalTab feature call
-    // Pass the tabDepthFaces so the modified sheet metal tab feature knows which faces to offset
+    // No longer need to pass facesToOffset since we've already applied the offset
     const tabDefinition = {
         "tabFaces" : tabFaces,
         "booleanUnionScope" : sourceWallFaces,  // Wall faces - feature will extract definition entities internally
-        "booleanOffset" : definition.slotMargin,
-        "booleanSubtractScope" : subtractScope,  // Slot bodies from mergeScope
-        "facesToOffset" : tabDepthFaces  // Only offset these specific faces from the tab depth extension
+        "booleanOffset" : 0 * meter,  // Set to 0 since we already applied offset above
+        "booleanSubtractScope" : subtractScope  // Slot bodies from mergeScope
     };
     
     try
