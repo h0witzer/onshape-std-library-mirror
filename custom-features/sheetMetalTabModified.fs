@@ -277,6 +277,37 @@ function tryAlignTabBodyWithOppositeWall(context is Context, id is Id, tabBody i
 
     opOffsetFace(context, id, moveFaceDefinition);
 
+    // After offsetting, check if the surface normal orientation needs to be flipped
+    // to ensure correct thickening direction. The surface should be oriented such that
+    // it thickens toward the same direction as the definition face.
+    const alignedTabFaces = qOwnedByBody(tabBody, EntityType.FACE);
+    const unionFaceArray = evaluateQuery(context, unionQuery);
+    if (size(unionFaceArray) > 0)
+    {
+        const unionFace = unionFaceArray[0];
+        
+        // Get normals for both surfaces at their centers
+        const alignedNormal = try silent(evFaceTangentPlane(context, {
+                    "face" : qNthElement(alignedTabFaces, 0),
+                    "parameter" : vector(0.5, 0.5)
+                }));
+        const unionNormal = try silent(evFaceTangentPlane(context, {
+                    "face" : unionFace,
+                    "parameter" : vector(0.5, 0.5)
+                }));
+        
+        // If both normals are valid and pointing in opposite directions, flip the tab surface
+        if (alignedNormal != undefined && unionNormal != undefined)
+        {
+            if (dot(alignedNormal.normal, unionNormal.normal) < 0)
+            {
+                opFlipOrientation(context, id + "flip", {
+                            "bodies" : tabBody
+                        });
+            }
+        }
+    }
+
     return true;
 }
 
