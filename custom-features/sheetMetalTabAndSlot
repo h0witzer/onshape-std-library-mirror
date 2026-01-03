@@ -593,7 +593,7 @@ function identifyTabSegmentsByEdgeMidpoints(context is Context, allSplitEdges is
  *   context - The evaluation context
  *   id - Operation ID for this merge operation
  *   tabSurfaceBodies - Query for the surface bodies to merge (created by extracting and extending wall faces)
- *   sourceWallFaces - The wall faces we extracted from (used to find the sheet metal definition entities)
+ *   sourceWallFaces - The wall faces adjacent to tab segments (will be converted to definition entities by sheetMetalTab)
  *   definition - The feature definition containing merge scope (for slot subtraction) and slot margin parameters
  */
 function mergeTabSurfacesWithSheetMetal(context is Context, id is Id, tabSurfaceBodies is Query, sourceWallFaces is Query, definition is map)
@@ -609,20 +609,17 @@ function mergeTabSurfacesWithSheetMetal(context is Context, id is Id, tabSurface
         throw regenError("No tab surface faces found to merge. Check that edges were properly split and extended.", ["edges"]);
     }
     
-    // Get the sheet metal definition entities from the source wall faces
-    // The modified tab feature expects SheetMetalDefinitionEntityType.FACE for booleanUnionScope
-    // and will internally call getSMDefinitionEntities on it
-    const definitionEntities = try silent(getSMDefinitionEntities(context, sourceWallFaces, EntityType.FACE));
+    // Pass the source wall faces directly to booleanUnionScope
+    // The sheetMetalTab feature will internally call getSMDefinitionEntities() on them
+    // to extract the proper sheet metal definition entities
+    const wallFaceCount = size(evaluateQuery(context, sourceWallFaces));
     
-    if (definitionEntities == undefined || size(definitionEntities) == 0)
+    if (wallFaceCount == 0)
     {
-        throw regenError("No sheet metal definition entities found from wall faces", ["edges"]);
+        throw regenError("No wall faces found to merge with", ["edges"]);
     }
     
-    const targetDefinitionFaces = qUnion(definitionEntities);
-    const defFaceCount = size(evaluateQuery(context, targetDefinitionFaces));
-    
-    println("Target sheet metal definition faces for merge: " ~ toString(defFaceCount) ~ " faces");
+    println("Source wall faces for merge: " ~ toString(wallFaceCount) ~ " faces");
     
     // mergeScope is for slot bodies (subtraction), not for the union operation
     // If mergeScope is provided, use it for booleanSubtractScope
@@ -631,7 +628,7 @@ function mergeTabSurfacesWithSheetMetal(context is Context, id is Id, tabSurface
     // Create the definition for the sheetMetalTab feature call
     const tabDefinition = {
         "tabFaces" : tabFaces,
-        "booleanUnionScope" : targetDefinitionFaces,  // Sheet metal definition faces
+        "booleanUnionScope" : sourceWallFaces,  // Wall faces - feature will extract definition entities internally
         "booleanOffset" : definition.slotMargin,
         "booleanSubtractScope" : subtractScope  // Slot bodies from mergeScope
     };
