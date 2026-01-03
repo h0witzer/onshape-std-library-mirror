@@ -1110,15 +1110,20 @@ function mergeTabSurfacesWithSheetMetal(context is Context, id is Id, tabSurface
     const selectionsByModelId = partitionSheetMetalQueriesByModel(context, unionEntities);
     var index = 0;
     var oneSuccess = false;
+    
+    // Build a modified definition for the merge that has booleanOffset set to 0
+    // since we already applied the offset to tab depth faces above
+    var modifiedDefinition = definition;  // Start with original definition
+    modifiedDefinition = modifiedDefinition + {
+        "booleanOffset" : 0 * meter,  // Override to 0 since offset already applied
+        "booleanSubtractScope" : subtractScope  // Use the prepared subtractScope
+    };
+    
     for (var pair in selectionsByModelId)
     {
-        const tabDefinition = {
-            "tabFaces" : tabFaces,
-            "booleanUnionScope" : sourceWallFaces,
-            "booleanOffset" : 0 * meter,  // Already applied offset above
-            "booleanSubtractScope" : subtractScope
-        };
-        oneSuccess = applyTab(context, id + unstableIdComponent(index), tabDefinition, tabFaces, pair.value, id) || oneSuccess;
+        // Pass tabFaces (faces of the extracted/extended surface bodies) to applyTab
+        // applyTab expects the second parameter to be a query for tool faces
+        oneSuccess = applyTab(context, id + unstableIdComponent(index), modifiedDefinition, tabFaces, pair.value, id) || oneSuccess;
         index += 1;
     }
 
@@ -1127,9 +1132,8 @@ function mergeTabSurfacesWithSheetMetal(context is Context, id is Id, tabSurface
         throw regenError("Tab merge had no effect", ["edges"]);
     }
 
-    opDeleteBodies(context, id + "deleteBodies", {
-                "entities" : qCreatedBy(id + "extractWalls", EntityType.BODY)
-            });
+    // Don't delete tabSurfaceBodies here - they get consumed by the boolean operations in applyTab/booleanOneTabGroup
+    // The bodies are merged into the sheet metal model and no longer exist as separate entities
 
     const toUpdate = assignSMAttributesToNewOrSplitEntities(context, sheetMetalBodiesQuery, initialData, id);
 
