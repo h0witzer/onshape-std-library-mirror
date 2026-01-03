@@ -277,38 +277,35 @@ function tryAlignTabBodyWithOppositeWall(context is Context, id is Id, tabBody i
 
     opOffsetFace(context, id, moveFaceDefinition);
 
-    // After offsetting, check if the surface normal orientation needs to be flipped
-    // to ensure correct thickening direction. The surface should be oriented such that
-    // it thickens toward the same direction as the definition face.
+    // After offsetting, use evCollision to check if the surface orientation needs to be flipped.
+    // The ClashType will tell us if the tool (tab surface) normal points into or out of the target.
+    // ABUT_TOOL_IN_TARGET means normals are opposite (need to flip)
+    // ABUT_TOOL_OUT_TARGET means normals are aligned (no flip needed)
     const alignedTabFaces = qOwnedByBody(tabBody, EntityType.FACE);
-    const unionFaceArray = evaluateQuery(context, unionQuery);
-    if (size(unionFaceArray) > 0)
+    const collisions = try silent(evCollision(context, {
+                "tools" : alignedTabFaces,
+                "targets" : unionQuery
+            }));
+    
+    if (collisions != undefined && size(collisions) > 0)
     {
-        // Use the first definition face as reference - this is the face that was determined
-        // to be closest during the distance calculation above
-        const unionFace = unionFaceArray[0];
-        
-        // Get normals for both surfaces at their parameter space centers (0.5, 0.5)
-        // This works for most face types (planes, cylinders, cones, splines) as it samples
-        // the middle of the parametric domain
-        const alignedNormal = try silent(evFaceTangentPlane(context, {
-                    "face" : qNthElement(alignedTabFaces, 0),
-                    "parameter" : vector(0.5, 0.5)
-                }));
-        const unionNormal = try silent(evFaceTangentPlane(context, {
-                    "face" : unionFace,
-                    "parameter" : vector(0.5, 0.5)
-                }));
-        
-        // If both normals are valid and pointing in opposite directions, flip the tab surface
-        if (alignedNormal != undefined && unionNormal != undefined)
+        // Check the first collision to determine orientation
+        for (var collision in collisions)
         {
-            if (dot(alignedNormal.normal, unionNormal.normal) < 0)
+            if (collision["type"] == ClashType.ABUT_TOOL_IN_TARGET)
             {
+                // Tool's normal points into target - normals are opposite, need to flip
                 opFlipOrientation(context, id + "flip", {
                             "bodies" : tabBody
                         });
+                break;
             }
+            else if (collision["type"] == ClashType.ABUT_TOOL_OUT_TARGET)
+            {
+                // Tool's normal points out of target - normals are aligned, no flip needed
+                break;
+            }
+            // For other clash types (ABUT_NO_CLASS, etc.), we don't flip
         }
     }
 
