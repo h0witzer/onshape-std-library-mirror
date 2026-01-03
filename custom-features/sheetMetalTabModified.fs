@@ -289,7 +289,7 @@ function tryAlignTabBodyWithOppositeWall(context is Context, id is Id, tabBody i
     
     if (collisions != undefined && size(collisions) > 0)
     {
-        // Check the first collision to determine orientation
+        // Check collisions to determine orientation - process until we find a definitive clash type
         for (var collision in collisions)
         {
             if (collision["type"] == ClashType.ABUT_TOOL_IN_TARGET)
@@ -305,7 +305,8 @@ function tryAlignTabBodyWithOppositeWall(context is Context, id is Id, tabBody i
                 // Tool's normal points out of target - normals are aligned, no flip needed
                 break;
             }
-            // For other clash types (ABUT_NO_CLASS, etc.), we don't flip
+            // For ABUT_NO_CLASS and other types, continue checking remaining collisions
+            // as we may find a more specific clash type
         }
     }
 
