@@ -267,15 +267,12 @@ function tryAlignTabBodyWithOppositeWall(context is Context, id is Id, tabBody i
 
     // Use MoveFaceType.OFFSET to correctly handle spline faces and cylinder faces
     // This is the proper approach mentioned in the move face feature
-    const moveFaceDefinition = {
+    opOffsetFace(context, id, {
                 "moveFaces" : tabFaces,
-                "moveFaceType" : MoveFaceType.OFFSET,
                 "offsetDistance" : offsetDistance,
                 "mergeFaces" : true,
                 "reFillet" : false
-            };
-
-    opOffsetFace(context, id, moveFaceDefinition);
+            });
 
     // After offsetting from inside to outside (or vice versa), the surface orientation
     // is always flipped. The inside and outside faces of sheet metal always have opposite normals.
