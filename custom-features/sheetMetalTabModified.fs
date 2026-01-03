@@ -265,12 +265,16 @@ function tryAlignTabBodyWithOppositeWall(context is Context, id is Id, tabBody i
     const offsetSign = (dot(directionVector, tangentPlane.normal) >= 0) ? 1 : -1;
     const offsetDistance = offsetSign * totalThickness;
 
-    opOffsetFace(context, id, {
+    // Use MoveFaceType.OFFSET to correctly handle spline faces and cylinder faces
+    // This is the proper approach mentioned in the move face feature
+    const moveFaceDefinition = {
                 "moveFaces" : tabFaces,
+                "moveFaceType" : MoveFaceType.OFFSET,
                 "offsetDistance" : offsetDistance,
-                "mergeFaces" : true,
                 "reFillet" : false
-            });
+            };
+
+    opOffsetFace(context, id, moveFaceDefinition);
 
     return true;
 }
