@@ -284,9 +284,13 @@ function tryAlignTabBodyWithOppositeWall(context is Context, id is Id, tabBody i
     const unionFaceArray = evaluateQuery(context, unionQuery);
     if (size(unionFaceArray) > 0)
     {
+        // Use the first definition face as reference - this is the face that was determined
+        // to be closest during the distance calculation above
         const unionFace = unionFaceArray[0];
         
-        // Get normals for both surfaces at their centers
+        // Get normals for both surfaces at their parameter space centers (0.5, 0.5)
+        // This works for most face types (planes, cylinders, cones, splines) as it samples
+        // the middle of the parametric domain
         const alignedNormal = try silent(evFaceTangentPlane(context, {
                     "face" : qNthElement(alignedTabFaces, 0),
                     "parameter" : vector(0.5, 0.5)
