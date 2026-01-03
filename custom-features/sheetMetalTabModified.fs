@@ -271,6 +271,7 @@ function tryAlignTabBodyWithOppositeWall(context is Context, id is Id, tabBody i
                 "moveFaces" : tabFaces,
                 "moveFaceType" : MoveFaceType.OFFSET,
                 "offsetDistance" : offsetDistance,
+                "mergeFaces" : true,
                 "reFillet" : false
             };
 
