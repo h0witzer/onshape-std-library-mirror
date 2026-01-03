@@ -267,9 +267,10 @@ export const tabAndSlotBossDisplay = defineFeature(function(context is Context, 
         
         if (!isQueryEmpty(context, extractedBodies))
         {
-            // Find faces created by the extension operation using qCreatedBy
-            // These are the new faces added to the surface bodies by the extension, not the original wall faces
-            // We want to offset only these faces for slot clearance
+            // Find faces created specifically by the opExtendSheetBody operation at id + "extendTabs"
+            // qCreatedBy returns only NEW faces that were added during the extension (not existing wall faces)
+            // These tab depth faces are the ones we want to offset for slot clearance, not the entire sheet metal definition
+            // This localizes the offset operation to just the tab geometry as required
             const tabDepthFaces = qCreatedBy(id + "extendTabs", EntityType.FACE);
             
             const tabDepthFaceCount = size(evaluateQuery(context, tabDepthFaces));
