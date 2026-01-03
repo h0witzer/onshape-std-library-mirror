@@ -13,10 +13,11 @@ import(path : "onshape/std/feature.fs", version : "2837.0");
 import(path : "onshape/std/extendendtype.gen.fs", version : "2837.0");
 import(path : "onshape/std/extendsheetshapetype.gen.fs", version : "2837.0");
 import(path : "onshape/std/edgetopology.gen.fs", version : "2837.0");
-import(path : "onshape/std/moveFace.fs", version : "2837.0");
+// Additional imports needed for sheet metal tab operations
 import(path : "onshape/std/boolean.fs", version : "2837.0");
-import(path : "onshape/std/sheetMetalUtils.fs", version : "2837.0");
+import(path : "onshape/std/moveFace.fs", version : "2837.0");
 import(path : "onshape/std/transform.fs", version : "2837.0");
+import(path : "onshape/std/sheetMetalUtils.fs", version : "2837.0");
 import(path : "onshape/std/surfaceGeometry.fs", version : "2837.0");
 import(path : "onshape/std/topologyUtils.fs", version : "2837.0");
 import(path : "onshape/std/vector.fs", version : "2837.0");
@@ -27,6 +28,7 @@ import(path : "onshape/std/math.fs", version : "2837.0");
 // For support contact caden.armstrong@smartbenchsoftware.com
 // 
 // Refactored to use edge splitting method from custom-features/onlyTabs-refactor/splitSmEdgeChainToSegments.fs
+// Sheet metal tab logic ported from sheetMetalTabModified.fs to consolidate all functionality in one file
 
 const EDGE_LENGTH_TOLERANCE = 1e-9 * meter;
 const EDGE_PARAMETER_TOLERANCE = 1e-6;
@@ -273,16 +275,7 @@ export const tabAndSlotBossDisplay = defineFeature(function(context is Context, 
         
         if (!isQueryEmpty(context, extractedBodies))
         {
-            // Find faces created specifically by the opExtendSheetBody operation at id + "extendTabs"
-            // qCreatedBy returns only NEW faces that were added during the extension (not existing wall faces)
-            // These tab depth faces are the ones we want to offset for slot clearance, not the entire sheet metal definition
-            // This localizes the offset operation to just the tab geometry as required
-            const tabDepthFaces = qCreatedBy(id + "extendTabs", EntityType.FACE);
-            
-            const tabDepthFaceCount = size(evaluateQuery(context, tabDepthFaces));
-            println("Tab depth faces identified from extension operation: " ~ toString(tabDepthFaceCount));
-            
-            mergeTabSurfacesWithSheetMetal(context, id + "mergeTabsWithModel", extractedBodies, wallFaces, tabDepthFaces, definition);
+            mergeTabSurfacesWithSheetMetal(context, id + "mergeTabsWithModel", extractedBodies, wallFaces, definition);
         }
     });
 
@@ -600,32 +593,7 @@ function identifyTabSegmentsByEdgeMidpoints(context is Context, allSplitEdges is
 // Outputs: Query containing wall edges that should be extended at tab locations
 
 // ========== Sheet Metal Tab Helper Functions ==========
-// The following functions are ported from sheetMetalTabModified.fs to implement
-// the sheet metal tab merging logic directly in this feature.
-
-/**
- * Takes a sheet metal query and returns the results as a map where the keys are sheet metal model ids
- * and the values are arrays of queries.
- */
-function partitionSheetMetalQueriesByModel(context is Context, selections is array) returns map
-{
-    var out = {};
-    for (var selection in selections)
-    {
-        const withTracking = qUnion([selection, startTracking(context, selection)]);
-        const id = getActiveSheetMetalId(context, selection);
-        const existing = out[id];
-        if (existing is undefined)
-        {
-            out[id] = [withTracking];
-        }
-        else
-        {
-            out[id] = append(existing, withTracking);
-        }
-    }
-    return out;
-}
+// The following functions are ported from sheetMetalTabModified.fs
 
 /**
  * Collects all sheet metal wall faces that are currently coincident with the supplied tab body.
@@ -742,6 +710,22 @@ function findCoincidentSheetMetalWalls(context is Context, id is Id, tabBody is 
 
     const coincidentQuery = qUnion(coincidentFaces);
     return qUnion([coincidentQuery, startTracking(context, coincidentQuery)]);
+}
+
+/**
+ * Converts tools into sheet bodies.
+ */
+function createTools(context is Context, id is Id, tools is Query)
+{
+    const faces = evaluateQuery(context, tools);
+    if (faces == [])
+    {
+        throw regenError(ErrorStringEnum.SHEET_METAL_TAB_NO_TAB, ["tabFaces"]);
+    }
+    if (isAtVersionOrLater(context, FeatureScriptVersionNumber.V696_REMOVE_ADDED_REDUNDANCY))
+        opExtractSurface(context, id, { "faces" : tools, "redundancyType" : ExtractSurfaceRedundancyType.REMOVE_ALL_REDUNDANCY });
+    else
+        opExtractSurface(context, id, { "faces" : tools, "removeRedundant" : true });
 }
 
 function reportBooleanIssues(context is Context, id is Id, tabBody is Query, wallFaces is Query)
@@ -982,6 +966,30 @@ function booleanOneTabGroup(context is Context, id is Id, definition is map, coi
     return getFeatureStatus(context, id + "boolean");
 }
 
+/**
+ * Takes a sheet metal query and returns the results as a map where the keys are sheet metal model ids
+ * and the values are arrays of queries.
+ */
+function partitionSheetMetalQueriesByModel(context is Context, selections is array) returns map
+{
+    var out = {};
+    for (var selection in selections)
+    {
+        const withTracking = qUnion([selection, startTracking(context, selection)]);
+        const id = getActiveSheetMetalId(context, selection);
+        const existing = out[id];
+        if (existing is undefined)
+        {
+            out[id] = [withTracking];
+        }
+        else
+        {
+            out[id] = append(existing, withTracking);
+        }
+    }
+    return out;
+}
+
 function applyTab(context is Context, id is Id, definition is map, tabQuery is Query, unionEntities is array, rootId is Id) returns boolean
 {
     const tabBodies = evaluateQuery(context, qOwnerBody(tabQuery));
@@ -1016,17 +1024,15 @@ function applyTab(context is Context, id is Id, definition is map, tabQuery is Q
 
 /**
  * Merges the generated tab surface bodies with the sheet metal model.
- * This function implements the sheet metal tab merging logic directly without calling an external feature.
  * 
  * Inputs:
  *   context - The evaluation context
  *   id - Operation ID for this merge operation
  *   tabSurfaceBodies - Query for the surface bodies to merge (created by extracting and extending wall faces)
  *   sourceWallFaces - The wall faces adjacent to tab segments (will be converted to definition entities by sheetMetalTab)
- *   tabDepthFaces - Query for faces created from the tab depth extension operation (these are the ones to offset)
  *   definition - The feature definition containing merge scope (for slot subtraction) and slot margin parameters
  */
-function mergeTabSurfacesWithSheetMetal(context is Context, id is Id, tabSurfaceBodies is Query, sourceWallFaces is Query, tabDepthFaces is Query, definition is map)
+function mergeTabSurfacesWithSheetMetal(context is Context, id is Id, tabSurfaceBodies is Query, sourceWallFaces is Query, definition is map)
 {
     // Get all faces from the tab surface bodies to pass as tabFaces
     const tabFaces = qOwnedByBody(tabSurfaceBodies, EntityType.FACE);
@@ -1051,34 +1057,15 @@ function mergeTabSurfacesWithSheetMetal(context is Context, id is Id, tabSurface
     
     println("Source wall faces for merge: " ~ toString(wallFaceCount) ~ " faces");
     
-    const tabDepthFaceCount = size(evaluateQuery(context, tabDepthFaces));
-    println("Tab depth faces to offset: " ~ toString(tabDepthFaceCount) ~ " faces");
-    
-    // Apply offset directly to the tab depth faces on the surface bodies BEFORE merging
-    // This localizes the offset operation to just the tab depth geometry
-    if (definition.slotMargin > 0 * meter && tabDepthFaceCount > 0)
-    {
-        try
-        {
-            opOffsetFace(context, id + "offsetTabDepthFaces", {
-                "moveFaces" : tabDepthFaces,
-                "moveFaceType" : MoveFaceType.OFFSET,
-                "offsetDistance" : definition.slotMargin,
-                "reFillet" : false
-            });
-            println("Applied offset of " ~ toString(definition.slotMargin) ~ " to " ~ toString(tabDepthFaceCount) ~ " tab depth faces");
-        }
-        catch (error)
-        {
-            throw regenError("Failed to offset tab depth faces: " ~ toString(error), ["slotMargin"]);
-        }
-    }
-    
-    // Merge scope is for slot bodies (subtraction), not for the union operation
+    // mergeScope is for slot bodies (subtraction), not for the union operation
+    // If mergeScope is provided, use it for booleanSubtractScope
     const subtractScope = !isQueryEmpty(context, definition.mergeScope) ? definition.mergeScope : qNothing();
     
-    // Now perform the sheet metal tab merge operation using local functions
-    // This is the logic from sheetMetalTabModified.fs ported here
+    // Create the definition for the sheetMetalTab feature call
+    // Prepare data for sheet metal tab merge using ported logic from sheetMetalTabModified.fs
+    // This replaces the call to modifiedSmTab::sheetMetalTab with inline implementation
+    
+    createTools(context, id + "extract", tabFaces);
     
     const unionEntities = try silent(getSMDefinitionEntities(context, sourceWallFaces));
     if (unionEntities == undefined || unionEntities == [])
@@ -1088,7 +1075,6 @@ function mergeTabSurfacesWithSheetMetal(context is Context, id is Id, tabSurface
     const unionEntityQuery = qUnion(unionEntities);
     const unionBodies = evaluateQuery(context, qOwnerBody(unionEntityQuery));
 
-    // Check for same flange in both union and subtract
     if (isAtVersionOrLater(context, FeatureScriptVersionNumber.V1235_TAB_MERGE_AND_SUBTRACT))
     {
         const subtractEntityQuery = qUnion(getSMDefinitionEntities(context, subtractScope));
@@ -1111,19 +1097,15 @@ function mergeTabSurfacesWithSheetMetal(context is Context, id is Id, tabSurface
     var index = 0;
     var oneSuccess = false;
     
-    // Build a modified definition for the merge that has booleanOffset set to 0
-    // since we already applied the offset to tab depth faces above
-    var modifiedDefinition = definition;  // Start with original definition
-    modifiedDefinition = modifiedDefinition + {
-        "booleanOffset" : 0 * meter,  // Override to 0 since offset already applied
-        "booleanSubtractScope" : subtractScope  // Use the prepared subtractScope
+    // Build definition for applyTab using slotMargin as booleanOffset
+    const tabMergeDefinition = definition + {
+        "booleanOffset" : definition.slotMargin,
+        "booleanSubtractScope" : subtractScope
     };
     
     for (var pair in selectionsByModelId)
     {
-        // Pass tabFaces (faces of the extracted/extended surface bodies) to applyTab
-        // applyTab expects the second parameter to be a query for tool faces
-        oneSuccess = applyTab(context, id + unstableIdComponent(index), modifiedDefinition, tabFaces, pair.value, id) || oneSuccess;
+        oneSuccess = applyTab(context, id + unstableIdComponent(index), tabMergeDefinition, qCreatedBy(id + "extract", EntityType.FACE), pair.value, id) || oneSuccess;
         index += 1;
     }
 
@@ -1132,8 +1114,9 @@ function mergeTabSurfacesWithSheetMetal(context is Context, id is Id, tabSurface
         throw regenError("Tab merge had no effect", ["edges"]);
     }
 
-    // Don't delete tabSurfaceBodies here - they get consumed by the boolean operations in applyTab/booleanOneTabGroup
-    // The bodies are merged into the sheet metal model and no longer exist as separate entities
+    opDeleteBodies(context, id + "deleteBodies", {
+                "entities" : qCreatedBy(id + "extract", EntityType.BODY)
+            });
 
     const toUpdate = assignSMAttributesToNewOrSplitEntities(context, sheetMetalBodiesQuery, initialData, id);
 
