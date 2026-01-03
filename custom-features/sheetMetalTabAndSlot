@@ -95,7 +95,7 @@ export const tabAndSlotBossDisplay = defineFeature(function(context is Context, 
         annotation { "Name" : "Slot Width Margin" }
         isLength(definition.slotMargin, SLOT_MARGIN_BOUNDS);
 
-        annotation { "Name" : "Merge Scope", "Filter" : EntityType.BODY }
+        annotation { "Name" : "Slot Bodies (for overlapping tabs)", "Filter" : EntityType.BODY }
         definition.mergeScope is Query;
 
         annotation { "Name" : "Remove Rip Joints" }
@@ -641,6 +641,14 @@ function mergeTabSurfacesWithSheetMetal(context is Context, id is Id, tabSurface
     }
     catch (error)
     {
-        throw regenError("Failed to merge tab surfaces with sheet metal model: " ~ toString(error), ["edges"]);
+        // Check if this is a boolean error that might be caused by overlapping bodies
+        const errorString = toString(error);
+        if (errorString->find("BOOLEAN") != -1 && isQueryEmpty(context, definition.mergeScope))
+        {
+            throw regenError("Failed to merge tab surfaces: Tabs may be overlapping with other sheet metal bodies. " ~
+                           "Specify slot bodies in the 'Merge Scope' parameter to enable automatic slot creation for overlapping areas.", 
+                           ["mergeScope"]);
+        }
+        throw regenError("Failed to merge tab surfaces with sheet metal model: " ~ errorString, ["edges"]);
     }
 }
