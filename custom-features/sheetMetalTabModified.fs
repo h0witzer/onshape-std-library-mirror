@@ -28,7 +28,11 @@ import(path : "onshape/std/vector.fs", version : "2837.0");
 
 /**
  * Feature adding tabs to sheet metal faces using supplied surface geometry.
- *
+ * 
+ * Optional parameter: facesToOffset (Query)
+ *   When provided, only the specified faces will be offset during the slot creation operation.
+ *   This allows for localized offset application (e.g., only offsetting tab depth faces).
+ *   When undefined (default), all faces created by the thicken operation are offset (backward compatible behavior).
  */
 annotation { "Feature Type Name" : "Tab",
         "Editing Logic Function" : "sheetMetalTabEditingLogic" }
