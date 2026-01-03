@@ -13,6 +13,8 @@ import(path : "onshape/std/feature.fs", version : "2837.0");
 import(path : "onshape/std/extendendtype.gen.fs", version : "2837.0");
 import(path : "onshape/std/extendsheetshapetype.gen.fs", version : "2837.0");
 import(path : "onshape/std/edgetopology.gen.fs", version : "2837.0");
+// Import the modified sheet metal tab feature that can work with surface bodies
+modifiedSmTab::import(path : "2f2f9dfa5cbbe76a5bc2ed2e", version : "c4f2f881ed297d6578bf4919");//modified Sheet Metal Tab Feature
 // Written by Caden Armstrong - SmartBench Software
 // Hacked by Derek Van Allen - Boss Display
 // Created for Boss Display
@@ -93,7 +95,7 @@ export const tabAndSlotBossDisplay = defineFeature(function(context is Context, 
         annotation { "Name" : "Slot Width Margin" }
         isLength(definition.slotMargin, SLOT_MARGIN_BOUNDS);
 
-        annotation { "Name" : "Merge Scope", "Filter" : EntityType.BODY }
+        annotation { "Name" : "Slot Bodies (for overlapping tabs)", "Filter" : EntityType.BODY }
         definition.mergeScope is Query;
 
         annotation { "Name" : "Remove Rip Joints" }
@@ -257,6 +259,15 @@ export const tabAndSlotBossDisplay = defineFeature(function(context is Context, 
         else
         {
             println("Warning: No edges found to extend");
+        }
+
+        // Phase 4: Merge the extended surface bodies back with the sheet metal model
+        // Call mergeTabSurfacesWithSheetMetal to integrate the surface bodies using sheetMetalTabModified
+        // The wallFaces we extracted from are the sheet metal definition faces to add material to
+        
+        if (!isQueryEmpty(context, extractedBodies))
+        {
+            mergeTabSurfacesWithSheetMetal(context, id + "mergeTabsWithModel", extractedBodies, wallFaces, definition);
         }
     });
 
@@ -572,3 +583,72 @@ function identifyTabSegmentsByEdgeMidpoints(context is Context, allSplitEdges is
 // Finds edges on wall faces that are perpendicular to the input edge chain and within tab positions.
 // Inputs: wallEdges (all edges on wall faces), splitEdges (edges on input chain), path, totalLength, tabDomains
 // Outputs: Query containing wall edges that should be extended at tab locations
+
+/**
+ * Merges the generated tab surface bodies with the sheet metal model using sheetMetalTabModified.
+ * This function calls the modified sheet metal tab feature which can work with surface bodies
+ * (not just planar sketches).
+ * 
+ * Inputs:
+ *   context - The evaluation context
+ *   id - Operation ID for this merge operation
+ *   tabSurfaceBodies - Query for the surface bodies to merge (created by extracting and extending wall faces)
+ *   sourceWallFaces - The wall faces adjacent to tab segments (will be converted to definition entities by sheetMetalTab)
+ *   definition - The feature definition containing merge scope (for slot subtraction) and slot margin parameters
+ */
+function mergeTabSurfacesWithSheetMetal(context is Context, id is Id, tabSurfaceBodies is Query, sourceWallFaces is Query, definition is map)
+{
+    // Get all faces from the tab surface bodies to pass as tabFaces
+    const tabFaces = qOwnedByBody(tabSurfaceBodies, EntityType.FACE);
+    
+    const tabFaceCount = size(evaluateQuery(context, tabFaces));
+    println("Preparing to merge " ~ toString(tabFaceCount) ~ " tab surface faces with sheet metal model");
+    
+    if (tabFaceCount == 0)
+    {
+        throw regenError("No tab surface faces found to merge. Check that edges were properly split and extended.", ["edges"]);
+    }
+    
+    // Pass the source wall faces directly to booleanUnionScope
+    // The sheetMetalTab feature will internally call getSMDefinitionEntities() on them
+    // to extract the proper sheet metal definition entities
+    const wallFaceCount = size(evaluateQuery(context, sourceWallFaces));
+    
+    if (wallFaceCount == 0)
+    {
+        throw regenError("No wall faces found to merge with", ["edges"]);
+    }
+    
+    println("Source wall faces for merge: " ~ toString(wallFaceCount) ~ " faces");
+    
+    // mergeScope is for slot bodies (subtraction), not for the union operation
+    // If mergeScope is provided, use it for booleanSubtractScope
+    const subtractScope = !isQueryEmpty(context, definition.mergeScope) ? definition.mergeScope : qNothing();
+    
+    // Create the definition for the sheetMetalTab feature call
+    const tabDefinition = {
+        "tabFaces" : tabFaces,
+        "booleanUnionScope" : sourceWallFaces,  // Wall faces - feature will extract definition entities internally
+        "booleanOffset" : definition.slotMargin,
+        "booleanSubtractScope" : subtractScope  // Slot bodies from mergeScope
+    };
+    
+    try
+    {
+        // Call the imported sheetMetalTab feature from the modifiedSmTab namespace
+        modifiedSmTab::sheetMetalTab(context, id, tabDefinition);
+        println("Successfully merged tab surfaces with sheet metal model");
+    }
+    catch (error)
+    {
+        // Check if this is a boolean error that might be caused by overlapping bodies
+        const errorString = toString(error);
+        if (errorString->find("BOOLEAN") != -1 && isQueryEmpty(context, definition.mergeScope))
+        {
+            throw regenError("Failed to merge tab surfaces: Tabs may be overlapping with other sheet metal bodies. " ~
+                           "Specify slot bodies in the 'Merge Scope' parameter to enable automatic slot creation for overlapping areas.", 
+                           ["mergeScope"]);
+        }
+        throw regenError("Failed to merge tab surfaces with sheet metal model: " ~ errorString, ["edges"]);
+    }
+}
