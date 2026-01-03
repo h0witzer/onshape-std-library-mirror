@@ -238,6 +238,9 @@ export const tabAndSlotBossDisplay = defineFeature(function(context is Context, 
         // Filter to only laminar (one-sided/boundary) edges to avoid EXTEND_NON_LAMINAR error
         const extractedEdgesToExtend = qEdgeTopologyFilter(trackedTabSegmentsAfterExtraction, EdgeTopology.ONE_SIDED);
         
+        // Track the edges we're about to extend to find the resulting faces later
+        const trackedExtensionEdges = startTracking(context, extractedEdgesToExtend);
+        
         if (size(evaluateQuery(context, extractedEdgesToExtend)) > 0)
         {
             try
@@ -267,7 +270,11 @@ export const tabAndSlotBossDisplay = defineFeature(function(context is Context, 
         
         if (!isQueryEmpty(context, extractedBodies))
         {
-            mergeTabSurfacesWithSheetMetal(context, id + "mergeTabsWithModel", extractedBodies, wallFaces, definition);
+            // Find faces created by the extension operation by querying faces adjacent to the tracked extension edges
+            // These are the faces we want to offset for slot clearance
+            const tabDepthFaces = qAdjacent(trackedExtensionEdges, AdjacencyType.EDGE, EntityType.FACE);
+            
+            mergeTabSurfacesWithSheetMetal(context, id + "mergeTabsWithModel", extractedBodies, wallFaces, tabDepthFaces, definition);
         }
     });
 
@@ -594,9 +601,10 @@ function identifyTabSegmentsByEdgeMidpoints(context is Context, allSplitEdges is
  *   id - Operation ID for this merge operation
  *   tabSurfaceBodies - Query for the surface bodies to merge (created by extracting and extending wall faces)
  *   sourceWallFaces - The wall faces adjacent to tab segments (will be converted to definition entities by sheetMetalTab)
+ *   tabDepthFaces - Query for faces created from the tab depth extension operation (these are the ones to offset)
  *   definition - The feature definition containing merge scope (for slot subtraction) and slot margin parameters
  */
-function mergeTabSurfacesWithSheetMetal(context is Context, id is Id, tabSurfaceBodies is Query, sourceWallFaces is Query, definition is map)
+function mergeTabSurfacesWithSheetMetal(context is Context, id is Id, tabSurfaceBodies is Query, sourceWallFaces is Query, tabDepthFaces is Query, definition is map)
 {
     // Get all faces from the tab surface bodies to pass as tabFaces
     const tabFaces = qOwnedByBody(tabSurfaceBodies, EntityType.FACE);
@@ -621,16 +629,21 @@ function mergeTabSurfacesWithSheetMetal(context is Context, id is Id, tabSurface
     
     println("Source wall faces for merge: " ~ toString(wallFaceCount) ~ " faces");
     
+    const tabDepthFaceCount = size(evaluateQuery(context, tabDepthFaces));
+    println("Tab depth faces to offset: " ~ toString(tabDepthFaceCount) ~ " faces");
+    
     // mergeScope is for slot bodies (subtraction), not for the union operation
     // If mergeScope is provided, use it for booleanSubtractScope
     const subtractScope = !isQueryEmpty(context, definition.mergeScope) ? definition.mergeScope : qNothing();
     
     // Create the definition for the sheetMetalTab feature call
+    // Pass the tabDepthFaces so the modified sheet metal tab feature knows which faces to offset
     const tabDefinition = {
         "tabFaces" : tabFaces,
         "booleanUnionScope" : sourceWallFaces,  // Wall faces - feature will extract definition entities internally
         "booleanOffset" : definition.slotMargin,
-        "booleanSubtractScope" : subtractScope  // Slot bodies from mergeScope
+        "booleanSubtractScope" : subtractScope,  // Slot bodies from mergeScope
+        "facesToOffset" : tabDepthFaces  // Only offset these specific faces from the tab depth extension
     };
     
     try
