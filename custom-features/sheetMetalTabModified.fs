@@ -277,38 +277,12 @@ function tryAlignTabBodyWithOppositeWall(context is Context, id is Id, tabBody i
 
     opOffsetFace(context, id, moveFaceDefinition);
 
-    // After offsetting, use evCollision to check if the surface orientation needs to be flipped.
-    // The ClashType will tell us if the tool (tab surface) normal points into or out of the target.
-    // ABUT_TOOL_IN_TARGET means normals are opposite (need to flip)
-    // ABUT_TOOL_OUT_TARGET means normals are aligned (no flip needed)
-    const alignedTabFaces = qOwnedByBody(tabBody, EntityType.FACE);
-    const collisions = try silent(evCollision(context, {
-                "tools" : alignedTabFaces,
-                "targets" : unionQuery
-            }));
-    
-    if (collisions != undefined && size(collisions) > 0)
-    {
-        // Check collisions to determine orientation - process until we find a definitive clash type
-        for (var collision in collisions)
-        {
-            if (collision["type"] == ClashType.ABUT_TOOL_IN_TARGET)
-            {
-                // Tool's normal points into target - normals are opposite, need to flip
-                opFlipOrientation(context, id + "flip", {
-                            "bodies" : tabBody
-                        });
-                break;
-            }
-            else if (collision["type"] == ClashType.ABUT_TOOL_OUT_TARGET)
-            {
-                // Tool's normal points out of target - normals are aligned, no flip needed
-                break;
-            }
-            // For ABUT_NO_CLASS and other types, continue checking remaining collisions
-            // as we may find a more specific clash type
-        }
-    }
+    // After offsetting from inside to outside (or vice versa), the surface orientation
+    // is always flipped. The inside and outside faces of sheet metal always have opposite normals.
+    // Always flip the orientation to ensure correct thickening direction.
+    opFlipOrientation(context, id + "flip", {
+                "bodies" : tabBody
+            });
 
     return true;
 }
