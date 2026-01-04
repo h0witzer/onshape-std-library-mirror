@@ -161,7 +161,7 @@ function sortFacesByArea(context is Context, faces is array) returns array
     var facesWithAreas = [];
     for (var face in faces)
     {
-        const area = evArea(context, { "faces" : face });
+        const area = evArea(context, { "entities" : face });
         facesWithAreas = append(facesWithAreas, { "face" : face, "area" : area });
     }
     
