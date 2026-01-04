@@ -66,26 +66,13 @@ export const medialAxis = defineFeature(function(context is Context, id is Id, d
         const endCapFace = qCapEntity(id + "extrude", CapType.END, EntityType.FACE);
         const sideFaces = qSubtraction(allExtrudedFaces, qUnion([startCapFace, endCapFace]));
         
-        // Create a neutral plane at the base for drafting
-        opPlane(context, id + "neutralPlane", {
-            "plane" : facePlane,
-            "width" : 1 * meter,
-            "height" : 1 * meter
-        });
-        const neutralPlaneFace = qCreatedBy(id + "neutralPlane", EntityType.FACE);
-        
-        // Apply draft to the side faces
+        // Apply draft to the side faces using the input face plane as the reference surface
         opDraft(context, id + "draft", {
-            "draftType" : DraftType.NEUTRAL_PLANE,
+            "draftType" : DraftType.REFERENCE_SURFACE,
             "draftFaces" : sideFaces,
-            "neutralPlane" : neutralPlaneFace,
+            "referenceSurface" : facePlane,
             "pullVec" : facePlane.normal,
             "angle" : 45 * degree
-        });
-        
-        // Clean up the neutral plane
-        opDeleteBodies(context, id + "deleteNeutralPlane", {
-            "entities" : qOwnerBody(neutralPlaneFace)
         });
         
         // Step 3: Query all edges from the drafted body
