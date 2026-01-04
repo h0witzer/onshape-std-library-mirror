@@ -458,7 +458,7 @@ function computeInwardNormal(context is Context, edge is Query, tangent is Vecto
         {
             // Fallback: use cross product of tangent with up vector
             const fallbackCross = cross(tangent, vector(0, 0, 1));
-            if (norm(fallbackCross) > TOLERANCE.zeroLength)
+            if (squaredNorm(fallbackCross) != 0)
             {
                 faceNormal = normalize(fallbackCross);
             }
@@ -474,8 +474,7 @@ function computeInwardNormal(context is Context, edge is Query, tangent is Vecto
     const perpendicular = cross(faceNormal, tangent);
     
     // Check if cross product is valid (non-zero)
-    const perpendicularMagnitude = norm(perpendicular);
-    if (perpendicularMagnitude < TOLERANCE.zeroLength)
+    if (squaredNorm(perpendicular) == 0)
     {
         // Tangent is parallel to face normal - this shouldn't happen for valid boundary edges
         // Use perpendicularVector as fallback
@@ -521,7 +520,7 @@ function processReflexVertices(segments is array) returns array
         const vec2 = nextSegment.endPoint - nextSegment.startPoint;
         
         // Check for zero-length vectors
-        if (norm(vec1) < TOLERANCE.zeroLength || norm(vec2) < TOLERANCE.zeroLength)
+        if (squaredNorm(vec1) == 0 || squaredNorm(vec2) == 0)
         {
             // Skip reflex vertex processing for dummy segments
             processedSegments = append(processedSegments, currentSegment);
@@ -577,7 +576,7 @@ function processReflexVertices(segments is array) returns array
                 
                 // Interpolate normal direction
                 const interpolatedNormalVec = (1.0 - t) * normal1 + t * normal2;
-                const interpolatedNormal = norm(interpolatedNormalVec) > TOLERANCE.zeroLength 
+                const interpolatedNormal = squaredNorm(interpolatedNormalVec) != 0 
                     ? normalize(interpolatedNormalVec) 
                     : normal1; // Fallback to first normal
                 
@@ -704,11 +703,11 @@ function isConvexVertex(segment1 is BoundarySegment, segment2 is BoundarySegment
     const vec1 = segment1.endPoint - segment1.startPoint;
     const vec2 = segment2.endPoint - segment2.startPoint;
     
-    // Check for zero-length vectors (dummy segments)
-    const mag1 = norm(vec1);
-    const mag2 = norm(vec2);
+    // Check for zero-length vectors (dummy segments) using squared norm for efficiency
+    const sqMag1 = squaredNorm(vec1);
+    const sqMag2 = squaredNorm(vec2);
     
-    if (mag1 < TOLERANCE.zeroLength || mag2 < TOLERANCE.zeroLength)
+    if (sqMag1 == 0 || sqMag2 == 0)
     {
         // For dummy segments, assume convex to avoid issues
         return true;
@@ -1497,12 +1496,12 @@ function computeMAEndpoint(segment is BoundarySegment, piece is RLFSPiece, useSt
     // Sample boundary at parameters and displace along normal
     const boundaryPoint = (1 - parameter) * segment.startPoint + parameter * segment.endPoint;
     const normalVec = (1 - parameter) * segment.startNormal + parameter * segment.endNormal;
-    const normal = norm(normalVec) > TOLERANCE.zeroLength ? normalize(normalVec) : segment.startNormal;
+    const normal = squaredNorm(normalVec) != 0 ? normalize(normalVec) : segment.startNormal;
     const displacedPoint1 = boundaryPoint + displacement * normal;
     
     const peerBoundaryPoint = (1 - peerParameter) * peerSegment.startPoint + peerParameter * peerSegment.endPoint;
     const peerNormalVec = (1 - peerParameter) * peerSegment.startNormal + peerParameter * peerSegment.endNormal;
-    const peerNormal = norm(peerNormalVec) > TOLERANCE.zeroLength ? normalize(peerNormalVec) : peerSegment.startNormal;
+    const peerNormal = squaredNorm(peerNormalVec) != 0 ? normalize(peerNormalVec) : peerSegment.startNormal;
     const displacedPoint2 = peerBoundaryPoint + peerDisplacement * peerNormal;
     
     // Average the two estimates
