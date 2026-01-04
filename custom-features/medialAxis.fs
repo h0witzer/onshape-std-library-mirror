@@ -80,7 +80,7 @@ export const medialAxis = defineFeature(function(context is Context, id is Id, d
         {
             try silent
             {
-                opDraft(context, id + ("draft_" ~ faceIndex), {
+                opDraft(context, id + "draft" + faceIndex, {
                     "draftType" : DraftType.REFERENCE_SURFACE,
                     "draftFaces" : face,
                     "referenceSurface" : facePlane,
@@ -100,9 +100,9 @@ export const medialAxis = defineFeature(function(context is Context, id is Id, d
         const allEdgesAfterDraft = qOwnedByBody(extrudedBody, EntityType.EDGE);
         
         // Step 4: Filter out edges that are vertex-adjacent to the start cap face
-        // Also exclude edges from faces that failed to draft
+        // Also exclude edges that belong to faces that failed to draft
         const edgesAdjacentToStartCap = qAdjacent(startCapFace, AdjacencyType.VERTEX, EntityType.EDGE);
-        const edgesFromFailedFaces = qAdjacent(failedDraftFaces, AdjacencyType.VERTEX, EntityType.EDGE);
+        const edgesFromFailedFaces = qAdjacent(failedDraftFaces, AdjacencyType.EDGE, EntityType.EDGE);
         const edgesToExclude = qUnion([edgesAdjacentToStartCap, edgesFromFailedFaces]);
         
         // Get the peak edges by subtracting excluded edges from all edges in the drafted body
