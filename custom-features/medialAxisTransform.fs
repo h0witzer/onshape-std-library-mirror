@@ -6,6 +6,7 @@ import(path : "onshape/std/feature.fs", version : "2837.0");
 import(path : "onshape/std/math.fs", version : "2837.0");
 import(path : "onshape/std/query.fs", version : "2837.0");
 import(path : "onshape/std/sketch.fs", version : "2837.0");
+import(path : "onshape/std/surfaceGeometry.fs", version : "2837.0");
 import(path : "onshape/std/units.fs", version : "2837.0");
 import(path : "onshape/std/vector.fs", version : "2837.0");
 import(path : "onshape/std/valueBounds.fs", version : "2837.0");
@@ -832,32 +833,45 @@ function drawMedialAxisCurves(context is Context,
                               plane is Plane,
                               showDebug is boolean)
 {
-    // Draw MA edges as debug lines
+    if (@size(graph.edges) == 0)
+    {
+        println("No medial axis edges to draw");
+        return;
+    }
+    
+    // Create a sketch on the plane to draw the medial axis
+    const sketch = newSketchOnPlane(context, id + "sketch", {
+        "sketchPlane" : plane
+    });
+    
+    // Draw MA edges as sketch line segments
     for (var i = 0; i < @size(graph.edges); i += 1)
     {
         const edge = graph.edges[i];
         const startNode = graph.nodes[edge.startNodeIndex];
         const endNode = graph.nodes[edge.endNodeIndex];
         
+        // Project positions onto the sketch plane to get 2D coordinates
+        const start2D = worldToPlane(plane, startNode.position);
+        const end2D = worldToPlane(plane, endNode.position);
+        
+        // Draw line segment in sketch
+        skLineSegment(sketch, "edge" ~ i, {
+            "start" : start2D,
+            "end" : end2D
+        });
+        
         if (showDebug)
         {
-            // Draw line connecting the nodes
+            // Draw debug visualization
             debug(context, startNode.position, endNode.position, DebugColor.RED);
-            
-            // Draw points at nodes
             addDebugPoint(context, startNode.position, DebugColor.BLUE);
             addDebugPoint(context, endNode.position, DebugColor.BLUE);
         }
-        
-        // Create actual curve geometry
-        const curveId = id + ("medialAxis" ~ i);
-        try
-        {
-            opFitSpline(context, curveId, {
-                "points" : [startNode.position, endNode.position]
-            });
-        }
     }
+    
+    // Solve the sketch to create the geometry
+    skSolve(sketch);
     
     if (showDebug)
     {
