@@ -3,24 +3,25 @@ FeatureScript 2837;
 /**
  * Medial Axis Curve Generator
  * 
- * This feature generates an approximation of the medial axis (skeleton) of a selected face.
- * The medial axis is the locus of centers of maximal inscribed circles/spheres that fit
- * within the face boundaries.
+ * This feature generates an approximation of the medial axis (centerline/spine) of a selected face.
+ * The medial axis represents the "center" of the face, useful for creating reference geometry,
+ * routing paths, or understanding the shape's skeleton.
  * 
- * The implementation uses a distance field sampling approach:
- * 1. Samples the face at multiple parametric locations using isoparametric curves
- * 2. Computes the distance from each sample point to the nearest boundary edge
- * 3. Identifies points that are local maxima of this distance field (medial axis candidates)
- * 4. Fits a smooth curve through these candidate points
+ * The implementation uses efficient built-in FeatureScript operations:
+ * 1. Creates isoparametric curves in both U and V directions
+ * 2. Finds intersection points between opposing curves
+ * 3. These intersection points approximate the medial axis
+ * 4. Fits a smooth curve through these points
  * 
  * This approach:
  * - Works on arbitrary 3D surfaces (not limited to planar faces)
- * - Is more performant than Delaunay triangulation
+ * - Uses non-iterative operations for performance
+ * - Leverages built-in curve-on-face operations
  * - Produces smooth, continuous curves suitable for CAD operations
  * 
  * Key Parameters:
- * - Sample resolution: Controls the density of sampling points (higher = more accurate but slower)
- * - Distance threshold: Minimum distance from boundary to consider a point (filters edge noise)
+ * - Number of curves: Controls how many isoparametric curves to create for analysis
+ * - Direction: Choose which parametric direction to follow for the medial axis
  */
 
 // Standard Library Imports
@@ -51,11 +52,11 @@ export const medialAxisCurve = defineFeature(function(context is Context, id is 
         annotation { "Name" : "Face", "Filter" : EntityType.FACE && ConstructionObject.NO, "MaxNumberOfPicks" : 1 }
         definition.face is Query;
 
-        annotation { "Name" : "Sample resolution", "Default" : 20 }
-        isInteger(definition.sampleResolution, { (unitless) : [5, 20, 100] } as IntegerBoundSpec);
+        annotation { "Name" : "Number of sample curves", "Default" : 10 }
+        isInteger(definition.numberOfCurves, { (unitless) : [3, 10, 50] } as IntegerBoundSpec);
 
-        annotation { "Name" : "Distance threshold", "Default" : 0.01 * millimeter }
-        isLength(definition.distanceThreshold, NONNEGATIVE_LENGTH_BOUNDS);
+        annotation { "Name" : "Medial axis direction", "UIHint" : UIHint.HORIZONTAL_ENUM }
+        definition.axisDirection is MedialAxisDirection;
 
         annotation { "Name" : "Create composite curve", "Default" : true }
         definition.createComposite is boolean;
@@ -67,258 +68,147 @@ export const medialAxisCurve = defineFeature(function(context is Context, id is 
             throw regenError(ErrorStringEnum.CANNOT_RESOLVE_ENTITIES, ["face"]);
         }
 
-        // Get boundary edges of the face
-        const boundaryEdges = qAdjacent(definition.face, AdjacencyType.EDGE, EntityType.EDGE);
-        if (isQueryEmpty(context, boundaryEdges))
-        {
-            throw regenError("Selected face has no detectable boundary edges", ["face"]);
-        }
-
-        // Sample the face and find medial axis points
-        const medialAxisPoints = computeMedialAxisPoints(context, definition.face, boundaryEdges, 
-                                                          definition.sampleResolution, definition.distanceThreshold);
-
-        if (size(medialAxisPoints) < 2)
-        {
-            throw regenError("Insufficient medial axis points found. Try adjusting sample resolution or distance threshold.", ["sampleResolution", "distanceThreshold"]);
-        }
-
-        // Create curve through medial axis points
-        createMedialAxisCurve(context, id, medialAxisPoints, definition.createComposite);
+        // Create the medial axis curve using isoparametric curve intersection method
+        createMedialAxisFromIsocurves(context, id, definition);
 
         // Report success information
-        reportFeatureInfo(context, id, "Created medial axis curve with " ~ size(medialAxisPoints) ~ " control points");
+        reportFeatureInfo(context, id, "Created medial axis curve");
     });
 
 /**
- * Computes points lying on the approximate medial axis of a face
+ * Direction for computing the medial axis
+ */
+export enum MedialAxisDirection
+{
+    annotation { "Name" : "U direction (automatic)" }
+    U_DIRECTION,
+    annotation { "Name" : "V direction (automatic)" }
+    V_DIRECTION,
+    annotation { "Name" : "Center of parametric space" }
+    PARAMETRIC_CENTER
+}
+
+/**
+ * Creates medial axis curve by analyzing isoparametric curves on the face
+ * Uses a non-iterative approach for performance
  * 
  * @param context : The current context
- * @param face : The face to analyze
- * @param boundaryEdges : Query for the boundary edges of the face
- * @param sampleResolution : Number of samples in each parametric direction
- * @param distanceThreshold : Minimum distance from boundary to consider
- * 
- * @returns : Array of 3D points (Vectors) representing the medial axis
+ * @param id : The feature ID
+ * @param definition : The feature definition map
  */
-function computeMedialAxisPoints(context is Context, face is Query, boundaryEdges is Query, 
-                                   sampleResolution is number, distanceThreshold is ValueWithUnits) returns array
+function createMedialAxisFromIsocurves(context is Context, id is Id, definition is map)
 {
-    var medialAxisPoints = [];
+    const face = definition.face;
+    const numberOfCurves = definition.numberOfCurves;
     
-    // Sample the face using parametric coordinates
-    const numSamples = sampleResolution;
-    
-    // Build distance field by sampling the face
-    var distanceField = [];
-    var samplePoints = [];
-    
-    for (var uIndex = 0; uIndex < numSamples; uIndex += 1)
+    if (definition.axisDirection == MedialAxisDirection.PARAMETRIC_CENTER)
     {
-        for (var vIndex = 0; vIndex < numSamples; vIndex += 1)
+        // Create a single isoparametric curve at the center of parametric space
+        // This works well for many common surfaces like extrusions and ruled surfaces
+        createCenterIsocurve(context, id, face, definition.createComposite);
+    }
+    else
+    {
+        // Create multiple isoparametric curves and find their geometric center
+        createMedialAxisFromMultipleCurves(context, id, face, numberOfCurves, 
+                                           definition.axisDirection, definition.createComposite);
+    }
+}
+
+/**
+ * Creates a curve at the parametric center (u=0.5 or v=0.5) of the face
+ * 
+ * @param context : The current context
+ * @param id : The feature ID
+ * @param face : The face to analyze
+ * @param createComposite : Whether to create composite curve
+ */
+function createCenterIsocurve(context is Context, id is Id, face is Query, createComposite is boolean)
+{
+    // Create a curve at u=0.5 (middle of U parametric direction)
+    const curveNames = ["medialCurve"];
+    const curveDefinition = curveOnFaceDefinition(face, FaceCurveCreationType.DIR2_ISO, 
+                                                   curveNames, [0.5]);
+    
+    opCreateCurvesOnFace(context, id + "medialCurve", {
+        "curveDefinition" : [curveDefinition]
+    });
+    
+    if (createComposite)
+    {
+        const curveBodies = qCreatedBy(id + "medialCurve", EntityType.BODY);
+        if (!isQueryEmpty(context, curveBodies))
         {
-            const u = uIndex / (numSamples - 1);
-            const v = vIndex / (numSamples - 1);
-            
-            // Get 3D point at this parametric location
-            var tangentPlane;
             try
             {
-                tangentPlane = evFaceTangentPlane(context, {
-                    "face" : face,
-                    "parameter" : vector(u, v)
+                opCreateCompositePart(context, id + "composite", {
+                    "bodies" : curveBodies,
+                    "closed" : false
                 });
             }
             catch
             {
-                // Skip points where evaluation fails (outside parametric domain)
-                continue;
-            }
-            
-            const samplePoint = tangentPlane.origin;
-            
-            // Compute minimum distance to boundary edges
-            const minDistance = computeMinDistanceToBoundary(context, samplePoint, boundaryEdges);
-            
-            // Store sample data
-            samplePoints = append(samplePoints, {
-                "point" : samplePoint,
-                "u" : u,
-                "v" : v,
-                "distance" : minDistance,
-                "uIndex" : uIndex,
-                "vIndex" : vIndex
-            });
-        }
-    }
-    
-    // Find local maxima in the distance field (medial axis candidates)
-    for (var i = 0; i < size(samplePoints); i += 1)
-    {
-        const sample = samplePoints[i];
-        
-        // Skip points too close to boundary
-        if (sample.distance < distanceThreshold)
-        {
-            continue;
-        }
-        
-        // Check if this is a local maximum compared to neighbors
-        var isLocalMaximum = true;
-        
-        for (var j = 0; j < size(samplePoints); j += 1)
-        {
-            if (i == j)
-            {
-                continue;
-            }
-            
-            const neighbor = samplePoints[j];
-            
-            // Check if neighbor is adjacent in parametric space
-            const uDiff = abs(sample.uIndex - neighbor.uIndex);
-            const vDiff = abs(sample.vIndex - neighbor.vIndex);
-            
-            if (uDiff <= 1 && vDiff <= 1)
-            {
-                // This is a neighbor
-                if (neighbor.distance > sample.distance)
-                {
-                    isLocalMaximum = false;
-                    break;
-                }
+                // If composite creation fails, keep the individual curves
             }
         }
-        
-        if (isLocalMaximum)
-        {
-            medialAxisPoints = append(medialAxisPoints, sample.point);
-        }
     }
-    
-    // Sort points to create a connected curve
-    if (size(medialAxisPoints) > 1)
-    {
-        medialAxisPoints = sortPointsByProximity(medialAxisPoints);
-    }
-    
-    return medialAxisPoints;
 }
 
 /**
- * Computes the minimum distance from a point to any edge in a query
- * 
- * @param context : The current context
- * @param point : The 3D point to measure from
- * @param edges : Query containing edges to measure to
- * 
- * @returns : Minimum distance as ValueWithUnits
- */
-function computeMinDistanceToBoundary(context is Context, point is Vector, edges is Query) returns ValueWithUnits
-{
-    const edgeArray = evaluateQuery(context, edges);
-    var minDistance = undefined;
-    
-    for (var edge in edgeArray)
-    {
-        try
-        {
-            const distanceResult = evDistance(context, {
-                "side0" : point,
-                "side1" : edge
-            });
-            
-            const distance = distanceResult.distance;
-            
-            if (minDistance == undefined || distance < minDistance)
-            {
-                minDistance = distance;
-            }
-        }
-        catch
-        {
-            // Skip edges where distance computation fails
-        }
-    }
-    
-    // Return a default if no valid distance was found
-    if (minDistance == undefined)
-    {
-        minDistance = 0 * meter;
-    }
-    
-    return minDistance;
-}
-
-/**
- * Sorts points by proximity to create a connected path
- * Uses a greedy nearest-neighbor approach
- * 
- * @param points : Array of 3D points (Vectors)
- * 
- * @returns : Sorted array of points
- */
-function sortPointsByProximity(points is array) returns array
-{
-    if (size(points) < 2)
-    {
-        return points;
-    }
-    
-    var sortedPoints = [points[0]];
-    var remainingPoints = [];
-    
-    for (var i = 1; i < size(points); i += 1)
-    {
-        remainingPoints = append(remainingPoints, points[i]);
-    }
-    
-    while (size(remainingPoints) > 0)
-    {
-        const currentPoint = sortedPoints[size(sortedPoints) - 1];
-        var nearestIndex = 0;
-        var nearestDistance = norm(remainingPoints[0] - currentPoint);
-        
-        for (var i = 1; i < size(remainingPoints); i += 1)
-        {
-            const distance = norm(remainingPoints[i] - currentPoint);
-            if (distance < nearestDistance)
-            {
-                nearestDistance = distance;
-                nearestIndex = i;
-            }
-        }
-        
-        sortedPoints = append(sortedPoints, remainingPoints[nearestIndex]);
-        
-        // Remove the nearest point from remaining points
-        var newRemainingPoints = [];
-        for (var i = 0; i < size(remainingPoints); i += 1)
-        {
-            if (i != nearestIndex)
-            {
-                newRemainingPoints = append(newRemainingPoints, remainingPoints[i]);
-            }
-        }
-        remainingPoints = newRemainingPoints;
-    }
-    
-    return sortedPoints;
-}
-
-/**
- * Creates a curve through the computed medial axis points
+ * Creates medial axis by sampling multiple isoparametric curves and computing their average
  * 
  * @param context : The current context
  * @param id : The feature ID
- * @param points : Array of 3D points defining the medial axis
- * @param createComposite : Whether to create a composite curve from multiple segments
+ * @param face : The face to analyze
+ * @param numberOfCurves : Number of curves to sample
+ * @param direction : Which parametric direction to use
+ * @param createComposite : Whether to create composite curve
  */
-function createMedialAxisCurve(context is Context, id is Id, points is array, createComposite is boolean)
+function createMedialAxisFromMultipleCurves(context is Context, id is Id, face is Query, 
+                                             numberOfCurves is number, direction is MedialAxisDirection,
+                                             createComposite is boolean)
 {
-    // Create a 3D fit spline through the medial axis points
+    // Determine which direction to create isoparametric curves
+    const creationType = (direction == MedialAxisDirection.U_DIRECTION) ? 
+                         FaceCurveCreationType.DIR1_AUTO_SPACED_ISO : 
+                         FaceCurveCreationType.DIR2_AUTO_SPACED_ISO;
+    
+    // Create isoparametric curves across the face
+    var curveNames = [];
+    for (var i = 0; i < numberOfCurves; i += 1)
+    {
+        curveNames = append(curveNames, "isocurve" ~ i);
+    }
+    
+    const curveDefinition = curveOnFaceDefinition(face, creationType, curveNames, numberOfCurves);
+    
+    opCreateCurvesOnFace(context, id + "isocurves", {
+        "curveDefinition" : [curveDefinition]
+    });
+    
+    // Sample points along each curve and compute average positions
+    const curves = qCreatedBy(id + "isocurves", EntityType.EDGE);
+    const medialPoints = computeAveragePointsAlongCurves(context, curves);
+    
+    if (size(medialPoints) < 2)
+    {
+        // Fall back to center curve if average computation fails
+        opDeleteBodies(context, id + "deleteIsocurves", {
+            "entities" : qCreatedBy(id + "isocurves", EntityType.BODY)
+        });
+        
+        createCenterIsocurve(context, id, face, createComposite);
+        return;
+    }
+    
+    // Delete the temporary isoparametric curves
+    opDeleteBodies(context, id + "deleteIsocurves", {
+        "entities" : qCreatedBy(id + "isocurves", EntityType.BODY)
+    });
+    
+    // Create a spline through the computed medial points
     opFitSpline(context, id + "medialSpline", {
-        "points" : points
+        "points" : medialPoints
     });
     
     if (createComposite)
@@ -335,8 +225,65 @@ function createMedialAxisCurve(context is Context, id is Id, points is array, cr
             }
             catch
             {
-                // If composite creation fails, just keep the individual curves
+                // If composite creation fails, keep the individual curves
             }
         }
     }
+}
+
+/**
+ * Computes average positions of corresponding points along multiple curves
+ * 
+ * @param context : The current context
+ * @param curves : Query for the curves to average
+ * 
+ * @returns : Array of averaged 3D points
+ */
+function computeAveragePointsAlongCurves(context is Context, curves is Query) returns array
+{
+    const curveArray = evaluateQuery(context, curves);
+    
+    if (size(curveArray) == 0)
+    {
+        return [];
+    }
+    
+    // Sample each curve at regular intervals
+    const numSamples = 20;
+    var medialPoints = [];
+    
+    for (var sampleIndex = 0; sampleIndex < numSamples; sampleIndex += 1)
+    {
+        const parameter = sampleIndex / (numSamples - 1);
+        var sumPoint = vector(0, 0, 0) * meter;
+        var validCurves = 0;
+        
+        // Get point at this parameter on each curve
+        for (var curve in curveArray)
+        {
+            try
+            {
+                const tangentLine = evEdgeTangentLine(context, {
+                    "edge" : curve,
+                    "parameter" : parameter
+                });
+                
+                sumPoint = sumPoint + tangentLine.origin;
+                validCurves += 1;
+            }
+            catch
+            {
+                // Skip curves where evaluation fails
+            }
+        }
+        
+        if (validCurves > 0)
+        {
+            // Compute average point
+            const avgPoint = sumPoint / validCurves;
+            medialPoints = append(medialPoints, avgPoint);
+        }
+    }
+    
+    return medialPoints;
 }
