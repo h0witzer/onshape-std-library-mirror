@@ -686,9 +686,22 @@ function testAdjacentSegmentCollision(segment1 is BoundarySegment, segment2 is B
  */
 function isConvexVertex(segment1 is BoundarySegment, segment2 is BoundarySegment) returns boolean
 {
-    // Calculate the angle between the segments
-    const dir1 = normalize(segment1.endPoint - segment1.startPoint);
-    const dir2 = normalize(segment2.endPoint - segment2.startPoint);
+    // Calculate direction vectors
+    const vec1 = segment1.endPoint - segment1.startPoint;
+    const vec2 = segment2.endPoint - segment2.startPoint;
+    
+    // Check for zero-length vectors (dummy segments)
+    const mag1 = norm(vec1);
+    const mag2 = norm(vec2);
+    
+    if (mag1 < TOLERANCE.zeroLength || mag2 < TOLERANCE.zeroLength)
+    {
+        // For dummy segments, assume convex to avoid issues
+        return true;
+    }
+    
+    const dir1 = normalize(vec1);
+    const dir2 = normalize(vec2);
     
     // Use cross product to determine if angle is convex (inner angle < π)
     // For 2D in a plane, we check the z-component of cross product
