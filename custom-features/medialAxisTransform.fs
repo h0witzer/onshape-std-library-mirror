@@ -1063,30 +1063,6 @@ function testAndUpdateSegmentPair(boundarySegments is array, index1 is number, i
     
     return false;
 }
-        segment1.startPoint, segment1.endPoint,
-        segment1.startNormal, segment1.endNormal
-    );
-    if (collision.collides)
-    {
-        collisionEvents = append(collisionEvents, {
-            "distance" : collision.distance,
-            "parameter" : collision.parameter,
-            "peerParameter" : 1.0,
-            "segmentIndex" : index1,
-            "peerSegmentIndex" : index2
-        });
-    }
-    
-    // Sort collision events by distance and create RLFS pieces
-    if (@size(collisionEvents) >= 2)
-    {
-        // Sort by distance
-        collisionEvents = sortCollisionEvents(collisionEvents);
-        
-        // Identify collision type and create RLFS pieces
-        createRLFSPiecesFromCollision(boundarySegments, collisionEvents, index1, index2);
-    }
-}
 
 /**
  * Sort collision events by distance (ascending).
