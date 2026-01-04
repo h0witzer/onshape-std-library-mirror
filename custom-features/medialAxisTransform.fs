@@ -553,30 +553,27 @@ function isConvexVertex(segment1 is BoundarySegment, segment2 is BoundarySegment
  * 
  * where:
  *   P = endpoint position
- *   N = endpoint normal
+ *   N = endpoint normal (unit vector)
  *   P1, P2 = segment endpoints
- *   N1, N2 = segment normals
- *   d = displacement distance (unknown)
- *   t = parameter on segment [0,1] (unknown)
+ *   N1, N2 = segment normals (unit vectors)
+ *   d = displacement distance (unknown, with length units)
+ *   t = parameter on segment [0,1] (unknown, unitless)
  * 
- * This is a system of 2 equations in 2 unknowns (d, t) in 2D, or 3 equations for 2 unknowns in 3D.
- * We solve for d > 0 and t in [0,1].
+ * The paper states this leads to a quadratic equation via substitution method.
+ * We solve algebraically for both solutions and check validity.
  * 
  * @param endpointPos : Position of the endpoint
- * @param endpointNormal : Normal at the endpoint
+ * @param endpointNormal : Normal at the endpoint (unit vector)
  * @param segmentStart : Start position of the segment
  * @param segmentEnd : End position of the segment
- * @param segmentNormalStart : Normal at segment start
- * @param segmentNormalEnd : Normal at segment end
+ * @param segmentNormalStart : Normal at segment start (unit vector)
+ * @param segmentNormalEnd : Normal at segment end (unit vector)
  * @returns {map} : Map with "collides" boolean, "distance" d, and "parameter" t if collision occurs
  */
 function solveEndpointSegmentCollision(endpointPos is Vector, endpointNormal is Vector,
                                       segmentStart is Vector, segmentEnd is Vector,
                                       segmentNormalStart is Vector, segmentNormalEnd is Vector) returns map
 {
-    // We work in 2D by projecting onto the plane (assuming all points are coplanar)
-    // Extract x and y components (assuming z is normal to plane or consistent)
-    
     const P = endpointPos;
     const N = endpointNormal;
     const P1 = segmentStart;
@@ -584,83 +581,152 @@ function solveEndpointSegmentCollision(endpointPos is Vector, endpointNormal is 
     const N1 = segmentNormalStart;
     const N2 = segmentNormalEnd;
     
-    // Equation: P + d*N = (1-t)*P1 + t*P2 + d*((1-t)*N1 + t*N2)
-    // Rearranging: P - (1-t)*P1 - t*P2 = d*((1-t)*N1 + t*N2 - N)
+    // Extract components for 2D solution (work in plane)
+    // Using first two components (x, y) assuming planar configuration
+    const px = P[0] / meter;
+    const py = P[1] / meter;
+    const nx = N[0];
+    const ny = N[1];
+    const p1x = P1[0] / meter;
+    const p1y = P1[1] / meter;
+    const p2x = P2[0] / meter;
+    const p2y = P2[1] / meter;
+    const n1x = N1[0];
+    const n1y = N1[1];
+    const n2x = N2[0];
+    const n2y = N2[1];
     
-    // This gives us 3 equations (x, y, z) with 2 unknowns (d, t)
-    // We need to solve this as an overdetermined system or use 2 equations
-    
-    // Let's use x and y components:
-    // P.x + d*N.x = (1-t)*P1.x + t*P2.x + d*((1-t)*N1.x + t*N2.x)
-    // P.y + d*N.y = (1-t)*P1.y + t*P2.y + d*((1-t)*N1.y + t*N2.y)
+    // Equation (unitless after dividing by meter):
+    // px + d*nx = (1-t)*p1x + t*p2x + d*((1-t)*n1x + t*n2x)
+    // py + d*ny = (1-t)*p1y + t*p2y + d*((1-t)*n1y + t*n2y)
     
     // Rearranging:
-    // P.x - P1.x + t*(P1.x - P2.x) = d*(N.x - N1.x + t*(N1.x - N2.x))
-    // P.y - P1.y + t*(P1.y - P2.y) = d*(N.y - N1.y + t*(N1.y - N2.y))
+    // px - p1x + t*(p1x - p2x) = d*(n1x - nx + t*(n2x - n1x))
+    // py - p1y + t*(p1y - p2y) = d*(n1y - ny + t*(n2y - n1y))
     
-    // This is a quadratic system in general. Let's use a numerical approach.
-    // Try to solve using substitution method as described in the paper.
+    // Define: ax = px - p1x, ay = py - p1y
+    //         bx = p1x - p2x, by = p1y - p2y
+    //         cx = n1x - nx, cy = n1y - ny
+    //         dx = n2x - n1x, dy = n2y - n1y
     
-    // Simplified approach for now: assume normals don't change significantly (linear interpolation)
-    // Then we have a linear system we can solve more easily
+    const ax = px - p1x;
+    const ay = py - p1y;
+    const bx = p1x - p2x;
+    const by = p1y - p2y;
+    const cx = n1x - nx;
+    const cy = n1y - ny;
+    const dx = n2x - n1x;
+    const dy = n2y - n1y;
     
-    // Let's set up the linear system: A*[d, t]^T = b
-    // From the two equations:
-    // d*N.x - d*N1.x - d*t*(N1.x - N2.x) - t*(P1.x - P2.x) = P1.x - P.x
-    // d*N.y - d*N1.y - d*t*(N1.y - N2.y) - t*(P1.y - P2.y) = P1.y - P.y
+    // System: ax + t*bx = d*(cx + t*dx)
+    //         ay + t*by = d*(cy + t*dy)
     
-    // This is still non-linear due to the d*t term. 
-    // The paper mentions this leads to a quadratic equation in general.
-    // For implementation, we'll use an iterative approach or closed-form for special cases.
+    // Eliminate t by cross-multiplication:
+    // (ax + t*bx)*(cy + t*dy) = (ay + t*by)*(cx + t*dx)
     
-    // Simplified implementation: Try multiple t values and solve for d, pick best solution
-    const numTestPoints = 20;
+    // Expanding:
+    // ax*cy + ax*t*dy + t*bx*cy + t^2*bx*dy = ay*cx + ay*t*dx + t*by*cx + t^2*by*dx
+    
+    // Collecting by powers of t:
+    // t^2: bx*dy - by*dx
+    // t: ax*dy + bx*cy - ay*dx - by*cx  
+    // 1: ax*cy - ay*cx
+    
+    // This gives: At^2 + Bt + C = 0 where:
+    const At = bx * dy - by * dx;
+    const Bt = ax * dy + bx * cy - ay * dx - by * cx;
+    const Ct = ax * cy - ay * cx;
+    
+    const tolerance = 1e-12;
+    var tSolutions = [];
+    
+    if (abs(At) < tolerance)
+    {
+        // Linear in t: Bt + C = 0
+        if (abs(Bt) > tolerance)
+        {
+            const t = -Ct / Bt;
+            tSolutions = append(tSolutions, t);
+        }
+    }
+    else
+    {
+        // Quadratic in t: solve At^2 + Bt + C = 0
+        const discriminant = Bt * Bt - 4.0 * At * Ct;
+        
+        if (discriminant >= 0)
+        {
+            const sqrtDisc = sqrt(discriminant);
+            const t1 = (-Bt + sqrtDisc) / (2.0 * At);
+            const t2 = (-Bt - sqrtDisc) / (2.0 * At);
+            
+            tSolutions = append(tSolutions, t1);
+            if (abs(t1 - t2) > 1e-9)
+            {
+                tSolutions = append(tSolutions, t2);
+            }
+        }
+    }
+    
+    // For each valid t, solve for d and verify
     var bestSolution = { "collides" : false, "distance" : 0 * meter, "parameter" : 0.0 };
     var minDistance = 1e10 * meter;
     
-    for (var i = 0; i <= numTestPoints; i += 1)
+    for (var i = 0; i < @size(tSolutions); i += 1)
     {
-        const t = i / numTestPoints;
+        const t = tSolutions[i];
         
-        // For this t, solve for d
-        // P + d*N = (1-t)*P1 + t*P2 + d*((1-t)*N1 + t*N2)
-        // P + d*N = (1-t)*(P1 + d*N1) + t*(P2 + d*N2)
-        // d*(N - (1-t)*N1 - t*N2) = (1-t)*P1 + t*P2 - P
-        
-        const targetPoint = (1 - t) * P1 + t * P2;
-        const interpolatedNormal = normalize((1 - t) * N1 + t * N2);
-        
-        // Solve: P + d*N = targetPoint + d*interpolatedNormal
-        // d*(N - interpolatedNormal) = targetPoint - P
-        
-        const normalDiff = N - interpolatedNormal;
-        const posDiff = targetPoint - P;
-        
-        // Project onto normalDiff to solve for d
-        const normalDiffLength = norm(normalDiff);
-        if (normalDiffLength < 1e-10)
+        // Check if t is in valid range
+        if (t < 0.0 || t > 1.0)
         {
-            continue; // Singular case, skip
+            continue;
         }
         
-        const d = dot(posDiff, normalDiff) / (normalDiffLength * normalDiffLength);
+        // Solve for d from: ax + t*bx = d*(cx + t*dx)
+        const denominator = cx + t * dx;
         
-        // Check if solution is valid (d > 0 and t in [0,1])
-        if (d > 0 * meter && t >= 0.0 && t <= 1.0)
+        if (abs(denominator) < tolerance)
         {
-            // Verify the solution by checking both sides of equation
-            const lhs = P + d * N;
-            const rhs = (1 - t) * (P1 + d * N1) + t * (P2 + d * N2);
-            const error = norm(lhs - rhs);
-            
-            if (error < 1e-6 * meter && d < minDistance)
+            // Try y equation instead
+            const denominatorY = cy + t * dy;
+            if (abs(denominatorY) < tolerance)
             {
-                minDistance = d;
-                bestSolution = {
-                    "collides" : true,
-                    "distance" : d,
-                    "parameter" : t
-                };
+                continue; // Singular case
+            }
+            const d = (ay + t * by) / denominatorY;
+            
+            if (d > 0)
+            {
+                // Verify with x equation
+                const check = ax + t * bx - d * (cx + t * dx);
+                if (abs(check) < 1e-6 && d * meter < minDistance)
+                {
+                    minDistance = d * meter;
+                    bestSolution = {
+                        "collides" : true,
+                        "distance" : d * meter,
+                        "parameter" : t
+                    };
+                }
+            }
+        }
+        else
+        {
+            const d = (ax + t * bx) / denominator;
+            
+            if (d > 0)
+            {
+                // Verify with y equation
+                const check = ay + t * by - d * (cy + t * dy);
+                if (abs(check) < 1e-6 && d * meter < minDistance)
+                {
+                    minDistance = d * meter;
+                    bestSolution = {
+                        "collides" : true,
+                        "distance" : d * meter,
+                        "parameter" : t
+                    };
+                }
             }
         }
     }
