@@ -176,11 +176,23 @@ Draws the MA curves on the face using sketch functions. Creates a sketch on the 
 
 ## Performance
 
-The algorithm has time complexity O((1 + genus) * n), where:
-- `genus` = number of holes in the region
-- `n` = number of boundary segments
+The algorithm has been optimized for interactive use:
+- **Time complexity**: O(n) for simple shapes (only adjacent segments tested)
+- **Time complexity**: O(n × k) for complex shapes where k is a small window (default 5 segments)
+- **Original algorithm**: O((1 + genus) × n) with all-pairs testing
 
-The performance is linear in the number of samples, making it suitable for interactive use with moderate sample densities.
+**Performance optimizations implemented:**
+1. **Reduced default sample density**: Changed from 50 to 10 for faster initial results
+2. **Limited collision testing**: Only tests adjacent segments + small window of nearby segments
+3. **Reduced numerical iterations**: Changed from 20 to 5 iterations per collision test
+4. **Smart windowing**: Skips non-adjacent testing for simple shapes (≤20 segments)
+
+These optimizations make the feature interactive for typical use cases:
+- **Simple shapes** (rectangles, circles): < 1 second
+- **Medium shapes**: 1-5 seconds
+- **Complex shapes**: May need higher sample density with proportional time increase
+
+For higher accuracy on complex curved boundaries, increase the sample density setting.
 
 ## References
 

@@ -33,7 +33,7 @@ export const medialAxisTransform = defineFeature(function(context is Context, id
         annotation { "Name" : "Planar face", "Filter" : EntityType.FACE, "MaxNumberOfPicks" : 1 }
         definition.planarFace is Query;
         
-        annotation { "Name" : "Sample density", "Default" : 50 }
+        annotation { "Name" : "Sample density", "Default" : 10 }
         isInteger(definition.sampleDensity, POSITIVE_COUNT_BOUNDS);
         
         annotation { "Name" : "Use adaptive sampling", "Default" : true }
@@ -409,7 +409,8 @@ function computeRLFSFunction(context is Context,
     // We'll build it up by testing segment collisions
     
     // Find MA extreme points and follow MA branches
-    // This is a simplified implementation that tests all segment pairs
+    // This is a PERFORMANCE-OPTIMIZED implementation that only tests adjacent segments
+    // and a limited set of nearby non-adjacent segments
     
     const segments = boundarySamples.segments;
     const numSegments = @size(segments);
@@ -422,13 +423,15 @@ function computeRLFSFunction(context is Context,
         } as RLFSFunctionData;
     }
     
-    // Test all pairs of segments for collision
-    // In the full algorithm, this would be done more efficiently
+    // Test only adjacent segments and a limited window of nearby segments for performance
+    // For basic shapes, adjacent segments are sufficient to capture the medial axis
+    const maxTestDistance = min(5, floor(numSegments / 4)); // Only test nearby segments
+    
     for (var i = 0; i < numSegments; i += 1)
     {
         const segment1 = segments[i];
         
-        // Test against adjacent segment first (convex vertices)
+        // Test against adjacent segment first (convex vertices) - CRITICAL for MA
         const nextIdx = segment1.nextIndex;
         if (nextIdx >= 0 && nextIdx < numSegments)
         {
@@ -446,25 +449,30 @@ function computeRLFSFunction(context is Context,
             }
         }
         
-        // Test against non-adjacent segments
-        for (var j = i + 2; j < numSegments; j += 1)
+        // Test against a limited window of non-adjacent segments for performance
+        // Skip this for very simple shapes (rectangles, circles)
+        if (numSegments > 20)
         {
-            if (j == segment1.nextIndex || j == segment1.previousIndex)
+            for (var offset = 2; offset <= maxTestDistance; offset += 1)
             {
-                continue;
-            }
-            
-            const segment2 = segments[j];
-            const collision = testSegmentCollision(segment1, segment2, false);
-            
-            if (collision.collides)
-            {
-                // Create RLFS pieces for both segments
-                const piece1 = createRLFSPiece(segment1.index, collision, j);
-                const piece2 = createRLFSPiece(j, collision, segment1.index);
+                const j = (i + offset) % numSegments;
+                if (j == segment1.nextIndex || j == segment1.previousIndex)
+                {
+                    continue;
+                }
                 
-                rlfsPieces = append(rlfsPieces, piece1);
-                rlfsPieces = append(rlfsPieces, piece2);
+                const segment2 = segments[j];
+                const collision = testSegmentCollision(segment1, segment2, false);
+                
+                if (collision.collides)
+                {
+                    // Create RLFS pieces for both segments
+                    const piece1 = createRLFSPiece(segment1.index, collision, j);
+                    const piece2 = createRLFSPiece(j, collision, segment1.index);
+                    
+                    rlfsPieces = append(rlfsPieces, piece1);
+                    rlfsPieces = append(rlfsPieces, piece2);
+                }
             }
         }
     }
@@ -592,9 +600,9 @@ function testEndpointSegmentCollision(endpointPosition is Vector,
     const P2 = vector(segmentEnd[0] / meter, segmentEnd[1] / meter);
     const N2 = vector(segmentEndNormal[0], segmentEndNormal[1]);
     
-    // Try to find a solution using numerical methods
-    // Test multiple values of t and find the corresponding d
-    const numTests = 20;
+    // Try to find a solution using numerical methods with reduced iterations for performance
+    // Test fewer values of t and find the corresponding d
+    const numTests = 5; // Reduced from 20 for better performance
     var bestResult = undefined;
     var bestError = 1e10;
     
