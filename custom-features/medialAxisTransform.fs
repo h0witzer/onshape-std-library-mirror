@@ -339,7 +339,10 @@ function adaptiveSampleCurvedEdge(context is Context, edge is Query, edgeLength 
     }
     
     // Perform adaptive refinement based on curvature
-    samplePoints, sampleNormals, sampleParameters = refineBasedOnCurvature(context, edge, samplePoints, sampleNormals, sampleParameters, curvatureThreshold);
+    const refinedData = refineBasedOnCurvature(context, edge, samplePoints, sampleNormals, sampleParameters, curvatureThreshold);
+    samplePoints = refinedData.points;
+    sampleNormals = refinedData.normals;
+    sampleParameters = refinedData.parameters;
     
     // Create segments from sample points
     for (var i = 0; i < @size(samplePoints) - 1; i += 1)
@@ -367,10 +370,10 @@ function adaptiveSampleCurvedEdge(context is Context, edge is Query, edgeLength 
  * @param normals : Array of normal vectors
  * @param parameters : Array of parameters
  * @param curvatureThreshold : Threshold for refinement
- * @returns {array, array, array} : Refined arrays of points, normals, and parameters
+ * @returns {map} : Map with "points", "normals", and "parameters" arrays
  */
 function refineBasedOnCurvature(context is Context, edge is Query, points is array, normals is array, 
-                               parameters is array, curvatureThreshold is number) returns array
+                               parameters is array, curvatureThreshold is number) returns map
 {
     // Simple refinement: check angle change between consecutive segments
     // If angle change is large, add midpoint sample
@@ -405,7 +408,11 @@ function refineBasedOnCurvature(context is Context, edge is Query, points is arr
         refinedParameters = append(refinedParameters, parameters[i + 1]);
     }
     
-    return refinedPoints, refinedNormals, refinedParameters;
+    return {
+        "points" : refinedPoints,
+        "normals" : refinedNormals,
+        "parameters" : refinedParameters
+    };
 }
 
 /**
