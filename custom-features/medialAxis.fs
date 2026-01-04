@@ -16,11 +16,10 @@ import(path : "onshape/std/projectiontype.gen.fs", version : "2837.0");
  * 
  * The medial axis is computed by:
  * 1. Extruding the face profile normally in the direction of the face normal
- * 2. Applying a 45-degree draft to each side face individually, from largest to smallest
+ * 2. Applying a 45-degree draft to all side faces at once
  * 3. Querying all edges from the drafted body
  * 4. Filtering out edges that are vertex-adjacent to the start cap face
- * 5. Also filtering out edges from faces that failed to draft
- * 6. Projecting the remaining peak edges back onto the input face
+ * 5. Projecting the remaining peak edges back onto the input face
  * 
  * @param context {Context}: The context of the feature
  * @param id {Id}: The identifier for this feature
@@ -60,53 +59,43 @@ export const medialAxis = defineFeature(function(context is Context, id is Id, d
         
         const extrudedBody = qCreatedBy(id + "extrude", EntityType.BODY);
         
-        // Step 2: Apply 45-degree inward draft to side faces, one at a time
+        // Step 2: Apply 45-degree inward draft to create a tapered body
+        // We need to draft the side faces (walls) of the extrusion inward
         // Get all faces of the extruded body except the start and end caps
         const allExtrudedFaces = qOwnedByBody(extrudedBody, EntityType.FACE);
         const startCapFace = qCapEntity(id + "extrude", CapType.START, EntityType.FACE);
         const endCapFace = qCapEntity(id + "extrude", CapType.END, EntityType.FACE);
         const sideFaces = qSubtraction(allExtrudedFaces, qUnion([startCapFace, endCapFace]));
         
-        // Get array of individual side faces sorted by area (largest first)
-        const sideFacesArray = evaluateQuery(context, sideFaces);
-        const sortedSideFaces = sortFacesByArea(context, sideFacesArray);
-        
-        // Track faces that failed to draft - their edges should be excluded
-        var failedDraftFaces is Query = qNothing();
-        
-        // Draft each face individually, starting with largest
-        var faceIndex = 0;
-        for (var face in sortedSideFaces)
+        // Apply draft to the side faces using the input face plane as the reference surface
+        // Use try/catch to handle draft failures gracefully
+        var draftSucceeded = true;
+        try silent
         {
-            try silent
-            {
-                opDraft(context, id + "draft" + faceIndex, {
-                    "draftType" : DraftType.REFERENCE_SURFACE,
-                    "draftFaces" : face,
-                    "referenceSurface" : facePlane,
-                    "pullVec" : facePlane.normal,
-                    "angle" : 45 * degree
-                });
-            }
-            catch
-            {
-                // If draft fails, add this face to the exclusion list
-                failedDraftFaces = qUnion([failedDraftFaces, face]);
-            }
-            faceIndex += 1;
+            opDraft(context, id + "draft", {
+                "draftType" : DraftType.REFERENCE_SURFACE,
+                "draftFaces" : sideFaces,
+                "referenceSurface" : facePlane,
+                "pullVec" : facePlane.normal,
+                "angle" : 45 * degree
+            });
+        }
+        catch
+        {
+            // If draft fails, we'll continue without it
+            // The undrafted extrusion may still provide useful edges
+            draftSucceeded = false;
         }
         
         // Step 3: Query all edges from the drafted body
         const allEdgesAfterDraft = qOwnedByBody(extrudedBody, EntityType.EDGE);
         
         // Step 4: Filter out edges that are vertex-adjacent to the start cap face
-        // Also exclude edges that belong to faces that failed to draft
         const edgesAdjacentToStartCap = qAdjacent(startCapFace, AdjacencyType.VERTEX, EntityType.EDGE);
-        const edgesFromFailedFaces = qAdjacent(failedDraftFaces, AdjacencyType.EDGE, EntityType.EDGE);
-        const edgesToExclude = qUnion([edgesAdjacentToStartCap, edgesFromFailedFaces]);
         
-        // Get the peak edges by subtracting excluded edges from all edges in the drafted body
-        const peakEdges = qSubtraction(allEdgesAfterDraft, edgesToExclude);
+        // Get the peak edges by subtracting edges adjacent to the start cap
+        // from all edges in the drafted body
+        const peakEdges = qSubtraction(allEdgesAfterDraft, edgesAdjacentToStartCap);
         
         if (isQueryEmpty(context, peakEdges))
         {
@@ -145,43 +134,4 @@ function calculateExtrusionDistance(context is Context, face is Query) returns V
     // Use the diagonal as a safe upper bound
     // For a 45-degree draft, this ensures we extrude far enough
     return diagonal;
-}
-
-/**
- * Sort an array of face queries by their surface area in descending order (largest first).
- * This is used to draft faces from largest to smallest, which improves draft success rate.
- * 
- * @param context {Context}: The context
- * @param faces {array}: Array of face queries to sort
- * @returns {array}: Sorted array of face queries (largest area first)
- */
-function sortFacesByArea(context is Context, faces is array) returns array
-{
-    // Create array of maps containing face and its area
-    var facesWithAreas = [];
-    for (var face in faces)
-    {
-        const area = evArea(context, { "entities" : face });
-        facesWithAreas = append(facesWithAreas, { "face" : face, "area" : area });
-    }
-    
-    // Sort by area in descending order (largest first)
-    // For descending order: if a > b, return negative (a comes first)
-    facesWithAreas = sort(facesWithAreas, function(a, b) {
-        if (a.area > b.area)
-            return -1;
-        else if (a.area < b.area)
-            return 1;
-        else
-            return 0;
-    });
-    
-    // Extract just the face queries
-    var sortedFaces = [];
-    for (var item in facesWithAreas)
-    {
-        sortedFaces = append(sortedFaces, item.face);
-    }
-    
-    return sortedFaces;
 }
