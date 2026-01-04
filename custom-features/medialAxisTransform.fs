@@ -3,11 +3,15 @@ import(path : "onshape/std/common.fs", version : "2837.0");
 import(path : "onshape/std/containers.fs", version : "2837.0");
 import(path : "onshape/std/coordSystem.fs", version : "2837.0");
 import(path : "onshape/std/curveGeometry.fs", version : "2837.0");
+import(path : "onshape/std/curvetype.gen.fs", version : "2837.0");
 import(path : "onshape/std/debug.fs", version : "2837.0");
+import(path : "onshape/std/edgetopology.gen.fs", version : "2837.0");
 import(path : "onshape/std/evaluate.fs", version : "2837.0");
 import(path : "onshape/std/feature.fs", version : "2837.0");
 import(path : "onshape/std/math.fs", version : "2837.0");
 import(path : "onshape/std/sketch.fs", version : "2837.0");
+import(path : "onshape/std/surfaceGeometry.fs", version : "2837.0");
+import(path : "onshape/std/surfacetype.gen.fs", version : "2837.0");
 import(path : "onshape/std/units.fs", version : "2837.0");
 import(path : "onshape/std/vector.fs", version : "2837.0");
 import(path : "onshape/std/query.fs", version : "2837.0");
@@ -40,7 +44,7 @@ export const medialAxisTransform = defineFeature(function(context is Context, id
         annotation { "Name" : "Planar face", "Filter" : EntityType.FACE, "MaxNumberOfPicks" : 1 }
         definition.planarFace is Query;
         
-        annotation { "Name" : "Sampling density", "Description" : "Number of samples per unit length for adaptive boundary discretization" }
+        annotation { "Name" : "Sampling density", "Description" : "Number of samples per unit length for adaptive boundary discretization", "Default" : 100 }
         isInteger(definition.samplingDensity, POSITIVE_COUNT_BOUNDS);
         
         annotation { "Name" : "Show debug visualization", "Default" : true }
