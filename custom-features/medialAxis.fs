@@ -69,7 +69,6 @@ export const medialAxis = defineFeature(function(context is Context, id is Id, d
         
         // Apply draft to the side faces using the input face plane as the reference surface
         // Use try/catch to handle draft failures gracefully
-        var draftSucceeded = true;
         try silent
         {
             opDraft(context, id + "draft", {
@@ -84,7 +83,6 @@ export const medialAxis = defineFeature(function(context is Context, id is Id, d
         {
             // If draft fails, we'll continue without it
             // The undrafted extrusion may still provide useful edges
-            draftSucceeded = false;
         }
         
         // Step 3: Query all edges from the drafted body
