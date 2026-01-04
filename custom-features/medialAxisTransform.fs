@@ -64,8 +64,8 @@ export const medialAxisTransform = defineFeature(function(context is Context, id
     }
     {
         // Verify face is planar
-        const faceDefinition = evFaceDefinition(context, { "face" : definition.planarFace });
-        if (faceDefinition.surfaceType != SurfaceType.PLANE)
+        const surfaceDefinition = evSurfaceDefinition(context, { "face" : definition.planarFace });
+        if (surfaceDefinition.surfaceType != SurfaceType.PLANE)
         {
             throw regenError("Selected face must be planar", ["planarFace"]);
         }
@@ -226,7 +226,7 @@ function discretizeBoundary(context is Context, planarFace is Query, samplingDen
     var segments = [];
     
     // Get boundary edges of the face
-    const boundaryEdges = qOwnedByBody(qEdgeTopologyFilter(qOwnerEdge(planarFace), EdgeTopology.FULL), qUnionQuery(planarFace));
+    const boundaryEdges = qAdjacent(planarFace, AdjacencyType.EDGE, EntityType.EDGE);
     const edges = evaluateQuery(context, boundaryEdges);
     
     if (@size(edges) == 0)
@@ -241,7 +241,7 @@ function discretizeBoundary(context is Context, planarFace is Query, samplingDen
     {
         const edge = edges[i];
         const edgeSegments = discretizeEdge(context, edge, samplingDensity, curvatureThreshold);
-        segments = concatenate(segments, edgeSegments);
+        segments = concatenateArrays(segments, edgeSegments);
     }
     
     // Process reflex vertices and insert dummy segments
@@ -428,8 +428,8 @@ function refineBasedOnCurvature(context is Context, edge is Query, points is arr
 function computeInwardNormal(context is Context, edge is Query, tangent is Vector, parameter is number) returns Vector
 {
     // Get the face that owns this edge
-    const owningFace = qOwnerEdge(edge);
-    const faces = evaluateQuery(context, owningFace);
+    const owningFaces = qAdjacent(edge, AdjacencyType.VERTEX, EntityType.FACE);
+    const faces = evaluateQuery(context, owningFaces);
     
     if (@size(faces) == 0)
     {
@@ -874,7 +874,7 @@ function followMABranch(context is Context, boundarySegments is array, leftStart
     var right = rightStart;
     
     // Perform initial collision test between starting pair
-    var madeProgress = testAndUpdateSegmentPair(boundarySegments, left, right);
+    testAndUpdateSegmentPair(boundarySegments, left, right);
     
     // Main loop: alternate between moving right and moving left
     var continueTracking = true;
@@ -1503,7 +1503,7 @@ function visualizeMedialAxis(context is Context, id is Id, maGraph is MAGraph, s
 {
     // Create a sketch on the plane
     const sketchId = id + "maSketch";
-    newSketchOnPlane(context, sketchId, { "sketchPlane" : sketchPlane });
+    const sketch = newSketchOnPlane(context, sketchId, { "sketchPlane" : sketchPlane });
     
     // Draw MA edges as sketch lines
     for (var i = 0; i < @size(maGraph.edges); i += 1)
@@ -1517,7 +1517,7 @@ function visualizeMedialAxis(context is Context, id is Id, maGraph is MAGraph, s
         const endPoint2D = worldToPlane(sketchPlane, endNode.position);
         
         // Create sketch line
-        skLineSegment(context, sketchId + ("edge" ~ i), {
+        skLineSegment(sketch, "edge" ~ i, {
             "start" : startPoint2D,
             "end" : endPoint2D
         });
@@ -1531,7 +1531,7 @@ function visualizeMedialAxis(context is Context, id is Id, maGraph is MAGraph, s
     }
     
     // Solve the sketch
-    skSolve(context, sketchId);
+    skSolve(sketch);
 }
 
 /**
