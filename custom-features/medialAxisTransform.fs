@@ -517,8 +517,19 @@ function processReflexVertices(segments is array) returns array
         // At junction: currentSegment.endPoint == nextSegment.startPoint
         
         // Calculate inner angle at junction
-        const dir1 = normalize(currentSegment.endPoint - currentSegment.startPoint);
-        const dir2 = normalize(nextSegment.endPoint - nextSegment.startPoint);
+        const vec1 = currentSegment.endPoint - currentSegment.startPoint;
+        const vec2 = nextSegment.endPoint - nextSegment.startPoint;
+        
+        // Check for zero-length vectors
+        if (norm(vec1) < TOLERANCE.zeroLength || norm(vec2) < TOLERANCE.zeroLength)
+        {
+            // Skip reflex vertex processing for dummy segments
+            processedSegments = append(processedSegments, currentSegment);
+            continue;
+        }
+        
+        const dir1 = normalize(vec1);
+        const dir2 = normalize(vec2);
         
         // Use cross product to determine turn direction
         // In 2D (assuming planar): crossZ = dir1.x * dir2.y - dir1.y * dir2.x
@@ -565,7 +576,10 @@ function processReflexVertices(segments is array) returns array
                 const t = j / (numDummies + 1.0);
                 
                 // Interpolate normal direction
-                const interpolatedNormal = normalize((1.0 - t) * normal1 + t * normal2);
+                const interpolatedNormalVec = (1.0 - t) * normal1 + t * normal2;
+                const interpolatedNormal = norm(interpolatedNormalVec) > TOLERANCE.zeroLength 
+                    ? normalize(interpolatedNormalVec) 
+                    : normal1; // Fallback to first normal
                 
                 // Create zero-length dummy segment
                 const dummySegment = {
@@ -1482,11 +1496,13 @@ function computeMAEndpoint(segment is BoundarySegment, piece is RLFSPiece, useSt
     
     // Sample boundary at parameters and displace along normal
     const boundaryPoint = (1 - parameter) * segment.startPoint + parameter * segment.endPoint;
-    const normal = normalize((1 - parameter) * segment.startNormal + parameter * segment.endNormal);
+    const normalVec = (1 - parameter) * segment.startNormal + parameter * segment.endNormal;
+    const normal = norm(normalVec) > TOLERANCE.zeroLength ? normalize(normalVec) : segment.startNormal;
     const displacedPoint1 = boundaryPoint + displacement * normal;
     
     const peerBoundaryPoint = (1 - peerParameter) * peerSegment.startPoint + peerParameter * peerSegment.endPoint;
-    const peerNormal = normalize((1 - peerParameter) * peerSegment.startNormal + peerParameter * peerSegment.endNormal);
+    const peerNormalVec = (1 - peerParameter) * peerSegment.startNormal + peerParameter * peerSegment.endNormal;
+    const peerNormal = norm(peerNormalVec) > TOLERANCE.zeroLength ? normalize(peerNormalVec) : peerSegment.startNormal;
     const displacedPoint2 = peerBoundaryPoint + peerDisplacement * peerNormal;
     
     // Average the two estimates
