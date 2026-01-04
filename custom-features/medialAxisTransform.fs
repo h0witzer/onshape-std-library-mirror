@@ -457,13 +457,30 @@ function computeInwardNormal(context is Context, edge is Query, tangent is Vecto
         catch
         {
             // Fallback: use cross product of tangent with up vector
-            faceNormal = normalize(cross(tangent, vector(0, 0, 1)));
+            const fallbackCross = cross(tangent, vector(0, 0, 1));
+            if (norm(fallbackCross) > TOLERANCE.zeroLength)
+            {
+                faceNormal = normalize(fallbackCross);
+            }
+            else
+            {
+                faceNormal = vector(0, 1, 0); // Default fallback
+            }
         }
     }
     
     // Compute perpendicular to tangent in the plane of the face
     // For a planar face, the inward normal is: faceNormal × tangent
     const perpendicular = cross(faceNormal, tangent);
+    
+    // Check if cross product is valid (non-zero)
+    const perpendicularMagnitude = norm(perpendicular);
+    if (perpendicularMagnitude < TOLERANCE.zeroLength)
+    {
+        // Tangent is parallel to face normal - this shouldn't happen for valid boundary edges
+        // Use perpendicularVector as fallback
+        return perpendicularVector(tangent);
+    }
     
     // Normalize to unit vector
     return normalize(perpendicular);
