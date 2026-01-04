@@ -414,6 +414,14 @@ function computeRLFSFunction(context is Context,
     const segments = boundarySamples.segments;
     const numSegments = @size(segments);
     
+    if (numSegments == 0)
+    {
+        println("Warning: No segments to process");
+        return {
+            "pieces" : []
+        } as RLFSFunctionData;
+    }
+    
     // Test all pairs of segments for collision
     // In the full algorithm, this would be done more efficiently
     for (var i = 0; i < numSegments; i += 1)
@@ -459,6 +467,11 @@ function computeRLFSFunction(context is Context,
                 rlfsPieces = append(rlfsPieces, piece2);
             }
         }
+    }
+    
+    if (@size(rlfsPieces) == 0)
+    {
+        println("Warning: No collisions detected - medial axis may be empty or sample density may be too low");
     }
     
     return {
@@ -701,6 +714,15 @@ function extractMedialAxisGraph(boundarySamples is BoundarySamples,
     var nodes = [];
     var edges = [];
     var pieces = rlfsFunctionData.pieces;
+    
+    if (@size(pieces) == 0)
+    {
+        println("Warning: No RLFS pieces to process - returning empty graph");
+        return {
+            "nodes" : [],
+            "edges" : []
+        } as MedialAxisGraph;
+    }
     
     // Iterate over all RLFS pieces
     for (var i = 0; i < @size(pieces); i += 1)
