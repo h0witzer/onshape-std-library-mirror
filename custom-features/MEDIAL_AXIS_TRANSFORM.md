@@ -158,28 +158,30 @@ Draws the MA curves on the face using sketch functions. Creates a sketch on the 
 ## Limitations and Future Work
 
 ### Current Limitations
-1. Collision detection uses simplified numerical approach (should be analytical quadratic solution)
-2. Find MA Extreme Points and Follow MA are simplified (should implement full algorithm)
-3. Fix MA for holes not yet implemented
-4. Reflex vertex handling (dummy segments) not yet implemented
-5. No adaptive sampling based on curvature yet
+1. **Simplified Algorithm**: Does not implement the full Find MA Extreme Points and Follow MA routines from the paper
+2. **Collision Detection**: Uses numerical approximation instead of analytical quadratic solution
+3. **Limited Collision Testing**: Only tests adjacent + small window of segments (not full intelligent boundary marching)
+4. **No Reflex Vertex Handling**: Doesn't split reflex vertices into dummy segments
+5. **No Hole Support**: Fix MA routine not implemented for regions with holes
+6. **No Adaptive Sampling**: Samples uniformly instead of adapting to curvature
 
 ### Future Improvements
-1. Implement analytical collision detection solver
-2. Implement full Find MA Extreme Points routine with LMPC detection
-3. Implement full Follow MA routine with branch tracking and overwriting
-4. Implement Fix MA routine for regions with holes
-5. Add reflex vertex splitting into dummy segments
-6. Implement curvature-aware adaptive sampling
-7. Optimize collision testing with spatial data structures
-8. Add offset curve generation capability
+1. **Implement Full Paper Algorithm**: Add complete Find MA Extreme Points and Follow MA routines for true O(n) linear time
+2. **Analytical Collision Solver**: Solve quadratic equation analytically instead of numerically
+3. **Reflex Vertex Splitting**: Add dummy segments for reflex vertices as described in paper
+4. **Hole Support**: Implement Fix MA routine for handling inner boundaries
+5. **Adaptive Sampling**: Implement curvature-aware sampling as described in paper
+6. **Node Sharing**: Properly share nodes between edges in graph extraction
+7. **Offset Curves**: Add offset curve generation capability from Section 5 of paper
 
 ## Performance
 
-The algorithm has been optimized for interactive use:
+The paper's full algorithm achieves O((1 + genus) × n) time complexity through intelligent boundary marching with Find MA Extreme Points and Follow MA routines.
+
+**Current implementation** (simplified version):
 - **Time complexity**: O(n) for simple shapes (only adjacent segments tested)
 - **Time complexity**: O(n × k) for complex shapes where k is a small window (default 5 segments)
-- **Original algorithm**: O((1 + genus) × n) with all-pairs testing
+- **Note**: Does not implement the full Find MA Extreme Points and Follow MA routines from the paper
 
 **Performance optimizations implemented:**
 1. **Reduced default sample density**: Changed from 50 to 10 for faster initial results
@@ -193,6 +195,8 @@ These optimizations make the feature interactive for typical use cases:
 - **Complex shapes**: May need higher sample density with proportional time increase
 
 For higher accuracy on complex curved boundaries, increase the sample density setting.
+
+**Future Work**: Implementing the full Find MA Extreme Points and Follow MA routines from the paper would achieve true O(n) linear time even for complex shapes.
 
 ## References
 

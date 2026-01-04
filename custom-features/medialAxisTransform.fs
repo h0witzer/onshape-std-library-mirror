@@ -15,13 +15,19 @@ import(path : "onshape/std/valueBounds.fs", version : "2837.0");
 /**
  * Medial Axis Transform (MAT) for planar domains.
  * 
- * This feature implements the algorithm from the paper:
+ * This feature implements a simplified version of the algorithm from the paper:
  * "Performant Medial Axis Transform for Planar Domains"
  * 
+ * IMPLEMENTATION NOTE: This is a simplified implementation that achieves good performance
+ * for interactive use but does NOT implement the full linear-time algorithm from the paper.
+ * The paper achieves O((1+genus)×n) through intelligent boundary marching (Find MA Extreme
+ * Points and Follow MA routines). This implementation uses a simpler approach with limited
+ * collision testing that is O(n) for simple shapes and O(n×k) for complex shapes.
+ * 
  * The algorithm computes the medial axis (skeleton) of a planar face by:
- * 1. Sampling the face boundary with adaptive curvature-aware sampling
- * 2. Simulating a grass-fire model through segment collision detection
- * 3. Computing the Reduced Length Function to Skeleton (RLFS)
+ * 1. Sampling the face boundary into segments with inward normals
+ * 2. Testing adjacent segments (and limited nearby segments) for collision
+ * 3. Computing the Reduced Length Function to Skeleton (RLFS) from collisions
  * 4. Extracting the explicit medial axis as a graph structure
  * 5. Drawing the medial axis curves on the face
  */
