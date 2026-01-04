@@ -540,18 +540,18 @@ function processReflexVertices(segments is array) returns array
         else
         {
             // Left turn or straight - check if reflex
-            innerAngle = 2 * PI - angle;
+            innerAngle = 2 * PI * radian - angle;
         }
         
         // Add current segment
         processedSegments = append(processedSegments, currentSegment);
         
         // Check if this is a reflex vertex (inner angle > π)
-        if (innerAngle > PI + 0.01) // Small tolerance
+        if (innerAngle > PI * radian + 0.01 * radian) // Small tolerance
         {
             // Calculate number of dummy segments
-            const angleDifference = innerAngle - PI;
-            const numDummies = max(1, ceil(angleDifference / (PI / 10.0)));
+            const angleDifference = innerAngle - PI * radian;
+            const numDummies = max(1, ceil(angleDifference / (PI * radian / 10.0)));
             
             // Get normals at junction
             const normal1 = currentSegment.endNormal;
