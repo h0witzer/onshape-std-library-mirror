@@ -4,6 +4,7 @@ import(path : "onshape/std/debug.fs", version : "2837.0");
 import(path : "onshape/std/evaluate.fs", version : "2837.0");
 import(path : "onshape/std/feature.fs", version : "2837.0");
 import(path : "onshape/std/math.fs", version : "2837.0");
+import(path : "onshape/std/path.fs", version : "2837.0");
 import(path : "onshape/std/query.fs", version : "2837.0");
 import(path : "onshape/std/sketch.fs", version : "2837.0");
 import(path : "onshape/std/surfaceGeometry.fs", version : "2837.0");
@@ -236,70 +237,97 @@ function sampleFaceBoundary(context is Context,
 {
     var allSegments = [];
     
-    // Get all boundary edges of the face
-    const boundaryEdges = qAdjacent(face, AdjacencyType.EDGE, EntityType.EDGE);
-    const edgeArray = evaluateQuery(context, boundaryEdges);
+    // Get all boundary loops of the face
+    // Use qLoopEdges to get edges forming loops
+    const loopEdges = qLoopEdges(face);
     
-    if (@size(edgeArray) == 0)
+    // Construct paths from the loop edges to get ordered edge sequences
+    const paths = constructPaths(context, loopEdges, {});
+    
+    if (@size(paths) == 0)
     {
-        throw regenError("No boundary edges found on selected face");
+        throw regenError("No boundary loops found on selected face");
     }
     
-    // Process each boundary edge
-    for (var i = 0; i < @size(edgeArray); i += 1)
+    println("  - Found " ~ @size(paths) ~ " boundary loops");
+    
+    // Process each boundary loop
+    for (var loopIdx = 0; loopIdx < @size(paths); loopIdx += 1)
     {
-        const edge = edgeArray[i];
+        const path = paths[loopIdx];
+        const edges = path.edges;
         
-        // Get edge length for adaptive sampling
-        const edgeLength = evLength(context, { "entities" : edge });
+        println("  - Loop " ~ loopIdx ~ " has " ~ @size(edges) ~ " edges");
         
-        // Determine number of samples for this edge
-        var numSamples = ceil(sampleDensity * edgeLength / meter);
-        if (numSamples < 2)
+        // Process each edge in the loop
+        for (var edgeIdx = 0; edgeIdx < @size(edges); edgeIdx += 1)
         {
-            numSamples = 2;
-        }
-        
-        // Sample points along the edge
-        for (var j = 0; j < numSamples - 1; j += 1)
-        {
-            const param1 = j / (numSamples - 1);
-            const param2 = (j + 1) / (numSamples - 1);
+            const edge = edges[edgeIdx];
+            const edgeFlipped = path.flipped[edgeIdx];
             
-            // Get positions at parameters
-            const tangentLine1 = evEdgeTangentLine(context, { 
-                "edge" : edge, 
-                "parameter" : param1 
-            });
-            const tangentLine2 = evEdgeTangentLine(context, { 
-                "edge" : edge, 
-                "parameter" : param2 
-            });
+            // Get edge length for adaptive sampling
+            const edgeLength = evLength(context, { "entities" : edge });
             
-            const startPoint = tangentLine1.origin;
-            const endPoint = tangentLine2.origin;
+            // Determine number of samples for this edge based on length
+            var numSamples = max(2, ceil(sampleDensity * edgeLength / (0.01 * meter)));
             
-            // Compute normals pointing inward to the face
-            // Normal is perpendicular to edge tangent and lies in the plane
-            const edgeTangent1 = tangentLine1.direction;
-            const edgeTangent2 = tangentLine2.direction;
-            
-            // Normal in 2D plane: rotate tangent 90 degrees
-            // Check which direction points into the face
-            const normal1 = computeInwardNormal(context, face, plane, startPoint, edgeTangent1);
-            const normal2 = computeInwardNormal(context, face, plane, endPoint, edgeTangent2);
-            
-            const segment = {
-                "startPoint" : startPoint,
-                "endPoint" : endPoint,
-                "startNormal" : normal1,
-                "endNormal" : normal2,
-                "index" : @size(allSegments),
-                "nextIndex" : @size(allSegments) + 1,
-                "previousIndex" : @size(allSegments) - 1
-            } as BoundarySegment;
-            
-            allSegments = append(allSegments, segment);
+            // Sample points along the edge
+            for (var j = 0; j < numSamples - 1; j += 1)
+            {
+                var param1 = j / (numSamples - 1);
+                var param2 = (j + 1) / (numSamples - 1);
+                
+                // If edge is flipped in the path, reverse parameters
+                if (edgeFlipped)
+                {
+                    param1 = 1 - param1;
+                    param2 = 1 - param2;
+                    const temp = param1;
+                    param1 = param2;
+                    param2 = temp;
+                }
+                
+                // Get positions at parameters
+                const tangentLine1 = evEdgeTangentLine(context, { 
+                    "edge" : edge, 
+                    "parameter" : param1 
+                });
+                const tangentLine2 = evEdgeTangentLine(context, { 
+                    "edge" : edge, 
+                    "parameter" : param2 
+                });
+                
+                const startPoint = tangentLine1.origin;
+                const endPoint = tangentLine2.origin;
+                
+                // Compute normals pointing inward to the face
+                var edgeTangent1 = tangentLine1.direction;
+                var edgeTangent2 = tangentLine2.direction;
+                
+                // If edge is flipped, reverse tangents
+                if (edgeFlipped)
+                {
+                    edgeTangent1 = -edgeTangent1;
+                    edgeTangent2 = -edgeTangent2;
+                }
+                
+                // Normal in 2D plane: rotate tangent 90 degrees
+                // Check which direction points into the face
+                const normal1 = computeInwardNormal(context, face, plane, startPoint, edgeTangent1);
+                const normal2 = computeInwardNormal(context, face, plane, endPoint, edgeTangent2);
+                
+                const segment = {
+                    "startPoint" : startPoint,
+                    "endPoint" : endPoint,
+                    "startNormal" : normal1,
+                    "endNormal" : normal2,
+                    "index" : @size(allSegments),
+                    "nextIndex" : @size(allSegments) + 1,
+                    "previousIndex" : @size(allSegments) - 1
+                } as BoundarySegment;
+                
+                allSegments = append(allSegments, segment);
+            }
         }
     }
     
