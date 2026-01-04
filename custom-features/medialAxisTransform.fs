@@ -438,9 +438,28 @@ function computeInwardNormal(context is Context, edge is Query, tangent is Vecto
     
     const face = faces[0];
     
-    // Get face normal at a point near the edge
-    const edgeTangentLine = evEdgeTangentLine(context, { "edge" : edge, "parameter" : parameter, "arcLengthParameterization" : true });
-    const faceNormal = evFaceNormalAtEdge(context, { "edge" : edge, "face" : face, "parameter" : parameter });
+    // For a planar face, get the face normal directly from surface definition
+    const surfaceDef = evSurfaceDefinition(context, { "face" : face });
+    
+    // Extract plane normal (for planar faces)
+    var faceNormal = vector(0, 0, 1);
+    if (surfaceDef.surfaceType == SurfaceType.PLANE)
+    {
+        faceNormal = surfaceDef.normal;
+    }
+    else
+    {
+        // For non-planar faces (shouldn't happen for this feature), try edge normal
+        try
+        {
+            faceNormal = evFaceNormalAtEdge(context, { "edge" : edge, "face" : face, "parameter" : parameter });
+        }
+        catch
+        {
+            // Fallback: use cross product of tangent with up vector
+            faceNormal = normalize(cross(tangent, vector(0, 0, 1)));
+        }
+    }
     
     // Compute perpendicular to tangent in the plane of the face
     // For a planar face, the inward normal is: faceNormal × tangent
