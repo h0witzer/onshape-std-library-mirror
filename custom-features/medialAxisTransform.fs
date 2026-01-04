@@ -736,29 +736,117 @@ function solveEndpointSegmentCollision(endpointPos is Vector, endpointNormal is 
 
 /**
  * Follow an MA branch by walking along boundary in opposite directions from a starting pair.
- * This implements the Follow MA routine from the paper.
+ * This implements the Follow MA routine from the paper (Section 3.4.3).
+ * 
+ * The algorithm alternates between:
+ * 1. Keeping left fixed, moving right forward (next direction)
+ * 2. Keeping right fixed, moving left backward (previous direction)
+ * 
+ * Continues until no RLFS changes occur or branching point detected.
  * 
  * @param context : The context
  * @param boundarySegments : Array of BoundarySegment objects (modified in place)
- * @param startIndex1 : Index of first segment in starting pair
- * @param startIndex2 : Index of second segment in starting pair
+ * @param leftStart : Index of left-side segment in starting pair
+ * @param rightStart : Index of right-side segment in starting pair
  */
-function followMABranch(context is Context, boundarySegments is array, startIndex1 is number, startIndex2 is number)
+function followMABranch(context is Context, boundarySegments is array, leftStart is number, rightStart is number)
 {
-    // This is a placeholder for the complex Follow MA algorithm
-    // Full implementation would:
-    // 1. Track pairs of colliding segments
-    // 2. Walk in opposite directions along boundary
-    // 3. Perform collision tests and update RLFS pieces
-    // 4. Detect MA branching points
-    // 5. Recursively track new branches from branching points
+    const numSegments = @size(boundarySegments);
     
-    // For now, perform basic collision test between the starting pair
-    const segment1 = boundarySegments[startIndex1];
-    const segment2 = boundarySegments[startIndex2];
+    var left = leftStart;
+    var right = rightStart;
     
-    // Test collision and create RLFS piece if collision occurs
-    testAndUpdateSegmentPair(boundarySegments, startIndex1, startIndex2);
+    // Perform initial collision test between starting pair
+    var madeProgress = testAndUpdateSegmentPair(boundarySegments, left, right);
+    
+    // Main loop: alternate between moving right and moving left
+    var continueTracking = true;
+    var maxIterations = numSegments * 2; // Prevent infinite loops
+    var iterations = 0;
+    
+    while (continueTracking && iterations < maxIterations)
+    {
+        iterations += 1;
+        continueTracking = false;
+        
+        // Phase 1: Keep left fixed, move right forward (next direction)
+        var rightMoving = right;
+        var foundBranchingPoint = false;
+        
+        for (var i = 0; i < numSegments && !foundBranchingPoint; i += 1)
+        {
+            // Move to next segment
+            rightMoving = (rightMoving + 1) % numSegments;
+            
+            // Test collision between left and rightMoving
+            const updated = testAndUpdateSegmentPair(boundarySegments, left, rightMoving);
+            
+            if (updated)
+            {
+                continueTracking = true;
+                right = rightMoving;
+                
+                // Check for branching point on left segment
+                foundBranchingPoint = detectAndHandleBranchingPoint(context, boundarySegments, left);
+                if (foundBranchingPoint)
+                {
+                    break;
+                }
+            }
+            else
+            {
+                // No more collisions in this direction
+                break;
+            }
+        }
+        
+        if (foundBranchingPoint)
+        {
+            continue; // Branching point found, restart tracking from new branch
+        }
+        
+        // Step right back one position
+        right = (right + numSegments - 1) % numSegments;
+        
+        // Phase 2: Keep right fixed, move left backward (previous direction)
+        var leftMoving = left;
+        foundBranchingPoint = false;
+        
+        for (var i = 0; i < numSegments && !foundBranchingPoint; i += 1)
+        {
+            // Move to previous segment
+            leftMoving = (leftMoving + numSegments - 1) % numSegments;
+            
+            // Test collision between leftMoving and right
+            const updated = testAndUpdateSegmentPair(boundarySegments, leftMoving, right);
+            
+            if (updated)
+            {
+                continueTracking = true;
+                left = leftMoving;
+                
+                // Check for branching point on right segment
+                foundBranchingPoint = detectAndHandleBranchingPoint(context, boundarySegments, right);
+                if (foundBranchingPoint)
+                {
+                    break;
+                }
+            }
+            else
+            {
+                // No more collisions in this direction
+                break;
+            }
+        }
+        
+        if (foundBranchingPoint)
+        {
+            continue; // Branching point found, restart tracking from new branch
+        }
+        
+        // Step left back one position
+        left = (left + 1) % numSegments;
+    }
 }
 
 /**
@@ -767,8 +855,9 @@ function followMABranch(context is Context, boundarySegments is array, startInde
  * @param boundarySegments : Array of BoundarySegment objects (modified in place)
  * @param index1 : Index of first segment
  * @param index2 : Index of second segment
+ * @returns {boolean} : True if RLFS was updated for either segment
  */
-function testAndUpdateSegmentPair(boundarySegments is array, index1 is number, index2 is number)
+function testAndUpdateSegmentPair(boundarySegments is array, index1 is number, index2 is number) returns boolean
 {
     const segment1 = boundarySegments[index1];
     const segment2 = boundarySegments[index2];
@@ -851,6 +940,33 @@ function testAndUpdateSegmentPair(boundarySegments is array, index1 is number, i
         collisionEvents = sortCollisionEvents(collisionEvents);
         
         // Identify collision type and create RLFS pieces
+        const updated = createRLFSPiecesFromCollision(boundarySegments, collisionEvents, index1, index2);
+        return updated;
+    }
+    
+    return false;
+}
+        segment1.startPoint, segment1.endPoint,
+        segment1.startNormal, segment1.endNormal
+    );
+    if (collision.collides)
+    {
+        collisionEvents = append(collisionEvents, {
+            "distance" : collision.distance,
+            "parameter" : collision.parameter,
+            "peerParameter" : 1.0,
+            "segmentIndex" : index1,
+            "peerSegmentIndex" : index2
+        });
+    }
+    
+    // Sort collision events by distance and create RLFS pieces
+    if (@size(collisionEvents) >= 2)
+    {
+        // Sort by distance
+        collisionEvents = sortCollisionEvents(collisionEvents);
+        
+        // Identify collision type and create RLFS pieces
         createRLFSPiecesFromCollision(boundarySegments, collisionEvents, index1, index2);
     }
 }
@@ -892,8 +1008,9 @@ function sortCollisionEvents(events is array) returns array
  * @param collisionEvents : Sorted array of collision events
  * @param index1 : Index of first segment
  * @param index2 : Index of second segment
+ * @returns {boolean} : True if any RLFS was actually updated
  */
-function createRLFSPiecesFromCollision(boundarySegments is array, collisionEvents is array, index1 is number, index2 is number)
+function createRLFSPiecesFromCollision(boundarySegments is array, collisionEvents is array, index1 is number, index2 is number) returns boolean
 {
     // Get first two collision events
     const event1 = collisionEvents[0];
@@ -918,7 +1035,7 @@ function createRLFSPiecesFromCollision(boundarySegments is array, collisionEvent
     } as RLFSPiece;
     
     // Add RLFS piece to segment 1 (using minimum operator for overlaps)
-    addRLFSPieceToSegment(boundarySegments[index1], rlfs1);
+    const updated1 = addRLFSPieceToSegment(boundarySegments[index1], rlfs1);
     
     // Create RLFS piece for segment 2
     const rlfs2 = {
@@ -934,22 +1051,137 @@ function createRLFSPiecesFromCollision(boundarySegments is array, collisionEvent
     } as RLFSPiece;
     
     // Add RLFS piece to segment 2
-    addRLFSPieceToSegment(boundarySegments[index2], rlfs2);
+    const updated2 = addRLFSPieceToSegment(boundarySegments[index2], rlfs2);
+    
+    return updated1 || updated2;
 }
 
 /**
  * Add an RLFS piece to a segment, handling overlaps with minimum operator.
+ * Returns true if piece was actually added (RLFS updated).
  * 
  * @param segment : BoundarySegment object (modified in place)
  * @param newPiece : RLFS piece to add
+ * @returns {boolean} : True if RLFS was updated
  */
-function addRLFSPieceToSegment(segment is BoundarySegment, newPiece is RLFSPiece)
+function addRLFSPieceToSegment(segment is BoundarySegment, newPiece is RLFSPiece) returns boolean
 {
-    // Check for overlaps with existing pieces and apply minimum operator
-    // For now, simple implementation: just append
-    // Full implementation would clip overlapping pieces
+    // Check if this piece provides smaller displacement values than existing pieces
+    // If not, don't add it (minimum operator)
     
-    segment.rlfsPieces = append(segment.rlfsPieces, newPiece);
+    var shouldAdd = true;
+    var updated = false;
+    
+    // Simple implementation for now: check if interval overlaps with existing pieces
+    // and compare displacement values
+    for (var i = 0; i < @size(segment.rlfsPieces); i += 1)
+    {
+        const existingPiece = segment.rlfsPieces[i];
+        
+        // Check for interval overlap
+        const overlapStart = max(newPiece.parameterStart, existingPiece.parameterStart);
+        const overlapEnd = min(newPiece.parameterEnd, existingPiece.parameterEnd);
+        
+        if (overlapStart < overlapEnd)
+        {
+            // Overlaps - check if new piece has smaller displacement
+            // Sample at middle of overlap
+            const midParam = (overlapStart + overlapEnd) / 2.0;
+            
+            // Interpolate displacement for new piece
+            const newT = (midParam - newPiece.parameterStart) / (newPiece.parameterEnd - newPiece.parameterStart);
+            const newDisp = (1.0 - newT) * newPiece.displacementStart + newT * newPiece.displacementEnd;
+            
+            // Interpolate displacement for existing piece
+            const existingT = (midParam - existingPiece.parameterStart) / (existingPiece.parameterEnd - existingPiece.parameterStart);
+            const existingDisp = (1.0 - existingT) * existingPiece.displacementStart + existingT * existingPiece.displacementEnd;
+            
+            if (newDisp >= existingDisp)
+            {
+                // New piece doesn't improve RLFS in this overlap region
+                shouldAdd = false;
+                break;
+            }
+        }
+    }
+    
+    if (shouldAdd)
+    {
+        segment.rlfsPieces = append(segment.rlfsPieces, newPiece);
+        updated = true;
+    }
+    
+    return updated;
+}
+
+/**
+ * Detect and handle MA branching points on a segment.
+ * 
+ * A branching point is characterized by two adjacent RLFS pieces that satisfy:
+ * 1. They were produced by collisions against two non-adjacent segments, OR
+ * 2. The parameter s is not 0 and 1 for the end/start of the pieces
+ * 
+ * @param context : The context
+ * @param boundarySegments : Array of BoundarySegment objects
+ * @param segmentIndex : Index of segment to check for branching points
+ * @returns {boolean} : True if branching point found and handled
+ */
+function detectAndHandleBranchingPoint(context is Context, boundarySegments is array, segmentIndex is number) returns boolean
+{
+    const segment = boundarySegments[segmentIndex];
+    const pieces = segment.rlfsPieces;
+    
+    if (@size(pieces) < 2)
+    {
+        return false;
+    }
+    
+    // Check each pair of adjacent RLFS pieces
+    for (var i = 0; i < @size(pieces) - 1; i += 1)
+    {
+        const piece1 = pieces[i];
+        const piece2 = pieces[i + 1];
+        
+        // Check if pieces are continuously adjacent (piece1.end == piece2.start)
+        if (abs(piece1.parameterEnd - piece2.parameterStart) > 1e-6)
+        {
+            continue;
+        }
+        
+        // Check condition 1: non-adjacent peer segments
+        const peer1 = piece1.peerSegmentIndex;
+        const peer2 = piece2.peerSegmentIndex;
+        const numSegments = @size(boundarySegments);
+        
+        const isAdjacent = (peer1 == (peer2 + 1) % numSegments) || (peer2 == (peer1 + 1) % numSegments);
+        
+        if (!isAdjacent)
+        {
+            // Found branching point! Track new branch from peer segments
+            println("Branching point detected at segment " ~ segmentIndex ~ " between pieces " ~ i ~ " and " ~ (i+1));
+            followMABranch(context, boundarySegments, peer1, peer2);
+            return true;
+        }
+        
+        // Check condition 2: parameter s values
+        // This is for adjacent peer segments that define an MA extreme point
+        if (isAdjacent)
+        {
+            const s1End = piece1.peerParameterEnd;
+            const s2Start = piece2.peerParameterStart;
+            
+            // Check if s values are not 0 and 1 at the junction
+            if (abs(s1End - 1.0) > 1e-6 || abs(s2Start - 0.0) > 1e-6)
+            {
+                // This indicates an MA branching point from adjacent segments
+                println("Branching point (adjacent peers) detected at segment " ~ segmentIndex);
+                followMABranch(context, boundarySegments, peer1, peer2);
+                return true;
+            }
+        }
+    }
+    
+    return false;
 }
 
 /**
