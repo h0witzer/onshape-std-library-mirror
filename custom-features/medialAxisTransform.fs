@@ -703,30 +703,15 @@ function isConvexVertex(segment1 is BoundarySegment, segment2 is BoundarySegment
     const vec1 = segment1.endPoint - segment1.startPoint;
     const vec2 = segment2.endPoint - segment2.startPoint;
     
-    // Check for zero-length vectors (dummy segments)
-    // Use try-catch to handle normalize failures robustly
-    var dir1;
-    var dir2;
-    
-    try
+    // Check for zero-length vectors (dummy segments) before normalizing
+    if (squaredNorm(vec1) == 0 || squaredNorm(vec2) == 0)
     {
-        dir1 = normalize(vec1);
-    }
-    catch
-    {
-        // If normalize fails (zero or near-zero vector), assume convex
+        // Assume convex for dummy segments
         return true;
     }
     
-    try
-    {
-        dir2 = normalize(vec2);
-    }
-    catch
-    {
-        // If normalize fails (zero or near-zero vector), assume convex
-        return true;
-    }
+    const dir1 = normalize(vec1);
+    const dir2 = normalize(vec2);
     
     // Use cross product to determine if angle is convex (inner angle < π)
     // For 2D in a plane, we check the z-component of cross product
