@@ -9,6 +9,7 @@ import(path : "onshape/std/surfaceGeometry.fs", version : "2837.0");
 import(path : "onshape/std/units.fs", version : "2837.0");
 import(path : "onshape/std/vector.fs", version : "2837.0");
 import(path : "onshape/std/box.fs", version : "2837.0");
+import(path : "onshape/std/projectiontype.gen.fs", version : "2837.0");
 
 /**
  * Feature that creates a medial axis curve from a planar face.
