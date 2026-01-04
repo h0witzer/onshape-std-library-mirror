@@ -90,12 +90,14 @@ export const medialAxis = defineFeature(function(context is Context, id is Id, d
         // Step 3: Query all edges from the drafted body
         const allEdgesAfterDraft = qOwnedByBody(extrudedBody, EntityType.EDGE);
         
-        // Step 4: Filter out edges that are vertex-adjacent to the original face
-        // These are the edges at the base of the extrusion
-        const edgesAdjacentToOriginalFace = qAdjacent(inputFace, AdjacencyType.VERTEX, EntityType.EDGE);
+        // Step 4: Filter out edges that are vertex-adjacent to the original input face
+        // According to the problem statement: "subtract any edges from that selection 
+        // that are vertex adjacent to the original face"
+        const edgesAdjacentToInputFace = qAdjacent(inputFace, AdjacencyType.VERTEX, EntityType.EDGE);
         
-        // Get the peak edges (edges not adjacent to the original face)
-        const peakEdges = qSubtraction(allEdgesAfterDraft, edgesAdjacentToOriginalFace);
+        // Get the peak edges by subtracting edges adjacent to the input face
+        // from all edges in the drafted body
+        const peakEdges = qSubtraction(allEdgesAfterDraft, edgesAdjacentToInputFace);
         
         if (isQueryEmpty(context, peakEdges))
         {
