@@ -240,7 +240,11 @@ function discretizeBoundary(context is Context, planarFace is Query, samplingDen
         segments = concatenate(segments, edgeSegments);
     }
     
-    // Assign segment indices
+    // Process reflex vertices and insert dummy segments
+    // Reflex vertices have inner angle > π and need special handling
+    segments = processReflexVertices(segments);
+    
+    // Assign segment indices after reflex vertex processing
     for (var i = 0; i < @size(segments); i += 1)
     {
         segments[i].segmentIndex = i;
@@ -433,6 +437,108 @@ function computeInwardNormal(context is Context, edge is Query, tangent is Vecto
     
     // Normalize to unit vector
     return normalize(perpendicular);
+}
+
+/**
+ * Process reflex vertices and insert dummy segments with smoothly varying normals.
+ * 
+ * A reflex vertex is one where the inner angle is greater than π (180 degrees).
+ * According to the paper, reflex vertices must be split into dummy zero-length segments
+ * to ensure the boundary remains closed during grass-fire simulation.
+ * 
+ * Number of dummy segments = ceil((innerAngle - π) / (π/10))  [one per π/18 radians as default]
+ * 
+ * @param segments : Array of BoundarySegment objects
+ * @returns {array} : Array with dummy segments inserted at reflex vertices
+ */
+function processReflexVertices(segments is array) returns array
+{
+    if (@size(segments) == 0)
+    {
+        return segments;
+    }
+    
+    var processedSegments = [];
+    const numSegments = @size(segments);
+    
+    for (var i = 0; i < numSegments; i += 1)
+    {
+        const currentSegment = segments[i];
+        const nextSegment = segments[(i + 1) % numSegments];
+        
+        // Check if junction between current and next is a reflex vertex
+        // At junction: currentSegment.endPoint == nextSegment.startPoint
+        
+        // Calculate inner angle at junction
+        const dir1 = normalize(currentSegment.endPoint - currentSegment.startPoint);
+        const dir2 = normalize(nextSegment.endPoint - nextSegment.startPoint);
+        
+        // Use cross product to determine turn direction
+        // In 2D (assuming planar): crossZ = dir1.x * dir2.y - dir1.y * dir2.x
+        const crossZ = dir1[0] * dir2[1] - dir1[1] * dir2[0];
+        
+        // Use dot product to get angle magnitude
+        const dotProduct = dot(dir1, dir2);
+        const angle = acos(max(-1.0, min(1.0, dotProduct)));
+        
+        // Determine inner angle
+        // If crossZ < 0, it's a right turn (convex), inner angle < π
+        // If crossZ > 0, it's a left turn, could be reflex if angle > π/2
+        var innerAngle = angle;
+        if (crossZ < 0)
+        {
+            // Right turn - this is typically convex
+            innerAngle = angle;
+        }
+        else
+        {
+            // Left turn or straight - check if reflex
+            innerAngle = 2 * PI - angle;
+        }
+        
+        // Add current segment
+        processedSegments = append(processedSegments, currentSegment);
+        
+        // Check if this is a reflex vertex (inner angle > π)
+        if (innerAngle > PI + 0.01) // Small tolerance
+        {
+            // Calculate number of dummy segments
+            const angleDifference = innerAngle - PI;
+            const numDummies = max(1, ceil(angleDifference / (PI / 10.0)));
+            
+            // Get normals at junction
+            const normal1 = currentSegment.endNormal;
+            const normal2 = nextSegment.startNormal;
+            
+            // Create dummy segments with smoothly varying normals
+            const junctionPoint = currentSegment.endPoint;
+            
+            for (var j = 1; j <= numDummies; j += 1)
+            {
+                const t = j / (numDummies + 1.0);
+                
+                // Interpolate normal direction
+                const interpolatedNormal = normalize((1.0 - t) * normal1 + t * normal2);
+                
+                // Create zero-length dummy segment
+                const dummySegment = {
+                    "startPoint" : junctionPoint,
+                    "endPoint" : junctionPoint,
+                    "startNormal" : interpolatedNormal,
+                    "endNormal" : interpolatedNormal,
+                    "rlfsPieces" : [],
+                    "isDummy" : true,
+                    "segmentIndex" : -1
+                } as BoundarySegment;
+                
+                processedSegments = append(processedSegments, dummySegment);
+            }
+            
+            println("Inserted " ~ numDummies ~ " dummy segments at reflex vertex (inner angle: " ~ (innerAngle / degree) ~ " degrees)");
+        }
+    }
+    
+    return processedSegments;
 }
 
 // ==================== Phase 2: RLFS Computation ====================
