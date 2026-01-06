@@ -972,7 +972,7 @@ export function ffdPlaneManipulator(context is Context, definition is map, newMa
  * 
  * @param planeTransformations {array} : Array of transformation entries
  * @param planeIndex {number} : Index of the plane to find transformation for
- * @returns {map} : Transform components (rotationMatrix, translateX/Y/Z) or undefined if not found
+ * @returns {map} : Transform components (rotationMatrix, translateX/Y/Z), returns identity if not found
  */
 function findTransformForPlane(planeTransformations is array, planeIndex is number) returns map
 {
@@ -988,7 +988,13 @@ function findTransformForPlane(planeTransformations is array, planeIndex is numb
             };
         }
     }
-    return undefined;
+    // Return identity transformation if no transformation exists for this plane
+    return {
+        "rotationMatrix" : undefined,
+        "translateX" : 0 * meter,
+        "translateY" : 0 * meter,
+        "translateZ" : 0 * meter
+    };
 }
 
 
@@ -1072,7 +1078,7 @@ function addPlaneManipulators(context is Context, id is Id, originalLattice is m
         // Find the current transformation for the selected plane
         const planeTransformData = findTransformForPlane(planeTransformations, selectedIndex);
         var currentTransform = identityTransform();
-        if (planeTransformData != undefined && planeTransformData.rotationMatrix != undefined)
+        if (planeTransformData.rotationMatrix != undefined)
         {
             const rotationMatrix = planeTransformData.rotationMatrix;
             if (size(rotationMatrix) == 9)
