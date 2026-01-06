@@ -706,8 +706,8 @@ export function ffdManipulator(context is Context, definition is map, newManipul
         const triadTransform = newManipulators[LATTICE_TRIAD_MANIPULATOR].transform;
         const selectedIndex = definition.selectedPointIndex;
         
-        // Initialize latticeOffsets if undefined
-        if (definition.latticeOffsets == undefined)
+        // Initialize latticeOffsets if undefined or not an array
+        if (definition.latticeOffsets == undefined || !(definition.latticeOffsets is array))
         {
             definition.latticeOffsets = [];
         }
