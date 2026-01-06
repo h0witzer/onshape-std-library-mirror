@@ -117,6 +117,17 @@ export const freeFormDeformation = defineFeature(function(context is Context, id
         annotation { "Name" : "Selected control point index", "UIHint" : UIHint.ALWAYS_HIDDEN }
         isInteger(definition.selectedPointIndex, { (unitless) : [0, 0, 1000] } as IntegerBoundSpec);
         
+        annotation { "Name" : "Lattice control point offsets", "Item name" : "offset", "UIHint" : UIHint.ALWAYS_HIDDEN }
+        definition.latticeOffsets is array;
+        for (var offset in definition.latticeOffsets)
+        {
+            annotation { "Name" : "Control point index", "UIHint" : UIHint.ALWAYS_HIDDEN }
+            isInteger(offset.index, { (unitless) : [0, 0, 1000] } as IntegerBoundSpec);
+            
+            annotation { "Name" : "Offset vector", "UIHint" : UIHint.ALWAYS_HIDDEN }
+            is3dLengthVector(offset.offset);
+        }
+        
         annotation { "Name" : "Enable diagnostics" }
         definition.enableDiagnostics is boolean;
         
