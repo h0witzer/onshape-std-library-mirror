@@ -115,6 +115,9 @@ export const freeFormDeformation = defineFeature(function(context is Context, id
                      "Description" : "Number of spans in the U direction of the FFD lattice" }
         isInteger(definition.spanCountU, FFD_SPAN_COUNT_BOUNDS);
         
+        annotation { "Name" : "Selected control point index", "UIHint" : UIHint.ALWAYS_HIDDEN }
+        isInteger(definition.selectedPointIndex, { (unitless) : [0, 0, 1000] } as IntegerBoundSpec);
+        
         annotation { "Name" : "Edit lattice control points" }
         definition.editLatticePoints is boolean;
         
@@ -124,9 +127,6 @@ export const freeFormDeformation = defineFeature(function(context is Context, id
         {
             if (definition.editLatticePoints)
             {
-                annotation { "Name" : "Selected control point index", "UIHint" : UIHint.ALWAYS_HIDDEN }
-                isInteger(definition.selectedPointIndex, { (unitless) : [0, 0, 1000] } as IntegerBoundSpec);
-                
                 annotation { "Name" : "Lattice point offsets", 
                              "Item name" : "point offset", 
                              "Item label template" : "#index: #x;#y;#z", 
@@ -264,7 +264,7 @@ function applyFFDDeformation(context is Context, id is Id, inputFace is Query, d
             const pointIndex = offsetEntry.index;
             if (pointIndex >= 0 && pointIndex < lattice.totalControlPoints)
             {
-                const offset = vector(offsetEntry.x, offsetEntry.y, offsetEntry.z);
+                const offset = findOffsetForPoint(definition.latticePointOffsets, pointIndex);
                 latticeControlPointsForDisplay[pointIndex] = lattice.controlPoints[pointIndex] + offset;
             }
         }
@@ -791,6 +791,29 @@ export function ffdManipulator(context is Context, definition is map, newManipul
 
 
 /**
+ * Finds the offset vector for a given lattice point index
+ * 
+ * Searches the latticePointOffsets array for an entry matching the given index.
+ * Returns the offset vector if found, or a zero vector if no offset exists.
+ * 
+ * @param latticePointOffsets {array} : Array of offset entries
+ * @param pointIndex {number} : Index of the point to find offset for
+ * @returns {Vector} : Offset vector with units, or zero vector if not found
+ */
+function findOffsetForPoint(latticePointOffsets is array, pointIndex is number) returns Vector
+{
+    for (var offsetEntry in latticePointOffsets)
+    {
+        if (offsetEntry.index == pointIndex)
+        {
+            return vector(offsetEntry.x, offsetEntry.y, offsetEntry.z);
+        }
+    }
+    return vector(0 * meter, 0 * meter, 0 * meter);
+}
+
+
+/**
  * Applies stored lattice offsets to the lattice control points
  * 
  * Modifies the lattice structure in-place by applying user-specified offsets
@@ -812,7 +835,7 @@ function applyLatticeOffsets(lattice is map, latticePointOffsets is array)
         // Validate index is within bounds
         if (pointIndex >= 0 && pointIndex < lattice.totalControlPoints)
         {
-            const offset = vector(offsetEntry.x, offsetEntry.y, offsetEntry.z);
+            const offset = findOffsetForPoint(latticePointOffsets, pointIndex);
             lattice.controlPoints[pointIndex] = lattice.controlPoints[pointIndex] + offset;
         }
     }
@@ -853,16 +876,8 @@ function addFFDManipulators(context is Context, id is Id, originalLattice is map
     // If editing is enabled and a valid point is selected, show triad manipulator
     if (editLatticePoints && selectedIndex >= 0 && selectedIndex < originalLattice.totalControlPoints)
     {
-        // Find the current offset for the selected point, if any
-        var selectedPointOffset = vector(0 * meter, 0 * meter, 0 * meter);
-        for (var offsetEntry in latticePointOffsets)
-        {
-            if (offsetEntry.index == selectedIndex)
-            {
-                selectedPointOffset = vector(offsetEntry.x, offsetEntry.y, offsetEntry.z);
-                break;
-            }
-        }
+        // Find the current offset for the selected point using helper function
+        const selectedPointOffset = findOffsetForPoint(latticePointOffsets, selectedIndex);
         
         // Base position is the ORIGINAL lattice control point position (before offset)
         const selectedPointBase = originalLattice.controlPoints[selectedIndex];
