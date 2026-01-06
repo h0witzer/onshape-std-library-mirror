@@ -256,7 +256,17 @@ function applyPlaneBasedFFDDeformation(context is Context, id is Id, inputFaces 
     var lattice = buildPlaneBasedFFDLattice(boundingBox, spanCounts, definition.manipulationDirection);
     if (definition.editPlanes && size(definition.planeTransformations) > 0)
     {
+        if (definition.printLatticeInfo)
+        {
+            println("Applying " ~ size(definition.planeTransformations) ~ " plane transformations");
+        }
         applyPlaneTransformationsToLattice(lattice, definition.planeTransformations, definition.manipulationDirection);
+        
+        if (definition.printLatticeInfo)
+        {
+            println("Sample control point before transform: " ~ latticeOriginal.controlPoints[0]);
+            println("Sample control point after transform: " ~ lattice.controlPoints[0]);
+        }
     }
     
     if (definition.printLatticeInfo)
@@ -827,7 +837,8 @@ function visualizeLatticeControlPoints(context is Context, id is Id, lattice is 
 /**
  * Visualizes the planes using debug geometry
  * 
- * Shows plane centers and normal indicators for each plane in the lattice.
+ * Shows actual plane definitions with origin and normal for each plane in the lattice.
+ * Uses proper Plane debug visualization to show plane orientation and position.
  * 
  * @param context {Context} : The modeling context
  * @param id {Id} : Identifier for the debug geometry
@@ -836,10 +847,12 @@ function visualizeLatticeControlPoints(context is Context, id is Id, lattice is 
  */
 function visualizePlanes(context is Context, id is Id, lattice is map, direction is FFDPlaneDirection)
 {
-    for (var planeInfo in lattice.planeData)
+    for (var planeIndex = 0; planeIndex < size(lattice.planeData); planeIndex += 1)
     {
-        // Calculate plane center
+        const planeInfo = lattice.planeData[planeIndex];
         const pointIndices = planeInfo.pointIndices;
+        
+        // Calculate plane center from the current (possibly transformed) control points
         var planeCenter = vector(0 * meter, 0 * meter, 0 * meter);
         for (var pointIndex in pointIndices)
         {
@@ -847,8 +860,24 @@ function visualizePlanes(context is Context, id is Id, lattice is map, direction
         }
         planeCenter = planeCenter / size(pointIndices);
         
-        // Draw plane center
-        debug(context, planeCenter, DebugColor.GREEN);
+        // Determine plane normal based on manipulation direction
+        var planeNormal = vector(0, 0, 1);
+        if (direction == FFDPlaneDirection.S_DIRECTION)
+        {
+            planeNormal = vector(1, 0, 0);
+        }
+        else if (direction == FFDPlaneDirection.T_DIRECTION)
+        {
+            planeNormal = vector(0, 1, 0);
+        }
+        else // U_DIRECTION
+        {
+            planeNormal = vector(0, 0, 1);
+        }
+        
+        // Create and debug the plane using proper Plane type
+        const planeGeometry = plane(planeCenter, planeNormal);
+        debug(context, planeGeometry, DebugColor.GREEN);
     }
 }
 
