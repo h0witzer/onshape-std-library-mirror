@@ -294,10 +294,12 @@ function applyPlaneBasedFFDDeformation(context is Context, id is Id, inputFaces 
             {
                 const originalPoint = controlPoints[uIndex][vIndex];
                 
-                // Convert to STU parametric space
-                const stuCoords = convertWorldToSTU(originalPoint, lattice);
+                // Convert to STU parametric space using ORIGINAL lattice geometry
+                // The original lattice defines the parametric space; we don't want transformed control points to affect this
+                const stuCoords = convertWorldToSTU(originalPoint, latticeOriginal);
                 
-                // Evaluate trivariate Bernstein polynomial to get deformed position
+                // Evaluate trivariate Bernstein polynomial using MODIFIED lattice control points
+                // This is where the deformation actually happens
                 const deformedPoint = evaluateTrivariateBernstein(stuCoords, lattice);
                 
                 deformedRow = append(deformedRow, deformedPoint);

@@ -71,7 +71,7 @@ freeFormDeformationPlanes
 ### Key Data Structures
 
 **Lattice Structure:**
-```javascript
+```
 {
     minCorner: Vector3,           // Bounding box min
     maxCorner: Vector3,           // Bounding box max
@@ -85,7 +85,7 @@ freeFormDeformationPlanes
 ```
 
 **Plane Data:**
-```javascript
+```
 {
     pointIndices: array,  // Indices of control points on this plane
     planeIndex: number    // Plane number (0 to N-1)
@@ -93,7 +93,7 @@ freeFormDeformationPlanes
 ```
 
 **Plane Transformation:**
-```javascript
+```
 {
     index: number,        // Which plane to transform
     translateX: Length,   // X translation
