@@ -252,21 +252,25 @@ function applyFFDDeformation(context is Context, id is Id, inputFace is Query, d
     
     // Build display points by copying lattice points and applying offsets
     // This shows the current positions including any applied offsets
-    var latticeControlPointsForDisplay = lattice.controlPoints;
+    // Create an explicit copy to avoid modifying the original lattice
+    var latticeControlPointsForDisplay = [];
+    for (var i = 0; i < size(lattice.controlPoints); i += 1)
+    {
+        latticeControlPointsForDisplay = append(latticeControlPointsForDisplay, lattice.controlPoints[i]);
+    }
     
     // Apply user-specified offsets to display points (for manipulator visualization)
     if (definition.editLatticePoints && size(definition.latticePointOffsets) > 0)
     {
         // Apply offsets to create display points
-        // Note: This modifies the array, creating a new version due to FeatureScript's value semantics
         for (var offsetEntry in definition.latticePointOffsets)
         {
             const pointIndex = offsetEntry.index;
-            if (pointIndex >= 0 && pointIndex < lattice.totalControlPoints)
+            if (pointIndex >= 0 && pointIndex < size(latticeControlPointsForDisplay))
             {
                 // Directly use the offset from the entry (no need to search again)
                 const offset = vector(offsetEntry.x, offsetEntry.y, offsetEntry.z);
-                latticeControlPointsForDisplay[pointIndex] = lattice.controlPoints[pointIndex] + offset;
+                latticeControlPointsForDisplay[pointIndex] = latticeControlPointsForDisplay[pointIndex] + offset;
             }
         }
     }
@@ -756,6 +760,9 @@ export function ffdManipulator(context is Context, definition is map, newManipul
     // Handle triad manipulation for moving the selected control point
     if (newManipulators[LATTICE_TRIAD_MANIPULATOR] is map)
     {
+        // Extract offset vector once for efficiency and readability
+        const manipulatorOffset = newManipulators[LATTICE_TRIAD_MANIPULATOR].offset;
+        
         var foundOffset = false;
         
         // Check if an offset entry already exists for the selected point
@@ -764,9 +771,9 @@ export function ffdManipulator(context is Context, definition is map, newManipul
             if (definition.latticePointOffsets[i].index == definition.selectedPointIndex)
             {
                 // Update existing offset entry
-                definition.latticePointOffsets[i].x = newManipulators[LATTICE_TRIAD_MANIPULATOR].offset[0];
-                definition.latticePointOffsets[i].y = newManipulators[LATTICE_TRIAD_MANIPULATOR].offset[1];
-                definition.latticePointOffsets[i].z = newManipulators[LATTICE_TRIAD_MANIPULATOR].offset[2];
+                definition.latticePointOffsets[i].x = manipulatorOffset[0];
+                definition.latticePointOffsets[i].y = manipulatorOffset[1];
+                definition.latticePointOffsets[i].z = manipulatorOffset[2];
                 foundOffset = true;
                 break;
             }
@@ -777,9 +784,9 @@ export function ffdManipulator(context is Context, definition is map, newManipul
         {
             var newOffset = {
                 "index" : definition.selectedPointIndex,
-                "x" : newManipulators[LATTICE_TRIAD_MANIPULATOR].offset[0],
-                "y" : newManipulators[LATTICE_TRIAD_MANIPULATOR].offset[1],
-                "z" : newManipulators[LATTICE_TRIAD_MANIPULATOR].offset[2]
+                "x" : manipulatorOffset[0],
+                "y" : manipulatorOffset[1],
+                "z" : manipulatorOffset[2]
             };
             definition.latticePointOffsets = append(definition.latticePointOffsets, newOffset);
         }
