@@ -221,12 +221,7 @@ function applyFFDDeformation(context is Context, id is Id, inputFace is Query, d
         printLatticeInformation(lattice);
     }
     
-    // Add manipulators for interactive control point manipulation
-    // Pass offsets array to manipulators - they will use it to create transforms
-    const offsetsArray = (definition.latticeOffsets != undefined && definition.latticeOffsets is array) ? definition.latticeOffsets : [];
-    addFFDManipulators(context, id, lattice, definition.selectedPointIndex, offsetsArray);
-    
-    // Create a working copy of lattice for deformation
+    // Create a working copy of lattice for deformation and visualization
     // Build new control points array to avoid modifying the original
     var copiedControlPoints = [];
     for (var i = 0; i < size(lattice.controlPoints); i += 1)
@@ -258,6 +253,11 @@ function applyFFDDeformation(context is Context, id is Id, inputFace is Query, d
     {
         applyLatticeOffsets(deformationLattice, definition.latticeOffsets);
     }
+    
+    // Add manipulators for interactive control point manipulation
+    // Pass the deformationLattice (with offsets applied) and offsets array
+    const offsetsArray = (definition.latticeOffsets != undefined && definition.latticeOffsets is array) ? definition.latticeOffsets : [];
+    addFFDManipulators(context, id, lattice, deformationLattice, definition.selectedPointIndex, offsetsArray);
     
     if (definition.showLatticeControlPoints)
     {
@@ -806,7 +806,7 @@ function applyLatticeOffsets(lattice is map, offsets is array)
 /**
  * Adds manipulators for interactive FFD lattice control point manipulation
  * 
- * This function follows the Routing Curve pattern:
+ * This function follows the Edit Curve pattern:
  * 1. Creates a points manipulator showing all lattice control points except the selected one
  * 2. Creates a triad manipulator at the selected control point for XYZ translation only
  * 
@@ -815,39 +815,24 @@ function applyLatticeOffsets(lattice is map, offsets is array)
  * 
  * @param context {Context} : The modeling context
  * @param id {Id} : Feature identifier
- * @param lattice {map} : Lattice structure containing control points
+ * @param originalLattice {map} : Original lattice structure with unmodified control points
+ * @param deformationLattice {map} : Lattice with offsets applied (for display)
  * @param selectedIndex {number} : Index of the currently selected control point
  * @param offsets {array} : Array of stored offset entries for retrieving translation values
  */
-function addFFDManipulators(context is Context, id is Id, lattice is map, selectedIndex is number, offsets is array)
+function addFFDManipulators(context is Context, id is Id, originalLattice is map, deformationLattice is map, selectedIndex is number, offsets is array)
 {
-    // Build map of all manipulators to add at once (matching Routing Curve pattern)
+    // Build map of all manipulators to add at once (matching Edit Curve pattern)
     var manipulators = {};
     
     // Create array of lattice control point positions, excluding the selected one
-    // This matches the Routing Curve pattern where we remove the selected point
-    // to avoid interference between the points manipulator and triad manipulator
-    // Points should show current positions (original + offset)
+    // Use deformationLattice positions (with offsets already applied) matching Edit Curve
     var pointPositions = [];
-    for (var i = 0; i < lattice.totalControlPoints; i += 1)
+    for (var i = 0; i < deformationLattice.totalControlPoints; i += 1)
     {
         if (i != selectedIndex)
         {
-            // Start with original position
-            var position = lattice.controlPoints[i];
-            
-            // Add any stored offset for this point
-            for (var offsetEntry in offsets)
-            {
-                if (offsetEntry.index == i)
-                {
-                    const offset = vector(offsetEntry.offsetX, offsetEntry.offsetY, offsetEntry.offsetZ);
-                    position = position + offset;
-                    break;
-                }
-            }
-            
-            pointPositions = append(pointPositions, position);
+            pointPositions = append(pointPositions, deformationLattice.controlPoints[i]);
         }
     }
     
@@ -860,10 +845,10 @@ function addFFDManipulators(context is Context, id is Id, lattice is map, select
     manipulators[LATTICE_POINTS_MANIPULATOR] = pointsManip;
     
     // Add triad manipulator at the selected control point
-    if (selectedIndex >= 0 && selectedIndex < lattice.totalControlPoints)
+    if (selectedIndex >= 0 && selectedIndex < originalLattice.totalControlPoints)
     {
         // Get the ORIGINAL lattice position (base point before any offsets)
-        const originalPoint = lattice.controlPoints[selectedIndex];
+        const originalPoint = originalLattice.controlPoints[selectedIndex];
         
         // Find stored offset for this control point if it exists
         var offset = vector(0 * meter, 0 * meter, 0 * meter);
