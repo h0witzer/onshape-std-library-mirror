@@ -512,7 +512,13 @@ function applyPlaneTransformationsToLattice(lattice is map, planeTransformations
 {
     // Store the original control points before any transformations
     const originalControlPoints = lattice.controlPoints;
-    var modifiedControlPoints = lattice.controlPoints;
+    
+    // Create a deep copy of control points array so modifications don't affect the original
+    var modifiedControlPoints = [];
+    for (var pointIndex = 0; pointIndex < size(originalControlPoints); pointIndex += 1)
+    {
+        modifiedControlPoints = append(modifiedControlPoints, originalControlPoints[pointIndex]);
+    }
     
     for (var transformEntry in planeTransformations)
     {
