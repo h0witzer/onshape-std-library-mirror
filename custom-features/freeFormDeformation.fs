@@ -1,0 +1,683 @@
+FeatureScript 2837;
+
+/**
+ * Free-Form Deformation (FFD) Feature
+ * 
+ * This feature implements the FFD algorithm presented in Sederberg & Parry's 1986 paper,
+ * "Free-Form Deformation of Solid Geometric Models". The algorithm allows deformation of
+ * NURBS surfaces by manipulating control points of a 3D lattice that embeds the surface.
+ * 
+ * The FFD algorithm works as follows:
+ * 1. Create a 3D lattice (control point grid) around the input surface based on its bounding box
+ * 2. Map each control point of the surface to parametric (S, T, U) coordinates in the lattice space
+ * 3. Evaluate the trivariate Bernstein polynomial using the (potentially modified) lattice control points
+ * 4. The result gives deformed positions for the surface control points
+ * 
+ * The lattice is parameterized with S, T, U coordinates (each ranging from 0 to 1):
+ * - S: Corresponds to the X-axis direction of the bounding box
+ * - T: Corresponds to the Y-axis direction of the bounding box
+ * - U: Corresponds to the Z-axis direction of the bounding box
+ * 
+ * The number of spans in each direction determines the lattice resolution:
+ * - More spans = finer control but more control points
+ * - Fewer spans = coarser control but simpler manipulation
+ * - Number of control points in direction = spans + 1
+ * 
+ * Mathematical basis:
+ * The FFD volume is a trivariate tensor-product Bernstein polynomial:
+ * X(s,t,u) = Σ Σ Σ B_i,l(s) * B_j,m(t) * B_k,n(u) * P_ijk
+ * 
+ * where:
+ * - B_i,n(u) = C(n,i) * (1-u)^(n-i) * u^i is the Bernstein basis function
+ * - C(n,i) = n! / (i! * (n-i)!) is the binomial coefficient
+ * - P_ijk are the lattice control points
+ * - l, m, n are the number of spans in S, T, U directions
+ * 
+ * Implementation references:
+ * - JavaScript reference: non-featurescript-functions-reference/free-form-deformation-master/ffd.js
+ * - Whitepaper: whitepaper-references/"Free-Form Deformation of Parametric CAD Geometry.pdf"
+ * - Related utilities: custom-features/tweenSurfaces.fs
+ */
+
+// Standard Library Imports
+import(path : "onshape/std/common.fs", version : "2837.0");
+import(path : "onshape/std/context.fs", version : "2837.0");
+import(path : "onshape/std/coordSystem.fs", version : "2837.0");
+import(path : "onshape/std/evaluate.fs", version : "2837.0");
+import(path : "onshape/std/feature.fs", version : "2837.0");
+import(path : "onshape/std/geomOperations.fs", version : "2837.0");
+import(path : "onshape/std/math.fs", version : "2837.0");
+import(path : "onshape/std/query.fs", version : "2837.0");
+import(path : "onshape/std/surfaceGeometry.fs", version : "2837.0");
+import(path : "onshape/std/units.fs", version : "2837.0");
+import(path : "onshape/std/valueBounds.fs", version : "2837.0");
+import(path : "onshape/std/vector.fs", version : "2837.0");
+import(path : "onshape/std/containers.fs", version : "2837.0");
+import(path : "onshape/std/box.fs", version : "2837.0");
+import(path : "onshape/std/nurbsUtils.fs", version : "2837.0");
+import(path : "onshape/std/debug.fs", version : "2837.0");
+
+
+// Bounds for lattice span counts
+export const FFD_SPAN_COUNT_BOUNDS = {
+    (integerRange) : [1, 2, 8]
+} as IntegerBoundSpec;
+
+
+/**
+ * Free-Form Deformation feature definition
+ * 
+ * Allows user to deform a NURBS surface by manipulating a 3D lattice of control points.
+ * The surface is embedded in a trivariate Bernstein polynomial volume defined by the lattice.
+ */
+annotation { "Feature Type Name" : "Free-Form Deformation",
+        "Feature Type Description" : "Deform a NURBS surface using a 3D control point lattice based on the FFD algorithm.",
+        "UIHint" : "NO_PREVIEW_PROVIDED" }
+export const freeFormDeformation = defineFeature(function(context is Context, id is Id, definition is map)
+    precondition
+    {
+        annotation { "Name" : "Surface to deform", 
+                     "Filter" : EntityType.FACE && SketchObject.NO && ConstructionObject.NO && AllowMeshGeometry.NO, 
+                     "MaxNumberOfPicks" : 1 }
+        definition.surfaceToDeform is Query;
+        
+        annotation { "Name" : "Lattice spans in S direction (X-axis)", 
+                     "Description" : "Number of spans in the S direction of the FFD lattice" }
+        isInteger(definition.spanCountS, FFD_SPAN_COUNT_BOUNDS);
+        
+        annotation { "Name" : "Lattice spans in T direction (Y-axis)", 
+                     "Description" : "Number of spans in the T direction of the FFD lattice" }
+        isInteger(definition.spanCountT, FFD_SPAN_COUNT_BOUNDS);
+        
+        annotation { "Name" : "Lattice spans in U direction (Z-axis)", 
+                     "Description" : "Number of spans in the U direction of the FFD lattice" }
+        isInteger(definition.spanCountU, FFD_SPAN_COUNT_BOUNDS);
+        
+        annotation { "Name" : "Enable lattice control point manipulation" }
+        definition.enableLatticeManipulation is boolean;
+        
+        annotation { "Group Name" : "Lattice control point offsets", 
+                     "Driving Parameter" : "enableLatticeManipulation", 
+                     "Collapsed By Default" : false }
+        {
+            if (definition.enableLatticeManipulation)
+            {
+                annotation { "Name" : "Control point index (linear)" }
+                isInteger(definition.controlPointIndex, { (integerRange) : [0, 1, 100] } as IntegerBoundSpec);
+                
+                annotation { "Name" : "Offset X" }
+                isLength(definition.offsetX, { (meter) : [-1, 0, 1] } as LengthBoundSpec);
+                
+                annotation { "Name" : "Offset Y" }
+                isLength(definition.offsetY, { (meter) : [-1, 0, 1] } as LengthBoundSpec);
+                
+                annotation { "Name" : "Offset Z" }
+                isLength(definition.offsetZ, { (meter) : [-1, 0, 1] } as LengthBoundSpec);
+            }
+        }
+        
+        annotation { "Name" : "Enable diagnostics" }
+        definition.enableDiagnostics is boolean;
+        
+        annotation { "Group Name" : "Developer diagnostics", 
+                     "Driving Parameter" : "enableDiagnostics", 
+                     "Collapsed By Default" : true }
+        {
+            if (definition.enableDiagnostics)
+            {
+                annotation { "Name" : "Show lattice control points" }
+                definition.showLatticeControlPoints is boolean;
+                
+                annotation { "Name" : "Show bounding box" }
+                definition.showBoundingBox is boolean;
+                
+                annotation { "Name" : "Print lattice information" }
+                definition.printLatticeInfo is boolean;
+                
+                annotation { "Name" : "Print deformation details" }
+                definition.printDeformationDetails is boolean;
+            }
+        }
+    }
+    {
+        // Validate input surface selection
+        if (evaluateQueryCount(context, definition.surfaceToDeform) == 0)
+            throw regenError("Select a surface to deform.", ["surfaceToDeform"]);
+        
+        const inputFace = evaluateQuery(context, definition.surfaceToDeform)[0];
+        
+        // Apply FFD deformation
+        applyFFDDeformation(context, id, inputFace, definition);
+    }, {
+        spanCountS : 2,
+        spanCountT : 2,
+        spanCountU : 2,
+        enableLatticeManipulation : false,
+        controlPointIndex : 0,
+        offsetX : 0 * meter,
+        offsetY : 0 * meter,
+        offsetZ : 0 * meter,
+        enableDiagnostics : false,
+        showLatticeControlPoints : false,
+        showBoundingBox : false,
+        printLatticeInfo : false,
+        printDeformationDetails : false
+    });
+
+
+/**
+ * Applies FFD deformation to the input surface
+ * 
+ * This function orchestrates the FFD algorithm:
+ * 1. Extract B-spline surface from the input face
+ * 2. Compute the bounding box for the surface
+ * 3. Build the FFD lattice based on the bounding box and span counts
+ * 4. Apply any user-specified control point offsets
+ * 5. Deform each surface control point using trivariate Bernstein evaluation
+ * 6. Create the deformed surface
+ * 
+ * @param context {Context} : The modeling context
+ * @param id {Id} : The feature identifier
+ * @param inputFace {Query} : The face to deform
+ * @param definition {map} : Feature definition containing lattice parameters and offsets
+ */
+function applyFFDDeformation(context is Context, id is Id, inputFace is Query, definition is map)
+{
+    // Get B-spline surface representation
+    var surfaceDefinition = evSurfaceDefinition(context, {
+        "face" : inputFace
+    });
+    
+    // If not already a B-spline, approximate it
+    if (surfaceDefinition.surfaceType != SurfaceType.SPLINE)
+    {
+        const approximation = evApproximateBSplineSurface(context, {
+            "face" : inputFace
+        });
+        surfaceDefinition = approximation.bSplineSurface;
+    }
+    
+    const controlPoints = surfaceDefinition.controlPoints;
+    const weights = surfaceDefinition.weights;
+    const isRational = surfaceDefinition.isRational;
+    
+    // Compute bounding box from surface control points
+    const boundingBox = computeControlPointBoundingBox(controlPoints);
+    
+    if (definition.showBoundingBox)
+    {
+        visualizeBoundingBox(context, id + "bbox", boundingBox);
+    }
+    
+    // Build FFD lattice
+    const spanCounts = [definition.spanCountS, definition.spanCountT, definition.spanCountU];
+    const lattice = buildFFDLattice(boundingBox, spanCounts);
+    
+    if (definition.printLatticeInfo)
+    {
+        printLatticeInformation(lattice);
+    }
+    
+    // Apply user-specified control point offset if manipulation is enabled
+    if (definition.enableLatticeManipulation)
+    {
+        applyControlPointOffset(lattice, definition.controlPointIndex, 
+                               vector(definition.offsetX, definition.offsetY, definition.offsetZ));
+    }
+    
+    if (definition.showLatticeControlPoints)
+    {
+        visualizeLatticeControlPoints(context, id + "lattice", lattice);
+    }
+    
+    // Deform surface control points using FFD
+    var deformedControlPoints = [];
+    for (var uIndex = 0; uIndex < size(controlPoints); uIndex += 1)
+    {
+        var deformedRow = [];
+        for (var vIndex = 0; vIndex < size(controlPoints[0]); vIndex += 1)
+        {
+            const originalPoint = controlPoints[uIndex][vIndex];
+            
+            // For rational surfaces, work with weighted control points
+            var pointToDeform = originalPoint;
+            if (isRational)
+            {
+                const weight = weights[uIndex][vIndex];
+                pointToDeform = originalPoint * weight;
+            }
+            
+            // Convert to STU parametric space
+            const stuCoords = convertWorldToSTU(pointToDeform, lattice);
+            
+            // Evaluate trivariate Bernstein polynomial
+            const deformedPoint = evaluateTrivariateBernstein(stuCoords, lattice);
+            
+            // For rational surfaces, un-weight the result
+            var finalDeformedPoint = deformedPoint;
+            if (isRational)
+            {
+                const weight = weights[uIndex][vIndex];
+                finalDeformedPoint = deformedPoint / weight;
+            }
+            
+            deformedRow = append(deformedRow, finalDeformedPoint);
+            
+            // Debug output for first control point
+            if (definition.printDeformationDetails && uIndex == 0 && vIndex == 0)
+            {
+                println("DEBUG: First control point deformation:");
+                println("  Original: " ~ originalPoint);
+                println("  STU coords: " ~ stuCoords);
+                println("  Deformed: " ~ finalDeformedPoint);
+            }
+        }
+        deformedControlPoints = append(deformedControlPoints, deformedRow);
+    }
+    
+    // Create the deformed B-spline surface
+    const deformedSurfaceDefinition = bSplineSurface({
+        "uDegree" : surfaceDefinition.uDegree,
+        "vDegree" : surfaceDefinition.vDegree,
+        "isUPeriodic" : surfaceDefinition.isUPeriodic,
+        "isVPeriodic" : surfaceDefinition.isVPeriodic,
+        "controlPoints" : controlPointMatrix(deformedControlPoints),
+        "weights" : weights == undefined ? undefined : matrix(weights),
+        "uKnots" : surfaceDefinition.uKnots,
+        "vKnots" : surfaceDefinition.vKnots
+    });
+    
+    opCreateBSplineSurface(context, id, {
+        "bSplineSurface" : deformedSurfaceDefinition
+    });
+}
+
+
+/**
+ * Computes an axis-aligned bounding box from an array of control points
+ * 
+ * @param controlPoints {array} : 2D array of control points (Vector3 with units)
+ * @returns {map} : Map containing minCorner (Vector3) and maxCorner (Vector3)
+ */
+function computeControlPointBoundingBox(controlPoints is array) returns map
+{
+    // Initialize with first point
+    var minX = controlPoints[0][0][0];
+    var maxX = controlPoints[0][0][0];
+    var minY = controlPoints[0][0][1];
+    var maxY = controlPoints[0][0][1];
+    var minZ = controlPoints[0][0][2];
+    var maxZ = controlPoints[0][0][2];
+    
+    // Find min/max in each dimension
+    for (var uIndex = 0; uIndex < size(controlPoints); uIndex += 1)
+    {
+        for (var vIndex = 0; vIndex < size(controlPoints[0]); vIndex += 1)
+        {
+            const point = controlPoints[uIndex][vIndex];
+            minX = min(minX, point[0]);
+            maxX = max(maxX, point[0]);
+            minY = min(minY, point[1]);
+            maxY = max(maxY, point[1]);
+            minZ = min(minZ, point[2]);
+            maxZ = max(maxZ, point[2]);
+        }
+    }
+    
+    return {
+        "minCorner" : vector(minX, minY, minZ),
+        "maxCorner" : vector(maxX, maxY, maxZ)
+    };
+}
+
+
+/**
+ * Builds an FFD lattice structure from a bounding box and span counts
+ * 
+ * The lattice is a 3D grid of control points that initially match the
+ * corners and edges of the bounding box. Control points are uniformly
+ * distributed in each parametric direction.
+ * 
+ * @param boundingBox {map} : Map with minCorner and maxCorner (Vector3)
+ * @param spanCounts {array} : Array of 3 integers [spanS, spanT, spanU]
+ * @returns {map} : Lattice structure with control points, axes, span counts, etc.
+ */
+function buildFFDLattice(boundingBox is map, spanCounts is array) returns map
+{
+    const minCorner = boundingBox.minCorner;
+    const maxCorner = boundingBox.maxCorner;
+    
+    // Compute axes (directions and magnitudes)
+    const axisS = vector(maxCorner[0] - minCorner[0], 0 * meter, 0 * meter);
+    const axisT = vector(0 * meter, maxCorner[1] - minCorner[1], 0 * meter);
+    const axisU = vector(0 * meter, 0 * meter, maxCorner[2] - minCorner[2]);
+    
+    const spanCountS = spanCounts[0];
+    const spanCountT = spanCounts[1];
+    const spanCountU = spanCounts[2];
+    
+    // Number of control points = spans + 1
+    const controlPointCountS = spanCountS + 1;
+    const controlPointCountT = spanCountT + 1;
+    const controlPointCountU = spanCountU + 1;
+    
+    const totalControlPoints = controlPointCountS * controlPointCountT * controlPointCountU;
+    
+    // Initialize control points in a 3D grid
+    var controlPoints = [];
+    for (var indexS = 0; indexS < controlPointCountS; indexS += 1)
+    {
+        for (var indexT = 0; indexT < controlPointCountT; indexT += 1)
+        {
+            for (var indexU = 0; indexU < controlPointCountU; indexU += 1)
+            {
+                // Compute position: origin + (i/spanS)*axisS + (j/spanT)*axisT + (k/spanU)*axisU
+                const fractionS = indexS / spanCountS;
+                const fractionT = indexT / spanCountT;
+                const fractionU = indexU / spanCountU;
+                
+                const position = minCorner + axisS * fractionS + axisT * fractionT + axisU * fractionU;
+                controlPoints = append(controlPoints, position);
+            }
+        }
+    }
+    
+    return {
+        "minCorner" : minCorner,
+        "maxCorner" : maxCorner,
+        "axisS" : axisS,
+        "axisT" : axisT,
+        "axisU" : axisU,
+        "spanCountS" : spanCountS,
+        "spanCountT" : spanCountT,
+        "spanCountU" : spanCountU,
+        "controlPointCountS" : controlPointCountS,
+        "controlPointCountT" : controlPointCountT,
+        "controlPointCountU" : controlPointCountU,
+        "totalControlPoints" : totalControlPoints,
+        "controlPoints" : controlPoints
+    };
+}
+
+
+/**
+ * Converts a 3D point in world space to parametric (S, T, U) coordinates in the lattice space
+ * 
+ * The conversion uses the lattice's local coordinate system defined by its three axes.
+ * Each parametric coordinate ranges from 0 to 1 across the lattice.
+ * 
+ * The transformation is:
+ * For each axis i: stu[i] = (axisJ cross axisK) dot (point - minCorner) / (axisJ cross axisK) dot axisI
+ * where J and K are the other two axes (cyclic permutation)
+ * 
+ * @param worldPoint {Vector3} : Point in world coordinates (with units)
+ * @param lattice {map} : Lattice structure containing axes and origin
+ * @returns {Vector3} : Parametric coordinates (S, T, U), each in range [0, 1] (unitless)
+ */
+function convertWorldToSTU(worldPoint is Vector, lattice is map) returns Vector
+{
+    // Vector from minimum corner to the world point
+    const minToWorld = worldPoint - lattice.minCorner;
+    
+    // Compute cross products for each axis
+    const crossS = cross(lattice.axisT, lattice.axisU);
+    const crossT = cross(lattice.axisS, lattice.axisU);
+    const crossU = cross(lattice.axisS, lattice.axisT);
+    
+    // Compute parametric coordinates using scalar triple product
+    const numeratorS = dot(crossS, minToWorld);
+    const denominatorS = dot(crossS, lattice.axisS);
+    const paramS = numeratorS / denominatorS;
+    
+    const numeratorT = dot(crossT, minToWorld);
+    const denominatorT = dot(crossT, lattice.axisT);
+    const paramT = numeratorT / denominatorT;
+    
+    const numeratorU = dot(crossU, minToWorld);
+    const denominatorU = dot(crossU, lattice.axisU);
+    const paramU = numeratorU / denominatorU;
+    
+    // Return unitless parametric coordinates
+    return vector(paramS, paramT, paramU);
+}
+
+
+/**
+ * Evaluates the trivariate Bernstein polynomial at parametric coordinates (s, t, u)
+ * 
+ * This is the core of the FFD algorithm. The trivariate Bernstein polynomial is:
+ * X(s,t,u) = Σ_i Σ_j Σ_k B_i,l(s) * B_j,m(t) * B_k,n(u) * P_ijk
+ * 
+ * where:
+ * - B_i,n(u) is the Bernstein basis function
+ * - P_ijk are the lattice control points
+ * - l, m, n are the span counts in S, T, U directions
+ * 
+ * The evaluation is performed using nested loops following the tensor product structure.
+ * 
+ * @param stuCoords {Vector3} : Parametric coordinates (s, t, u) in range [0, 1]
+ * @param lattice {map} : Lattice structure with control points and dimensions
+ * @returns {Vector3} : Evaluated point in world space (with units)
+ */
+function evaluateTrivariateBernstein(stuCoords is Vector, lattice is map) returns Vector
+{
+    const paramS = stuCoords[0];
+    const paramT = stuCoords[1];
+    const paramU = stuCoords[2];
+    
+    // Initialize result as zero vector (with proper units from first control point)
+    var evaluatedPoint = vector(0 * meter, 0 * meter, 0 * meter);
+    
+    // Triple nested loop following the tensor product structure
+    for (var indexS = 0; indexS < lattice.controlPointCountS; indexS += 1)
+    {
+        var intermediatePointT = vector(0 * meter, 0 * meter, 0 * meter);
+        
+        for (var indexT = 0; indexT < lattice.controlPointCountT; indexT += 1)
+        {
+            var intermediatePointU = vector(0 * meter, 0 * meter, 0 * meter);
+            
+            for (var indexU = 0; indexU < lattice.controlPointCountU; indexU += 1)
+            {
+                // Get control point at position (indexS, indexT, indexU)
+                const linearIndex = getTernaryIndex(indexS, indexT, indexU, lattice);
+                const controlPoint = lattice.controlPoints[linearIndex];
+                
+                // Compute Bernstein basis function for U direction
+                const basisU = bernsteinPolynomial(lattice.spanCountU, indexU, paramU);
+                
+                // Accumulate contribution from this U control point
+                intermediatePointU = intermediatePointU + controlPoint * basisU;
+            }
+            
+            // Compute Bernstein basis function for T direction
+            const basisT = bernsteinPolynomial(lattice.spanCountT, indexT, paramT);
+            
+            // Accumulate contribution from this T slice
+            intermediatePointT = intermediatePointT + intermediatePointU * basisT;
+        }
+        
+        // Compute Bernstein basis function for S direction
+        const basisS = bernsteinPolynomial(lattice.spanCountS, indexS, paramS);
+        
+        // Accumulate contribution from this S slice
+        evaluatedPoint = evaluatedPoint + intermediatePointT * basisS;
+    }
+    
+    return evaluatedPoint;
+}
+
+
+/**
+ * Computes the Bernstein basis function B_{i,n}(u)
+ * 
+ * The Bernstein polynomial is defined as:
+ * B_{i,n}(u) = C(n,i) * (1-u)^(n-i) * u^i
+ * 
+ * where C(n,i) = n! / (i! * (n-i)!) is the binomial coefficient
+ * 
+ * @param degree {number} : Degree of the polynomial (n)
+ * @param index {number} : Index of the basis function (i)
+ * @param parameter {number} : Parameter value u in range [0, 1]
+ * @returns {number} : Value of the Bernstein basis function (unitless)
+ */
+function bernsteinPolynomial(degree is number, index is number, parameter is number) returns number
+{
+    // Compute binomial coefficient C(n,i) = n! / (i! * (n-i)!)
+    const binomialCoefficient = factorial(degree) / (factorial(index) * factorial(degree - index));
+    
+    // Compute (1-u)^(n-i)
+    const termOneMinusU = pow(1 - parameter, degree - index);
+    
+    // Compute u^i
+    const termU = pow(parameter, index);
+    
+    return binomialCoefficient * termOneMinusU * termU;
+}
+
+
+/**
+ * Computes the factorial of a non-negative integer
+ * 
+ * @param n {number} : Non-negative integer
+ * @returns {number} : n! = n * (n-1) * ... * 2 * 1
+ */
+function factorial(n is number) returns number
+{
+    if (n <= 0)
+        return 1;
+    
+    var result = 1;
+    for (var i = n; i > 1; i -= 1)
+    {
+        result = result * i;
+    }
+    
+    return result;
+}
+
+
+/**
+ * Converts ternary lattice indices (i, j, k) to a linear array index
+ * 
+ * The lattice is stored as a 1D array but conceptually organized as a 3D grid.
+ * This function computes the linear index from 3D coordinates.
+ * 
+ * Storage order: U varies fastest, then T, then S
+ * Linear index = i * (countT * countU) + j * countU + k
+ * 
+ * @param indexS {number} : Index in S direction
+ * @param indexT {number} : Index in T direction
+ * @param indexU {number} : Index in U direction
+ * @param lattice {map} : Lattice structure with dimension information
+ * @returns {number} : Linear index into the control points array
+ */
+function getTernaryIndex(indexS is number, indexT is number, indexU is number, lattice is map) returns number
+{
+    return indexS * lattice.controlPointCountT * lattice.controlPointCountU + 
+           indexT * lattice.controlPointCountU + 
+           indexU;
+}
+
+
+/**
+ * Applies a user-specified offset to a lattice control point
+ * 
+ * This modifies the lattice control point at the specified linear index by adding the offset vector.
+ * This allows interactive manipulation of the FFD lattice.
+ * 
+ * @param lattice {map} : Lattice structure (modified in place)
+ * @param linearIndex {number} : Linear index of the control point to modify
+ * @param offset {Vector3} : Offset to add to the control point position
+ */
+function applyControlPointOffset(lattice is map, linearIndex is number, offset is Vector)
+{
+    // Validate index
+    if (linearIndex < 0 || linearIndex >= lattice.totalControlPoints)
+    {
+        println("WARNING: Control point index " ~ linearIndex ~ " is out of range [0, " ~ 
+                (lattice.totalControlPoints - 1) ~ "]");
+        return;
+    }
+    
+    // Modify the control point
+    lattice.controlPoints[linearIndex] = lattice.controlPoints[linearIndex] + offset;
+}
+
+
+/**
+ * Prints detailed information about the FFD lattice
+ * 
+ * @param lattice {map} : Lattice structure
+ */
+function printLatticeInformation(lattice is map)
+{
+    println("=== FFD Lattice Information ===");
+    println("Bounding box:");
+    println("  Min corner: " ~ lattice.minCorner);
+    println("  Max corner: " ~ lattice.maxCorner);
+    println("Axes:");
+    println("  S axis: " ~ lattice.axisS);
+    println("  T axis: " ~ lattice.axisT);
+    println("  U axis: " ~ lattice.axisU);
+    println("Span counts: [" ~ lattice.spanCountS ~ ", " ~ lattice.spanCountT ~ ", " ~ lattice.spanCountU ~ "]");
+    println("Control point counts: [" ~ lattice.controlPointCountS ~ ", " ~ 
+            lattice.controlPointCountT ~ ", " ~ lattice.controlPointCountU ~ "]");
+    println("Total control points: " ~ lattice.totalControlPoints);
+    println("===============================");
+}
+
+
+/**
+ * Visualizes the bounding box using debug geometry
+ * 
+ * @param context {Context} : The modeling context
+ * @param id {Id} : Identifier for the debug geometry
+ * @param boundingBox {map} : Map with minCorner and maxCorner
+ */
+function visualizeBoundingBox(context is Context, id is Id, boundingBox is map)
+{
+    const minCorner = boundingBox.minCorner;
+    const maxCorner = boundingBox.maxCorner;
+    
+    // Draw edges of the bounding box
+    const corners = [
+        minCorner,
+        vector(maxCorner[0], minCorner[1], minCorner[2]),
+        vector(maxCorner[0], maxCorner[1], minCorner[2]),
+        vector(minCorner[0], maxCorner[1], minCorner[2]),
+        vector(minCorner[0], minCorner[1], maxCorner[2]),
+        vector(maxCorner[0], minCorner[1], maxCorner[2]),
+        maxCorner,
+        vector(minCorner[0], maxCorner[1], maxCorner[2])
+    ];
+    
+    // Bottom face edges
+    debug(context, corners[0], DebugColor.BLUE);
+    debug(context, corners[1], DebugColor.BLUE);
+    debug(context, corners[2], DebugColor.BLUE);
+    debug(context, corners[3], DebugColor.BLUE);
+    
+    // Top face edges
+    debug(context, corners[4], DebugColor.BLUE);
+    debug(context, corners[5], DebugColor.BLUE);
+    debug(context, corners[6], DebugColor.BLUE);
+    debug(context, corners[7], DebugColor.BLUE);
+}
+
+
+/**
+ * Visualizes the FFD lattice control points using debug geometry
+ * 
+ * @param context {Context} : The modeling context
+ * @param id {Id} : Identifier for the debug geometry
+ * @param lattice {map} : Lattice structure with control points
+ */
+function visualizeLatticeControlPoints(context is Context, id is Id, lattice is map)
+{
+    // Draw each control point as a debug point
+    for (var i = 0; i < lattice.totalControlPoints; i += 1)
+    {
+        debug(context, lattice.controlPoints[i], DebugColor.RED);
+    }
+}
