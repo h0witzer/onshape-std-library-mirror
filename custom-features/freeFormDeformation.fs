@@ -833,6 +833,10 @@ function findOffsetForPoint(latticePointOffsets is array, pointIndex is number) 
  */
 function applyLatticeOffsets(lattice is map, latticePointOffsets is array)
 {
+    // In FeatureScript, we need to extract the array, modify it, and reassign it
+    // to ensure the modifications are reflected in the map
+    var modifiedControlPoints = lattice.controlPoints;
+    
     // Apply each stored offset to its corresponding lattice control point
     for (var offsetEntry in latticePointOffsets)
     {
@@ -843,9 +847,12 @@ function applyLatticeOffsets(lattice is map, latticePointOffsets is array)
         {
             // Directly use the offset from the entry (no need to search again)
             const offset = vector(offsetEntry.x, offsetEntry.y, offsetEntry.z);
-            lattice.controlPoints[pointIndex] = lattice.controlPoints[pointIndex] + offset;
+            modifiedControlPoints[pointIndex] = modifiedControlPoints[pointIndex] + offset;
         }
     }
+    
+    // Reassign the modified array back to the lattice
+    lattice.controlPoints = modifiedControlPoints;
 }
 
 
