@@ -719,29 +719,35 @@ export function ffdManipulator(context is Context, definition is map, newManipul
         const transform = newManipulators[LATTICE_TRIAD_MANIPULATOR].transform;
         const selectedIndex = definition.selectedPointIndex;
         
-        // Store offset as a map entry with index and separate X/Y/Z components
-        // Following Routing Curve pattern (stores dx, dy, dz separately)
-        const offset = {
-            "index" : selectedIndex,
-            "offsetX" : transform.translation[0],
-            "offsetY" : transform.translation[1],
-            "offsetZ" : transform.translation[2]
-        };
-        
-        // Update existing offset or add new one
-        var found = false;
+        // Find the array index for this control point index
+        var arrayIndex = -1;
         for (var i = 0; i < size(definition.latticeOffsets); i += 1)
         {
             if (definition.latticeOffsets[i].index == selectedIndex)
             {
-                definition.latticeOffsets[i] = offset;
-                found = true;
+                arrayIndex = i;
                 break;
             }
         }
-        if (!found)
+        
+        // If offset entry exists, update it; otherwise create new one
+        if (arrayIndex >= 0)
         {
-            definition.latticeOffsets = append(definition.latticeOffsets, offset);
+            // Update existing offset entry (following Routing Curve pattern)
+            definition.latticeOffsets[arrayIndex].offsetX = transform.translation[0];
+            definition.latticeOffsets[arrayIndex].offsetY = transform.translation[1];
+            definition.latticeOffsets[arrayIndex].offsetZ = transform.translation[2];
+        }
+        else
+        {
+            // Create new offset entry
+            const newOffset = {
+                "index" : selectedIndex,
+                "offsetX" : transform.translation[0],
+                "offsetY" : transform.translation[1],
+                "offsetZ" : transform.translation[2]
+            };
+            definition.latticeOffsets = append(definition.latticeOffsets, newOffset);
         }
     }
     
