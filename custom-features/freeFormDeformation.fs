@@ -741,39 +741,23 @@ export function ffdManipulator(context is Context, definition is map, newManipul
         }
         
         // Find the array index for this control point index
-        var arrayIndex = -1;
+        var foundEdit = false;
         for (var i = 0; i < size(definition.latticeOffsets); i += 1)
         {
             if (definition.latticeOffsets[i].index == selectedIndex)
             {
-                arrayIndex = i;
+                // Update existing offset entry (direct modification like Edit Curve)
+                definition.latticeOffsets[i].offsetX = newOffset[0];
+                definition.latticeOffsets[i].offsetY = newOffset[1];
+                definition.latticeOffsets[i].offsetZ = newOffset[2];
+                foundEdit = true;
                 break;
             }
         }
         
-        // If offset entry exists, update it; otherwise create new one
-        if (arrayIndex >= 0)
+        // If no offset entry exists, create new one
+        if (!foundEdit)
         {
-            // Update existing offset entry
-            var updatedOffset = definition.latticeOffsets[arrayIndex];
-            updatedOffset.offsetX = newOffset[0];
-            updatedOffset.offsetY = newOffset[1];
-            updatedOffset.offsetZ = newOffset[2];
-            
-            // Rebuild entire array with updated element
-            var newOffsets = [];
-            for (var i = 0; i < size(definition.latticeOffsets); i += 1)
-            {
-                if (i == arrayIndex)
-                    newOffsets = append(newOffsets, updatedOffset);
-                else
-                    newOffsets = append(newOffsets, definition.latticeOffsets[i]);
-            }
-            definition.latticeOffsets = newOffsets;
-        }
-        else
-        {
-            // Create new offset entry
             const newOffsetEntry = {
                 "index" : selectedIndex,
                 "offsetX" : newOffset[0],
