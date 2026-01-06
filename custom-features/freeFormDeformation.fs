@@ -85,7 +85,7 @@ export const FFD_SPAN_COUNT_BOUNDS = {
  * The surface is embedded in a trivariate Bernstein polynomial volume defined by the lattice.
  */
 annotation { "Feature Type Name" : "Free-Form Deformation",
-        "Feature Type Description" : "Deform a NURBS surface using a 3D control point lattice based on the FFD algorithm.",
+        "Feature Type Description" : "Deform a NURBS surface using a 3D control point lattice. Enable diagnostics and lattice manipulation to modify control points and see deformation effects.",
         "UIHint" : "NO_PREVIEW_PROVIDED" }
 export const freeFormDeformation = defineFeature(function(context is Context, id is Id, definition is map)
     precondition
@@ -107,7 +107,8 @@ export const freeFormDeformation = defineFeature(function(context is Context, id
                      "Description" : "Number of spans in the U direction of the FFD lattice" }
         isInteger(definition.spanCountU, FFD_SPAN_COUNT_BOUNDS);
         
-        annotation { "Name" : "Enable lattice control point manipulation" }
+        annotation { "Name" : "Enable lattice control point manipulation", 
+                     "Description" : "Enable to modify lattice control points and deform the surface. Total control points = (spanS+1)×(spanT+1)×(spanU+1)" }
         definition.enableLatticeManipulation is boolean;
         
         annotation { "Group Name" : "Lattice control point offsets", 
@@ -116,16 +117,20 @@ export const freeFormDeformation = defineFeature(function(context is Context, id
         {
             if (definition.enableLatticeManipulation)
             {
-                annotation { "Name" : "Control point index (linear)" }
-                isInteger(definition.controlPointIndex, { (unitless) : [0, 1, 100] } as IntegerBoundSpec);
+                annotation { "Name" : "Control point index (linear)", 
+                             "Description" : "Index of lattice control point to modify. Use diagnostics to see total count and positions. Example: for 2×2×2 lattice, valid range is 0-26" }
+                isInteger(definition.controlPointIndex, { (unitless) : [0, 1, 1000] } as IntegerBoundSpec);
                 
-                annotation { "Name" : "Offset X" }
+                annotation { "Name" : "Offset X", 
+                             "Description" : "Move control point in X direction (S-axis). Try 0.01m to start" }
                 isLength(definition.offsetX, { (meter) : [-1, 0, 1] } as LengthBoundSpec);
                 
-                annotation { "Name" : "Offset Y" }
+                annotation { "Name" : "Offset Y", 
+                             "Description" : "Move control point in Y direction (T-axis). Try 0.01m to start" }
                 isLength(definition.offsetY, { (meter) : [-1, 0, 1] } as LengthBoundSpec);
                 
-                annotation { "Name" : "Offset Z" }
+                annotation { "Name" : "Offset Z", 
+                             "Description" : "Move control point in Z direction (U-axis). Try 0.01m to start" }
                 isLength(definition.offsetZ, { (meter) : [-1, 0, 1] } as LengthBoundSpec);
             }
         }
@@ -643,6 +648,13 @@ function printLatticeInformation(lattice is map)
     println("Control point counts: [" ~ lattice.controlPointCountS ~ ", " ~ 
             lattice.controlPointCountT ~ ", " ~ lattice.controlPointCountU ~ "]");
     println("Total control points: " ~ lattice.totalControlPoints);
+    println("");
+    println("USAGE: To deform the surface:");
+    println("  1. Enable 'lattice control point manipulation'");
+    println("  2. Choose a control point index (0 to " ~ (lattice.totalControlPoints - 1) ~ ")");
+    println("  3. Set non-zero offset values (e.g., 0.01m in X/Y/Z)");
+    println("  4. The surface will deform based on the modified lattice");
+    println("  Note: With all offsets at 0, surface is unchanged (expected behavior)");
     println("===============================");
 }
 
