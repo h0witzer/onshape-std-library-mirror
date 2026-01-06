@@ -775,6 +775,12 @@ function applyLatticeOffsets(lattice is map, offsets is array)
 {
     for (var offsetEntry in offsets)
     {
+        // Check if offsetEntry has valid index field
+        if (offsetEntry.index == undefined)
+        {
+            continue;
+        }
+        
         const index = offsetEntry.index;
         // Reconstruct vector from individual X/Y/Z components (matching Routing Curve pattern)
         const offset = vector(offsetEntry.offsetX, offsetEntry.offsetY, offsetEntry.offsetZ);
