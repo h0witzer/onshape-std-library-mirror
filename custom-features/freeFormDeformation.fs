@@ -242,6 +242,7 @@ function applyFFDDeformation(context is Context, id is Id, inputFace is Query, d
     }
     
     // Build original lattice WITHOUT offsets - needed for triad base positions
+    const spanCounts = [definition.spanCountS, definition.spanCountT, definition.spanCountU];
     var latticeOriginal = buildFFDLattice(boundingBox, spanCounts);
     
     // Build a modified lattice WITH offsets for visualization and deformation
