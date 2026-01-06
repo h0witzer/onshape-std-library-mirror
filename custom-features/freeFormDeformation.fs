@@ -36,9 +36,10 @@ FeatureScript 2837;
  * Usage:
  * 1. Select a surface face to deform
  * 2. Set the number of lattice spans in each direction (S, T, U)
- * 3. Enable lattice manipulation and specify a control point index to modify
- * 4. Set offset values (X, Y, Z) to move that control point
- * 5. The surface will deform according to the modified lattice
+ * 3. Enable "Edit lattice control points" to begin interactive manipulation
+ * 4. Click on any lattice control point to select it (shown as small spheres)
+ * 5. Drag the triad manipulator to move that control point
+ * 6. The surface will deform according to the modified lattice
  * 
  * Tips:
  * - Start with fewer spans (e.g., 2x2x2) for global deformations
@@ -117,6 +118,37 @@ export const freeFormDeformation = defineFeature(function(context is Context, id
         annotation { "Name" : "Selected control point index", "UIHint" : UIHint.ALWAYS_HIDDEN }
         isInteger(definition.selectedPointIndex, { (unitless) : [0, 0, 1000] } as IntegerBoundSpec);
         
+        annotation { "Name" : "Edit lattice control points" }
+        definition.editLatticePoints is boolean;
+        
+        annotation { "Group Name" : "Edit lattice control points", 
+                     "Driving Parameter" : "editLatticePoints", 
+                     "Collapsed By Default" : false }
+        {
+            if (definition.editLatticePoints)
+            {
+                annotation { "Name" : "Lattice point offsets", 
+                             "Item name" : "point offset", 
+                             "Item label template" : "#index: #x;#y;#z", 
+                             "UIHint" : UIHint.PREVENT_ARRAY_REORDER }
+                definition.latticePointOffsets is array;
+                for (var latticePointOffset in definition.latticePointOffsets)
+                {
+                    annotation { "Name" : "Control point index" }
+                    isInteger(latticePointOffset.index, { (unitless) : [0, 0, 1000] } as IntegerBoundSpec);
+                    
+                    annotation { "Name" : "X offset" }
+                    isLength(latticePointOffset.x, ZERO_DEFAULT_LENGTH_BOUNDS);
+                    
+                    annotation { "Name" : "Y offset" }
+                    isLength(latticePointOffset.y, ZERO_DEFAULT_LENGTH_BOUNDS);
+                    
+                    annotation { "Name" : "Z offset" }
+                    isLength(latticePointOffset.z, ZERO_DEFAULT_LENGTH_BOUNDS);
+                }
+            }
+        }
+        
         annotation { "Name" : "Enable diagnostics" }
         definition.enableDiagnostics is boolean;
         
@@ -153,7 +185,9 @@ export const freeFormDeformation = defineFeature(function(context is Context, id
         spanCountS : 2,
         spanCountT : 2,
         spanCountU : 2,
+        editLatticePoints : false,
         selectedPointIndex : 0,
+        latticePointOffsets : [],
         enableDiagnostics : false,
         showLatticeControlPoints : false,
         showBoundingBox : false,
@@ -207,17 +241,40 @@ function applyFFDDeformation(context is Context, id is Id, inputFace is Query, d
         visualizeBoundingBox(context, id + "bbox", boundingBox);
     }
     
-    // Build FFD lattice
+    // Build original lattice WITHOUT offsets - needed for triad base positions
     const spanCounts = [definition.spanCountS, definition.spanCountT, definition.spanCountU];
-    const lattice = buildFFDLattice(boundingBox, spanCounts);
+    var latticeOriginal = buildFFDLattice(boundingBox, spanCounts);
+    
+    // Build a modified lattice WITH offsets for visualization and deformation
+    var lattice = buildFFDLattice(boundingBox, spanCounts);
+    if (definition.editLatticePoints && size(definition.latticePointOffsets) > 0)
+    {
+        // Extract, modify, and reassign control points
+        var modifiedControlPoints = lattice.controlPoints;
+        for (var offsetEntry in definition.latticePointOffsets)
+        {
+            const pointIndex = offsetEntry.index;
+            if (pointIndex >= 0 && pointIndex < lattice.totalControlPoints)
+            {
+                const offset = vector(offsetEntry.x, offsetEntry.y, offsetEntry.z);
+                modifiedControlPoints[pointIndex] = modifiedControlPoints[pointIndex] + offset;
+            }
+        }
+        lattice.controlPoints = modifiedControlPoints;
+    }
     
     if (definition.printLatticeInfo)
     {
         printLatticeInformation(lattice);
     }
     
+    // Build display points from the MODIFIED lattice (with offsets) for manipulator visualization
+    var latticeControlPointsForDisplay = lattice.controlPoints;
+    
     // Add manipulators for interactive control point manipulation
-    addFFDManipulators(context, id, lattice, definition.selectedPointIndex);
+    // Pass ORIGINAL lattice for base positions, MODIFIED lattice control points for visualization
+    addFFDManipulators(context, id, latticeOriginal, latticeControlPointsForDisplay, definition.selectedPointIndex, 
+                      definition.editLatticePoints, definition.latticePointOffsets);
     
     if (definition.showLatticeControlPoints)
     {
@@ -599,11 +656,11 @@ function printLatticeInformation(lattice is map)
     println("Total control points: " ~ lattice.totalControlPoints);
     println("");
     println("USAGE: To deform the surface:");
-    println("  1. Enable 'lattice control point manipulation'");
-    println("  2. Choose a control point index (0 to " ~ (lattice.totalControlPoints - 1) ~ ")");
-    println("  3. Set non-zero offset values (e.g., 0.01m in X/Y/Z)");
+    println("  1. Enable 'Edit lattice control points' checkbox");
+    println("  2. Click on any lattice control point (shown as small spheres)");
+    println("  3. Drag the triad manipulator to move that control point");
     println("  4. The surface will deform based on the modified lattice");
-    println("  Note: With all offsets at 0, surface is unchanged (expected behavior)");
+    println("  Control point indices range from 0 to " ~ (lattice.totalControlPoints - 1));
     println("===============================");
 }
 
@@ -667,33 +724,140 @@ function visualizeLatticeControlPoints(context is Context, id is Id, lattice is 
 /**
  * Manipulator handler for FFD feature
  * 
- * TODO: Implement Edit Curve-style manipulator logic
+ * Handles two types of manipulators:
+ * 1. INDEX_MANIPULATOR (pointsManipulator): When a lattice control point is clicked, 
+ *    enables editing and sets selectedPointIndex
+ * 2. OFFSET_MANIPULATOR (triadManipulator): When the triad is dragged, updates or creates
+ *    an offset entry in latticePointOffsets array
+ * 
+ * This follows the exact pattern used in Edit Curve feature.
+ * 
+ * @param context {Context} : The modeling context
+ * @param definition {map} : Current feature definition
+ * @param newManipulators {map} : Map of manipulator changes from user interaction
+ * @returns {map} : Updated definition with manipulator-driven changes
  */
 export function ffdManipulator(context is Context, definition is map, newManipulators is map) returns map
 {
-    // Edit Curve Manipulator logic go here
+    // Handle point selection via pointsManipulator
+    if (newManipulators[LATTICE_POINTS_MANIPULATOR] is map)
+    {
+        // User clicked on a lattice control point - enable editing and set the selected index
+        definition.editLatticePoints = true;
+        definition.selectedPointIndex = newManipulators[LATTICE_POINTS_MANIPULATOR].index;
+    }
+    
+    // Handle triad manipulation for moving the selected control point
+    if (newManipulators[LATTICE_TRIAD_MANIPULATOR] is map)
+    {
+        // Extract offset vector once for efficiency and readability
+        const manipulatorOffset = newManipulators[LATTICE_TRIAD_MANIPULATOR].offset;
+        
+        var foundOffset = false;
+        
+        // Check if an offset entry already exists for the selected point
+        for (var i = 0; i < size(definition.latticePointOffsets); i += 1)
+        {
+            if (definition.latticePointOffsets[i].index == definition.selectedPointIndex)
+            {
+                // Update existing offset entry
+                definition.latticePointOffsets[i].x = manipulatorOffset[0];
+                definition.latticePointOffsets[i].y = manipulatorOffset[1];
+                definition.latticePointOffsets[i].z = manipulatorOffset[2];
+                foundOffset = true;
+                break;
+            }
+        }
+        
+        // If no offset entry exists for this point, create one
+        if (!foundOffset)
+        {
+            var newOffset = {
+                "index" : definition.selectedPointIndex,
+                "x" : manipulatorOffset[0],
+                "y" : manipulatorOffset[1],
+                "z" : manipulatorOffset[2]
+            };
+            definition.latticePointOffsets = append(definition.latticePointOffsets, newOffset);
+        }
+    }
     
     return definition;
 }
 
 
 /**
- * Applies stored lattice offsets to the lattice control points
+ * Finds the offset vector for a given lattice point index
  * 
- * TODO: Implement offset application logic
+ * Searches the latticePointOffsets array for an entry matching the given index.
+ * Returns the offset vector if found, or a zero vector if no offset exists.
+ * 
+ * @param latticePointOffsets {array} : Array of offset entries
+ * @param pointIndex {number} : Index of the point to find offset for
+ * @returns {Vector} : Offset vector with units, or zero vector if not found
  */
-function applyLatticeOffsets(lattice is map, offsets is array)
+function findOffsetForPoint(latticePointOffsets is array, pointIndex is number) returns Vector
 {
-    // Edit Curve Manipulator logic go here
+    for (var offsetEntry in latticePointOffsets)
+    {
+        if (offsetEntry.index == pointIndex)
+        {
+            return vector(offsetEntry.x, offsetEntry.y, offsetEntry.z);
+        }
+    }
+    return vector(0 * meter, 0 * meter, 0 * meter);
 }
+
 
 
 /**
  * Adds manipulators for interactive FFD lattice control point manipulation
  * 
- * TODO: Implement Edit Curve-style manipulator setup
+ * Creates two types of manipulators following the Edit Curve pattern:
+ * 1. pointsManipulator: Shows selectable points at all lattice control point locations
+ *    (displays current positions including offsets)
+ * 2. triadManipulator: Shows a 3D triad at the selected point for dragging (if editLatticePoints is enabled)
+ *    (base is original position, offset is user modification)
+ * 
+ * @param context {Context} : The modeling context
+ * @param id {Id} : Feature identifier for manipulator registration
+ * @param originalLattice {map} : Original lattice structure (before offsets) for base positions
+ * @param displayPoints {array} : Lattice control points with offsets applied (for visualization)
+ * @param selectedIndex {number} : Currently selected control point index
+ * @param editLatticePoints {boolean} : Whether lattice point editing is enabled
+ * @param latticePointOffsets {array} : Array of offsets to compute offset for triad
  */
-function addFFDManipulators(context is Context, id is Id, lattice is map, selectedIndex is number)
+function addFFDManipulators(context is Context, id is Id, originalLattice is map, displayPoints is array,
+                           selectedIndex is number, editLatticePoints is boolean, latticePointOffsets is array)
 {
-    // Edit Curve Manipulator logic go here
+    // Create points manipulator showing all lattice control points at their current positions
+    // Users can click on any point to select it
+    const pointsManip = pointsManipulator({
+        "points" : displayPoints,
+        "index" : editLatticePoints ? selectedIndex : -1
+    });
+    
+    addManipulators(context, id, {
+        (LATTICE_POINTS_MANIPULATOR) : pointsManip
+    });
+    
+    // If editing is enabled and a valid point is selected, show triad manipulator
+    if (editLatticePoints && selectedIndex >= 0 && selectedIndex < originalLattice.totalControlPoints)
+    {
+        // Find the current offset for the selected point using helper function
+        const selectedPointOffset = findOffsetForPoint(latticePointOffsets, selectedIndex);
+        
+        // Base position is the ORIGINAL lattice control point position (before offset)
+        const selectedPointBase = originalLattice.controlPoints[selectedIndex];
+        
+        // Create triad manipulator at the selected point
+        const triadManip = triadManipulator({
+            "base" : selectedPointBase,
+            "offset" : selectedPointOffset
+        });
+        
+        addManipulators(context, id, {
+            (LATTICE_TRIAD_MANIPULATOR) : triadManip
+        });
+    }
 }
