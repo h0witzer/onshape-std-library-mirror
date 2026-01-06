@@ -5,13 +5,20 @@ FeatureScript 2837;
  * 
  * This feature implements the FFD algorithm presented in Sederberg & Parry's 1986 paper,
  * "Free-Form Deformation of Solid Geometric Models". The algorithm allows deformation of
- * NURBS surfaces by manipulating control points of a 3D lattice that embeds the surface.
+ * NURBS surfaces by manipulating control points of a 3D lattice that embeds the surface(s).
  * 
  * The FFD algorithm works as follows:
- * 1. Create a 3D lattice (control point grid) around the input surface based on its bounding box
- * 2. Map each control point of the surface to parametric (S, T, U) coordinates in the lattice space
+ * 1. Create a 3D lattice (control point grid) around the input surface(s) based on their unified bounding box
+ * 2. Map each control point of each surface to parametric (S, T, U) coordinates in the lattice space
  * 3. Evaluate the trivariate Bernstein polynomial using the (potentially modified) lattice control points
- * 4. The result gives deformed positions for the surface control points
+ * 4. The result gives deformed positions for all surface control points
+ * 
+ * Multiple Surface Support:
+ * - Select multiple surfaces to deform them together using the same lattice
+ * - All surfaces are embedded in a single unified lattice volume
+ * - The bounding box is computed to encompass all selected surfaces
+ * - Each surface is deformed independently but within the same lattice context
+ * - This enables coherent deformation of multiple surfaces as a group
  * 
  * The lattice is parameterized with S, T, U coordinates (each ranging from 0 to 1):
  * - S: Corresponds to the X-axis direction of the bounding box
@@ -34,12 +41,12 @@ FeatureScript 2837;
  * - l, m, n are the number of spans in S, T, U directions
  * 
  * Usage:
- * 1. Select a surface face to deform
+ * 1. Select one or more surface faces to deform
  * 2. Set the number of lattice spans in each direction (S, T, U)
  * 3. Enable "Edit lattice control points" to begin interactive manipulation
  * 4. Click on any lattice control point to select it (shown as small spheres)
  * 5. Drag the triad manipulator to move that control point
- * 6. The surface will deform according to the modified lattice
+ * 6. All selected surfaces will deform according to the modified lattice
  * 
  * Tips:
  * - Start with fewer spans (e.g., 2x2x2) for global deformations
@@ -47,6 +54,7 @@ FeatureScript 2837;
  * - Use diagnostics to visualize the lattice and understand control point indexing
  * - Control point indices are linear: index = i * (countT * countU) + j * countU + k
  *   where i, j, k are indices in S, T, U directions respectively
+ * - When deforming multiple surfaces, they all share the same lattice volume
  * 
  * Implementation references:
  * - JavaScript reference: non-featurescript-functions-reference/free-form-deformation-master/ffd.js
@@ -92,16 +100,15 @@ const LATTICE_TRIAD_MANIPULATOR = "latticeTriadManipulator";
  * The surface is embedded in a trivariate Bernstein polynomial volume defined by the lattice.
  */
 annotation { "Feature Type Name" : "Free-Form Deformation",
-        "Feature Type Description" : "Deform a NURBS surface using a 3D control point lattice. Drag control points to deform the surface interactively.",
+        "Feature Type Description" : "Deform one or more NURBS surfaces using a shared 3D control point lattice. Select multiple surfaces to deform them together in the same volume.",
         "UIHint" : "NO_PREVIEW_PROVIDED",
         "Manipulator Change Function" : "ffdManipulator" }
 export const freeFormDeformation = defineFeature(function(context is Context, id is Id, definition is map)
     precondition
     {
-        annotation { "Name" : "Surface to deform", 
-                     "Filter" : EntityType.FACE && SketchObject.NO && ConstructionObject.NO && AllowMeshGeometry.NO, 
-                     "MaxNumberOfPicks" : 1 }
-        definition.surfaceToDeform is Query;
+        annotation { "Name" : "Surfaces to deform", 
+                     "Filter" : EntityType.FACE && SketchObject.NO && ConstructionObject.NO && AllowMeshGeometry.NO }
+        definition.surfacesToDeform is Query;
         
         annotation { "Name" : "Lattice spans in S direction (X-axis)", 
                      "Description" : "Number of spans in the S direction of the FFD lattice" }
@@ -174,13 +181,14 @@ export const freeFormDeformation = defineFeature(function(context is Context, id
     }
     {
         // Validate input surface selection
-        if (evaluateQueryCount(context, definition.surfaceToDeform) == 0)
-            throw regenError("Select a surface to deform.", ["surfaceToDeform"]);
+        const surfaceCount = evaluateQueryCount(context, definition.surfacesToDeform);
+        if (surfaceCount == 0)
+            throw regenError("Select at least one surface to deform.", ["surfacesToDeform"]);
         
-        const inputFace = evaluateQuery(context, definition.surfaceToDeform)[0];
+        const inputFaces = evaluateQuery(context, definition.surfacesToDeform);
         
-        // Apply FFD deformation
-        applyFFDDeformation(context, id, inputFace, definition);
+        // Apply FFD deformation to all selected surfaces
+        applyFFDDeformationToMultipleSurfaces(context, id, inputFaces, definition);
     }, {
         spanCountS : 2,
         spanCountT : 2,
@@ -194,6 +202,163 @@ export const freeFormDeformation = defineFeature(function(context is Context, id
         printLatticeInfo : false,
         printDeformationDetails : false
     });
+
+
+
+/**
+ * Applies FFD deformation to multiple input surfaces using a shared lattice
+ * 
+ * This function extends the FFD algorithm to work on multiple surfaces simultaneously:
+ * 1. Collect B-spline surface representations for all input faces
+ * 2. Compute a unified bounding box that encompasses all surfaces
+ * 3. Build a single FFD lattice based on the unified bounding box
+ * 4. Apply the same lattice deformation to each surface
+ * 5. Create all deformed surfaces
+ * 
+ * @param context {Context} : The modeling context
+ * @param id {Id} : The feature identifier
+ * @param inputFaces {array} : Array of faces to deform
+ * @param definition {map} : Feature definition containing lattice parameters and offsets
+ */
+function applyFFDDeformationToMultipleSurfaces(context is Context, id is Id, inputFaces is array, definition is map)
+{
+    // Step 1: Extract B-spline surface representations for all input faces
+    var surfaceDefinitions = [];
+    var allControlPoints = [];
+    
+    for (var faceIndex = 0; faceIndex < size(inputFaces); faceIndex += 1)
+    {
+        const inputFace = inputFaces[faceIndex];
+        
+        // Get B-spline surface representation
+        var surfaceDefinition = evSurfaceDefinition(context, {
+            "face" : inputFace
+        });
+        
+        // If not already a B-spline, approximate it
+        if (surfaceDefinition.surfaceType != SurfaceType.SPLINE)
+        {
+            const approximation = evApproximateBSplineSurface(context, {
+                "face" : inputFace
+            });
+            surfaceDefinition = approximation.bSplineSurface;
+        }
+        
+        surfaceDefinitions = append(surfaceDefinitions, surfaceDefinition);
+        
+        // Collect all control points from this surface for unified bounding box
+        const controlPoints = surfaceDefinition.controlPoints;
+        for (var uIndex = 0; uIndex < size(controlPoints); uIndex += 1)
+        {
+            for (var vIndex = 0; vIndex < size(controlPoints[0]); vIndex += 1)
+            {
+                allControlPoints = append(allControlPoints, controlPoints[uIndex][vIndex]);
+            }
+        }
+    }
+    
+    // Step 2: Compute a unified bounding box that encompasses all surfaces
+    const boundingBox = computeUnifiedBoundingBox(allControlPoints);
+    
+    if (definition.showBoundingBox)
+    {
+        visualizeBoundingBox(context, id + "bbox", boundingBox);
+    }
+    
+    // Step 3: Build the FFD lattice based on the unified bounding box
+    const spanCounts = [definition.spanCountS, definition.spanCountT, definition.spanCountU];
+    var latticeOriginal = buildFFDLattice(boundingBox, spanCounts);
+    
+    // Build a modified lattice WITH offsets for visualization and deformation
+    var lattice = buildFFDLattice(boundingBox, spanCounts);
+    if (definition.editLatticePoints && size(definition.latticePointOffsets) > 0)
+    {
+        // Extract, modify, and reassign control points
+        var modifiedControlPoints = lattice.controlPoints;
+        for (var offsetEntry in definition.latticePointOffsets)
+        {
+            const pointIndex = offsetEntry.index;
+            if (pointIndex >= 0 && pointIndex < lattice.totalControlPoints)
+            {
+                const offset = vector(offsetEntry.x, offsetEntry.y, offsetEntry.z);
+                modifiedControlPoints[pointIndex] = modifiedControlPoints[pointIndex] + offset;
+            }
+        }
+        lattice.controlPoints = modifiedControlPoints;
+    }
+    
+    if (definition.printLatticeInfo)
+    {
+        printLatticeInformation(lattice);
+    }
+    
+    // Build display points from the MODIFIED lattice (with offsets) for manipulator visualization
+    var latticeControlPointsForDisplay = lattice.controlPoints;
+    
+    // Add manipulators for interactive control point manipulation
+    addFFDManipulators(context, id, latticeOriginal, latticeControlPointsForDisplay, definition.selectedPointIndex, 
+                      definition.editLatticePoints, definition.latticePointOffsets);
+    
+    if (definition.showLatticeControlPoints)
+    {
+        visualizeLatticeControlPoints(context, id + "lattice", lattice);
+    }
+    
+    // Step 4: Apply the same lattice deformation to each surface
+    for (var surfaceIndex = 0; surfaceIndex < size(surfaceDefinitions); surfaceIndex += 1)
+    {
+        const surfaceDefinition = surfaceDefinitions[surfaceIndex];
+        const controlPoints = surfaceDefinition.controlPoints;
+        const weights = surfaceDefinition.weights;
+        
+        // Deform surface control points using FFD
+        var deformedControlPoints = [];
+        for (var uIndex = 0; uIndex < size(controlPoints); uIndex += 1)
+        {
+            var deformedRow = [];
+            for (var vIndex = 0; vIndex < size(controlPoints[0]); vIndex += 1)
+            {
+                const originalPoint = controlPoints[uIndex][vIndex];
+                
+                // FFD operates on the actual 3D control point positions
+                // Convert to STU parametric space
+                const stuCoords = convertWorldToSTU(originalPoint, lattice);
+                
+                // Evaluate trivariate Bernstein polynomial to get deformed position
+                const deformedPoint = evaluateTrivariateBernstein(stuCoords, lattice);
+                
+                deformedRow = append(deformedRow, deformedPoint);
+                
+                // Debug output for first control point of first surface
+                if (definition.printDeformationDetails && surfaceIndex == 0 && uIndex == 0 && vIndex == 0)
+                {
+                    println("DEBUG: First control point deformation (Surface " ~ surfaceIndex ~ "):");
+                    println("  Original: " ~ originalPoint);
+                    println("  STU coords: " ~ stuCoords);
+                    println("  Deformed: " ~ deformedPoint);
+                }
+            }
+            deformedControlPoints = append(deformedControlPoints, deformedRow);
+        }
+        
+        // Step 5: Create the deformed B-spline surface
+        const deformedSurfaceDefinition = bSplineSurface({
+            "uDegree" : surfaceDefinition.uDegree,
+            "vDegree" : surfaceDefinition.vDegree,
+            "isUPeriodic" : surfaceDefinition.isUPeriodic,
+            "isVPeriodic" : surfaceDefinition.isVPeriodic,
+            "controlPoints" : controlPointMatrix(deformedControlPoints),
+            "weights" : weights == undefined ? undefined : matrix(weights),
+            "uKnots" : surfaceDefinition.uKnots,
+            "vKnots" : surfaceDefinition.vKnots
+        });
+        
+        // Create each deformed surface with a unique sub-ID
+        opCreateBSplineSurface(context, id + ("surface" ~ surfaceIndex), {
+            "bSplineSurface" : deformedSurfaceDefinition
+        });
+    }
+}
 
 
 /**
@@ -358,6 +523,44 @@ function computeControlPointBoundingBox(controlPoints is array) returns map
             minZ = min(minZ, point[2]);
             maxZ = max(maxZ, point[2]);
         }
+    }
+    
+    return {
+        "minCorner" : vector(minX, minY, minZ),
+        "maxCorner" : vector(maxX, maxY, maxZ)
+    };
+}
+
+
+/**
+ * Computes an axis-aligned bounding box from a flat array of control points
+ * 
+ * This function is used for multiple surfaces where all control points are collected
+ * into a single flat array to compute a unified bounding box.
+ * 
+ * @param controlPoints {array} : Flat array of control points (Vector3 with units)
+ * @returns {map} : Map containing minCorner (Vector3) and maxCorner (Vector3)
+ */
+function computeUnifiedBoundingBox(controlPoints is array) returns map
+{
+    // Initialize with first point
+    var minX = controlPoints[0][0];
+    var maxX = controlPoints[0][0];
+    var minY = controlPoints[0][1];
+    var maxY = controlPoints[0][1];
+    var minZ = controlPoints[0][2];
+    var maxZ = controlPoints[0][2];
+    
+    // Find min/max in each dimension
+    for (var pointIndex = 0; pointIndex < size(controlPoints); pointIndex += 1)
+    {
+        const point = controlPoints[pointIndex];
+        minX = min(minX, point[0]);
+        maxX = max(maxX, point[0]);
+        minY = min(minY, point[1]);
+        maxY = max(maxY, point[1]);
+        minZ = min(minZ, point[2]);
+        maxZ = max(maxZ, point[2]);
     }
     
     return {
