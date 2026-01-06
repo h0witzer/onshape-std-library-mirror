@@ -127,8 +127,19 @@ export const freeFormDeformationPlanes = defineFeature(function(context is Conte
                     annotation { "Name" : "Plane index" }
                     isInteger(planeTransform.index, { (unitless) : [0, 0, 100] } as IntegerBoundSpec);
                     
-                    annotation { "Name" : "Transform data", "UIHint" : UIHint.ALWAYS_HIDDEN }
-                    planeTransform.transformData is map;
+                    // Store transform as decomposed components (rotation matrix + translation vector)
+                    // This avoids the "Unrecognized type" error for storing Transform objects directly
+                    annotation { "Name" : "Rotation matrix", "UIHint" : UIHint.ALWAYS_HIDDEN }
+                    planeTransform.rotationMatrix is array;
+                    
+                    annotation { "Name" : "Translation X", "UIHint" : UIHint.ALWAYS_HIDDEN }
+                    isLength(planeTransform.translateX, ZERO_DEFAULT_LENGTH_BOUNDS);
+                    
+                    annotation { "Name" : "Translation Y", "UIHint" : UIHint.ALWAYS_HIDDEN }
+                    isLength(planeTransform.translateY, ZERO_DEFAULT_LENGTH_BOUNDS);
+                    
+                    annotation { "Name" : "Translation Z", "UIHint" : UIHint.ALWAYS_HIDDEN }
+                    isLength(planeTransform.translateZ, ZERO_DEFAULT_LENGTH_BOUNDS);
                 }
             }
         }
@@ -540,15 +551,23 @@ function applyPlaneTransformationsToLattice(lattice is map, planeTransformations
             }
             originalPlaneCenter = originalPlaneCenter / size(pointIndices);
             
-            // Get the stored transform data for this plane
-            const transformData = transformEntry.transformData;
+            // Get the stored transform components for this plane
+            const rotationMatrix = transformEntry.rotationMatrix;
+            const translateX = transformEntry.translateX;
+            const translateY = transformEntry.translateY;
+            const translateZ = transformEntry.translateZ;
             
-            // Extract the transform from stored data
-            // The transformData contains a Transform that was created relative to the plane's coordinate system
+            // Reconstruct the transform from stored components
             var planeTransform = identityTransform();
-            if (transformData != undefined && transformData.linear != undefined && transformData.translation != undefined)
+            if (rotationMatrix != undefined && size(rotationMatrix) == 9)
             {
-                planeTransform = transform(transformData.linear as Matrix, transformData.translation as Vector);
+                // Convert flat array to Matrix
+                const matrix3x3 = matrix([
+                    [rotationMatrix[0], rotationMatrix[1], rotationMatrix[2]],
+                    [rotationMatrix[3], rotationMatrix[4], rotationMatrix[5]],
+                    [rotationMatrix[6], rotationMatrix[7], rotationMatrix[8]]
+                ]);
+                planeTransform = transform(matrix3x3, vector(translateX, translateY, translateZ));
             }
             
             // Create a coordinate system at the original plane center
@@ -902,11 +921,16 @@ export function ffdPlaneManipulator(context is Context, definition is map, newMa
         const manipulator = newManipulators[PLANE_TRIAD_MANIPULATOR];
         const planeTransform = manipulator.transform;
         
-        // Store the transform data (linear matrix and translation vector)
-        const transformData = {
-            "linear" : planeTransform.linear,
-            "translation" : planeTransform.translation
-        };
+        // Decompose the transform into components that can be stored in precondition
+        // Convert the 3x3 rotation matrix to a flat array of 9 values
+        const linearMatrix = planeTransform.linear;
+        const rotationMatrix = [
+            linearMatrix[0][0], linearMatrix[0][1], linearMatrix[0][2],
+            linearMatrix[1][0], linearMatrix[1][1], linearMatrix[1][2],
+            linearMatrix[2][0], linearMatrix[2][1], linearMatrix[2][2]
+        ];
+        
+        const translation = planeTransform.translation;
         
         var foundTransform = false;
         
@@ -916,7 +940,10 @@ export function ffdPlaneManipulator(context is Context, definition is map, newMa
             if (definition.planeTransformations[transformIndex].index == definition.selectedPlaneIndex)
             {
                 // Update existing transformation entry
-                definition.planeTransformations[transformIndex].transformData = transformData;
+                definition.planeTransformations[transformIndex].rotationMatrix = rotationMatrix;
+                definition.planeTransformations[transformIndex].translateX = translation[0];
+                definition.planeTransformations[transformIndex].translateY = translation[1];
+                definition.planeTransformations[transformIndex].translateZ = translation[2];
                 foundTransform = true;
                 break;
             }
@@ -927,7 +954,10 @@ export function ffdPlaneManipulator(context is Context, definition is map, newMa
         {
             var newTransform = {
                 "index" : definition.selectedPlaneIndex,
-                "transformData" : transformData
+                "rotationMatrix" : rotationMatrix,
+                "translateX" : translation[0],
+                "translateY" : translation[1],
+                "translateZ" : translation[2]
             };
             definition.planeTransformations = append(definition.planeTransformations, newTransform);
         }
@@ -942,7 +972,7 @@ export function ffdPlaneManipulator(context is Context, definition is map, newMa
  * 
  * @param planeTransformations {array} : Array of transformation entries
  * @param planeIndex {number} : Index of the plane to find transformation for
- * @returns {map} : Transform data (linear and translation) or undefined if not found
+ * @returns {map} : Transform components (rotationMatrix, translateX/Y/Z) or undefined if not found
  */
 function findTransformForPlane(planeTransformations is array, planeIndex is number) returns map
 {
@@ -950,7 +980,12 @@ function findTransformForPlane(planeTransformations is array, planeIndex is numb
     {
         if (transformEntry.index == planeIndex)
         {
-            return transformEntry.transformData;
+            return {
+                "rotationMatrix" : transformEntry.rotationMatrix,
+                "translateX" : transformEntry.translateX,
+                "translateY" : transformEntry.translateY,
+                "translateZ" : transformEntry.translateZ
+            };
         }
     }
     return undefined;
@@ -1037,9 +1072,24 @@ function addPlaneManipulators(context is Context, id is Id, originalLattice is m
         // Find the current transformation for the selected plane
         const planeTransformData = findTransformForPlane(planeTransformations, selectedIndex);
         var currentTransform = identityTransform();
-        if (planeTransformData != undefined && planeTransformData.linear != undefined && planeTransformData.translation != undefined)
+        if (planeTransformData != undefined && planeTransformData.rotationMatrix != undefined)
         {
-            currentTransform = transform(planeTransformData.linear as Matrix, planeTransformData.translation as Vector);
+            const rotationMatrix = planeTransformData.rotationMatrix;
+            if (size(rotationMatrix) == 9)
+            {
+                // Convert flat array to Matrix
+                const matrix3x3 = matrix([
+                    [rotationMatrix[0], rotationMatrix[1], rotationMatrix[2]],
+                    [rotationMatrix[3], rotationMatrix[4], rotationMatrix[5]],
+                    [rotationMatrix[6], rotationMatrix[7], rotationMatrix[8]]
+                ]);
+                const translation = vector(
+                    planeTransformData.translateX,
+                    planeTransformData.translateY,
+                    planeTransformData.translateZ
+                );
+                currentTransform = transform(matrix3x3, translation);
+            }
         }
         
         // Create full triad manipulator at the selected plane center
