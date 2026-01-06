@@ -227,6 +227,13 @@ function applyFFDDeformation(context is Context, id is Id, inputFace is Query, d
     addFFDManipulators(context, id, lattice, definition.selectedPointIndex, offsetsArray);
     
     // Create a working copy of lattice for deformation
+    // Deep copy the control points array to avoid modifying the original
+    var copiedControlPoints = [];
+    for (var i = 0; i < size(lattice.controlPoints); i += 1)
+    {
+        copiedControlPoints = append(copiedControlPoints, lattice.controlPoints[i]);
+    }
+    
     // Apply stored lattice offsets to the working copy
     var deformationLattice = {
         "minCorner" : lattice.minCorner,
@@ -241,7 +248,7 @@ function applyFFDDeformation(context is Context, id is Id, inputFace is Query, d
         "controlPointCountT" : lattice.controlPointCountT,
         "controlPointCountU" : lattice.controlPointCountU,
         "totalControlPoints" : lattice.totalControlPoints,
-        "controlPoints" : lattice.controlPoints, // Will be modified below
+        "controlPoints" : copiedControlPoints,
         "crossS" : lattice.crossS,
         "crossT" : lattice.crossT,
         "crossU" : lattice.crossU
@@ -837,12 +844,27 @@ function addFFDManipulators(context is Context, id is Id, lattice is map, select
     // Create array of lattice control point positions, excluding the selected one
     // This matches the Routing Curve pattern where we remove the selected point
     // to avoid interference between the points manipulator and triad manipulator
+    // Points should show current positions (original + offset)
     var pointPositions = [];
     for (var i = 0; i < lattice.totalControlPoints; i += 1)
     {
         if (i != selectedIndex)
         {
-            pointPositions = append(pointPositions, lattice.controlPoints[i]);
+            // Start with original position
+            var position = lattice.controlPoints[i];
+            
+            // Add any stored offset for this point
+            for (var offsetEntry in offsets)
+            {
+                if (offsetEntry.index == i)
+                {
+                    const offset = vector(offsetEntry.offsetX, offsetEntry.offsetY, offsetEntry.offsetZ);
+                    position = position + offset;
+                    break;
+                }
+            }
+            
+            pointPositions = append(pointPositions, position);
         }
     }
     
