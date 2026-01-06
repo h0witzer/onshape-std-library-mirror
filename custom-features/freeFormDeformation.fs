@@ -706,6 +706,12 @@ export function ffdManipulator(context is Context, definition is map, newManipul
         const triadTransform = newManipulators[LATTICE_TRIAD_MANIPULATOR].transform;
         const selectedIndex = definition.selectedPointIndex;
         
+        // Initialize latticeOffsets if undefined
+        if (definition.latticeOffsets == undefined)
+        {
+            definition.latticeOffsets = [];
+        }
+        
         // Find the array index for this control point index
         var arrayIndex = -1;
         for (var i = 0; i < size(definition.latticeOffsets); i += 1)
