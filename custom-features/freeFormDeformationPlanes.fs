@@ -593,10 +593,8 @@ function applyPlaneTransformationsToLattice(lattice is map, planeTransformations
             const planeCoordSys = coordSystem(originalPlaneCenter, planeX, planeNormal);
             
             // Apply the plane-relative transform using the sandwich pattern
-            // The fullTriadManipulator gives us a transform relative to the base coordinate system
-            // Apply the INVERSE to get the correct rotation direction
-            const inverseTransform = inverse(planeTransform);
-            const worldTransform = toWorld(planeCoordSys) * inverseTransform * fromWorld(planeCoordSys);
+            // This matches the pattern used in triadTransform and routingCurve
+            const worldTransform = toWorld(planeCoordSys) * planeTransform * fromWorld(planeCoordSys);
             
             // Apply transformation to all points on this plane
             // Use the ORIGINAL point positions as the base for transformation
@@ -909,10 +907,11 @@ function visualizePlanes(context is Context, id is Id, lattice is map, direction
                 [rotationMatrix[6], rotationMatrix[7], rotationMatrix[8]]
             ]);
             
-            // Apply inverse rotation to plane normal to show the rotated plane
-            const inverseMatrix = inverse(matrix3x3);
-            planeNormal = inverseMatrix * planeNormal;
-            planeX = inverseMatrix * planeX;
+            // Apply the rotation matrix to plane normal to show the rotated plane
+            // Since we store the transposed matrix, transpose it back before applying
+            const rotationMatrixForVisualization = transpose(matrix3x3);
+            planeNormal = rotationMatrixForVisualization * planeNormal;
+            planeX = rotationMatrixForVisualization * planeX;
         }
         
         // Create and debug the plane using proper Plane type with transformed normal
@@ -948,12 +947,12 @@ export function ffdPlaneManipulator(context is Context, definition is map, newMa
         const planeTransform = manipulator.transform;
         
         // Decompose the transform into components that can be stored in precondition
-        // Convert the 3x3 rotation matrix to a flat array of 9 values
-        const linearMatrix = planeTransform.linear;
+        // The rotation matrix needs to be transposed to match the convention used in triadTransform and routingCurve
+        const transposedLinear = transpose(planeTransform.linear);
         const rotationMatrix = [
-            linearMatrix[0][0], linearMatrix[0][1], linearMatrix[0][2],
-            linearMatrix[1][0], linearMatrix[1][1], linearMatrix[1][2],
-            linearMatrix[2][0], linearMatrix[2][1], linearMatrix[2][2]
+            transposedLinear[0][0], transposedLinear[0][1], transposedLinear[0][2],
+            transposedLinear[1][0], transposedLinear[1][1], transposedLinear[1][2],
+            transposedLinear[2][0], transposedLinear[2][1], transposedLinear[2][2]
         ];
         
         const translation = planeTransform.translation;
