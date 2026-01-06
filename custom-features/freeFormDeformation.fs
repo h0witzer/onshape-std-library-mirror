@@ -780,10 +780,21 @@ export function ffdManipulator(context is Context, definition is map, newManipul
         }
         
         println("Offsets array size after: " ~ size(definition.latticeOffsets));
-        if (size(definition.latticeOffsets) > 0)
+        
+        // Debug: print the offset we just updated
+        if (arrayIndex >= 0 && arrayIndex < size(definition.latticeOffsets))
         {
-            println("Last offset: index=" ~ definition.latticeOffsets[size(definition.latticeOffsets)-1].index ~ 
-                    ", offsetX=" ~ definition.latticeOffsets[size(definition.latticeOffsets)-1].offsetX);
+            println("Updated offset at array index " ~ arrayIndex ~ ": index=" ~ definition.latticeOffsets[arrayIndex].index ~ 
+                    ", offsetX=" ~ definition.latticeOffsets[arrayIndex].offsetX ~
+                    ", offsetY=" ~ definition.latticeOffsets[arrayIndex].offsetY ~
+                    ", offsetZ=" ~ definition.latticeOffsets[arrayIndex].offsetZ);
+        }
+        else if (size(definition.latticeOffsets) > 0)
+        {
+            println("Last offset (new entry): index=" ~ definition.latticeOffsets[size(definition.latticeOffsets)-1].index ~ 
+                    ", offsetX=" ~ definition.latticeOffsets[size(definition.latticeOffsets)-1].offsetX ~
+                    ", offsetY=" ~ definition.latticeOffsets[size(definition.latticeOffsets)-1].offsetY ~
+                    ", offsetZ=" ~ definition.latticeOffsets[size(definition.latticeOffsets)-1].offsetZ);
         }
     }
     
