@@ -241,50 +241,39 @@ function applyFFDDeformation(context is Context, id is Id, inputFace is Query, d
         visualizeBoundingBox(context, id + "bbox", boundingBox);
     }
     
-    // Build FFD lattice
-    const spanCounts = [definition.spanCountS, definition.spanCountT, definition.spanCountU];
+    // Build original lattice WITHOUT offsets - needed for triad base positions
+    var latticeOriginal = buildFFDLattice(boundingBox, spanCounts);
+    
+    // Build a modified lattice WITH offsets for visualization and deformation
     var lattice = buildFFDLattice(boundingBox, spanCounts);
+    if (definition.editLatticePoints && size(definition.latticePointOffsets) > 0)
+    {
+        // Extract, modify, and reassign control points
+        var modifiedControlPoints = lattice.controlPoints;
+        for (var offsetEntry in definition.latticePointOffsets)
+        {
+            const pointIndex = offsetEntry.index;
+            if (pointIndex >= 0 && pointIndex < lattice.totalControlPoints)
+            {
+                const offset = vector(offsetEntry.x, offsetEntry.y, offsetEntry.z);
+                modifiedControlPoints[pointIndex] = modifiedControlPoints[pointIndex] + offset;
+            }
+        }
+        lattice.controlPoints = modifiedControlPoints;
+    }
     
     if (definition.printLatticeInfo)
     {
         printLatticeInformation(lattice);
     }
     
-    // Build display points by copying lattice points and applying offsets
-    // This shows the current positions including any applied offsets
-    // Create an explicit copy to avoid modifying the original lattice
-    var latticeControlPointsForDisplay = [];
-    for (var i = 0; i < size(lattice.controlPoints); i += 1)
-    {
-        latticeControlPointsForDisplay = append(latticeControlPointsForDisplay, lattice.controlPoints[i]);
-    }
-    
-    // Apply user-specified offsets to display points (for manipulator visualization)
-    if (definition.editLatticePoints && size(definition.latticePointOffsets) > 0)
-    {
-        // Apply offsets to create display points
-        for (var offsetEntry in definition.latticePointOffsets)
-        {
-            const pointIndex = offsetEntry.index;
-            if (pointIndex >= 0 && pointIndex < size(latticeControlPointsForDisplay))
-            {
-                // Directly use the offset from the entry (no need to search again)
-                const offset = vector(offsetEntry.x, offsetEntry.y, offsetEntry.z);
-                latticeControlPointsForDisplay[pointIndex] = latticeControlPointsForDisplay[pointIndex] + offset;
-            }
-        }
-    }
+    // Build display points from the MODIFIED lattice (with offsets) for manipulator visualization
+    var latticeControlPointsForDisplay = lattice.controlPoints;
     
     // Add manipulators for interactive control point manipulation
-    // Pass original lattice for base positions, display points for visualization
-    addFFDManipulators(context, id, lattice, latticeControlPointsForDisplay, definition.selectedPointIndex, 
+    // Pass ORIGINAL lattice for base positions, MODIFIED lattice control points for visualization
+    addFFDManipulators(context, id, latticeOriginal, latticeControlPointsForDisplay, definition.selectedPointIndex, 
                       definition.editLatticePoints, definition.latticePointOffsets);
-    
-    // Apply offsets to the actual lattice for deformation computation
-    if (definition.editLatticePoints && size(definition.latticePointOffsets) > 0)
-    {
-        applyLatticeOffsets(lattice, definition.latticePointOffsets);
-    }
     
     if (definition.showLatticeControlPoints)
     {
@@ -818,42 +807,6 @@ function findOffsetForPoint(latticePointOffsets is array, pointIndex is number) 
     return vector(0 * meter, 0 * meter, 0 * meter);
 }
 
-
-/**
- * Applies stored lattice offsets to the lattice control points
- * 
- * Modifies the lattice structure in-place by applying user-specified offsets
- * from the latticePointOffsets array to the corresponding control points.
- * This allows interactive manipulation of the FFD lattice.
- * 
- * @param lattice {map} : Lattice structure with control points array
- * @param latticePointOffsets {array} : Array of offset definitions, each containing:
- *   - index: The linear index of the control point to offset
- *   - x, y, z: The offset amounts in each direction (with units)
- */
-function applyLatticeOffsets(lattice is map, latticePointOffsets is array)
-{
-    // In FeatureScript, we need to extract the array, modify it, and reassign it
-    // to ensure the modifications are reflected in the map
-    var modifiedControlPoints = lattice.controlPoints;
-    
-    // Apply each stored offset to its corresponding lattice control point
-    for (var offsetEntry in latticePointOffsets)
-    {
-        const pointIndex = offsetEntry.index;
-        
-        // Validate index is within bounds
-        if (pointIndex >= 0 && pointIndex < lattice.totalControlPoints)
-        {
-            // Directly use the offset from the entry (no need to search again)
-            const offset = vector(offsetEntry.x, offsetEntry.y, offsetEntry.z);
-            modifiedControlPoints[pointIndex] = modifiedControlPoints[pointIndex] + offset;
-        }
-    }
-    
-    // Reassign the modified array back to the lattice
-    lattice.controlPoints = modifiedControlPoints;
-}
 
 
 /**
