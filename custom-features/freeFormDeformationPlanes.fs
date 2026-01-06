@@ -132,13 +132,13 @@ export const freeFormDeformationPlanes = defineFeature(function(context is Conte
                     annotation { "Name" : "Rotation matrix", "UIHint" : UIHint.ALWAYS_HIDDEN }
                     isAnything(planeTransform.rotationMatrix);
                     
-                    annotation { "Name" : "Translation X", "UIHint" : UIHint.ALWAYS_HIDDEN }
+                    annotation { "Name" : "Translation X", "Group Name" : "Transform" }
                     isLength(planeTransform.translateX, ZERO_DEFAULT_LENGTH_BOUNDS);
                     
-                    annotation { "Name" : "Translation Y", "UIHint" : UIHint.ALWAYS_HIDDEN }
+                    annotation { "Name" : "Translation Y", "Group Name" : "Transform" }
                     isLength(planeTransform.translateY, ZERO_DEFAULT_LENGTH_BOUNDS);
                     
-                    annotation { "Name" : "Translation Z", "UIHint" : UIHint.ALWAYS_HIDDEN }
+                    annotation { "Name" : "Translation Z", "Group Name" : "Transform" }
                     isLength(planeTransform.translateZ, ZERO_DEFAULT_LENGTH_BOUNDS);
                 }
             }
@@ -286,7 +286,7 @@ function applyPlaneBasedFFDDeformation(context is Context, id is Id, inputFaces 
     
     if (definition.showPlanes)
     {
-        visualizePlanes(context, id + "planes", lattice, definition.manipulationDirection);
+        visualizePlanes(context, id + "planes", lattice, definition.manipulationDirection, definition.planeTransformations);
     }
     
     // Step 4: Apply the same lattice deformation to each surface
@@ -856,13 +856,15 @@ function visualizeLatticeControlPoints(context is Context, id is Id, lattice is 
  * 
  * Shows actual plane definitions with origin and normal for each plane in the lattice.
  * Uses proper Plane debug visualization to show plane orientation and position.
+ * Applies transforms to show rotated planes correctly.
  * 
  * @param context {Context} : The modeling context
  * @param id {Id} : Identifier for the debug geometry
  * @param lattice {map} : Lattice structure with plane data
  * @param direction {FFDPlaneDirection} : The manipulation direction
+ * @param planeTransformations {array} : Array of plane transformations
  */
-function visualizePlanes(context is Context, id is Id, lattice is map, direction is FFDPlaneDirection)
+function visualizePlanes(context is Context, id is Id, lattice is map, direction is FFDPlaneDirection, planeTransformations is array)
 {
     for (var planeIndex = 0; planeIndex < size(lattice.planeData); planeIndex += 1)
     {
@@ -877,23 +879,44 @@ function visualizePlanes(context is Context, id is Id, lattice is map, direction
         }
         planeCenter = planeCenter / size(pointIndices);
         
-        // Determine plane normal based on manipulation direction
+        // Determine initial plane normal based on manipulation direction
         var planeNormal = vector(0, 0, 1);
+        var planeX = vector(1, 0, 0);
         if (direction == FFDPlaneDirection.S_DIRECTION)
         {
             planeNormal = vector(1, 0, 0);
+            planeX = vector(0, 1, 0);
         }
         else if (direction == FFDPlaneDirection.T_DIRECTION)
         {
             planeNormal = vector(0, 1, 0);
+            planeX = vector(0, 0, 1);
         }
         else // U_DIRECTION
         {
             planeNormal = vector(0, 0, 1);
+            planeX = vector(1, 0, 0);
         }
         
-        // Create and debug the plane using proper Plane type
-        const planeGeometry = plane(planeCenter, planeNormal);
+        // Apply rotation from transform if it exists
+        const transformData = findTransformForPlane(planeTransformations, planeIndex);
+        if (transformData.rotationMatrix != undefined && size(transformData.rotationMatrix) == 9)
+        {
+            const rotationMatrix = transformData.rotationMatrix;
+            const matrix3x3 = matrix([
+                [rotationMatrix[0], rotationMatrix[1], rotationMatrix[2]],
+                [rotationMatrix[3], rotationMatrix[4], rotationMatrix[5]],
+                [rotationMatrix[6], rotationMatrix[7], rotationMatrix[8]]
+            ]);
+            
+            // Apply inverse rotation to plane normal to show the rotated plane
+            const inverseMatrix = inverse(matrix3x3);
+            planeNormal = inverseMatrix * planeNormal;
+            planeX = inverseMatrix * planeX;
+        }
+        
+        // Create and debug the plane using proper Plane type with transformed normal
+        const planeGeometry = plane(planeCenter, planeNormal, planeX);
         debug(context, planeGeometry, DebugColor.GREEN);
     }
 }
