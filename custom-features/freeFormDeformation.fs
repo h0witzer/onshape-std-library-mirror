@@ -124,8 +124,14 @@ export const freeFormDeformation = defineFeature(function(context is Context, id
             annotation { "Name" : "Control point index", "UIHint" : UIHint.ALWAYS_HIDDEN }
             isInteger(offset.index, { (unitless) : [0, 0, 1000] } as IntegerBoundSpec);
             
-            annotation { "Name" : "Offset vector", "UIHint" : UIHint.ALWAYS_HIDDEN }
-            is3dLengthVector(offset.offset);
+            annotation { "Name" : "Offset X", "UIHint" : UIHint.ALWAYS_HIDDEN }
+            isLength(offset.offsetX, { (meter) : [-10, 0, 10] } as LengthBoundSpec);
+            
+            annotation { "Name" : "Offset Y", "UIHint" : UIHint.ALWAYS_HIDDEN }
+            isLength(offset.offsetY, { (meter) : [-10, 0, 10] } as LengthBoundSpec);
+            
+            annotation { "Name" : "Offset Z", "UIHint" : UIHint.ALWAYS_HIDDEN }
+            isLength(offset.offsetZ, { (meter) : [-10, 0, 10] } as LengthBoundSpec);
         }
         
         annotation { "Name" : "Enable diagnostics" }
@@ -713,14 +719,13 @@ export function ffdManipulator(context is Context, definition is map, newManipul
         const transform = newManipulators[LATTICE_TRIAD_MANIPULATOR].transform;
         const selectedIndex = definition.selectedPointIndex;
         
-        // Store offset as a map entry with index and vector
+        // Store offset as a map entry with index and separate X/Y/Z components
+        // Following Routing Curve pattern (stores dx, dy, dz separately)
         const offset = {
             "index" : selectedIndex,
-            "offset" : vector(
-                transform.translation[0],
-                transform.translation[1],
-                transform.translation[2]
-            )
+            "offsetX" : transform.translation[0],
+            "offsetY" : transform.translation[1],
+            "offsetZ" : transform.translation[2]
         };
         
         // Update existing offset or add new one
@@ -749,7 +754,8 @@ function applyLatticeOffsets(lattice is map, offsets is array)
     for (var offsetEntry in offsets)
     {
         const index = offsetEntry.index;
-        const offset = offsetEntry.offset;
+        // Reconstruct vector from individual X/Y/Z components (following Routing Curve pattern)
+        const offset = vector(offsetEntry.offsetX, offsetEntry.offsetY, offsetEntry.offsetZ);
         if (index >= 0 && index < lattice.totalControlPoints)
         {
             lattice.controlPoints[index] = lattice.controlPoints[index] + offset;
