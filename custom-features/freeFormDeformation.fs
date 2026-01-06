@@ -228,7 +228,8 @@ function applyFFDDeformation(context is Context, id is Id, inputFace is Query, d
     }
     
     // Add manipulators for interactive control point manipulation
-    addFFDManipulators(context, id, lattice, definition.selectedPointIndex);
+    const offsetsArray = definition.latticeOffsets != undefined ? definition.latticeOffsets : [];
+    addFFDManipulators(context, id, lattice, definition.selectedPointIndex, offsetsArray);
     
     if (definition.showLatticeControlPoints)
     {
@@ -677,6 +678,10 @@ function visualizeLatticeControlPoints(context is Context, id is Id, lattice is 
 
 /**
  * Manipulator handler for FFD feature
+ * 
+ * Handles user interactions with the FFD lattice control point manipulators.
+ * Follows the pattern established in Routing Curve for consistent behavior.
+ * Only handles XYZ translation - rotation is not part of this implementation.
  */
 export function ffdManipulator(context is Context, definition is map, newManipulators is map) returns map
 {
@@ -686,28 +691,20 @@ export function ffdManipulator(context is Context, definition is map, newManipul
         var newIndex = newManipulators[LATTICE_POINTS_MANIPULATOR].index;
         
         // Adjust index to account for the currently selected point not being in the array
-        // (we skip it to avoid interference with the triad manipulator)
+        // This matches the Routing Curve pattern where the selected point is removed from 
+        // the points manipulator to avoid interference with the triad manipulator
         if (newIndex >= oldIndex)
         {
             newIndex = newIndex + 1;
         }
-        
-        println("=== POINT CLICK ===");
-        println("Old index: " ~ oldIndex);
-        println("New index: " ~ newIndex);
         
         definition.selectedPointIndex = newIndex;
     }
     
     if (newManipulators[LATTICE_TRIAD_MANIPULATOR] is map)
     {
-        const transform = newManipulators[LATTICE_TRIAD_MANIPULATOR].transform;
+        const triadTransform = newManipulators[LATTICE_TRIAD_MANIPULATOR].transform;
         const selectedIndex = definition.selectedPointIndex;
-        
-        println("=== TRIAD DRAG ===");
-        println("Selected index: " ~ selectedIndex);
-        println("Transform translation: " ~ transform.translation);
-        println("Offsets array size before: " ~ size(definition.latticeOffsets));
         
         // Find the array index for this control point index
         var arrayIndex = -1;
@@ -720,21 +717,15 @@ export function ffdManipulator(context is Context, definition is map, newManipul
             }
         }
         
-        println("Array index found: " ~ arrayIndex);
-        
         // If offset entry exists, update it; otherwise create new one
         if (arrayIndex >= 0)
         {
             // Update existing offset entry
-            // Note: Cannot directly modify array element fields in manipulator context
-            // Must rebuild the entire array
-            println("Updating existing offset at array index " ~ arrayIndex);
-            
             // Build new element with updated values
             var updatedOffset = definition.latticeOffsets[arrayIndex];
-            updatedOffset.offsetX = transform.translation[0];
-            updatedOffset.offsetY = transform.translation[1];
-            updatedOffset.offsetZ = transform.translation[2];
+            updatedOffset.offsetX = triadTransform.translation[0];
+            updatedOffset.offsetY = triadTransform.translation[1];
+            updatedOffset.offsetZ = triadTransform.translation[2];
             
             // Rebuild entire array with updated element
             var newOffsets = [];
@@ -750,32 +741,13 @@ export function ffdManipulator(context is Context, definition is map, newManipul
         else
         {
             // Create new offset entry
-            println("Creating new offset entry");
             const newOffset = {
                 "index" : selectedIndex,
-                "offsetX" : transform.translation[0],
-                "offsetY" : transform.translation[1],
-                "offsetZ" : transform.translation[2]
+                "offsetX" : triadTransform.translation[0],
+                "offsetY" : triadTransform.translation[1],
+                "offsetZ" : triadTransform.translation[2]
             };
             definition.latticeOffsets = append(definition.latticeOffsets, newOffset);
-        }
-        
-        println("Offsets array size after: " ~ size(definition.latticeOffsets));
-        
-        // Debug: print the offset we just updated
-        if (arrayIndex >= 0 && arrayIndex < size(definition.latticeOffsets))
-        {
-            println("Updated offset at array index " ~ arrayIndex ~ ": index=" ~ definition.latticeOffsets[arrayIndex].index ~ 
-                    ", offsetX=" ~ definition.latticeOffsets[arrayIndex].offsetX ~
-                    ", offsetY=" ~ definition.latticeOffsets[arrayIndex].offsetY ~
-                    ", offsetZ=" ~ definition.latticeOffsets[arrayIndex].offsetZ);
-        }
-        else if (size(definition.latticeOffsets) > 0)
-        {
-            println("Last offset (new entry): index=" ~ definition.latticeOffsets[size(definition.latticeOffsets)-1].index ~ 
-                    ", offsetX=" ~ definition.latticeOffsets[size(definition.latticeOffsets)-1].offsetX ~
-                    ", offsetY=" ~ definition.latticeOffsets[size(definition.latticeOffsets)-1].offsetY ~
-                    ", offsetZ=" ~ definition.latticeOffsets[size(definition.latticeOffsets)-1].offsetZ);
         }
     }
     
@@ -783,12 +755,22 @@ export function ffdManipulator(context is Context, definition is map, newManipul
 }
 
 
+/**
+ * Applies stored lattice offsets to the lattice control points
+ * 
+ * This function updates the lattice control points based on user manipulator interactions.
+ * Each offset entry contains an index, translation offsets (X, Y, Z), and a rotation matrix.
+ * Following the Routing Curve pattern, offsets are applied as simple translations.
+ * 
+ * @param lattice {map} : Lattice structure with control points to be modified
+ * @param offsets {array} : Array of offset entries with index, offsetX, offsetY, offsetZ, and rotationMatrix
+ */
 function applyLatticeOffsets(lattice is map, offsets is array)
 {
     for (var offsetEntry in offsets)
     {
         const index = offsetEntry.index;
-        // Reconstruct vector from individual X/Y/Z components (following Routing Curve pattern)
+        // Reconstruct vector from individual X/Y/Z components (matching Routing Curve pattern)
         const offset = vector(offsetEntry.offsetX, offsetEntry.offsetY, offsetEntry.offsetZ);
         if (index >= 0 && index < lattice.totalControlPoints)
         {
@@ -798,12 +780,30 @@ function applyLatticeOffsets(lattice is map, offsets is array)
 }
 
 
-function addFFDManipulators(context is Context, id is Id, lattice is map, selectedIndex is number)
+/**
+ * Adds manipulators for interactive FFD lattice control point manipulation
+ * 
+ * This function follows the Routing Curve pattern:
+ * 1. Creates a points manipulator showing all lattice control points except the selected one
+ * 2. Creates a triad manipulator at the selected control point for XYZ translation only
+ * 
+ * The selected point is excluded from the points manipulator to avoid interference with
+ * the triad manipulator that allows precise positioning of that point.
+ * 
+ * @param context {Context} : The modeling context
+ * @param id {Id} : Feature identifier
+ * @param lattice {map} : Lattice structure containing control points
+ * @param selectedIndex {number} : Index of the currently selected control point
+ * @param offsets {array} : Array of stored offset entries for retrieving translation values
+ */
+function addFFDManipulators(context is Context, id is Id, lattice is map, selectedIndex is number, offsets is array)
 {
-    // Build map of all manipulators to add at once
+    // Build map of all manipulators to add at once (matching Routing Curve pattern)
     var manipulators = {};
     
     // Create array of lattice control point positions, excluding the selected one
+    // This matches the Routing Curve pattern where we remove the selected point
+    // to avoid interference between the points manipulator and triad manipulator
     var pointPositions = [];
     for (var i = 0; i < lattice.totalControlPoints; i += 1)
     {
@@ -826,9 +826,26 @@ function addFFDManipulators(context is Context, id is Id, lattice is map, select
     {
         // The lattice already has offsets applied, so use the current position
         const selectedPoint = lattice.controlPoints[selectedIndex];
+        
+        // Find stored translation for this control point if it exists
+        var translation = vector(0 * meter, 0 * meter, 0 * meter);
+        for (var offsetEntry in offsets)
+        {
+            if (offsetEntry.index == selectedIndex)
+            {
+                translation = vector(offsetEntry.offsetX, offsetEntry.offsetY, offsetEntry.offsetZ);
+                break;
+            }
+        }
+        
+        // Create transform with translation only (matching Routing Curve pattern)
+        // Base coordinate system is positioned at the original (unmodified) lattice point
+        const triadTransform = transform(identityMatrix(3), translation);
+        
+        // Create triad manipulator with base coordinate system at the selected point
         const triadManip = fullTriadManipulator({
-            "base" : coordSystem(selectedPoint, vector(1, 0, 0), vector(0, 1, 0)),
-            "transform" : identityTransform(),
+            "base" : coordSystem(selectedPoint - translation, vector(1, 0, 0), vector(0, 1, 0)),
+            "transform" : triadTransform,
             "displayEditView" : true
         });
         manipulators[LATTICE_TRIAD_MANIPULATOR] = triadManip;
