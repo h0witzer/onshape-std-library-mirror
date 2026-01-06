@@ -362,50 +362,6 @@ function applyFFDDeformationToMultipleSurfaces(context is Context, id is Id, inp
 
 
 /**
- * Computes an axis-aligned bounding box from an array of control points
- * 
- * @param controlPoints {array} : 2D array of control points (Vector3 with units)
- * @returns {map} : Map containing minCorner (Vector3) and maxCorner (Vector3)
- */
-function computeControlPointBoundingBox(controlPoints is array) returns map
-{
-    // Validate that we have at least one control point
-    if (size(controlPoints) == 0 || size(controlPoints[0]) == 0)
-    {
-        throw "Cannot compute bounding box from empty control points array";
-    }
-    
-    // Initialize with first point
-    var minX = controlPoints[0][0][0];
-    var maxX = controlPoints[0][0][0];
-    var minY = controlPoints[0][0][1];
-    var maxY = controlPoints[0][0][1];
-    var minZ = controlPoints[0][0][2];
-    var maxZ = controlPoints[0][0][2];
-    
-    // Find min/max in each dimension
-    for (var uIndex = 0; uIndex < size(controlPoints); uIndex += 1)
-    {
-        for (var vIndex = 0; vIndex < size(controlPoints[0]); vIndex += 1)
-        {
-            const point = controlPoints[uIndex][vIndex];
-            minX = min(minX, point[0]);
-            maxX = max(maxX, point[0]);
-            minY = min(minY, point[1]);
-            maxY = max(maxY, point[1]);
-            minZ = min(minZ, point[2]);
-            maxZ = max(maxZ, point[2]);
-        }
-    }
-    
-    return {
-        "minCorner" : vector(minX, minY, minZ),
-        "maxCorner" : vector(maxX, maxY, maxZ)
-    };
-}
-
-
-/**
  * Computes an axis-aligned bounding box from a flat array of control points
  * 
  * This function is used for multiple surfaces where all control points are collected
