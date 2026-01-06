@@ -593,7 +593,9 @@ function applyPlaneTransformationsToLattice(lattice is map, planeTransformations
             const planeCoordSys = coordSystem(originalPlaneCenter, planeX, planeNormal);
             
             // Convert the plane-relative transform to world space
-            const worldTransform = toWorld(planeCoordSys) * planeTransform * fromWorld(planeCoordSys);
+            // The fullTriadManipulator returns a transform relative to the base coordinate system
+            // We only need to convert from plane space to world space, not sandwich the transform
+            const worldTransform = toWorld(planeCoordSys) * planeTransform;
             
             // Apply transformation to all points on this plane
             // Use the ORIGINAL point positions as the base for transformation
