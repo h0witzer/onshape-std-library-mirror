@@ -117,9 +117,6 @@ export const freeFormDeformation = defineFeature(function(context is Context, id
         annotation { "Name" : "Selected control point index" }
         isInteger(definition.selectedPointIndex, { (unitless) : [0, 0, 1000] } as IntegerBoundSpec);
         
-        annotation { "Name" : "Control point offsets (internal)", "UIHint" : UIHint.ALWAYS_HIDDEN }
-        definition.latticeOffsets is array;
-        
         annotation { "Name" : "Enable diagnostics" }
         definition.enableDiagnostics is boolean;
         
@@ -221,7 +218,10 @@ function applyFFDDeformation(context is Context, id is Id, inputFace is Query, d
     }
     
     // Apply stored lattice offsets from manipulator interactions
-    applyLatticeOffsets(lattice, definition.latticeOffsets);
+    if (definition.latticeOffsets != undefined)
+    {
+        applyLatticeOffsets(lattice, definition.latticeOffsets);
+    }
     
     // Add manipulators for interactive control point manipulation
     addFFDManipulators(context, id, lattice, definition.selectedPointIndex);
@@ -586,31 +586,6 @@ function getTernaryIndex(indexS is number, indexT is number, indexU is number, l
 
 
 /**
- * Applies a user-specified offset to a lattice control point
- * 
- * This modifies the lattice control point at the specified linear index by adding the offset vector.
- * This allows interactive manipulation of the FFD lattice.
- * 
- * @param lattice {map} : Lattice structure (modified in place)
- * @param linearIndex {number} : Linear index of the control point to modify
- * @param offset {Vector3} : Offset to add to the control point position
- */
-function applyControlPointOffset(lattice is map, linearIndex is number, offset is Vector)
-{
-    // Validate index
-    if (linearIndex < 0 || linearIndex >= lattice.totalControlPoints)
-    {
-        println("WARNING: Control point index " ~ linearIndex ~ " is out of range [0, " ~ 
-                (lattice.totalControlPoints - 1) ~ "]");
-        return;
-    }
-    
-    // Modify the control point
-    lattice.controlPoints[linearIndex] = lattice.controlPoints[linearIndex] + offset;
-}
-
-
-/**
  * Prints detailed information about the FFD lattice
  * 
  * @param lattice {map} : Lattice structure
@@ -701,6 +676,12 @@ function visualizeLatticeControlPoints(context is Context, id is Id, lattice is 
  */
 export function ffdManipulator(context is Context, definition is map, newManipulators is map) returns map
 {
+    // Initialize latticeOffsets if it doesn't exist
+    if (definition.latticeOffsets == undefined)
+    {
+        definition.latticeOffsets = [];
+    }
+    
     if (newManipulators[LATTICE_POINTS_MANIPULATOR] is map)
     {
         definition.selectedPointIndex = newManipulators[LATTICE_POINTS_MANIPULATOR].index;
