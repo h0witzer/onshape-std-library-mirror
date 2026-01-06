@@ -117,10 +117,6 @@ export const freeFormDeformation = defineFeature(function(context is Context, id
         annotation { "Name" : "Selected control point index", "UIHint" : UIHint.ALWAYS_HIDDEN }
         isInteger(definition.selectedPointIndex, { (unitless) : [0, 0, 1000] } as IntegerBoundSpec);
         
-        // Lattice offsets managed by manipulator (matching Routing Curve pattern)
-        annotation { "Name" : "Lattice offsets", "UIHint" : UIHint.ALWAYS_HIDDEN }
-        isAnything(definition.latticeOffsets);
-        
         annotation { "Name" : "Enable diagnostics" }
         definition.enableDiagnostics is boolean;
         
@@ -158,7 +154,6 @@ export const freeFormDeformation = defineFeature(function(context is Context, id
         spanCountT : 2,
         spanCountU : 2,
         selectedPointIndex : 0,
-        latticeOffsets : [],
         enableDiagnostics : false,
         showLatticeControlPoints : false,
         showBoundingBox : false,
@@ -221,47 +216,12 @@ function applyFFDDeformation(context is Context, id is Id, inputFace is Query, d
         printLatticeInformation(lattice);
     }
     
-    // Create a working copy of lattice for deformation and visualization
-    // Build new control points array to avoid modifying the original
-    var copiedControlPoints = [];
-    for (var i = 0; i < size(lattice.controlPoints); i += 1)
-    {
-        copiedControlPoints = append(copiedControlPoints, lattice.controlPoints[i]);
-    }
-    
-    // Apply stored lattice offsets to the working copy
-    var deformationLattice = {
-        "minCorner" : lattice.minCorner,
-        "maxCorner" : lattice.maxCorner,
-        "axisS" : lattice.axisS,
-        "axisT" : lattice.axisT,
-        "axisU" : lattice.axisU,
-        "spanCountS" : lattice.spanCountS,
-        "spanCountT" : lattice.spanCountT,
-        "spanCountU" : lattice.spanCountU,
-        "controlPointCountS" : lattice.controlPointCountS,
-        "controlPointCountT" : lattice.controlPointCountT,
-        "controlPointCountU" : lattice.controlPointCountU,
-        "totalControlPoints" : lattice.totalControlPoints,
-        "controlPoints" : copiedControlPoints,
-        "crossS" : lattice.crossS,
-        "crossT" : lattice.crossT,
-        "crossU" : lattice.crossU
-    };
-    
-    if (definition.latticeOffsets != undefined && definition.latticeOffsets is array)
-    {
-        applyLatticeOffsets(deformationLattice, definition.latticeOffsets);
-    }
-    
     // Add manipulators for interactive control point manipulation
-    // Pass the deformationLattice (with offsets applied) and offsets array
-    const offsetsArray = (definition.latticeOffsets != undefined && definition.latticeOffsets is array) ? definition.latticeOffsets : [];
-    addFFDManipulators(context, id, lattice, deformationLattice, definition.selectedPointIndex, offsetsArray);
+    addFFDManipulators(context, id, lattice, definition.selectedPointIndex);
     
     if (definition.showLatticeControlPoints)
     {
-        visualizeLatticeControlPoints(context, id + "lattice", deformationLattice);
+        visualizeLatticeControlPoints(context, id + "lattice", lattice);
     }
     
     // Deform surface control points using FFD
@@ -275,10 +235,10 @@ function applyFFDDeformation(context is Context, id is Id, inputFace is Query, d
             
             // FFD operates on the actual 3D control point positions
             // Convert to STU parametric space
-            const stuCoords = convertWorldToSTU(originalPoint, deformationLattice);
+            const stuCoords = convertWorldToSTU(originalPoint, lattice);
             
             // Evaluate trivariate Bernstein polynomial to get deformed position
-            const deformedPoint = evaluateTrivariateBernstein(stuCoords, deformationLattice);
+            const deformedPoint = evaluateTrivariateBernstein(stuCoords, lattice);
             
             deformedRow = append(deformedRow, deformedPoint);
             
@@ -707,66 +667,11 @@ function visualizeLatticeControlPoints(context is Context, id is Id, lattice is 
 /**
  * Manipulator handler for FFD feature
  * 
- * Handles user interactions with the FFD lattice control point manipulators.
- * Follows the pattern established in Routing Curve for consistent behavior.
- * Only handles XYZ translation - rotation is not part of this implementation.
+ * TODO: Implement Edit Curve-style manipulator logic
  */
 export function ffdManipulator(context is Context, definition is map, newManipulators is map) returns map
 {
-    if (newManipulators[LATTICE_POINTS_MANIPULATOR] is map)
-    {
-        const oldIndex = definition.selectedPointIndex;
-        var newIndex = newManipulators[LATTICE_POINTS_MANIPULATOR].index;
-        
-        // Adjust index to account for the currently selected point not being in the array
-        // This matches the Routing Curve pattern where the selected point is removed from 
-        // the points manipulator to avoid interference with the triad manipulator
-        if (newIndex >= oldIndex)
-        {
-            newIndex = newIndex + 1;
-        }
-        
-        definition.selectedPointIndex = newIndex;
-    }
-    
-    if (newManipulators[LATTICE_TRIAD_MANIPULATOR] is map)
-    {
-        const newOffset = newManipulators[LATTICE_TRIAD_MANIPULATOR].offset;
-        const selectedIndex = definition.selectedPointIndex;
-        
-        // Initialize latticeOffsets if undefined or not an array
-        if (definition.latticeOffsets == undefined || !(definition.latticeOffsets is array))
-        {
-            definition.latticeOffsets = [];
-        }
-        
-        // Find the array index for this control point index
-        var foundEdit = false;
-        for (var i = 0; i < size(definition.latticeOffsets); i += 1)
-        {
-            if (definition.latticeOffsets[i].index == selectedIndex)
-            {
-                // Update existing offset entry (direct modification like Edit Curve)
-                definition.latticeOffsets[i].offsetX = newOffset[0];
-                definition.latticeOffsets[i].offsetY = newOffset[1];
-                definition.latticeOffsets[i].offsetZ = newOffset[2];
-                foundEdit = true;
-                break;
-            }
-        }
-        
-        // If no offset entry exists, create new one
-        if (!foundEdit)
-        {
-            const newOffsetEntry = {
-                "index" : selectedIndex,
-                "offsetX" : newOffset[0],
-                "offsetY" : newOffset[1],
-                "offsetZ" : newOffset[2]
-            };
-            definition.latticeOffsets = append(definition.latticeOffsets, newOffsetEntry);
-        }
-    }
+    // Edit Curve Manipulator logic go here
     
     return definition;
 }
@@ -775,101 +680,20 @@ export function ffdManipulator(context is Context, definition is map, newManipul
 /**
  * Applies stored lattice offsets to the lattice control points
  * 
- * This function updates the lattice control points based on user manipulator interactions.
- * Each offset entry contains an index, translation offsets (X, Y, Z), and a rotation matrix.
- * Following the Routing Curve pattern, offsets are applied as simple translations.
- * 
- * @param lattice {map} : Lattice structure with control points to be modified
- * @param offsets {array} : Array of offset entries with index, offsetX, offsetY, offsetZ, and rotationMatrix
+ * TODO: Implement offset application logic
  */
 function applyLatticeOffsets(lattice is map, offsets is array)
 {
-    for (var offsetEntry in offsets)
-    {
-        // Check if offsetEntry has valid index field
-        if (offsetEntry.index == undefined)
-        {
-            continue;
-        }
-        
-        const index = offsetEntry.index;
-        // Reconstruct vector from individual X/Y/Z components (matching Routing Curve pattern)
-        const offset = vector(offsetEntry.offsetX, offsetEntry.offsetY, offsetEntry.offsetZ);
-        if (index >= 0 && index < lattice.totalControlPoints)
-        {
-            lattice.controlPoints[index] = lattice.controlPoints[index] + offset;
-        }
-    }
+    // Edit Curve Manipulator logic go here
 }
 
 
 /**
  * Adds manipulators for interactive FFD lattice control point manipulation
  * 
- * This function follows the Edit Curve pattern:
- * 1. Creates a points manipulator showing all lattice control points except the selected one
- * 2. Creates a triad manipulator at the selected control point for XYZ translation only
- * 
- * The selected point is excluded from the points manipulator to avoid interference with
- * the triad manipulator that allows precise positioning of that point.
- * 
- * @param context {Context} : The modeling context
- * @param id {Id} : Feature identifier
- * @param originalLattice {map} : Original lattice structure with unmodified control points
- * @param deformationLattice {map} : Lattice with offsets applied (for display)
- * @param selectedIndex {number} : Index of the currently selected control point
- * @param offsets {array} : Array of stored offset entries for retrieving translation values
+ * TODO: Implement Edit Curve-style manipulator setup
  */
-function addFFDManipulators(context is Context, id is Id, originalLattice is map, deformationLattice is map, selectedIndex is number, offsets is array)
+function addFFDManipulators(context is Context, id is Id, lattice is map, selectedIndex is number)
 {
-    // Build map of all manipulators to add at once (matching Edit Curve pattern)
-    var manipulators = {};
-    
-    // Create array of lattice control point positions, excluding the selected one
-    // Use deformationLattice positions (with offsets already applied) matching Edit Curve
-    var pointPositions = [];
-    for (var i = 0; i < deformationLattice.totalControlPoints; i += 1)
-    {
-        if (i != selectedIndex)
-        {
-            pointPositions = append(pointPositions, deformationLattice.controlPoints[i]);
-        }
-    }
-    
-    // Add points manipulator to show all lattice control points (except selected)
-    // Pass -1 as index to indicate no point is selected in the manipulator itself
-    const pointsManip = pointsManipulator({
-        "points" : pointPositions,
-        "index" : -1
-    });
-    manipulators[LATTICE_POINTS_MANIPULATOR] = pointsManip;
-    
-    // Add triad manipulator at the selected control point
-    if (selectedIndex >= 0 && selectedIndex < originalLattice.totalControlPoints)
-    {
-        // Get the ORIGINAL lattice position (base point before any offsets)
-        const originalPoint = originalLattice.controlPoints[selectedIndex];
-        
-        // Find stored offset for this control point if it exists
-        var offset = vector(0 * meter, 0 * meter, 0 * meter);
-        for (var offsetEntry in offsets)
-        {
-            if (offsetEntry.index == selectedIndex)
-            {
-                offset = vector(offsetEntry.offsetX, offsetEntry.offsetY, offsetEntry.offsetZ);
-                break;
-            }
-        }
-        
-        // Create triad manipulator with base and offset (matching Edit Curve pattern)
-        // The base is the original position, offset shows the modification
-        const triadManip = triadManipulator({
-            "base" : originalPoint,
-            "offset" : offset
-        });
-        manipulators[LATTICE_TRIAD_MANIPULATOR] = triadManip;
-    }
-    
-    // Add all manipulators at once
-    addManipulators(context, id, manipulators);
+    // Edit Curve Manipulator logic go here
 }
