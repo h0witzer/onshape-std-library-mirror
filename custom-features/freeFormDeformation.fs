@@ -117,9 +117,9 @@ export const freeFormDeformation = defineFeature(function(context is Context, id
         annotation { "Name" : "Selected control point index", "UIHint" : UIHint.ALWAYS_HIDDEN }
         isInteger(definition.selectedPointIndex, { (unitless) : [0, 0, 1000] } as IntegerBoundSpec);
         
-        // Note: latticeOffsets is NOT declared in precondition to allow manipulator to manage it
-        // without interference from FeatureScript's parameter system. It's managed entirely by
-        // the manipulator change function (ffdManipulator), similar to how triadTransform works.
+        // Lattice offsets managed by manipulator (matching Routing Curve pattern)
+        annotation { "Name" : "Lattice offsets", "UIHint" : UIHint.ALWAYS_HIDDEN }
+        isAnything(definition.latticeOffsets);
         
         annotation { "Name" : "Enable diagnostics" }
         definition.enableDiagnostics is boolean;
