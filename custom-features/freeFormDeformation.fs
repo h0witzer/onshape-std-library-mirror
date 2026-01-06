@@ -221,19 +221,40 @@ function applyFFDDeformation(context is Context, id is Id, inputFace is Query, d
         printLatticeInformation(lattice);
     }
     
-    // Apply stored lattice offsets from manipulator interactions
-    if (definition.latticeOffsets != undefined && definition.latticeOffsets is array)
-    {
-        applyLatticeOffsets(lattice, definition.latticeOffsets);
-    }
-    
     // Add manipulators for interactive control point manipulation
+    // Pass offsets array to manipulators - they will use it to create transforms
     const offsetsArray = (definition.latticeOffsets != undefined && definition.latticeOffsets is array) ? definition.latticeOffsets : [];
     addFFDManipulators(context, id, lattice, definition.selectedPointIndex, offsetsArray);
     
+    // Create a working copy of lattice for deformation
+    // Apply stored lattice offsets to the working copy
+    var deformationLattice = {
+        "minCorner" : lattice.minCorner,
+        "maxCorner" : lattice.maxCorner,
+        "axisS" : lattice.axisS,
+        "axisT" : lattice.axisT,
+        "axisU" : lattice.axisU,
+        "spanCountS" : lattice.spanCountS,
+        "spanCountT" : lattice.spanCountT,
+        "spanCountU" : lattice.spanCountU,
+        "controlPointCountS" : lattice.controlPointCountS,
+        "controlPointCountT" : lattice.controlPointCountT,
+        "controlPointCountU" : lattice.controlPointCountU,
+        "totalControlPoints" : lattice.totalControlPoints,
+        "controlPoints" : lattice.controlPoints, // Will be modified below
+        "crossS" : lattice.crossS,
+        "crossT" : lattice.crossT,
+        "crossU" : lattice.crossU
+    };
+    
+    if (definition.latticeOffsets != undefined && definition.latticeOffsets is array)
+    {
+        applyLatticeOffsets(deformationLattice, definition.latticeOffsets);
+    }
+    
     if (definition.showLatticeControlPoints)
     {
-        visualizeLatticeControlPoints(context, id + "lattice", lattice);
+        visualizeLatticeControlPoints(context, id + "lattice", deformationLattice);
     }
     
     // Deform surface control points using FFD
@@ -247,10 +268,10 @@ function applyFFDDeformation(context is Context, id is Id, inputFace is Query, d
             
             // FFD operates on the actual 3D control point positions
             // Convert to STU parametric space
-            const stuCoords = convertWorldToSTU(originalPoint, lattice);
+            const stuCoords = convertWorldToSTU(originalPoint, deformationLattice);
             
             // Evaluate trivariate Bernstein polynomial to get deformed position
-            const deformedPoint = evaluateTrivariateBernstein(stuCoords, lattice);
+            const deformedPoint = evaluateTrivariateBernstein(stuCoords, deformationLattice);
             
             deformedRow = append(deformedRow, deformedPoint);
             
@@ -836,8 +857,8 @@ function addFFDManipulators(context is Context, id is Id, lattice is map, select
     // Add triad manipulator at the selected control point
     if (selectedIndex >= 0 && selectedIndex < lattice.totalControlPoints)
     {
-        // The lattice already has offsets applied, so use the current position
-        const selectedPoint = lattice.controlPoints[selectedIndex];
+        // Get the ORIGINAL lattice position (before any offsets)
+        const originalPoint = lattice.controlPoints[selectedIndex];
         
         // Find stored translation for this control point if it exists
         var translation = vector(0 * meter, 0 * meter, 0 * meter);
@@ -851,12 +872,12 @@ function addFFDManipulators(context is Context, id is Id, lattice is map, select
         }
         
         // Create transform with translation only (matching Routing Curve pattern)
-        // Base coordinate system is positioned at the original (unmodified) lattice point
+        // Base is at the original lattice point, transform represents the offset
         const triadTransform = transform(identityMatrix(3), translation);
         
-        // Create triad manipulator with base coordinate system at the selected point
+        // Create triad manipulator with base coordinate system at the original point
         const triadManip = fullTriadManipulator({
-            "base" : coordSystem(selectedPoint - translation, vector(1, 0, 0), vector(0, 1, 0)),
+            "base" : coordSystem(originalPoint, vector(1, 0, 0), vector(0, 1, 0)),
             "transform" : triadTransform,
             "displayEditView" : true
         });
