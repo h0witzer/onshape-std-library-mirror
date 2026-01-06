@@ -171,7 +171,8 @@ export const freeFormDeformation = defineFeature(function(context is Context, id
         spanCountT : 2,
         spanCountU : 2,
         selectedPointIndex : 0,
-        latticeOffsets : [],
+        // latticeOffsets intentionally NOT in defaults - managed by manipulator
+        // to prevent reset to [] on every regeneration
         enableDiagnostics : false,
         showLatticeControlPoints : false,
         showBoundingBox : false,
