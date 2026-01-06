@@ -567,7 +567,9 @@ function applyPlaneTransformationsToLattice(lattice is map, planeTransformations
                     [rotationMatrix[3], rotationMatrix[4], rotationMatrix[5]],
                     [rotationMatrix[6], rotationMatrix[7], rotationMatrix[8]]
                 ]);
-                planeTransform = transform(matrix3x3, vector(translateX, translateY, translateZ));
+                // We stored the transposed matrix, so transpose it back for application
+                const rotationForApplication = transpose(matrix3x3);
+                planeTransform = transform(rotationForApplication, vector(translateX, translateY, translateZ));
             }
             
             // Create a coordinate system at the original plane center
@@ -1114,12 +1116,14 @@ function addPlaneManipulators(context is Context, id is Id, originalLattice is m
                     [rotationMatrix[3], rotationMatrix[4], rotationMatrix[5]],
                     [rotationMatrix[6], rotationMatrix[7], rotationMatrix[8]]
                 ]);
+                // We stored the transposed matrix, so transpose it back for the manipulator
+                const rotationForManipulator = transpose(matrix3x3);
                 const translation = vector(
                     planeTransformData.translateX,
                     planeTransformData.translateY,
                     planeTransformData.translateZ
                 );
-                currentTransform = transform(matrix3x3, translation);
+                currentTransform = transform(rotationForManipulator, translation);
             }
         }
         
