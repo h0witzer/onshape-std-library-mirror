@@ -36,9 +36,10 @@ FeatureScript 2837;
  * Usage:
  * 1. Select a surface face to deform
  * 2. Set the number of lattice spans in each direction (S, T, U)
- * 3. Enable lattice manipulation and specify a control point index to modify
- * 4. Set offset values (X, Y, Z) to move that control point
- * 5. The surface will deform according to the modified lattice
+ * 3. Enable "Edit lattice control points" to begin interactive manipulation
+ * 4. Click on any lattice control point to select it (shown as small spheres)
+ * 5. Drag the triad manipulator to move that control point
+ * 6. The surface will deform according to the modified lattice
  * 
  * Tips:
  * - Start with fewer spans (e.g., 2x2x2) for global deformations
@@ -662,11 +663,11 @@ function printLatticeInformation(lattice is map)
     println("Total control points: " ~ lattice.totalControlPoints);
     println("");
     println("USAGE: To deform the surface:");
-    println("  1. Enable 'lattice control point manipulation'");
-    println("  2. Choose a control point index (0 to " ~ (lattice.totalControlPoints - 1) ~ ")");
-    println("  3. Set non-zero offset values (e.g., 0.01m in X/Y/Z)");
+    println("  1. Enable 'Edit lattice control points' checkbox");
+    println("  2. Click on any lattice control point (shown as small spheres)");
+    println("  3. Drag the triad manipulator to move that control point");
     println("  4. The surface will deform based on the modified lattice");
-    println("  Note: With all offsets at 0, surface is unchanged (expected behavior)");
+    println("  Control point indices range from 0 to " ~ (lattice.totalControlPoints - 1));
     println("===============================");
 }
 
