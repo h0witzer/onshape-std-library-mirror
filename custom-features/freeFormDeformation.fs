@@ -222,13 +222,13 @@ function applyFFDDeformation(context is Context, id is Id, inputFace is Query, d
     }
     
     // Apply stored lattice offsets from manipulator interactions
-    if (definition.latticeOffsets != undefined)
+    if (definition.latticeOffsets != undefined && definition.latticeOffsets is array)
     {
         applyLatticeOffsets(lattice, definition.latticeOffsets);
     }
     
     // Add manipulators for interactive control point manipulation
-    const offsetsArray = definition.latticeOffsets != undefined ? definition.latticeOffsets : [];
+    const offsetsArray = (definition.latticeOffsets != undefined && definition.latticeOffsets is array) ? definition.latticeOffsets : [];
     addFFDManipulators(context, id, lattice, definition.selectedPointIndex, offsetsArray);
     
     if (definition.showLatticeControlPoints)
