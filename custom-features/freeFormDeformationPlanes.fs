@@ -44,6 +44,7 @@ FeatureScript 2837;
 import(path : "onshape/std/common.fs", version : "2837.0");
 import(path : "onshape/std/context.fs", version : "2837.0");
 import(path : "onshape/std/coordSystem.fs", version : "2837.0");
+import(path : "onshape/std/curveGeometry.fs", version : "2837.0");
 import(path : "onshape/std/evaluate.fs", version : "2837.0");
 import(path : "onshape/std/feature.fs", version : "2837.0");
 import(path : "onshape/std/geomOperations.fs", version : "2837.0");
@@ -533,71 +534,45 @@ function applyPlaneTransformationsToLattice(lattice is map, planeTransformations
             const rotationAngle = transformEntry.rotation;
             
             // Determine rotation axis based on manipulation direction
-            var rotationAxis = vector(0, 0, 1);
+            var rotationAxisDirection = vector(0, 0, 1);
             if (direction == FFDPlaneDirection.S_DIRECTION)
             {
-                rotationAxis = vector(1, 0, 0);
+                rotationAxisDirection = vector(1, 0, 0);
             }
             else if (direction == FFDPlaneDirection.T_DIRECTION)
             {
-                rotationAxis = vector(0, 1, 0);
+                rotationAxisDirection = vector(0, 1, 0);
             }
             else // U_DIRECTION
             {
-                rotationAxis = vector(0, 0, 1);
+                rotationAxisDirection = vector(0, 0, 1);
             }
+            
+            // Build rotation transform using standard library function
+            var rotationTransform = identityTransform();
+            if (abs(rotationAngle) > 0 * radian)
+            {
+                const rotationLine = line(planeCenter, rotationAxisDirection);
+                rotationTransform = rotationAround(rotationLine, rotationAngle);
+            }
+            
+            // Build translation transform
+            const translationTransform = transform(translation);
+            
+            // Combine transformations: rotate first, then translate
+            const combinedTransform = translationTransform * rotationTransform;
             
             // Apply transformation to all points on this plane
             for (var pointIndex in pointIndices)
             {
-                var point = modifiedControlPoints[pointIndex];
-                
-                // Translate to origin (relative to plane center)
-                point = point - planeCenter;
-                
-                // Apply rotation around the axis
-                if (abs(rotationAngle) > 0 * radian)
-                {
-                    point = rotationAround3D(point, rotationAxis, rotationAngle);
-                }
-                
-                // Translate back and add user translation
-                point = point + planeCenter + translation;
-                
-                modifiedControlPoints[pointIndex] = point;
+                const originalPoint = modifiedControlPoints[pointIndex];
+                const transformedPoint = combinedTransform * originalPoint;
+                modifiedControlPoints[pointIndex] = transformedPoint;
             }
         }
     }
     
     lattice.controlPoints = modifiedControlPoints;
-}
-
-
-/**
- * Rotates a 3D vector around an axis by a given angle
- * 
- * Uses Rodrigues' rotation formula:
- * v_rot = v*cos(θ) + (k × v)*sin(θ) + k*(k·v)*(1-cos(θ))
- * 
- * @param vector {Vector} : Vector to rotate (with units)
- * @param axis {Vector} : Rotation axis (unitless, normalized)
- * @param angle {ValueWithUnits} : Rotation angle
- * @returns {Vector} : Rotated vector (with same units as input)
- */
-function rotationAround3D(vector is Vector, axis is Vector, angle is ValueWithUnits) returns Vector
-{
-    const cosTheta = cos(angle);
-    const sinTheta = sin(angle);
-    
-    const axisDotVector = axis[0] * vector[0] + axis[1] * vector[1] + axis[2] * vector[2];
-    
-    const crossProduct = cross(axis, vector / meter) * meter;
-    
-    const term1 = vector * cosTheta;
-    const term2 = crossProduct * sinTheta;
-    const term3 = axis * axisDotVector * (1 - cosTheta);
-    
-    return term1 + term2 + term3;
 }
 
 
