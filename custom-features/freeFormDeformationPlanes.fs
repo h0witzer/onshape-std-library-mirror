@@ -567,9 +567,7 @@ function applyPlaneTransformationsToLattice(lattice is map, planeTransformations
                     [rotationMatrix[3], rotationMatrix[4], rotationMatrix[5]],
                     [rotationMatrix[6], rotationMatrix[7], rotationMatrix[8]]
                 ]);
-                // We stored the transposed matrix, so transpose it back for application
-                const rotationForApplication = transpose(matrix3x3);
-                planeTransform = transform(rotationForApplication, vector(translateX, translateY, translateZ));
+                planeTransform = transform(matrix3x3, vector(translateX, translateY, translateZ));
             }
             
             // Create a coordinate system at the original plane center
@@ -910,10 +908,9 @@ function visualizePlanes(context is Context, id is Id, lattice is map, direction
             ]);
             
             // Apply the rotation matrix to plane normal to show the rotated plane
-            // Since we store the transposed matrix, transpose it back before applying
-            const rotationMatrixForVisualization = transpose(matrix3x3);
-            planeNormal = rotationMatrixForVisualization * planeNormal;
-            planeX = rotationMatrixForVisualization * planeX;
+            // Use the stored matrix directly to match how it's applied in lattice transformation
+            planeNormal = matrix3x3 * planeNormal;
+            planeX = matrix3x3 * planeX;
         }
         
         // Create and debug the plane using proper Plane type with transformed normal
@@ -1116,14 +1113,12 @@ function addPlaneManipulators(context is Context, id is Id, originalLattice is m
                     [rotationMatrix[3], rotationMatrix[4], rotationMatrix[5]],
                     [rotationMatrix[6], rotationMatrix[7], rotationMatrix[8]]
                 ]);
-                // We stored the transposed matrix, so transpose it back for the manipulator
-                const rotationForManipulator = transpose(matrix3x3);
                 const translation = vector(
                     planeTransformData.translateX,
                     planeTransformData.translateY,
                     planeTransformData.translateZ
                 );
-                currentTransform = transform(rotationForManipulator, translation);
+                currentTransform = transform(matrix3x3, translation);
             }
         }
         
