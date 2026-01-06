@@ -213,7 +213,8 @@ function applyFFDDeformation(context is Context, id is Id, inputFace is Query, d
     
     const controlPoints = surfaceDefinition.controlPoints;
     const weights = surfaceDefinition.weights;
-    const isRational = surfaceDefinition.isRational;
+    // Note: isRational flag is available but weights preservation is automatic
+    // since we only modify control point positions, not weights
     
     // Compute bounding box from surface control points
     const boundingBox = computeControlPointBoundingBox(controlPoints);
@@ -394,7 +395,11 @@ function buildFFDLattice(boundingBox is map, spanCounts is array) returns map
         "controlPointCountT" : controlPointCountT,
         "controlPointCountU" : controlPointCountU,
         "totalControlPoints" : totalControlPoints,
-        "controlPoints" : controlPoints
+        "controlPoints" : controlPoints,
+        // Pre-compute cross products for coordinate conversion (performance optimization)
+        "crossS" : cross(axisT, axisU),  // T × U for S parameter
+        "crossT" : cross(axisS, axisU),  // S × U for T parameter
+        "crossU" : cross(axisS, axisT)   // S × T for U parameter
     };
 }
 
@@ -418,17 +423,16 @@ function convertWorldToSTU(worldPoint is Vector, lattice is map) returns Vector
     // Vector from minimum corner to the world point
     const minToWorld = worldPoint - lattice.minCorner;
     
-    // Compute cross products for each axis
-    // For right-handed coordinate system: to find the S parameter, we need the volume
-    // projection in the S direction, which uses the perpendicular plane (T × U)
-    // Reference: ffd.js lines 91-94
-    const crossS = cross(lattice.axisT, lattice.axisU);  // T × U for S
-    const crossT = cross(lattice.axisS, lattice.axisU);  // S × U for T
-    const crossU = cross(lattice.axisS, lattice.axisT);  // S × T for U
+    // Use pre-computed cross products from lattice structure (for performance)
+    // Cross products were computed during lattice construction
+    const crossS = lattice.crossS;
+    const crossT = lattice.crossT;
+    const crossU = lattice.crossU;
     
     // Compute parametric coordinates using scalar triple product
     // Add small epsilon to avoid division by zero for degenerate cases
-    const epsilon = 1e-10 * meter * meter;
+    // Epsilon must have units of volume (meter^3) to match the denominators
+    const epsilon = 1e-10 * meter * meter * meter;
     
     const numeratorS = dot(crossS, minToWorld);
     var denominatorS = dot(crossS, lattice.axisS);
@@ -549,6 +553,10 @@ function bernsteinPolynomial(degree is number, index is number, parameter is num
 
 /**
  * Computes the factorial of a non-negative integer
+ * 
+ * Note: For typical FFD lattices (1-8 spans), the degrees are small (≤8),
+ * so factorial computation is not a performance bottleneck. For higher degrees,
+ * consider implementing binomial coefficient caching or Pascal's triangle.
  * 
  * @param n {number} : Non-negative integer
  * @returns {number} : n! = n * (n-1) * ... * 2 * 1
