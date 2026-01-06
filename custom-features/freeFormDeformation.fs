@@ -114,8 +114,39 @@ export const freeFormDeformation = defineFeature(function(context is Context, id
                      "Description" : "Number of spans in the U direction of the FFD lattice" }
         isInteger(definition.spanCountU, FFD_SPAN_COUNT_BOUNDS);
         
-        annotation { "Name" : "Selected control point index", "UIHint" : UIHint.ALWAYS_HIDDEN }
-        isInteger(definition.selectedPointIndex, { (unitless) : [0, 0, 1000] } as IntegerBoundSpec);
+        annotation { "Name" : "Edit lattice control points" }
+        definition.editLatticePoints is boolean;
+        
+        annotation { "Group Name" : "Edit lattice control points", 
+                     "Driving Parameter" : "editLatticePoints", 
+                     "Collapsed By Default" : false }
+        {
+            if (definition.editLatticePoints)
+            {
+                annotation { "Name" : "Selected control point index", "UIHint" : UIHint.ALWAYS_HIDDEN }
+                isInteger(definition.selectedPointIndex, { (unitless) : [0, 0, 1000] } as IntegerBoundSpec);
+                
+                annotation { "Name" : "Lattice point offsets", 
+                             "Item name" : "point offset", 
+                             "Item label template" : "#index: #x;#y;#z", 
+                             "UIHint" : UIHint.PREVENT_ARRAY_REORDER }
+                definition.latticePointOffsets is array;
+                for (var latticePointOffset in definition.latticePointOffsets)
+                {
+                    annotation { "Name" : "Control point index" }
+                    isInteger(latticePointOffset.index, { (unitless) : [0, 0, 1000] } as IntegerBoundSpec);
+                    
+                    annotation { "Name" : "X offset" }
+                    isLength(latticePointOffset.x, ZERO_DEFAULT_LENGTH_BOUNDS);
+                    
+                    annotation { "Name" : "Y offset" }
+                    isLength(latticePointOffset.y, ZERO_DEFAULT_LENGTH_BOUNDS);
+                    
+                    annotation { "Name" : "Z offset" }
+                    isLength(latticePointOffset.z, ZERO_DEFAULT_LENGTH_BOUNDS);
+                }
+            }
+        }
         
         annotation { "Name" : "Enable diagnostics" }
         definition.enableDiagnostics is boolean;
@@ -153,7 +184,9 @@ export const freeFormDeformation = defineFeature(function(context is Context, id
         spanCountS : 2,
         spanCountT : 2,
         spanCountU : 2,
+        editLatticePoints : false,
         selectedPointIndex : 0,
+        latticePointOffsets : [],
         enableDiagnostics : false,
         showLatticeControlPoints : false,
         showBoundingBox : false,
@@ -209,15 +242,45 @@ function applyFFDDeformation(context is Context, id is Id, inputFace is Query, d
     
     // Build FFD lattice
     const spanCounts = [definition.spanCountS, definition.spanCountT, definition.spanCountU];
-    const lattice = buildFFDLattice(boundingBox, spanCounts);
+    var lattice = buildFFDLattice(boundingBox, spanCounts);
     
     if (definition.printLatticeInfo)
     {
         printLatticeInformation(lattice);
     }
     
+    // Create a copy of lattice control points for manipulator display
+    // This will show the current positions including any applied offsets
+    var latticeControlPointsForDisplay = [];
+    for (var i = 0; i < lattice.totalControlPoints; i += 1)
+    {
+        latticeControlPointsForDisplay = append(latticeControlPointsForDisplay, lattice.controlPoints[i]);
+    }
+    
+    // Apply user-specified offsets to display points (for manipulator visualization)
+    if (definition.editLatticePoints && size(definition.latticePointOffsets) > 0)
+    {
+        for (var offsetEntry in definition.latticePointOffsets)
+        {
+            const pointIndex = offsetEntry.index;
+            if (pointIndex >= 0 && pointIndex < lattice.totalControlPoints)
+            {
+                const offset = vector(offsetEntry.x, offsetEntry.y, offsetEntry.z);
+                latticeControlPointsForDisplay[pointIndex] = latticeControlPointsForDisplay[pointIndex] + offset;
+            }
+        }
+    }
+    
     // Add manipulators for interactive control point manipulation
-    addFFDManipulators(context, id, lattice, definition.selectedPointIndex);
+    // Pass original lattice for base positions, display points for visualization
+    addFFDManipulators(context, id, lattice, latticeControlPointsForDisplay, definition.selectedPointIndex, 
+                      definition.editLatticePoints, definition.latticePointOffsets);
+    
+    // Apply offsets to the actual lattice for deformation computation
+    if (definition.editLatticePoints && size(definition.latticePointOffsets) > 0)
+    {
+        applyLatticeOffsets(lattice, definition.latticePointOffsets);
+    }
     
     if (definition.showLatticeControlPoints)
     {
@@ -667,11 +730,62 @@ function visualizeLatticeControlPoints(context is Context, id is Id, lattice is 
 /**
  * Manipulator handler for FFD feature
  * 
- * TODO: Implement Edit Curve-style manipulator logic
+ * Handles two types of manipulators:
+ * 1. INDEX_MANIPULATOR (pointsManipulator): When a lattice control point is clicked, 
+ *    enables editing and sets selectedPointIndex
+ * 2. OFFSET_MANIPULATOR (triadManipulator): When the triad is dragged, updates or creates
+ *    an offset entry in latticePointOffsets array
+ * 
+ * This follows the exact pattern used in Edit Curve feature.
+ * 
+ * @param context {Context} : The modeling context
+ * @param definition {map} : Current feature definition
+ * @param newManipulators {map} : Map of manipulator changes from user interaction
+ * @returns {map} : Updated definition with manipulator-driven changes
  */
 export function ffdManipulator(context is Context, definition is map, newManipulators is map) returns map
 {
-    // Edit Curve Manipulator logic go here
+    // Handle point selection via pointsManipulator
+    if (newManipulators[LATTICE_POINTS_MANIPULATOR] is map)
+    {
+        // User clicked on a lattice control point - enable editing and set the selected index
+        definition.editLatticePoints = true;
+        definition.selectedPointIndex = newManipulators[LATTICE_POINTS_MANIPULATOR].index;
+    }
+    
+    // Handle triad manipulation for moving the selected control point
+    if (newManipulators[LATTICE_TRIAD_MANIPULATOR] is map)
+    {
+        var foundOffset = false;
+        
+        // Check if an offset entry already exists for the selected point
+        for (var i = 0; i < size(definition.latticePointOffsets); i += 1)
+        {
+            if (definition.latticePointOffsets[i].index != definition.selectedPointIndex)
+            {
+                continue;
+            }
+            
+            // Update existing offset entry
+            definition.latticePointOffsets[i].x = newManipulators[LATTICE_TRIAD_MANIPULATOR].offset[0];
+            definition.latticePointOffsets[i].y = newManipulators[LATTICE_TRIAD_MANIPULATOR].offset[1];
+            definition.latticePointOffsets[i].z = newManipulators[LATTICE_TRIAD_MANIPULATOR].offset[2];
+            foundOffset = true;
+            break;
+        }
+        
+        // If no offset entry exists for this point, create one
+        if (!foundOffset)
+        {
+            var newOffset = {
+                "index" : definition.selectedPointIndex,
+                "x" : newManipulators[LATTICE_TRIAD_MANIPULATOR].offset[0],
+                "y" : newManipulators[LATTICE_TRIAD_MANIPULATOR].offset[1],
+                "z" : newManipulators[LATTICE_TRIAD_MANIPULATOR].offset[2]
+            };
+            definition.latticePointOffsets = append(definition.latticePointOffsets, newOffset);
+        }
+    }
     
     return definition;
 }
@@ -680,20 +794,88 @@ export function ffdManipulator(context is Context, definition is map, newManipul
 /**
  * Applies stored lattice offsets to the lattice control points
  * 
- * TODO: Implement offset application logic
+ * Modifies the lattice structure in-place by applying user-specified offsets
+ * from the latticePointOffsets array to the corresponding control points.
+ * This allows interactive manipulation of the FFD lattice.
+ * 
+ * @param lattice {map} : Lattice structure with control points array
+ * @param latticePointOffsets {array} : Array of offset definitions, each containing:
+ *   - index: The linear index of the control point to offset
+ *   - x, y, z: The offset amounts in each direction (with units)
  */
-function applyLatticeOffsets(lattice is map, offsets is array)
+function applyLatticeOffsets(lattice is map, latticePointOffsets is array)
 {
-    // Edit Curve Manipulator logic go here
+    // Apply each stored offset to its corresponding lattice control point
+    for (var offsetEntry in latticePointOffsets)
+    {
+        const pointIndex = offsetEntry.index;
+        
+        // Validate index is within bounds
+        if (pointIndex >= 0 && pointIndex < lattice.totalControlPoints)
+        {
+            const offset = vector(offsetEntry.x, offsetEntry.y, offsetEntry.z);
+            lattice.controlPoints[pointIndex] = lattice.controlPoints[pointIndex] + offset;
+        }
+    }
 }
 
 
 /**
  * Adds manipulators for interactive FFD lattice control point manipulation
  * 
- * TODO: Implement Edit Curve-style manipulator setup
+ * Creates two types of manipulators following the Edit Curve pattern:
+ * 1. pointsManipulator: Shows selectable points at all lattice control point locations
+ *    (displays current positions including offsets)
+ * 2. triadManipulator: Shows a 3D triad at the selected point for dragging (if editLatticePoints is enabled)
+ *    (base is original position, offset is user modification)
+ * 
+ * @param context {Context} : The modeling context
+ * @param id {Id} : Feature identifier for manipulator registration
+ * @param originalLattice {map} : Original lattice structure (before offsets) for base positions
+ * @param displayPoints {array} : Lattice control points with offsets applied (for visualization)
+ * @param selectedIndex {number} : Currently selected control point index
+ * @param editLatticePoints {boolean} : Whether lattice point editing is enabled
+ * @param latticePointOffsets {array} : Array of offsets to compute offset for triad
  */
-function addFFDManipulators(context is Context, id is Id, lattice is map, selectedIndex is number)
+function addFFDManipulators(context is Context, id is Id, originalLattice is map, displayPoints is array,
+                           selectedIndex is number, editLatticePoints is boolean, latticePointOffsets is array)
 {
-    // Edit Curve Manipulator logic go here
+    // Create points manipulator showing all lattice control points at their current positions
+    // Users can click on any point to select it
+    const pointsManip = pointsManipulator({
+        "points" : displayPoints,
+        "index" : editLatticePoints ? selectedIndex : -1
+    });
+    
+    addManipulators(context, id, {
+        (LATTICE_POINTS_MANIPULATOR) : pointsManip
+    });
+    
+    // If editing is enabled and a valid point is selected, show triad manipulator
+    if (editLatticePoints && selectedIndex >= 0 && selectedIndex < originalLattice.totalControlPoints)
+    {
+        // Find the current offset for the selected point, if any
+        var selectedPointOffset = vector(0 * meter, 0 * meter, 0 * meter);
+        for (var offsetEntry in latticePointOffsets)
+        {
+            if (offsetEntry.index == selectedIndex)
+            {
+                selectedPointOffset = vector(offsetEntry.x, offsetEntry.y, offsetEntry.z);
+                break;
+            }
+        }
+        
+        // Base position is the ORIGINAL lattice control point position (before offset)
+        const selectedPointBase = originalLattice.controlPoints[selectedIndex];
+        
+        // Create triad manipulator at the selected point
+        const triadManip = triadManipulator({
+            "base" : selectedPointBase,
+            "offset" : selectedPointOffset
+        });
+        
+        addManipulators(context, id, {
+            (LATTICE_TRIAD_MANIPULATOR) : triadManip
+        });
+    }
 }
