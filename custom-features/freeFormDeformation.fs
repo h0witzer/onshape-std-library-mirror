@@ -74,7 +74,7 @@ import(path : "onshape/std/debug.fs", version : "2837.0");
 
 // Bounds for lattice span counts
 export const FFD_SPAN_COUNT_BOUNDS = {
-    (integerRange) : [1, 2, 8]
+    (unitless) : [1, 2, 8]
 } as IntegerBoundSpec;
 
 
@@ -117,7 +117,7 @@ export const freeFormDeformation = defineFeature(function(context is Context, id
             if (definition.enableLatticeManipulation)
             {
                 annotation { "Name" : "Control point index (linear)" }
-                isInteger(definition.controlPointIndex, { (integerRange) : [0, 1, 100] } as IntegerBoundSpec);
+                isInteger(definition.controlPointIndex, { (unitless) : [0, 1, 100] } as IntegerBoundSpec);
                 
                 annotation { "Name" : "Offset X" }
                 isLength(definition.offsetX, { (meter) : [-1, 0, 1] } as LengthBoundSpec);
