@@ -731,7 +731,7 @@ export function ffdManipulator(context is Context, definition is map, newManipul
     
     if (newManipulators[LATTICE_TRIAD_MANIPULATOR] is map)
     {
-        const triadTransform = newManipulators[LATTICE_TRIAD_MANIPULATOR].transform;
+        const newOffset = newManipulators[LATTICE_TRIAD_MANIPULATOR].offset;
         const selectedIndex = definition.selectedPointIndex;
         
         // Initialize latticeOffsets if undefined or not an array
@@ -755,11 +755,10 @@ export function ffdManipulator(context is Context, definition is map, newManipul
         if (arrayIndex >= 0)
         {
             // Update existing offset entry
-            // Build new element with updated values
             var updatedOffset = definition.latticeOffsets[arrayIndex];
-            updatedOffset.offsetX = triadTransform.translation[0];
-            updatedOffset.offsetY = triadTransform.translation[1];
-            updatedOffset.offsetZ = triadTransform.translation[2];
+            updatedOffset.offsetX = newOffset[0];
+            updatedOffset.offsetY = newOffset[1];
+            updatedOffset.offsetZ = newOffset[2];
             
             // Rebuild entire array with updated element
             var newOffsets = [];
@@ -775,13 +774,13 @@ export function ffdManipulator(context is Context, definition is map, newManipul
         else
         {
             // Create new offset entry
-            const newOffset = {
+            const newOffsetEntry = {
                 "index" : selectedIndex,
-                "offsetX" : triadTransform.translation[0],
-                "offsetY" : triadTransform.translation[1],
-                "offsetZ" : triadTransform.translation[2]
+                "offsetX" : newOffset[0],
+                "offsetY" : newOffset[1],
+                "offsetZ" : newOffset[2]
             };
-            definition.latticeOffsets = append(definition.latticeOffsets, newOffset);
+            definition.latticeOffsets = append(definition.latticeOffsets, newOffsetEntry);
         }
     }
     
@@ -879,29 +878,25 @@ function addFFDManipulators(context is Context, id is Id, lattice is map, select
     // Add triad manipulator at the selected control point
     if (selectedIndex >= 0 && selectedIndex < lattice.totalControlPoints)
     {
-        // Get the ORIGINAL lattice position (before any offsets)
+        // Get the ORIGINAL lattice position (base point before any offsets)
         const originalPoint = lattice.controlPoints[selectedIndex];
         
-        // Find stored translation for this control point if it exists
-        var translation = vector(0 * meter, 0 * meter, 0 * meter);
+        // Find stored offset for this control point if it exists
+        var offset = vector(0 * meter, 0 * meter, 0 * meter);
         for (var offsetEntry in offsets)
         {
             if (offsetEntry.index == selectedIndex)
             {
-                translation = vector(offsetEntry.offsetX, offsetEntry.offsetY, offsetEntry.offsetZ);
+                offset = vector(offsetEntry.offsetX, offsetEntry.offsetY, offsetEntry.offsetZ);
                 break;
             }
         }
         
-        // Create transform with translation only (matching Routing Curve pattern)
-        // Base is at the original lattice point, transform represents the offset
-        const triadTransform = transform(identityMatrix(3), translation);
-        
-        // Create triad manipulator with base coordinate system at the original point
-        const triadManip = fullTriadManipulator({
-            "base" : coordSystem(originalPoint, vector(1, 0, 0), vector(0, 1, 0)),
-            "transform" : triadTransform,
-            "displayEditView" : true
+        // Create triad manipulator with base and offset (matching Edit Curve pattern)
+        // The base is the original position, offset shows the modification
+        const triadManip = triadManipulator({
+            "base" : originalPoint,
+            "offset" : offset
         });
         manipulators[LATTICE_TRIAD_MANIPULATOR] = triadManip;
     }
