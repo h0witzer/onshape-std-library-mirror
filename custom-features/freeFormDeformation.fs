@@ -136,19 +136,13 @@ export const freeFormDeformation = defineFeature(function(context is Context, id
             {
                 annotation { "Name" : "Lattice point offsets", 
                              "Item name" : "point offset", 
-                             "Item label template" : "[#paramS,#paramT,#paramU]: #x;#y;#z", 
+                             "Item label template" : "#index: #x;#y;#z", 
                              "UIHint" : UIHint.PREVENT_ARRAY_REORDER }
                 definition.latticePointOffsets is array;
                 for (var latticePointOffset in definition.latticePointOffsets)
                 {
-                    annotation { "Name" : "Control point S parameter (0-1)" }
-                    isReal(latticePointOffset.paramS, CLAMP_MAGNITUDE_REAL_BOUNDS);
-                    
-                    annotation { "Name" : "Control point T parameter (0-1)" }
-                    isReal(latticePointOffset.paramT, CLAMP_MAGNITUDE_REAL_BOUNDS);
-                    
-                    annotation { "Name" : "Control point U parameter (0-1)" }
-                    isReal(latticePointOffset.paramU, CLAMP_MAGNITUDE_REAL_BOUNDS);
+                    annotation { "Name" : "Control point index" }
+                    isInteger(latticePointOffset.index, { (unitless) : [0, 0, 1000] } as IntegerBoundSpec);
                     
                     annotation { "Name" : "X offset" }
                     isLength(latticePointOffset.x, ZERO_DEFAULT_LENGTH_BOUNDS);
@@ -283,23 +277,9 @@ function applyFFDDeformationToMultipleSurfaces(context is Context, id is Id, inp
         var modifiedControlPoints = lattice.controlPoints;
         for (var offsetEntry in definition.latticePointOffsets)
         {
-            // Use parametric coordinates (0-1) to find nearest control point
-            // This is stable across span count changes
-            const paramS = offsetEntry.paramS;
-            const paramT = offsetEntry.paramT;
-            const paramU = offsetEntry.paramU;
-            
-            // Find the nearest control point indices by rounding
-            const indexS = round(paramS * lattice.spanCountS);
-            const indexT = round(paramT * lattice.spanCountT);
-            const indexU = round(paramU * lattice.spanCountU);
-            
-            // Validate indices are within current lattice bounds
-            if (indexS >= 0 && indexS < lattice.controlPointCountS &&
-                indexT >= 0 && indexT < lattice.controlPointCountT &&
-                indexU >= 0 && indexU < lattice.controlPointCountU)
+            const pointIndex = offsetEntry.index;
+            if (pointIndex >= 0 && pointIndex < lattice.totalControlPoints)
             {
-                const pointIndex = getTernaryIndex(indexS, indexT, indexU, lattice);
                 const offset = vector(offsetEntry.x, offsetEntry.y, offsetEntry.z);
                 modifiedControlPoints[pointIndex] = modifiedControlPoints[pointIndex] + offset;
             }
@@ -694,58 +674,6 @@ function getTernaryIndex(indexS is number, indexT is number, indexU is number, l
 
 
 /**
- * Converts a linear array index to ternary lattice indices (i, j, k)
- * 
- * This is the inverse of getTernaryIndex. Given a linear index, it computes
- * the 3D grid coordinates.
- * 
- * Storage order: U varies fastest, then T, then S
- * 
- * @param linearIndex {number} : Linear index into the control points array
- * @param lattice {map} : Lattice structure with dimension information
- * @returns {array} : Array of [indexS, indexT, indexU]
- */
-function getLinearToTernaryIndices(linearIndex is number, lattice is map) returns array
-{
-    const countT = lattice.controlPointCountT;
-    const countU = lattice.controlPointCountU;
-    
-    const indexS = floor(linearIndex / (countT * countU));
-    const remainder = linearIndex % (countT * countU);
-    const indexT = floor(remainder / countU);
-    const indexU = remainder % countU;
-    
-    return [indexS, indexT, indexU];
-}
-
-
-/**
- * Converts a linear array index to parametric coordinates (0-1 range)
- * 
- * Given a linear index, this computes the parametric position (0-1) 
- * along each axis (S, T, U). This is stable across span count changes.
- * 
- * @param linearIndex {number} : Linear index into the control points array
- * @param lattice {map} : Lattice structure with dimension information
- * @returns {array} : Array of [paramS, paramT, paramU] in range [0, 1]
- */
-function getLinearToParametricCoordinates(linearIndex is number, lattice is map) returns array
-{
-    const indices = getLinearToTernaryIndices(linearIndex, lattice);
-    const indexS = indices[0];
-    const indexT = indices[1];
-    const indexU = indices[2];
-    
-    // Convert indices to parametric coordinates (0-1)
-    const paramS = indexS / lattice.spanCountS;
-    const paramT = indexT / lattice.spanCountT;
-    const paramU = indexU / lattice.spanCountU;
-    
-    return [paramS, paramT, paramU];
-}
-
-
-/**
  * Prints detailed information about the FFD lattice
  * 
  * @param lattice {map} : Lattice structure
@@ -838,11 +766,9 @@ function visualizeLatticeControlPoints(context is Context, id is Id, lattice is 
  * 1. INDEX_MANIPULATOR (pointsManipulator): When a lattice control point is clicked, 
  *    enables editing and sets selectedPointIndex
  * 2. OFFSET_MANIPULATOR (triadManipulator): When the triad is dragged, updates or creates
- *    an offset entry in latticePointOffsets array using parametric coordinates
+ *    an offset entry in latticePointOffsets array
  * 
- * Parametric coordinates (0-1) are used instead of indices to maintain stability
- * when span counts change. This allows users to add/remove lattice resolution
- * without losing their offset positions.
+ * This follows the exact pattern used in Edit Curve feature.
  * 
  * @param context {Context} : The modeling context
  * @param definition {map} : Current feature definition
@@ -851,36 +777,6 @@ function visualizeLatticeControlPoints(context is Context, id is Id, lattice is 
  */
 export function ffdManipulator(context is Context, definition is map, newManipulators is map) returns map
 {
-    // We need the current lattice structure to convert between linear and parametric coordinates
-    // Rebuild the lattice to get current span counts
-    const inputFaces = evaluateQuery(context, definition.surfacesToDeform);
-    if (size(inputFaces) == 0)
-        return definition;
-    
-    // Get bounding box (simplified - just for lattice structure)
-    var allControlPoints = [];
-    for (var faceIndex = 0; faceIndex < size(inputFaces); faceIndex += 1)
-    {
-        const inputFace = inputFaces[faceIndex];
-        var surfaceDefinition = evSurfaceDefinition(context, {"face" : inputFace});
-        if (surfaceDefinition.surfaceType != SurfaceType.SPLINE)
-        {
-            const approximation = evApproximateBSplineSurface(context, {"face" : inputFace});
-            surfaceDefinition = approximation.bSplineSurface;
-        }
-        const controlPoints = surfaceDefinition.controlPoints;
-        for (var uIndex = 0; uIndex < size(controlPoints); uIndex += 1)
-        {
-            for (var vIndex = 0; vIndex < size(controlPoints[0]); vIndex += 1)
-            {
-                allControlPoints = append(allControlPoints, controlPoints[uIndex][vIndex]);
-            }
-        }
-    }
-    const boundingBox = computeUnifiedBoundingBox(allControlPoints);
-    const spanCounts = [definition.spanCountS, definition.spanCountT, definition.spanCountU];
-    const lattice = buildFFDLattice(boundingBox, spanCounts);
-    
     // Handle point selection via pointsManipulator
     if (newManipulators[LATTICE_POINTS_MANIPULATOR] is map)
     {
@@ -895,24 +791,12 @@ export function ffdManipulator(context is Context, definition is map, newManipul
         // Extract offset vector once for efficiency and readability
         const manipulatorOffset = newManipulators[LATTICE_TRIAD_MANIPULATOR].offset;
         
-        // Convert selected linear index to parametric coordinates
-        const parametricCoords = getLinearToParametricCoordinates(definition.selectedPointIndex, lattice);
-        const paramS = parametricCoords[0];
-        const paramT = parametricCoords[1];
-        const paramU = parametricCoords[2];
-        
         var foundOffset = false;
         
-        // Check if an offset entry already exists for this parametric location
-        // Use tolerance for floating point comparison
-        const tolerance = 0.001;
+        // Check if an offset entry already exists for the selected point
         for (var i = 0; i < size(definition.latticePointOffsets); i += 1)
         {
-            const deltaS = abs(definition.latticePointOffsets[i].paramS - paramS);
-            const deltaT = abs(definition.latticePointOffsets[i].paramT - paramT);
-            const deltaU = abs(definition.latticePointOffsets[i].paramU - paramU);
-            
-            if (deltaS < tolerance && deltaT < tolerance && deltaU < tolerance)
+            if (definition.latticePointOffsets[i].index == definition.selectedPointIndex)
             {
                 // Update existing offset entry
                 definition.latticePointOffsets[i].x = manipulatorOffset[0];
@@ -927,9 +811,7 @@ export function ffdManipulator(context is Context, definition is map, newManipul
         if (!foundOffset)
         {
             var newOffset = {
-                "paramS" : paramS,
-                "paramT" : paramT,
-                "paramU" : paramU,
+                "index" : definition.selectedPointIndex,
                 "x" : manipulatorOffset[0],
                 "y" : manipulatorOffset[1],
                 "z" : manipulatorOffset[2]
@@ -943,28 +825,20 @@ export function ffdManipulator(context is Context, definition is map, newManipul
 
 
 /**
- * Finds the offset vector for a given lattice point using parametric coordinates
+ * Finds the offset vector for a given lattice point index
  * 
- * Searches the latticePointOffsets array for an entry matching the parametric position.
+ * Searches the latticePointOffsets array for an entry matching the given index.
  * Returns the offset vector if found, or a zero vector if no offset exists.
  * 
- * @param latticePointOffsets {array} : Array of offset entries with parametric coordinates
- * @param paramS {number} : Parametric coordinate in S direction (0-1)
- * @param paramT {number} : Parametric coordinate in T direction (0-1)
- * @param paramU {number} : Parametric coordinate in U direction (0-1)
+ * @param latticePointOffsets {array} : Array of offset entries
+ * @param pointIndex {number} : Index of the point to find offset for
  * @returns {Vector} : Offset vector with units, or zero vector if not found
  */
-function findOffsetForParametricPoint(latticePointOffsets is array, paramS is number, 
-                                      paramT is number, paramU is number) returns Vector
+function findOffsetForPoint(latticePointOffsets is array, pointIndex is number) returns Vector
 {
-    const tolerance = 0.001;
     for (var offsetEntry in latticePointOffsets)
     {
-        const deltaS = abs(offsetEntry.paramS - paramS);
-        const deltaT = abs(offsetEntry.paramT - paramT);
-        const deltaU = abs(offsetEntry.paramU - paramU);
-        
-        if (deltaS < tolerance && deltaT < tolerance && deltaU < tolerance)
+        if (offsetEntry.index == pointIndex)
         {
             return vector(offsetEntry.x, offsetEntry.y, offsetEntry.z);
         }
@@ -1008,14 +882,8 @@ function addFFDManipulators(context is Context, id is Id, originalLattice is map
     // If editing is enabled and a valid point is selected, show triad manipulator
     if (editLatticePoints && selectedIndex >= 0 && selectedIndex < originalLattice.totalControlPoints)
     {
-        // Convert selected index to parametric coordinates
-        const parametricCoords = getLinearToParametricCoordinates(selectedIndex, originalLattice);
-        const paramS = parametricCoords[0];
-        const paramT = parametricCoords[1];
-        const paramU = parametricCoords[2];
-        
-        // Find the current offset for the selected point using parametric coordinates
-        const selectedPointOffset = findOffsetForParametricPoint(latticePointOffsets, paramS, paramT, paramU);
+        // Find the current offset for the selected point using helper function
+        const selectedPointOffset = findOffsetForPoint(latticePointOffsets, selectedIndex);
         
         // Base position is the ORIGINAL lattice control point position (before offset)
         const selectedPointBase = originalLattice.controlPoints[selectedIndex];
