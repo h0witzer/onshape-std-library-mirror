@@ -158,8 +158,7 @@ export const freeFormDeformation = defineFeature(function(context is Context, id
         spanCountT : 2,
         spanCountU : 2,
         selectedPointIndex : 0,
-        // latticeOffsets intentionally NOT in defaults - managed by manipulator
-        // to prevent reset to [] on every regeneration
+        latticeOffsets : [],
         enableDiagnostics : false,
         showLatticeControlPoints : false,
         showBoundingBox : false,
@@ -681,12 +680,6 @@ function visualizeLatticeControlPoints(context is Context, id is Id, lattice is 
  */
 export function ffdManipulator(context is Context, definition is map, newManipulators is map) returns map
 {
-    // Initialize latticeOffsets if it doesn't exist
-    if (definition.latticeOffsets == undefined)
-    {
-        definition.latticeOffsets = [];
-    }
-    
     if (newManipulators[LATTICE_POINTS_MANIPULATOR] is map)
     {
         const oldIndex = definition.selectedPointIndex;
