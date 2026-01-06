@@ -502,6 +502,12 @@ function applyFFDDeformation(context is Context, id is Id, inputFace is Query, d
  */
 function computeControlPointBoundingBox(controlPoints is array) returns map
 {
+    // Validate that we have at least one control point
+    if (size(controlPoints) == 0 || size(controlPoints[0]) == 0)
+    {
+        throw "Cannot compute bounding box from empty control points array";
+    }
+    
     // Initialize with first point
     var minX = controlPoints[0][0][0];
     var maxX = controlPoints[0][0][0];
@@ -543,6 +549,12 @@ function computeControlPointBoundingBox(controlPoints is array) returns map
  */
 function computeUnifiedBoundingBox(controlPoints is array) returns map
 {
+    // Validate that we have at least one control point
+    if (size(controlPoints) == 0)
+    {
+        throw "Cannot compute bounding box from empty control points array";
+    }
+    
     // Initialize with first point
     var minX = controlPoints[0][0];
     var maxX = controlPoints[0][0];
