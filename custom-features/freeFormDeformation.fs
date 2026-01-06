@@ -711,6 +711,10 @@ export function ffdManipulator(context is Context, definition is map, newManipul
             newIndex = newIndex + 1;
         }
         
+        println("=== POINT CLICK ===");
+        println("Old index: " ~ oldIndex);
+        println("New index: " ~ newIndex);
+        
         definition.selectedPointIndex = newIndex;
     }
     
@@ -718,6 +722,11 @@ export function ffdManipulator(context is Context, definition is map, newManipul
     {
         const transform = newManipulators[LATTICE_TRIAD_MANIPULATOR].transform;
         const selectedIndex = definition.selectedPointIndex;
+        
+        println("=== TRIAD DRAG ===");
+        println("Selected index: " ~ selectedIndex);
+        println("Transform translation: " ~ transform.translation);
+        println("Offsets array size before: " ~ size(definition.latticeOffsets));
         
         // Find the array index for this control point index
         var arrayIndex = -1;
@@ -730,10 +739,13 @@ export function ffdManipulator(context is Context, definition is map, newManipul
             }
         }
         
+        println("Array index found: " ~ arrayIndex);
+        
         // If offset entry exists, update it; otherwise create new one
         if (arrayIndex >= 0)
         {
             // Update existing offset entry (following Routing Curve pattern)
+            println("Updating existing offset at array index " ~ arrayIndex);
             definition.latticeOffsets[arrayIndex].offsetX = transform.translation[0];
             definition.latticeOffsets[arrayIndex].offsetY = transform.translation[1];
             definition.latticeOffsets[arrayIndex].offsetZ = transform.translation[2];
@@ -741,6 +753,7 @@ export function ffdManipulator(context is Context, definition is map, newManipul
         else
         {
             // Create new offset entry
+            println("Creating new offset entry");
             const newOffset = {
                 "index" : selectedIndex,
                 "offsetX" : transform.translation[0],
@@ -748,6 +761,13 @@ export function ffdManipulator(context is Context, definition is map, newManipul
                 "offsetZ" : transform.translation[2]
             };
             definition.latticeOffsets = append(definition.latticeOffsets, newOffset);
+        }
+        
+        println("Offsets array size after: " ~ size(definition.latticeOffsets));
+        if (size(definition.latticeOffsets) > 0)
+        {
+            println("Last offset: index=" ~ definition.latticeOffsets[size(definition.latticeOffsets)-1].index ~ 
+                    ", offsetX=" ~ definition.latticeOffsets[size(definition.latticeOffsets)-1].offsetX);
         }
     }
     
