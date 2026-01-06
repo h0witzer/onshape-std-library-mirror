@@ -62,21 +62,31 @@ const newPosition = basePoint + offset;
 **Full Triad** (rotation + translation):
 ```featurescript
 // Transform is relative to base coordinate system
-const worldTransform = toWorld(baseCoordSys) * transform;
+// For manipulating control points around a center, use the sandwich pattern with INVERSE
+const inverseTransform = inverse(transform);
+const worldTransform = toWorld(baseCoordSys) * inverseTransform * fromWorld(baseCoordSys);
 const newPosition = worldTransform * originalPoint;
 
-// DO NOT use sandwich pattern: toWorld * transform * fromWorld
-// This applies rotation in the wrong direction!
+// For transforming entire bodies, use the sandwich pattern WITHOUT inverse
+const worldTransform = toWorld(baseCoordSys) * transform * fromWorld(baseCoordSys);
+opTransform(context, id, { "bodies" : bodies, "transform" : worldTransform });
 ```
 
 ### Rotation Direction
 
-**Critical**: The fullTriadManipulator returns transforms that are **relative to the base coordinate system**.
+**Critical**: The fullTriadManipulator returns transforms that represent how the coordinate system moves.
 
-- ✅ **Correct**: `toWorld(baseCS) * transform`
-- ❌ **Wrong**: `toWorld(baseCS) * transform * fromWorld(baseCS)`
+- For **point manipulation**: Use `inverse(transform)` to get the correct rotation direction
+  - When the user rotates the handle clockwise, the coordinate system rotates clockwise
+  - But we want to rotate points clockwise around the center
+  - These are opposite operations, hence the inverse
+- For **body transformation**: Use `transform` directly (matches triadTransform)
+  - Bodies are transformed as rigid objects
+  - The transform is applied directly without inversion
 
-The sandwich pattern (`toWorld * T * fromWorld`) is used for transforming coordinate systems themselves, not for applying user manipulations. Using it with fullTriadManipulator will result in rotations happening in the opposite direction from user input.
+The difference is subtle but crucial:
+- **Manipulating points**: We're moving points relative to a fixed center → use inverse
+- **Transforming bodies**: We're moving the entire object → use direct transform
 
 ## Storage Pattern
 
@@ -150,17 +160,19 @@ if (rotationMatrix != undefined && size(rotationMatrix) == 9)
 2. **Use Full Triad** when you need rotation or 6-DOF control
 3. **Always decompose** Transform objects for storage in preconditions
 4. **Use isAnything()** for rotation matrix arrays to avoid nested array errors
-5. **Apply transforms** with `toWorld(baseCS) * transform`, not the sandwich pattern
-6. **Validate transform** existence by checking `rotationMatrix != undefined`
-7. **Provide defaults** when no transform exists (identity transform)
+5. **Apply transforms with inverse** for point manipulation: `toWorld(baseCS) * inverse(transform) * fromWorld(baseCS)`
+6. **Apply transforms directly** for body transformation: `toWorld(baseCS) * transform * fromWorld(baseCS)`
+7. **Validate transform** existence by checking `rotationMatrix != undefined`
+8. **Provide defaults** when no transform exists (identity transform)
 
 ## Common Pitfalls
 
 1. ❌ Storing Transform object directly in precondition → "Unrecognized type" error
 2. ❌ Using `rotationMatrix is array` in nested loop → "Cannot define array within array" error
 3. ❌ Returning `undefined` from function declared `returns map` → "Function returned undefined" error
-4. ❌ Using sandwich pattern for manipulator transforms → Opposite rotation direction
-5. ❌ Not checking for `undefined` before accessing array size → Runtime error
+4. ❌ Forgetting to invert transform for point manipulation → Opposite rotation direction
+5. ❌ Using direct transform instead of inverse for points → Unwanted positional offset
+6. ❌ Not checking for `undefined` before accessing array size → Runtime error
 
 ## Examples in Standard Library
 
