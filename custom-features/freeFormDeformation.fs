@@ -250,24 +250,22 @@ function applyFFDDeformation(context is Context, id is Id, inputFace is Query, d
         printLatticeInformation(lattice);
     }
     
-    // Create a copy of lattice control points for manipulator display
-    // This will show the current positions including any applied offsets
-    var latticeControlPointsForDisplay = [];
-    for (var i = 0; i < lattice.totalControlPoints; i += 1)
-    {
-        latticeControlPointsForDisplay = append(latticeControlPointsForDisplay, lattice.controlPoints[i]);
-    }
+    // Build display points by copying lattice points and applying offsets
+    // This shows the current positions including any applied offsets
+    var latticeControlPointsForDisplay = lattice.controlPoints;
     
     // Apply user-specified offsets to display points (for manipulator visualization)
     if (definition.editLatticePoints && size(definition.latticePointOffsets) > 0)
     {
+        // Apply offsets to create display points
+        // Note: This modifies the array, creating a new version due to FeatureScript's value semantics
         for (var offsetEntry in definition.latticePointOffsets)
         {
             const pointIndex = offsetEntry.index;
             if (pointIndex >= 0 && pointIndex < lattice.totalControlPoints)
             {
                 const offset = vector(offsetEntry.x, offsetEntry.y, offsetEntry.z);
-                latticeControlPointsForDisplay[pointIndex] = latticeControlPointsForDisplay[pointIndex] + offset;
+                latticeControlPointsForDisplay[pointIndex] = lattice.controlPoints[pointIndex] + offset;
             }
         }
     }
