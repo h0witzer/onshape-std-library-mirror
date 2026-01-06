@@ -33,6 +33,20 @@ FeatureScript 2837;
  * - P_ijk are the lattice control points
  * - l, m, n are the number of spans in S, T, U directions
  * 
+ * Usage:
+ * 1. Select a surface face to deform
+ * 2. Set the number of lattice spans in each direction (S, T, U)
+ * 3. Enable lattice manipulation and specify a control point index to modify
+ * 4. Set offset values (X, Y, Z) to move that control point
+ * 5. The surface will deform according to the modified lattice
+ * 
+ * Tips:
+ * - Start with fewer spans (e.g., 2x2x2) for global deformations
+ * - Use more spans (e.g., 4x4x4 or higher) for localized deformations
+ * - Use diagnostics to visualize the lattice and understand control point indexing
+ * - Control point indices are linear: index = i * (countT * countU) + j * countU + k
+ *   where i, j, k are indices in S, T, U directions respectively
+ * 
  * Implementation references:
  * - JavaScript reference: non-featurescript-functions-reference/free-form-deformation-master/ffd.js
  * - Whitepaper: whitepaper-references/"Free-Form Deformation of Parametric CAD Geometry.pdf"
