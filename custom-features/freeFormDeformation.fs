@@ -5,13 +5,20 @@ FeatureScript 2837;
  * 
  * This feature implements the FFD algorithm presented in Sederberg & Parry's 1986 paper,
  * "Free-Form Deformation of Solid Geometric Models". The algorithm allows deformation of
- * NURBS surfaces by manipulating control points of a 3D lattice that embeds the surface.
+ * NURBS surfaces by manipulating control points of a 3D lattice that embeds the surface(s).
  * 
  * The FFD algorithm works as follows:
- * 1. Create a 3D lattice (control point grid) around the input surface based on its bounding box
- * 2. Map each control point of the surface to parametric (S, T, U) coordinates in the lattice space
+ * 1. Create a 3D lattice (control point grid) around the input surface(s) based on their unified bounding box
+ * 2. Map each control point of each surface to parametric (S, T, U) coordinates in the lattice space
  * 3. Evaluate the trivariate Bernstein polynomial using the (potentially modified) lattice control points
- * 4. The result gives deformed positions for the surface control points
+ * 4. The result gives deformed positions for all surface control points
+ * 
+ * Multiple Surface Support:
+ * - Select multiple surfaces to deform them together using the same lattice
+ * - All surfaces are embedded in a single unified lattice volume
+ * - The bounding box is computed to encompass all selected surfaces
+ * - Each surface is deformed independently but within the same lattice context
+ * - This enables coherent deformation of multiple surfaces as a group
  * 
  * The lattice is parameterized with S, T, U coordinates (each ranging from 0 to 1):
  * - S: Corresponds to the X-axis direction of the bounding box
@@ -34,12 +41,12 @@ FeatureScript 2837;
  * - l, m, n are the number of spans in S, T, U directions
  * 
  * Usage:
- * 1. Select a surface face to deform
+ * 1. Select one or more surface faces to deform
  * 2. Set the number of lattice spans in each direction (S, T, U)
  * 3. Enable "Edit lattice control points" to begin interactive manipulation
  * 4. Click on any lattice control point to select it (shown as small spheres)
  * 5. Drag the triad manipulator to move that control point
- * 6. The surface will deform according to the modified lattice
+ * 6. All selected surfaces will deform according to the modified lattice
  * 
  * Tips:
  * - Start with fewer spans (e.g., 2x2x2) for global deformations
@@ -47,6 +54,7 @@ FeatureScript 2837;
  * - Use diagnostics to visualize the lattice and understand control point indexing
  * - Control point indices are linear: index = i * (countT * countU) + j * countU + k
  *   where i, j, k are indices in S, T, U directions respectively
+ * - When deforming multiple surfaces, they all share the same lattice volume
  * 
  * Implementation references:
  * - JavaScript reference: non-featurescript-functions-reference/free-form-deformation-master/ffd.js
@@ -92,16 +100,15 @@ const LATTICE_TRIAD_MANIPULATOR = "latticeTriadManipulator";
  * The surface is embedded in a trivariate Bernstein polynomial volume defined by the lattice.
  */
 annotation { "Feature Type Name" : "Free-Form Deformation",
-        "Feature Type Description" : "Deform a NURBS surface using a 3D control point lattice. Drag control points to deform the surface interactively.",
+        "Feature Type Description" : "Deform one or more NURBS surfaces using a shared 3D control point lattice. Select multiple surfaces to deform them together in the same volume.",
         "UIHint" : "NO_PREVIEW_PROVIDED",
         "Manipulator Change Function" : "ffdManipulator" }
 export const freeFormDeformation = defineFeature(function(context is Context, id is Id, definition is map)
     precondition
     {
-        annotation { "Name" : "Surface to deform", 
-                     "Filter" : EntityType.FACE && SketchObject.NO && ConstructionObject.NO && AllowMeshGeometry.NO, 
-                     "MaxNumberOfPicks" : 1 }
-        definition.surfaceToDeform is Query;
+        annotation { "Name" : "Surfaces to deform", 
+                     "Filter" : EntityType.FACE && SketchObject.NO && ConstructionObject.NO && AllowMeshGeometry.NO }
+        definition.surfacesToDeform is Query;
         
         annotation { "Name" : "Lattice spans in S direction (X-axis)", 
                      "Description" : "Number of spans in the S direction of the FFD lattice" }
@@ -129,13 +136,19 @@ export const freeFormDeformation = defineFeature(function(context is Context, id
             {
                 annotation { "Name" : "Lattice point offsets", 
                              "Item name" : "point offset", 
-                             "Item label template" : "#index: #x;#y;#z", 
+                             "Item label template" : "[#paramS,#paramT,#paramU]: #x;#y;#z", 
                              "UIHint" : UIHint.PREVENT_ARRAY_REORDER }
                 definition.latticePointOffsets is array;
                 for (var latticePointOffset in definition.latticePointOffsets)
                 {
-                    annotation { "Name" : "Control point index" }
-                    isInteger(latticePointOffset.index, { (unitless) : [0, 0, 1000] } as IntegerBoundSpec);
+                    annotation { "Name" : "Control point S parameter (0-1)" }
+                    isReal(latticePointOffset.paramS, CLAMP_MAGNITUDE_REAL_BOUNDS);
+                    
+                    annotation { "Name" : "Control point T parameter (0-1)" }
+                    isReal(latticePointOffset.paramT, CLAMP_MAGNITUDE_REAL_BOUNDS);
+                    
+                    annotation { "Name" : "Control point U parameter (0-1)" }
+                    isReal(latticePointOffset.paramU, CLAMP_MAGNITUDE_REAL_BOUNDS);
                     
                     annotation { "Name" : "X offset" }
                     isLength(latticePointOffset.x, ZERO_DEFAULT_LENGTH_BOUNDS);
@@ -174,13 +187,14 @@ export const freeFormDeformation = defineFeature(function(context is Context, id
     }
     {
         // Validate input surface selection
-        if (evaluateQueryCount(context, definition.surfaceToDeform) == 0)
-            throw regenError("Select a surface to deform.", ["surfaceToDeform"]);
+        const surfaceCount = evaluateQueryCount(context, definition.surfacesToDeform);
+        if (surfaceCount == 0)
+            throw regenError("Select at least one surface to deform.", ["surfacesToDeform"]);
         
-        const inputFace = evaluateQuery(context, definition.surfaceToDeform)[0];
+        const inputFaces = evaluateQuery(context, definition.surfacesToDeform);
         
-        // Apply FFD deformation
-        applyFFDDeformation(context, id, inputFace, definition);
+        // Apply FFD deformation to all selected surfaces
+        applyFFDDeformationToMultipleSurfaces(context, id, inputFaces, definition);
     }, {
         spanCountS : 2,
         spanCountT : 2,
@@ -196,52 +210,68 @@ export const freeFormDeformation = defineFeature(function(context is Context, id
     });
 
 
+
 /**
- * Applies FFD deformation to the input surface
+ * Applies FFD deformation to multiple input surfaces using a shared lattice
  * 
- * This function orchestrates the FFD algorithm:
- * 1. Extract B-spline surface from the input face
- * 2. Compute the bounding box for the surface
- * 3. Build the FFD lattice based on the bounding box and span counts
- * 4. Apply any user-specified control point offsets
- * 5. Deform each surface control point using trivariate Bernstein evaluation
- * 6. Create the deformed surface
+ * This function extends the FFD algorithm to work on multiple surfaces simultaneously:
+ * 1. Collect B-spline surface representations for all input faces
+ * 2. Compute a unified bounding box that encompasses all surfaces
+ * 3. Build a single FFD lattice based on the unified bounding box
+ * 4. Apply the same lattice deformation to each surface
+ * 5. Create all deformed surfaces
  * 
  * @param context {Context} : The modeling context
  * @param id {Id} : The feature identifier
- * @param inputFace {Query} : The face to deform
+ * @param inputFaces {array} : Array of faces to deform
  * @param definition {map} : Feature definition containing lattice parameters and offsets
  */
-function applyFFDDeformation(context is Context, id is Id, inputFace is Query, definition is map)
+function applyFFDDeformationToMultipleSurfaces(context is Context, id is Id, inputFaces is array, definition is map)
 {
-    // Get B-spline surface representation
-    var surfaceDefinition = evSurfaceDefinition(context, {
-        "face" : inputFace
-    });
+    // Step 1: Extract B-spline surface representations for all input faces
+    var surfaceDefinitions = [];
+    var allControlPoints = [];
     
-    // If not already a B-spline, approximate it
-    if (surfaceDefinition.surfaceType != SurfaceType.SPLINE)
+    for (var faceIndex = 0; faceIndex < size(inputFaces); faceIndex += 1)
     {
-        const approximation = evApproximateBSplineSurface(context, {
+        const inputFace = inputFaces[faceIndex];
+        
+        // Get B-spline surface representation
+        var surfaceDefinition = evSurfaceDefinition(context, {
             "face" : inputFace
         });
-        surfaceDefinition = approximation.bSplineSurface;
+        
+        // If not already a B-spline, approximate it
+        if (surfaceDefinition.surfaceType != SurfaceType.SPLINE)
+        {
+            const approximation = evApproximateBSplineSurface(context, {
+                "face" : inputFace
+            });
+            surfaceDefinition = approximation.bSplineSurface;
+        }
+        
+        surfaceDefinitions = append(surfaceDefinitions, surfaceDefinition);
+        
+        // Collect all control points from this surface for unified bounding box
+        const controlPoints = surfaceDefinition.controlPoints;
+        for (var uIndex = 0; uIndex < size(controlPoints); uIndex += 1)
+        {
+            for (var vIndex = 0; vIndex < size(controlPoints[0]); vIndex += 1)
+            {
+                allControlPoints = append(allControlPoints, controlPoints[uIndex][vIndex]);
+            }
+        }
     }
     
-    const controlPoints = surfaceDefinition.controlPoints;
-    const weights = surfaceDefinition.weights;
-    // Note: isRational flag is available but weights preservation is automatic
-    // since we only modify control point positions, not weights
-    
-    // Compute bounding box from surface control points
-    const boundingBox = computeControlPointBoundingBox(controlPoints);
+    // Step 2: Compute a unified bounding box that encompasses all surfaces
+    const boundingBox = computeUnifiedBoundingBox(allControlPoints);
     
     if (definition.showBoundingBox)
     {
         visualizeBoundingBox(context, id + "bbox", boundingBox);
     }
     
-    // Build original lattice WITHOUT offsets - needed for triad base positions
+    // Step 3: Build the FFD lattice based on the unified bounding box
     const spanCounts = [definition.spanCountS, definition.spanCountT, definition.spanCountU];
     var latticeOriginal = buildFFDLattice(boundingBox, spanCounts);
     
@@ -253,9 +283,23 @@ function applyFFDDeformation(context is Context, id is Id, inputFace is Query, d
         var modifiedControlPoints = lattice.controlPoints;
         for (var offsetEntry in definition.latticePointOffsets)
         {
-            const pointIndex = offsetEntry.index;
-            if (pointIndex >= 0 && pointIndex < lattice.totalControlPoints)
+            // Use parametric coordinates (0-1) to find nearest control point
+            // This is stable across span count changes
+            const paramS = offsetEntry.paramS;
+            const paramT = offsetEntry.paramT;
+            const paramU = offsetEntry.paramU;
+            
+            // Find the nearest control point indices by rounding
+            const indexS = round(paramS * lattice.spanCountS);
+            const indexT = round(paramT * lattice.spanCountT);
+            const indexU = round(paramU * lattice.spanCountU);
+            
+            // Validate indices are within current lattice bounds
+            if (indexS >= 0 && indexS < lattice.controlPointCountS &&
+                indexT >= 0 && indexT < lattice.controlPointCountT &&
+                indexU >= 0 && indexU < lattice.controlPointCountU)
             {
+                const pointIndex = getTernaryIndex(indexS, indexT, indexU, lattice);
                 const offset = vector(offsetEntry.x, offsetEntry.y, offsetEntry.z);
                 modifiedControlPoints[pointIndex] = modifiedControlPoints[pointIndex] + offset;
             }
@@ -272,7 +316,6 @@ function applyFFDDeformation(context is Context, id is Id, inputFace is Query, d
     var latticeControlPointsForDisplay = lattice.controlPoints;
     
     // Add manipulators for interactive control point manipulation
-    // Pass ORIGINAL lattice for base positions, MODIFIED lattice control points for visualization
     addFFDManipulators(context, id, latticeOriginal, latticeControlPointsForDisplay, definition.selectedPointIndex, 
                       definition.editLatticePoints, definition.latticePointOffsets);
     
@@ -281,83 +324,98 @@ function applyFFDDeformation(context is Context, id is Id, inputFace is Query, d
         visualizeLatticeControlPoints(context, id + "lattice", lattice);
     }
     
-    // Deform surface control points using FFD
-    var deformedControlPoints = [];
-    for (var uIndex = 0; uIndex < size(controlPoints); uIndex += 1)
+    // Step 4: Apply the same lattice deformation to each surface
+    for (var surfaceIndex = 0; surfaceIndex < size(surfaceDefinitions); surfaceIndex += 1)
     {
-        var deformedRow = [];
-        for (var vIndex = 0; vIndex < size(controlPoints[0]); vIndex += 1)
+        const surfaceDefinition = surfaceDefinitions[surfaceIndex];
+        const controlPoints = surfaceDefinition.controlPoints;
+        const weights = surfaceDefinition.weights;
+        
+        // Deform surface control points using FFD
+        var deformedControlPoints = [];
+        for (var uIndex = 0; uIndex < size(controlPoints); uIndex += 1)
         {
-            const originalPoint = controlPoints[uIndex][vIndex];
-            
-            // FFD operates on the actual 3D control point positions
-            // Convert to STU parametric space
-            const stuCoords = convertWorldToSTU(originalPoint, lattice);
-            
-            // Evaluate trivariate Bernstein polynomial to get deformed position
-            const deformedPoint = evaluateTrivariateBernstein(stuCoords, lattice);
-            
-            deformedRow = append(deformedRow, deformedPoint);
-            
-            // Debug output for first control point
-            if (definition.printDeformationDetails && uIndex == 0 && vIndex == 0)
+            var deformedRow = [];
+            for (var vIndex = 0; vIndex < size(controlPoints[0]); vIndex += 1)
             {
-                println("DEBUG: First control point deformation:");
-                println("  Original: " ~ originalPoint);
-                println("  STU coords: " ~ stuCoords);
-                println("  Deformed: " ~ deformedPoint);
+                const originalPoint = controlPoints[uIndex][vIndex];
+                
+                // FFD operates on the actual 3D control point positions
+                // Convert to STU parametric space
+                const stuCoords = convertWorldToSTU(originalPoint, lattice);
+                
+                // Evaluate trivariate Bernstein polynomial to get deformed position
+                const deformedPoint = evaluateTrivariateBernstein(stuCoords, lattice);
+                
+                deformedRow = append(deformedRow, deformedPoint);
+                
+                // Debug output for first control point of first surface
+                if (definition.printDeformationDetails && surfaceIndex == 0 && uIndex == 0 && vIndex == 0)
+                {
+                    println("DEBUG: First control point deformation (Surface " ~ surfaceIndex ~ "):");
+                    println("  Original: " ~ originalPoint);
+                    println("  STU coords: " ~ stuCoords);
+                    println("  Deformed: " ~ deformedPoint);
+                }
             }
+            deformedControlPoints = append(deformedControlPoints, deformedRow);
         }
-        deformedControlPoints = append(deformedControlPoints, deformedRow);
+        
+        // Step 5: Create the deformed B-spline surface
+        const deformedSurfaceDefinition = bSplineSurface({
+            "uDegree" : surfaceDefinition.uDegree,
+            "vDegree" : surfaceDefinition.vDegree,
+            "isUPeriodic" : surfaceDefinition.isUPeriodic,
+            "isVPeriodic" : surfaceDefinition.isVPeriodic,
+            "controlPoints" : controlPointMatrix(deformedControlPoints),
+            "weights" : weights == undefined ? undefined : matrix(weights),
+            "uKnots" : surfaceDefinition.uKnots,
+            "vKnots" : surfaceDefinition.vKnots
+        });
+        
+        // Create each deformed surface with a unique sub-ID
+        opCreateBSplineSurface(context, id + ("surface" ~ surfaceIndex), {
+            "bSplineSurface" : deformedSurfaceDefinition
+        });
     }
-    
-    // Create the deformed B-spline surface
-    const deformedSurfaceDefinition = bSplineSurface({
-        "uDegree" : surfaceDefinition.uDegree,
-        "vDegree" : surfaceDefinition.vDegree,
-        "isUPeriodic" : surfaceDefinition.isUPeriodic,
-        "isVPeriodic" : surfaceDefinition.isVPeriodic,
-        "controlPoints" : controlPointMatrix(deformedControlPoints),
-        "weights" : weights == undefined ? undefined : matrix(weights),
-        "uKnots" : surfaceDefinition.uKnots,
-        "vKnots" : surfaceDefinition.vKnots
-    });
-    
-    opCreateBSplineSurface(context, id, {
-        "bSplineSurface" : deformedSurfaceDefinition
-    });
 }
 
 
 /**
- * Computes an axis-aligned bounding box from an array of control points
+ * Computes an axis-aligned bounding box from a flat array of control points
  * 
- * @param controlPoints {array} : 2D array of control points (Vector3 with units)
+ * This function is used for multiple surfaces where all control points are collected
+ * into a single flat array to compute a unified bounding box.
+ * 
+ * @param controlPoints {array} : Flat array of control points (Vector3 with units)
  * @returns {map} : Map containing minCorner (Vector3) and maxCorner (Vector3)
  */
-function computeControlPointBoundingBox(controlPoints is array) returns map
+function computeUnifiedBoundingBox(controlPoints is array) returns map
 {
+    // Validate that we have at least one control point
+    if (size(controlPoints) == 0)
+    {
+        throw "Cannot compute bounding box from empty control points array";
+    }
+    
     // Initialize with first point
-    var minX = controlPoints[0][0][0];
-    var maxX = controlPoints[0][0][0];
-    var minY = controlPoints[0][0][1];
-    var maxY = controlPoints[0][0][1];
-    var minZ = controlPoints[0][0][2];
-    var maxZ = controlPoints[0][0][2];
+    var minX = controlPoints[0][0];
+    var maxX = controlPoints[0][0];
+    var minY = controlPoints[0][1];
+    var maxY = controlPoints[0][1];
+    var minZ = controlPoints[0][2];
+    var maxZ = controlPoints[0][2];
     
     // Find min/max in each dimension
-    for (var uIndex = 0; uIndex < size(controlPoints); uIndex += 1)
+    for (var pointIndex = 0; pointIndex < size(controlPoints); pointIndex += 1)
     {
-        for (var vIndex = 0; vIndex < size(controlPoints[0]); vIndex += 1)
-        {
-            const point = controlPoints[uIndex][vIndex];
-            minX = min(minX, point[0]);
-            maxX = max(maxX, point[0]);
-            minY = min(minY, point[1]);
-            maxY = max(maxY, point[1]);
-            minZ = min(minZ, point[2]);
-            maxZ = max(maxZ, point[2]);
-        }
+        const point = controlPoints[pointIndex];
+        minX = min(minX, point[0]);
+        maxX = max(maxX, point[0]);
+        minY = min(minY, point[1]);
+        maxY = max(maxY, point[1]);
+        minZ = min(minZ, point[2]);
+        maxZ = max(maxZ, point[2]);
     }
     
     return {
@@ -636,6 +694,58 @@ function getTernaryIndex(indexS is number, indexT is number, indexU is number, l
 
 
 /**
+ * Converts a linear array index to ternary lattice indices (i, j, k)
+ * 
+ * This is the inverse of getTernaryIndex. Given a linear index, it computes
+ * the 3D grid coordinates.
+ * 
+ * Storage order: U varies fastest, then T, then S
+ * 
+ * @param linearIndex {number} : Linear index into the control points array
+ * @param lattice {map} : Lattice structure with dimension information
+ * @returns {array} : Array of [indexS, indexT, indexU]
+ */
+function getLinearToTernaryIndices(linearIndex is number, lattice is map) returns array
+{
+    const countT = lattice.controlPointCountT;
+    const countU = lattice.controlPointCountU;
+    
+    const indexS = floor(linearIndex / (countT * countU));
+    const remainder = linearIndex % (countT * countU);
+    const indexT = floor(remainder / countU);
+    const indexU = remainder % countU;
+    
+    return [indexS, indexT, indexU];
+}
+
+
+/**
+ * Converts a linear array index to parametric coordinates (0-1 range)
+ * 
+ * Given a linear index, this computes the parametric position (0-1) 
+ * along each axis (S, T, U). This is stable across span count changes.
+ * 
+ * @param linearIndex {number} : Linear index into the control points array
+ * @param lattice {map} : Lattice structure with dimension information
+ * @returns {array} : Array of [paramS, paramT, paramU] in range [0, 1]
+ */
+function getLinearToParametricCoordinates(linearIndex is number, lattice is map) returns array
+{
+    const indices = getLinearToTernaryIndices(linearIndex, lattice);
+    const indexS = indices[0];
+    const indexT = indices[1];
+    const indexU = indices[2];
+    
+    // Convert indices to parametric coordinates (0-1)
+    const paramS = indexS / lattice.spanCountS;
+    const paramT = indexT / lattice.spanCountT;
+    const paramU = indexU / lattice.spanCountU;
+    
+    return [paramS, paramT, paramU];
+}
+
+
+/**
  * Prints detailed information about the FFD lattice
  * 
  * @param lattice {map} : Lattice structure
@@ -728,9 +838,11 @@ function visualizeLatticeControlPoints(context is Context, id is Id, lattice is 
  * 1. INDEX_MANIPULATOR (pointsManipulator): When a lattice control point is clicked, 
  *    enables editing and sets selectedPointIndex
  * 2. OFFSET_MANIPULATOR (triadManipulator): When the triad is dragged, updates or creates
- *    an offset entry in latticePointOffsets array
+ *    an offset entry in latticePointOffsets array using parametric coordinates
  * 
- * This follows the exact pattern used in Edit Curve feature.
+ * Parametric coordinates (0-1) are used instead of indices to maintain stability
+ * when span counts change. This allows users to add/remove lattice resolution
+ * without losing their offset positions.
  * 
  * @param context {Context} : The modeling context
  * @param definition {map} : Current feature definition
@@ -739,6 +851,36 @@ function visualizeLatticeControlPoints(context is Context, id is Id, lattice is 
  */
 export function ffdManipulator(context is Context, definition is map, newManipulators is map) returns map
 {
+    // We need the current lattice structure to convert between linear and parametric coordinates
+    // Rebuild the lattice to get current span counts
+    const inputFaces = evaluateQuery(context, definition.surfacesToDeform);
+    if (size(inputFaces) == 0)
+        return definition;
+    
+    // Get bounding box (simplified - just for lattice structure)
+    var allControlPoints = [];
+    for (var faceIndex = 0; faceIndex < size(inputFaces); faceIndex += 1)
+    {
+        const inputFace = inputFaces[faceIndex];
+        var surfaceDefinition = evSurfaceDefinition(context, {"face" : inputFace});
+        if (surfaceDefinition.surfaceType != SurfaceType.SPLINE)
+        {
+            const approximation = evApproximateBSplineSurface(context, {"face" : inputFace});
+            surfaceDefinition = approximation.bSplineSurface;
+        }
+        const controlPoints = surfaceDefinition.controlPoints;
+        for (var uIndex = 0; uIndex < size(controlPoints); uIndex += 1)
+        {
+            for (var vIndex = 0; vIndex < size(controlPoints[0]); vIndex += 1)
+            {
+                allControlPoints = append(allControlPoints, controlPoints[uIndex][vIndex]);
+            }
+        }
+    }
+    const boundingBox = computeUnifiedBoundingBox(allControlPoints);
+    const spanCounts = [definition.spanCountS, definition.spanCountT, definition.spanCountU];
+    const lattice = buildFFDLattice(boundingBox, spanCounts);
+    
     // Handle point selection via pointsManipulator
     if (newManipulators[LATTICE_POINTS_MANIPULATOR] is map)
     {
@@ -753,12 +895,24 @@ export function ffdManipulator(context is Context, definition is map, newManipul
         // Extract offset vector once for efficiency and readability
         const manipulatorOffset = newManipulators[LATTICE_TRIAD_MANIPULATOR].offset;
         
+        // Convert selected linear index to parametric coordinates
+        const parametricCoords = getLinearToParametricCoordinates(definition.selectedPointIndex, lattice);
+        const paramS = parametricCoords[0];
+        const paramT = parametricCoords[1];
+        const paramU = parametricCoords[2];
+        
         var foundOffset = false;
         
-        // Check if an offset entry already exists for the selected point
+        // Check if an offset entry already exists for this parametric location
+        // Use tolerance for floating point comparison
+        const tolerance = 0.001;
         for (var i = 0; i < size(definition.latticePointOffsets); i += 1)
         {
-            if (definition.latticePointOffsets[i].index == definition.selectedPointIndex)
+            const deltaS = abs(definition.latticePointOffsets[i].paramS - paramS);
+            const deltaT = abs(definition.latticePointOffsets[i].paramT - paramT);
+            const deltaU = abs(definition.latticePointOffsets[i].paramU - paramU);
+            
+            if (deltaS < tolerance && deltaT < tolerance && deltaU < tolerance)
             {
                 // Update existing offset entry
                 definition.latticePointOffsets[i].x = manipulatorOffset[0];
@@ -773,7 +927,9 @@ export function ffdManipulator(context is Context, definition is map, newManipul
         if (!foundOffset)
         {
             var newOffset = {
-                "index" : definition.selectedPointIndex,
+                "paramS" : paramS,
+                "paramT" : paramT,
+                "paramU" : paramU,
                 "x" : manipulatorOffset[0],
                 "y" : manipulatorOffset[1],
                 "z" : manipulatorOffset[2]
@@ -787,20 +943,28 @@ export function ffdManipulator(context is Context, definition is map, newManipul
 
 
 /**
- * Finds the offset vector for a given lattice point index
+ * Finds the offset vector for a given lattice point using parametric coordinates
  * 
- * Searches the latticePointOffsets array for an entry matching the given index.
+ * Searches the latticePointOffsets array for an entry matching the parametric position.
  * Returns the offset vector if found, or a zero vector if no offset exists.
  * 
- * @param latticePointOffsets {array} : Array of offset entries
- * @param pointIndex {number} : Index of the point to find offset for
+ * @param latticePointOffsets {array} : Array of offset entries with parametric coordinates
+ * @param paramS {number} : Parametric coordinate in S direction (0-1)
+ * @param paramT {number} : Parametric coordinate in T direction (0-1)
+ * @param paramU {number} : Parametric coordinate in U direction (0-1)
  * @returns {Vector} : Offset vector with units, or zero vector if not found
  */
-function findOffsetForPoint(latticePointOffsets is array, pointIndex is number) returns Vector
+function findOffsetForParametricPoint(latticePointOffsets is array, paramS is number, 
+                                      paramT is number, paramU is number) returns Vector
 {
+    const tolerance = 0.001;
     for (var offsetEntry in latticePointOffsets)
     {
-        if (offsetEntry.index == pointIndex)
+        const deltaS = abs(offsetEntry.paramS - paramS);
+        const deltaT = abs(offsetEntry.paramT - paramT);
+        const deltaU = abs(offsetEntry.paramU - paramU);
+        
+        if (deltaS < tolerance && deltaT < tolerance && deltaU < tolerance)
         {
             return vector(offsetEntry.x, offsetEntry.y, offsetEntry.z);
         }
@@ -844,8 +1008,14 @@ function addFFDManipulators(context is Context, id is Id, originalLattice is map
     // If editing is enabled and a valid point is selected, show triad manipulator
     if (editLatticePoints && selectedIndex >= 0 && selectedIndex < originalLattice.totalControlPoints)
     {
-        // Find the current offset for the selected point using helper function
-        const selectedPointOffset = findOffsetForPoint(latticePointOffsets, selectedIndex);
+        // Convert selected index to parametric coordinates
+        const parametricCoords = getLinearToParametricCoordinates(selectedIndex, originalLattice);
+        const paramS = parametricCoords[0];
+        const paramT = parametricCoords[1];
+        const paramU = parametricCoords[2];
+        
+        // Find the current offset for the selected point using parametric coordinates
+        const selectedPointOffset = findOffsetForParametricPoint(latticePointOffsets, paramS, paramT, paramU);
         
         // Base position is the ORIGINAL lattice control point position (before offset)
         const selectedPointBase = originalLattice.controlPoints[selectedIndex];
