@@ -264,7 +264,8 @@ function applyFFDDeformation(context is Context, id is Id, inputFace is Query, d
             const pointIndex = offsetEntry.index;
             if (pointIndex >= 0 && pointIndex < lattice.totalControlPoints)
             {
-                const offset = findOffsetForPoint(definition.latticePointOffsets, pointIndex);
+                // Directly use the offset from the entry (no need to search again)
+                const offset = vector(offsetEntry.x, offsetEntry.y, offsetEntry.z);
                 latticeControlPointsForDisplay[pointIndex] = lattice.controlPoints[pointIndex] + offset;
             }
         }
@@ -760,17 +761,15 @@ export function ffdManipulator(context is Context, definition is map, newManipul
         // Check if an offset entry already exists for the selected point
         for (var i = 0; i < size(definition.latticePointOffsets); i += 1)
         {
-            if (definition.latticePointOffsets[i].index != definition.selectedPointIndex)
+            if (definition.latticePointOffsets[i].index == definition.selectedPointIndex)
             {
-                continue;
+                // Update existing offset entry
+                definition.latticePointOffsets[i].x = newManipulators[LATTICE_TRIAD_MANIPULATOR].offset[0];
+                definition.latticePointOffsets[i].y = newManipulators[LATTICE_TRIAD_MANIPULATOR].offset[1];
+                definition.latticePointOffsets[i].z = newManipulators[LATTICE_TRIAD_MANIPULATOR].offset[2];
+                foundOffset = true;
+                break;
             }
-            
-            // Update existing offset entry
-            definition.latticePointOffsets[i].x = newManipulators[LATTICE_TRIAD_MANIPULATOR].offset[0];
-            definition.latticePointOffsets[i].y = newManipulators[LATTICE_TRIAD_MANIPULATOR].offset[1];
-            definition.latticePointOffsets[i].z = newManipulators[LATTICE_TRIAD_MANIPULATOR].offset[2];
-            foundOffset = true;
-            break;
         }
         
         // If no offset entry exists for this point, create one
@@ -835,7 +834,8 @@ function applyLatticeOffsets(lattice is map, latticePointOffsets is array)
         // Validate index is within bounds
         if (pointIndex >= 0 && pointIndex < lattice.totalControlPoints)
         {
-            const offset = findOffsetForPoint(latticePointOffsets, pointIndex);
+            // Directly use the offset from the entry (no need to search again)
+            const offset = vector(offsetEntry.x, offsetEntry.y, offsetEntry.z);
             lattice.controlPoints[pointIndex] = lattice.controlPoints[pointIndex] + offset;
         }
     }
