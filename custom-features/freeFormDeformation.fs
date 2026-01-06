@@ -419,21 +419,33 @@ function convertWorldToSTU(worldPoint is Vector, lattice is map) returns Vector
     const minToWorld = worldPoint - lattice.minCorner;
     
     // Compute cross products for each axis
-    const crossS = cross(lattice.axisT, lattice.axisU);
-    const crossT = cross(lattice.axisS, lattice.axisU);
-    const crossU = cross(lattice.axisS, lattice.axisT);
+    // For right-handed coordinate system: to find the S parameter, we need the volume
+    // projection in the S direction, which uses the perpendicular plane (T × U)
+    // Reference: ffd.js lines 91-94
+    const crossS = cross(lattice.axisT, lattice.axisU);  // T × U for S
+    const crossT = cross(lattice.axisS, lattice.axisU);  // S × U for T
+    const crossU = cross(lattice.axisS, lattice.axisT);  // S × T for U
     
     // Compute parametric coordinates using scalar triple product
+    // Add small epsilon to avoid division by zero for degenerate cases
+    const epsilon = 1e-10 * meter * meter;
+    
     const numeratorS = dot(crossS, minToWorld);
-    const denominatorS = dot(crossS, lattice.axisS);
+    var denominatorS = dot(crossS, lattice.axisS);
+    if (abs(denominatorS) < epsilon)
+        denominatorS = epsilon;
     const paramS = numeratorS / denominatorS;
     
     const numeratorT = dot(crossT, minToWorld);
-    const denominatorT = dot(crossT, lattice.axisT);
+    var denominatorT = dot(crossT, lattice.axisT);
+    if (abs(denominatorT) < epsilon)
+        denominatorT = epsilon;
     const paramT = numeratorT / denominatorT;
     
     const numeratorU = dot(crossU, minToWorld);
-    const denominatorU = dot(crossU, lattice.axisU);
+    var denominatorU = dot(crossU, lattice.axisU);
+    if (abs(denominatorU) < epsilon)
+        denominatorU = epsilon;
     const paramU = numeratorU / denominatorU;
     
     // Return unitless parametric coordinates
