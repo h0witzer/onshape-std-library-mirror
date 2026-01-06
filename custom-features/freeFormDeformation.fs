@@ -744,11 +744,27 @@ export function ffdManipulator(context is Context, definition is map, newManipul
         // If offset entry exists, update it; otherwise create new one
         if (arrayIndex >= 0)
         {
-            // Update existing offset entry (following Routing Curve pattern)
+            // Update existing offset entry
+            // Note: Cannot directly modify array element fields in manipulator context
+            // Must rebuild the entire array
             println("Updating existing offset at array index " ~ arrayIndex);
-            definition.latticeOffsets[arrayIndex].offsetX = transform.translation[0];
-            definition.latticeOffsets[arrayIndex].offsetY = transform.translation[1];
-            definition.latticeOffsets[arrayIndex].offsetZ = transform.translation[2];
+            
+            // Build new element with updated values
+            var updatedOffset = definition.latticeOffsets[arrayIndex];
+            updatedOffset.offsetX = transform.translation[0];
+            updatedOffset.offsetY = transform.translation[1];
+            updatedOffset.offsetZ = transform.translation[2];
+            
+            // Rebuild entire array with updated element
+            var newOffsets = [];
+            for (var i = 0; i < size(definition.latticeOffsets); i += 1)
+            {
+                if (i == arrayIndex)
+                    newOffsets = append(newOffsets, updatedOffset);
+                else
+                    newOffsets = append(newOffsets, definition.latticeOffsets[i]);
+            }
+            definition.latticeOffsets = newOffsets;
         }
         else
         {
