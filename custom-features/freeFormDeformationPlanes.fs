@@ -260,7 +260,7 @@ function applyPlaneBasedFFDDeformation(context is Context, id is Id, inputFaces 
         {
             println("Applying " ~ size(definition.planeTransformations) ~ " plane transformations");
         }
-        applyPlaneTransformationsToLattice(lattice, definition.planeTransformations, definition.manipulationDirection);
+        lattice = applyPlaneTransformationsToLattice(lattice, definition.planeTransformations, definition.manipulationDirection);
         
         if (definition.printLatticeInfo)
         {
@@ -516,11 +516,12 @@ function buildPlaneBasedFFDLattice(boundingBox is map, spanCounts is array, dire
  * For each transformed plane, all control points on that plane are moved together
  * according to the plane's translation and rotation.
  * 
- * @param lattice {map} : Lattice structure (modified in place)
+ * @param lattice {map} : Lattice structure (will be modified)
  * @param planeTransformations {array} : Array of plane transformation entries
  * @param direction {FFDPlaneDirection} : The manipulation direction
+ * @returns {map} : The modified lattice structure with transformed control points
  */
-function applyPlaneTransformationsToLattice(lattice is map, planeTransformations is array, direction is FFDPlaneDirection)
+function applyPlaneTransformationsToLattice(lattice is map, planeTransformations is array, direction is FFDPlaneDirection) returns map
 {
     // Store the original control points before any transformations
     const originalControlPoints = lattice.controlPoints;
@@ -594,6 +595,7 @@ function applyPlaneTransformationsToLattice(lattice is map, planeTransformations
     }
     
     lattice.controlPoints = modifiedControlPoints;
+    return lattice;
 }
 
 
