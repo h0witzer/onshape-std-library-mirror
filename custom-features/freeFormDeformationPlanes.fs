@@ -128,9 +128,9 @@ export const freeFormDeformationPlanes = defineFeature(function(context is Conte
                     isInteger(planeTransform.index, { (unitless) : [0, 0, 100] } as IntegerBoundSpec);
                     
                     // Store transform as decomposed components (rotation matrix + translation vector)
-                    // This avoids the "Unrecognized type" error for storing Transform objects directly
+                    // Use isAnything for rotationMatrix to avoid "Cannot define array within array" error
                     annotation { "Name" : "Rotation matrix", "UIHint" : UIHint.ALWAYS_HIDDEN }
-                    planeTransform.rotationMatrix is array;
+                    isAnything(planeTransform.rotationMatrix);
                     
                     annotation { "Name" : "Translation X", "UIHint" : UIHint.ALWAYS_HIDDEN }
                     isLength(planeTransform.translateX, ZERO_DEFAULT_LENGTH_BOUNDS);
