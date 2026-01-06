@@ -114,7 +114,7 @@ export const freeFormDeformation = defineFeature(function(context is Context, id
                      "Description" : "Number of spans in the U direction of the FFD lattice" }
         isInteger(definition.spanCountU, FFD_SPAN_COUNT_BOUNDS);
         
-        annotation { "Name" : "Selected control point index" }
+        annotation { "Name" : "Selected control point index", "UIHint" : UIHint.ALWAYS_HIDDEN }
         isInteger(definition.selectedPointIndex, { (unitless) : [0, 0, 1000] } as IntegerBoundSpec);
         
         annotation { "Name" : "Enable diagnostics" }
@@ -684,7 +684,17 @@ export function ffdManipulator(context is Context, definition is map, newManipul
     
     if (newManipulators[LATTICE_POINTS_MANIPULATOR] is map)
     {
-        definition.selectedPointIndex = newManipulators[LATTICE_POINTS_MANIPULATOR].index;
+        const oldIndex = definition.selectedPointIndex;
+        var newIndex = newManipulators[LATTICE_POINTS_MANIPULATOR].index;
+        
+        // Adjust index to account for the currently selected point not being in the array
+        // (we skip it to avoid interference with the triad manipulator)
+        if (newIndex >= oldIndex)
+        {
+            newIndex = newIndex + 1;
+        }
+        
+        definition.selectedPointIndex = newIndex;
     }
     
     if (newManipulators[LATTICE_TRIAD_MANIPULATOR] is map)
@@ -739,6 +749,7 @@ function applyLatticeOffsets(lattice is map, offsets is array)
 
 function addFFDManipulators(context is Context, id is Id, lattice is map, selectedIndex is number)
 {
+    // Create array of lattice control point positions, excluding the selected one
     var pointPositions = [];
     for (var i = 0; i < lattice.totalControlPoints; i += 1)
     {
@@ -748,14 +759,18 @@ function addFFDManipulators(context is Context, id is Id, lattice is map, select
         }
     }
     
+    // Add points manipulator to show all lattice control points (except selected)
+    // Pass -1 as index to indicate no point is selected in the manipulator itself
     const pointsManip = pointsManipulator({
         "points" : pointPositions,
-        "index" : selectedIndex
+        "index" : -1
     });
     addManipulators(context, id, { (LATTICE_POINTS_MANIPULATOR) : pointsManip });
     
+    // Add triad manipulator at the selected control point
     if (selectedIndex >= 0 && selectedIndex < lattice.totalControlPoints)
     {
+        // The lattice already has offsets applied, so use the current position
         const selectedPoint = lattice.controlPoints[selectedIndex];
         const triadManip = fullTriadManipulator({
             "base" : coordSystem(selectedPoint, vector(1, 0, 0), vector(0, 1, 0)),
