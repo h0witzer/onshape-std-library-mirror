@@ -60,6 +60,7 @@ import(path : "onshape/std/coordSystem.fs", version : "2837.0");
 import(path : "onshape/std/evaluate.fs", version : "2837.0");
 import(path : "onshape/std/feature.fs", version : "2837.0");
 import(path : "onshape/std/geomOperations.fs", version : "2837.0");
+import(path : "onshape/std/manipulator.fs", version : "2837.0");
 import(path : "onshape/std/math.fs", version : "2837.0");
 import(path : "onshape/std/query.fs", version : "2837.0");
 import(path : "onshape/std/surfaceGeometry.fs", version : "2837.0");
@@ -70,12 +71,17 @@ import(path : "onshape/std/containers.fs", version : "2837.0");
 import(path : "onshape/std/box.fs", version : "2837.0");
 import(path : "onshape/std/nurbsUtils.fs", version : "2837.0");
 import(path : "onshape/std/debug.fs", version : "2837.0");
+import(path : "onshape/std/transform.fs", version : "2837.0");
 
 
 // Bounds for lattice span counts
 export const FFD_SPAN_COUNT_BOUNDS = {
     (unitless) : [1, 2, 8]
 } as IntegerBoundSpec;
+
+// Manipulator identifiers
+const LATTICE_POINTS_MANIPULATOR = "latticePointsManipulator";
+const LATTICE_TRIAD_MANIPULATOR = "latticeTriadManipulator";
 
 
 /**
@@ -85,8 +91,9 @@ export const FFD_SPAN_COUNT_BOUNDS = {
  * The surface is embedded in a trivariate Bernstein polynomial volume defined by the lattice.
  */
 annotation { "Feature Type Name" : "Free-Form Deformation",
-        "Feature Type Description" : "Deform a NURBS surface using a 3D control point lattice. Enable diagnostics and lattice manipulation to modify control points and see deformation effects.",
-        "UIHint" : "NO_PREVIEW_PROVIDED" }
+        "Feature Type Description" : "Deform a NURBS surface using a 3D control point lattice. Drag control points to deform the surface interactively.",
+        "UIHint" : "NO_PREVIEW_PROVIDED",
+        "Manipulator Change Function" : "ffdManipulator" }
 export const freeFormDeformation = defineFeature(function(context is Context, id is Id, definition is map)
     precondition
     {
@@ -107,33 +114,11 @@ export const freeFormDeformation = defineFeature(function(context is Context, id
                      "Description" : "Number of spans in the U direction of the FFD lattice" }
         isInteger(definition.spanCountU, FFD_SPAN_COUNT_BOUNDS);
         
-        annotation { "Name" : "Enable lattice control point manipulation", 
-                     "Description" : "Enable to modify lattice control points and deform the surface. Total control points = (spanS+1)×(spanT+1)×(spanU+1)" }
-        definition.enableLatticeManipulation is boolean;
+        annotation { "Name" : "Selected control point index" }
+        isInteger(definition.selectedPointIndex, { (unitless) : [0, 0, 1000] } as IntegerBoundSpec);
         
-        annotation { "Group Name" : "Lattice control point offsets", 
-                     "Driving Parameter" : "enableLatticeManipulation", 
-                     "Collapsed By Default" : false }
-        {
-            if (definition.enableLatticeManipulation)
-            {
-                annotation { "Name" : "Control point index (linear)", 
-                             "Description" : "Index of lattice control point to modify. Use diagnostics to see total count and positions. Example: for 2×2×2 lattice, valid range is 0-26" }
-                isInteger(definition.controlPointIndex, { (unitless) : [0, 1, 1000] } as IntegerBoundSpec);
-                
-                annotation { "Name" : "Offset X", 
-                             "Description" : "Move control point in X direction (S-axis). Try 0.01m to start" }
-                isLength(definition.offsetX, { (meter) : [-1, 0, 1] } as LengthBoundSpec);
-                
-                annotation { "Name" : "Offset Y", 
-                             "Description" : "Move control point in Y direction (T-axis). Try 0.01m to start" }
-                isLength(definition.offsetY, { (meter) : [-1, 0, 1] } as LengthBoundSpec);
-                
-                annotation { "Name" : "Offset Z", 
-                             "Description" : "Move control point in Z direction (U-axis). Try 0.01m to start" }
-                isLength(definition.offsetZ, { (meter) : [-1, 0, 1] } as LengthBoundSpec);
-            }
-        }
+        annotation { "Name" : "Control point offsets (internal)", "UIHint" : UIHint.ALWAYS_HIDDEN }
+        definition.latticeOffsets is array;
         
         annotation { "Name" : "Enable diagnostics" }
         definition.enableDiagnostics is boolean;
@@ -171,11 +156,8 @@ export const freeFormDeformation = defineFeature(function(context is Context, id
         spanCountS : 2,
         spanCountT : 2,
         spanCountU : 2,
-        enableLatticeManipulation : false,
-        controlPointIndex : 0,
-        offsetX : 0 * meter,
-        offsetY : 0 * meter,
-        offsetZ : 0 * meter,
+        selectedPointIndex : 0,
+        latticeOffsets : [],
         enableDiagnostics : false,
         showLatticeControlPoints : false,
         showBoundingBox : false,
@@ -238,12 +220,11 @@ function applyFFDDeformation(context is Context, id is Id, inputFace is Query, d
         printLatticeInformation(lattice);
     }
     
-    // Apply user-specified control point offset if manipulation is enabled
-    if (definition.enableLatticeManipulation)
-    {
-        applyControlPointOffset(lattice, definition.controlPointIndex, 
-                               vector(definition.offsetX, definition.offsetY, definition.offsetZ));
-    }
+    // Apply stored lattice offsets from manipulator interactions
+    applyLatticeOffsets(lattice, definition.latticeOffsets);
+    
+    // Add manipulators for interactive control point manipulation
+    addFFDManipulators(context, id, lattice, definition.selectedPointIndex);
     
     if (definition.showLatticeControlPoints)
     {
@@ -710,5 +691,95 @@ function visualizeLatticeControlPoints(context is Context, id is Id, lattice is 
     for (var i = 0; i < lattice.totalControlPoints; i += 1)
     {
         debug(context, lattice.controlPoints[i], DebugColor.RED);
+    }
+}
+
+
+
+/**
+ * Manipulator handler for FFD feature
+ */
+export function ffdManipulator(context is Context, definition is map, newManipulators is map) returns map
+{
+    if (newManipulators[LATTICE_POINTS_MANIPULATOR] is map)
+    {
+        definition.selectedPointIndex = newManipulators[LATTICE_POINTS_MANIPULATOR].index;
+    }
+    
+    if (newManipulators[LATTICE_TRIAD_MANIPULATOR] is map)
+    {
+        const transform = newManipulators[LATTICE_TRIAD_MANIPULATOR].transform;
+        const selectedIndex = definition.selectedPointIndex;
+        
+        // Store offset as a map entry with index and vector
+        const offset = {
+            "index" : selectedIndex,
+            "offset" : vector(
+                transform.translation[0],
+                transform.translation[1],
+                transform.translation[2]
+            )
+        };
+        
+        // Update existing offset or add new one
+        var found = false;
+        for (var i = 0; i < size(definition.latticeOffsets); i += 1)
+        {
+            if (definition.latticeOffsets[i].index == selectedIndex)
+            {
+                definition.latticeOffsets[i] = offset;
+                found = true;
+                break;
+            }
+        }
+        if (!found)
+        {
+            definition.latticeOffsets = append(definition.latticeOffsets, offset);
+        }
+    }
+    
+    return definition;
+}
+
+
+function applyLatticeOffsets(lattice is map, offsets is array)
+{
+    for (var offsetEntry in offsets)
+    {
+        const index = offsetEntry.index;
+        const offset = offsetEntry.offset;
+        if (index >= 0 && index < lattice.totalControlPoints)
+        {
+            lattice.controlPoints[index] = lattice.controlPoints[index] + offset;
+        }
+    }
+}
+
+
+function addFFDManipulators(context is Context, id is Id, lattice is map, selectedIndex is number)
+{
+    var pointPositions = [];
+    for (var i = 0; i < lattice.totalControlPoints; i += 1)
+    {
+        if (i != selectedIndex)
+        {
+            pointPositions = append(pointPositions, lattice.controlPoints[i]);
+        }
+    }
+    
+    const pointsManip = pointsManipulator({
+        "points" : pointPositions,
+        "index" : selectedIndex
+    });
+    addManipulators(context, id, { (LATTICE_POINTS_MANIPULATOR) : pointsManip });
+    
+    if (selectedIndex >= 0 && selectedIndex < lattice.totalControlPoints)
+    {
+        const selectedPoint = lattice.controlPoints[selectedIndex];
+        const triadManip = fullTriadManipulator({
+            "base" : coordSystem(selectedPoint, vector(1, 0, 0), vector(0, 1, 0)),
+            "transform" : identityTransform()
+        });
+        addManipulators(context, id, { (LATTICE_TRIAD_MANIPULATOR) : triadManip });
     }
 }
