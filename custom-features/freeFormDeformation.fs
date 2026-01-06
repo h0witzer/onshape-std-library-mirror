@@ -227,7 +227,7 @@ function applyFFDDeformation(context is Context, id is Id, inputFace is Query, d
     addFFDManipulators(context, id, lattice, definition.selectedPointIndex, offsetsArray);
     
     // Create a working copy of lattice for deformation
-    // Deep copy the control points array to avoid modifying the original
+    // Build new control points array to avoid modifying the original
     var copiedControlPoints = [];
     for (var i = 0; i < size(lattice.controlPoints); i += 1)
     {
