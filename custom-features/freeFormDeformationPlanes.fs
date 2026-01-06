@@ -510,6 +510,8 @@ function buildPlaneBasedFFDLattice(boundingBox is map, spanCounts is array, dire
  */
 function applyPlaneTransformationsToLattice(lattice is map, planeTransformations is array, direction is FFDPlaneDirection)
 {
+    // Store the original control points before any transformations
+    const originalControlPoints = lattice.controlPoints;
     var modifiedControlPoints = lattice.controlPoints;
     
     for (var transformEntry in planeTransformations)
@@ -521,13 +523,13 @@ function applyPlaneTransformationsToLattice(lattice is map, planeTransformations
             const planeInfo = lattice.planeData[planeIndex];
             const pointIndices = planeInfo.pointIndices;
             
-            // Calculate plane center from the original control points
-            var planeCenter = vector(0 * meter, 0 * meter, 0 * meter);
+            // Calculate plane center from the ORIGINAL (untransformed) control points
+            var originalPlaneCenter = vector(0 * meter, 0 * meter, 0 * meter);
             for (var pointIndex in pointIndices)
             {
-                planeCenter = planeCenter + modifiedControlPoints[pointIndex];
+                originalPlaneCenter = originalPlaneCenter + originalControlPoints[pointIndex];
             }
-            planeCenter = planeCenter / size(pointIndices);
+            originalPlaneCenter = originalPlaneCenter / size(pointIndices);
             
             // Build transformation
             const translation = vector(transformEntry.translateX, transformEntry.translateY, transformEntry.translateZ);
@@ -552,7 +554,7 @@ function applyPlaneTransformationsToLattice(lattice is map, planeTransformations
             var rotationTransform = identityTransform();
             if (abs(rotationAngle) > 0 * radian)
             {
-                const rotationLine = line(planeCenter, rotationAxisDirection);
+                const rotationLine = line(originalPlaneCenter, rotationAxisDirection);
                 rotationTransform = rotationAround(rotationLine, rotationAngle);
             }
             
@@ -563,9 +565,10 @@ function applyPlaneTransformationsToLattice(lattice is map, planeTransformations
             const combinedTransform = translationTransform * rotationTransform;
             
             // Apply transformation to all points on this plane
+            // Use the ORIGINAL point positions as the base for transformation
             for (var pointIndex in pointIndices)
             {
-                const originalPoint = modifiedControlPoints[pointIndex];
+                const originalPoint = originalControlPoints[pointIndex];
                 const transformedPoint = combinedTransform * originalPoint;
                 modifiedControlPoints[pointIndex] = transformedPoint;
             }
