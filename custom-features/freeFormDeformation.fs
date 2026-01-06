@@ -239,29 +239,14 @@ function applyFFDDeformation(context is Context, id is Id, inputFace is Query, d
         {
             const originalPoint = controlPoints[uIndex][vIndex];
             
-            // For rational surfaces, work with weighted control points
-            var pointToDeform = originalPoint;
-            if (isRational)
-            {
-                const weight = weights[uIndex][vIndex];
-                pointToDeform = originalPoint * weight;
-            }
-            
+            // FFD operates on the actual 3D control point positions
             // Convert to STU parametric space
-            const stuCoords = convertWorldToSTU(pointToDeform, lattice);
+            const stuCoords = convertWorldToSTU(originalPoint, lattice);
             
-            // Evaluate trivariate Bernstein polynomial
+            // Evaluate trivariate Bernstein polynomial to get deformed position
             const deformedPoint = evaluateTrivariateBernstein(stuCoords, lattice);
             
-            // For rational surfaces, un-weight the result
-            var finalDeformedPoint = deformedPoint;
-            if (isRational)
-            {
-                const weight = weights[uIndex][vIndex];
-                finalDeformedPoint = deformedPoint / weight;
-            }
-            
-            deformedRow = append(deformedRow, finalDeformedPoint);
+            deformedRow = append(deformedRow, deformedPoint);
             
             // Debug output for first control point
             if (definition.printDeformationDetails && uIndex == 0 && vIndex == 0)
@@ -269,7 +254,7 @@ function applyFFDDeformation(context is Context, id is Id, inputFace is Query, d
                 println("DEBUG: First control point deformation:");
                 println("  Original: " ~ originalPoint);
                 println("  STU coords: " ~ stuCoords);
-                println("  Deformed: " ~ finalDeformedPoint);
+                println("  Deformed: " ~ deformedPoint);
             }
         }
         deformedControlPoints = append(deformedControlPoints, deformedRow);
@@ -527,10 +512,10 @@ function bernsteinPolynomial(degree is number, index is number, parameter is num
     const binomialCoefficient = factorial(degree) / (factorial(index) * factorial(degree - index));
     
     // Compute (1-u)^(n-i)
-    const termOneMinusU = pow(1 - parameter, degree - index);
+    const termOneMinusU = (1 - parameter) ^ (degree - index);
     
     // Compute u^i
-    const termU = pow(parameter, index);
+    const termU = parameter ^ index;
     
     return binomialCoefficient * termOneMinusU * termU;
 }
