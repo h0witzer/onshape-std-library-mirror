@@ -792,6 +792,9 @@ function applyLatticeOffsets(lattice is map, offsets is array)
 
 function addFFDManipulators(context is Context, id is Id, lattice is map, selectedIndex is number)
 {
+    // Build map of all manipulators to add at once
+    var manipulators = {};
+    
     // Create array of lattice control point positions, excluding the selected one
     var pointPositions = [];
     for (var i = 0; i < lattice.totalControlPoints; i += 1)
@@ -808,7 +811,7 @@ function addFFDManipulators(context is Context, id is Id, lattice is map, select
         "points" : pointPositions,
         "index" : -1
     });
-    addManipulators(context, id, { (LATTICE_POINTS_MANIPULATOR) : pointsManip });
+    manipulators[LATTICE_POINTS_MANIPULATOR] = pointsManip;
     
     // Add triad manipulator at the selected control point
     if (selectedIndex >= 0 && selectedIndex < lattice.totalControlPoints)
@@ -817,8 +820,12 @@ function addFFDManipulators(context is Context, id is Id, lattice is map, select
         const selectedPoint = lattice.controlPoints[selectedIndex];
         const triadManip = fullTriadManipulator({
             "base" : coordSystem(selectedPoint, vector(1, 0, 0), vector(0, 1, 0)),
-            "transform" : identityTransform()
+            "transform" : identityTransform(),
+            "displayEditView" : true
         });
-        addManipulators(context, id, { (LATTICE_TRIAD_MANIPULATOR) : triadManip });
+        manipulators[LATTICE_TRIAD_MANIPULATOR] = triadManip;
     }
+    
+    // Add all manipulators at once
+    addManipulators(context, id, manipulators);
 }
