@@ -1,5 +1,24 @@
-FeatureScript 1793;
-export import(path : "onshape/std/geometry.fs", version : "1793.0");
+FeatureScript 2837;
+export import(path : "onshape/std/geometry.fs", version : "2837.0");
+
+// Additional imports for FFD-based implementation
+import(path : "onshape/std/common.fs", version : "2837.0");
+import(path : "onshape/std/context.fs", version : "2837.0");
+import(path : "onshape/std/coordSystem.fs", version : "2837.0");
+import(path : "onshape/std/evaluate.fs", version : "2837.0");
+import(path : "onshape/std/feature.fs", version : "2837.0");
+import(path : "onshape/std/geomOperations.fs", version : "2837.0");
+import(path : "onshape/std/math.fs", version : "2837.0");
+import(path : "onshape/std/query.fs", version : "2837.0");
+import(path : "onshape/std/surfaceGeometry.fs", version : "2837.0");
+import(path : "onshape/std/units.fs", version : "2837.0");
+import(path : "onshape/std/valueBounds.fs", version : "2837.0");
+import(path : "onshape/std/vector.fs", version : "2837.0");
+import(path : "onshape/std/containers.fs", version : "2837.0");
+import(path : "onshape/std/box.fs", version : "2837.0");
+import(path : "onshape/std/nurbsUtils.fs", version : "2837.0");
+import(path : "onshape/std/debug.fs", version : "2837.0");
+import(path : "onshape/std/transform.fs", version : "2837.0");
 
 icon::import(path : "c624ed6117bc781df9db34a7", version : "8c1fdbdfcd870db45cc00916");
 image::import(path : "2150aaa7a0e55c57536755d0", version : "24ccd4a440ee9c760daa3bc1");
@@ -21,6 +40,18 @@ export enum TaperType
 
 /**
  * Performs flex (taper, twist and deform) for a body, face, edge or vertex.
+ * 
+ * This feature uses Free-Form Deformation (FFD) with trivariate Bernstein polynomials
+ * to provide high-quality, efficient surface deformation. The FFD approach replaces the
+ * previous piecewise filling schema, providing:
+ * - Better surface quality with smooth deformations
+ * - Improved performance for complex shapes
+ * - More generalizable to various surface types
+ * 
+ * Implementation references:
+ * - Core FFD algorithm: custom-features/freeFormDeformation.fs
+ * - Plane-based FFD: custom-features/freeFormDeformationPlanes.fs
+ * - Whitepaper: whitepaper-references/"Free-Form Deformation of Parametric CAD Geometry.pdf"
  *
  * @param context {Context}
  * @param id : @autocomplete `id + "flex"`
@@ -33,9 +64,9 @@ export enum TaperType
  *              The base line direction.
  *
  *      @field edgeSamplingStep {ValueWithUnits}:
- *              Edge sampling step.
+ *              Edge sampling step (deprecated in FFD implementation).
  *      @field faceSamplingStep {ValueWithUnits}:
- *              Face sampling step.
+ *              Face sampling step (deprecated in FFD implementation).
  *
  *      @field isTaper {boolean}:
  *              Taper control.
@@ -418,7 +449,14 @@ export function onFlexFeatureChange(context is Context, id is Id, oldDefinition 
 
 
 /**
- * Flex (twist, taper, deform) given entities (body, face, edge, point).
+ * Flex (twist, taper, deform) given entities using FFD algorithm.
+ * 
+ * This replaces the previous piecewise filling approach with a cleaner FFD-based method:
+ * 1. Extract B-spline surface representations
+ * 2. Build FFD lattice around the surfaces
+ * 3. Modify lattice control points based on taper/twist/deform settings
+ * 4. Evaluate trivariate Bernstein polynomial to deform surfaces
+ * 5. Create deformed surfaces directly
  */
 function flexEntities(context is Context, id is Id, definition is map)
 {
@@ -427,300 +465,79 @@ function flexEntities(context is Context, id is Id, definition is map)
         return;
     }
 
-    /* Selected entities ***********************************************************/
-    var bodyTable = evaluateQuery(context, qEntityFilter(definition.entities, EntityType.BODY));
-    var faceTable = evaluateQuery(context, qEntityFilter(definition.entities, EntityType.FACE));
+    /* Filter entities by type *****************************************************/
+    var bodyFaces = evaluateQuery(context, qOwnedByBody(qEntityFilter(definition.entities, EntityType.BODY), EntityType.FACE));
+    var selectedFaces = evaluateQuery(context, qEntityFilter(definition.entities, EntityType.FACE));
+    var allFaces = concatenateArrays([bodyFaces, selectedFaces]);
+    
+    /* Handle edges and vertices separately (legacy support) **********************/
     var edgeTable = evaluateQuery(context, qEntityFilter(definition.entities, EntityType.EDGE));
     var vertexTable = evaluateQuery(context, qEntityFilter(definition.entities, EntityType.VERTEX));
-
-    /* Split entities into sub faces ***********************************************/
-    const subFaces = splitEntities(context, id + "splitEntities", definition, qUnion(concatenateArrays([bodyTable, faceTable])));
-    var baseSubFaceTable = evaluateQuery(context, subFaces);
-
-    /* Temporary edges (edges of subfaces) *****************************************/
-    var temporaryEdges = qAdjacent(qUnion(baseSubFaceTable), AdjacencyType.EDGE, EntityType.EDGE);
-    for (var edge in evaluateQuery(context, temporaryEdges))
+    
+    /* Process edges with legacy method if requested ******************************/
+    if (size(edgeTable) > 0 && definition.isDebug2)
     {
-        edge.temporary = true;
-        edgeTable = append(edgeTable, edge);
+        for (var edgeIndex = 0; edgeIndex < size(edgeTable); edgeIndex += 1)
+        {
+            try
+            {
+                var targetEdge = flexEdgeLegacy(context, id + "flexEdge" + edgeIndex, definition, edgeTable[edgeIndex]);
+                if (definition.isShowSamples)
+                {
+                    addDebugEntities(context, targetEdge, DebugColor.BLUE);
+                }
+            }
+            catch
+            {
+                reportFeatureWarning(context, id, "Translating edges failed.");
+                addDebugEntities(context, edgeTable[edgeIndex], DebugColor.RED);
+                return;
+            }
+        }
     }
-
-    /* Tables for temporary entities ***********************************************/
-    var temporaryEdgeTable = [];
-
-    /* Show all edges **************************************************************/
-    if (definition.isShowSamples == true)
+    
+    /* Process vertices with legacy method if requested ****************************/
+    if (size(vertexTable) > 0 && definition.isDebug2)
     {
-        addDebugEntities(context, qUnion(edgeTable), DebugColor.GREEN);
+        for (var vertexIndex = 0; vertexIndex < size(vertexTable); vertexIndex += 1)
+        {
+            try
+            {
+                var targetVertex = flexVertexLegacy(context, id + "flexVertex" + vertexIndex, definition, vertexTable[vertexIndex]);
+                addDebugEntities(context, targetVertex, DebugColor.BLACK);
+            }
+            catch
+            {
+                reportFeatureWarning(context, id, "Translating vertices failed.");
+                addDebugEntities(context, vertexTable[vertexIndex], DebugColor.RED);
+                return;
+            }
+        }
     }
-
-    /* Create target edges *********************************************************/
-    if (definition.isDebug2 == false)
+    
+    /* Process faces using FFD algorithm *******************************************/
+    if (size(allFaces) == 0)
     {
         return;
     }
-    for (var edgeIndex, edge in edgeTable)
-    {
-        /* Flex source edge -> target edge  */
-        try
-        {
-            /* Create target edge */
-            var targetEdge = flexEdge(context, id + "flexEdge" + edgeIndex, definition, edge);
-
-            /* Link base edge to the target edge */
-            setAttribute(context, {
-                        "entities" : edge,
-                        "name" : "targetEdges",
-                        "attribute" : targetEdge
-                    });
-
-            /* Show target edge */
-            if (definition.isShowSamples == true)
-            {
-                addDebugEntities(context, targetEdge, DebugColor.BLUE);
-            }
-
-            /* Check if temporary */
-            if (edge.temporary == true)
-            {
-                temporaryEdgeTable = append(temporaryEdgeTable, targetEdge);
-            }
-        }
-        catch
-        {
-            reportFeatureWarning(context, id, "Translating edges failed.");
-
-            /* Show error in preview */
-            addDebugEntities(context, edge, DebugColor.RED);
-
-            return;
-        }
-    }
-
-    /* Create target vertices ******************************************************/
-    for (var vertexIndex, vertex in vertexTable)
-    {
-        /* Flex source vertex -> target vertex  */
-        try
-        {
-            /* Create target vertex */
-            var targetVertex = flexVertex(context, id + "flexVertex" + vertexIndex, definition, vertex);
-
-            addDebugEntities(context, targetVertex, DebugColor.BLACK);
-        }
-        catch
-        {
-            reportFeatureWarning(context, id, "Translating vertices failed.");
-
-            /* Show error in preview */
-            addDebugEntities(context, vertex, DebugColor.RED);
-
-            return;
-        }
-    }
-
-    /* Create new subfaces **********************************************************/
+    
     if (definition.isDebug3 == false)
     {
         return;
     }
-    for (var faceIndex, face in baseSubFaceTable)
+    
+    try
     {
-        /* Base edges for this face */
-        var baseEdges = qLoopEdges(face);
-
-        /* Find target edges linked to base edges */
-        var targetEdges = getAttributes(context, {
-                "entities" : baseEdges,
-                "name" : "targetEdges"
-            });
-
-        /* Surface filling id */
-        var fillSurfaceId = id + ("fillSurface" ~ faceIndex);
-
-        try
-        {
-            /* Create new face either using loft or fill surface */
-            try silent
-            {
-                if (size(targetEdges) == 2)
-                {
-                    opLoft(context, fillSurfaceId + 1, {
-                                "profileSubqueries" : [targetEdges[0], targetEdges[1]],
-                                "bodyType" : ToolBodyType.SURFACE
-                            });
-                }
-                else if (size(targetEdges) == 3)
-                {
-                    /* Use loft if only three edges (avoid INTERSECTING_EDGES with opFillSurface ) */
-                    opLoft(context, fillSurfaceId + 2, {
-                                "profileSubqueries" : [targetEdges[0], targetEdges[1]],
-                                "guideSubqueries" : [targetEdges[2]],
-                                "bodyType" : ToolBodyType.SURFACE
-                            });
-                }
-                else
-                {
-                    throw "Not lofted";
-                }
-            }
-            catch
-            {
-                /* Get tangent points of base sub face */
-                const tangentPlanes = getAttribute(context, {
-                            "entity" : face,
-                            "name" : "tangentPlanes"
-                        });
-
-                /* Create guide points in taget space */
-                var pointsId = id + ("point" ~ faceIndex);
-                for (var tangentIndex, tangent in tangentPlanes)
-                {
-                    var point = definition.convertFunction(tangent.origin);
-
-                    opPoint(context, pointsId + tangentIndex, {
-                                "point" : point
-                            });
-
-                    if (definition.isShowSamples == true)
-                    {
-                        addDebugPoint(context, tangent.origin, DebugColor.GREEN);
-                        addDebugPoint(context, point, DebugColor.BLUE);
-                    }
-                }
-
-                /* Fill surface */
-                try silent
-                {
-                    opFillSurface(context, fillSurfaceId + 3, {
-                                "edgesG0" : qUnion(targetEdges),
-                                "edgesG1" : qNothing(),
-                                "edgesG2" : qNothing(),
-                                "guideVertices" : qCreatedBy(pointsId),
-                                "showIsocurves" : false,
-                            });
-                }
-                catch
-                {
-                    opFillSurface(context, fillSurfaceId + 4, {
-                                "edgesG0" : qUnion(targetEdges),
-                                "edgesG1" : qNothing(),
-                                "edgesG2" : qNothing(),
-                                "guideVertices" : qNothing(),
-                                "showIsocurves" : false,
-                            });
-                }
-
-                /* Delete points */
-                try silent
-                {
-                    opDeleteBodies(context, id + ("deletePoints" ~ faceIndex), {
-                                "entities" : qCreatedBy(pointsId)
-                            });
-                }
-            }
-
-            var targetFaces = qCreatedBy(fillSurfaceId, EntityType.BODY);
-
-            /* Link base face to the target face */
-            setAttribute(context, {
-                        "entities" : face,
-                        "name" : "targetFaces",
-                        "attribute" : targetFaces
-                    });
-        }
-
-        catch
-        {
-            reportFeatureWarning(context, id, "Filling edges failed. (Try to adjust edge sampling and grid size.)");
-
-            /* Show error in preview */
-            addDebugEntities(context, baseEdges, DebugColor.RED);
-            addDebugEntities(context, qUnion(targetEdges), DebugColor.RED);
-
-            return;
-        }
+        flexFacesWithFFD(context, id, allFaces, definition);
     }
-
-    /* Delete temporary edges *******************************************************/
-    try silent
+    catch (error)
     {
-        opDeleteBodies(context, id + "deleteEdges", {
-                    "entities" : qUnion(temporaryEdgeTable)
-                });
-    }
-
-
-    /* Create target bodies ********************************************************/
-    if (definition.isDebug4 == false)
-    {
+        reportFeatureWarning(context, id, "FFD deformation failed: " ~ error);
+        for (var face in allFaces)
+        {
+            debug(context, face, DebugColor.RED);
+        }
         return;
-    }
-    for (var entintyIndex, entity in concatenateArrays([bodyTable, faceTable]))
-    {
-        /* Sub faces */
-        var subFaces = getAttributes(context, {
-                "entities" : entity,
-                "name" : "subFaces"
-            });
-
-        /* Find target subfaces linked to these base subfaces */
-        var targetSubFaces = getAttributes(context, {
-                "entities" : qUnion(subFaces),
-                "name" : "targetFaces"
-            });
-
-        try
-        {
-            /* Join sub faces into surface or solid */
-            try silent
-            {
-                if (size(targetSubFaces) > 1)
-                {
-                    opBoolean(context, id + ("booleanBody" ~ entintyIndex), {
-                                "tools" : qUnion(targetSubFaces),
-                                "operationType" : BooleanOperationType.UNION,
-                                "makeSolid" : true,
-                                "keepTools" : false,
-                            });
-                }
-            }
-            catch
-            {
-                var bodies = evaluateQuery(context, qEntityFilter(entity, EntityType.BODY));
-                if (size(bodies) == 0)
-                {
-                    throw "Joining sub faces failed";
-                }
-                else
-                {
-                    /* Enclose bodies if boolean failed to make solid */
-                    enclose(context, id + ("enclose" ~ entintyIndex), {
-                                "entities" : qUnion(targetSubFaces),
-                                "mergeResults" : false,
-                                "keepTools" : false
-                            });
-                }
-            }
-        }
-        catch
-        {
-            reportFeatureWarning(context, id, "Joining target faces failed.  (Try to adjust edge sampling and grid size.)");
-
-            /* Show error in preview */
-            debug(context, qUnion(subFaces), DebugColor.RED);
-            debug(context, qUnion(targetSubFaces), DebugColor.RED);
-
-            return;
-        }
-    }
-
-    /* Delete temporary subfaces ****************************************************/
-    try silent
-    {
-        opDeleteBodies(context, id + "deleteSubFaces", {
-                    "entities" : qUnion(baseSubFaceTable)
-                });
     }
 }
 
@@ -844,9 +661,402 @@ function addDebugCoordinateSystem(context is Context, coordSystem is CoordSystem
 
 
 /**
- * Create target vertex.
+ * FFD-based deformation of faces
+ * 
+ * This function replaces the piecewise surface filling approach with a direct
+ * FFD deformation. It:
+ * 1. Extracts B-spline surfaces from input faces
+ * 2. Builds an FFD lattice along the base line
+ * 3. Modifies lattice control points based on taper/twist/deform
+ * 4. Deforms surfaces using trivariate Bernstein polynomials
+ * 5. Creates deformed surfaces
+ * 
+ * @param context {Context} : The modeling context
+ * @param id {Id} : Feature identifier
+ * @param faces {array} : Array of face entities to deform
+ * @param definition {map} : Feature definition with taper/twist/deform settings
  */
-function flexVertex(context is Context, id is Id, definition is map, vertex is Query) returns Query
+function flexFacesWithFFD(context is Context, id is Id, faces is array, definition is map)
+{
+    /* Extract B-spline surface representations ************************************/
+    var surfaceDefinitions = [];
+    var allControlPoints = [];
+    
+    for (var faceIndex = 0; faceIndex < size(faces); faceIndex += 1)
+    {
+        const inputFace = faces[faceIndex];
+        
+        // Get B-spline surface representation
+        var surfaceDefinition = evSurfaceDefinition(context, {
+            "face" : inputFace
+        });
+        
+        // If not already a B-spline, approximate it
+        if (surfaceDefinition.surfaceType != SurfaceType.SPLINE)
+        {
+            const approximation = evApproximateBSplineSurface(context, {
+                "face" : inputFace
+            });
+            surfaceDefinition = approximation.bSplineSurface;
+        }
+        
+        surfaceDefinitions = append(surfaceDefinitions, surfaceDefinition);
+        
+        // Collect all control points for bounding box calculation
+        const controlPoints = surfaceDefinition.controlPoints;
+        for (var uIndex = 0; uIndex < size(controlPoints); uIndex += 1)
+        {
+            for (var vIndex = 0; vIndex < size(controlPoints[0]); vIndex += 1)
+            {
+                allControlPoints = append(allControlPoints, controlPoints[uIndex][vIndex]);
+            }
+        }
+    }
+    
+    /* Build FFD lattice along base line *******************************************/
+    // Use a simple lattice with 2 spans along the base line direction
+    // This provides control at start, middle, and end
+    const lattice = buildFlexFFDLattice(allControlPoints, definition);
+    
+    /* Modify lattice based on taper/twist/deform settings ************************/
+    modifyLatticeForFlex(lattice, definition);
+    
+    /* Deform each surface using the modified lattice ******************************/
+    for (var surfaceIndex = 0; surfaceIndex < size(surfaceDefinitions); surfaceIndex += 1)
+    {
+        const surfaceDefinition = surfaceDefinitions[surfaceIndex];
+        const controlPoints = surfaceDefinition.controlPoints;
+        const weights = surfaceDefinition.weights;
+        
+        // Deform surface control points using FFD
+        var deformedControlPoints = [];
+        for (var uIndex = 0; uIndex < size(controlPoints); uIndex += 1)
+        {
+            var deformedRow = [];
+            for (var vIndex = 0; vIndex < size(controlPoints[0]); vIndex += 1)
+            {
+                const originalPoint = controlPoints[uIndex][vIndex];
+                
+                // Convert to STU parametric space
+                const stuCoords = convertWorldToSTUFlex(originalPoint, lattice);
+                
+                // Evaluate trivariate Bernstein polynomial to get deformed position
+                const deformedPoint = evaluateTrivariateBernsteinFlex(stuCoords, lattice);
+                
+                deformedRow = append(deformedRow, deformedPoint);
+            }
+            deformedControlPoints = append(deformedControlPoints, deformedRow);
+        }
+        
+        // Create the deformed B-spline surface
+        const deformedSurfaceDefinition = bSplineSurface({
+            "uDegree" : surfaceDefinition.uDegree,
+            "vDegree" : surfaceDefinition.vDegree,
+            "isUPeriodic" : surfaceDefinition.isUPeriodic,
+            "isVPeriodic" : surfaceDefinition.isVPeriodic,
+            "controlPoints" : controlPointMatrix(deformedControlPoints),
+            "weights" : weights == undefined ? undefined : matrix(weights),
+            "uKnots" : surfaceDefinition.uKnots,
+            "vKnots" : surfaceDefinition.vKnots
+        });
+        
+        // Create deformed surface
+        opCreateBSplineSurface(context, id + ("surface" ~ surfaceIndex), {
+            "bSplineSurface" : deformedSurfaceDefinition
+        });
+    }
+}
+
+
+/**
+ * Builds an FFD lattice oriented along the base line for flex operations
+ * 
+ * The lattice is aligned with the base coordinate system and extends along
+ * the base line direction with spans positioned for flex control.
+ * 
+ * @param allControlPoints {array} : Flat array of all surface control points
+ * @param definition {map} : Feature definition with base coordinate system
+ * @returns {map} : Lattice structure with control points and metadata
+ */
+function buildFlexFFDLattice(allControlPoints is array, definition is map) returns map
+{
+    /* Compute bounding box in base coordinate system ******************************/
+    var minX = undefined;
+    var maxX = undefined;
+    var minY = undefined;
+    var maxY = undefined;
+    var minZ = undefined;
+    var maxZ = undefined;
+    
+    for (var point in allControlPoints)
+    {
+        // Transform point to base coordinate system
+        const localPoint = fromWorld(definition.baseCoordSys, point);
+        
+        if (minX == undefined || localPoint[0] < minX)
+            minX = localPoint[0];
+        if (maxX == undefined || localPoint[0] > maxX)
+            maxX = localPoint[0];
+        if (minY == undefined || localPoint[1] < minY)
+            minY = localPoint[1];
+        if (maxY == undefined || localPoint[1] > maxY)
+            maxY = localPoint[1];
+        if (minZ == undefined || localPoint[2] < minZ)
+            minZ = localPoint[2];
+        if (maxZ == undefined || localPoint[2] > maxZ)
+            maxZ = localPoint[2];
+    }
+    
+    const minCorner = vector(minX, minY, minZ);
+    const maxCorner = vector(maxX, maxY, maxZ);
+    
+    /* Build lattice with 2 spans along X (base line), 1 span in Y and Z **********/
+    const spanCountS = 2;  // 3 control points along base line for start/middle/end
+    const spanCountT = 1;  // 2 control points in Y direction
+    const spanCountU = 1;  // 2 control points in Z direction
+    
+    const controlPointCountS = spanCountS + 1;
+    const controlPointCountT = spanCountT + 1;
+    const controlPointCountU = spanCountU + 1;
+    
+    const totalControlPoints = controlPointCountS * controlPointCountT * controlPointCountU;
+    
+    // Compute axes in local (base) coordinate system
+    const axisS = vector(maxCorner[0] - minCorner[0], 0 * meter, 0 * meter);
+    const axisT = vector(0 * meter, maxCorner[1] - minCorner[1], 0 * meter);
+    const axisU = vector(0 * meter, 0 * meter, maxCorner[2] - minCorner[2]);
+    
+    /* Initialize control points ***************************************************/
+    var controlPoints = [];
+    for (var indexS = 0; indexS < controlPointCountS; indexS += 1)
+    {
+        for (var indexT = 0; indexT < controlPointCountT; indexT += 1)
+        {
+            for (var indexU = 0; indexU < controlPointCountU; indexU += 1)
+            {
+                const fractionS = indexS / spanCountS;
+                const fractionT = indexT / spanCountT;
+                const fractionU = indexU / spanCountU;
+                
+                const localPosition = minCorner + axisS * fractionS + axisT * fractionT + axisU * fractionU;
+                
+                // Transform back to world coordinates
+                const worldPosition = toWorld(definition.baseCoordSys, localPosition);
+                
+                controlPoints = append(controlPoints, worldPosition);
+            }
+        }
+    }
+    
+    return {
+        "minCorner" : minCorner,
+        "maxCorner" : maxCorner,
+        "axisS" : axisS,
+        "axisT" : axisT,
+        "axisU" : axisU,
+        "spanCountS" : spanCountS,
+        "spanCountT" : spanCountT,
+        "spanCountU" : spanCountU,
+        "controlPointCountS" : controlPointCountS,
+        "controlPointCountT" : controlPointCountT,
+        "controlPointCountU" : controlPointCountU,
+        "totalControlPoints" : totalControlPoints,
+        "controlPoints" : controlPoints,
+        "baseCoordSys" : definition.baseCoordSys,
+        "basePathLength" : definition.basePathLength,
+        "crossS" : cross(axisT, axisU),
+        "crossT" : cross(axisS, axisU),
+        "crossU" : cross(axisS, axisT)
+    };
+}
+
+
+/**
+ * Modifies FFD lattice control points based on taper/twist/deform settings
+ * 
+ * This applies the flex transformations (taper, twist, deform) to the lattice
+ * control points. Each control point is transformed using the convertPoint
+ * function which encodes the taper/twist/deform logic.
+ * 
+ * @param lattice {map} : Lattice structure (modified in place)
+ * @param definition {map} : Feature definition with transformation settings
+ */
+function modifyLatticeForFlex(lattice is map, definition is map)
+{
+    var modifiedControlPoints = [];
+    
+    for (var pointIndex = 0; pointIndex < lattice.totalControlPoints; pointIndex += 1)
+    {
+        const originalPoint = lattice.controlPoints[pointIndex];
+        
+        // Use the existing convertPoint function which applies taper/twist/deform
+        const deformedPoint = definition.convertFunction(originalPoint);
+        
+        modifiedControlPoints = append(modifiedControlPoints, deformedPoint);
+    }
+    
+    // Update lattice with modified control points
+    lattice.controlPoints = modifiedControlPoints;
+}
+
+
+/**
+ * Converts a 3D point in world space to parametric (S, T, U) coordinates in flex lattice
+ * 
+ * This is similar to the standard FFD conversion but uses the base coordinate system
+ * for proper alignment with the flex operation.
+ * 
+ * @param worldPoint {Vector3} : Point in world coordinates
+ * @param lattice {map} : Lattice structure
+ * @returns {Vector3} : Parametric coordinates (S, T, U) in range [0, 1]
+ */
+function convertWorldToSTUFlex(worldPoint is Vector, lattice is map) returns Vector
+{
+    // Transform to base coordinate system first
+    const localPoint = fromWorld(lattice.baseCoordSys, worldPoint);
+    
+    // Vector from minimum corner to the local point
+    const minToLocal = localPoint - lattice.minCorner;
+    
+    // Use pre-computed cross products
+    const crossS = lattice.crossS;
+    const crossT = lattice.crossT;
+    const crossU = lattice.crossU;
+    
+    // Compute parametric coordinates
+    const epsilon = 1e-10 * meter * meter * meter;
+    
+    const numeratorS = dot(crossS, minToLocal);
+    var denominatorS = dot(crossS, lattice.axisS);
+    if (abs(denominatorS) < epsilon)
+        denominatorS = epsilon;
+    const paramS = numeratorS / denominatorS;
+    
+    const numeratorT = dot(crossT, minToLocal);
+    var denominatorT = dot(crossT, lattice.axisT);
+    if (abs(denominatorT) < epsilon)
+        denominatorT = epsilon;
+    const paramT = numeratorT / denominatorT;
+    
+    const numeratorU = dot(crossU, minToLocal);
+    var denominatorU = dot(crossU, lattice.axisU);
+    if (abs(denominatorU) < epsilon)
+        denominatorU = epsilon;
+    const paramU = numeratorU / denominatorU;
+    
+    return vector(paramS, paramT, paramU);
+}
+
+
+/**
+ * Evaluates the trivariate Bernstein polynomial for flex FFD
+ * 
+ * Standard FFD evaluation using the lattice control points.
+ * 
+ * @param stuCoords {Vector3} : Parametric coordinates (s, t, u)
+ * @param lattice {map} : Lattice structure with control points
+ * @returns {Vector3} : Evaluated point in world space
+ */
+function evaluateTrivariateBernsteinFlex(stuCoords is Vector, lattice is map) returns Vector
+{
+    const paramS = stuCoords[0];
+    const paramT = stuCoords[1];
+    const paramU = stuCoords[2];
+    
+    var evaluatedPoint = vector(0 * meter, 0 * meter, 0 * meter);
+    
+    for (var indexS = 0; indexS < lattice.controlPointCountS; indexS += 1)
+    {
+        var intermediatePointT = vector(0 * meter, 0 * meter, 0 * meter);
+        
+        for (var indexT = 0; indexT < lattice.controlPointCountT; indexT += 1)
+        {
+            var intermediatePointU = vector(0 * meter, 0 * meter, 0 * meter);
+            
+            for (var indexU = 0; indexU < lattice.controlPointCountU; indexU += 1)
+            {
+                const linearIndex = getTernaryIndexFlex(indexS, indexT, indexU, lattice);
+                const controlPoint = lattice.controlPoints[linearIndex];
+                
+                const basisU = bernsteinPolynomialFlex(lattice.spanCountU, indexU, paramU);
+                
+                intermediatePointU = intermediatePointU + controlPoint * basisU;
+            }
+            
+            const basisT = bernsteinPolynomialFlex(lattice.spanCountT, indexT, paramT);
+            
+            intermediatePointT = intermediatePointT + intermediatePointU * basisT;
+        }
+        
+        const basisS = bernsteinPolynomialFlex(lattice.spanCountS, indexS, paramS);
+        
+        evaluatedPoint = evaluatedPoint + intermediatePointT * basisS;
+    }
+    
+    return evaluatedPoint;
+}
+
+
+/**
+ * Computes the Bernstein basis function B_{i,n}(u) for flex FFD
+ * 
+ * @param degree {number} : Degree of the polynomial (n)
+ * @param index {number} : Index of the basis function (i)
+ * @param parameter {number} : Parameter value u in range [0, 1]
+ * @returns {number} : Value of the Bernstein basis function
+ */
+function bernsteinPolynomialFlex(degree is number, index is number, parameter is number) returns number
+{
+    const binomialCoefficient = factorialFlex(degree) / (factorialFlex(index) * factorialFlex(degree - index));
+    const termOneMinusU = (1 - parameter) ^ (degree - index);
+    const termU = parameter ^ index;
+    
+    return binomialCoefficient * termOneMinusU * termU;
+}
+
+
+/**
+ * Computes the factorial of a non-negative integer for flex FFD
+ * 
+ * @param n {number} : Non-negative integer
+ * @returns {number} : n!
+ */
+function factorialFlex(n is number) returns number
+{
+    if (n <= 0)
+        return 1;
+    
+    var result = 1;
+    for (var i = n; i > 1; i -= 1)
+    {
+        result = result * i;
+    }
+    
+    return result;
+}
+
+
+/**
+ * Converts ternary lattice indices to linear index for flex FFD
+ * 
+ * @param indexS {number} : Index in S direction
+ * @param indexT {number} : Index in T direction
+ * @param indexU {number} : Index in U direction
+ * @param lattice {map} : Lattice structure
+ * @returns {number} : Linear index
+ */
+function getTernaryIndexFlex(indexS is number, indexT is number, indexU is number, lattice is map) returns number
+{
+    return indexS * lattice.controlPointCountT * lattice.controlPointCountU + 
+           indexT * lattice.controlPointCountU + 
+           indexU;
+}
+
+
+/**
+ * Create target vertex (legacy method for edge/vertex support).
+ */
+function flexVertexLegacy(context is Context, id is Id, definition is map, vertex is Query) returns Query
 {
     const sourcePoint = evVertexPoint(context, { "vertex" : vertex });
     const targetPoint = definition.convertFunction(sourcePoint);
@@ -860,11 +1070,11 @@ function flexVertex(context is Context, id is Id, definition is map, vertex is Q
 }
 
 /**
- * Create target edge.
+ * Create target edge (legacy method for edge support).
  */
-function flexEdge(context is Context, id is Id, definition is map, edge is Query) returns Query
+function flexEdgeLegacy(context is Context, id is Id, definition is map, edge is Query) returns Query
 {
-    const targetPoints = flexEdgePoints(context, definition, edge);
+    const targetPoints = flexEdgePointsLegacy(context, definition, edge);
 
     /* Create new edge (3D cubic spline through target points) */
     opFitSpline(context, id, { "points" : targetPoints });
@@ -873,9 +1083,9 @@ function flexEdge(context is Context, id is Id, definition is map, edge is Query
 }
 
 /**
- * Sample an edge and return target points (array).
+ * Sample an edge and return target points (array) - legacy method.
  */
-function flexEdgePoints(context is Context, definition is map, edge is Query) returns array
+function flexEdgePointsLegacy(context is Context, definition is map, edge is Query) returns array
 {
     /* Default values **************************************************************/
     if (definition.edgeSamplingStep == undefined)
@@ -927,8 +1137,19 @@ function flexEdgePoints(context is Context, definition is map, edge is Query) re
     return targetPoints;
 }
 
+/*
+ * ============================================================================
+ * DEPRECATED LEGACY FUNCTIONS 
+ * ============================================================================
+ * The functions below (splitEntities) are part of the old piecewise filling
+ * approach and are no longer used in the FFD-based implementation.
+ * They are kept here for reference but should not be called.
+ * ============================================================================
+ */
+
 /**
- * Create subfaces by splitting entities (faces and bodies).
+ * DEPRECATED: Create subfaces by splitting entities (faces and bodies).
+ * This function is no longer used with the FFD-based approach.
  */
 function splitEntities(context is Context, id is Id, definition is map, entities is Query)
 {
