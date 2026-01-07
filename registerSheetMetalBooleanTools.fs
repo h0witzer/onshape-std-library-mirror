@@ -73,9 +73,11 @@ export function makeIsEntityPlanarCache(context is Context) returns function
  *
  * @param definition {{
  *      @field subtractiveTools {Query}:
- *              The cutting tool bodies you want subtracted from the sheet metal target bodies.
+ *              The cutting tool bodies you want subtracted from the sheet metal target bodies. @optional
+ *      @field additiveTools {Query}:
+ *              The additive tool bodies you want unioned with the sheet metal target bodies. @optional
  *      @field targets {Query}:
- *              The sheet metal target bodies you want to cut the tool bodies from.
+ *              The sheet metal target bodies you want to boolean the tool bodies with.
  *      @field doUpdateSMGeometry {boolean} :
  *              true : Call [updateSheetMetalGeometry] so that the actual boolean is performed
  *              false: The caller might want to call [updateSheetMetalGeometry] themselves
@@ -84,8 +86,12 @@ export function makeIsEntityPlanarCache(context is Context) returns function
  */
 export const registerSheetMetalBooleanTools = function(context is Context, id is Id, definition is map)
     {
+        // Determine which tools to use (subtractiveTools or additiveTools)
+        const toolsQuery = definition.subtractiveTools != undefined ? definition.subtractiveTools : definition.additiveTools;
+        const isAdditive = definition.additiveTools != undefined;
+        
         var collisions = evCollision(context, {
-                "tools" : definition.subtractiveTools,
+                "tools" : toolsQuery,
                 "targets" : definition.targets
             });
 
@@ -165,14 +171,33 @@ export const registerSheetMetalBooleanTools = function(context is Context, id is
                 throw "Unexpected as planes have been filtered";
             }
             var alteredWallAttribute = wallAttribute;
-            if (alteredWallAttribute.cuttingToolBodyIds == undefined)
+            
+            // Handle both subtractive and additive tools
+            if (isAdditive)
             {
-                alteredWallAttribute.cuttingToolBodyIds = cuttingToolBodyIds;
+                // For additive tools, store in additiveToolBodyIds attribute
+                if (alteredWallAttribute.additiveToolBodyIds == undefined)
+                {
+                    alteredWallAttribute.additiveToolBodyIds = cuttingToolBodyIds;
+                }
+                else
+                {
+                    alteredWallAttribute.additiveToolBodyIds = concatenateArrays([alteredWallAttribute.additiveToolBodyIds, cuttingToolBodyIds]);
+                }
             }
             else
             {
-                alteredWallAttribute.cuttingToolBodyIds = concatenateArrays([alteredWallAttribute.cuttingToolBodyIds, cuttingToolBodyIds]);
+                // For subtractive tools, store in cuttingToolBodyIds attribute (existing behavior)
+                if (alteredWallAttribute.cuttingToolBodyIds == undefined)
+                {
+                    alteredWallAttribute.cuttingToolBodyIds = cuttingToolBodyIds;
+                }
+                else
+                {
+                    alteredWallAttribute.cuttingToolBodyIds = concatenateArrays([alteredWallAttribute.cuttingToolBodyIds, cuttingToolBodyIds]);
+                }
             }
+            
             replaceSMAttribute(context, wallAttribute, alteredWallAttribute);
             updatedSMEntities = append(updatedSMEntities, wall);
             robustWallToCuttingToolBodyIdSet[makeRobustQuery(context, wall)] = cuttingToolBodyIdSet;

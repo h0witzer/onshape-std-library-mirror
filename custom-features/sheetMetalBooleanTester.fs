@@ -10,7 +10,7 @@ import(path : "onshape/std/common.fs", version : "2837.0");
 import(path : "onshape/std/query.fs", version : "2837.0");
 import(path : "onshape/std/feature.fs", version : "2837.0");
 import(path : "onshape/std/booleanoperationtype.gen.fs", version : "2837.0");
-import(path : "d3ff2f637f78618994683000", version : "06af691c35febae02bdb7446"); // registerSheetMetalBooleanTools.fs modified
+import(path : "onshape/std/registerSheetMetalBooleanTools.fs", version : "2837.0");
 import(path : "onshape/std/sheetMetalUtils.fs", version : "2837.0");
 import(path : "onshape/std/error.fs", version : "2837.0");
 import(path : "onshape/std/geomOperations.fs", version : "2837.0");
@@ -134,11 +134,10 @@ export const sheetMetalBooleanTester = defineFeature(function(context is Context
             // This is experimental - testing additive operations on sheet metal
             try
             {
-                // Call the modified registerSheetMetalBooleanTools with union support
+                // Call registerSheetMetalBooleanTools with additiveTools parameter
                 const wallToAddingToolBodyIds = registerSheetMetalBooleanTools(context, id, {
                     "targets" : definition.targetSheetMetal,
                     "additiveTools" : definition.toolBody,
-                    "operationType" : BooleanOperationType.UNION,
                     "doUpdateSMGeometry" : definition.updateGeometry
                 });
 
