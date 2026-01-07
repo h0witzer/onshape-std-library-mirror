@@ -9,7 +9,8 @@ FeatureScript 2837;
 import(path : "onshape/std/common.fs", version : "2837.0");
 import(path : "onshape/std/query.fs", version : "2837.0");
 import(path : "onshape/std/feature.fs", version : "2837.0");
-import(path : "onshape/std/registerSheetMetalBooleanTools.fs", version : "2837.0");
+import(path : "onshape/std/booleanoperationtype.gen.fs", version : "2837.0");
+import(path : "d3ff2f637f78618994683000", version : "06af691c35febae02bdb7446"); // registerSheetMetalBooleanTools.fs modified
 import(path : "onshape/std/sheetMetalUtils.fs", version : "2837.0");
 import(path : "onshape/std/error.fs", version : "2837.0");
 import(path : "onshape/std/geomOperations.fs", version : "2837.0");
@@ -52,7 +53,7 @@ export const sheetMetalBooleanTester = defineFeature(function(context is Context
         definition.toolBody is Query;
 
         annotation { "Name" : "Target sheet metal part",
-                     "Filter" : EntityType.BODY && ModifiableEntityOnly.YES && BodyType.SHEET,
+                     "Filter" : EntityType.BODY && ModifiableEntityOnly.YES,
                      "MaxNumberOfPicks" : 1 }
         definition.targetSheetMetal is Query;
 
@@ -129,8 +130,45 @@ export const sheetMetalBooleanTester = defineFeature(function(context is Context
         }
         else if (definition.operationType == SheetMetalBooleanTestType.UNION)
         {
-            // Union operations are not supported by registerSheetMetalBooleanTools
-            // This is experimental and may not work as the hole feature only uses subtraction
-            throw regenError("Union operations are not currently supported. The hole feature only performs subtractive operations (countersink/counterbore). This remains experimental.");
+            // Union operations using modified registerSheetMetalBooleanTools
+            // This is experimental - testing additive operations on sheet metal
+            try
+            {
+                // Call the modified registerSheetMetalBooleanTools with union support
+                const wallToAddingToolBodyIds = registerSheetMetalBooleanTools(context, id, {
+                    "targets" : definition.targetSheetMetal,
+                    "additiveTools" : definition.toolBody,
+                    "operationType" : BooleanOperationType.UNION,
+                    "doUpdateSMGeometry" : definition.updateGeometry
+                });
+
+                // The function returns a map of walls to adding tool body IDs
+                // If the map is not empty, tools were successfully registered
+                if (wallToAddingToolBodyIds != undefined && size(wallToAddingToolBodyIds) > 0)
+                {
+                    const geometryStatus = definition.updateGeometry ? "Geometry updated." : "Geometry update deferred.";
+                    const message = "Successfully registered " ~ size(wallToAddingToolBodyIds) ~ 
+                                    " additive tool(s) to sheet metal wall(s). " ~ geometryStatus;
+                    reportFeatureInfo(context, id, message);
+                    
+                    // If keepTool is false, delete the tool body (standard boolean behavior)
+                    // Note: registerSheetMetalBooleanTools already copies the tool, so we're deleting the original
+                    if (!definition.keepTool)
+                    {
+                        opDeleteBodies(context, id + "deleteTool", {
+                            "entities" : definition.toolBody
+                        });
+                    }
+                }
+                else
+                {
+                    reportFeatureWarning(context, id, 
+                        "No tools were registered. Tool may not intersect planar walls, or may intersect non-planar features.");
+                }
+            }
+            catch (error)
+            {
+                throw regenError("Failed to register sheet metal boolean tools for union: " ~ error);
+            }
         }
     });
