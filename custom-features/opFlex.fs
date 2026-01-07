@@ -475,7 +475,11 @@ function flexEntities(context is Context, id is Id, definition is map)
     var vertexTable = evaluateQuery(context, qEntityFilter(definition.entities, EntityType.VERTEX));
     
     /* Process edges with legacy method if requested ******************************/
-    if (size(edgeTable) > 0 && definition.isDebug2)
+    if (size(edgeTable) > 0 && definition.isDebug2 == false)
+    {
+        return;
+    }
+    if (size(edgeTable) > 0)
     {
         for (var edgeIndex = 0; edgeIndex < size(edgeTable); edgeIndex += 1)
         {
@@ -497,7 +501,7 @@ function flexEntities(context is Context, id is Id, definition is map)
     }
     
     /* Process vertices with legacy method if requested ****************************/
-    if (size(vertexTable) > 0 && definition.isDebug2)
+    if (size(vertexTable) > 0)
     {
         for (var vertexIndex = 0; vertexIndex < size(vertexTable); vertexIndex += 1)
         {
@@ -999,6 +1003,10 @@ function evaluateTrivariateBernsteinFlex(stuCoords is Vector, lattice is map) re
 
 /**
  * Computes the Bernstein basis function B_{i,n}(u) for flex FFD
+ * 
+ * Note: For the flex FFD lattice, we use a simple 2-span configuration
+ * (degree 2 in S direction, degree 1 in T and U). Factorial computation
+ * is trivial for these small degrees and doesn't need optimization.
  * 
  * @param degree {number} : Degree of the polynomial (n)
  * @param index {number} : Index of the basis function (i)
