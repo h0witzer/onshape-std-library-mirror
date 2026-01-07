@@ -10,7 +10,7 @@ import(path : "onshape/std/common.fs", version : "2837.0");
 import(path : "onshape/std/query.fs", version : "2837.0");
 import(path : "onshape/std/feature.fs", version : "2837.0");
 import(path : "onshape/std/booleanoperationtype.gen.fs", version : "2837.0");
-import(path : "registerSheetMetalBooleanToolsModified.fs", version : "");
+import(path : "d3ff2f637f78618994683000", version : "26bfcf148a40369a0bf3b9e0"); // registerSheetMetalBooleanTools.fs modified
 import(path : "onshape/std/sheetMetalUtils.fs", version : "2837.0");
 import(path : "onshape/std/error.fs", version : "2837.0");
 import(path : "onshape/std/geomOperations.fs", version : "2837.0");
