@@ -13,6 +13,7 @@ import(path : "onshape/std/booleanoperationtype.gen.fs", version : "2837.0");
 import(path : "onshape/std/registerSheetMetalBooleanTools.fs", version : "2837.0");
 import(path : "onshape/std/sheetMetalUtils.fs", version : "2837.0");
 import(path : "onshape/std/error.fs", version : "2837.0");
+import(path : "onshape/std/geomOperations.fs", version : "2837.0");
 
 /**
  * Defines the type of boolean operation to test
@@ -56,8 +57,13 @@ export const sheetMetalBooleanTester = defineFeature(function(context is Context
                      "MaxNumberOfPicks" : 1 }
         definition.targetSheetMetal is Query;
 
-        annotation { "Name" : "Update geometry immediately" }
+        annotation { "Name" : "Update geometry immediately",
+                     "Default" : true }
         definition.updateGeometry is boolean;
+
+        annotation { "Name" : "Keep tool body",
+                     "Default" : false }
+        definition.keepTool is boolean;
     }
     {
         // Verify the tool body is a solid
@@ -85,18 +91,30 @@ export const sheetMetalBooleanTester = defineFeature(function(context is Context
             // This is the special wiring that allows violations of normal sheet metal rules
             try
             {
+                // Call registerSheetMetalBooleanTools - this is the key function that enables
+                // the special sheet metal boolean operations used by hole feature countersinks/counterbores
                 const wallToCuttingToolBodyIds = registerSheetMetalBooleanTools(context, id, {
                     "targets" : definition.targetSheetMetal,
                     "subtractiveTools" : definition.toolBody,
                     "doUpdateSMGeometry" : definition.updateGeometry
                 });
 
-                // Log success information
+                // The function returns a map of walls to cutting tool body IDs
+                // If the map is not empty, tools were successfully registered
                 if (wallToCuttingToolBodyIds != undefined && size(wallToCuttingToolBodyIds) > 0)
                 {
                     reportFeatureInfo(context, id, "Successfully registered " ~ size(wallToCuttingToolBodyIds) ~ 
                                     " cutting tool(s) to sheet metal wall(s). " ~
                                     (definition.updateGeometry ? "Geometry updated." : "Geometry update deferred."));
+                    
+                    // If keepTool is false, delete the tool body (standard boolean behavior)
+                    // Note: registerSheetMetalBooleanTools already copies the tool, so we're deleting the original
+                    if (!definition.keepTool)
+                    {
+                        opDeleteBodies(context, id + "deleteTool", {
+                            "entities" : definition.toolBody
+                        });
+                    }
                 }
                 else
                 {
