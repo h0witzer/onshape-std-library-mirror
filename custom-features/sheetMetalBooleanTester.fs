@@ -9,7 +9,6 @@ FeatureScript 2837;
 import(path : "onshape/std/common.fs", version : "2837.0");
 import(path : "onshape/std/query.fs", version : "2837.0");
 import(path : "onshape/std/feature.fs", version : "2837.0");
-import(path : "onshape/std/booleanoperationtype.gen.fs", version : "2837.0");
 import(path : "onshape/std/registerSheetMetalBooleanTools.fs", version : "2837.0");
 import(path : "onshape/std/sheetMetalUtils.fs", version : "2837.0");
 import(path : "onshape/std/error.fs", version : "2837.0");
@@ -103,9 +102,10 @@ export const sheetMetalBooleanTester = defineFeature(function(context is Context
                 // If the map is not empty, tools were successfully registered
                 if (wallToCuttingToolBodyIds != undefined && size(wallToCuttingToolBodyIds) > 0)
                 {
-                    reportFeatureInfo(context, id, "Successfully registered " ~ size(wallToCuttingToolBodyIds) ~ 
-                                    " cutting tool(s) to sheet metal wall(s). " ~
-                                    (definition.updateGeometry ? "Geometry updated." : "Geometry update deferred."));
+                    const geometryStatus = definition.updateGeometry ? "Geometry updated." : "Geometry update deferred.";
+                    const message = "Successfully registered " ~ size(wallToCuttingToolBodyIds) ~ 
+                                    " cutting tool(s) to sheet metal wall(s). " ~ geometryStatus;
+                    reportFeatureInfo(context, id, message);
                     
                     // If keepTool is false, delete the tool body (standard boolean behavior)
                     // Note: registerSheetMetalBooleanTools already copies the tool, so we're deleting the original
@@ -118,7 +118,8 @@ export const sheetMetalBooleanTester = defineFeature(function(context is Context
                 }
                 else
                 {
-                    reportFeatureWarning(context, id, "No tools were registered. The tool may not intersect planar walls of the sheet metal, or may intersect non-planar features (curves, bends, etc.).");
+                    reportFeatureWarning(context, id, 
+                        "No tools were registered. Tool may not intersect planar walls, or may intersect non-planar features.");
                 }
             }
             catch (error)
