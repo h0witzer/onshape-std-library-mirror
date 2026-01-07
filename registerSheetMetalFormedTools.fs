@@ -132,7 +132,12 @@ export const registerSheetMetalFormedTools = function(context is Context, id is 
             }
             for (var form in formedBodies)
             {
-                if (!isQueryEmpty(context, form->qBodyType(BodyType.SOLID)) &&
+                // Skip footprint check if body is marked with FORM_BODY_SKETCH_FOR_FLAT_VIEW
+                // This allows experimental use cases where solid bodies are positioned manually
+                const hasSketchAttribute = !isQueryEmpty(context, qBodiesWithFormAttribute(form, FORM_BODY_SKETCH_FOR_FLAT_VIEW));
+                
+                if (!hasSketchAttribute &&
+                    !isQueryEmpty(context, form->qBodyType(BodyType.SOLID)) &&
                     !isFormFootPrintOnFace(context, form, definitionFace, targetToDefinitionEntity))
                 {
                     continue;

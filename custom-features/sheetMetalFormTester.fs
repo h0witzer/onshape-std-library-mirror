@@ -14,9 +14,6 @@ import(path : "onshape/std/sheetMetalUtils.fs", version : "2837.0");
 import(path : "onshape/std/error.fs", version : "2837.0");
 import(path : "onshape/std/sheetMetalAttribute.fs", version : "2837.0");
 import(path : "onshape/std/geomOperations.fs", version : "2837.0");
-import(path : "onshape/std/coordSystem.fs", version : "2837.0");
-import(path : "onshape/std/transform.fs", version : "2837.0");
-import(path : "onshape/std/evaluate.fs", version : "2837.0");
 
 /**
  * Defines the type of boolean operation to test
@@ -60,11 +57,6 @@ export const sheetMetalFormTester = defineFeature(function(context is Context, i
                      "MaxNumberOfPicks" : 1 }
         definition.targetSheetMetal is Query;
 
-        annotation { "Name" : "Target face on sheet metal",
-                     "Filter" : EntityType.FACE && GeometryType.PLANE,
-                     "MaxNumberOfPicks" : 1 }
-        definition.targetFace is Query;
-
         annotation { "Name" : "Update geometry immediately",
                      "Default" : true }
         definition.updateGeometry is boolean;
@@ -86,12 +78,6 @@ export const sheetMetalFormTester = defineFeature(function(context is Context, i
             throw regenError(ErrorStringEnum.CANNOT_RESOLVE_ENTITIES, ["targetSheetMetal"]);
         }
 
-        // Verify the target face is selected
-        if (isQueryEmpty(context, definition.targetFace))
-        {
-            throw regenError(ErrorStringEnum.CANNOT_RESOLVE_ENTITIES, ["targetFace"]);
-        }
-
         // Check if the target is actually sheet metal
         const isSheetMetalTarget = isActiveSheetMetalPart(context, definition.targetSheetMetal);
         if (!isSheetMetalTarget)
@@ -99,48 +85,13 @@ export const sheetMetalFormTester = defineFeature(function(context is Context, i
             throw regenError("Selected target is not a sheet metal part. This feature only works with sheet metal.");
         }
 
-        // Position the tool body on the target face
-        // Get the coordinate system of the target face (z-axis is normal to face)
-        const targetFacePlane = evFaceTangentPlane(context, {
-            "face" : definition.targetFace,
-            "parameter" : vector(0.5, 0.5)
-        });
-        
-        // Get the centroid of the tool body
-        const toolCentroid = evApproximateCentroid(context, {
-            "entities" : definition.toolBody
-        });
-        
-        // Calculate transform to move tool body so its centroid sits on the target face
-        // For UNION (positive part), move tool centroid to face, then offset slightly into material
-        // For SUBTRACTION (negative part), move tool centroid to face, then offset slightly out of material
-        var offsetDistance = 0 * meter;
-        if (definition.operationType == SheetMetalFormTestType.UNION)
-        {
-            // For additive, position tool slightly above the face
-            offsetDistance = -0.001 * meter; // Negative moves away from material
-        }
-        else // SUBTRACTION
-        {
-            // For subtractive, position tool slightly below the face  
-            offsetDistance = 0.001 * meter; // Positive moves into material
-        }
-        
-        const targetPoint = targetFacePlane.origin + (targetFacePlane.normal * offsetDistance);
-        const transformVector = targetPoint - toolCentroid;
-        
-        // Transform the tool body to position it on the target face
-        opTransform(context, id + "positionTool", {
-            "bodies" : definition.toolBody,
-            "transform" : transform(transformVector)
-        });
-
-        // Get definition face for the selected target face
-        const definitionFaces = getSMDefinitionEntities(context, definition.targetFace);
+        // Get all definition faces from the target sheet metal
+        const targetFaces = qOwnedByBody(definition.targetSheetMetal, EntityType.FACE);
+        const definitionFaces = getSMDefinitionEntities(context, targetFaces);
         
         if (definitionFaces == [])
         {
-            throw regenError("Could not get definition entity for target face. Ensure you selected a planar face on the sheet metal part.");
+            throw regenError("Could not get definition entities for target sheet metal.");
         }
 
         // Mark the tool body with the appropriate form attribute based on operation type
@@ -155,13 +106,15 @@ export const sheetMetalFormTester = defineFeature(function(context is Context, i
             setFormAttribute(context, definition.toolBody, FORM_BODY_NEGATIVE_PART);
         }
 
-        // EXPERIMENTAL: Try marking the solid tool body with FORM_BODY_SKETCH_FOR_FLAT_VIEW
-        // to make it appear in the flat pattern. This tests if solids can be imported to 2D view.
-        // The standard form feature only uses wire bodies for this, but we're testing if solids work.
+        // EXPERIMENTAL: Mark the solid tool body with FORM_BODY_SKETCH_FOR_FLAT_VIEW
+        // This serves dual purposes:
+        // 1. Tests if solids can be imported to the flat pattern view
+        // 2. Signals to registerSheetMetalFormedTools to skip the footprint validation
+        //    (allowing the tool to be positioned wherever the user wants)
         setFormAttribute(context, definition.toolBody, FORM_BODY_SKETCH_FOR_FLAT_VIEW);
 
         // Prepare the definition face to formed bodies map
-        // Map the selected definition face to the positioned tool body
+        // We need to map each definition face that the tool intersects
         var definitionFaceToFormedBodies = {};
         for (var definitionFace in definitionFaces)
         {
