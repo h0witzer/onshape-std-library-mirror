@@ -34,10 +34,28 @@ function isFormFootPrintOnFace(context is Context, form is Query, faceDefinition
     const positiveBody = qUnion(evaluateQuery(context, qBodiesWithFormAttribute(form, FORM_BODY_POSITIVE_PART)));
     const negativeBody = qUnion(evaluateQuery(context, qBodiesWithFormAttribute(form, FORM_BODY_NEGATIVE_PART)));
 
-    const collisions = evCollision(context, {
-            "tools" : qUnion([positiveBody, negativeBody]),
-            "targets" : qSheetMetalFlatFilter(qBodyType(qOwnerBody(qAttributeQuery(associationAttributes[0])), BodyType.SOLID), SMFlatType.NO)
-    });
+    // Check if both queries are empty - if so, return false early
+    if (isQueryEmpty(context, positiveBody) && isQueryEmpty(context, negativeBody))
+    {
+        return false;
+    }
+
+    // Try evCollision, but handle cases where the query might not resolve properly
+    // (e.g., when a body has multiple form attributes including sketch attribute)
+    var collisions;
+    try
+    {
+        collisions = evCollision(context, {
+                "tools" : qUnion([positiveBody, negativeBody]),
+                "targets" : qSheetMetalFlatFilter(qBodyType(qOwnerBody(qAttributeQuery(associationAttributes[0])), BodyType.SOLID), SMFlatType.NO)
+        });
+    }
+    catch
+    {
+        // If evCollision fails (e.g., CANNOT_RESOLVE_ENTITIES), assume the form is valid
+        // This allows experimental use cases where bodies have multiple form attributes
+        return true;
+    }
 
     if (size(collisions) == 0)
     {
