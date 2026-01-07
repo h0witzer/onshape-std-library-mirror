@@ -29,12 +29,17 @@ FeatureScript 2837;
  * 4. Reconstructs surface with increased control point count
  * 5. Creates new surface geometry that is identical to original
  * 
- * The algorithm works in homogeneous coordinates for rational surfaces (NURBS) to ensure
- * mathematically correct results.
+ * The algorithm works in homogeneous coordinates for rational surfaces (NURBS) using
+ * the combinePointsAndWeights and separatePointsAndWeights functions from nurbsUtils.fs
+ * to ensure mathematically correct results.
+ * 
+ * Dependencies:
+ * - nurbsUtils.fs: Provides combinePointsAndWeights and separatePointsAndWeights for
+ *   working with rational B-splines (NURBS) in homogeneous coordinates
  * 
  * Related Features:
  * - custom-features/freeFormDeformation.fs - FFD feature that benefits from refined surfaces
- * - custom-features/tweenSurfaces.fs - Contains the core knot insertion algorithms
+ * - custom-features/tweenSurfaces.fs - Contains similar knot insertion algorithms
  */
 
 // Standard Library Imports
@@ -551,12 +556,19 @@ function insertKnotBoehm(controlPoints is array, knots is array, degree is numbe
     }
     
     // Find the knot span index where insertParam falls
+    // Using forward iteration for efficiency
     var knotSpanIndex = -1;
-    for (var i = size(knots) - degree - 2; i >= degree; i -= 1)
+    for (var i = degree; i < size(knots) - degree - 1; i += 1)
     {
-        if (insertParam >= knots[i] && insertParam <= knots[i + 1])
+        if (insertParam >= knots[i] && insertParam < knots[i + 1])
         {
             knotSpanIndex = i;
+            break;
+        }
+        // Handle the case where insertParam equals a knot value
+        if (insertParam == knots[i + 1] && i < size(knots) - degree - 2)
+        {
+            knotSpanIndex = i + 1;
             break;
         }
     }
@@ -564,17 +576,18 @@ function insertKnotBoehm(controlPoints is array, knots is array, degree is numbe
     // Handle edge case: if not found, clamp to valid range
     if (knotSpanIndex == -1)
     {
-        if (insertParam < knots[degree])
+        if (insertParam <= knots[degree])
         {
             knotSpanIndex = degree;
         }
         else
         {
-            knotSpanIndex = max(degree, size(knots) - degree - 2);
+            knotSpanIndex = size(knots) - degree - 2;
         }
     }
     
     // Compute new control points using the Boehm algorithm
+    // After inserting one knot, we'll have numControlPoints + 1 control points
     var newControlPoints = [];
     
     const k = knotSpanIndex;
@@ -587,6 +600,8 @@ function insertKnotBoehm(controlPoints is array, knots is array, degree is numbe
     }
     
     // Compute new control points from (k-p+1) to k using Boehm's knot insertion formula
+    // The formula: Q_i = alpha_i * P_i + (1 - alpha_i) * P_{i-1}
+    // where alpha_i = (u - knot_i) / (knot_{i+p} - knot_i)
     for (var i = k - p + 1; i <= k; i += 1)
     {
         const denominator = knots[i + p] - knots[i];
@@ -597,34 +612,15 @@ function insertKnotBoehm(controlPoints is array, knots is array, degree is numbe
         }
         else
         {
+            // For repeated knots, keep the right control point
             alpha = 1.0;
         }
         const newPoint = controlPoints[i - 1] * (1 - alpha) + controlPoints[i] * alpha;
         newControlPoints = append(newControlPoints, newPoint);
     }
     
-    // Handle the control point at position k+1
-    if (k + 1 < numControlPoints)
-    {
-        const denominator = knots[k + 1 + p] - knots[k + 1];
-        var alpha = 0.0;
-        if (abs(denominator) > KNOT_TOLERANCE)
-        {
-            alpha = (insertParam - knots[k + 1]) / denominator;
-        }
-        else
-        {
-            alpha = 1.0;
-        }
-        const newPoint = controlPoints[k] * (1 - alpha) + controlPoints[k + 1] * alpha;
-        newControlPoints = append(newControlPoints, newPoint);
-    }
-    else
-    {
-        newControlPoints = append(newControlPoints, controlPoints[numControlPoints - 1]);
-    }
-    
-    // Control points from (k+1) onward remain unchanged but shifted by 1
+    // Control points from (k+1) onward remain unchanged
+    // These are appended after the affected region
     for (var i = k + 1; i < numControlPoints; i += 1)
     {
         newControlPoints = append(newControlPoints, controlPoints[i]);
