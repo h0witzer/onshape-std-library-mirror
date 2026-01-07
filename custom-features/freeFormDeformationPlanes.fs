@@ -852,14 +852,15 @@ function visualizeLatticeControlPoints(context is Context, id is Id, lattice is 
 /**
  * Visualizes the planes using debug geometry
  * 
- * Shows the actual plane defined by the lattice control points for each plane.
- * Computes plane normal and orientation directly from the transformed control points.
+ * Shows actual plane definitions with origin and normal for each plane in the lattice.
+ * Uses proper Plane debug visualization to show plane orientation and position.
+ * Applies transforms to show rotated planes correctly.
  * 
  * @param context {Context} : The modeling context
  * @param id {Id} : Identifier for the debug geometry
  * @param lattice {map} : Lattice structure with plane data
  * @param direction {FFDPlaneDirection} : The manipulation direction
- * @param planeTransformations {array} : Array of plane transformations (not used - for API compatibility)
+ * @param planeTransformations {array} : Array of plane transformations
  */
 function visualizePlanes(context is Context, id is Id, lattice is map, direction is FFDPlaneDirection, planeTransformations is array)
 {
@@ -868,18 +869,7 @@ function visualizePlanes(context is Context, id is Id, lattice is map, direction
         const planeInfo = lattice.planeData[planeIndex];
         const pointIndices = planeInfo.pointIndices;
         
-        // Each plane has 4 control points (2x2 grid)
-        if (size(pointIndices) < 3)
-        {
-            continue; // Need at least 3 points to define a plane
-        }
-        
-        // Get the actual positions of the control points from the lattice
-        const point0 = lattice.controlPoints[pointIndices[0]];
-        const point1 = lattice.controlPoints[pointIndices[1]];
-        const point2 = lattice.controlPoints[pointIndices[2]];
-        
-        // Calculate plane center from all control points on this plane
+        // Calculate plane center from the current (possibly transformed) control points
         var planeCenter = vector(0 * meter, 0 * meter, 0 * meter);
         for (var pointIndex in pointIndices)
         {
@@ -887,38 +877,43 @@ function visualizePlanes(context is Context, id is Id, lattice is map, direction
         }
         planeCenter = planeCenter / size(pointIndices);
         
-        // Compute plane normal from the first three control points
-        // Use cross product of two edge vectors
-        const edge1 = point1 - point0;
-        const edge2 = point2 - point0;
-        var planeNormal = cross(edge1, edge2);
-        
-        // Normalize the normal vector
-        const normalLength = norm(planeNormal);
-        if (normalLength > TOLERANCE.zeroLength * meter)
+        // Determine initial plane normal based on manipulation direction
+        var planeNormal = vector(0, 0, 1);
+        var planeX = vector(1, 0, 0);
+        if (direction == FFDPlaneDirection.S_DIRECTION)
         {
-            planeNormal = planeNormal / normalLength;
+            planeNormal = vector(1, 0, 0);
+            planeX = vector(0, 1, 0);
         }
-        else
+        else if (direction == FFDPlaneDirection.T_DIRECTION)
         {
-            // Points are collinear, skip this plane
-            continue;
+            planeNormal = vector(0, 1, 0);
+            planeX = vector(0, 0, 1);
         }
-        
-        // Use edge1 as the x-axis direction (normalized)
-        var planeX = edge1;
-        const xLength = norm(planeX);
-        if (xLength > TOLERANCE.zeroLength * meter)
+        else // U_DIRECTION
         {
-            planeX = planeX / xLength;
-        }
-        else
-        {
-            // Use a default if edge is too short
+            planeNormal = vector(0, 0, 1);
             planeX = vector(1, 0, 0);
         }
         
-        // Create and debug the plane using the computed geometry
+        // Apply rotation from transform if it exists
+        const transformData = findTransformForPlane(planeTransformations, planeIndex);
+        if (transformData.rotationMatrix != undefined && size(transformData.rotationMatrix) == 9)
+        {
+            const rotationMatrix = transformData.rotationMatrix;
+            const matrix3x3 = matrix([
+                [rotationMatrix[0], rotationMatrix[1], rotationMatrix[2]],
+                [rotationMatrix[3], rotationMatrix[4], rotationMatrix[5]],
+                [rotationMatrix[6], rotationMatrix[7], rotationMatrix[8]]
+            ]);
+            
+            // Apply the rotation matrix to plane normal to show the rotated plane
+            // Use the stored matrix directly to match how it's applied in lattice transformation
+            planeNormal = matrix3x3 * planeNormal;
+            planeX = matrix3x3 * planeX;
+        }
+        
+        // Create and debug the plane using proper Plane type with transformed normal
         const planeGeometry = plane(planeCenter, planeNormal, planeX);
         debug(context, planeGeometry, DebugColor.GREEN);
     }
