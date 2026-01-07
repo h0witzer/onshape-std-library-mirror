@@ -13,18 +13,19 @@ import(path : "onshape/std/registerSheetMetalFormedTools.fs", version : "2837.0"
 import(path : "onshape/std/sheetMetalUtils.fs", version : "2837.0");
 import(path : "onshape/std/error.fs", version : "2837.0");
 import(path : "onshape/std/sheetMetalAttribute.fs", version : "2837.0");
+import(path : "onshape/std/geomOperations.fs", version : "2837.0");
 
 /**
- * Defines the type of form operation to test
- * @value ADDITIVE : Add positive (raised) geometry to sheet metal
- * @value SUBTRACTIVE : Add negative (depressed) geometry to sheet metal
+ * Defines the type of boolean operation to test
+ * @value SUBTRACTION : Subtract tool body from sheet metal target (like countersink/counterbore)
+ * @value UNION : Union tool body with sheet metal target (experimental)
  */
 export enum SheetMetalFormTestType
 {
-    annotation { "Name" : "Additive (Raised)" }
-    ADDITIVE,
-    annotation { "Name" : "Subtractive (Depressed)" }
-    SUBTRACTIVE
+    annotation { "Name" : "Subtraction" }
+    SUBTRACTION,
+    annotation { "Name" : "Union (Experimental)" }
+    UNION
 }
 
 /**
@@ -94,13 +95,49 @@ export const sheetMetalFormTester = defineFeature(function(context is Context, i
         }
 
         // Mark the tool body with the appropriate form attribute based on operation type
-        if (definition.operationType == SheetMetalFormTestType.ADDITIVE)
+        // For SUBTRACTION, use negative part (depressed geometry)
+        // For UNION, use positive part (raised geometry)
+        if (definition.operationType == SheetMetalFormTestType.UNION)
         {
             setFormAttribute(context, definition.toolBody, FORM_BODY_POSITIVE_PART);
         }
-        else // SUBTRACTIVE
+        else // SUBTRACTION
         {
             setFormAttribute(context, definition.toolBody, FORM_BODY_NEGATIVE_PART);
+        }
+
+        // Create a sketch representation of the tool body for the flat pattern
+        // This is what makes the tool appear in the 2D view
+        const sketchId = id + "toolSketch";
+        try
+        {
+            // Project the tool body outline onto a sketch plane
+            // We'll use the first face of the tool as a reference
+            const toolFaces = qOwnedByBody(definition.toolBody, EntityType.FACE);
+            if (!isQueryEmpty(context, toolFaces))
+            {
+                // Create a sketch body by extracting edges from the tool
+                const toolEdges = qOwnedByBody(definition.toolBody, EntityType.EDGE);
+                if (!isQueryEmpty(context, toolEdges))
+                {
+                    // Use opExtractWires to create wire bodies from the edges
+                    opExtractWires(context, sketchId, {
+                        "edges" : toolEdges
+                    });
+                    
+                    const sketchBodies = qCreatedBy(sketchId, EntityType.BODY);
+                    if (!isQueryEmpty(context, sketchBodies))
+                    {
+                        // Mark the sketch bodies with the flat view attribute
+                        setFormAttribute(context, sketchBodies, FORM_BODY_SKETCH_FOR_FLAT_VIEW);
+                    }
+                }
+            }
+        }
+        catch
+        {
+            // If sketch creation fails, continue without it
+            // The 3D geometry will still work
         }
 
         // Prepare the definition face to formed bodies map
@@ -123,7 +160,7 @@ export const sheetMetalFormTester = defineFeature(function(context is Context, i
             if (wallToFormedBodyIds != undefined && size(wallToFormedBodyIds) > 0)
             {
                 const geometryStatus = definition.updateGeometry ? "Geometry updated." : "Geometry update deferred.";
-                const operationType = definition.operationType == SheetMetalFormTestType.ADDITIVE ? "additive (raised)" : "subtractive (depressed)";
+                const operationType = definition.operationType == SheetMetalFormTestType.UNION ? "union" : "subtraction";
                 const message = "Successfully registered " ~ operationType ~ " form tool to sheet metal wall(s). " ~ geometryStatus;
                 reportFeatureInfo(context, id, message);
 
