@@ -1,22 +1,26 @@
 FeatureScript 2815;
 
-export import(path : "onshape/std/query.fs", version : "2815.0");
-import(path : "onshape/std/feature.fs", version : "2815.0");
-import(path : "onshape/std/evaluate.fs", version : "2815.0");
-import(path : "onshape/std/geomOperations.fs", version : "2815.0");
-import(path : "onshape/std/variable.fs", version : "2815.0");
+// Special thanks to Michael Pascoe for stability improvements in V4
+// This script is maintained by Derek Van Allen
+// For support or improvement requests please contact me on the Onshape forums or comment on the main thread
+// https://forum.onshape.com/discussion/28078/new-feature-poly-mate-connectors
+
+import(path : "onshape/std/common.fs", version : "2815.0");
 import(path : "onshape/std/queryVariable.fs", version : "2815.0");
+icon::import(path : "88ad2302bdebe0131df8f002", version : "95e1f1cb002a1db5c49b7878");
+
 
 annotation { "Feature Type Name" : "Poly-Mate Connectors",
         "Feature Type Description" : "Adds multiple explicit mate connectors on the locations of implicit mate connectors",
-        "Feature Name Template" : "Poly-Mate Connectors#featureName" }
+        "Feature Name Template" : "Poly-Mate Connectors#featureName" ,
+                "Icon" : icon::BLOB_DATA }
 // Promoting them
 // King me
 export const duplicateMateConnectors = defineFeature(function(context is Context, id is Id, definition is map)
     precondition
     {
-        annotation { "Name" : "Mate connectors", "Filter" : BodyType.MATE_CONNECTOR,
-                    "UIHint" : UIHint.PREVENT_CREATING_NEW_MATE_CONNECTORS }
+             annotation { "Name" : "Mate connectors", "Filter" : BodyType.MATE_CONNECTOR }
+        // "UIHint" : UIHint.PREVENT_CREATING_NEW_MATE_CONNECTORS }
         definition.connectors is Query;
 
         annotation { "Name" : "Specify owner part" }
@@ -46,20 +50,32 @@ export const duplicateMateConnectors = defineFeature(function(context is Context
             verifyNonemptyQuery(context, definition, "ownerPart",
                 ErrorStringEnum.MATECONNECTOR_OWNER_PART_NOT_RESOLVED);
         }
-        forEachEntity(context, id, definition.connectors, function(sourceConnector is Query, innerId is Id)
-            {
-                const connectorCsys = evMateConnector(context, { "mateConnector" : sourceConnector });
-                const owningPart = definition.specifyOwnerPart ?
-                    definition.ownerPart :
-                    qOwnerBody(sourceConnector);
-                // Create the new mate connector
-                opMateConnector(context, innerId, { "coordSystem" : connectorCsys, "owner" : owningPart });
-            });
+
+        // 1. Resolve all selected entities into a list
+        const entities = evaluateQuery(context, definition.connectors);
+
+        // 2. Iterate by Index (i) instead of by Topology
+        for (var i = 0; i < size(entities); i += 1)
+        {
+            const entity = entities[i];
+
+            const connectorCsys = evMateConnector(context, {
+                        "mateConnector" : entity
+                    });
+
+            const owningPart = definition.specifyOwnerPart ?
+                definition.ownerPart :
+                qOwnerBody(entity);
+
+            // 3. Create the mate connector using a stable ID based on the loop index (id + i)
+            // If you swap geometry at index 0, the ID remains (id + 0)
+            opMateConnector(context, id + i, { "coordSystem" : connectorCsys, "owner" : owningPart });
+        }
 
         if (definition.createQueryVariable)
         {
             verifyVariableNameIsValid(definition.queryVariableName, "queryVariableName");
-            // Ensure the query variable name does not collide with an existing variable.
+
             var variableExists = false;
             try silent
             {
@@ -69,9 +85,9 @@ export const duplicateMateConnectors = defineFeature(function(context is Context
             if (variableExists)
             {
                 throw regenError(ErrorStringEnum.QUERY_VARIABLE_NAME_ALREADY_USED_IN_NON_QUERY_VARIABLE,
-                        ["queryVariableName"]);
+                    ["queryVariableName"]);
             }
-            // Expose the created mate connectors through a reusable query variable when requested.
+
             const createdMateConnectors = qCreatedBy(id, EntityType.BODY);
             setQueryVariable(context, definition.queryVariableName, createdMateConnectors);
         }
@@ -79,7 +95,7 @@ export const duplicateMateConnectors = defineFeature(function(context is Context
         const featureName = definition.createQueryVariable ?
             " [QV: " ~ definition.queryVariableName ~ "]" :
             "";
-        // Surface the relevant query variable name in the feature tree when requested.
+
         setFeatureComputedParameter(context, id, { "name" : "featureName", "value" : featureName });
     },
     {});
