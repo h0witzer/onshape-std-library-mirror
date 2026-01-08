@@ -11,7 +11,7 @@ icon::import(path : "88ad2302bdebe0131df8f002", version : "95e1f1cb002a1db5c49b7
 
 
 annotation { "Feature Type Name" : "Poly-Mate Connectors",
-        "Feature Type Description" : "Adds multiple explicit mate connectors on the locations of implicit mate connectors",
+        "Feature Type Description" : "Adds multiple explicit mate connectors on the locations of implicit mate connectors or sketch vertices",
         "Feature Name Template" : "Poly-Mate Connectors#featureName" ,
                 "Icon" : icon::BLOB_DATA }
 // Promoting them
@@ -19,7 +19,8 @@ annotation { "Feature Type Name" : "Poly-Mate Connectors",
 export const duplicateMateConnectors = defineFeature(function(context is Context, id is Id, definition is map)
     precondition
     {
-             annotation { "Name" : "Mate connectors", "Filter" : BodyType.MATE_CONNECTOR }
+             annotation { "Name" : "Mate connectors or sketch points", 
+                        "Filter" : EntityType.VERTEX && SketchObject.YES && ModifiableEntityOnly.YES || BodyType.MATE_CONNECTOR }
         // "UIHint" : UIHint.PREVENT_CREATING_NEW_MATE_CONNECTORS }
         definition.connectors is Query;
 
@@ -59,13 +60,53 @@ export const duplicateMateConnectors = defineFeature(function(context is Context
         {
             const entity = entities[i];
 
-            const connectorCsys = evMateConnector(context, {
-                        "mateConnector" : entity
-                    });
+            var connectorCsys;
+            var owningPart;
+            
+            // Determine if the entity is a sketch vertex or a mate connector
+            const isMateConnector = !isQueryEmpty(context, qBodyType(entity, BodyType.MATE_CONNECTOR));
+            
+            if (!isMateConnector)
+            {
+                // Handle sketch vertex: get its position and use the sketch plane for orientation
+                const vertexPoint = evVertexPoint(context, { "vertex" : entity });
+                const sketchPlaneResult = try silent(evOwnerSketchPlane(context, { "entity" : entity }));
+                
+                if (sketchPlaneResult == undefined)
+                {
+                    // If we can't get the sketch plane, use a default coordinate system at the point
+                    connectorCsys = coordSystem(vertexPoint, X_DIRECTION, Z_DIRECTION);
+                }
+                else
+                {
+                    // Convert the sketch plane to a coordinate system and position it at the vertex
+                    const planeCsys = planeToCSys(sketchPlaneResult);
+                    connectorCsys = coordSystem(vertexPoint, planeCsys.xAxis, planeCsys.zAxis);
+                }
+                
+                // For sketch vertices, determine owner from user input or attempt to find owner body
+                if (definition.specifyOwnerPart)
+                {
+                    owningPart = definition.ownerPart;
+                }
+                else
+                {
+                    // Try to get owner body, but it may not exist for sketch vertices
+                    const ownerResult = try silent(qOwnerBody(entity));
+                    owningPart = (ownerResult != undefined) ? ownerResult : qNothing();
+                }
+            }
+            else
+            {
+                // Handle existing mate connector
+                connectorCsys = evMateConnector(context, {
+                            "mateConnector" : entity
+                        });
 
-            const owningPart = definition.specifyOwnerPart ?
-                definition.ownerPart :
-                qOwnerBody(entity);
+                owningPart = definition.specifyOwnerPart ?
+                    definition.ownerPart :
+                    qOwnerBody(entity);
+            }
 
             // 3. Create the mate connector using a stable ID based on the loop index (id + i)
             // If you swap geometry at index 0, the ID remains (id + 0)
