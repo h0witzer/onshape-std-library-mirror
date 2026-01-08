@@ -79,12 +79,11 @@ export const blackMarketSheetMetalBoolean = defineFeature(function(context is Co
 
             // The function returns a map of walls to cutting tool body IDs
             // If the map is not empty, tools were successfully registered
-            println(wallToCuttingToolBodyIds);
             if (wallToCuttingToolBodyIds != undefined && size(wallToCuttingToolBodyIds) > 0)
             {
                 // Count the total number of tools across all walls
                 var totalToolCount = 0;
-                for (var wall, toolIdSet in wallToCuttingToolBodyIds)
+                for (var toolIdSet in values(wallToCuttingToolBodyIds))
                 {
                     totalToolCount += size(toolIdSet);
                 }
