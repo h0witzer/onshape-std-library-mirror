@@ -20,8 +20,8 @@ export const duplicateMateConnectors = defineFeature(function(context is Context
     precondition
     {
              annotation { "Name" : "Mate connectors or sketch points", 
-                        "Filter" : EntityType.VERTEX && SketchObject.YES && ModifiableEntityOnly.YES || BodyType.MATE_CONNECTOR }
-        // "UIHint" : UIHint.PREVENT_CREATING_NEW_MATE_CONNECTORS }
+                        "Filter" : EntityType.VERTEX && SketchObject.YES && ModifiableEntityOnly.YES || BodyType.MATE_CONNECTOR,
+                        "UIHint" : UIHint.ALLOW_QUERY_ORDER }
         definition.connectors is Query;
 
         annotation { "Name" : "Specify owner part" }
