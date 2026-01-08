@@ -54,6 +54,16 @@ export const duplicateMateConnectors = defineFeature(function(context is Context
 
         // 1. Resolve all selected entities into a list
         const entities = evaluateQuery(context, definition.connectors);
+        
+        // Pre-evaluate mate connectors for performance when processing many entities
+        const mateConnectorArray = evaluateQuery(context, qBodyType(definition.connectors, BodyType.MATE_CONNECTOR));
+        
+        // Build a map for efficient membership testing
+        var mateConnectorSet = {};
+        for (var mc in mateConnectorArray)
+        {
+            mateConnectorSet[mc] = true;
+        }
 
         // 2. Iterate by Index (i) instead of by Topology
         for (var i = 0; i < size(entities); i += 1)
@@ -64,15 +74,15 @@ export const duplicateMateConnectors = defineFeature(function(context is Context
             var owningPart;
             
             // Determine if the entity is a sketch vertex or a mate connector
-            const isMateConnector = !isQueryEmpty(context, qBodyType(entity, BodyType.MATE_CONNECTOR));
+            const isMateConnector = (mateConnectorSet[entity] != undefined);
             
             if (!isMateConnector)
             {
                 // Handle sketch vertex: get its position and use the sketch plane for orientation
                 const vertexPoint = evVertexPoint(context, { "vertex" : entity });
-                const sketchPlaneResult = try silent(evOwnerSketchPlane(context, { "entity" : entity }));
+                const ownerSketchPlane = try silent(evOwnerSketchPlane(context, { "entity" : entity }));
                 
-                if (sketchPlaneResult == undefined)
+                if (ownerSketchPlane == undefined)
                 {
                     // If we can't get the sketch plane, use a default coordinate system at the point
                     connectorCsys = coordSystem(vertexPoint, X_DIRECTION, Z_DIRECTION);
@@ -80,7 +90,7 @@ export const duplicateMateConnectors = defineFeature(function(context is Context
                 else
                 {
                     // Convert the sketch plane to a coordinate system and position it at the vertex
-                    const planeCsys = planeToCSys(sketchPlaneResult);
+                    const planeCsys = planeToCSys(ownerSketchPlane);
                     connectorCsys = coordSystem(vertexPoint, planeCsys.xAxis, planeCsys.zAxis);
                 }
                 
@@ -92,8 +102,8 @@ export const duplicateMateConnectors = defineFeature(function(context is Context
                 else
                 {
                     // Try to get owner body, but it may not exist for sketch vertices
-                    const ownerResult = try silent(qOwnerBody(entity));
-                    owningPart = (ownerResult != undefined) ? ownerResult : qNothing();
+                    const ownerBody = try silent(qOwnerBody(entity));
+                    owningPart = (ownerBody != undefined) ? ownerBody : qNothing();
                 }
             }
             else
