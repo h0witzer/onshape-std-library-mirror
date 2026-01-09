@@ -30,11 +30,12 @@ export const debugSurfaceNormal = defineFeature(function(context is Context, id 
             "Name" : "Normal length",
             "Description" : "Length of the debug normal arrow"
         }
-        isLength(definition.normalLength, LENGTH_BOUNDS);
+        isLength(definition.normalLength, NONNEGATIVE_LENGTH_BOUNDS);
 
         annotation { 
             "Name" : "Debug color",
-            "Description" : "Color to display the normal arrow"
+            "Description" : "Color to display the normal arrow",
+            "Default" : DebugColor.RED
         }
         definition.debugColor is DebugColor;
     }

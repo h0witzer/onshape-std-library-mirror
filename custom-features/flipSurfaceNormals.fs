@@ -55,51 +55,53 @@ export const flipSurfaceNormals = defineFeature(function(context is Context, id 
                     "face" : currentFace
                 });
 
+                var bSplineSurfaceData;
+
                 // If the surface is not a B-spline, approximate it as one
                 if (surfaceDefinition.surfaceType != SurfaceType.SPLINE)
                 {
-                    surfaceDefinition = evApproximateBSplineSurface(context, {
+                    bSplineSurfaceData = evApproximateBSplineSurface(context, {
                         "face" : currentFace
                     }).bSplineSurface;
                 }
                 else
                 {
                     // Extract the bSplineSurface field from the surface definition
-                    surfaceDefinition = surfaceDefinition.bSplineSurface;
+                    bSplineSurfaceData = surfaceDefinition.bSplineSurface;
                 }
 
                 // Flip the surface normal by reversing the V direction control points
                 // This is done by reversing the order of control point rows
                 var flippedControlPoints = [];
-                for (var vIndex = size(surfaceDefinition.controlPoints) - 1; vIndex >= 0; vIndex -= 1)
+                for (var vIndex = size(bSplineSurfaceData.controlPoints) - 1; vIndex >= 0; vIndex -= 1)
                 {
-                    flippedControlPoints = append(flippedControlPoints, surfaceDefinition.controlPoints[vIndex]);
+                    flippedControlPoints = append(flippedControlPoints, bSplineSurfaceData.controlPoints[vIndex]);
                 }
 
                 // Also need to reverse the V knot vector to maintain parametrization
                 // For a knot vector [k0, k1, ..., kn], we need to create [K-kn, K-k(n-1), ..., K-k0]
                 // where K is a constant chosen to maintain the domain
                 var flippedVKnots = [];
-                if (size(surfaceDefinition.vKnots) > 0)
+                if (size(bSplineSurfaceData.vKnots) > 0)
                 {
-                    const vKnotMax = surfaceDefinition.vKnots[size(surfaceDefinition.vKnots) - 1];
-                    const vKnotMin = surfaceDefinition.vKnots[0];
+                    const vKnotMax = bSplineSurfaceData.vKnots[size(bSplineSurfaceData.vKnots) - 1];
+                    const vKnotMin = bSplineSurfaceData.vKnots[0];
                     const vKnotSum = vKnotMax + vKnotMin;
                     
-                    for (var knotIndex = size(surfaceDefinition.vKnots) - 1; knotIndex >= 0; knotIndex -= 1)
+                    for (var knotIndex = size(bSplineSurfaceData.vKnots) - 1; knotIndex >= 0; knotIndex -= 1)
                     {
-                        flippedVKnots = append(flippedVKnots, vKnotSum - surfaceDefinition.vKnots[knotIndex]);
+                        flippedVKnots = append(flippedVKnots, vKnotSum - bSplineSurfaceData.vKnots[knotIndex]);
                     }
                 }
 
                 // Create the flipped B-spline surface definition
                 var flippedSurface = {
-                    "uDegree" : surfaceDefinition.uDegree,
-                    "vDegree" : surfaceDefinition.vDegree,
-                    "isRational" : surfaceDefinition.isRational,
-                    "isUPeriodic" : surfaceDefinition.isUPeriodic,
-                    "isVPeriodic" : surfaceDefinition.isVPeriodic,
-                    "uKnots" : surfaceDefinition.uKnots,
+                    "uDegree" : bSplineSurfaceData.uDegree,
+                    "vDegree" : bSplineSurfaceData.vDegree,
+                    "isRational" : bSplineSurfaceData.isRational,
+                    "isUPeriodic" : bSplineSurfaceData.isUPeriodic,
+                    "isVPeriodic" : bSplineSurfaceData.isVPeriodic,
+                    "uKnots" : bSplineSurfaceData.uKnots,
                     "vKnots" : flippedVKnots,
                     "controlPoints" : flippedControlPoints
                 };
