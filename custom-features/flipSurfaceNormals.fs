@@ -6,14 +6,15 @@ import(path : "onshape/std/common.fs", version : "2837.0");
  * 
  * This feature reverses the orientation of selected surfaces so that their normals point in
  * the opposite direction. This is accomplished by extracting the B-spline surface definition,
- * swapping the U and V control point order to flip the normal direction, and replacing the
+ * reversing the V direction control point order to flip the normal direction, and replacing the
  * original surface with the flipped version.
  * 
  * The feature works by:
  * 1. Extracting or approximating the surface as a B-spline
- * 2. Reversing the V direction control points to flip the normal
- * 3. Creating a new surface with the modified control points
- * 4. Replacing the original surface with the flipped surface
+ * 2. Reversing the order of V direction control points to flip the normal
+ * 3. Reversing the V knot vector to maintain proper parametrization
+ * 4. Creating a new surface with the modified control points
+ * 5. Replacing the original surface with the flipped surface
  * 
  * Note: This operation modifies the surface orientation but maintains the same underlying geometry.
  */
