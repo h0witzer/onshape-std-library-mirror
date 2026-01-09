@@ -123,8 +123,8 @@ function applyTab(context is Context, id is Id, definition is map, tabQuery is Q
         const tabBodyQuery = qUnion([tabBody]);
         const trackedTabBody = qUnion([tabBodyQuery, startTracking(context, tabBodyQuery)]);
         const tabIndexComponent = unstableIdComponent(index);
-        const coincidentWalls = findCoincidentSheetMetalWalls(context, id + tabIndexComponent + "align", trackedTabBody, unionQuery);
-        const coincidentGrouping = { "tabBody" : trackedTabBody, "walls" : coincidentWalls };
+        const wallInfo = findCoincidentSheetMetalWalls(context, id + tabIndexComponent + "align", trackedTabBody, unionQuery);
+        const coincidentGrouping = { "tabBody" : trackedTabBody, "walls" : wallInfo.walls, "wasAligned" : wallInfo.wasAligned };
         const status = booleanOneTabGroup(context, id + tabIndexComponent + "group", definition, coincidentGrouping, separatedSubtractQueries, rootId);
         if (status.statusEnum != ErrorStringEnum.BOOLEAN_UNION_NO_OP)
         {
@@ -161,10 +161,12 @@ function partitionSheetMetalQueriesByModel(context is Context, selections is arr
 
 /**
  * Locate the sheet metal walls that are coincident with the supplied tab body.
+ * Returns a map with "walls" query and "wasAligned" boolean flag.
  */
-function findCoincidentSheetMetalWalls(context is Context, id is Id, tabBody is Query, unionQuery is Query) returns Query
+function findCoincidentSheetMetalWalls(context is Context, id is Id, tabBody is Query, unionQuery is Query) returns map
 {
     var coincidentFaces = collectCoincidentFaces(context, tabBody, unionQuery);
+    var wasAligned = false;
 
     if (size(coincidentFaces) == 0)
     {
@@ -172,6 +174,7 @@ function findCoincidentSheetMetalWalls(context is Context, id is Id, tabBody is 
         if (aligned)
         {
             coincidentFaces = collectCoincidentFaces(context, tabBody, unionQuery);
+            wasAligned = true;
         }
     }
 
@@ -181,7 +184,10 @@ function findCoincidentSheetMetalWalls(context is Context, id is Id, tabBody is 
     }
 
     const coincidentQuery = qUnion(coincidentFaces);
-    return qUnion([coincidentQuery, startTracking(context, coincidentQuery)]);
+    return {
+        "walls" : qUnion([coincidentQuery, startTracking(context, coincidentQuery)]),
+        "wasAligned" : wasAligned
+    };
 }
 
 /**
@@ -262,20 +268,11 @@ function tryAlignTabBodyWithOppositeWall(context is Context, id is Id, tabBody i
     const offsetSign = (dot(directionVector, tangentPlane.normal) >= 0) ? 1 : -1;
     const offsetDistance = offsetSign * totalThickness;
 
-    // Use MoveFaceType.OFFSET to correctly handle spline faces and cylinder faces
-    // This is the proper approach mentioned in the move face feature
     opOffsetFace(context, id, {
                 "moveFaces" : tabFaces,
                 "offsetDistance" : offsetDistance,
                 "mergeFaces" : true,
                 "reFillet" : false
-            });
-
-    // After offsetting from inside to outside (or vice versa), the surface orientation
-    // is always flipped. The inside and outside faces of sheet metal always have opposite normals.
-    // Always flip the orientation to ensure correct thickening direction.
-    opFlipOrientation(context, id + "flip", {
-                "bodies" : tabBody
             });
 
     return true;
@@ -421,10 +418,15 @@ function subtractTab(context is Context, id is Id, definition is map, subtractQu
     if (modelParameters is undefined)
         throw regenError(ErrorStringEnum.REGEN_ERROR);
 
+    // When the tab was aligned by offsetting to the opposite wall, swap the thickness parameters
+    // to ensure the thickening direction is correct for the new position
+    const thickness1 = coincidentGrouping.wasAligned ? modelParameters.backThickness : modelParameters.frontThickness;
+    const thickness2 = coincidentGrouping.wasAligned ? modelParameters.frontThickness : modelParameters.backThickness;
+
     callSubfeatureAndProcessStatus(rootId, opThicken, context, id + "thicken", {
                 "entities" : qOwnedByBody(coincidentGrouping.tabBody, EntityType.FACE),
-                "thickness1" : modelParameters.frontThickness,
-                "thickness2" : modelParameters.backThickness
+                "thickness1" : thickness1,
+                "thickness2" : thickness2
             });
 
     const unionPartFaces = getSMCorrespondingInPart(context, coincidentGrouping.walls, EntityType.FACE);
