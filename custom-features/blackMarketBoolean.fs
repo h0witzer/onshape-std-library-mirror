@@ -79,11 +79,18 @@ export const blackMarketSheetMetalBoolean = defineFeature(function(context is Co
 
             // The function returns a map of walls to cutting tool body IDs
             // If the map is not empty, tools were successfully registered
-            println(wallToCuttingToolBodyIds);
             if (wallToCuttingToolBodyIds != undefined && size(wallToCuttingToolBodyIds) > 0)
             {
-                const message = "Successfully registered " ~ size(wallToCuttingToolBodyIds) ~
-                    " cutting tool(s) to sheet metal wall(s), geometry updated. ";
+                // Count the total number of tools across all walls
+                var totalToolCount = 0;
+                for (var toolIdSet in values(wallToCuttingToolBodyIds))
+                {
+                    totalToolCount += size(toolIdSet);
+                }
+                
+                const wallCount = size(wallToCuttingToolBodyIds);
+                const message = "Successfully registered " ~ totalToolCount ~
+                    " cutting tool(s) to " ~ wallCount ~ " sheet metal wall(s), geometry updated.";
                 reportFeatureInfo(context, id, message);
 
             }
