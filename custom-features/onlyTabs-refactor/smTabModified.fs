@@ -268,6 +268,7 @@ function tryAlignTabBodyWithOppositeWall(context is Context, id is Id, tabBody i
     const offsetSign = (dot(directionVector, tangentPlane.normal) >= 0) ? 1 : -1;
     const offsetDistance = offsetSign * totalThickness;
 
+    // Use opOffsetFace to offset the tab body by the sheet metal thickness to align with the opposite wall
     opOffsetFace(context, id, {
                 "moveFaces" : tabFaces,
                 "offsetDistance" : offsetDistance,
@@ -418,8 +419,10 @@ function subtractTab(context is Context, id is Id, definition is map, subtractQu
     if (modelParameters is undefined)
         throw regenError(ErrorStringEnum.REGEN_ERROR);
 
-    // When the tab was aligned by offsetting to the opposite wall, swap the thickness parameters
-    // to ensure the thickening direction is correct for the new position
+    // When the tab was aligned by offsetting to the opposite wall, swap the thickness parameters.
+    // The offset moves the tab through the sheet metal thickness, effectively reversing which side
+    // is "front" and which is "back" relative to the target wall. Swapping ensures opThicken
+    // creates geometry in the correct direction for proper merging and slot creation.
     const thickness1 = coincidentGrouping.wasAligned ? modelParameters.backThickness : modelParameters.frontThickness;
     const thickness2 = coincidentGrouping.wasAligned ? modelParameters.frontThickness : modelParameters.backThickness;
 
