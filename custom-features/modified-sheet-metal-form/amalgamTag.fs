@@ -16,6 +16,7 @@ import(path : "onshape/std/featureList.fs", version : "2815.0");
 import(path : "5418313fd7f629d9c7f1ac10", version : "b97acafda22e3375bf349519"); //modifiedFormedUtils.fs
 import(path : "onshape/std/frameAttributes.fs", version : "2815.0");
 import(path : "onshape/std/frameUtils.fs", version : "2815.0");
+import(path : "onshape/std/properties.fs", version : "2815.0");
 import(path : "onshape/std/surfaceGeometry.fs", version : "2815.0");
 import(path : "onshape/std/units.fs", version : "2815.0");
 import(path : "onshape/std/vector.fs", version : "2815.0");
@@ -87,13 +88,13 @@ export const tag = defineFeature(function(context is Context, id is Id, definiti
         }
         else if (definition.tagPurpose == TagPurpose.FORM)
         {
-            annotation { "Name" : "Tools for union operations", "Filter" : EntityType.BODY && BodyType.SOLID}
+            annotation { "Name" : "Tools for union operations", "Filter" : (EntityType.BODY && BodyType.SOLID) || BodyType.COMPOSITE}
             definition.positivePart is Query;
 
-            annotation { "Name" : "Tools for subtraction operations", "Filter" : EntityType.BODY && BodyType.SOLID }
+            annotation { "Name" : "Tools for subtraction operations", "Filter" : (EntityType.BODY && BodyType.SOLID) || BodyType.COMPOSITE }
             definition.negativePart is Query;
 
-            annotation { "Name" : "Parts to insert as new", "Filter" : EntityType.BODY && BodyType.SOLID}
+            annotation { "Name" : "Parts to insert as new", "Filter" : (EntityType.BODY && BodyType.SOLID) || BodyType.COMPOSITE}
             definition.newPart is Query;
 
             annotation { "Name" : "Sketch for flat view" , "UIHint" : UIHint.ALWAYS_HIDDEN}
@@ -140,37 +141,40 @@ function doTagForm(context is Context, topLevelId is Id, definition is map)
     var positivePartSelected = !isQueryEmpty(context, definition.positivePart);
     if (positivePartSelected)
     {
-        if (isQueryEmpty(context, qBodyType(definition.positivePart, BodyType.SOLID)))
+        // Allow both solid bodies and composite parts
+        const solidOrComposite = qUnion([
+            qBodyType(definition.positivePart, BodyType.SOLID),
+            qBodyType(definition.positivePart, BodyType.COMPOSITE)
+        ]);
+        if (isQueryEmpty(context, solidOrComposite))
         {
             throw regenError(ErrorStringEnum.FORMED_TAG_FORM_POSITIVE_PART_NOT_SOLID, ["positivePart"], definition.positivePart);
-        }
-        else if (!isQueryEmpty(context, qConsumed(definition.positivePart, Consumed.YES)))
-        {
-            throw regenError(ErrorStringEnum.FORMED_TAG_FORM_POSITIVE_PART_CONSUMED, ["positivePart"], definition.positivePart);
         }
     }
     var negativePartSelected = !isQueryEmpty(context, definition.negativePart);
     if (negativePartSelected)
     {
-        if (isQueryEmpty(context, qBodyType(definition.negativePart, BodyType.SOLID)))
+        // Allow both solid bodies and composite parts
+        const solidOrComposite = qUnion([
+            qBodyType(definition.negativePart, BodyType.SOLID),
+            qBodyType(definition.negativePart, BodyType.COMPOSITE)
+        ]);
+        if (isQueryEmpty(context, solidOrComposite))
         {
             throw regenError(ErrorStringEnum.FORMED_TAG_FORM_NEGATIVE_PART_NOT_SOLID, ["negativePart"], definition.negativePart);
-        }
-        else if (!isQueryEmpty(context, qConsumed(definition.negativePart, Consumed.YES)))
-        {
-            throw regenError(ErrorStringEnum.FORMED_TAG_FORM_NEGATIVE_PART_CONSUMED, ["negativePart"], definition.negativePart);
         }
     }
         var newPartSelected = !isQueryEmpty(context, definition.newPart);
     if (newPartSelected)
     {
-        if (isQueryEmpty(context, qBodyType(definition.newPart, BodyType.SOLID)))
+        // Allow both solid bodies and composite parts
+        const solidOrComposite = qUnion([
+            qBodyType(definition.newPart, BodyType.SOLID),
+            qBodyType(definition.newPart, BodyType.COMPOSITE)
+        ]);
+        if (isQueryEmpty(context, solidOrComposite))
         {
-            throw regenError(ErrorStringEnum.FORMED_TAG_FORM_NEGATIVE_PART_NOT_SOLID, ["negativePart"], definition.negativePart);
-        }
-        else if (!isQueryEmpty(context, qConsumed(definition.negativePart, Consumed.YES)))
-        {
-            throw regenError(ErrorStringEnum.FORMED_TAG_FORM_NEGATIVE_PART_CONSUMED, ["negativePart"], definition.negativePart);
+            throw regenError(ErrorStringEnum.FORMED_TAG_FORM_NEGATIVE_PART_NOT_SOLID, ["newPart"], definition.newPart);
         }
     }
     if (positivePartSelected && negativePartSelected &&
@@ -205,6 +209,13 @@ function doTagForm(context is Context, topLevelId is Id, definition is map)
     if (negativePartSelected)
     {
         setFormAttribute(context, definition.negativePart, FORM_BODY_NEGATIVE_PART);
+        // Apply magenta appearance with 0.2 alpha to subtraction tool bodies for user identification
+        // Use qFlattenedCompositeParts to ensure composite part constituents also get the appearance
+        setProperty(context, {
+            "entities" : qFlattenedCompositeParts(definition.negativePart),
+            "propertyType" : PropertyType.APPEARANCE,
+            "value" : color(1, 0, 1, 0.2)
+        });
     }
         if (newPartSelected)
     {
