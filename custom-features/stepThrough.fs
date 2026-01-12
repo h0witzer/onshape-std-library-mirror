@@ -288,10 +288,10 @@ export const stepThroughFeature = defineFeature(function(context is Context, id 
  * }
  * ```
  */
-export function stepThrough(context is Context, checkpointId is Id, stateMap is map)
+export function stepThrough(context is Context, id is Id, stateMap is map)
 {
     var output = "\n▼▼▼ STEP-THROUGH CHECKPOINT ▼▼▼\n";
-    output ~= "ID: " ~ checkpointId ~ "\n";
+    output ~= "ID: " ~ id ~ "\n";
     
     if (size(stateMap) > 0)
     {
@@ -314,14 +314,14 @@ export function stepThrough(context is Context, checkpointId is Id, stateMap is 
  * Similar to stepThrough, but also inspects and highlights a query.
  * 
  * @param context : The context in which the feature is executing
- * @param checkpointId : A unique ID for this checkpoint
+ * @param id : A unique ID for this checkpoint
  * @param stateMap : A map of variable names and values to display
  * @param query : A query to inspect and highlight in the UI
  */
-export function stepThroughWithQuery(context is Context, checkpointId is Id, stateMap is map, query is Query)
+export function stepThroughWithQuery(context is Context, id is Id, stateMap is map, query is Query)
 {
     var output = "\n▼▼▼ STEP-THROUGH CHECKPOINT ▼▼▼\n";
-    output ~= "ID: " ~ checkpointId ~ "\n";
+    output ~= "ID: " ~ id ~ "\n";
     
     if (size(stateMap) > 0)
     {
