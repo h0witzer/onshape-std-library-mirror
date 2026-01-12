@@ -96,4 +96,3 @@ export const stepThroughExample = defineFeature(function(context is Context, id 
             println("  Total entities created: " ~ size(evaluateQuery(context, qCreatedBy(id))));
         }
     });
-

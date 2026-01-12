@@ -299,7 +299,7 @@ export function stepThrough(context is Context, checkpointId is Id, stateMap is 
  * Similar to stepThrough, but also inspects and highlights a query.
  * 
  * @param context : The context in which the feature is executing
- * @param id : A unique ID for this checkpoint
+ * @param checkpointId : A unique ID for this checkpoint
  * @param stateMap : A map of variable names and values to display
  * @param query : A query to inspect and highlight in the UI
  */
