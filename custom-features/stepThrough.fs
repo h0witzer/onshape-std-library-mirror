@@ -2,6 +2,7 @@ FeatureScript 2837;
 import(path : "onshape/std/feature.fs", version : "2837.0");
 import(path : "onshape/std/string.fs", version : "2837.0");
 import(path : "onshape/std/debug.fs", version : "2837.0");
+import(path : "onshape/std/containers.fs", version : "2837.0");
 
 /**
  * Step-Through Diagnostics Utility
@@ -280,9 +281,10 @@ export function stepThrough(context is Context, checkpointId is Id, stateMap is 
     if (size(stateMap) > 0)
     {
         output ~= "State:\n";
-        for (var entry in stateMap)
+        const mapKeys = keys(stateMap);
+        for (var key in mapKeys)
         {
-            output ~= "  • " ~ entry.key ~ ": " ~ entry.value ~ "\n";
+            output ~= "  • " ~ key ~ ": " ~ stateMap[key] ~ "\n";
         }
     }
     
@@ -309,9 +311,10 @@ export function stepThroughWithQuery(context is Context, checkpointId is Id, sta
     if (size(stateMap) > 0)
     {
         output ~= "State:\n";
-        for (var entry in stateMap)
+        const mapKeys = keys(stateMap);
+        for (var key in mapKeys)
         {
-            output ~= "  • " ~ entry.key ~ ": " ~ entry.value ~ "\n";
+            output ~= "  • " ~ key ~ ": " ~ stateMap[key] ~ "\n";
         }
     }
     
