@@ -33,6 +33,39 @@ import(path : "onshape/std/containers.fs", version : "2837.0");
  * ```
  */
 
+// Constants for maintainability
+const MAX_VARIABLE_COUNT = 5;
+const MAX_QUERY_COUNT = 3;
+const ENTITY_TYPE_ORDER = [EntityType.BODY, EntityType.FACE, EntityType.EDGE, EntityType.VERTEX];
+
+/**
+ * Helper function to get the display name for an entity type
+ * 
+ * @param entityType : The entity type to get the name for
+ * @param count : The count of entities (for singular/plural handling)
+ * @returns : The display name string (e.g., "face" or "faces")
+ */
+function getEntityTypeName(entityType is EntityType, count is number) returns string
+{
+    if (entityType == EntityType.BODY)
+    {
+        return count == 1 ? "body" : "bodies";
+    }
+    else if (entityType == EntityType.FACE)
+    {
+        return count == 1 ? "face" : "faces";
+    }
+    else if (entityType == EntityType.EDGE)
+    {
+        return count == 1 ? "edge" : "edges";
+    }
+    else if (entityType == EntityType.VERTEX)
+    {
+        return count == 1 ? "vertex" : "vertices";
+    }
+    return "";
+}
+
 export enum StepThroughDisplayMode
 {
     annotation { "Name" : "Feature info (recommended)" }
@@ -141,7 +174,7 @@ export const stepThroughFeature = defineFeature(function(context is Context, id 
 
         // Display state variables
         var hasVariables = false;
-        for (var varNum = 1; varNum <= 5; varNum += 1)
+        for (var varNum = 1; varNum <= MAX_VARIABLE_COUNT; varNum += 1)
         {
             const varName = definition["var" ~ varNum ~ "Name"];
             if (varName != undefined && varName != "")
@@ -158,7 +191,7 @@ export const stepThroughFeature = defineFeature(function(context is Context, id 
 
         // Inspect queries
         var hasQueries = false;
-        for (var queryNum = 1; queryNum <= 3; queryNum += 1)
+        for (var queryNum = 1; queryNum <= MAX_QUERY_COUNT; queryNum += 1)
         {
             const query = definition["query" ~ queryNum];
             if (query != undefined && !isQueryEmpty(context, query))
@@ -181,7 +214,7 @@ export const stepThroughFeature = defineFeature(function(context is Context, id 
                     var queryDescription = "";
                     var isFirstType = true;
                     
-                    for (var entityType in [EntityType.BODY, EntityType.FACE, EntityType.EDGE, EntityType.VERTEX])
+                    for (var entityType in ENTITY_TYPE_ORDER)
                     {
                         const filteredEntities = evaluateQuery(context, qEntityFilter(qUnion(entities), entityType));
                         const count = size(filteredEntities);
@@ -194,25 +227,7 @@ export const stepThroughFeature = defineFeature(function(context is Context, id 
                             }
                             isFirstType = false;
                             
-                            var entityName = "";
-                            if (entityType == EntityType.BODY)
-                            {
-                                entityName = count == 1 ? "body" : "bodies";
-                            }
-                            else if (entityType == EntityType.FACE)
-                            {
-                                entityName = count == 1 ? "face" : "faces";
-                            }
-                            else if (entityType == EntityType.EDGE)
-                            {
-                                entityName = count == 1 ? "edge" : "edges";
-                            }
-                            else if (entityType == EntityType.VERTEX)
-                            {
-                                entityName = count == 1 ? "vertex" : "vertices";
-                            }
-                            
-                            queryDescription ~= count ~ " " ~ entityName;
+                            queryDescription ~= count ~ " " ~ getEntityTypeName(entityType, count);
                         }
                     }
                     
@@ -331,7 +346,7 @@ export function stepThroughWithQuery(context is Context, checkpointId is Id, sta
         var queryDescription = "";
         var isFirstType = true;
         
-        for (var entityType in [EntityType.BODY, EntityType.FACE, EntityType.EDGE, EntityType.VERTEX])
+        for (var entityType in ENTITY_TYPE_ORDER)
         {
             const count = size(evaluateQuery(context, qEntityFilter(qUnion(entities), entityType)));
             
@@ -343,25 +358,7 @@ export function stepThroughWithQuery(context is Context, checkpointId is Id, sta
                 }
                 isFirstType = false;
                 
-                var entityName = "";
-                if (entityType == EntityType.BODY)
-                {
-                    entityName = count == 1 ? "body" : "bodies";
-                }
-                else if (entityType == EntityType.FACE)
-                {
-                    entityName = count == 1 ? "face" : "faces";
-                }
-                else if (entityType == EntityType.EDGE)
-                {
-                    entityName = count == 1 ? "edge" : "edges";
-                }
-                else if (entityType == EntityType.VERTEX)
-                {
-                    entityName = count == 1 ? "vertex" : "vertices";
-                }
-                
-                queryDescription ~= count ~ " " ~ entityName;
+                queryDescription ~= count ~ " " ~ getEntityTypeName(entityType, count);
             }
         }
         
