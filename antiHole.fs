@@ -682,12 +682,7 @@ export const antiHole = defineFeature(function(context is Context, id is Id, def
 
         // ------------- Error checking -------------
 
-        // Holes are now supported in sheet metal so the queryContainsActiveSheetMetal check is not wanted in newer parts
-        if (!isAtVersionOrLater(context, FeatureScriptVersionNumber.V621_SHEET_METAL_HOLES) && queryContainsActiveSheetMetal(context, definition.scope))
-        {
-            const smQueries = separateSheetMetalQueries(context, definition.scope).sheetMetalQueries;
-            throw regenError(ErrorStringEnum.SHEET_METAL_PARTS_PROHIBITED, ["scope"], smQueries);
-        }
+        // Anti-holes don't interact with sheet metal - they create simple additive geometry
 
         // V206 was the current version when it was determined that a version check was needed
         if (definition.style == HoleStyle.C_BORE && isAtVersionOrLater(context, FeatureScriptVersionNumber.V206_LINEAR_RANGE))
@@ -927,6 +922,7 @@ export const antiHole = defineFeature(function(context is Context, id is Id, def
         }
     }, {
             generationType : AntiHoleGenerationType.NEW_BODY,
+            scope : qNothing(),
             endStyle : HoleEndStyle.BLIND,
             startStyle : HoleStartStyle.PART,
             style : HoleStyle.SIMPLE,
