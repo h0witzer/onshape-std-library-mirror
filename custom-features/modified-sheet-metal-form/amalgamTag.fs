@@ -87,10 +87,10 @@ export const tag = defineFeature(function(context is Context, id is Id, definiti
         }
         else if (definition.tagPurpose == TagPurpose.FORM)
         {
-            annotation { "Name" : "Tools for union operations", "Filter" : EntityType.BODY && (BodyType.SOLID || BodyType.COMPOSITE)}
+            annotation { "Name" : "Tools for union operations", "Filter" : EntityType.BODY && BodyType.SOLID}
             definition.positivePart is Query;
 
-            annotation { "Name" : "Tools for subtraction operations", "Filter" : EntityType.BODY && (BodyType.SOLID || BodyType.COMPOSITE) }
+            annotation { "Name" : "Tools for subtraction operations", "Filter" : EntityType.BODY && BodyType.SOLID }
             definition.negativePart is Query;
 
             annotation { "Name" : "Parts to insert as new", "Filter" : EntityType.BODY && (BodyType.SOLID || BodyType.COMPOSITE)}
@@ -140,8 +140,7 @@ function doTagForm(context is Context, topLevelId is Id, definition is map)
     var positivePartSelected = !isQueryEmpty(context, definition.positivePart);
     if (positivePartSelected)
     {
-        const positivePartValidTypes = qUnion([qBodyType(definition.positivePart, BodyType.SOLID), qBodyType(definition.positivePart, BodyType.COMPOSITE)]);
-        if (isQueryEmpty(context, positivePartValidTypes))
+        if (isQueryEmpty(context, qBodyType(definition.positivePart, BodyType.SOLID)))
         {
             throw regenError(ErrorStringEnum.FORMED_TAG_FORM_POSITIVE_PART_NOT_SOLID, ["positivePart"], definition.positivePart);
         }
@@ -153,8 +152,7 @@ function doTagForm(context is Context, topLevelId is Id, definition is map)
     var negativePartSelected = !isQueryEmpty(context, definition.negativePart);
     if (negativePartSelected)
     {
-        const negativePartValidTypes = qUnion([qBodyType(definition.negativePart, BodyType.SOLID), qBodyType(definition.negativePart, BodyType.COMPOSITE)]);
-        if (isQueryEmpty(context, negativePartValidTypes))
+        if (isQueryEmpty(context, qBodyType(definition.negativePart, BodyType.SOLID)))
         {
             throw regenError(ErrorStringEnum.FORMED_TAG_FORM_NEGATIVE_PART_NOT_SOLID, ["negativePart"], definition.negativePart);
         }

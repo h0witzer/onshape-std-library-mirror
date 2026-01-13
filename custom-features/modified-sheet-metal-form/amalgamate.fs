@@ -113,12 +113,12 @@ function addFormInstances(context is Context, id is Id, definition is map, insta
 
 /**
  * Apply the positive and negative form bodies to the selected target solids, then clean up helper geometry.
- * Composite parts are flattened into their constituent bodies for boolean operations.
+ * Composite parts tagged as new are flattened into their constituent bodies for insertion.
  */
 function performFormBooleans(context is Context, id is Id, subtractionTargets is Query, unionTargets is Query, allFormedBodies is Query, createNewBodies is boolean)
 {
-    const positiveBodies = qFlattenedCompositeParts(qBodiesWithAnyFormAttribute(allFormedBodies, modifiedFormed::FORM_BODY_POSITIVE_PART));
-    const negativeBodies = qFlattenedCompositeParts(qBodiesWithAnyFormAttribute(allFormedBodies, modifiedFormed::FORM_BODY_NEGATIVE_PART));
+    const positiveBodies = qBodiesWithAnyFormAttribute(allFormedBodies, modifiedFormed::FORM_BODY_POSITIVE_PART);
+    const negativeBodies = qBodiesWithAnyFormAttribute(allFormedBodies, modifiedFormed::FORM_BODY_NEGATIVE_PART);
     const newBodies = qFlattenedCompositeParts(qBodiesWithAnyFormAttribute(allFormedBodies, modifiedFormed::FORM_BODY_NEW_PART));
 
     if (!isQueryEmpty(context, negativeBodies))
