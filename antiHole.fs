@@ -1151,14 +1151,14 @@ function produceAntiHoles(context is Context, topLevelId is Id, definition is ma
         const scopeTest = evaluateQuery(context, definition.scope);
         if (size(scopeTest) == 0)
         {
-            throwRegenErrorWithToolErrorEntities(context, topLevelId, definition, locations, ErrorStringEnum.HOLE_EMPTY_SCOPE, ["scope"]);
+            // For anti-holes in ADD mode, we need bodies to merge with
+            throw regenError(ErrorStringEnum.BOOLEAN_UNION_NO_TARGET, ["scope"]);
         }
         definition.scopeSize = try(scopeSize(context, definition));
         if (definition.scopeSize == undefined)
         {
             // Give some default so that we do not fail during error entity generation
             definition.scopeSize = 0.1 * meter;
-            throwRegenErrorWithToolErrorEntities(context, topLevelId, definition, locations, ErrorStringEnum.HOLE_FAIL_BBOX, ["scope"]);
         }
     }
     else
@@ -1234,7 +1234,7 @@ function produceAntiHolesUsingOpHole(context is Context, topLevelId is Id, defin
         const booleanId = topLevelId + "booleanUnion";
         try
         {
-            callSubfeatureAndProcessStatus(topLevelId, booleanBodies, context, booleanId, {
+            booleanBodies(context, booleanId, {
                         "targets" : definition.scope,
                         "tools" : antiHoleToolsQuery,
                         "keepTools" : false,
@@ -1245,10 +1245,7 @@ function produceAntiHolesUsingOpHole(context is Context, topLevelId is Id, defin
         {
             // If boolean fails, it might be because tools and targets don't intersect
             // In that case, just leave the tools as separate bodies
-            if (booleanError != ErrorStringEnum.BOOLEAN_BAD_INPUT)
-            {
-                throw booleanError;
-            }
+            // Don't propagate boolean errors for anti-holes since they're additive
         }
     }
     // If NEW_BODY, the solid bodies created by opHole are left as-is (new separate bodies)
@@ -1272,7 +1269,7 @@ function produceAntiHolesUsingOpHole(context is Context, topLevelId is Id, defin
         }
     }
 
-    adjustFeatureStatusAfterProducingHoles(context, topLevelId, definition, locations, successfulAntiHoles);
+    adjustFeatureStatusAfterProducingAntiHoles(context, topLevelId, definition, locations, successfulAntiHoles);
 }
 
 /**
@@ -1305,6 +1302,46 @@ function produceAntiHolesUsingRevolve(context is Context, topLevelId is Id, defi
         
         // For now, just skip - this is a complex fallback that would require sketch creation
         // In practice, anti-holes should be used when bodies exist to reference
+    }
+}
+
+/**
+ * Adjusts feature status after producing anti-holes (additive geometry).
+ * Unlike regular holes, anti-holes don't cut material, so error handling is different.
+ * 
+ * @param context - The current modeling context
+ * @param topLevelId - The ID for this feature operation
+ * @param definition - Feature definition map containing all parameters
+ * @param locations - Array of location queries where anti-holes were placed
+ * @param successfulAntiHoles - Box containing map of successful anti-hole indices
+ */
+function adjustFeatureStatusAfterProducingAntiHoles(context is Context, topLevelId is Id, definition is map,
+    locations is array, successfulAntiHoles is box)
+{
+    // For anti-holes (additive geometry), we don't throw errors about "no hits" 
+    // since we're creating new bodies, not cutting into existing ones
+    
+    // Show a warning and highlight unsuccessful locations if the anti-hole has partially failed
+    const numberOfLocations = size(locations);
+    if (size(successfulAntiHoles[]) != numberOfLocations && size(successfulAntiHoles[]) > 0)
+    {
+        var unsuccessfulLocations = [];
+        for (var i = 0; i < numberOfLocations; i += 1)
+        {
+            if (successfulAntiHoles[][i] == undefined)
+            {
+                unsuccessfulLocations = append(unsuccessfulLocations, locations[i]);
+            }
+        }
+
+        reportFeatureWarning(context, topLevelId, ErrorStringEnum.HOLE_PARTIAL_FAILURE);
+        setErrorEntities(context, topLevelId, { "entities" : qUnion(unsuccessfulLocations) });
+    }
+    else if (size(successfulAntiHoles[]) == 0)
+    {
+        // If no anti-holes were created at all, report an error
+        reportFeatureError(context, topLevelId, ErrorStringEnum.HOLE_NO_HITS);
+        setErrorEntities(context, topLevelId, { "entities" : qUnion(locations) });
     }
 }
 
