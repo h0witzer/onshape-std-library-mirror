@@ -30,7 +30,7 @@ import(path : "onshape/std/vector.fs", version : "2837.0");
  * Feature adding tabs to sheet metal faces using supplied surface geometry.
  *
  */
-annotation { "Feature Type Name" : "Tab",
+annotation { "Feature Type Name" : "Tab via surfaces",
         "Editing Logic Function" : "sheetMetalTabEditingLogic" }
 export const sheetMetalTab = defineSheetMetalFeature(function(context is Context, id is Id, definition is map)
     precondition
@@ -274,12 +274,6 @@ function tryAlignTabBodyWithOppositeWall(context is Context, id is Id, tabBody i
                 "reFillet" : false
             });
 
-    // After offsetting from inside to outside (or vice versa), the surface orientation
-    // is always flipped. The inside and outside faces of sheet metal always have opposite normals.
-    // Always flip the orientation to ensure correct thickening direction.
-    opFlipOrientation(context, id + "flip", {
-                "bodies" : tabBody
-            });
 
     return true;
 }
