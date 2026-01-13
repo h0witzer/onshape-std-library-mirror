@@ -481,16 +481,33 @@ function booleanOneTabGroup(context is Context, id is Id, definition is map, coi
     if (fixCornerBreaks)
         cornerBreakTracking = collectCornerBreakTracking(context, wallBodies);
 
-    subtractTab(context, id + "subtract", definition, subtractQueries, coincidentGrouping, rootId);
-
+    // Create the copy of the tab body BEFORE calling subtractTab
+    // This ensures we have a clean copy that hasn't been affected by any modifications during subtractTab
     opPattern(context, id + "copyTool", {
                 "entities" : coincidentGrouping.tabBody,
                 "transforms" : [identityTransform()],
                 "instanceNames" : ["1"]
             });
 
+    subtractTab(context, id + "subtract", definition, subtractQueries, coincidentGrouping, rootId);
+
     const toolsQ = qCreatedBy(id + "copyTool", EntityType.BODY);
-    try
+    
+    // Validate that we have valid bodies before attempting boolean operation
+    const toolBodies = evaluateQuery(context, toolsQ);
+    const wallBodyArray = evaluateQuery(context, wallBodies);
+    
+    if (size(toolBodies) == 0)
+    {
+        throw regenError(ErrorStringEnum.SHEET_METAL_TAB_NO_TAB, ["tabFaces"]);
+    }
+    
+    if (size(wallBodyArray) == 0)
+    {
+        throw regenError(ErrorStringEnum.SHEET_METAL_TAB_NO_WALL, ["booleanUnionScope"]);
+    }
+    
+    try silent
     {
         opBoolean(context, id + "boolean", {
                     "tools" : qUnion([wallBodies, toolsQ]),
@@ -518,7 +535,7 @@ function booleanOneTabGroup(context is Context, id is Id, definition is map, coi
         if (size(errorGeom) > 0)
         {
            setErrorEntities(context, rootId, { "entities" : qUnion(errorGeom) });
-        //   throw regenError(ErrorStringEnum.SHEET_METAL_TAB_COLLISION);
+           throw regenError(ErrorStringEnum.SHEET_METAL_TAB_COLLISION);
         }
         else
         {
