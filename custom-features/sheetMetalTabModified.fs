@@ -9,8 +9,9 @@ FeatureScript 2837;
 // Fix for BOOLEAN_INVALID errors (January 2026):
 // - Moved opPattern call before subtractTab in booleanOneTabGroup function to ensure clean tab body copy
 // - Added validation checks before boolean operation to catch invalid states early
-// - Restored standard library error handling pattern with try silent and proper error throws
-// - This resolves intermittent BOOLEAN_INVALID errors particularly with rounded/cylindrical geometries
+// - Un-commented SHEET_METAL_TAB_COLLISION error throw for proper collision reporting
+// - Kept try block loud (not silent) for diagnostic purposes
+// - This helps diagnose intermittent BOOLEAN_INVALID errors particularly with rounded/cylindrical geometries
 
 // Imports used in interface
 export import(path : "onshape/std/query.fs", version : "2837.0");
@@ -513,7 +514,7 @@ function booleanOneTabGroup(context is Context, id is Id, definition is map, coi
         throw regenError(ErrorStringEnum.SHEET_METAL_TAB_NO_WALL, ["booleanUnionScope"]);
     }
     
-    try silent
+    try
     {
         opBoolean(context, id + "boolean", {
                     "tools" : qUnion([wallBodies, toolsQ]),
