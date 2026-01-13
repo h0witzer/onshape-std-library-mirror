@@ -93,7 +93,7 @@ export const tag = defineFeature(function(context is Context, id is Id, definiti
             annotation { "Name" : "Tools for subtraction operations", "Filter" : EntityType.BODY && BodyType.SOLID }
             definition.negativePart is Query;
 
-            annotation { "Name" : "Parts to insert as new", "Filter" : EntityType.BODY && BodyType.SOLID}
+            annotation { "Name" : "Parts to insert as new", "Filter" : EntityType.BODY && (BodyType.SOLID || BodyType.COMPOSITE)}
             definition.newPart is Query;
 
             annotation { "Name" : "Sketch for flat view" , "UIHint" : UIHint.ALWAYS_HIDDEN}
@@ -164,13 +164,14 @@ function doTagForm(context is Context, topLevelId is Id, definition is map)
         var newPartSelected = !isQueryEmpty(context, definition.newPart);
     if (newPartSelected)
     {
-        if (isQueryEmpty(context, qBodyType(definition.newPart, BodyType.SOLID)))
+        const newPartValidTypes = qUnion([qBodyType(definition.newPart, BodyType.SOLID), qBodyType(definition.newPart, BodyType.COMPOSITE)]);
+        if (isQueryEmpty(context, newPartValidTypes))
         {
-            throw regenError(ErrorStringEnum.FORMED_TAG_FORM_NEGATIVE_PART_NOT_SOLID, ["negativePart"], definition.negativePart);
+            throw regenError(ErrorStringEnum.FORMED_TAG_FORM_NEGATIVE_PART_NOT_SOLID, ["newPart"], definition.newPart);
         }
-        else if (!isQueryEmpty(context, qConsumed(definition.negativePart, Consumed.YES)))
+        else if (!isQueryEmpty(context, qConsumed(definition.newPart, Consumed.YES)))
         {
-            throw regenError(ErrorStringEnum.FORMED_TAG_FORM_NEGATIVE_PART_CONSUMED, ["negativePart"], definition.negativePart);
+            throw regenError(ErrorStringEnum.FORMED_TAG_FORM_NEGATIVE_PART_CONSUMED, ["newPart"], definition.newPart);
         }
     }
     if (positivePartSelected && negativePartSelected &&

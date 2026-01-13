@@ -11,6 +11,7 @@ import(path : "onshape/std/feature.fs", version : "2815.0");
 standardFormed::import(path : "onshape/std/formedUtils.fs", version : "2815.0");
 modifiedFormed::import(path : "5418313fd7f629d9c7f1ac10", version : "b97acafda22e3375bf349519"); //modifiedFormedUtils.fs
 import(path : "onshape/std/instantiator.fs", version : "2815.0");
+import(path : "onshape/std/query.fs", version : "2815.0");
 import(path : "onshape/std/vector.fs", version : "2815.0");
 
 /**
@@ -112,12 +113,13 @@ function addFormInstances(context is Context, id is Id, definition is map, insta
 
 /**
  * Apply the positive and negative form bodies to the selected target solids, then clean up helper geometry.
+ * Composite parts tagged as new are flattened into their constituent bodies for insertion.
  */
 function performFormBooleans(context is Context, id is Id, subtractionTargets is Query, unionTargets is Query, allFormedBodies is Query, createNewBodies is boolean)
 {
     const positiveBodies = qBodiesWithAnyFormAttribute(allFormedBodies, modifiedFormed::FORM_BODY_POSITIVE_PART);
     const negativeBodies = qBodiesWithAnyFormAttribute(allFormedBodies, modifiedFormed::FORM_BODY_NEGATIVE_PART);
-    const newBodies = qBodiesWithAnyFormAttribute(allFormedBodies, modifiedFormed::FORM_BODY_NEW_PART);
+    const newBodies = qFlattenedCompositeParts(qBodiesWithAnyFormAttribute(allFormedBodies, modifiedFormed::FORM_BODY_NEW_PART));
 
     if (!isQueryEmpty(context, negativeBodies))
     {
