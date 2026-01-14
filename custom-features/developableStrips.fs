@@ -330,17 +330,18 @@ function generateDevelopableStrip(context is Context, id is Id, surfaceFace is Q
         
         // Compute derivative of rotation angle for geodesic torsion
         // dφ/ds where s is arc length
-        var dPhiDs = 0.0 / meter;  // Initialize with correct units (angle/length, angle is dimensionless)
+        var dPhiDs = 0.0 / meter;  // Initialize with correct units (1/length, angle is dimensionless)
         if (i > 0 && i < numberOfPoints - 1)
         {
             const dt = curveParameters[i + 1] - curveParameters[i - 1];  // unitless parameter difference
-            const dPhi = rotationAngles[i + 1] - rotationAngles[i - 1];  // angle difference
+            const dPhi = rotationAngles[i + 1] - rotationAngles[i - 1];  // angle difference (has radian units)
             if (abs(dt) > 1e-10)
             {
                 // Convert parameter derivative to arc-length derivative
                 // dφ/ds = (dφ/dt) * (dt/ds) = (dφ/dt) / (ds/dt)
                 // For normalized parameters [0,1], ds/dt = curveLength
-                dPhiDs = (dPhi / dt) / curveLength;
+                // Strip radian units from dPhi to make it dimensionless (angles are mathematically dimensionless)
+                dPhiDs = (dPhi / radian / dt) / curveLength;
             }
         }
         
