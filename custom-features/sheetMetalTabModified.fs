@@ -11,7 +11,8 @@ FeatureScript 2837;
 // - Added validation checks before boolean operation to catch invalid states early
 // - Un-commented SHEET_METAL_TAB_COLLISION error throw for proper collision reporting
 // - Kept try block loud (not silent) for diagnostic purposes
-// - This helps diagnose intermittent BOOLEAN_INVALID errors particularly with rounded/cylindrical geometries
+// - Replaced opBoolean with joinSurfaceBodiesWithAutoMatching to handle surface orientation automatically
+// - This resolves BOOLEAN_INVALID errors caused by mismatched surface orientations in rounded/cylindrical geometries
 
 // Imports used in interface
 export import(path : "onshape/std/query.fs", version : "2837.0");
@@ -53,9 +54,6 @@ export const sheetMetalTab = defineSheetMetalFeature(function(context is Context
 
         annotation { "Name" : "Subtraction scope", "Filter" : (SheetMetalDefinitionEntityType.FACE && AllowFlattenedGeometry.YES && ModifiableEntityOnly.YES) || (BodyType.SOLID && EntityType.BODY && ActiveSheetMetal.NO) }
         definition.booleanSubtractScope is Query;
-        
-        annotation { "Name" : "Allow sheet bodies in boolean", "Default" : true }
-        definition.allowSheets is boolean;
     }
     {
         // this is not necessary but helps with correct error reporting in feature pattern
@@ -523,23 +521,27 @@ function booleanOneTabGroup(context is Context, id is Id, definition is map, coi
     const toolSheetBodies = evaluateQuery(context, qBodyType(toolsQ, BodyType.SHEET));
     const toolSolidBodies = evaluateQuery(context, qBodyType(toolsQ, BodyType.SOLID));
     
-    println("=== Boolean Union Diagnostics ===");
+    println("=== Surface Join Diagnostics ===");
     println("Wall bodies - Total: " ~ toString(size(wallBodyArray)));
     println("Wall bodies - Sheets: " ~ toString(size(wallSheetBodies)));
     println("Wall bodies - Solids: " ~ toString(size(wallSolidBodies)));
     println("Tool bodies - Total: " ~ toString(size(toolBodies)));
     println("Tool bodies - Sheets: " ~ toString(size(toolSheetBodies)));
     println("Tool bodies - Solids: " ~ toString(size(toolSolidBodies)));
-    println("AllowSheets parameter: " ~ toString(definition.allowSheets));
     println("=================================");
     
     try
     {
-        opBoolean(context, id + "boolean", {
-                    "tools" : qUnion([wallBodies, toolsQ]),
-                    "operationType" : BooleanOperationType.UNION,
-                    "allowSheets" : definition.allowSheets
-                });
+        // Use joinSurfaceBodiesWithAutoMatching instead of opBoolean to handle surface orientation automatically
+        // The sheet metal walls (wallBodies) provide the target scope with correct orientation priority
+        // The copied tab surfaces (toolsQ) are provided as the seed
+        joinSurfaceBodiesWithAutoMatching(context, id + "boolean", {
+                    "seed" : toolsQ,
+                    "defaultSurfaceScope" : false,
+                    "booleanSurfaceScope" : wallBodies,
+                    "makeSolid" : false,
+                    "eraseImprintedEdges" : true
+                }, function(id is Id) {});
     }
     catch
     {
