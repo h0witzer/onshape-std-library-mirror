@@ -22,6 +22,7 @@ export import(path : "onshape/std/tool.fs", version : "2837.0");
 import(path : "onshape/std/attributes.fs", version : "2837.0");
 import(path : "onshape/std/boolean.fs", version : "2837.0");
 import(path : "onshape/std/containers.fs", version : "2837.0");
+import(path : "onshape/std/debug.fs", version : "2837.0");
 import(path : "onshape/std/evaluate.fs", version : "2837.0");
 import(path : "onshape/std/feature.fs", version : "2837.0");
 import(path : "onshape/std/math.fs", version : "2837.0");
@@ -529,6 +530,31 @@ function booleanOneTabGroup(context is Context, id is Id, definition is map, coi
     println("Tool bodies - Sheets: " ~ toString(size(toolSheetBodies)));
     println("Tool bodies - Solids: " ~ toString(size(toolSolidBodies)));
     println("=================================");
+    
+    // Draw debug arrows showing surface normals for visualization
+    // This helps diagnose orientation mismatches between tool and wall surfaces
+    const arrowLength = 10 * millimeter;
+    const arrowRadius = 0.5 * millimeter;
+    
+    // Draw normals for wall faces (RED arrows)
+    for (var wallFace in evaluateQuery(context, qOwnedByBody(wallBodies, EntityType.FACE)))
+    {
+        const wallFaceCenter = evFaceTangentPlane(context, {
+                    "face" : wallFace,
+                    "parameter" : vector(0.5, 0.5)
+                });
+        addDebugArrow(context, wallFaceCenter.origin, wallFaceCenter.origin + wallFaceCenter.normal * arrowLength, arrowRadius, DebugColor.RED);
+    }
+    
+    // Draw normals for tool faces (BLUE arrows)
+    for (var toolFace in evaluateQuery(context, qOwnedByBody(toolsQ, EntityType.FACE)))
+    {
+        const toolFaceCenter = evFaceTangentPlane(context, {
+                    "face" : toolFace,
+                    "parameter" : vector(0.5, 0.5)
+                });
+        addDebugArrow(context, toolFaceCenter.origin, toolFaceCenter.origin + toolFaceCenter.normal * arrowLength, arrowRadius, DebugColor.BLUE);
+    }
     
     try
     {
