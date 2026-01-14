@@ -84,40 +84,38 @@ export const developableStrips = defineFeature(function(context is Context, id i
         annotation { "Name" : "Rotation mode" }
         definition.rotationMode is DevelopableStripRotationMode;
         
-        annotation { "Group Name" : "Rotation angle settings", "Driving Parameter" : "rotationMode" }
+        // Rotation angle parameters based on selected mode
+        if (definition.rotationMode == DevelopableStripRotationMode.CONSTANT_ANGLE)
         {
-            if (definition.rotationMode == DevelopableStripRotationMode.CONSTANT_ANGLE)
-            {
-                annotation { "Name" : "Rotation angle φ", "Description" : "Constant rotation angle between Frenet and Darboux frames" }
-                isAngle(definition.rotationAngle, ROTATION_ANGLE_BOUNDS);
-            }
+            annotation { "Name" : "Rotation angle φ", "Description" : "Constant rotation angle between Frenet and Darboux frames" }
+            isAngle(definition.rotationAngle, ROTATION_ANGLE_BOUNDS);
+        }
+        
+        if (definition.rotationMode == DevelopableStripRotationMode.LINEAR_VARIATION)
+        {
+            annotation { "Name" : "Base angle φ₀", "Description" : "Starting rotation angle" }
+            isAngle(definition.baseAngle, ROTATION_ANGLE_BOUNDS);
             
-            if (definition.rotationMode == DevelopableStripRotationMode.LINEAR_VARIATION)
-            {
-                annotation { "Name" : "Base angle φ₀", "Description" : "Starting rotation angle" }
-                isAngle(definition.baseAngle, ROTATION_ANGLE_BOUNDS);
-                
-                annotation { "Name" : "Angle rate", "Description" : "Linear rate of angle change along curve (degrees per unit length)" }
-                isReal(definition.angleRate, ZERO_INCLUSIVE_OFFSET_BOUNDS);
-            }
+            annotation { "Name" : "Angle rate", "Description" : "Linear rate of angle change along curve (degrees per unit length)" }
+            isReal(definition.angleRate, ZERO_INCLUSIVE_OFFSET_BOUNDS);
+        }
+        
+        if (definition.rotationMode == DevelopableStripRotationMode.SINUSOIDAL_PATTERN)
+        {
+            annotation { "Name" : "Base angle φ₀", "Description" : "Constant offset angle" }
+            isAngle(definition.baseAngle, ROTATION_ANGLE_BOUNDS);
             
-            if (definition.rotationMode == DevelopableStripRotationMode.SINUSOIDAL_PATTERN)
-            {
-                annotation { "Name" : "Base angle φ₀", "Description" : "Constant offset angle" }
-                isAngle(definition.baseAngle, ROTATION_ANGLE_BOUNDS);
-                
-                annotation { "Name" : "Amplitude", "Description" : "Amplitude of sinusoidal variation" }
-                isAngle(definition.amplitude, ROTATION_ANGLE_BOUNDS);
-                
-                annotation { "Name" : "Frequency", "Description" : "Number of complete cycles along the curve" }
-                isReal(definition.frequency, POSITIVE_COUNT_BOUNDS);
-            }
+            annotation { "Name" : "Amplitude", "Description" : "Amplitude of sinusoidal variation" }
+            isAngle(definition.amplitude, ROTATION_ANGLE_BOUNDS);
             
-            if (definition.rotationMode == DevelopableStripRotationMode.CONSTANT_TANGENT_RULING)
-            {
-                annotation { "Name" : "Tangent-ruling angle θ", "Description" : "Constant angle between tangent and ruling direction" }
-                isAngle(definition.tangentRulingAngle, TANGENT_RULING_ANGLE_BOUNDS);
-            }
+            annotation { "Name" : "Frequency", "Description" : "Number of complete cycles along the curve" }
+            isReal(definition.frequency, POSITIVE_COUNT_BOUNDS);
+        }
+        
+        if (definition.rotationMode == DevelopableStripRotationMode.CONSTANT_TANGENT_RULING)
+        {
+            annotation { "Name" : "Tangent-ruling angle θ", "Description" : "Constant angle between tangent and ruling direction" }
+            isAngle(definition.tangentRulingAngle, TANGENT_RULING_ANGLE_BOUNDS);
         }
         
         annotation { "Name" : "Strip width", "Description" : "Half-width of the developable strip" }
@@ -141,11 +139,11 @@ export const developableStrips = defineFeature(function(context is Context, id i
             }
         }
         
-        annotation { "Name" : "Enable diagnostics" }
-        definition.enableDiagnostics is boolean;
-        
         annotation { "Name" : "Show edge of regression" }
         definition.showEdgeOfRegression is boolean;
+        
+        annotation { "Name" : "Enable diagnostics" }
+        definition.enableDiagnostics is boolean;
         
         annotation { "Group Name" : "Developer diagnostics", "Driving Parameter" : "enableDiagnostics", "Collapsed By Default" : true }
         {
