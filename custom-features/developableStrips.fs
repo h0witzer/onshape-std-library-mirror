@@ -231,54 +231,49 @@ function generateDevelopableStrip(context is Context, id is Id, curveEdge is Que
         println("Parameter range: " ~ curveParameters[0] ~ " to " ~ curveParameters[size(curveParameters) - 1]);
     }
     
-    // Compute Frenet frames, curvature, and torsion at each sample point
+    // Compute Frenet frames and curvatures at each sample point
     var samplePoints = [];
     var frenetFrames = [];
     var curvatures = [];
-    var torsions = [];
-    var parametricSpeeds = [];
     
     for (var i = 0; i < numberOfPoints; i += 1)
     {
         const parameter = curveParameters[i];
         
-        // Evaluate curve position and tangent line
-        const tangentLine = evEdgeTangentLine(context, {
-            "edge" : curveEdge,
-            "parameter" : parameter
-        });
-        
-        const position = tangentLine.origin;
-        samplePoints = append(samplePoints, position);
-        
         // Compute Frenet frame components
         const frenetFrame = computeFrenetFrame(context, curveEdge, parameter);
         frenetFrames = append(frenetFrames, frenetFrame);
         
+        samplePoints = append(samplePoints, frenetFrame.position);
         curvatures = append(curvatures, frenetFrame.curvature);
-        torsions = append(torsions, frenetFrame.torsion);
-        parametricSpeeds = append(parametricSpeeds, frenetFrame.parametricSpeed);
         
         // Debug visualization
         if (definition.showFrenetFrame && i % 5 == 0)
         {
             const frameScale = definition.stripWidth * 0.5;
-            debug(context, line(position, frenetFrame.tangent), DebugColor.RED);
-            debug(context, line(position, frenetFrame.normal), DebugColor.GREEN);
-            debug(context, line(position, frenetFrame.binormal), DebugColor.BLUE);
+            const position = frenetFrame.position;
+            debug(context, line(position, position + frenetFrame.tangent * frameScale), DebugColor.RED);
+            debug(context, line(position, position + frenetFrame.normal * frameScale), DebugColor.GREEN);
+            debug(context, line(position, position + frenetFrame.binormal * frameScale), DebugColor.BLUE);
         }
     }
+    
+    // Compute torsion using finite differences on the Frenet frames
+    const torsions = computeTorsionsFiniteDifference(frenetFrames, curveParameters);
     
     if (definition.printCurveProperties)
     {
         println("Curvature range: " ~ min(curvatures) ~ " to " ~ max(curvatures));
-        println("Torsion range: " ~ min(torsions) ~ " to " ~ max(torsions));
+        if (size(torsions) > 0)
+        {
+            println("Torsion range: " ~ min(torsions) ~ " to " ~ max(torsions));
+        }
     }
     
     // Compute rotation angles based on selected mode
     const rotationAngles = computeRotationAngles(context, definition, samplePoints, 
                                                   frenetFrames, curvatures, torsions, 
-                                                  parametricSpeeds, curveParameters);
+                                                  curveParameters);
     
     if (definition.printRotationAngles)
     {
@@ -297,15 +292,28 @@ function generateDevelopableStrip(context is Context, id is Id, curveEdge is Que
     {
         const frenetFrame = frenetFrames[i];
         const rotationAngle = rotationAngles[i];
+        const kappa = curvatures[i];
+        const tau = torsions[i];
         
         // Compute Darboux frame by rotating Frenet frame around tangent axis
         const darbouxFrame = computeDarbouxFrame(frenetFrame, rotationAngle);
         darbouxFrames = append(darbouxFrames, darbouxFrame);
         
+        // Compute derivative of rotation angle for geodesic torsion
+        var dPhiDs = 0.0 / meter;
+        if (i > 0 && i < numberOfPoints - 1)
+        {
+            const ds = curveParameters[i + 1] - curveParameters[i - 1];
+            const dPhi = rotationAngles[i + 1] - rotationAngles[i - 1];
+            if (abs(ds) > 1e-10)
+            {
+                dPhiDs = dPhi / ds;
+            }
+        }
+        
         // Compute ruling direction from Darboux frame and geometric properties
-        const rulingDirection = computeRulingDirection(darbouxFrame, frenetFrame.curvature, 
-                                                       frenetFrame.torsion, rotationAngle, 
-                                                       parametricSpeeds[i]);
+        const rulingDirection = computeRulingDirection(darbouxFrame, kappa, tau, 
+                                                       rotationAngle, dPhiDs);
         rulingDirections = append(rulingDirections, rulingDirection);
         
         // Debug visualization
@@ -415,6 +423,83 @@ function generateCurveParameters(context is Context, curveEdge is Query, numberO
 
 
 /**
+ * Computes torsion values using finite differences on Frenet frames.
+ * 
+ * Torsion τ measures how much the binormal vector twists along the curve.
+ * It can be computed from the derivative of the binormal with respect to arc length:
+ * τ = -b' · n
+ * 
+ * Using finite differences:
+ * τ(i) ≈ -(b(i+1) - b(i-1)) · n(i) / (2 * ds)
+ * 
+ * @param frenetFrames {array} : Array of Frenet frame data
+ * @param parameters {array} : Array of parameter values
+ * @returns {array} : Array of torsion values (with 1/length units)
+ */
+function computeTorsionsFiniteDifference(frenetFrames is array, parameters is array) returns array
+{
+    var torsions = [];
+    const numberOfPoints = size(frenetFrames);
+    
+    for (var i = 0; i < numberOfPoints; i += 1)
+    {
+        var torsion = 0.0 / meter;
+        
+        if (i > 0 && i < numberOfPoints - 1)
+        {
+            // Central difference
+            const binormalPrev = frenetFrames[i - 1].binormal;
+            const binormalNext = frenetFrames[i + 1].binormal;
+            const normal = frenetFrames[i].normal;
+            
+            const dBinormal = binormalNext - binormalPrev;
+            const ds = parameters[i + 1] - parameters[i - 1];
+            
+            if (abs(ds) > 1e-10)
+            {
+                // τ = -db/ds · n
+                torsion = -dot(dBinormal, normal) / ds;
+            }
+        }
+        else if (i == 0 && numberOfPoints > 1)
+        {
+            // Forward difference at start
+            const binormalCurrent = frenetFrames[i].binormal;
+            const binormalNext = frenetFrames[i + 1].binormal;
+            const normal = frenetFrames[i].normal;
+            
+            const dBinormal = binormalNext - binormalCurrent;
+            const ds = parameters[i + 1] - parameters[i];
+            
+            if (abs(ds) > 1e-10)
+            {
+                torsion = -dot(dBinormal, normal) / ds;
+            }
+        }
+        else if (i == numberOfPoints - 1 && numberOfPoints > 1)
+        {
+            // Backward difference at end
+            const binormalPrev = frenetFrames[i - 1].binormal;
+            const binormalCurrent = frenetFrames[i].binormal;
+            const normal = frenetFrames[i].normal;
+            
+            const dBinormal = binormalCurrent - binormalPrev;
+            const ds = parameters[i] - parameters[i - 1];
+            
+            if (abs(ds) > 1e-10)
+            {
+                torsion = -dot(dBinormal, normal) / ds;
+            }
+        }
+        
+        torsions = append(torsions, torsion);
+    }
+    
+    return torsions;
+}
+
+
+/**
  * Computes the Frenet frame (tangent, normal, binormal) at a point on a curve.
  * 
  * For an arbitrarily parameterized curve c(t), the Frenet frame is computed as:
@@ -422,14 +507,16 @@ function generateCurveParameters(context is Context, curveEdge is Query, numberO
  * - Binormal: b = (c'(t) × c''(t)) / ||c'(t) × c''(t)||
  * - Normal: n = b × t
  * 
- * Also computes curvature κ and torsion τ:
+ * Also computes curvature κ:
  * - κ(t) = ||c'(t) × c''(t)|| / ||c'(t)||³
- * - τ(t) = [c'(t), c''(t), c'''(t)] / ||c'(t) × c''(t)||²
+ * 
+ * Torsion τ requires the third derivative and is computed using finite differences
+ * across multiple sample points.
  * 
  * @param context {Context} : The modeling context
  * @param curveEdge {Query} : The curve edge
  * @param parameter {number} : Parameter value (0 to 1)
- * @returns {map} : Map with fields: tangent, normal, binormal, curvature, torsion, parametricSpeed
+ * @returns {map} : Map with fields: tangent, normal, binormal, curvature
  */
 function computeFrenetFrame(context is Context, curveEdge is Query, parameter is number) returns map
 {
@@ -454,21 +541,12 @@ function computeFrenetFrame(context is Context, curveEdge is Query, parameter is
     // Get curvature value
     const curvatureValue = curvatureResult.curvature;
     
-    // Get parametric speed (magnitude of first derivative)
-    // This would ideally be computed from the curve parameterization
-    const parametricSpeed = 1.0 / meter; // Default value
-    
-    // Torsion computation requires third derivative, which is not directly available
-    // We'll approximate it using finite differences in a separate computation
-    const torsionValue = 0.0 / meter; // Placeholder - will be computed later
-    
     return {
         "tangent" : tangent,
         "normal" : normal,
         "binormal" : binormal,
         "curvature" : curvatureValue,
-        "torsion" : torsionValue,
-        "parametricSpeed" : parametricSpeed
+        "position" : tangentLine.origin
     };
 }
 
@@ -489,13 +567,12 @@ function computeFrenetFrame(context is Context, curveEdge is Query, parameter is
  * @param frenetFrames {array} : Array of Frenet frame data
  * @param curvatures {array} : Array of curvature values
  * @param torsions {array} : Array of torsion values
- * @param parametricSpeeds {array} : Array of parametric speed values
  * @param curveParameters {array} : Array of normalized parameter values (0 to 1)
  * @returns {array} : Array of rotation angles (in radians)
  */
 function computeRotationAngles(context is Context, definition is map, samplePoints is array,
                                 frenetFrames is array, curvatures is array, torsions is array,
-                                parametricSpeeds is array, curveParameters is array) returns array
+                                curveParameters is array) returns array
 {
     var rotationAngles = [];
     const numberOfPoints = size(samplePoints);
@@ -625,26 +702,28 @@ function computeDarbouxFrame(frenetFrame is map, rotationAngle is ValueWithUnits
 /**
  * Computes the ruling direction of the developable surface.
  * 
- * From the paper, the ruling direction d is given by:
+ * From the paper (equation 16), the ruling direction d is given by:
  * d = (τ_g * t - κ_n * B*) / sqrt(τ_g² + κ_n²)
  * 
- * where:
+ * where (from equation 15):
  * - τ_g = τ + dφ/ds (geodesic torsion)
  * - κ_n = -κ * sin(φ) (normal curvature)
+ * - κ_g = κ * cos(φ) (geodesic curvature)
  * - κ is the curvature of the space curve
  * - τ is the torsion of the space curve
  * - φ is the rotation angle
+ * - dφ/ds is the derivative of rotation angle with respect to arc length
  * 
  * @param darbouxFrame {map} : Darboux frame with tangent, binormalStar, normalStar
  * @param curvature {ValueWithUnits} : Curvature κ of the space curve
  * @param torsion {ValueWithUnits} : Torsion τ of the space curve
  * @param rotationAngle {ValueWithUnits} : Rotation angle φ
- * @param parametricSpeed {ValueWithUnits} : Parametric speed Λ = ds/dt
+ * @param dPhiDs {ValueWithUnits} : Derivative of rotation angle dφ/ds
  * @returns {Vector} : Unit ruling direction vector
  */
 function computeRulingDirection(darbouxFrame is map, curvature is ValueWithUnits, 
                                  torsion is ValueWithUnits, rotationAngle is ValueWithUnits,
-                                 parametricSpeed is ValueWithUnits) returns Vector
+                                 dPhiDs is ValueWithUnits) returns Vector
 {
     const tangent = darbouxFrame.tangent;
     const binormalStar = darbouxFrame.binormalStar;
@@ -653,22 +732,33 @@ function computeRulingDirection(darbouxFrame is map, curvature is ValueWithUnits
     const normalCurvature = -curvature * sin(rotationAngle);
     
     // Compute geodesic torsion: τ_g = τ + dφ/ds
-    // For now, approximate dφ/ds as 0 for constant angle cases
-    // This would need to be computed properly for variable angle cases
-    const geodesicTorsion = torsion;
+    const geodesicTorsion = torsion + dPhiDs;
     
     // Compute ruling direction: d = (τ_g * t - κ_n * B*) / sqrt(τ_g² + κ_n²)
-    const numerator = tangent * geodesicTorsion - binormalStar * normalCurvature;
+    const numeratorT = tangent * geodesicTorsion;
+    const numeratorB = binormalStar * normalCurvature;
+    const numerator = numeratorT - numeratorB;
+    
     const denominator = sqrt(geodesicTorsion * geodesicTorsion + normalCurvature * normalCurvature);
     
     if (denominator < 1e-10 / meter)
     {
-        // Degenerate case: ruling direction is perpendicular to tangent
+        // Degenerate case: when both τ_g and κ_n are near zero
+        // The ruling direction becomes perpendicular to the tangent
+        // Use binormalStar as the default direction
         return binormalStar;
     }
     
     const rulingDirection = numerator / denominator;
-    return normalize(rulingDirection);
+    
+    // Normalize to ensure unit vector (accounting for potential numerical errors)
+    const magnitude = norm(rulingDirection);
+    if (magnitude > 1e-10)
+    {
+        return rulingDirection / magnitude;
+    }
+    
+    return binormalStar;
 }
 
 
