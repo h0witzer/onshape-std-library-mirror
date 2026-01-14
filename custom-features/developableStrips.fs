@@ -144,6 +144,9 @@ export const developableStrips = defineFeature(function(context is Context, id i
         annotation { "Name" : "Enable diagnostics" }
         definition.enableDiagnostics is boolean;
         
+        annotation { "Name" : "Show edge of regression" }
+        definition.showEdgeOfRegression is boolean;
+        
         annotation { "Group Name" : "Developer diagnostics", "Driving Parameter" : "enableDiagnostics", "Collapsed By Default" : true }
         {
             if (definition.enableDiagnostics)
@@ -190,6 +193,7 @@ export const developableStrips = defineFeature(function(context is Context, id i
         useSymmetricWidth : true,
         positiveWidth : 0.1 * meter,
         negativeWidth : 0.1 * meter,
+        showEdgeOfRegression : false,
         enableDiagnostics : false,
         showFrenetFrame : false,
         showDarbouxFrame : false,
@@ -398,6 +402,36 @@ function generateDevelopableStrip(context is Context, id is Id, curveEdge is Que
     else
     {
         throw regenError("Failed to create developable strip surface. Edge curves were not generated successfully.");
+    }
+    
+    // Optionally compute and visualize edge of regression
+    if (definition.showEdgeOfRegression)
+    {
+        const edgeOfRegressionPoints = computeEdgeOfRegression(samplePoints, frenetFrames, 
+                                                                darbouxFrames, curvatures, 
+                                                                torsions, rotationAngles, 
+                                                                curveParameters);
+        
+        // Visualize edge of regression points
+        for (var i = 0; i < size(edgeOfRegressionPoints); i += 1)
+        {
+            if (i % 5 == 0)
+            {
+                debug(context, edgeOfRegressionPoints[i], DebugColor.YELLOW);
+            }
+        }
+        
+        // Optionally create a curve through the edge of regression points
+        if (size(edgeOfRegressionPoints) > 2)
+        {
+            try silent
+            {
+                const edgeOfRegressionId = id + "edgeOfRegression";
+                opFitSpline(context, edgeOfRegressionId, {
+                    "points" : edgeOfRegressionPoints
+                });
+            }
+        }
     }
 }
 
@@ -783,7 +817,158 @@ function fitBSplineCurveToPoints(context is Context, id is Id, points is array, 
 
 
 /**
- * Helper function to compute the minimum value in an array.
+ * Helper function to compute the minimum value in an array (duplicate removed).
+ * 
+ * @param values {array} : Array of numeric values
+ * @returns {number} : Minimum value
+ */
+function min(values is array) returns number
+{
+    if (size(values) == 0)
+        return 0.0;
+    
+    var minValue = values[0];
+    for (var i = 1; i < size(values); i += 1)
+    {
+        if (values[i] < minValue)
+        {
+            minValue = values[i];
+        }
+    }
+    return minValue;
+}
+
+
+/**
+ * Helper function to compute the maximum value in an array.
+ * 
+ * @param values {array} : Array of numeric values
+ * @returns {number} : Maximum value
+ */
+function max(values is array) returns number
+{
+    if (size(values) == 0)
+        return 0.0;
+    
+    var maxValue = values[0];
+    for (var i = 1; i < size(values); i += 1)
+    {
+        if (values[i] > maxValue)
+        {
+            maxValue = values[i];
+        }
+    }
+    return maxValue;
+}
+
+
+/**
+ * Computes the edge of regression curve for a developable surface.
+ * 
+ * The edge of regression (also called cuspidal edge) is where the developable
+ * surface becomes singular. From equation (21) in the paper:
+ * 
+ * e(t) = c(t) - [Λ * κ_n * τ_g * t - κ_n * B*] / 
+ *               [Λ * κ_g * (κ_n² + τ_g²) + d(τ_g)/dt * κ_n - d(κ_n)/dt * τ_g]
+ * 
+ * where:
+ * - c(t) is the directrix curve
+ * - Λ is the parametric speed
+ * - κ_n = -κ * sin(φ) is the normal curvature
+ * - κ_g = κ * cos(φ) is the geodesic curvature
+ * - τ_g = τ + dφ/ds is the geodesic torsion
+ * - t is the tangent vector
+ * - B* is the binormal star from Darboux frame
+ * 
+ * @param samplePoints {array} : Array of points on the directrix curve
+ * @param frenetFrames {array} : Array of Frenet frame data
+ * @param darbouxFrames {array} : Array of Darboux frame data
+ * @param curvatures {array} : Array of curvature values
+ * @param torsions {array} : Array of torsion values
+ * @param rotationAngles {array} : Array of rotation angles
+ * @param parameters {array} : Array of parameter values
+ * @returns {array} : Array of edge of regression points
+ */
+function computeEdgeOfRegression(samplePoints is array, frenetFrames is array, 
+                                  darbouxFrames is array, curvatures is array, 
+                                  torsions is array, rotationAngles is array,
+                                  parameters is array) returns array
+{
+    var edgePoints = [];
+    const numberOfPoints = size(samplePoints);
+    
+    for (var i = 0; i < numberOfPoints; i += 1)
+    {
+        const position = samplePoints[i];
+        const tangent = frenetFrames[i].tangent;
+        const binormalStar = darbouxFrames[i].binormalStar;
+        const kappa = curvatures[i];
+        const tau = torsions[i];
+        const phi = rotationAngles[i];
+        
+        // Compute derivatives of rotation angle
+        var dPhiDs = 0.0 / meter;
+        if (i > 0 && i < numberOfPoints - 1)
+        {
+            const ds = parameters[i + 1] - parameters[i - 1];
+            const dPhi = rotationAngles[i + 1] - rotationAngles[i - 1];
+            if (abs(ds) > 1e-10)
+            {
+                dPhiDs = dPhi / ds;
+            }
+        }
+        
+        // Compute geometric quantities
+        const normalCurvature = -kappa * sin(phi); // κ_n
+        const geodesicCurvature = kappa * cos(phi); // κ_g  
+        const geodesicTorsion = tau + dPhiDs; // τ_g
+        
+        // Compute derivatives of κ_n and τ_g
+        var dNormalCurvatureDs = 0.0 / (meter * meter);
+        var dGeodesicTorsionDs = 0.0 / (meter * meter);
+        
+        if (i > 0 && i < numberOfPoints - 1)
+        {
+            const ds = parameters[i + 1] - parameters[i - 1];
+            
+            const normalCurvaturePrev = -curvatures[i - 1] * sin(rotationAngles[i - 1]);
+            const normalCurvatureNext = -curvatures[i + 1] * sin(rotationAngles[i + 1]);
+            dNormalCurvatureDs = (normalCurvatureNext - normalCurvaturePrev) / ds;
+            
+            const geodesicTorsionPrev = torsions[i - 1] + 
+                (i > 1 ? (rotationAngles[i] - rotationAngles[i - 2]) / (parameters[i] - parameters[i - 2]) : 0.0 / meter);
+            const geodesicTorsionNext = torsions[i + 1] + 
+                (i < numberOfPoints - 2 ? (rotationAngles[i + 2] - rotationAngles[i]) / (parameters[i + 2] - parameters[i]) : 0.0 / meter);
+            dGeodesicTorsionDs = (geodesicTorsionNext - geodesicTorsionPrev) / ds;
+        }
+        
+        // Parametric speed (approximate as 1 for normalized parameters)
+        const parametricSpeed = 1.0 / meter;
+        
+        // Compute denominator
+        const denominator = parametricSpeed * geodesicCurvature * (normalCurvature * normalCurvature + geodesicTorsion * geodesicTorsion) +
+                           dGeodesicTorsionDs * normalCurvature - dNormalCurvatureDs * geodesicTorsion;
+        
+        // Compute numerator
+        const numerator = tangent * (parametricSpeed * normalCurvature * geodesicTorsion) - 
+                         binormalStar * normalCurvature;
+        
+        // Compute edge of regression point
+        var edgePoint = position;
+        if (abs(denominator) > 1e-10 / (meter * meter))
+        {
+            edgePoint = position - numerator / denominator;
+        }
+        
+        edgePoints = append(edgePoints, edgePoint);
+    }
+    
+    return edgePoints;
+}
+
+
+/**
+ * Helper function to compute the minimum value in an array (duplicate removed).
  * 
  * @param values {array} : Array of numeric values
  * @returns {number} : Minimum value
