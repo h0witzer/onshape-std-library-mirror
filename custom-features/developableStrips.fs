@@ -288,7 +288,7 @@ function generateDevelopableStrip(context is Context, id is Id, surfaceFace is Q
     }
     
     // Compute torsion using finite differences on the Frenet frames
-    const torsions = computeTorsionsFiniteDifference(frenetFrames, curveParameters);
+    const torsions = computeTorsionsFiniteDifference(frenetFrames, curveParameters, curveLength);
     
     if (definition.printCurveProperties)
     {
@@ -364,7 +364,7 @@ function generateDevelopableStrip(context is Context, id is Id, surfaceFace is Q
             const position = samplePoints[i];
             const rulingScale = definition.stripWidth;
             const rulingEnd = position + rulingDirection * rulingScale;
-            debug(context, line(position, rulingEnd), DebugColor.WHITE);
+            debug(context, line(position, rulingEnd), DebugColor.ORANGE);
         }
     }
     
@@ -496,10 +496,11 @@ function generateCurveParameters(context is Context, curveEdge is Query, numberO
  * τ(i) ≈ -(b(i+1) - b(i-1)) · n(i) / (2 * ds)
  * 
  * @param frenetFrames {array} : Array of Frenet frame data
- * @param parameters {array} : Array of parameter values
+ * @param parameters {array} : Array of parameter values (unitless, 0 to 1)
+ * @param curveLength {ValueWithUnits} : Total length of the curve
  * @returns {array} : Array of torsion values (with 1/length units)
  */
-function computeTorsionsFiniteDifference(frenetFrames is array, parameters is array) returns array
+function computeTorsionsFiniteDifference(frenetFrames is array, parameters is array, curveLength is ValueWithUnits) returns array
 {
     var torsions = [];
     const numberOfPoints = size(frenetFrames);
@@ -516,12 +517,13 @@ function computeTorsionsFiniteDifference(frenetFrames is array, parameters is ar
             const normal = frenetFrames[i].normal;
             
             const dBinormal = binormalNext - binormalPrev;
-            const ds = parameters[i + 1] - parameters[i - 1];
+            const dt = parameters[i + 1] - parameters[i - 1];  // parameter difference (unitless)
             
-            if (abs(ds) > 1e-10)
+            if (abs(dt) > 1e-10)
             {
-                // τ = -db/ds · n
-                torsion = -dot(dBinormal, normal) / ds;
+                // τ = -db/ds · n, where ds = curveLength * dt for normalized parameters
+                // So τ = -db/dt · n / (ds/dt) = -db/dt · n / curveLength
+                torsion = -dot(dBinormal, normal) / (dt * curveLength);
             }
         }
         else if (i == 0 && numberOfPoints > 1)
@@ -532,11 +534,11 @@ function computeTorsionsFiniteDifference(frenetFrames is array, parameters is ar
             const normal = frenetFrames[i].normal;
             
             const dBinormal = binormalNext - binormalCurrent;
-            const ds = parameters[i + 1] - parameters[i];
+            const dt = parameters[i + 1] - parameters[i];
             
-            if (abs(ds) > 1e-10)
+            if (abs(dt) > 1e-10)
             {
-                torsion = -dot(dBinormal, normal) / ds;
+                torsion = -dot(dBinormal, normal) / (dt * curveLength);
             }
         }
         else if (i == numberOfPoints - 1 && numberOfPoints > 1)
@@ -547,11 +549,11 @@ function computeTorsionsFiniteDifference(frenetFrames is array, parameters is ar
             const normal = frenetFrames[i].normal;
             
             const dBinormal = binormalCurrent - binormalPrev;
-            const ds = parameters[i] - parameters[i - 1];
+            const dt = parameters[i] - parameters[i - 1];
             
-            if (abs(ds) > 1e-10)
+            if (abs(dt) > 1e-10)
             {
-                torsion = -dot(dBinormal, normal) / ds;
+                torsion = -dot(dBinormal, normal) / (dt * curveLength);
             }
         }
         
