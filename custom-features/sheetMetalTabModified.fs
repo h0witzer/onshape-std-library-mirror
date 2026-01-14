@@ -598,7 +598,7 @@ function booleanOneTabGroup(context is Context, id is Id, definition is map, coi
     {
         println("Flipping orientation of " ~ toString(size(toolBodiesToFlip)) ~ " tool bodies with opposite normals");
         opFlipOrientation(context, id + "flipTools", {
-                    "faces" : qOwnedByBody(qUnion(toolBodiesToFlip), EntityType.FACE)
+                    "bodies" : qUnion(toolBodiesToFlip)
                 });
     }
     
