@@ -78,8 +78,8 @@ annotation { "Feature Type Name" : "Developable Strips",
 export const developableStrips = defineFeature(function(context is Context, id is Id, definition is map)
     precondition
     {
-        annotation { "Name" : "Input curve", "Filter" : EntityType.EDGE && SketchObject.NO && ConstructionObject.NO, "MaxNumberOfPicks" : 1 }
-        definition.inputCurve is Query;
+        annotation { "Name" : "Input surface", "Filter" : EntityType.FACE && SketchObject.NO && ConstructionObject.NO && AllowMeshGeometry.NO, "MaxNumberOfPicks" : 1 }
+        definition.inputSurface is Query;
         
         annotation { "Name" : "Rotation mode" }
         definition.rotationMode is DevelopableStripRotationMode;
@@ -171,13 +171,13 @@ export const developableStrips = defineFeature(function(context is Context, id i
     }
     {
         // Validate input
-        if (evaluateQueryCount(context, definition.inputCurve) == 0)
-            throw regenError("Select an input curve.", ["inputCurve"]);
+        if (evaluateQueryCount(context, definition.inputSurface) == 0)
+            throw regenError("Select an input surface.", ["inputSurface"]);
         
-        const curveEdge = evaluateQuery(context, definition.inputCurve)[0];
+        const surfaceFace = evaluateQuery(context, definition.inputSurface)[0];
         
         // Generate the developable strip
-        generateDevelopableStrip(context, id, curveEdge, definition);
+        generateDevelopableStrip(context, id, surfaceFace, definition);
     }, {
         rotationMode : DevelopableStripRotationMode.CONSTANT_ANGLE,
         rotationAngle : 0 * degree,
@@ -204,34 +204,60 @@ export const developableStrips = defineFeature(function(context is Context, id i
 
 
 /**
- * Generates a developable strip along a space curve.
+ * Generates a developable strip from a surface.
  * 
  * Implements the algorithm from Maekawa & Scholz (2024):
- * 1. Sample the input curve at discrete points
- * 2. Compute Frenet frame (tangent, normal, binormal) at each point
- * 3. Compute curvature and torsion at each point
- * 4. Determine rotation angles based on the selected mode
- * 5. Compute Darboux frame using rotation angles
- * 6. Compute ruling directions from Darboux frame
- * 7. Generate strip endpoints using ruling directions and widths
- * 8. Fit B-spline curves to strip edges
- * 9. Create B-spline surface from the fitted curves
+ * 1. Extract a directrix curve from the surface (e.g., boundary edge or iso-curve)
+ * 2. Sample the curve at discrete points
+ * 3. Compute Frenet frame (tangent, normal, binormal) at each point
+ * 4. Compute curvature and torsion at each point
+ * 5. Determine rotation angles based on the selected mode
+ * 6. Compute Darboux frame using rotation angles
+ * 7. Compute ruling directions from Darboux frame
+ * 8. Generate strip endpoints using ruling directions and widths
+ * 9. Fit B-spline curves to strip edges
+ * 10. Create B-spline surface from the fitted curves
  * 
  * @param context {Context} : The modeling context
  * @param id {Id} : The feature identifier
- * @param curveEdge {Query} : The input curve edge
+ * @param surfaceFace {Query} : The input surface face
  * @param definition {map} : The feature definition with parameters
  */
-function generateDevelopableStrip(context is Context, id is Id, curveEdge is Query, definition is map)
+function generateDevelopableStrip(context is Context, id is Id, surfaceFace is Query, definition is map)
 {
+    // Extract a boundary edge from the surface as the directrix curve
+    // This uses the edges of the surface face
+    const boundaryEdges = qAdjacent(surfaceFace, AdjacencyType.EDGE, EntityType.EDGE);
+    const edgeCount = evaluateQueryCount(context, boundaryEdges);
+    
+    if (edgeCount == 0)
+    {
+        throw regenError("Surface has no boundary edges. Select a surface with edges.");
+    }
+    
+    // Use the first edge as the directrix curve
+    const curveEdge = qNthElement(boundaryEdges, 0);
+    
+    if (definition.printCurveProperties)
+    {
+        println("Using boundary edge as directrix curve");
+        println("Surface has " ~ edgeCount ~ " boundary edges");
+    }
+    
     // Sample the curve at discrete points
     const numberOfPoints = definition.numberOfSamplePoints;
     const curveParameters = generateCurveParameters(context, curveEdge, numberOfPoints);
+    
+    // Get curve length for proper arc-length derivatives
+    const curveLength = evLength(context, {
+        "entities" : curveEdge
+    });
     
     if (definition.printCurveProperties)
     {
         println("Sampled curve with " ~ numberOfPoints ~ " points");
         println("Parameter range: " ~ curveParameters[0] ~ " to " ~ curveParameters[size(curveParameters) - 1]);
+        println("Curve length: " ~ curveLength);
     }
     
     // Compute Frenet frames and curvatures at each sample point
@@ -276,7 +302,7 @@ function generateDevelopableStrip(context is Context, id is Id, curveEdge is Que
     // Compute rotation angles based on selected mode
     const rotationAngles = computeRotationAngles(context, definition, samplePoints, 
                                                   frenetFrames, curvatures, torsions, 
-                                                  curveParameters);
+                                                  curveParameters, curveLength);
     
     if (definition.printRotationAngles)
     {
@@ -303,14 +329,18 @@ function generateDevelopableStrip(context is Context, id is Id, curveEdge is Que
         darbouxFrames = append(darbouxFrames, darbouxFrame);
         
         // Compute derivative of rotation angle for geodesic torsion
-        var dPhiDs = 0.0 / meter;
+        // dφ/ds where s is arc length
+        var dPhiDs = 0.0 / meter;  // Initialize with correct units (angle/length, angle is dimensionless)
         if (i > 0 && i < numberOfPoints - 1)
         {
-            const ds = curveParameters[i + 1] - curveParameters[i - 1];
-            const dPhi = rotationAngles[i + 1] - rotationAngles[i - 1];
-            if (abs(ds) > 1e-10)
+            const dt = curveParameters[i + 1] - curveParameters[i - 1];  // unitless parameter difference
+            const dPhi = rotationAngles[i + 1] - rotationAngles[i - 1];  // angle difference
+            if (abs(dt) > 1e-10)
             {
-                dPhiDs = dPhi / ds;
+                // Convert parameter derivative to arc-length derivative
+                // dφ/ds = (dφ/dt) * (dt/ds) = (dφ/dt) / (ds/dt)
+                // For normalized parameters [0,1], ds/dt = curveLength
+                dPhiDs = (dPhi / dt) / curveLength;
             }
         }
         
@@ -601,11 +631,12 @@ function computeFrenetFrame(context is Context, curveEdge is Query, parameter is
  * @param curvatures {array} : Array of curvature values
  * @param torsions {array} : Array of torsion values
  * @param curveParameters {array} : Array of normalized parameter values (0 to 1)
+ * @param curveLength {ValueWithUnits} : Total length of the curve
  * @returns {array} : Array of rotation angles (in radians)
  */
 function computeRotationAngles(context is Context, definition is map, samplePoints is array,
                                 frenetFrames is array, curvatures is array, torsions is array,
-                                curveParameters is array) returns array
+                                curveParameters is array, curveLength is ValueWithUnits) returns array
 {
     var rotationAngles = [];
     const numberOfPoints = size(samplePoints);
