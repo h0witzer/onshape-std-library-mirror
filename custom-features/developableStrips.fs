@@ -87,14 +87,14 @@ export const developableStrips = defineFeature(function(context is Context, id i
         // Rotation angle parameters based on selected mode
         if (definition.rotationMode == DevelopableStripRotationMode.CONSTANT_ANGLE)
         {
-            annotation { "Name" : "Rotation angle φ", "Description" : "Constant rotation angle between Frenet and Darboux frames" }
+            annotation { "Name" : "Rotation angle", "Description" : "Constant rotation angle between Frenet and Darboux frames" }
             isAngle(definition.rotationAngle, ROTATION_ANGLE_BOUNDS);
         }
         
         if (definition.rotationMode == DevelopableStripRotationMode.LINEAR_VARIATION)
         {
-            annotation { "Name" : "Base angle φ₀", "Description" : "Starting rotation angle" }
-            isAngle(definition.baseAngle, ROTATION_ANGLE_BOUNDS);
+            annotation { "Name" : "Base angle", "Description" : "Starting rotation angle" }
+            isAngle(definition.linearBaseAngle, ROTATION_ANGLE_BOUNDS);
             
             annotation { "Name" : "Angle rate", "Description" : "Linear rate of angle change along curve (degrees per unit length)" }
             isReal(definition.angleRate, ZERO_INCLUSIVE_OFFSET_BOUNDS);
@@ -102,8 +102,8 @@ export const developableStrips = defineFeature(function(context is Context, id i
         
         if (definition.rotationMode == DevelopableStripRotationMode.SINUSOIDAL_PATTERN)
         {
-            annotation { "Name" : "Base angle φ₀", "Description" : "Constant offset angle" }
-            isAngle(definition.baseAngle, ROTATION_ANGLE_BOUNDS);
+            annotation { "Name" : "Base angle", "Description" : "Constant offset angle" }
+            isAngle(definition.sinusoidalBaseAngle, ROTATION_ANGLE_BOUNDS);
             
             annotation { "Name" : "Amplitude", "Description" : "Amplitude of sinusoidal variation" }
             isAngle(definition.amplitude, ROTATION_ANGLE_BOUNDS);
@@ -114,7 +114,7 @@ export const developableStrips = defineFeature(function(context is Context, id i
         
         if (definition.rotationMode == DevelopableStripRotationMode.CONSTANT_TANGENT_RULING)
         {
-            annotation { "Name" : "Tangent-ruling angle θ", "Description" : "Constant angle between tangent and ruling direction" }
+            annotation { "Name" : "Tangent-ruling angle", "Description" : "Constant angle between tangent and ruling direction" }
             isAngle(definition.tangentRulingAngle, TANGENT_RULING_ANGLE_BOUNDS);
         }
         
@@ -181,7 +181,8 @@ export const developableStrips = defineFeature(function(context is Context, id i
     }, {
         rotationMode : DevelopableStripRotationMode.CONSTANT_ANGLE,
         rotationAngle : 0 * degree,
-        baseAngle : 0 * degree,
+        linearBaseAngle : 0 * degree,
+        sinusoidalBaseAngle : 0 * degree,
         angleRate : 0.0,
         amplitude : 0.1 * radian,
         frequency : 1.0,
@@ -621,7 +622,7 @@ function computeRotationAngles(context is Context, definition is map, samplePoin
     else if (definition.rotationMode == DevelopableStripRotationMode.LINEAR_VARIATION)
     {
         // φ(t) = φ₀ + rate * t
-        const baseAngle = definition.baseAngle;
+        const baseAngle = definition.linearBaseAngle;
         const rate = definition.angleRate * degree; // Convert to angle per unit parameter
         
         for (var i = 0; i < numberOfPoints; i += 1)
@@ -634,7 +635,7 @@ function computeRotationAngles(context is Context, definition is map, samplePoin
     else if (definition.rotationMode == DevelopableStripRotationMode.SINUSOIDAL_PATTERN)
     {
         // φ(t) = φ₀ + amplitude * sin(2π * frequency * t)
-        const baseAngle = definition.baseAngle;
+        const baseAngle = definition.sinusoidalBaseAngle;
         const amplitude = definition.amplitude;
         const frequency = definition.frequency;
         
