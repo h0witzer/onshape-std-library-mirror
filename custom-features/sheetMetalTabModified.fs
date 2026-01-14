@@ -53,6 +53,9 @@ export const sheetMetalTab = defineSheetMetalFeature(function(context is Context
 
         annotation { "Name" : "Subtraction scope", "Filter" : (SheetMetalDefinitionEntityType.FACE && AllowFlattenedGeometry.YES && ModifiableEntityOnly.YES) || (BodyType.SOLID && EntityType.BODY && ActiveSheetMetal.NO) }
         definition.booleanSubtractScope is Query;
+        
+        annotation { "Name" : "Allow sheet bodies in boolean", "Default" : true }
+        definition.allowSheets is boolean;
     }
     {
         // this is not necessary but helps with correct error reporting in feature pattern
@@ -514,12 +517,28 @@ function booleanOneTabGroup(context is Context, id is Id, definition is map, coi
         throw regenError(ErrorStringEnum.SHEET_METAL_TAB_NO_WALL, ["booleanUnionScope"]);
     }
     
+    // Diagnostic output for body types
+    const wallSheetBodies = evaluateQuery(context, qBodyType(wallBodies, BodyType.SHEET));
+    const wallSolidBodies = evaluateQuery(context, qBodyType(wallBodies, BodyType.SOLID));
+    const toolSheetBodies = evaluateQuery(context, qBodyType(toolsQ, BodyType.SHEET));
+    const toolSolidBodies = evaluateQuery(context, qBodyType(toolsQ, BodyType.SOLID));
+    
+    println("=== Boolean Union Diagnostics ===");
+    println("Wall bodies - Total: " ~ toString(size(wallBodyArray)));
+    println("Wall bodies - Sheets: " ~ toString(size(wallSheetBodies)));
+    println("Wall bodies - Solids: " ~ toString(size(wallSolidBodies)));
+    println("Tool bodies - Total: " ~ toString(size(toolBodies)));
+    println("Tool bodies - Sheets: " ~ toString(size(toolSheetBodies)));
+    println("Tool bodies - Solids: " ~ toString(size(toolSolidBodies)));
+    println("AllowSheets parameter: " ~ toString(definition.allowSheets));
+    println("=================================");
+    
     try
     {
         opBoolean(context, id + "boolean", {
                     "tools" : qUnion([wallBodies, toolsQ]),
                     "operationType" : BooleanOperationType.UNION,
-                    "allowSheets" : true
+                    "allowSheets" : definition.allowSheets
                 });
     }
     catch
