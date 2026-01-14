@@ -11,8 +11,9 @@ FeatureScript 2837;
 // - Added validation checks before boolean operation to catch invalid states early
 // - Un-commented SHEET_METAL_TAB_COLLISION error throw for proper collision reporting
 // - Kept try block loud (not silent) for diagnostic purposes
-// - Added recomputeMatches: true to opBoolean to handle surface orientation/edge matching automatically
-// - This resolves BOOLEAN_INVALID errors caused by surface orientation issues in rounded/cylindrical geometries
+// - Added automatic orientation correction: detects tool bodies with opposite normals and flips them
+// - Added visual debugging with red/blue arrows showing surface normals
+// - This resolves BOOLEAN_INVALID errors caused by surface orientation mismatches in rounded/cylindrical geometries
 
 // Imports used in interface
 export import(path : "onshape/std/query.fs", version : "2837.0");
@@ -536,24 +537,69 @@ function booleanOneTabGroup(context is Context, id is Id, definition is map, coi
     const arrowLength = 10 * millimeter;
     const arrowRadius = 0.5 * millimeter;
     
-    // Draw normals for wall faces (RED arrows)
+    // Collect wall face normals for comparison
+    var wallFaceNormals = [];
     for (var wallFace in evaluateQuery(context, qOwnedByBody(wallBodies, EntityType.FACE)))
     {
         const wallFaceCenter = evFaceTangentPlane(context, {
                     "face" : wallFace,
                     "parameter" : vector(0.5, 0.5)
                 });
+        wallFaceNormals = append(wallFaceNormals, {
+                    "face" : wallFace,
+                    "origin" : wallFaceCenter.origin,
+                    "normal" : wallFaceCenter.normal
+                });
         addDebugArrow(context, wallFaceCenter.origin, wallFaceCenter.origin + wallFaceCenter.normal * arrowLength, arrowRadius, DebugColor.RED);
     }
     
-    // Draw normals for tool faces (BLUE arrows)
+    // Check tool faces and flip orientation if needed
+    var toolBodiesToFlip = [];
     for (var toolFace in evaluateQuery(context, qOwnedByBody(toolsQ, EntityType.FACE)))
     {
         const toolFaceCenter = evFaceTangentPlane(context, {
                     "face" : toolFace,
                     "parameter" : vector(0.5, 0.5)
                 });
+        
+        // Find the closest wall face to this tool face
+        var minDistance = undefined;
+        var closestWallNormal = undefined;
+        for (var wallInfo in wallFaceNormals)
+        {
+            const dist = norm(toolFaceCenter.origin - wallInfo.origin);
+            if (minDistance == undefined || dist < minDistance)
+            {
+                minDistance = dist;
+                closestWallNormal = wallInfo.normal;
+            }
+        }
+        
+        // Check if normals are opposite (dot product < 0)
+        if (closestWallNormal != undefined)
+        {
+            const dotProduct = dot(toolFaceCenter.normal, closestWallNormal);
+            if (dotProduct < 0)
+            {
+                // Normals are opposite - need to flip this tool body
+                const toolBody = qOwnerBody(toolFace);
+                if (!isIn(toolBody, toolBodiesToFlip))
+                {
+                    toolBodiesToFlip = append(toolBodiesToFlip, toolBody);
+                }
+            }
+        }
+        
         addDebugArrow(context, toolFaceCenter.origin, toolFaceCenter.origin + toolFaceCenter.normal * arrowLength, arrowRadius, DebugColor.BLUE);
+    }
+    
+    // Flip tool bodies that have opposite orientation
+    if (size(toolBodiesToFlip) > 0)
+    {
+        println("Flipping orientation of " ~ toString(size(toolBodiesToFlip)) ~ " tool bodies with opposite normals");
+        opFlipOrientation(context, id + "flipTools", {
+                    "faces" : qOwnedByBody(qUnion(toolBodiesToFlip), EntityType.FACE)
+                });
     }
     
     try
