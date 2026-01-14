@@ -11,8 +11,8 @@ FeatureScript 2837;
 // - Added validation checks before boolean operation to catch invalid states early
 // - Un-commented SHEET_METAL_TAB_COLLISION error throw for proper collision reporting
 // - Kept try block loud (not silent) for diagnostic purposes
-// - Replaced opBoolean with joinSurfaceBodiesWithAutoMatching to handle surface orientation automatically
-// - This resolves BOOLEAN_INVALID errors caused by mismatched surface orientations in rounded/cylindrical geometries
+// - Added recomputeMatches: true to opBoolean to handle surface orientation/edge matching automatically
+// - This resolves BOOLEAN_INVALID errors caused by surface orientation issues in rounded/cylindrical geometries
 
 // Imports used in interface
 export import(path : "onshape/std/query.fs", version : "2837.0");
@@ -532,16 +532,15 @@ function booleanOneTabGroup(context is Context, id is Id, definition is map, coi
     
     try
     {
-        // Use joinSurfaceBodiesWithAutoMatching instead of opBoolean to handle surface orientation automatically
-        // The sheet metal walls (wallBodies) provide the target scope with correct orientation priority
-        // The copied tab surfaces (toolsQ) are provided as the seed
-        joinSurfaceBodiesWithAutoMatching(context, id + "boolean", {
-                    "seed" : toolsQ,
-                    "defaultSurfaceScope" : false,
-                    "booleanSurfaceScope" : wallBodies,
-                    "makeSolid" : false,
-                    "eraseImprintedEdges" : true
-                }, function(id is Id) {});
+        // Use opBoolean with allowSheets for sheet metal surfaces
+        // The user found that orientation issues cause BOOLEAN_INVALID errors
+        // opBoolean with proper edge matching should handle this
+        opBoolean(context, id + "boolean", {
+                    "tools" : qUnion([wallBodies, toolsQ]),
+                    "operationType" : BooleanOperationType.UNION,
+                    "allowSheets" : true,
+                    "recomputeMatches" : true
+                });
     }
     catch
     {
