@@ -11,7 +11,8 @@ FeatureScript 2837;
 // - Added validation checks before boolean operation to catch invalid states early
 // - Un-commented SHEET_METAL_TAB_COLLISION error throw for proper collision reporting
 // - Kept try block loud (not silent) for diagnostic purposes
-// - Added automatic orientation correction: detects tool bodies with opposite normals and flips them
+// - Added automatic orientation correction: detects tool bodies with opposite normals and flips them BEFORE subtractTab
+// - This ensures subtractTab operations work with correctly oriented surfaces
 // - Added visual debugging with red/blue arrows showing surface normals
 // - This resolves BOOLEAN_INVALID errors caused by surface orientation mismatches in rounded/cylindrical geometries
 
@@ -499,11 +500,9 @@ function booleanOneTabGroup(context is Context, id is Id, definition is map, coi
                 "instanceNames" : ["1"]
             });
 
-    subtractTab(context, id + "subtract", definition, subtractQueries, coincidentGrouping, rootId);
-
     const toolsQ = qCreatedBy(id + "copyTool", EntityType.BODY);
     
-    // Validate that we have valid bodies before attempting boolean operation
+    // Validate that we have valid bodies before attempting operations
     const toolBodies = evaluateQuery(context, toolsQ);
     const wallBodyArray = evaluateQuery(context, wallBodies);
     
@@ -532,8 +531,8 @@ function booleanOneTabGroup(context is Context, id is Id, definition is map, coi
     println("Tool bodies - Solids: " ~ toString(size(toolSolidBodies)));
     println("=================================");
     
-    // Draw debug arrows showing surface normals for visualization
-    // This helps diagnose orientation mismatches between tool and wall surfaces
+    // Check orientation and flip tool bodies BEFORE subtractTab
+    // This ensures subtractTab operations work with correctly oriented surfaces
     const arrowLength = 10 * millimeter;
     const arrowRadius = 0.5 * millimeter;
     
@@ -593,7 +592,7 @@ function booleanOneTabGroup(context is Context, id is Id, definition is map, coi
         addDebugArrow(context, toolFaceCenter.origin, toolFaceCenter.origin + toolFaceCenter.normal * arrowLength, arrowRadius, DebugColor.BLUE);
     }
     
-    // Flip tool bodies that have opposite orientation
+    // Flip tool bodies that have opposite orientation BEFORE subtractTab
     if (size(toolBodiesToFlip) > 0)
     {
         println("Flipping orientation of " ~ toString(size(toolBodiesToFlip)) ~ " tool bodies with opposite normals");
@@ -601,6 +600,9 @@ function booleanOneTabGroup(context is Context, id is Id, definition is map, coi
                     "bodies" : qUnion(toolBodiesToFlip)
                 });
     }
+
+    // Now call subtractTab with correctly oriented surfaces
+    subtractTab(context, id + "subtract", definition, subtractQueries, coincidentGrouping, rootId);
     
     try
     {
