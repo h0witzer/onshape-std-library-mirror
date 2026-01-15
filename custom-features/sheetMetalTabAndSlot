@@ -881,16 +881,11 @@ function subtractTab(context is Context, id is Id, definition is map, subtractQu
 
     if (size(subtractSMFaces) != 0 || !isQueryEmpty(context, subtractQueries.nonSheetMetalQueries))
     {
-        if (definition.booleanOffset > 0 * meter)
+        if (definition.booleanOffset > 0 * meter && definition.extensionEdgesTracking != undefined)
         {
-            var facesToOffset = qCreatedBy(id + "thicken", EntityType.FACE);
-            
-            if (definition.extensionEdgesTracking != undefined)
-            {
-                const thickenedBody = qCreatedBy(id + "thicken", EntityType.BODY);
-                const thickenedFaces = qOwnedByBody(thickenedBody, EntityType.FACE);
-                facesToOffset = qIntersection([definition.extensionEdgesTracking, thickenedFaces]);
-            }
+            const thickenedBody = qCreatedBy(id + "thicken", EntityType.BODY);
+            const thickenedFaces = qOwnedByBody(thickenedBody, EntityType.FACE);
+            const facesToOffset = qIntersection([definition.extensionEdgesTracking, thickenedFaces]);
             
             if (!isQueryEmpty(context, facesToOffset))
             {
@@ -1135,7 +1130,8 @@ function mergeTabSurfacesWithSheetMetal(context is Context, id is Id, tabSurface
         "tabFaces" : tabFaces,
         "booleanUnionScope" : sourceWallFaces,
         "booleanOffset" : definition.slotMargin,
-        "booleanSubtractScope" : subtractScope
+        "booleanSubtractScope" : subtractScope,
+        "extensionEdgesTracking" : definition.extensionEdgesTracking
     };
     
     try
