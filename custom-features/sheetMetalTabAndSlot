@@ -1184,6 +1184,12 @@ function mergeTabSurfacesWithSheetMetal(context is Context, id is Id, tabSurface
                     "entities" : qUnion([toUpdate.modifiedEntities, unionEntityPersistantQuery]),
                     "deletedAttributes" : toUpdate.deletedAttributes,
                     "associatedChanges" : associateChanges });
+        
+        // Delete the original tab surface bodies now that copies have been merged
+        // The boolean operations used copies created by opPattern, leaving these originals behind
+        try silent(opDeleteBodies(context, id + "deleteOriginalTabSurfaces", {
+                    "entities" : tabSurfaceBodies
+                }));
     }
     catch (error)
     {
