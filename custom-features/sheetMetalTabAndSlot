@@ -824,21 +824,16 @@ function smSubtractTab(context is Context, id is Id, tab is Query, subtractFaces
         const targetModelParameters = try silent(getModelParameters(context, qOwnerBody(face)));
         if (targetModelParameters is undefined)
             throw regenError(ErrorStringEnum.REGEN_ERROR);
-        
-        // Try to create boolean tools - may fail if geometries don't intersect
-        const tool = try silent(createBooleanToolsForFace(context, id + unstableIdComponent(index) + "tool", face, tab, targetModelParameters));
+        const tool = createBooleanToolsForFace(context, id + unstableIdComponent(index) + "tool", face, tab, targetModelParameters);
         if (tool != undefined)
         {
-            try silent
-            {
-                opBoolean(context, id + unstableIdComponent(index) + "booleanSubtract", {
-                            "tools" : qCreatedBy(id + unstableIdComponent(index) + "tool", EntityType.FACE),
-                            "targets" : face,
-                            "operationType" : BooleanOperationType.SUBTRACTION,
-                            "localizedInFaces" : true,
-                            "allowSheets" : true
-                        });
-            }
+            opBoolean(context, id + unstableIdComponent(index) + "booleanSubtract", {
+                        "tools" : qCreatedBy(id + unstableIdComponent(index) + "tool", EntityType.FACE),
+                        "targets" : face,
+                        "operationType" : BooleanOperationType.SUBTRACTION,
+                        "localizedInFaces" : true,
+                        "allowSheets" : true
+                    });
         }
         index += 1;
     }
