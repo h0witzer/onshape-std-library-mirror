@@ -850,9 +850,13 @@ function getCorrespondingJointEntitiesInPart(context is Context, selection is Qu
  * This is the core operation for creating the thickened tab geometry and subtracting it from overlapping bodies.
  * 
  * The function now supports selective face offsetting:
- * - If definition.extensionEdgesTracking is provided, only faces adjacent to the tracked extension edges are offset
+ * - If definition.extensionEdgesTracking is provided (a tracking query for edges created by opExtendSheetBody),
+ *   the tracked query will resolve to the corresponding faces on the thickened body after the thicken operation
  * - This ensures clearance is applied only to the side faces of tabs (created by sheet extension), not the top/bottom
  * - If tracking is not provided, falls back to offsetting all thickened faces (legacy behavior)
+ * 
+ * Key insight: Tracking queries follow geometry transformations. When edges are tracked and then the surface is 
+ * thickened, the tracking query resolves to the faces that were created from those edges, not the edges themselves.
  * 
  * Inputs: 
  *   definition (feature definition with offset settings and optional extensionEdgesTracking for selective offset)
@@ -902,18 +906,14 @@ function subtractTab(context is Context, id is Id, definition is map, subtractQu
             
             if (definition.extensionEdgesTracking != undefined)
             {
-                // The tracked extension edges should now resolve to edges on the thickened body
-                // Find faces adjacent to these edges - these are the side faces that need clearance
+                // The tracked extension edges will resolve to the corresponding faces on the thickened body
+                // After thickening, the tracking query evaluates to the faces that were created from those edges
+                // These are the side faces of the tab that need clearance offsetting
                 const thickenedBody = qCreatedBy(id + "thicken", EntityType.BODY);
                 
-                // Get all edges on the thickened body and intersect with tracked extension edges
-                // The tracking query will resolve to the corresponding edges after thickening
-                const edgesOnThickenedBody = qOwnedByBody(thickenedBody, EntityType.EDGE);
-                const trackedExtensionEdgesOnThickenedBody = qIntersection([definition.extensionEdgesTracking, edgesOnThickenedBody]);
-                
-                // Get faces adjacent to these tracked extension edges
-                // These are the side faces of the tab that were created by the extension operation
-                facesToOffset = qAdjacent(trackedExtensionEdgesOnThickenedBody, AdjacencyType.EDGE, EntityType.FACE);
+                // Filter the tracked query to only faces owned by the thickened body
+                // The tracking query itself will resolve to faces after the thicken operation
+                facesToOffset = qIntersection([definition.extensionEdgesTracking, qOwnedByBody(thickenedBody, EntityType.FACE)]);
             }
             
             // Only apply offset if we have faces to offset
