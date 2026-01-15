@@ -6,8 +6,6 @@ import(path : "onshape/std/evaluate.fs", version : "2837.0");
 import(path : "onshape/std/valueBounds.fs", version : "2837.0");
 import(path : "onshape/std/geomOperations.fs", version : "2837.0");
 import(path : "onshape/std/path.fs", version : "2837.0");
-import(path : "onshape/std/debug.fs", version : "2837.0");
-import(path : "onshape/std/debugcolor.gen.fs", version : "2837.0");
 import(path : "onshape/std/sheetMetalAttribute.fs", version : "2837.0");
 import(path : "onshape/std/feature.fs", version : "2837.0");
 import(path : "onshape/std/extendendtype.gen.fs", version : "2837.0");
@@ -153,9 +151,6 @@ export const tabAndSlotBossDisplay = defineSheetMetalFeature(function(context is
         // Use mixInTracking pattern: union the original query with a tracking query
         // This ensures we capture both affected (split) and unaffected edges
         const trackedEdges = qUnion([orderedEdgeQuery, startTracking(context, orderedEdgeQuery)]);
-        
-        // Debug: Display the input chain to verify correct identification
-        debug(context, orderedEdgeQuery, DebugColor.CYAN);
 
         // Split the edges at tab boundaries
         const splitParameters = calculateSplitParametersFromTabDomains(tabDomains);
@@ -190,19 +185,7 @@ export const tabAndSlotBossDisplay = defineSheetMetalFeature(function(context is
         // Filter to edges only and combine with original to handle both split and unsplit edges
         const allEdgesAfterSplit = qEntityFilter(qUnion([orderedEdgeQuery, trackedEdges]), EntityType.EDGE);
         
-        // Debug: Display the edges after split to verify all are captured
-        debug(context, allEdgesAfterSplit, DebugColor.RED);
-        println("Edges after split: " ~ toString(size(evaluateQuery(context, allEdgesAfterSplit))));
-        
         const tabSegmentEdges = identifyTabSegmentsByEdgeMidpoints(context, allEdgesAfterSplit, path, totalLength, tabDomains);
-        
-        // Debug output: Report how many tab segments were identified
-        const tabSegmentCount = size(evaluateQuery(context, tabSegmentEdges));
-        println("Tab domains count: " ~ toString(size(tabDomains)));
-        println("Tab segment edges identified: " ~ toString(tabSegmentCount));
-        
-        // Debug: Highlight tab segment edges to verify identification
-        debug(context, tabSegmentEdges, DebugColor.YELLOW);
 
         // Phase 2: Copy adjacent sheet metal wall surfaces
         // Use the identified tab segment edges to find adjacent faces
@@ -220,8 +203,6 @@ export const tabAndSlotBossDisplay = defineSheetMetalFeature(function(context is
         
         // Track the tab segment edges themselves
         const trackedTabSegments = startTracking(context, tabSegmentEdges);
-        
-        println("Tab segment edges count (before extraction): " ~ toString(size(evaluateQuery(context, tabSegmentEdges))));
 
         try
         {
@@ -229,7 +210,6 @@ export const tabAndSlotBossDisplay = defineSheetMetalFeature(function(context is
                         "faces" : wallFaces,
                         "tangentPropagation" : false
                     });
-            debug(context, wallFaces, DebugColor.BLUE);
         }
         catch
         {
@@ -257,16 +237,11 @@ export const tabAndSlotBossDisplay = defineSheetMetalFeature(function(context is
                             "extendDistance" : definition.tabDepth,
                             "extensionShape" : ExtendSheetShapeType.LINEAR
                         });
-                debug(context, extractedEdgesToExtend, DebugColor.GREEN);
             }
             catch
             {
                 throw regenError("Failed to extend tab edges", ["tabDepth"]);
             }
-        }
-        else
-        {
-            println("Warning: No edges found to extend");
         }
 
         // Phase 4: Merge the extended surface bodies back with the sheet metal model
@@ -505,14 +480,12 @@ function identifyTabSegmentsByEdgeMidpoints(context is Context, allSplitEdges is
 {
     if (size(tabDomains) == 0)
     {
-        println("identifyTabSegmentsByEdgeMidpoints: No tab domains provided");
         return qNothing();
     }
 
     // Get all split edges and try to reconstruct them into an ordered path
     const edges = evaluateQuery(context, allSplitEdges);
     const edgeCount = size(edges);
-    println("identifyTabSegmentsByEdgeMidpoints: Checking " ~ toString(edgeCount) ~ " edges");
     
     if (edgeCount == 0)
     {
@@ -525,15 +498,6 @@ function identifyTabSegmentsByEdgeMidpoints(context is Context, allSplitEdges is
     if (orderedPath != undefined)
     {
         orderedEdges = orderedPath.edges;
-        println("identifyTabSegmentsByEdgeMidpoints: Successfully ordered edges into path");
-        
-        // Verify the path length matches the original
-        const reconstructedLength = evLength(context, { "entities" : qUnion(orderedEdges) });
-        println("identifyTabSegmentsByEdgeMidpoints: Original length = " ~ toString(totalLength) ~ ", Reconstructed length = " ~ toString(reconstructedLength));
-    }
-    else
-    {
-        println("identifyTabSegmentsByEdgeMidpoints: Could not order edges, using original order");
     }
     
     // Calculate the normalized position (0 to 1) of each edge's midpoint along the chain
@@ -572,12 +536,9 @@ function identifyTabSegmentsByEdgeMidpoints(context is Context, allSplitEdges is
         
         if (isInTabDomain)
         {
-            println("Edge " ~ toString(i) ~ " at parameter " ~ toString(midpointParameter) ~ " is in tab domain " ~ toString(domainIndex));
             tabEdgeQueries = append(tabEdgeQueries, edge);
         }
     }
-    
-    println("identifyTabSegmentsByEdgeMidpoints: Found " ~ toString(size(tabEdgeQueries)) ~ " edges in tab domains");
     
     if (size(tabEdgeQueries) == 0)
     {
@@ -976,8 +937,6 @@ function booleanOneTabGroup(context is Context, id is Id, definition is map, coi
         cornerBreakTracking = collectCornerBreakTracking(context, wallBodies);
 
     // Check orientation and flip the ORIGINAL tab body BEFORE creating the copy
-    const arrowLength = 10 * millimeter;
-    const arrowRadius = 0.5 * millimeter;
     
     // Collect wall face normals for comparison
     var wallFaceNormals = [];
@@ -992,7 +951,6 @@ function booleanOneTabGroup(context is Context, id is Id, definition is map, coi
                     "origin" : wallFaceCenter.origin,
                     "normal" : wallFaceCenter.normal
                 });
-        addDebugArrow(context, wallFaceCenter.origin, wallFaceCenter.origin + wallFaceCenter.normal * arrowLength, arrowRadius, DebugColor.RED);
     }
     
     // Check ORIGINAL tab body faces and flip orientation if needed
@@ -1030,14 +988,11 @@ function booleanOneTabGroup(context is Context, id is Id, definition is map, coi
                 }
             }
         }
-        
-        addDebugArrow(context, tabFaceCenter.origin, tabFaceCenter.origin + tabFaceCenter.normal * arrowLength, arrowRadius, DebugColor.BLUE);
     }
     
     // Flip ORIGINAL tab body that has opposite orientation BEFORE creating copy
     if (size(tabBodiesToFlip) > 0)
     {
-        println("Flipping orientation of " ~ toString(size(tabBodiesToFlip)) ~ " tab bodies with opposite normals");
         opFlipOrientation(context, id + "flipTabs", {
                     "bodies" : qUnion(tabBodiesToFlip)
                 });
@@ -1065,21 +1020,6 @@ function booleanOneTabGroup(context is Context, id is Id, definition is map, coi
     {
         throw regenError(ErrorStringEnum.SHEET_METAL_TAB_NO_WALL, ["booleanUnionScope"]);
     }
-    
-    // Diagnostic output for body types
-    const wallSheetBodies = evaluateQuery(context, qBodyType(wallBodies, BodyType.SHEET));
-    const wallSolidBodies = evaluateQuery(context, qBodyType(wallBodies, BodyType.SOLID));
-    const toolSheetBodies = evaluateQuery(context, qBodyType(toolsQ, BodyType.SHEET));
-    const toolSolidBodies = evaluateQuery(context, qBodyType(toolsQ, BodyType.SOLID));
-    
-    println("=== Surface Join Diagnostics ===");
-    println("Wall bodies - Total: " ~ toString(size(wallBodyArray)));
-    println("Wall bodies - Sheets: " ~ toString(size(wallSheetBodies)));
-    println("Wall bodies - Solids: " ~ toString(size(wallSolidBodies)));
-    println("Tool bodies - Total: " ~ toString(size(toolBodies)));
-    println("Tool bodies - Sheets: " ~ toString(size(toolSheetBodies)));
-    println("Tool bodies - Solids: " ~ toString(size(toolSolidBodies)));
-    println("=================================");
 
     // Now call subtractTab with correctly oriented original surfaces
     subtractTab(context, id + "subtract", definition, subtractQueries, coincidentGrouping, rootId);
@@ -1183,7 +1123,6 @@ function mergeTabSurfacesWithSheetMetal(context is Context, id is Id, tabSurface
     const tabFaces = qOwnedByBody(tabSurfaceBodies, EntityType.FACE);
     
     const tabFaceCount = size(evaluateQuery(context, tabFaces));
-    println("Preparing to merge " ~ toString(tabFaceCount) ~ " tab surface faces with sheet metal model");
     
     if (tabFaceCount == 0)
     {
@@ -1196,8 +1135,6 @@ function mergeTabSurfacesWithSheetMetal(context is Context, id is Id, tabSurface
     {
         throw regenError("No wall faces found to merge with", ["edges"]);
     }
-    
-    println("Source wall faces for merge: " ~ toString(wallFaceCount) ~ " faces");
     
     // mergeScope is for slot bodies (subtraction), not for the union operation
     const subtractScope = !isQueryEmpty(context, definition.mergeScope) ? definition.mergeScope : qNothing();
@@ -1270,8 +1207,6 @@ function mergeTabSurfacesWithSheetMetal(context is Context, id is Id, tabSurface
                     "entities" : qUnion([toUpdate.modifiedEntities, unionEntityPersistantQuery]),
                     "deletedAttributes" : toUpdate.deletedAttributes,
                     "associatedChanges" : associateChanges });
-        
-        println("Successfully merged tab surfaces with sheet metal model");
     }
     catch (error)
     {
