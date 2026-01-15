@@ -277,7 +277,7 @@ export const tabAndSlotBossDisplay = defineSheetMetalFeature(function(context is
         {
             mergeTabSurfacesWithSheetMetal(context, id + "mergeTabsWithModel", extractedBodies, wallFaces, definition);
         }
-    });
+    }, { mergeScope : qNothing() });
 
 // Calculates split parameters for each edge within a path so a folded edge chain can be split into evenly sized segments.
 // Adapted from custom-features/onlyTabs-refactor/splitSmEdgeChainToSegments.fs
