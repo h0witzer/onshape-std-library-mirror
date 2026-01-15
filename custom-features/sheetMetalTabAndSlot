@@ -250,6 +250,14 @@ export const tabAndSlotBossDisplay = defineSheetMetalFeature(function(context is
         
         if (!isQueryEmpty(context, extractedBodies))
         {
+            // Get edges created by the sheet extension operation and track them through subsequent operations
+            // These edges define the side faces of the tabs that need clearance offsetting
+            const extensionCreatedEdges = qCreatedBy(id + "extendTabs", EntityType.EDGE);
+            const trackedExtensionEdges = startTracking(context, extensionCreatedEdges);
+            
+            // Store the tracked extension edges in the definition so downstream operations can identify
+            // the side faces created by the extension operation for selective offsetting
+            definition.extensionEdgesTracking = trackedExtensionEdges;
             mergeTabSurfacesWithSheetMetal(context, id + "mergeTabsWithModel", extractedBodies, wallFaces, definition);
         }
     }, { mergeScope : qNothing() });
@@ -840,8 +848,17 @@ function getCorrespondingJointEntitiesInPart(context is Context, selection is Qu
 /**
  * Thickens the input sheet body based on the parameters of the sheet metal model and performs subtraction operations.
  * This is the core operation for creating the thickened tab geometry and subtracting it from overlapping bodies.
- * Inputs: definition (feature definition with offset settings), subtractQueries (separated queries for subtraction),
- *         coincidentGrouping (map with tabBody and walls), rootId (root feature ID).
+ * 
+ * The function now supports selective face offsetting:
+ * - If definition.extensionEdgesTracking is provided, only faces adjacent to the tracked extension edges are offset
+ * - This ensures clearance is applied only to the side faces of tabs (created by sheet extension), not the top/bottom
+ * - If tracking is not provided, falls back to offsetting all thickened faces (legacy behavior)
+ * 
+ * Inputs: 
+ *   definition (feature definition with offset settings and optional extensionEdgesTracking for selective offset)
+ *   subtractQueries (separated queries for subtraction)
+ *   coincidentGrouping (map with tabBody and walls)
+ *   rootId (root feature ID)
  */
 function subtractTab(context is Context, id is Id, definition is map, subtractQueries is map, coincidentGrouping is map, rootId is Id)
 {
@@ -879,13 +896,37 @@ function subtractTab(context is Context, id is Id, definition is map, subtractQu
     {
         if (definition.booleanOffset > 0 * meter)
         {
-            const moveFaceDefinition = {
-                    "moveFaces" : qCreatedBy(id + "thicken", EntityType.FACE),
-                    "moveFaceType" : MoveFaceType.OFFSET,
-                    "offsetDistance" : definition.booleanOffset,
-                    "reFillet" : false };
+            // Only offset faces that are adjacent to edges created by the sheet extension operation
+            // This provides clearance only on the side faces of the tab, not on the top/bottom faces
+            var facesToOffset = qCreatedBy(id + "thicken", EntityType.FACE);
+            
+            if (definition.extensionEdgesTracking != undefined)
+            {
+                // The tracked extension edges should now resolve to edges on the thickened body
+                // Find faces adjacent to these edges - these are the side faces that need clearance
+                const thickenedBody = qCreatedBy(id + "thicken", EntityType.BODY);
+                
+                // Get all edges on the thickened body and intersect with tracked extension edges
+                // The tracking query will resolve to the corresponding edges after thickening
+                const edgesOnThickenedBody = qOwnedByBody(thickenedBody, EntityType.EDGE);
+                const trackedExtensionEdgesOnThickenedBody = qIntersection([definition.extensionEdgesTracking, edgesOnThickenedBody]);
+                
+                // Get faces adjacent to these tracked extension edges
+                // These are the side faces of the tab that were created by the extension operation
+                facesToOffset = qAdjacent(trackedExtensionEdgesOnThickenedBody, AdjacencyType.EDGE, EntityType.FACE);
+            }
+            
+            // Only apply offset if we have faces to offset
+            if (!isQueryEmpty(context, facesToOffset))
+            {
+                const moveFaceDefinition = {
+                        "moveFaces" : facesToOffset,
+                        "moveFaceType" : MoveFaceType.OFFSET,
+                        "offsetDistance" : definition.booleanOffset,
+                        "reFillet" : false };
 
-            opOffsetFace(context, id + "move", moveFaceDefinition);
+                opOffsetFace(context, id + "move", moveFaceDefinition);
+            }
         }
         smSubtractTab(context, id + "sm", qCreatedBy(id + "thicken", EntityType.BODY), subtractSMFaces);
         solidSubtractTab(context, id + "solid", qCreatedBy(id + "thicken", EntityType.BODY), subtractQueries.nonSheetMetalQueries);
