@@ -456,17 +456,37 @@ function subtractTab(context is Context, id is Id, definition is map, subtractQu
 
     if (size(subtractSMFaces) != 0 || !isQueryEmpty(context, subtractQueries.nonSheetMetalQueries))
     {
+        // For sheet metal subtraction, use the ORIGINAL sheet body (not the thickened one)
+        // createBooleanToolsForFace expects sheet bodies and does its own thickening internally
+        // Using pre-thickened bodies causes tracking issues with cap faces on rolled walls
+        var tabToolForSMSubtract = coincidentGrouping.tabBody;
+        
+        // Apply offset to the original sheet body if needed (not to the thickened body)
         if (definition.booleanOffset > 0 * meter)
         {
+            // Create a copy of the tab body to offset for subtraction
+            opPattern(context, id + "copyForOffset", {
+                        "entities" : coincidentGrouping.tabBody,
+                        "transforms" : [identityTransform()],
+                        "instanceNames" : ["offset"]
+                    });
+            
+            const tabCopyForOffset = qCreatedBy(id + "copyForOffset", EntityType.BODY);
+            
             const moveFaceDefinition = {
-                    "moveFaces" : qCreatedBy(id + "thicken", EntityType.FACE),
+                    "moveFaces" : qOwnedByBody(tabCopyForOffset, EntityType.FACE),
                     "moveFaceType" : MoveFaceType.OFFSET,
                     "offsetDistance" : definition.booleanOffset,
                     "reFillet" : false };
 
             opOffsetFace(context, id + "move", moveFaceDefinition);
+            
+            tabToolForSMSubtract = tabCopyForOffset;
         }
-        smSubtractTab(context, id + "sm", qCreatedBy(id + "thicken", EntityType.BODY), subtractSMFaces);
+        
+        smSubtractTab(context, id + "sm", tabToolForSMSubtract, subtractSMFaces);
+        
+        // For solid subtraction, we still use the thickened body
         solidSubtractTab(context, id + "solid", qCreatedBy(id + "thicken", EntityType.BODY), subtractQueries.nonSheetMetalQueries);
     }
 

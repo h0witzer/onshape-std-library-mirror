@@ -1209,15 +1209,7 @@ function createOutline(context is Context, id is Id, parentId, trimmed is Query,
     {
         for (var oneTrimmed in evaluateQuery(context, trimmed))
         {
-            // Check that the tool cuts all the way through the rolled wall.
-            // For pre-thickened tools (e.g., when called from a subprocess), the trimmed body
-            // may have cap faces from both the target thickening AND the tool thickening.
-            // Only cap faces from the target are tracked in capFacesTracking.
-            // Therefore, we check for AT LEAST 2 offset faces rather than EXACTLY 2.
-            // If there are fewer than 2, the tool definitely doesn't cut through.
-            // If there are more than 2, it's likely due to a pre-thickened tool contributing additional cap faces.
-            const trackedOffsetFaceCount = size(evaluateQuery(context, qIntersection([qOwnedByBody(oneTrimmed, EntityType.FACE), offsetFaces])));
-            if (trackedOffsetFaceCount < 2)
+            if (size(evaluateQuery(context, qIntersection([qOwnedByBody(oneTrimmed, EntityType.FACE), offsetFaces]))) != 2)
             {
                 if (parentId != undefined)
                 {
