@@ -554,25 +554,6 @@ function identifyTabSegmentsByEdgeMidpoints(context is Context, allSplitEdges is
 // ========================================
 
 /**
- * Converts tools into sheet bodies.
- * Extracts surface bodies from face queries for use in boolean operations.
- * Inputs: tools (query for faces to extract).
- * Outputs: Creates extracted surface bodies in the context.
- */
-function createTabTools(context is Context, id is Id, tools is Query)
-{
-    const faces = evaluateQuery(context, tools);
-    if (faces == [])
-    {
-        throw regenError(ErrorStringEnum.SHEET_METAL_TAB_NO_TAB, ["tabFaces"]);
-    }
-    if (isAtVersionOrLater(context, FeatureScriptVersionNumber.V696_REMOVE_ADDED_REDUNDANCY))
-        opExtractSurface(context, id, { "faces" : tools, "redundancyType" : ExtractSurfaceRedundancyType.REMOVE_ALL_REDUNDANCY });
-    else
-        opExtractSurface(context, id, { "faces" : tools, "removeRedundant" : true });
-}
-
-/**
  * Takes a sheet metal query and returns the results as a map where the keys are sheet metal model ids
  * and the values are arrays of queries.
  * Inputs: selections (array of queries for sheet metal entities).
@@ -1151,8 +1132,8 @@ function mergeTabSurfacesWithSheetMetal(context is Context, id is Id, tabSurface
     {
         // Integrated logic from sheetMetalTabModified.fs - no external call needed
         
-        // Extract surface bodies from tab faces
-        createTabTools(context, id + "extract", tabDefinition.tabFaces);
+        // The tabSurfaceBodies are already extracted and extended surface bodies from the main feature
+        // We can use them directly without re-extracting
         
         const unionEntities = try silent(getSMDefinitionEntities(context, tabDefinition.booleanUnionScope));
         if (unionEntities == undefined || unionEntities == [])
@@ -1187,7 +1168,7 @@ function mergeTabSurfacesWithSheetMetal(context is Context, id is Id, tabSurface
         var oneSuccess = false;
         for (var pair in selectionsByModelId)
         {
-            oneSuccess = applyTab(context, id + unstableIdComponent(index), tabDefinition, qCreatedBy(id + "extract", EntityType.FACE), pair.value, id) || oneSuccess;
+            oneSuccess = applyTab(context, id + unstableIdComponent(index), tabDefinition, tabDefinition.tabFaces, pair.value, id) || oneSuccess;
             index += 1;
         }
 
@@ -1196,10 +1177,6 @@ function mergeTabSurfacesWithSheetMetal(context is Context, id is Id, tabSurface
             reportFeatureInfo(context, id, ErrorStringEnum.SHEET_METAL_TAB_NO_EFFECT);
             setErrorEntities(context, id, { "entities" : tabDefinition.tabFaces });
         }
-
-        opDeleteBodies(context, id + "deleteBodies", {
-                    "entities" : qCreatedBy(id + "extract", EntityType.BODY)
-                });
 
         const toUpdate = assignSMAttributesToNewOrSplitEntities(context, sheetMetalBodiesQuery, initialData, id);
 
