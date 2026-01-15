@@ -746,7 +746,7 @@ function reportBooleanIssues(context is Context, id is Id, tabBody is Query, wal
  */
 function identifyEdgesForDeripping(context is Context, id is Id, tabBody is Query, partEntities is Query) returns array
 {
-    try silent
+    const result = try silent
     {
         var edgesForDerip = [];
         const collisions = evCollision(context, {
@@ -761,11 +761,8 @@ function identifyEdgesForDeripping(context is Context, id is Id, tabBody is Quer
             }
         }
         return edgesForDerip;
-    }
-    catch
-    {
-        return [];
-    }
+    };
+    return (result == undefined) ? [] : result;
 }
 
 /**
