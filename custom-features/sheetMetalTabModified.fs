@@ -368,7 +368,7 @@ function smSubtractTab(context is Context, id is Id, tab is Query, subtractFaces
         catch (error)
         {
             const errorString = toString(error);
-            if (errorString->find("SHEET_METAL_TOOL_DOES_NOT_CUT_THROUGH") != -1)
+            if (errorString->find("SHEET_METAL_TOOL_DOES_NOT_CUT_THROUGH") != undefined)
             {
                 // The validation failed but we know from the subprocess context that the geometry is correct
                 // Use the pre-thickened tab directly for subtraction
