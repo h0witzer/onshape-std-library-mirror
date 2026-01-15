@@ -780,40 +780,48 @@ function smSubtractTab(context is Context, id is Id, tab is Query, subtractFaces
     }
     
     // Group faces by their owner body to avoid redundant getModelParameters calls
-    var facesByBody = {};
+    // Build array of unique bodies and their associated faces
+    var bodiesWithFaces = [];
+    var processedBodies = [];
+    
     for (var face in subtractFaces)
     {
         const ownerBody = qOwnerBody(face);
-        const bodyArray = evaluateQuery(context, ownerBody);
-        if (size(bodyArray) > 0)
+        
+        // Check if we've already seen this body
+        var bodyFound = false;
+        for (var i = 0; i < size(processedBodies); i += 1)
         {
-            const bodyQuery = bodyArray[0];
-            if (facesByBody[bodyQuery] == undefined)
+            // Compare by evaluating queries to see if they reference the same body
+            const existingBodyEval = evaluateQuery(context, processedBodies[i]);
+            const currentBodyEval = evaluateQuery(context, ownerBody);
+            if (size(existingBodyEval) > 0 && size(currentBodyEval) > 0 && existingBodyEval[0] == currentBodyEval[0])
             {
-                facesByBody[bodyQuery] = [face];
+                bodiesWithFaces[i].faces = append(bodiesWithFaces[i].faces, face);
+                bodyFound = true;
+                break;
             }
-            else
-            {
-                facesByBody[bodyQuery] = append(facesByBody[bodyQuery], face);
-            }
+        }
+        
+        if (!bodyFound)
+        {
+            processedBodies = append(processedBodies, ownerBody);
+            bodiesWithFaces = append(bodiesWithFaces, { "body" : ownerBody, "faces" : [face] });
         }
     }
     
     // Process all faces grouped by body
     var bodyIndex = 0;
-    for (var bodyEntry in facesByBody)
+    for (var bodyData in bodiesWithFaces)
     {
-        const facesForBody = bodyEntry.value;
-        const ownerBody = qOwnerBody(facesForBody[0]);
-        
         // Get model parameters once per body instead of once per face
-        const targetModelParameters = try silent(getModelParameters(context, ownerBody));
+        const targetModelParameters = try silent(getModelParameters(context, bodyData.body));
         if (targetModelParameters is undefined)
             throw regenError(ErrorStringEnum.REGEN_ERROR);
         
         // Process each face in this body
         var faceIndex = 0;
-        for (var face in facesForBody)
+        for (var face in bodyData.faces)
         {
             // Only process tab bodies that actually intersect with this face
             // This avoids creating unnecessary outline tools for non-intersecting geometry
