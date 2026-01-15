@@ -909,10 +909,10 @@ function subtractTab(context is Context, id is Id, definition is map, subtractQu
                 // The tracked extension edges will resolve to the corresponding faces on the thickened body
                 // After thickening, the tracking query evaluates to the faces that were created from those edges
                 // These are the side faces of the tab that need clearance offsetting
-                const thickenedBody = qCreatedBy(id + "thicken", EntityType.BODY);
                 
                 // Filter the tracked query to only faces owned by the thickened body
                 // The tracking query itself will resolve to faces after the thicken operation
+                const thickenedBody = qCreatedBy(id + "thicken", EntityType.BODY);
                 facesToOffset = qIntersection([definition.extensionEdgesTracking, qOwnedByBody(thickenedBody, EntityType.FACE)]);
             }
             
