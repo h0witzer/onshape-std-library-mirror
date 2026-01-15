@@ -1200,38 +1200,7 @@ function mergeTabSurfacesWithSheetMetal(context is Context, id is Id, tabSurface
     println("Source wall faces for merge: " ~ toString(wallFaceCount) ~ " faces");
     
     // mergeScope is for slot bodies (subtraction), not for the union operation
-    // Process mergeScope to match booleanSubtractScope expectations:
-    // - Sheet metal bodies: convert to their definition faces
-    // - Solid non-sheet-metal bodies: pass through as-is
-    var subtractScope = qNothing();
-    if (!isQueryEmpty(context, definition.mergeScope))
-    {
-        // Separate sheet metal from non-sheet metal bodies
-        const sheetMetalBodies = qActiveSheetMetalFilter(definition.mergeScope, ActiveSheetMetal.YES);
-        const solidBodies = qActiveSheetMetalFilter(definition.mergeScope, ActiveSheetMetal.NO);
-        
-        // For sheet metal bodies, get their definition faces
-        var subtractQueries = [];
-        if (!isQueryEmpty(context, sheetMetalBodies))
-        {
-            const smDefinitionFaces = try silent(getSMDefinitionEntities(context, sheetMetalBodies, EntityType.FACE));
-            if (smDefinitionFaces != undefined && size(smDefinitionFaces) > 0)
-            {
-                subtractQueries = append(subtractQueries, qUnion(smDefinitionFaces));
-            }
-        }
-        
-        // Pass through solid bodies directly
-        if (!isQueryEmpty(context, solidBodies))
-        {
-            subtractQueries = append(subtractQueries, solidBodies);
-        }
-        
-        if (size(subtractQueries) > 0)
-        {
-            subtractScope = qUnion(subtractQueries);
-        }
-    }
+    const subtractScope = !isQueryEmpty(context, definition.mergeScope) ? definition.mergeScope : qNothing();
     
     // Build the tab definition with our parameters mapped to the expected format
     const tabDefinition = {
