@@ -325,106 +325,32 @@ function identifyEdgesForDeripping(context is Context, id is Id, tabBody is Quer
     }
 }
 
-/**
- * Performs tab subtraction on sheet metal faces with optimized processing.
- * For each target face, only processes tab tool bodies that actually intersect
- * with that face, avoiding unnecessary outline generation for non-intersecting tools.
- * Also groups faces by owner body to minimize redundant getModelParameters calls.
- * 
- * @param context : The geometry context
- * @param id : Feature ID for this operation
- * @param tab : Query for the thickened tab body/bodies to use as subtraction tools
- * @param subtractFaces : Array of sheet metal definition faces to subtract from
- */
 function smSubtractTab(context is Context, id is Id, tab is Query, subtractFaces)
 {
-    if (subtractFaces is undefined || size(subtractFaces) == 0)
+    if (subtractFaces is undefined)
     {
         return;
     }
-    
-    // Evaluate the tab bodies once
-    const tabBodies = evaluateQuery(context, tab);
-    if (size(tabBodies) == 0)
-    {
-        return;
-    }
-    
-    // Group faces by their owner body to avoid redundant getModelParameters calls
-    var facesByBody = {};
+    var index = 0;
     for (var face in subtractFaces)
     {
-        const ownerBody = qOwnerBody(face);
-        const bodyArray = evaluateQuery(context, ownerBody);
-        if (size(bodyArray) > 0)
-        {
-            const bodyQuery = bodyArray[0];
-            if (facesByBody[bodyQuery] == undefined)
-            {
-                facesByBody[bodyQuery] = [face];
-            }
-            else
-            {
-                facesByBody[bodyQuery] = append(facesByBody[bodyQuery], face);
-            }
-        }
-    }
-    
-    // Process all faces grouped by body
-    var bodyIndex = 0;
-    for (var bodyEntry in facesByBody)
-    {
-        const facesForBody = bodyEntry.value;
-        const ownerBody = qOwnerBody(facesForBody[0]);
-        
-        // Get model parameters once per body instead of once per face
-        const targetModelParameters = try silent(getModelParameters(context, ownerBody));
+        const targetModelParameters = try silent(getModelParameters(context, qOwnerBody(face)));
         if (targetModelParameters is undefined)
             throw regenError(ErrorStringEnum.REGEN_ERROR);
-        
-        // Process each face in this body
-        var faceIndex = 0;
-        for (var face in facesForBody)
+        const tool = createBooleanToolsForFace(context, id + unstableIdComponent(index) + "tool", face, tab, targetModelParameters);
+        if (tool != undefined)
         {
-            // Only process tab bodies that actually intersect with this face
-            // This avoids creating unnecessary outline tools for non-intersecting geometry
-            var intersectingTools = [];
-            for (var tabBody in tabBodies)
-            {
-                const collision = evCollision(context, {
-                    "tools" : tabBody,
-                    "targets" : face
-                });
-                if (collision != [])
-                {
-                    intersectingTools = append(intersectingTools, tabBody);
-                }
-            }
-            
-            // Only create boolean tools if there are actually intersecting tab bodies
-            if (size(intersectingTools) > 0)
-            {
-                const intersectingToolsQ = qUnion(intersectingTools);
-                const tool = createBooleanToolsForFace(context, 
-                    id + unstableIdComponent(bodyIndex) + "b" + unstableIdComponent(faceIndex) + "tool",
-                    face, intersectingToolsQ, targetModelParameters);
-                
-                if (tool != undefined)
-                {
-                    opBoolean(context, id + unstableIdComponent(bodyIndex) + "b" + unstableIdComponent(faceIndex) + "booleanSubtract", {
-                        "tools" : qCreatedBy(id + unstableIdComponent(bodyIndex) + "b" + unstableIdComponent(faceIndex) + "tool", EntityType.FACE),
+            opBoolean(context, id + unstableIdComponent(index) + "booleanSubtract", {
+                        "tools" : qCreatedBy(id + unstableIdComponent(index) + "tool", EntityType.FACE),
                         "targets" : face,
                         "operationType" : BooleanOperationType.SUBTRACTION,
                         "localizedInFaces" : true,
                         "allowSheets" : true
                     });
-                }
-            }
-            faceIndex += 1;
         }
-        
-        bodyIndex += 1;
+        index += 1;
     }
+
 }
 
 function solidSubtractTab(context is Context, id is Id, tab is Query, targets)
