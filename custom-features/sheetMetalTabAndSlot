@@ -270,7 +270,7 @@ export const tabAndSlotBossDisplay = defineFeature(function(context is Context, 
         }
 
         // Phase 4: Merge the extended surface bodies back with the sheet metal model
-        // Call mergeTabSurfacesWithSheetMetal to integrate the surface bodies using sheetMetalTabModified
+        // Call mergeTabSurfacesWithSheetMetal to integrate the surface bodies using integrated helper functions
         // The wallFaces we extracted from are the sheet metal definition faces to add material to
         
         if (!isQueryEmpty(context, extractedBodies))
