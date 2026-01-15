@@ -971,7 +971,7 @@ function booleanOneTabGroup(context is Context, id is Id, definition is map, coi
         }
     }
     
-    // Flip ORIGINAL tab body that has opposite orientation BEFORE creating copy
+    // Flip ORIGINAL tab body that has opposite orientation BEFORE using in boolean
     if (size(tabBodiesToFlip) > 0)
     {
         opFlipOrientation(context, id + "flipTabs", {
@@ -979,17 +979,12 @@ function booleanOneTabGroup(context is Context, id is Id, definition is map, coi
                 });
     }
 
-    // Create the copy of the tab body AFTER flipping orientation
-    opPattern(context, id + "copyTool", {
-                "entities" : coincidentGrouping.tabBody,
-                "transforms" : [identityTransform()],
-                "instanceNames" : ["1"]
-            });
-
-    const toolsQ = qCreatedBy(id + "copyTool", EntityType.BODY);
+    // Use the original tab body directly in the boolean operation
+    // No need to create a copy since the original is not used elsewhere
+    const toolsQ = coincidentGrouping.tabBody;
     
     // Validate that we have valid bodies before attempting operations
-    const toolBodies = evaluateQuery(context, toolsQ);
+    const toolBodies = evaluateQuery(context, qOwnerBody(toolsQ));
     const wallBodyArray = evaluateQuery(context, wallBodies);
     
     if (size(toolBodies) == 0)
@@ -1042,7 +1037,6 @@ function booleanOneTabGroup(context is Context, id is Id, definition is map, coi
             throw regenError(ErrorStringEnum.SHEET_METAL_TAB_FAILS_MERGE);
         }
     }
-    try silent(opDeleteBodies(context, id + "unionDelete", { "entities" : qCreatedBy(id + "copyTool", EntityType.BODY) }));
 
     if (fixCornerBreaks)
         remapCornerBreaks(context, cornerBreakTracking);
@@ -1184,12 +1178,6 @@ function mergeTabSurfacesWithSheetMetal(context is Context, id is Id, tabSurface
                     "entities" : qUnion([toUpdate.modifiedEntities, unionEntityPersistantQuery]),
                     "deletedAttributes" : toUpdate.deletedAttributes,
                     "associatedChanges" : associateChanges });
-        
-        // Delete the original tab surface bodies now that copies have been merged
-        // The boolean operations used copies created by opPattern, leaving these originals behind
-        try silent(opDeleteBodies(context, id + "deleteOriginalTabSurfaces", {
-                    "entities" : tabSurfaceBodies
-                }));
     }
     catch (error)
     {
