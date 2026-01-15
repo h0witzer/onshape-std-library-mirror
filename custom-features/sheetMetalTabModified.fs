@@ -7,14 +7,14 @@ FeatureScript 2837;
 // allowing non-planar surface bodies (e.g., cylindrical, conical surfaces) to be used as tab profiles.
 //
 // Fix for BOOLEAN_INVALID errors (January 2026):
-// - Moved opPattern call before subtractTab in booleanOneTabGroup function to ensure clean tab body copy
 // - Added validation checks before boolean operation to catch invalid states early
 // - Un-commented SHEET_METAL_TAB_COLLISION error throw for proper collision reporting
 // - Kept try block loud (not silent) for diagnostic purposes
-// - Added automatic orientation correction: detects tool bodies with opposite normals and flips them BEFORE subtractTab
-// - This ensures subtractTab operations work with correctly oriented surfaces
+// - Added automatic orientation correction: detects tab bodies with opposite normals and flips the ORIGINAL (not copy)
+// - Flip happens BEFORE opPattern copy - ensuring both subtractTab and boolean union use correctly oriented surfaces
+// - subtractTab uses the original body (coincidentGrouping.tabBody), so flipping must happen before copy creation
 // - Added visual debugging with red/blue arrows showing surface normals
-// - This resolves BOOLEAN_INVALID errors caused by surface orientation mismatches in rounded/cylindrical geometries
+// - This resolves BOOLEAN_INVALID errors and double-thickness subtraction issues from orientation mismatches
 
 // Imports used in interface
 export import(path : "onshape/std/query.fs", version : "2837.0");
@@ -492,8 +492,79 @@ function booleanOneTabGroup(context is Context, id is Id, definition is map, coi
     if (fixCornerBreaks)
         cornerBreakTracking = collectCornerBreakTracking(context, wallBodies);
 
-    // Create the copy of the tab body BEFORE calling subtractTab
-    // This ensures we have a clean copy that hasn't been affected by any modifications during subtractTab
+    // Check orientation and flip the ORIGINAL tab body BEFORE creating the copy
+    // This ensures both subtractTab and the boolean union work with correctly oriented surfaces
+    const arrowLength = 10 * millimeter;
+    const arrowRadius = 0.5 * millimeter;
+    
+    // Collect wall face normals for comparison
+    var wallFaceNormals = [];
+    for (var wallFace in evaluateQuery(context, qOwnedByBody(wallBodies, EntityType.FACE)))
+    {
+        const wallFaceCenter = evFaceTangentPlane(context, {
+                    "face" : wallFace,
+                    "parameter" : vector(0.5, 0.5)
+                });
+        wallFaceNormals = append(wallFaceNormals, {
+                    "face" : wallFace,
+                    "origin" : wallFaceCenter.origin,
+                    "normal" : wallFaceCenter.normal
+                });
+        addDebugArrow(context, wallFaceCenter.origin, wallFaceCenter.origin + wallFaceCenter.normal * arrowLength, arrowRadius, DebugColor.RED);
+    }
+    
+    // Check ORIGINAL tab body faces and flip orientation if needed
+    var tabBodiesToFlip = [];
+    for (var tabFace in evaluateQuery(context, qOwnedByBody(coincidentGrouping.tabBody, EntityType.FACE)))
+    {
+        const tabFaceCenter = evFaceTangentPlane(context, {
+                    "face" : tabFace,
+                    "parameter" : vector(0.5, 0.5)
+                });
+        
+        // Find the closest wall face to this tab face
+        var minDistance = undefined;
+        var closestWallNormal = undefined;
+        for (var wallInfo in wallFaceNormals)
+        {
+            const dist = norm(tabFaceCenter.origin - wallInfo.origin);
+            if (minDistance == undefined || dist < minDistance)
+            {
+                minDistance = dist;
+                closestWallNormal = wallInfo.normal;
+            }
+        }
+        
+        // Check if normals are opposite (dot product < 0)
+        if (closestWallNormal != undefined)
+        {
+            const dotProduct = dot(tabFaceCenter.normal, closestWallNormal);
+            if (dotProduct < 0)
+            {
+                // Normals are opposite - need to flip this tab body
+                const tabBody = qOwnerBody(tabFace);
+                if (!isIn(tabBody, tabBodiesToFlip))
+                {
+                    tabBodiesToFlip = append(tabBodiesToFlip, tabBody);
+                }
+            }
+        }
+        
+        addDebugArrow(context, tabFaceCenter.origin, tabFaceCenter.origin + tabFaceCenter.normal * arrowLength, arrowRadius, DebugColor.BLUE);
+    }
+    
+    // Flip ORIGINAL tab body that has opposite orientation BEFORE creating copy
+    // This ensures both subtractTab (which uses original) and the copy have correct orientation
+    if (size(tabBodiesToFlip) > 0)
+    {
+        println("Flipping orientation of " ~ toString(size(tabBodiesToFlip)) ~ " tab bodies with opposite normals");
+        opFlipOrientation(context, id + "flipTabs", {
+                    "bodies" : qUnion(tabBodiesToFlip)
+                });
+    }
+
+    // Create the copy of the tab body AFTER flipping orientation
+    // The copy will inherit the correct orientation from the flipped original
     opPattern(context, id + "copyTool", {
                 "entities" : coincidentGrouping.tabBody,
                 "transforms" : [identityTransform()],
@@ -530,78 +601,8 @@ function booleanOneTabGroup(context is Context, id is Id, definition is map, coi
     println("Tool bodies - Sheets: " ~ toString(size(toolSheetBodies)));
     println("Tool bodies - Solids: " ~ toString(size(toolSolidBodies)));
     println("=================================");
-    
-    // Check orientation and flip tool bodies BEFORE subtractTab
-    // This ensures subtractTab operations work with correctly oriented surfaces
-    const arrowLength = 10 * millimeter;
-    const arrowRadius = 0.5 * millimeter;
-    
-    // Collect wall face normals for comparison
-    var wallFaceNormals = [];
-    for (var wallFace in evaluateQuery(context, qOwnedByBody(wallBodies, EntityType.FACE)))
-    {
-        const wallFaceCenter = evFaceTangentPlane(context, {
-                    "face" : wallFace,
-                    "parameter" : vector(0.5, 0.5)
-                });
-        wallFaceNormals = append(wallFaceNormals, {
-                    "face" : wallFace,
-                    "origin" : wallFaceCenter.origin,
-                    "normal" : wallFaceCenter.normal
-                });
-        addDebugArrow(context, wallFaceCenter.origin, wallFaceCenter.origin + wallFaceCenter.normal * arrowLength, arrowRadius, DebugColor.RED);
-    }
-    
-    // Check tool faces and flip orientation if needed
-    var toolBodiesToFlip = [];
-    for (var toolFace in evaluateQuery(context, qOwnedByBody(toolsQ, EntityType.FACE)))
-    {
-        const toolFaceCenter = evFaceTangentPlane(context, {
-                    "face" : toolFace,
-                    "parameter" : vector(0.5, 0.5)
-                });
-        
-        // Find the closest wall face to this tool face
-        var minDistance = undefined;
-        var closestWallNormal = undefined;
-        for (var wallInfo in wallFaceNormals)
-        {
-            const dist = norm(toolFaceCenter.origin - wallInfo.origin);
-            if (minDistance == undefined || dist < minDistance)
-            {
-                minDistance = dist;
-                closestWallNormal = wallInfo.normal;
-            }
-        }
-        
-        // Check if normals are opposite (dot product < 0)
-        if (closestWallNormal != undefined)
-        {
-            const dotProduct = dot(toolFaceCenter.normal, closestWallNormal);
-            if (dotProduct < 0)
-            {
-                // Normals are opposite - need to flip this tool body
-                const toolBody = qOwnerBody(toolFace);
-                if (!isIn(toolBody, toolBodiesToFlip))
-                {
-                    toolBodiesToFlip = append(toolBodiesToFlip, toolBody);
-                }
-            }
-        }
-        
-        addDebugArrow(context, toolFaceCenter.origin, toolFaceCenter.origin + toolFaceCenter.normal * arrowLength, arrowRadius, DebugColor.BLUE);
-    }
-    
-    // Flip tool bodies that have opposite orientation BEFORE subtractTab
-    if (size(toolBodiesToFlip) > 0)
-    {
-        println("Flipping orientation of " ~ toString(size(toolBodiesToFlip)) ~ " tool bodies with opposite normals");
-        opFlipOrientation(context, id + "flipTools", {
-                    "bodies" : qUnion(toolBodiesToFlip)
-                });
-    }
 
-    // Now call subtractTab with correctly oriented surfaces
+    // Now call subtractTab with correctly oriented original surfaces
     subtractTab(context, id + "subtract", definition, subtractQueries, coincidentGrouping, rootId);
     
     try
