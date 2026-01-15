@@ -67,7 +67,7 @@ export enum SpacingType
 }
 
 annotation { "Feature Type Name" : "OnlyTabs - Boss Display", "Feature Type Description" : "Tab and Slot feature for Boss Display"}
-export const tabAndSlotBossDisplay = defineFeature(function(context is Context, id is Id, definition is map)
+export const tabAndSlotBossDisplay = defineSheetMetalFeature(function(context is Context, id is Id, definition is map)
     precondition
     {
         // Define the parameters of the feature type
