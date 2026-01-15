@@ -8,12 +8,9 @@ FeatureScript 2837;
 //
 // Fix for BOOLEAN_INVALID errors (January 2026):
 // - Added validation checks before boolean operation to catch invalid states early
-// - Un-commented SHEET_METAL_TAB_COLLISION error throw for proper collision reporting
-// - Kept try block loud (not silent) for diagnostic purposes
 // - Added automatic orientation correction: detects tab bodies with opposite normals and flips the ORIGINAL (not copy)
 // - Flip happens BEFORE opPattern copy - ensuring both subtractTab and boolean union use correctly oriented surfaces
 // - subtractTab uses the original body (coincidentGrouping.tabBody), so flipping must happen before copy creation
-// - Added visual debugging with red/blue arrows showing surface normals
 // - This resolves BOOLEAN_INVALID errors and double-thickness subtraction issues from orientation mismatches
 
 // Imports used in interface
@@ -24,7 +21,6 @@ export import(path : "onshape/std/tool.fs", version : "2837.0");
 import(path : "onshape/std/attributes.fs", version : "2837.0");
 import(path : "onshape/std/boolean.fs", version : "2837.0");
 import(path : "onshape/std/containers.fs", version : "2837.0");
-import(path : "onshape/std/debug.fs", version : "2837.0");
 import(path : "onshape/std/evaluate.fs", version : "2837.0");
 import(path : "onshape/std/feature.fs", version : "2837.0");
 import(path : "onshape/std/math.fs", version : "2837.0");
@@ -494,8 +490,6 @@ function booleanOneTabGroup(context is Context, id is Id, definition is map, coi
 
     // Check orientation and flip the ORIGINAL tab body BEFORE creating the copy
     // This ensures both subtractTab and the boolean union work with correctly oriented surfaces
-    const arrowLength = 10 * millimeter;
-    const arrowRadius = 0.5 * millimeter;
     
     // Collect wall face normals for comparison
     var wallFaceNormals = [];
@@ -510,7 +504,6 @@ function booleanOneTabGroup(context is Context, id is Id, definition is map, coi
                     "origin" : wallFaceCenter.origin,
                     "normal" : wallFaceCenter.normal
                 });
-        addDebugArrow(context, wallFaceCenter.origin, wallFaceCenter.origin + wallFaceCenter.normal * arrowLength, arrowRadius, DebugColor.RED);
     }
     
     // Check ORIGINAL tab body faces and flip orientation if needed
@@ -549,15 +542,12 @@ function booleanOneTabGroup(context is Context, id is Id, definition is map, coi
                 }
             }
         }
-        
-        addDebugArrow(context, tabFaceCenter.origin, tabFaceCenter.origin + tabFaceCenter.normal * arrowLength, arrowRadius, DebugColor.BLUE);
     }
     
     // Flip ORIGINAL tab body that has opposite orientation BEFORE creating copy
     // This ensures both subtractTab (which uses original) and the copy have correct orientation
     if (size(tabBodiesToFlip) > 0)
     {
-        println("Flipping orientation of " ~ toString(size(tabBodiesToFlip)) ~ " tab bodies with opposite normals");
         opFlipOrientation(context, id + "flipTabs", {
                     "bodies" : qUnion(tabBodiesToFlip)
                 });
@@ -586,21 +576,6 @@ function booleanOneTabGroup(context is Context, id is Id, definition is map, coi
     {
         throw regenError(ErrorStringEnum.SHEET_METAL_TAB_NO_WALL, ["booleanUnionScope"]);
     }
-    
-    // Diagnostic output for body types
-    const wallSheetBodies = evaluateQuery(context, qBodyType(wallBodies, BodyType.SHEET));
-    const wallSolidBodies = evaluateQuery(context, qBodyType(wallBodies, BodyType.SOLID));
-    const toolSheetBodies = evaluateQuery(context, qBodyType(toolsQ, BodyType.SHEET));
-    const toolSolidBodies = evaluateQuery(context, qBodyType(toolsQ, BodyType.SOLID));
-    
-    println("=== Surface Join Diagnostics ===");
-    println("Wall bodies - Total: " ~ toString(size(wallBodyArray)));
-    println("Wall bodies - Sheets: " ~ toString(size(wallSheetBodies)));
-    println("Wall bodies - Solids: " ~ toString(size(wallSolidBodies)));
-    println("Tool bodies - Total: " ~ toString(size(toolBodies)));
-    println("Tool bodies - Sheets: " ~ toString(size(toolSheetBodies)));
-    println("Tool bodies - Solids: " ~ toString(size(toolSolidBodies)));
-    println("=================================");
 
     // Now call subtractTab with correctly oriented original surfaces
     subtractTab(context, id + "subtract", definition, subtractQueries, coincidentGrouping, rootId);
