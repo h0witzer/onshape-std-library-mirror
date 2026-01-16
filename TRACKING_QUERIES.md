@@ -215,10 +215,119 @@ const orderedPath = constructPath(context, allEdgesAfterSplit);
 
 **Result:** Successfully captures all edges regardless of whether they were split, enabling accurate path reconstruction and domain checking.
 
+## Advanced Pattern: Tracking Through Function Boundaries
+
+### Problem
+
+Sometimes you need to track entities created by an operation in one function, and use those tracked entities in a different function downstream. Simply passing a tracking query through function parameters may not work as expected.
+
+### Solution: Use qCreatedBy with startTracking, Pass Through Maps
+
+When entities need to be tracked across function boundaries:
+
+1. **Identify entities with qCreatedBy** after the operation that creates them
+2. **Start tracking** those identified entities
+3. **Pass the tracking query through a map/definition** to downstream functions
+4. **Ensure the map is propagated** through all intermediate functions
+
+### Example: Sheet Metal Tab and Slot Extension Tracking
+
+```featurescript
+// Main feature function
+@opExtendSheetBody(context, id + "extendTabs", {
+    "entities" : edgesToExtend,
+    "extendDistance" : depth
+});
+
+// Identify edges created by the extension operation
+const extensionCreatedEdges = qCreatedBy(id + "extendTabs", EntityType.EDGE);
+
+// Track these edges through subsequent operations
+const trackedExtensionEdges = startTracking(context, extensionCreatedEdges);
+
+// Pass to downstream function via definition map
+definition.extensionEdgesTracking = trackedExtensionEdges;
+processTabSurfaces(context, id, definition);
+
+// ===================================
+
+// In intermediate function - MUST propagate tracking!
+function processTabSurfaces(context is Context, id is Id, definition is map)
+{
+    // Create local definition for nested call
+    const nestedDefinition = {
+        "someParam" : definition.someParam,
+        "extensionEdgesTracking" : definition.extensionEdgesTracking  // ← CRITICAL: propagate tracking
+    };
+    
+    applyOperations(context, id, nestedDefinition);
+}
+
+// ===================================
+
+// In final function - use the tracked edges
+function applyOperations(context is Context, id is Id, definition is map)
+{
+    // Perform operation that transforms the tracked entities
+    opThicken(context, id + "thicken", {...});
+    
+    // After thickening, tracked edges resolve to faces on the thickened body
+    if (definition.extensionEdgesTracking != undefined)
+    {
+        const thickenedBody = qCreatedBy(id + "thicken", EntityType.BODY);
+        const thickenedFaces = qOwnedByBody(thickenedBody, EntityType.FACE);
+        
+        // Tracking query resolves to the transformed geometry
+        const trackedFaces = qIntersection([definition.extensionEdgesTracking, thickenedFaces]);
+        
+        // Use only the specific faces that originated from the tracked edges
+        opOffsetFace(context, id + "offset", {
+            "moveFaces" : trackedFaces,
+            "offsetDistance" : offset
+        });
+    }
+}
+```
+
+### Key Lessons
+
+1. **qCreatedBy is precise**: Use it to identify exactly which entities were created by a specific operation
+2. **Track immediately after creation**: Call `startTracking()` right after the operation that creates the entities
+3. **Propagate through ALL intermediate maps**: If you create new definition maps in intermediate functions, you MUST include the tracking query in each one
+4. **Tracking queries are resilient**: They work across multiple operations and transformations (e.g., edges → faces after thickening)
+5. **Check for undefined**: Always check if the tracking query exists before using it
+
+### Common Mistake: Losing Tracking in Intermediate Maps
+
+```featurescript
+// ❌ WRONG: Tracking query lost in intermediate function
+function intermediateFunction(context is Context, id is Id, definition is map)
+{
+    const newDef = {
+        "param1" : definition.param1,
+        "param2" : definition.param2
+        // Missing: definition.extensionEdgesTracking ← Query is LOST here!
+    };
+    finalFunction(context, id, newDef);
+}
+
+// ✅ CORRECT: Tracking query propagated
+function intermediateFunction(context is Context, id is Id, definition is map)
+{
+    const newDef = {
+        "param1" : definition.param1,
+        "param2" : definition.param2,
+        "extensionEdgesTracking" : definition.extensionEdgesTracking  // ← Propagated!
+    };
+    finalFunction(context, id, newDef);
+}
+```
+
 ## References
 
 - Forum post explaining mixInTracking pattern
 - Examples in: `leftyFlip.fs`, `skewTransform.fs`, `fillPattern.fs`, `onlyTabs-refactor/smTabModified.fs`
+- Advanced tracking example: `custom-features/sheetMetalTabAndSlot` (extension edge tracking)
 - FeatureScript documentation: [startTracking](https://cad.onshape.com/FsDoc/)
 
 ## Summary
@@ -229,5 +338,12 @@ const orderedPath = constructPath(context, allEdgesAfterSplit);
 2. Perform the operation
 3. Combine original with tracked AFTER operation: `qUnion([original, tracked])`
 4. Filter to desired entity type if needed
+
+**Advanced Takeaway:** When tracking across function boundaries:
+
+1. Use `qCreatedBy` to identify specific entities after their creation operation
+2. Call `startTracking` on those entities immediately
+3. Pass tracking query through ALL intermediate function maps/definitions
+4. Tracked entities automatically resolve to their transformed state after subsequent operations
 
 This ensures you capture both affected (modified) and unaffected (original) entities, providing complete coverage for downstream operations.
