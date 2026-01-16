@@ -13,6 +13,7 @@ modifiedFormed::import(path : "5418313fd7f629d9c7f1ac10", version : "b97acafda22
 import(path : "onshape/std/instantiator.fs", version : "2815.0");
 import(path : "onshape/std/vector.fs", version : "2815.0");
 export import(path : "onshape/std/manipulator.fs", version : "2815.0");
+pointDeriveCommon::import(path : "onshape/std/pointDeriveCommon.fs", version : "2815.0");
 
 const AMALGAMATE_MANIPULATOR = "amalgamateManipulator";
 
@@ -103,55 +104,41 @@ export const amalgamate = defineFeature(function(context is Context, id is Id, d
         });
 
 /**
- * Get the mate connector transform by temporarily instantiating the tool at origin.
- * This computes the full transform (position AND orientation) from the selected mate connector.
+ * Get the mate connector transform using Point Derive's instantiation method.
+ * This uses instantiatePointDerivePartStudio to import once, then queries mate connectors.
  * @returns map with "transform", "points", and "hasMultiple" fields
  */
 function getMateConnectorTransform(context is Context, id is Id, definition is map) returns map
 {
-    // Temporarily instantiate at origin to get mate connector coordinate systems
-    const tempInstantiator = newInstantiator(id + "temp", {});
-    const configurationOverride = { "thickness" : definition.thickness };
-    
-    const tempBodies = addInstance(tempInstantiator, definition.formPartStudio, {
-                "transform" : identityTransform(),
-                "configurationOverride" : configurationOverride,
-                "mateConnector" : qBodiesWithAnyFormAttribute(modifiedFormed::FORM_BODY_CSYS_MATE_CONNECTOR)
-            });
-    
+    // Use Point Derive's instantiation method - imports at origin with mate connectors
+    var importQuery;
     try
     {
-        instantiate(context, tempInstantiator);
+        importQuery = pointDeriveCommon::instantiatePointDerivePartStudio(context, id + "import", definition.formPartStudio);
     }
     catch
     {
         return { "transform" : identityTransform(), "points" : [], "hasMultiple" : false };
     }
     
-    // Query mate connectors and get their full coordinate systems
-    const mateConnectors = qBodiesWithAnyFormAttribute(tempBodies, modifiedFormed::FORM_BODY_CSYS_MATE_CONNECTOR);
+    // Query mate connectors using Point Derive's helper function
+    const mateConnectors = importQuery->qMateConnectorsOfParts();
     
     var mateConnectorCSystems = [];
     if (!isQueryEmpty(context, mateConnectors))
     {
-        const mateConnectorQueries = evaluateQuery(context, mateConnectors);
-        for (var mc in mateConnectorQueries)
-        {
-            const mcCSys = evMateConnector(context, { "mateConnector" : mc });
-            mateConnectorCSystems = append(mateConnectorCSystems, mcCSys);
-        }
+        mateConnectorCSystems = pointDeriveCommon::computeCSysArray(context, mateConnectors);
     }
     
-    // Clean up temporary bodies
-    opDeleteBodies(context, id + "tempDelete", { "entities" : tempBodies });
+    // Clean up imported bodies
+    opDeleteBodies(context, id + "deleteImport", { "entities" : importQuery });
     
     if (size(mateConnectorCSystems) == 0)
     {
         return { "transform" : identityTransform(), "points" : [], "hasMultiple" : false };
     }
     
-    // Compute transform from selected mate connector's FULL coordinate system
-    // This captures both position AND orientation information
+    // Compute transform from selected mate connector (same as Point Derive)
     const clampedIndex = clamp(definition.locationIndex, 0, size(mateConnectorCSystems) - 1);
     const selectedMateConnectorCSys = mateConnectorCSystems[clampedIndex];
     
@@ -159,7 +146,7 @@ function getMateConnectorTransform(context is Context, id is Id, definition is m
     // This preserves the full rotational information of the mate connector
     const pointTransform = fromWorld(selectedMateConnectorCSys);
     
-    // Compute manipulator points at first location (just for visualization - only origins shown)
+    // Compute manipulator points at first location (same pattern as Point Derive)
     const locationQueries = evaluateQuery(context, definition.locations);
     if (size(locationQueries) > 0)
     {
@@ -174,7 +161,7 @@ function getMateConnectorTransform(context is Context, id is Id, definition is m
         for (var mcCSys in mateConnectorCSystems)
         {
             // Transform mate connector origins to first location for manipulator display
-            // Note: manipulator only shows points, but the actual transform includes rotation
+            // This is exactly how Point Derive computes manipulator points
             const transformedPoint = toWorld(firstLocationCSys) * pointTransform * mcCSys.origin;
             manipulatorPoints = append(manipulatorPoints, transformedPoint);
         }
