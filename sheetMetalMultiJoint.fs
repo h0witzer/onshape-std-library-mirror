@@ -86,12 +86,13 @@ export const sheetMetalMultiJoint = defineSheetMetalFeature(function(context is 
         // Process each selected entity
         for (var selectedEntity in selectedEntitiesArray)
         {
-            var jointEntity = findJointDefinitionEntity(context, selectedEntity, EntityType.EDGE);
+            var selectedEntityQuery = qUnion([selectedEntity]);
+            var jointEntity = findJointDefinitionEntity(context, selectedEntityQuery, EntityType.EDGE);
             var isFaceBend = false;
             if (jointEntity == undefined)
             {
                 // Not an edge, is it a face?
-                jointEntity = findJointDefinitionEntity(context, selectedEntity, EntityType.FACE);
+                jointEntity = findJointDefinitionEntity(context, selectedEntityQuery, EntityType.FACE);
                 isFaceBend = true;
             }
             if (jointEntity == undefined)
@@ -113,7 +114,7 @@ export const sheetMetalMultiJoint = defineSheetMetalFeature(function(context is 
                     // The radius gets set for both edge and face bends but is not used for face bends.
                     // And it should NOT be used for face bends because it is incorrect, the radius of a face bend
                     // is defined by the geometry, not by the sheet metal model.
-                    definition.radius = getDefaultSheetMetalRadius(context, selectedEntity);
+                    definition.radius = getDefaultSheetMetalRadius(context, selectedEntityQuery);
                 }
                 else if (isFaceBend)
                 {
@@ -121,7 +122,7 @@ export const sheetMetalMultiJoint = defineSheetMetalFeature(function(context is 
                 }
                 if (definition.useDefaultKFactor)
                 {
-                    definition.kFactor = getDefaultSheetMetalKFactor(context, selectedEntity);
+                    definition.kFactor = getDefaultSheetMetalKFactor(context, selectedEntityQuery);
                 }
 
                 if (!isFaceBend)
