@@ -13,7 +13,6 @@ modifiedFormed::import(path : "5418313fd7f629d9c7f1ac10", version : "b97acafda22
 import(path : "onshape/std/instantiator.fs", version : "2815.0");
 import(path : "onshape/std/vector.fs", version : "2815.0");
 export import(path : "onshape/std/manipulator.fs", version : "2815.0");
-pointDeriveCommon::import(path : "onshape/std/pointDeriveCommon.fs", version : "2815.0");
 
 const AMALGAMATE_MANIPULATOR = "amalgamateManipulator";
 
@@ -104,30 +103,44 @@ export const amalgamate = defineFeature(function(context is Context, id is Id, d
         });
 
 /**
- * Get the mate connector transform using Point Derive's instantiation method.
- * This uses instantiatePointDerivePartStudio to import once, then queries mate connectors.
+ * Get the mate connector transform using Point Derive's instantiation pattern.
+ * Copied from Point Derive's instantiatePointDerivePartStudio and computeCSysArray functions.
  * @returns map with "transform", "points", and "hasMultiple" fields
  */
 function getMateConnectorTransform(context is Context, id is Id, definition is map) returns map
 {
-    // Use Point Derive's instantiation method - imports at origin with mate connectors
+    // Instantiate at origin to import with mate connectors (based on Point Derive's pattern)
     var importQuery;
     try
     {
-        importQuery = pointDeriveCommon::instantiatePointDerivePartStudio(context, id + "import", definition.formPartStudio);
+        const instantiator = newInstantiator(id + "import");
+        var partStudioData = definition.formPartStudio;
+        
+        // Add mate connectors to the part query (same as instantiatePointDerivePartStudio)
+        partStudioData.partQuery = qUnion([
+                    partStudioData.partQuery,
+                    qMateConnectorsOfParts(partStudioData.partQuery)
+                ]);
+        
+        importQuery = addInstance(instantiator, partStudioData);
+        instantiate(context, instantiator);
     }
     catch
     {
         return { "transform" : identityTransform(), "points" : [], "hasMultiple" : false };
     }
     
-    // Query mate connectors using Point Derive's helper function
+    // Query mate connectors
     const mateConnectors = importQuery->qMateConnectorsOfParts();
     
+    // Convert to coordinate systems array (same as computeCSysArray)
     var mateConnectorCSystems = [];
     if (!isQueryEmpty(context, mateConnectors))
     {
-        mateConnectorCSystems = pointDeriveCommon::computeCSysArray(context, mateConnectors);
+        mateConnectorCSystems = mapArray(evaluateQuery(context, mateConnectors), function(mateConnector)
+            {
+                return evMateConnector(context, { "mateConnector" : mateConnector });
+            });
     }
     
     // Clean up imported bodies
