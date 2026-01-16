@@ -1,33 +1,35 @@
-FeatureScript ✨; /* Automatically generated version */
+FeatureScript 2856; /* Automatically generated version */
 // This module is part of the FeatureScript Standard Library and is distributed under the MIT License.
 // See the LICENSE tab for the license text.
 // Copyright (c) 2013-Present PTC Inc.
 
-export import(path : "onshape/std/extrudeCommon.fs", version : "✨");
-export import(path : "onshape/std/query.fs", version : "✨");
+export import(path : "onshape/std/extrudeCommon.fs", version : "2856.0");
+export import(path : "onshape/std/query.fs", version : "2856.0");
 
-import(path : "onshape/std/attributes.fs", version : "✨");
-import(path : "onshape/std/box.fs", version : "✨");
-import(path : "onshape/std/containers.fs", version : "✨");
-import(path : "onshape/std/coordSystem.fs", version : "✨");
-import(path : "onshape/std/curveGeometry.fs", version : "✨");
-import(path : "onshape/std/error.fs", version : "✨");
-import(path : "onshape/std/evaluate.fs", version : "✨");
-import(path : "onshape/std/feature.fs", version : "✨");
-import(path : "onshape/std/geomOperations.fs", version : "✨");
-import(path : "onshape/std/manipulator.fs", version : "✨");
-import(path : "onshape/std/math.fs", version : "✨");
-import(path : "onshape/std/modifyFillet.fs", version : "✨");
-import(path : "onshape/std/sheetMetalAttribute.fs", version : "✨");
-import(path : "onshape/std/sheetMetalUtils.fs", version : "✨");
-import(path : "onshape/std/sketch.fs", version : "✨");
-import(path : "onshape/std/smreliefstyle.gen.fs", version : "✨");
-import(path : "onshape/std/string.fs", version : "✨");
-import(path : "onshape/std/surfaceGeometry.fs", version : "✨");
-import(path : "onshape/std/tool.fs", version : "✨");
-import(path : "onshape/std/topologyUtils.fs", version : "✨");
-import(path : "onshape/std/valueBounds.fs", version : "✨");
-import(path : "onshape/std/vector.fs", version : "✨");
+import(path : "onshape/std/attributes.fs", version : "2856.0");
+import(path : "onshape/std/box.fs", version : "2856.0");
+import(path : "onshape/std/containers.fs", version : "2856.0");
+import(path : "onshape/std/coordSystem.fs", version : "2856.0");
+import(path : "onshape/std/curveGeometry.fs", version : "2856.0");
+import(path : "onshape/std/error.fs", version : "2856.0");
+import(path : "onshape/std/evaluate.fs", version : "2856.0");
+import(path : "onshape/std/feature.fs", version : "2856.0");
+import(path : "onshape/std/geomOperations.fs", version : "2856.0");
+import(path : "onshape/std/manipulator.fs", version : "2856.0");
+import(path : "onshape/std/math.fs", version : "2856.0");
+import(path : "onshape/std/modifyFillet.fs", version : "2856.0");
+import(path : "onshape/std/sheetMetalAttribute.fs", version : "2856.0");
+import(path : "onshape/std/sheetMetalUtils.fs", version : "2856.0");
+import(path : "onshape/std/sketch.fs", version : "2856.0");
+import(path : "onshape/std/smjointstyle.gen.fs", version : "2856.0");
+import(path : "onshape/std/smjointtype.gen.fs", version : "2856.0");
+import(path : "onshape/std/smreliefstyle.gen.fs", version : "2856.0");
+import(path : "onshape/std/string.fs", version : "2856.0");
+import(path : "onshape/std/surfaceGeometry.fs", version : "2856.0");
+import(path : "onshape/std/tool.fs", version : "2856.0");
+import(path : "onshape/std/topologyUtils.fs", version : "2856.0");
+import(path : "onshape/std/valueBounds.fs", version : "2856.0");
+import(path : "onshape/std/vector.fs", version : "2856.0");
 
 /**
  * Method of initializing sheet metal model
@@ -286,6 +288,10 @@ export const sheetMetalStart = defineSheetMetalFeature(function(context is Conte
                                          (EntityType.FACE && GeometryType.CYLINDER)) && SketchObject.NO }
                 definition.bends is Query;
 
+                annotation { "Name" : "Edges to rip",
+                             "Filter" : EntityType.EDGE && EdgeTopology.TWO_SIDED && GeometryType.LINE && SketchObject.NO }
+                definition.rips is Query;
+
                 annotation { "Name" : "Clearance from input" }
                 isLength(definition.clearance, NONNEGATIVE_ZERO_DEFAULT_LENGTH_BOUNDS);
 
@@ -341,6 +347,7 @@ export const sheetMetalStart = defineSheetMetalFeature(function(context is Conte
       "oppositeDirection" : false,
       "initEntities" : qNothing(),
       "bendArcs" : qNothing(),
+      "rips" : qNothing(),
       "defaultCornerStyle" :  SMCornerStrategyType.SIMPLE,
       "defaultCornerReliefScale" : 1.5,
       "defaultRoundReliefDiameter" : 0 * meter,
@@ -383,6 +390,7 @@ function verifyNoMeshSheetMetalStart(context is Context, definition is map)
     if (definition.process == SMProcessType.THICKEN || definition.process == SMProcessType.CONVERT)
     {
         verifyNoMesh(context, definition, "bends");
+        verifyNoMesh(context, definition, "rips");
     }
 }
 
@@ -455,7 +463,8 @@ export function addFlipDirectionUpManipulator(sheetBodies is Query, manipulatorN
  *      @field partToConvert {Query} : The body to convert.
  *      @field facesToExclude {Query} : Input faces to exclude from the sheet metal model.
  *      @field bendEdges {Query} : Edges to represent as bends in the sheet metal model.
- *              All other nonlaminar edges will be converted to rips.
+ *      @field ripEdges {Query} : Edges to represent as rips in the sheet metal model.
+ *              All other nonlaminar edges will be automatically classified as bends, rips, or tangent edges.
  *      @field clearance {ValueWithUnits} : Clearance from input.
  *      @field bendsIncluded {boolean} : If `true`, bends will be included in clearance calculations.
  * }}
@@ -477,6 +486,11 @@ export const convertExistingPart = function(context is Context, id is Id, defini
     }
     var edgesOnUnknownBodies = evaluateQuery(context, qSubtraction(qOwnerBody(definition.bends), definition.partToConvert));
     if (edgesOnUnknownBodies != [])
+    {
+        reportFeatureWarning(context, id, ErrorStringEnum.EDGES_NOT_OWNED_BY_PARTS);
+    }
+    var ripEdgesOnUnknownBodies = evaluateQuery(context, qSubtraction(qOwnerBody(definition.rips), definition.partToConvert));
+    if (ripEdgesOnUnknownBodies != [])
     {
         reportFeatureWarning(context, id, ErrorStringEnum.EDGES_NOT_OWNED_BY_PARTS);
     }
@@ -502,9 +516,9 @@ export const convertExistingPart = function(context is Context, id is Id, defini
         }
     }
 
-    var bendsQ = convertFaces(context, id, definition, complimentFacesQ, true);
+    var edgeMap = convertFaces(context, id, definition, complimentFacesQ, true);
     definition.remindToSelectBends = (nBends == 0 && nFacesToExclude > 0 && nComplimentFaces > 1);
-    annotateConvertedFaces(context, id, definition, bendsQ);
+    annotateConvertedFaces(context, id, definition, edgeMap);
 
     return qCreatedBy(id, EntityType.BODY);
 };
@@ -535,13 +549,14 @@ function checkConeApexInModel(context is Context, faces is Query)
     }
 }
 
-function convertFaces(context is Context, id is Id, definition, faces is Query, trimWithFacesAround is boolean) returns Query
+function convertFaces(context is Context, id is Id, definition, faces is Query, trimWithFacesAround is boolean) returns map
 {
     //if cone apex is part of model, error out
     checkConeApexInModel(context,faces);
 
     var surfaceId = id + "extractSurface";
     var bendsQ = startTracking(context, { "subquery" : definition.bends });
+    var ripsQ = startTracking(context, { "subquery" : definition.rips });
     var offset = computeSurfaceOffset(context, definition);
 
     try
@@ -557,7 +572,7 @@ function convertFaces(context is Context, id is Id, definition, faces is Query, 
         throw regenError(ErrorStringEnum.SHEET_METAL_CANNOT_THICKEN, ["partToConvert", "facesToExclude", "regions"]);
     }
 
-    return bendsQ;
+    return { "bends" : bendsQ, "rips" : ripsQ };
 }
 
 /**
@@ -587,13 +602,14 @@ export function getSheetMetalModelAttributeArgsFromDialogParams(context is Conte
     };
 }
 
-function annotateConvertedFaces(context is Context, id is Id, definition, bendsQuery is Query)
+function annotateConvertedFaces(context is Context, id is Id, definition, edgeMap is map)
 {
     try
     {
         var annotateSmSurfaceBodiesArgs = getSheetMetalModelAttributeArgsFromDialogParams(context, definition);
         annotateSmSurfaceBodiesArgs.surfaceBodies = qCreatedBy(id, EntityType.BODY);
-        annotateSmSurfaceBodiesArgs.bendEdgesAndFaces = bendsQuery;
+        annotateSmSurfaceBodiesArgs.bendEdgesAndFaces = edgeMap.bends;
+        annotateSmSurfaceBodiesArgs.ripEdges = edgeMap.rips;
         annotateSmSurfaceBodiesArgs.specialRadiiBends = [];
         annotateSmSurfaceBodies(context, id, annotateSmSurfaceBodiesArgs, 0);
         if (getFeatureError(context, id) != undefined)
@@ -790,14 +806,14 @@ function thickenToSheetMetal(context is Context, id is Id, definition is map)
     {
         throwOnUnsupportedFaces(context, qUnion(facesToConvert), ["regions"]);
     }
-    var bendsQ = qNothing();
+    var edgeMap = { "bends" : qNothing(), "rips" : qNothing() };
     var nFaces = size(facesToConvert);
     var nBends = size(evaluateQuery(context, definition.bends));
     if (nFaces != 0)
     {
         var useFacesAround = !isAtVersionOrLater(context, FeatureScriptVersionNumber.V525_SM_THICKEN_NO_NEIGHBORS);
         facesToConvert = append(facesToConvert, qEntityFilter(definition.bends, EntityType.FACE));
-        bendsQ = convertFaces(context, id, definition, qUnion(facesToConvert), useFacesAround);
+        edgeMap = convertFaces(context, id, definition, qUnion(facesToConvert), useFacesAround);
     }
     definition.keepInputParts = true;
     definition.remindToSelectBends = (nFaces > 1 && nBends == 0);
@@ -807,7 +823,7 @@ function thickenToSheetMetal(context is Context, id is Id, definition is map)
         transformResultIfNecessary(context, id, definition.transform);
     }
 
-    annotateConvertedFaces(context, id, definition, bendsQ);
+    annotateConvertedFaces(context, id, definition, edgeMap);
 
     return qCreatedBy(id, EntityType.BODY);
 }

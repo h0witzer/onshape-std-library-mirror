@@ -199,6 +199,7 @@ export function getSheetMetalModelAttributeFromParams(context is Context, id is 
 * @param args {{
 *       @field surfaceBodies{Query}
 *       @field bendEdgesAndFaces{Query}
+*       @field ripEdges{Query} : Optional edges to explicitly mark as rips
 *       @field specialRadiiBends{array} : array of pairs "(edge, bendRadius)"
 *       @field defaultRadius{ValueWithUnits} : bend radius to be applied to edges in bendEdgesAndFaces
 *       @field controlsThickness{boolean}
@@ -236,6 +237,16 @@ export function annotateSmSurfaceBodies(context is Context, id is Id, args is ma
     for (var edgeAndRadius in args.specialRadiiBends)
     {
         bendMap[edgeAndRadius[0]] = edgeAndRadius[1];
+    }
+
+    // Create map of edges explicitly marked as rips
+    var ripMap = {};
+    if (args.ripEdges != undefined)
+    {
+        for (var ripEdge in evaluateQuery(context, args.ripEdges))
+        {
+            ripMap[ripEdge] = true;
+        }
     }
 
     var facesQ =  qOwnedByBody(args.surfaceBodies, EntityType.FACE);
@@ -297,6 +308,7 @@ export function annotateSmSurfaceBodies(context is Context, id is Id, args is ma
             continue;
         }
         var bendRadius = bendMap[edge];
+        var isExplicitRip = ripMap[edge];
         var attributeId = toAttributeId(id + count);
         count += 1;
         if (bendRadius != undefined)
@@ -316,6 +328,26 @@ export function annotateSmSurfaceBodies(context is Context, id is Id, args is ma
             setAttribute(context, {
                     "entities" : edge,
                     "attribute" : bendAttribute
+            });
+        }
+        else if (isExplicitRip == true)
+        {
+            // Explicitly marked as a rip by user
+            var angleVal = try silent(edgeAngle(context, edge));
+            var jointAttribute = makeSMJointAttribute(attributeId);
+            jointAttribute.jointType = { "value" : SMJointType.RIP, "canBeEdited": true };
+            if (angleVal != undefined)
+            {
+                jointAttribute.angle = {"value" : angleVal, "canBeEdited" : false};
+            }
+            var zeroAngle = angleVal == undefined || angleVal < TOLERANCE.zeroAngle * radian;
+            if (!zeroAngle)
+            {
+                jointAttribute.jointStyle = { "value" : SMJointStyle.EDGE, "canBeEdited": true };
+            }
+            setAttribute(context, {
+                    "entities" : edge,
+                    "attribute" : jointAttribute
             });
         }
         else
