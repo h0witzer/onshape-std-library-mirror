@@ -82,10 +82,11 @@ export const amalgamate = defineFeature(function(context is Context, id is Id, d
             throw regenError(ErrorStringEnum.FORMED_FAILED_TO_DERIVE, ["formPartStudio"]);
         }
 
-        performFormBooleans(context, id, subtractionSolids, unionSolids, allFormedBodies, definition.createNewBodies);
+        // Add manipulator for mate connector selection from instantiated tool
+        // This must be done before performFormBooleans as it deletes the mate connectors
+        addFormToolManipulator(context, id, definition, allFormedBodies);
 
-        // Add manipulator for location selection
-        addLocationManipulator(context, id, definition);
+        performFormBooleans(context, id, subtractionSolids, unionSolids, allFormedBodies, definition.createNewBodies);
     },
     {
             "locationIndex" : 0,
@@ -219,38 +220,45 @@ function qBodiesWithAnyFormAttributes(queryToFilter is Query, attributes is arra
 }
 
 /**
- * Adds a manipulator to visualize and allow selection between different location points.
+ * Adds a manipulator to visualize and allow selection between different mate connector points
+ * from the instantiated form tool. This allows users to switch which mate connector is used
+ * as the placement origin when multiple mate connectors are defined in the tool.
  */
-function addLocationManipulator(context is Context, id is Id, definition is map)
+function addFormToolManipulator(context is Context, id is Id, definition is map, allFormedBodies is Query)
 {
-    if (isQueryEmpty(context, definition.locations))
+    // Query mate connectors from the instantiated form tool bodies
+    const mateConnectors = qBodiesWithAnyFormAttribute(allFormedBodies, modifiedFormed::FORM_BODY_CSYS_MATE_CONNECTOR);
+    
+    if (isQueryEmpty(context, mateConnectors))
     {
+        // No mate connectors in the form tool
         return;
     }
     
-    const locationQueries = evaluateQuery(context, definition.locations);
-    if (size(locationQueries) <= 1)
+    const mateConnectorQueries = evaluateQuery(context, mateConnectors);
+    if (size(mateConnectorQueries) <= 1)
     {
-        // No need for manipulator if only one location
+        // No need for manipulator if only one mate connector
         return;
     }
     
-    var locationPoints = [];
-    for (var location in locationQueries)
+    // Get the coordinate systems for all mate connectors
+    var mateConnectorPoints = [];
+    for (var mateConnector in mateConnectorQueries)
     {
-        const cSys = evaluateCSys(context, location);
-        locationPoints = append(locationPoints, cSys.origin);
+        const cSys = evMateConnector(context, { "mateConnector" : mateConnector });
+        mateConnectorPoints = append(mateConnectorPoints, cSys.origin);
     }
     
-    const clampedIndex = clamp(definition.locationIndex, 0, size(locationPoints) - 1);
+    const clampedIndex = clamp(definition.locationIndex, 0, size(mateConnectorPoints) - 1);
     
-    const locationManipulator = pointsManipulator({
-        "points" : locationPoints,
+    const mateConnectorManipulator = pointsManipulator({
+        "points" : mateConnectorPoints,
         "index" : clampedIndex
     });
     
     addManipulators(context, id, {
-        (AMALGAMATE_MANIPULATOR) : locationManipulator
+        (AMALGAMATE_MANIPULATOR) : mateConnectorManipulator
     });
 }
 

@@ -19,14 +19,6 @@ import(path : "onshape/std/frameUtils.fs", version : "2815.0");
 import(path : "onshape/std/surfaceGeometry.fs", version : "2815.0");
 import(path : "onshape/std/units.fs", version : "2815.0");
 import(path : "onshape/std/vector.fs", version : "2815.0");
-export import(path : "onshape/std/manipulator.fs", version : "2815.0");
-
-const AMALGAM_TAG_MANIPULATOR = "amalgamTagManipulator";
-
-const AMALGAM_TAG_INDEX_BOUNDS =
-{
-    (unitless) : [0, 0, 1e5]
-} as IntegerBoundSpec;
 
 /**
  * Defines the kind of entity being tagged in the feature.
@@ -46,14 +38,10 @@ export enum TagPurpose
  * Tag an entity with metadata. The metadata will be used for formed and frame features.
  */
 
-annotation { "Feature Type Name" : "Amalgam Tag",
-        "Manipulator Change Function" : "amalgamTagManipulatorChange" }
+annotation { "Feature Type Name" : "Amalgam Tag" }
 export const tag = defineFeature(function(context is Context, id is Id, definition is map)
     precondition
     {
-        annotation { "Name" : "Mate Connector Index", "UIHint" : UIHint.ALWAYS_HIDDEN }
-        isInteger(definition.mateConnectorIndex, AMALGAM_TAG_INDEX_BOUNDS);
-        
         annotation { "Name" : "Tag purpose", "UIHint" : UIHint.ALWAYS_HIDDEN }
         definition.tagPurpose is TagPurpose;
 
@@ -125,14 +113,7 @@ export const tag = defineFeature(function(context is Context, id is Id, definiti
         {
             doTagForm(context, id, definition);
         }
-
-        // Add manipulator for mate connector selection in FORM mode
-        if (definition.tagPurpose == TagPurpose.FORM)
-        {
-            addMateConnectorManipulator(context, id, definition);
-        }
     }, {
-            mateConnectorIndex : 0,
             tagPurpose : TagPurpose.FORM,
             standard : "",
             description : "",
@@ -319,54 +300,4 @@ function displayAlignmentPoints(context is Context, sketchRegions is Query, show
     {
         return;
     }
-}
-
-/**
- * Adds a manipulator to visualize and allow selection between different mate connector points.
- */
-function addMateConnectorManipulator(context is Context, id is Id, definition is map)
-{
-    if (isQueryEmpty(context, definition.cSysMateConnector))
-    {
-        return;
-    }
-    
-    const mateConnectorQueries = evaluateQuery(context, definition.cSysMateConnector);
-    if (size(mateConnectorQueries) <= 1)
-    {
-        // No need for manipulator if only one mate connector
-        return;
-    }
-    
-    var mateConnectorPoints = [];
-    for (var mateConnector in mateConnectorQueries)
-    {
-        const cSys = evMateConnector(context, { "mateConnector" : mateConnector });
-        mateConnectorPoints = append(mateConnectorPoints, cSys.origin);
-    }
-    
-    const clampedIndex = clamp(definition.mateConnectorIndex, 0, size(mateConnectorPoints) - 1);
-    
-    const mateConnectorManipulator = pointsManipulator({
-        "points" : mateConnectorPoints,
-        "index" : clampedIndex
-    });
-    
-    addManipulators(context, id, {
-        (AMALGAM_TAG_MANIPULATOR) : mateConnectorManipulator
-    });
-}
-
-/**
- * The manipulator change function for the Amalgam Tag feature.
- * Updates the mateConnectorIndex when a different mate connector point is selected.
- */
-export function amalgamTagManipulatorChange(context is Context, definition is map, newManipulators is map) returns map
-{
-    if (newManipulators[AMALGAM_TAG_MANIPULATOR] is Manipulator)
-    {
-        definition.mateConnectorIndex = newManipulators[AMALGAM_TAG_MANIPULATOR].index;
-    }
-    
-    return definition;
 }
