@@ -4,6 +4,7 @@ FeatureScript 2815;
 // See the LICENSE tab for the license text.
 // Copyright (c) 2013-Present PTC Inc.
 
+import(path : "onshape/std/attributes.fs", version : "2815.0");
 import(path : "onshape/std/common.fs", version : "2815.0");
 import(path : "onshape/std/coordSystem.fs", version : "2815.0");
 import(path : "onshape/std/evaluate.fs", version : "2815.0");
@@ -13,6 +14,7 @@ modifiedFormed::import(path : "5418313fd7f629d9c7f1ac10", version : "b97acafda22
 import(path : "onshape/std/instantiator.fs", version : "2815.0");
 import(path : "onshape/std/vector.fs", version : "2815.0");
 export import(path : "onshape/std/manipulator.fs", version : "2815.0");
+amalgamTag::import(path : "65dcc2bb2c4ff1c239467eca", version : "0e0105bab7e55e86e5fc21bb"); //amalgamTag.fs
 
 const AMALGAMATE_MANIPULATOR = "amalgamateManipulator";
 
@@ -103,48 +105,76 @@ export const amalgamate = defineFeature(function(context is Context, id is Id, d
         });
 
 /**
- * Get the mate connector transform using Point Derive's instantiation pattern.
- * Copied from Point Derive's instantiatePointDerivePartStudio and computeCSysArray functions.
+ * Get the mate connector transform by reading pre-stored coordinate systems from Amalgam Tag attributes.
+ * This eliminates the need for double instantiation, significantly improving performance.
  * @returns map with "transform", "points", and "hasMultiple" fields
  */
 function getMateConnectorTransform(context is Context, id is Id, definition is map) returns map
 {
-    // Instantiate at origin to import with mate connectors (based on Point Derive's pattern)
-    var importQuery;
+    // Try to read pre-stored mate connector coordinate systems from the tool's attributes
+    // This is much faster than instantiating the tool
+    var mateConnectorCSystems = undefined;
+    
     try
     {
-        const instantiator = newInstantiator(id + "import");
-        var partStudioData = definition.formPartStudio;
+        // Query all bodies with form attributes from the part studio
+        const partStudioBodies = evaluateQuery(context, definition.formPartStudio.partQuery);
         
-        // Add mate connectors to the part query (same as instantiatePointDerivePartStudio)
-        partStudioData.partQuery = qUnion([
-                    partStudioData.partQuery,
-                    qMateConnectorsOfParts(partStudioData.partQuery)
-                ]);
-        
-        importQuery = addInstance(instantiator, partStudioData);
-        instantiate(context, instantiator);
-    }
-    catch
-    {
-        return { "transform" : identityTransform(), "points" : [], "hasMultiple" : false };
-    }
-    
-    // Query mate connectors
-    const mateConnectors = importQuery->qMateConnectorsOfParts();
-    
-    // Convert to coordinate systems array (same as computeCSysArray)
-    var mateConnectorCSystems = [];
-    if (!isQueryEmpty(context, mateConnectors))
-    {
-        mateConnectorCSystems = mapArray(evaluateQuery(context, mateConnectors), function(mateConnector)
-            {
-                return evMateConnector(context, { "mateConnector" : mateConnector });
+        // Look for the attribute on any of the bodies
+        for (var body in partStudioBodies)
+        {
+            const attr = getAttribute(context, {
+                "entities" : qUnion([body]),
+                "name" : amalgamTag::AMALGAM_MATE_CONNECTOR_CSYSTEMS
             });
+            
+            if (attr != undefined)
+            {
+                mateConnectorCSystems = attr;
+                break;
+            }
+        }
     }
     
-    // Clean up imported bodies
-    opDeleteBodies(context, id + "deleteImport", { "entities" : importQuery });
+    // Fallback: if no pre-stored data found, instantiate to get mate connectors (old approach)
+    if (mateConnectorCSystems == undefined)
+    {
+        var importQuery;
+        try
+        {
+            const instantiator = newInstantiator(id + "import");
+            var partStudioData = definition.formPartStudio;
+            
+            // Add mate connectors to the part query (same as instantiatePointDerivePartStudio)
+            partStudioData.partQuery = qUnion([
+                        partStudioData.partQuery,
+                        qMateConnectorsOfParts(partStudioData.partQuery)
+                    ]);
+            
+            importQuery = addInstance(instantiator, partStudioData);
+            instantiate(context, instantiator);
+        }
+        catch
+        {
+            return { "transform" : identityTransform(), "points" : [], "hasMultiple" : false };
+        }
+        
+        // Query mate connectors
+        const mateConnectors = importQuery->qMateConnectorsOfParts();
+        
+        // Convert to coordinate systems array (same as computeCSysArray)
+        mateConnectorCSystems = [];
+        if (!isQueryEmpty(context, mateConnectors))
+        {
+            mateConnectorCSystems = mapArray(evaluateQuery(context, mateConnectors), function(mateConnector)
+                {
+                    return evMateConnector(context, { "mateConnector" : mateConnector });
+                });
+        }
+        
+        // Clean up imported bodies
+        opDeleteBodies(context, id + "deleteImport", { "entities" : importQuery });
+    }
     
     if (size(mateConnectorCSystems) == 0)
     {
