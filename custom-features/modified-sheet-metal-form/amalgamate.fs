@@ -88,7 +88,7 @@ export const amalgamate = defineFeature(function(context is Context, id is Id, d
 
         // Add manipulator for mate connector selection (only for first location)
         // This must be done before performFormBooleans as it deletes the mate connectors
-        if (mateConnectorData.points != [])
+        if (size(mateConnectorData.points) > 0)
         {
             addFormToolManipulator(context, id, definition, mateConnectorData.points);
         }
