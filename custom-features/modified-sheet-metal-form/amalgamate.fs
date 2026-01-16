@@ -227,6 +227,7 @@ function qBodiesWithAnyFormAttributes(queryToFilter is Query, attributes is arra
 function addFormToolManipulator(context is Context, id is Id, definition is map, allFormedBodies is Query)
 {
     // Query mate connectors from the instantiated form tool bodies
+    // FORM_BODY_CSYS_MATE_CONNECTOR is an attribute that marks mate connectors in the form tool
     const mateConnectors = qBodiesWithAnyFormAttribute(allFormedBodies, modifiedFormed::FORM_BODY_CSYS_MATE_CONNECTOR);
     
     if (isQueryEmpty(context, mateConnectors))
@@ -246,6 +247,7 @@ function addFormToolManipulator(context is Context, id is Id, definition is map,
     var mateConnectorPoints = [];
     for (var mateConnector in mateConnectorQueries)
     {
+        // evMateConnector evaluates the coordinate system (origin, axes) of a mate connector
         const cSys = evMateConnector(context, { "mateConnector" : mateConnector });
         mateConnectorPoints = append(mateConnectorPoints, cSys.origin);
     }
