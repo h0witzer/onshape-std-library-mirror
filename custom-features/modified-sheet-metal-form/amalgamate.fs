@@ -69,21 +69,42 @@ export const amalgamate = defineFeature(function(context is Context, id is Id, d
             throw regenError(ErrorStringEnum.FORMED_SELECT_LOCATION, ["locations"]);
         }
 
-        // Compute mate connector transform from a temporary instantiation
-        const mateConnectorData = computeMateConnectorTransformFromTool(context, id, definition);
-        
-        // Now instantiate all locations with the proper mate connector transform
         const instantiator = newInstantiator(id, {});
-        const allFormedBodies = addFormInstancesWithTransform(context, id, definition, instantiator, mateConnectorData.transform);
-
+        
+        // Instantiate first location without transform to get mate connector data
+        const firstInstanceData = addFirstFormInstanceForMateConnectorData(context, id, definition, instantiator);
+        
+        // Add remaining instances (will compute transform after first instantiation)
+        const remainingInstancesData = addRemainingFormInstancesPlaceholder(context, id, definition, instantiator);
+        
         try
         {
-            debug(context, instantiator, DebugColor.RED);
             instantiate(context, instantiator);
         }
         catch
         {
             throw regenError(ErrorStringEnum.FORMED_FAILED_TO_DERIVE, ["formPartStudio"]);
+        }
+        
+        // Compute mate connector transform from the first instance
+        const mateConnectorData = computeMateConnectorTransformFromFirstInstance(context, definition, firstInstanceData);
+        
+        // Apply mate connector transform to the first instance retroactively
+        if (mateConnectorData.transform != identityTransform())
+        {
+            opTransform(context, id + "transformFirst", {
+                "bodies" : firstInstanceData.bodies,
+                "transform" : mateConnectorData.transform
+            });
+            
+            // Also apply transform to remaining instances
+            for (var i = 0; i < size(remainingInstancesData); i += 1)
+            {
+                opTransform(context, id + "transformRemaining" + i, {
+                    "bodies" : remainingInstancesData[i],
+                    "transform" : mateConnectorData.transform
+                });
+            }
         }
 
         // Add manipulator for mate connector selection (only for first location)
@@ -93,6 +114,7 @@ export const amalgamate = defineFeature(function(context is Context, id is Id, d
             addFormToolManipulator(context, id, definition, mateConnectorData.points);
         }
 
+        const allFormedBodies = qUnion([firstInstanceData.bodies]->concatenate(remainingInstancesData));
         performFormBooleans(context, id, subtractionSolids, unionSolids, allFormedBodies, definition.createNewBodies);
     },
     {
@@ -105,45 +127,55 @@ export const amalgamate = defineFeature(function(context is Context, id is Id, d
         });
 
 /**
- * Compute the mate connector transform by temporarily instantiating the tool.
- * @returns map with "transform" and "points" fields
+ * Add the first instance without mate connector transform to get mate connector data.
+ * @returns map with "bodies" query and "firstLocation" coordinate system
  */
-function computeMateConnectorTransformFromTool(context is Context, id is Id, definition is map) returns map
+function addFirstFormInstanceForMateConnectorData(context is Context, id is Id, definition is map, instantiator is Instantiator) returns map
 {
-    // Create a temporary instantiator to get mate connector info
-    const tempInstantiator = newInstantiator(id + "temp", {});
     const configurationOverride = { "thickness" : definition.thickness };
+    const locationQueries = evaluateQuery(context, definition.locations);
     
-    // Instantiate at origin to get mate connector positions
-    const tempBodies = addInstance(tempInstantiator, definition.formPartStudio, {
-                "transform" : identityTransform(),
+    if (size(locationQueries) == 0)
+    {
+        return { "bodies" : qNothing(), "firstLocation" : WORLD_COORD_SYSTEM };
+    }
+    
+    // Get the first location
+    const firstLocation = locationQueries[0];
+    var firstLocationCSys = evaluateCSys(context, firstLocation);
+    if (definition.flipDirection)
+    {
+        firstLocationCSys.zAxis = -firstLocationCSys.zAxis;
+    }
+
+    // Instantiate first location WITHOUT mate connector transform
+    const formedBodies = addInstance(instantiator, definition.formPartStudio, {
+                "transform" : toWorld(firstLocationCSys),
+                "identity" : firstLocation,
                 "configurationOverride" : configurationOverride,
                 "mateConnector" : qBodiesWithAnyFormAttribute(modifiedFormed::FORM_BODY_CSYS_MATE_CONNECTOR)
             });
     
-    try
-    {
-        instantiate(context, tempInstantiator);
-    }
-    catch
-    {
-        return { "transform" : identityTransform(), "points" : [] };
-    }
-    
-    // Query mate connectors from the temporary instantiation
-    const mateConnectors = qBodiesWithAnyFormAttribute(tempBodies, modifiedFormed::FORM_BODY_CSYS_MATE_CONNECTOR);
+    return { "bodies" : formedBodies, "firstLocation" : firstLocationCSys };
+}
+
+/**
+ * Compute the mate connector transform from the first instantiated instance.
+ * @returns map with "transform" and "points" fields
+ */
+function computeMateConnectorTransformFromFirstInstance(context is Context, definition is map, firstInstanceData is map) returns map
+{
+    // Query mate connectors from the first instantiated form tool
+    const mateConnectors = qBodiesWithAnyFormAttribute(firstInstanceData.bodies, modifiedFormed::FORM_BODY_CSYS_MATE_CONNECTOR);
     
     if (isQueryEmpty(context, mateConnectors))
     {
-        // Clean up and return
-        opDeleteBodies(context, id + "tempDelete", { "entities" : tempBodies });
         return { "transform" : identityTransform(), "points" : [] };
     }
     
     const mateConnectorQueries = evaluateQuery(context, mateConnectors);
     if (size(mateConnectorQueries) == 0)
     {
-        opDeleteBodies(context, id + "tempDelete", { "entities" : tempBodies });
         return { "transform" : identityTransform(), "points" : [] };
     }
     
@@ -162,62 +194,46 @@ function computeMateConnectorTransformFromTool(context is Context, id is Id, def
     const selectedMateConnectorCSys = mateConnectorCSys[clampedIndex];
     const mateConnectorTransform = fromWorld(selectedMateConnectorCSys);
     
-    // Get the first location coordinate system
-    const locationQueries = evaluateQuery(context, definition.locations);
-    if (size(locationQueries) == 0)
-    {
-        opDeleteBodies(context, id + "tempDelete", { "entities" : tempBodies });
-        return { "transform" : identityTransform(), "points" : [] };
-    }
-    
-    const firstLocation = locationQueries[0];
-    var firstLocationCSys = evaluateCSys(context, firstLocation);
-    if (definition.flipDirection)
-    {
-        firstLocationCSys.zAxis = -firstLocationCSys.zAxis;
-    }
-    
     // Transform mate connector points to world space at the first location
     var mateConnectorPoints = [];
     for (var cSys in mateConnectorCSys)
     {
-        const transformedPoint = toWorld(firstLocationCSys) * mateConnectorTransform * cSys.origin;
+        const transformedPoint = toWorld(firstInstanceData.firstLocation) * mateConnectorTransform * cSys.origin;
         mateConnectorPoints = append(mateConnectorPoints, transformedPoint);
     }
-    
-    // Clean up temporary bodies
-    opDeleteBodies(context, id + "tempDelete", { "entities" : tempBodies });
     
     return { "transform" : mateConnectorTransform, "points" : mateConnectorPoints };
 }
 
 /**
- * Create instances of the form Part Studio at each requested location with mate connector transform.
- * @returns Query containing all formed tool bodies that were instantiated.
+ * Add instances for remaining locations (skip first) without transform - will apply transform later.
+ * @returns Array of queries, one for each remaining location's bodies.
  */
-function addFormInstancesWithTransform(context is Context, id is Id, definition is map, instantiator is Instantiator, mateConnectorTransform is Transform) returns Query
+function addRemainingFormInstancesPlaceholder(context is Context, id is Id, definition is map, instantiator is Instantiator) returns array
 {
-    var allFormedBodies = qNothing();
+    var bodiesArray = [];
     const configurationOverride = { "thickness" : definition.thickness };
-
-    for (var location in evaluateQuery(context, definition.locations))
+    const locationQueries = evaluateQuery(context, definition.locations);
+    
+    // Start from index 1 to skip the first location (already added)
+    for (var i = 1; i < size(locationQueries); i += 1)
     {
-        var cSys = evaluateCSys(context, location);
+        var cSys = evaluateCSys(context, locationQueries[i]);
         if (definition.flipDirection)
         {
             cSys.zAxis = -cSys.zAxis;
         }
 
         const formedBodies = addInstance(instantiator, definition.formPartStudio, {
-                    "transform" : toWorld(cSys) * mateConnectorTransform,
-                    "identity" : location,
+                    "transform" : toWorld(cSys),
+                    "identity" : locationQueries[i],
                     "configurationOverride" : configurationOverride,
                     "mateConnector" : qBodiesWithAnyFormAttribute(modifiedFormed::FORM_BODY_CSYS_MATE_CONNECTOR)
                 });
-        allFormedBodies = qUnion(allFormedBodies, formedBodies);
+        bodiesArray = append(bodiesArray, formedBodies);
     }
 
-    return allFormedBodies;
+    return bodiesArray;
 }
 
 /**
