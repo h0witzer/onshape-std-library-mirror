@@ -114,7 +114,13 @@ export const amalgamate = defineFeature(function(context is Context, id is Id, d
             addFormToolManipulator(context, id, definition, mateConnectorData.points);
         }
 
-        const allFormedBodies = qUnion([firstInstanceData.bodies]->concatenate(remainingInstancesData));
+        // Combine first instance with remaining instances for boolean operations
+        var allBodiesArray = [firstInstanceData.bodies];
+        for (var remainingBodies in remainingInstancesData)
+        {
+            allBodiesArray = append(allBodiesArray, remainingBodies);
+        }
+        const allFormedBodies = qUnion(allBodiesArray);
         performFormBooleans(context, id, subtractionSolids, unionSolids, allFormedBodies, definition.createNewBodies);
     },
     {
