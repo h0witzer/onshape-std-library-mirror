@@ -90,19 +90,34 @@ export const amalgamate = defineFeature(function(context is Context, id is Id, d
         const mateConnectorData = computeMateConnectorTransformFromFirstInstance(context, definition, firstInstanceData);
         
         // Apply mate connector transform to the first instance retroactively
+        // The transform is in the tool's local space, so we need to apply it in each instance's coordinate system
         if (mateConnectorData.transform != identityTransform())
         {
+            // For first instance, transform in its local coordinate system
+            const firstLocationTransform = toWorld(firstInstanceData.firstLocation);
+            const localTransform = firstLocationTransform * mateConnectorData.transform * inverse(firstLocationTransform);
+            
             opTransform(context, id + "transformFirst", {
                 "bodies" : firstInstanceData.bodies,
-                "transform" : mateConnectorData.transform
+                "transform" : localTransform
             });
             
-            // Also apply transform to remaining instances
-            for (var i = 0; i < size(remainingInstancesData); i += 1)
+            // Also apply transform to remaining instances in their local coordinate systems
+            const locationQueries = evaluateQuery(context, definition.locations);
+            for (var i = 1; i < size(locationQueries); i += 1)
             {
-                opTransform(context, id + "transformRemaining" + i, {
-                    "bodies" : remainingInstancesData[i],
-                    "transform" : mateConnectorData.transform
+                var locationCSys = evaluateCSys(context, locationQueries[i]);
+                if (definition.flipDirection)
+                {
+                    locationCSys.zAxis = -locationCSys.zAxis;
+                }
+                
+                const locationTransform = toWorld(locationCSys);
+                const localTransformRemaining = locationTransform * mateConnectorData.transform * inverse(locationTransform);
+                
+                opTransform(context, id + "transformRemaining" + (i-1), {
+                    "bodies" : remainingInstancesData[i-1],
+                    "transform" : localTransformRemaining
                 });
             }
         }
