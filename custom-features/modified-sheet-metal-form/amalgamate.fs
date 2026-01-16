@@ -70,10 +70,10 @@ export const amalgamate = defineFeature(function(context is Context, id is Id, d
         }
 
         // Get mate connector transform by sampling the tool
-        const mateConnectorTransform = getMateConnectorTransform(context, id, definition);
+        const mateConnectorData = getMateConnectorTransform(context, id, definition);
         
         const instantiator = newInstantiator(id, {});
-        const allFormedBodies = addFormInstancesWithTransform(context, id, definition, instantiator, mateConnectorTransform);
+        const allFormedBodies = addFormInstancesWithTransform(context, id, definition, instantiator, mateConnectorData.transform);
 
         try
         {
@@ -88,9 +88,9 @@ export const amalgamate = defineFeature(function(context is Context, id is Id, d
         performFormBooleans(context, id, subtractionSolids, unionSolids, allFormedBodies, definition.createNewBodies);
         
         // Add manipulator for location selection
-        if (mateConnectorTransform.hasMultiple)
+        if (mateConnectorData.hasMultiple)
         {
-            addFormToolManipulator(context, id, definition, mateConnectorTransform.points);
+            addFormToolManipulator(context, id, definition, mateConnectorData.points);
         }
     },
     {
