@@ -125,7 +125,7 @@ export const tag = defineFeature(function(context is Context, id is Id, definiti
         {
             doTagForm(context, id, definition);
         }
-        
+
         // Add manipulator for mate connector selection in FORM mode
         if (definition.tagPurpose == TagPurpose.FORM)
         {

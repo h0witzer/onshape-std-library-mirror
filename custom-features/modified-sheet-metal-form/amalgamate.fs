@@ -83,7 +83,7 @@ export const amalgamate = defineFeature(function(context is Context, id is Id, d
         }
 
         performFormBooleans(context, id, subtractionSolids, unionSolids, allFormedBodies, definition.createNewBodies);
-        
+
         // Add manipulator for location selection
         addLocationManipulator(context, id, definition);
     },
