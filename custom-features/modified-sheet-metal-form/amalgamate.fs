@@ -69,8 +69,12 @@ export const amalgamate = defineFeature(function(context is Context, id is Id, d
             throw regenError(ErrorStringEnum.FORMED_SELECT_LOCATION, ["locations"]);
         }
 
+        // Compute mate connector transform from a temporary instantiation
+        const mateConnectorData = computeMateConnectorTransformFromTool(context, id, definition);
+        
+        // Now instantiate all locations with the proper mate connector transform
         const instantiator = newInstantiator(id, {});
-        const allFormedBodies = addFormInstances(context, id, definition, instantiator);
+        const allFormedBodies = addFormInstancesWithTransform(context, id, definition, instantiator, mateConnectorData.transform);
 
         try
         {
@@ -82,9 +86,12 @@ export const amalgamate = defineFeature(function(context is Context, id is Id, d
             throw regenError(ErrorStringEnum.FORMED_FAILED_TO_DERIVE, ["formPartStudio"]);
         }
 
-        // Add manipulator for mate connector selection from instantiated tool
+        // Add manipulator for mate connector selection (only for first location)
         // This must be done before performFormBooleans as it deletes the mate connectors
-        addFormToolManipulator(context, id, definition, allFormedBodies);
+        if (mateConnectorData.points != [])
+        {
+            addFormToolManipulator(context, id, definition, mateConnectorData.points);
+        }
 
         performFormBooleans(context, id, subtractionSolids, unionSolids, allFormedBodies, definition.createNewBodies);
     },
@@ -98,10 +105,97 @@ export const amalgamate = defineFeature(function(context is Context, id is Id, d
         });
 
 /**
- * Create an instance of the form Part Studio at each requested location.
+ * Compute the mate connector transform by temporarily instantiating the tool.
+ * @returns map with "transform" and "points" fields
+ */
+function computeMateConnectorTransformFromTool(context is Context, id is Id, definition is map) returns map
+{
+    // Create a temporary instantiator to get mate connector info
+    const tempInstantiator = newInstantiator(id + "temp", {});
+    const configurationOverride = { "thickness" : definition.thickness };
+    
+    // Instantiate at origin to get mate connector positions
+    const tempBodies = addInstance(tempInstantiator, definition.formPartStudio, {
+                "transform" : identityTransform(),
+                "configurationOverride" : configurationOverride,
+                "mateConnector" : qBodiesWithAnyFormAttribute(modifiedFormed::FORM_BODY_CSYS_MATE_CONNECTOR)
+            });
+    
+    try
+    {
+        instantiate(context, tempInstantiator);
+    }
+    catch
+    {
+        return { "transform" : identityTransform(), "points" : [] };
+    }
+    
+    // Query mate connectors from the temporary instantiation
+    const mateConnectors = qBodiesWithAnyFormAttribute(tempBodies, modifiedFormed::FORM_BODY_CSYS_MATE_CONNECTOR);
+    
+    if (isQueryEmpty(context, mateConnectors))
+    {
+        // Clean up and return
+        opDeleteBodies(context, id + "tempDelete", { "entities" : tempBodies });
+        return { "transform" : identityTransform(), "points" : [] };
+    }
+    
+    const mateConnectorQueries = evaluateQuery(context, mateConnectors);
+    if (size(mateConnectorQueries) == 0)
+    {
+        opDeleteBodies(context, id + "tempDelete", { "entities" : tempBodies });
+        return { "transform" : identityTransform(), "points" : [] };
+    }
+    
+    // Get coordinate systems for all mate connectors
+    var mateConnectorCSys = [];
+    for (var mateConnector in mateConnectorQueries)
+    {
+        const cSys = evMateConnector(context, { "mateConnector" : mateConnector });
+        mateConnectorCSys = append(mateConnectorCSys, cSys);
+    }
+    
+    // Clamp index to valid range
+    const clampedIndex = clamp(definition.locationIndex, 0, size(mateConnectorCSys) - 1);
+    
+    // Compute transform from selected mate connector to origin
+    const selectedMateConnectorCSys = mateConnectorCSys[clampedIndex];
+    const mateConnectorTransform = fromWorld(selectedMateConnectorCSys);
+    
+    // Get the first location coordinate system
+    const locationQueries = evaluateQuery(context, definition.locations);
+    if (size(locationQueries) == 0)
+    {
+        opDeleteBodies(context, id + "tempDelete", { "entities" : tempBodies });
+        return { "transform" : identityTransform(), "points" : [] };
+    }
+    
+    const firstLocation = locationQueries[0];
+    var firstLocationCSys = evaluateCSys(context, firstLocation);
+    if (definition.flipDirection)
+    {
+        firstLocationCSys.zAxis = -firstLocationCSys.zAxis;
+    }
+    
+    // Transform mate connector points to world space at the first location
+    var mateConnectorPoints = [];
+    for (var cSys in mateConnectorCSys)
+    {
+        const transformedPoint = toWorld(firstLocationCSys) * mateConnectorTransform * cSys.origin;
+        mateConnectorPoints = append(mateConnectorPoints, transformedPoint);
+    }
+    
+    // Clean up temporary bodies
+    opDeleteBodies(context, id + "tempDelete", { "entities" : tempBodies });
+    
+    return { "transform" : mateConnectorTransform, "points" : mateConnectorPoints };
+}
+
+/**
+ * Create instances of the form Part Studio at each requested location with mate connector transform.
  * @returns Query containing all formed tool bodies that were instantiated.
  */
-function addFormInstances(context is Context, id is Id, definition is map, instantiator is Instantiator) returns Query
+function addFormInstancesWithTransform(context is Context, id is Id, definition is map, instantiator is Instantiator, mateConnectorTransform is Transform) returns Query
 {
     var allFormedBodies = qNothing();
     const configurationOverride = { "thickness" : definition.thickness };
@@ -115,7 +209,7 @@ function addFormInstances(context is Context, id is Id, definition is map, insta
         }
 
         const formedBodies = addInstance(instantiator, definition.formPartStudio, {
-                    "transform" : toWorld(cSys),
+                    "transform" : toWorld(cSys) * mateConnectorTransform,
                     "identity" : location,
                     "configurationOverride" : configurationOverride,
                     "mateConnector" : qBodiesWithAnyFormAttribute(modifiedFormed::FORM_BODY_CSYS_MATE_CONNECTOR)
@@ -223,33 +317,14 @@ function qBodiesWithAnyFormAttributes(queryToFilter is Query, attributes is arra
  * Adds a manipulator to visualize and allow selection between different mate connector points
  * from the instantiated form tool. This allows users to switch which mate connector is used
  * as the placement origin when multiple mate connectors are defined in the tool.
+ * Only shows manipulators for the first location to reduce draw overhead.
  */
-function addFormToolManipulator(context is Context, id is Id, definition is map, allFormedBodies is Query)
+function addFormToolManipulator(context is Context, id is Id, definition is map, mateConnectorPoints is array)
 {
-    // Query mate connectors from the instantiated form tool bodies
-    // FORM_BODY_CSYS_MATE_CONNECTOR is an attribute that marks mate connectors in the form tool
-    const mateConnectors = qBodiesWithAnyFormAttribute(allFormedBodies, modifiedFormed::FORM_BODY_CSYS_MATE_CONNECTOR);
-    
-    if (isQueryEmpty(context, mateConnectors))
+    if (size(mateConnectorPoints) <= 1)
     {
-        // No mate connectors in the form tool
+        // No need for manipulator if only one or no mate connectors
         return;
-    }
-    
-    const mateConnectorQueries = evaluateQuery(context, mateConnectors);
-    if (size(mateConnectorQueries) <= 1)
-    {
-        // No need for manipulator if only one mate connector
-        return;
-    }
-    
-    // Get the coordinate systems for all mate connectors
-    var mateConnectorPoints = [];
-    for (var mateConnector in mateConnectorQueries)
-    {
-        // evMateConnector evaluates the coordinate system (origin, axes) of a mate connector
-        const cSys = evMateConnector(context, { "mateConnector" : mateConnector });
-        mateConnectorPoints = append(mateConnectorPoints, cSys.origin);
     }
     
     const clampedIndex = clamp(definition.locationIndex, 0, size(mateConnectorPoints) - 1);
