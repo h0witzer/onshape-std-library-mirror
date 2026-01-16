@@ -910,20 +910,16 @@ function subtractTab(context is Context, id is Id, definition is map, subtractQu
         if (definition.tabChamfer > 0 * meter && definition.extensionVerticesTracking != undefined)
         {
             const thickenedBody = qCreatedBy(id + "thicken", EntityType.BODY);
-            const thickenedVertices = qOwnedByBody(thickenedBody, EntityType.VERTEX);
+            const thickenedEdges = qOwnedByBody(thickenedBody, EntityType.EDGE);
             
-            // Tracked vertices from extension resolve to vertices on thickened body
-            const extensionVertices = qIntersection([definition.extensionVerticesTracking, thickenedVertices]);
+            // Tracked vertices from extension resolve to edges on thickened body
+            const extensionEdges = qIntersection([definition.extensionVerticesTracking, thickenedEdges]);
             
-            // Get edges adjacent to these vertices and filter to only convex edges
-            const adjacentEdges = qAdjacent(extensionVertices, AdjacencyType.VERTEX, EntityType.EDGE);
-            const convexEdges = qEdgeConvexityTypeFilter(adjacentEdges, EdgeConvexityType.CONVEX);
+            // Filter to only convex edges
+            const convexEdges = qEdgeConvexityTypeFilter(extensionEdges, EdgeConvexityType.CONVEX);
             
-            // Get vertices from convex edges
-            const convexVertices = qAdjacent(convexEdges, AdjacencyType.EDGE, EntityType.VERTEX);
-            
-            // Intersect with original extension vertices to only get the corners we created
-            const verticesToChamfer = qIntersection([convexVertices, extensionVertices]);
+            // Get vertices from convex edges for corner break application
+            const verticesToChamfer = qAdjacent(convexEdges, AdjacencyType.EDGE, EntityType.VERTEX);
             
             if (!isQueryEmpty(context, verticesToChamfer))
             {
