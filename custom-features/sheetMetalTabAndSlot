@@ -21,6 +21,8 @@ import(path : "onshape/std/sheetMetalUtils.fs", version : "2837.0");
 import(path : "onshape/std/surfaceGeometry.fs", version : "2837.0");
 import(path : "onshape/std/topologyUtils.fs", version : "2837.0");
 import(path : "onshape/std/vector.fs", version : "2837.0");
+import(path : "onshape/std/sheetMetalCornerBreak.fs", version : "2837.0");
+import(path : "onshape/std/edgeconvexitytype.gen.fs", version : "2837.0");
 // Written by Caden Armstrong - SmartBench Software
 // Hacked by Derek Van Allen - Boss Display
 // Created for Boss Display
@@ -244,12 +246,22 @@ export const tabAndSlotBossDisplay = defineSheetMetalFeature(function(context is
             }
         }
 
+        // Track edges and vertices created by the sheet extension operation
+        const extensionCreatedEdges = qCreatedBy(id + "extendTabs", EntityType.EDGE);
+        const trackedExtensionEdges = startTracking(context, extensionCreatedEdges);
+        
+        // Track vertices created by extension for corner chamfering
+        const extensionCreatedVertices = qCreatedBy(id + "extendTabs", EntityType.VERTEX);
+        const trackedExtensionVertices = startTracking(context, extensionCreatedVertices);
+
         // Phase 4: Merge the extended surface bodies back with the sheet metal model
         // Call mergeTabSurfacesWithSheetMetal to integrate the surface bodies using integrated helper functions
         // The wallFaces we extracted from are the sheet metal definition faces to add material to
         
         if (!isQueryEmpty(context, extractedBodies))
         {
+            definition.extensionEdgesTracking = trackedExtensionEdges;
+            definition.extensionVerticesTracking = trackedExtensionVertices;
             mergeTabSurfacesWithSheetMetal(context, id + "mergeTabsWithModel", extractedBodies, wallFaces, definition);
         }
     }, { mergeScope : qNothing() });
@@ -839,7 +851,6 @@ function getCorrespondingJointEntitiesInPart(context is Context, selection is Qu
 
 /**
  * Thickens the input sheet body based on the parameters of the sheet metal model and performs subtraction operations.
- * This is the core operation for creating the thickened tab geometry and subtracting it from overlapping bodies.
  * Inputs: definition (feature definition with offset settings), subtractQueries (separated queries for subtraction),
  *         coincidentGrouping (map with tabBody and walls), rootId (root feature ID).
  */
@@ -877,16 +888,61 @@ function subtractTab(context is Context, id is Id, definition is map, subtractQu
 
     if (size(subtractSMFaces) != 0 || !isQueryEmpty(context, subtractQueries.nonSheetMetalQueries))
     {
-        if (definition.booleanOffset > 0 * meter)
+        if (definition.booleanOffset > 0 * meter && definition.extensionEdgesTracking != undefined)
         {
-            const moveFaceDefinition = {
-                    "moveFaces" : qCreatedBy(id + "thicken", EntityType.FACE),
-                    "moveFaceType" : MoveFaceType.OFFSET,
-                    "offsetDistance" : definition.booleanOffset,
-                    "reFillet" : false };
+            const thickenedBody = qCreatedBy(id + "thicken", EntityType.BODY);
+            const thickenedFaces = qOwnedByBody(thickenedBody, EntityType.FACE);
+            const facesToOffset = qIntersection([definition.extensionEdgesTracking, thickenedFaces]);
+            
+            if (!isQueryEmpty(context, facesToOffset))
+            {
+                const moveFaceDefinition = {
+                        "moveFaces" : facesToOffset,
+                        "moveFaceType" : MoveFaceType.OFFSET,
+                        "offsetDistance" : definition.booleanOffset,
+                        "reFillet" : false };
 
-            opOffsetFace(context, id + "move", moveFaceDefinition);
+                opOffsetFace(context, id + "move", moveFaceDefinition);
+            }
         }
+        
+        // Apply corner chamfers to extension-created vertices on the tab body
+        if (definition.tabChamfer > 0 * meter && definition.extensionVerticesTracking != undefined)
+        {
+            const thickenedBody = qCreatedBy(id + "thicken", EntityType.BODY);
+            const thickenedVertices = qOwnedByBody(thickenedBody, EntityType.VERTEX);
+            
+            // Tracked vertices from extension resolve to vertices on thickened body
+            const extensionVertices = qIntersection([definition.extensionVerticesTracking, thickenedVertices]);
+            
+            // Get edges adjacent to these vertices and filter to only convex edges
+            const adjacentEdges = qAdjacent(extensionVertices, AdjacencyType.VERTEX, EntityType.EDGE);
+            const convexEdges = qEdgeConvexityTypeFilter(adjacentEdges, EdgeConvexityType.CONVEX);
+            
+            // Get vertices from convex edges
+            const convexVertices = qAdjacent(convexEdges, AdjacencyType.EDGE, EntityType.VERTEX);
+            
+            // Intersect with original extension vertices to only get the corners we created
+            const verticesToChamfer = qIntersection([convexVertices, extensionVertices]);
+            
+            if (!isQueryEmpty(context, verticesToChamfer))
+            {
+                // Apply corner break chamfer using SMEdgeBlendImpl
+                const cornerBreakDefinition = {
+                    "entities" : verticesToChamfer,
+                    "blendType" : EdgeBlendType.CHAMFER,
+                    "width" : definition.tabChamfer,
+                    "crossSection" : FilletCrossSection.CHAMFER,
+                    "chamferMethod" : ChamferMethod.FACE_OFFSET
+                };
+                
+                try silent
+                {
+                    SMEdgeBlendImpl(context, id + "cornerChamfer", cornerBreakDefinition);
+                }
+            }
+        }
+        
         smSubtractTab(context, id + "sm", qCreatedBy(id + "thicken", EntityType.BODY), subtractSMFaces);
         solidSubtractTab(context, id + "solid", qCreatedBy(id + "thicken", EntityType.BODY), subtractQueries.nonSheetMetalQueries);
     }
@@ -1119,7 +1175,10 @@ function mergeTabSurfacesWithSheetMetal(context is Context, id is Id, tabSurface
         "tabFaces" : tabFaces,
         "booleanUnionScope" : sourceWallFaces,
         "booleanOffset" : definition.slotMargin,
-        "booleanSubtractScope" : subtractScope
+        "booleanSubtractScope" : subtractScope,
+        "extensionEdgesTracking" : definition.extensionEdgesTracking,
+        "extensionVerticesTracking" : definition.extensionVerticesTracking,
+        "tabChamfer" : definition.tabChamfer
     };
     
     try
