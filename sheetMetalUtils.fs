@@ -239,16 +239,6 @@ export function annotateSmSurfaceBodies(context is Context, id is Id, args is ma
         bendMap[edgeAndRadius[0]] = edgeAndRadius[1];
     }
 
-    // Create map of edges explicitly marked as rips
-    var ripMap = {};
-    if (args.ripEdges != undefined)
-    {
-        for (var ripEdge in evaluateQuery(context, args.ripEdges))
-        {
-            ripMap[ripEdge] = true;
-        }
-    }
-
     var facesQ =  qOwnedByBody(args.surfaceBodies, EntityType.FACE);
     var count = objectCount;
     var cylinderBends = [];
@@ -308,7 +298,8 @@ export function annotateSmSurfaceBodies(context is Context, id is Id, args is ma
             continue;
         }
         var bendRadius = bendMap[edge];
-        var isExplicitRip = ripMap[edge];
+        // Check if this edge is explicitly marked as a rip using query intersection
+        var isExplicitRip = (args.ripEdges != undefined && !isQueryEmpty(context, qIntersection([edge, args.ripEdges])));
         var attributeId = toAttributeId(id + count);
         count += 1;
         if (bendRadius != undefined)
@@ -330,7 +321,7 @@ export function annotateSmSurfaceBodies(context is Context, id is Id, args is ma
                     "attribute" : bendAttribute
             });
         }
-        else if (isExplicitRip == true)
+        else if (isExplicitRip)
         {
             // Explicitly marked as a rip by user
             var angleVal = try silent(edgeAngle(context, edge));
