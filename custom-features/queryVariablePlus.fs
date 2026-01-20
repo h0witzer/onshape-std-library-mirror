@@ -1387,9 +1387,9 @@ function loadAllQueryVariablesFromDerive(context is Context, id is Id, definitio
     
     // Get the derive feature ID
     var deriveFeatureId;
-    for (var featureEntry in definition.deriveFeature)
+    for (var featureId, _ in definition.deriveFeature)
     {
-        deriveFeatureId = featureEntry;
+        deriveFeatureId = featureId;
         break; // We only expect one derive feature based on MaxNumberOfPicks : 1
     }
     
