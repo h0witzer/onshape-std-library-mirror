@@ -1468,6 +1468,7 @@ function loadAllQueryVariablesFromDerive(context is Context, id is Id, definitio
     
     // Create a query variable for each unique name found
     var createdCount = 0;
+    var createdNames = [];
     for (var qvName, entities in queryVariableMap)
     {
         if (size(entities) > 0)
@@ -1475,6 +1476,7 @@ function loadAllQueryVariablesFromDerive(context is Context, id is Id, definitio
             const entityQuery = qUnion(entities);
             setQueryVariable(context, qvName, "Loaded from derive feature", entityQuery);
             createdCount += 1;
+            createdNames = append(createdNames, qvName);
         }
     }
     
@@ -1482,6 +1484,15 @@ function loadAllQueryVariablesFromDerive(context is Context, id is Id, definitio
     {
         throw regenError("No valid query variables could be reconstructed from the derive feature.", ["deriveFeature"]);
     }
+    
+    // Report which query variables were loaded
+    var statusMessage = "Loaded " ~ createdCount ~ " query variable" ~ (createdCount > 1 ? "s" : "") ~ ": ";
+    statusMessage = statusMessage ~ createdNames[0];
+    for (var i = 1; i < size(createdNames); i += 1)
+    {
+        statusMessage = statusMessage ~ ", " ~ createdNames[i];
+    }
+    reportFeatureInfo(context, id, statusMessage);
 }
 
 
