@@ -25,6 +25,9 @@ import(path : "onshape/std/error.fs", version : "2815.0");
 import(path : "onshape/std/sketch.fs", version : "2815.0");
 import(path : "onshape/std/variable.fs", version : "2815.0");
 
+icon::import(path : "7bc16b71641d1c179b59eb92", version : "8da46da443ae592e706756d7");
+
+
 /**
  * Allowed selection types to create query variable.
  */
@@ -680,6 +683,7 @@ export predicate additionalQueryPredicate(addQ is map)
  * }}
  */
 annotation { "Feature Type Name" : "Query variable+", "Feature Name Template" : "###name", "UIHint" : UIHint.NO_PREVIEW_PROVIDED,
+        "Icon" : icon::BLOB_DATA,
         "Tooltip Template" : "###name #description" }
 export const queryVariable = defineFeature(function(context is Context, id is Id, definition is map)
     precondition
@@ -1234,7 +1238,7 @@ function remapAdditionalQuery(definition is map) returns map
 /**
  * Filters input edges by angle tolerance to a reference direction.
  * This function enables "parallelish" edge selection with an angular tolerance.
- * 
+ *
  * @param context {Context} : The context in which the query is evaluated.
  * @param definition {map} : Map containing:
  *      - seedEdges {Query} : Input edges to filter
@@ -1245,20 +1249,20 @@ function remapAdditionalQuery(definition is map) returns map
 function qTolerantParallelEdges(context is Context, definition is map) returns Query
 {
     var tolerantParallelQuery = new box(qNothing());
-    
+
     const direction = extractDirection(context, definition.direction);
 
     // Filter input edges to only straight lines
     var straightEdges = definition.seedEdges->qGeometry(GeometryType.LINE);
-    
+
     const angleTolerance = definition.angleTolerance;
-    
+
     for (var edge in evaluateQuery(context, straightEdges))
     {
         const edgeDirection = evLine(context, { "edge" : edge }).direction;
-        
+
         var angle = angleBetween(direction, edgeDirection);
-        
+
         if (angle > 90 * degree)
         {
             angle = abs(angle - 180 * degree);
@@ -1269,14 +1273,14 @@ function qTolerantParallelEdges(context is Context, definition is map) returns Q
             tolerantParallelQuery[] = qUnion(tolerantParallelQuery[], edge);
         }
     }
-    
+
     return tolerantParallelQuery[];
 }
 
 /**
  * Builds a query for all entities of a specified type with optional filtering.
  * This enables selecting everything in the context with construction and body type filters.
- * 
+ *
  * @param context {Context} : The context in which the query is evaluated.
  * @param definition {map} : Map containing:
  *      - entityType {EntityType} : Type of entities to query
@@ -1288,17 +1292,17 @@ function qTolerantParallelEdges(context is Context, definition is map) returns Q
 function everythingSelection(context is Context, definition is map) returns Query
 {
     var everythingQuery = qEverything(definition.entityType);
-    
+
     if (definition.filterConstruction)
     {
         everythingQuery = everythingQuery->qConstructionFilter(ConstructionObject.NO);
     }
-    
+
     if (definition.filterByBodyType)
     {
         everythingQuery = everythingQuery->qBodyType(definition.createdByBodyType as BodyType);
     }
-    
+
     return everythingQuery;
 }
 
