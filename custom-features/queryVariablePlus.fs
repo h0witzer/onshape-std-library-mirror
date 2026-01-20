@@ -6,6 +6,8 @@ FeatureScript 2815;
  *
  * Maintained by Derek Van Allen, to request updates message me on the forums in this thread:
  * https://forum.onshape.com/discussion/29012/custom-feature-query-variable
+ *
+ * Parallelish selection and cap entities features contributed by Jelte
  */
 
 export import(path : "onshape/std/query.fs", version : "2815.0");
@@ -52,6 +54,8 @@ export enum SelectionType
     LOOP_CHAIN_CONNECTED,
     annotation { "Name" : "Parallel" }
     PARALLEL,
+    annotation { "Name" : "Parallelish edges" }
+    TOLERANT_PARALLEL,
     annotation { "Name" : "Tangent(ish) connected" }
     TANGENT_CONNECTED,
     annotation { "Name" : "Matching" }
@@ -68,6 +72,8 @@ export enum SelectionType
     GEOMETRY,
     annotation { "Name" : "All solid bodies" }
     ALL_SOLID_BODIES,
+    annotation { "Name" : "Everything" }
+    EVERYTHING,
     annotation { "Name" : "Edge convexity" }
     EDGE_CONVEXITY
 }
@@ -88,6 +94,7 @@ const SelectionTypeToLowercaseName = {
         SelectionType.BOUNDED_FACES : "bounded faces",
         SelectionType.LOOP_CHAIN_CONNECTED : "loop/chain connected",
         SelectionType.PARALLEL : "parallel",
+        SelectionType.TOLERANT_PARALLEL : "parallelish edges",
         SelectionType.TANGENT_CONNECTED : "tangent connected",
         SelectionType.MATCHING : "matching",
         SelectionType.MATCHING_BODIES : "matching bodies",
@@ -96,6 +103,7 @@ const SelectionTypeToLowercaseName = {
         SelectionType.POSITIONAL_DIRECTIONAL : "positional/directional",
         SelectionType.GEOMETRY : "geometry type",
         SelectionType.ALL_SOLID_BODIES : "all solid bodies",
+        SelectionType.EVERYTHING : "everything",
         SelectionType.EDGE_CONVEXITY : "edge convexity"
     };
 
@@ -340,17 +348,13 @@ export predicate initialQueryPredicate(definition is map)
         annotation { "Name" : "Geometry type" }
         definition.geometryType is GeometryType;
     }
-    if (definition.selectionType == SelectionType.TANGENT_CONNECTED && definition.seedType == SeedType.FACE)
-    {
-        annotation { "Name" : "Angle tolerance", "Default" : 0 * degree }
-        isAngle(definition.angleTolerance, ANGLE_STRICT_180_BOUNDS);
-    }
     else if (definition.selectionType == SelectionType.LOOP_CHAIN_CONNECTED)
     {
         annotation { "Name" : "Edges or faces", "Filter" : EntityType.EDGE || EntityType.FACE }
         definition.seedEdgesOrFaces is Query;
     }
     else if (definition.selectionType == SelectionType.PARALLEL
+        || definition.selectionType == SelectionType.TOLERANT_PARALLEL
         || (definition.selectionType == SelectionType.TANGENT_CONNECTED && definition.seedType == SeedType.EDGE)
         || (definition.selectionType == SelectionType.MATCHING && definition.seedType == SeedType.EDGE))
     {
@@ -360,7 +364,8 @@ export predicate initialQueryPredicate(definition is map)
     if (definition.selectionType == SelectionType.CREATED_BY
         || definition.selectionType == SelectionType.CAP_ENTITY
         || definition.selectionType == SelectionType.NON_CAP_ENTITY
-        || definition.selectionType == SelectionType.OWNED_BY)
+        || definition.selectionType == SelectionType.OWNED_BY
+        || definition.selectionType == SelectionType.EVERYTHING)
     {
         annotation { "Name" : "Entity type" }
         definition.entityType is EntityType;
@@ -380,7 +385,19 @@ export predicate initialQueryPredicate(definition is map)
         annotation { "Name" : "Edge convexity type" }
         definition.edgeConvexityType is EdgeConvexityType;
     }
-    if (definition.selectionType == SelectionType.CREATED_BY)
+    if (definition.selectionType == SelectionType.TOLERANT_PARALLEL)
+    {
+        annotation { "Name" : "Direction", "Filter" : QueryFilterCompound.ALLOWS_DIRECTION, "MaxNumberOfPicks" : 1 }
+        definition.direction is Query;
+    }
+    if (definition.selectionType == SelectionType.TANGENT_CONNECTED && definition.seedType == SeedType.FACE
+        || definition.selectionType == SelectionType.TOLERANT_PARALLEL)
+    {
+        annotation { "Name" : "Angle tolerance", "Default" : 0 * degree }
+        isAngle(definition.angleTolerance, ANGLE_STRICT_180_BOUNDS);
+    }
+    if (definition.selectionType == SelectionType.CREATED_BY
+        || definition.selectionType == SelectionType.EVERYTHING)
     {
         annotation { "Name" : "Filter construction entities", "Default" : true }
         definition.filterConstruction is boolean;
@@ -534,17 +551,13 @@ export predicate additionalQueryPredicate(addQ is map)
         annotation { "Name" : "Geometry type" }
         addQ.addQgeometryType is GeometryType;
     }
-    if (addQ.addQselectionType == SelectionType.TANGENT_CONNECTED && addQ.addQseedType == SeedType.FACE)
-    {
-        annotation { "Name" : "Angle tolerance", "Default" : 0 * degree }
-        isAngle(addQ.addQangleTolerance, ANGLE_STRICT_180_BOUNDS);
-    }
     else if (addQ.addQselectionType == SelectionType.LOOP_CHAIN_CONNECTED)
     {
         annotation { "Name" : "Edge or face", "Filter" : EntityType.EDGE || EntityType.FACE }
         addQ.addQseedEdgesOrFaces is Query;
     }
     else if (addQ.addQselectionType == SelectionType.PARALLEL
+        || addQ.addQselectionType == SelectionType.TOLERANT_PARALLEL
         || (addQ.addQselectionType == SelectionType.TANGENT_CONNECTED && addQ.addQseedType == SeedType.EDGE)
         || (addQ.addQselectionType == SelectionType.MATCHING && addQ.addQseedType == SeedType.EDGE))
     {
@@ -554,7 +567,8 @@ export predicate additionalQueryPredicate(addQ is map)
     if (addQ.addQselectionType == SelectionType.CREATED_BY
         || addQ.addQselectionType == SelectionType.CAP_ENTITY
         || addQ.addQselectionType == SelectionType.NON_CAP_ENTITY
-        || addQ.addQselectionType == SelectionType.OWNED_BY)
+        || addQ.addQselectionType == SelectionType.OWNED_BY
+        || addQ.addQselectionType == SelectionType.EVERYTHING)
     {
         annotation { "Name" : "Entity type" }
         addQ.addQentityType is EntityType;
@@ -574,7 +588,19 @@ export predicate additionalQueryPredicate(addQ is map)
         annotation { "Name" : "Edge convexity type" }
         addQ.addQedgeConvexityType is EdgeConvexityType;
     }
-    if (addQ.addQselectionType == SelectionType.CREATED_BY)
+    if (addQ.addQselectionType == SelectionType.TOLERANT_PARALLEL)
+    {
+        annotation { "Name" : "Direction", "Filter" : QueryFilterCompound.ALLOWS_DIRECTION, "MaxNumberOfPicks" : 1 }
+        addQ.addQdirection is Query;
+    }
+    if (addQ.addQselectionType == SelectionType.TANGENT_CONNECTED && addQ.addQseedType == SeedType.FACE
+        || addQ.addQselectionType == SelectionType.TOLERANT_PARALLEL)
+    {
+        annotation { "Name" : "Angle tolerance", "Default" : 0 * degree }
+        isAngle(addQ.addQangleTolerance, ANGLE_STRICT_180_BOUNDS);
+    }
+    if (addQ.addQselectionType == SelectionType.CREATED_BY
+        || addQ.addQselectionType == SelectionType.EVERYTHING)
     {
         annotation { "Name" : "Filter construction entities", "Default" : true }
         addQ.addQfilterConstruction is boolean;
@@ -760,6 +786,7 @@ function mapSelectionTypeToQuery(context is Context, definition is map) returns 
                 SelectionType.BOUNDED_FACES : qFaceOrEdgeBoundedFaces(qUnion([definition.seedFaces, definition.boundedFacesBounds])),
                 SelectionType.LOOP_CHAIN_CONNECTED : qLoopEdges(definition.seedEdgesOrFaces),
                 SelectionType.PARALLEL : qParallelEdges(definition.seedEdges),
+                SelectionType.TOLERANT_PARALLEL : qTolerantParallelEdges(context, definition),
                 SelectionType.TANGENT_CONNECTED : definition.seedType == SeedType.FACE ?
                 // Include faces within the given angular deviation
                 qTangentConnectedFaces(definition.seedFaces, definition.angleTolerance) :
@@ -771,6 +798,7 @@ function mapSelectionTypeToQuery(context is Context, definition is map) returns 
                 SelectionType.POSITIONAL_DIRECTIONAL : positionalDirectionalSelection(context, definition),
                 SelectionType.GEOMETRY : qGeometry(definition.geometrySeedEntities, definition.geometryType),
                 SelectionType.ALL_SOLID_BODIES : qAllSolidBodies(),
+                SelectionType.EVERYTHING : everythingSelection(context, definition),
                 SelectionType.EDGE_CONVEXITY : qEdgeConvexityTypeFilter(qOwnedByBody(definition.seedBodies, EntityType.EDGE), definition.edgeConvexityType)
             };
 }
@@ -1201,6 +1229,77 @@ function remapAdditionalQuery(definition is map) returns map
         remapped[substring(key, offset)] = value;
     }
     return remapped;
+}
+
+/**
+ * Filters input edges by angle tolerance to a reference direction.
+ * This function enables "parallelish" edge selection with an angular tolerance.
+ * 
+ * @param context {Context} : The context in which the query is evaluated.
+ * @param definition {map} : Map containing:
+ *      - seedEdges {Query} : Input edges to filter
+ *      - direction {Query} : Reference direction for parallel comparison
+ *      - angleTolerance {ValueWithUnits} : Maximum angular deviation from parallel
+ * @returns {Query} : Query containing edges within the angular tolerance of the direction
+ */
+function qTolerantParallelEdges(context is Context, definition is map) returns Query
+{
+    var tolerantParallelQuery = new box(qNothing());
+    
+    const direction = extractDirection(context, definition.direction);
+
+    // Filter input edges to only straight lines
+    var straightEdges = definition.seedEdges->qGeometry(GeometryType.LINE);
+    
+    const angleTolerance = definition.angleTolerance;
+    
+    for (var edge in evaluateQuery(context, straightEdges))
+    {
+        const edgeDirection = evLine(context, { "edge" : edge }).direction;
+        
+        var angle = angleBetween(direction, edgeDirection);
+        
+        if (angle > 90 * degree)
+        {
+            angle = abs(angle - 180 * degree);
+        }
+
+        if (angle <= angleTolerance)
+        {
+            tolerantParallelQuery[] = qUnion(tolerantParallelQuery[], edge);
+        }
+    }
+    
+    return tolerantParallelQuery[];
+}
+
+/**
+ * Builds a query for all entities of a specified type with optional filtering.
+ * This enables selecting everything in the context with construction and body type filters.
+ * 
+ * @param context {Context} : The context in which the query is evaluated.
+ * @param definition {map} : Map containing:
+ *      - entityType {EntityType} : Type of entities to query
+ *      - filterConstruction {boolean} : Whether to exclude construction geometry
+ *      - filterByBodyType {boolean} : Whether to filter by body type
+ *      - createdByBodyType {BodyTypeOptions} : Body type to filter by if filterByBodyType is true
+ * @returns {Query} : Query containing all entities matching the specified filters
+ */
+function everythingSelection(context is Context, definition is map) returns Query
+{
+    var everythingQuery = qEverything(definition.entityType);
+    
+    if (definition.filterConstruction)
+    {
+        everythingQuery = everythingQuery->qConstructionFilter(ConstructionObject.NO);
+    }
+    
+    if (definition.filterByBodyType)
+    {
+        everythingQuery = everythingQuery->qBodyType(definition.createdByBodyType as BodyType);
+    }
+    
+    return everythingQuery;
 }
 
 function checkQueryVariableName(context is Context, name is string)
