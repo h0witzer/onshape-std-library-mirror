@@ -1469,6 +1469,7 @@ function loadAllQueryVariablesFromDerive(context is Context, id is Id, definitio
     // Create a query variable for each unique name found
     var createdCount = 0;
     var createdNames = [];
+    var allLoadedEntities = [];
     for (var qvName, entities in queryVariableMap)
     {
         if (size(entities) > 0)
@@ -1477,6 +1478,12 @@ function loadAllQueryVariablesFromDerive(context is Context, id is Id, definitio
             setQueryVariable(context, qvName, "Loaded from derive feature", entityQuery);
             createdCount += 1;
             createdNames = append(createdNames, qvName);
+            
+            // Collect all entities for show selection
+            for (var entity in entities)
+            {
+                allLoadedEntities = append(allLoadedEntities, entity);
+            }
         }
     }
     
@@ -1493,6 +1500,17 @@ function loadAllQueryVariablesFromDerive(context is Context, id is Id, definitio
         statusMessage = statusMessage ~ ", " ~ createdNames[i];
     }
     reportFeatureInfo(context, id, statusMessage);
+    
+    // Show selection if enabled
+    if (definition.showSelection == true)
+    {
+        const allEntitiesQuery = qUnion(allLoadedEntities);
+        try silent
+        {
+            addDebugEntities(context, allEntitiesQuery, DebugColor.YELLOW);
+        }
+        setHighlightedEntities(context, { "entities" : allEntitiesQuery });
+    }
 }
 
 
