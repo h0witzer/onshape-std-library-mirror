@@ -709,13 +709,17 @@ annotation { "Feature Type Name" : "Query variable+", "Feature Name Template" : 
 export const queryVariable = defineFeature(function(context is Context, id is Id, definition is map)
     precondition
     {
-        annotation { "Name" : "Name", "UIHint" : [UIHint.UNCONFIGURABLE, UIHint.QUERY_VARIABLE_NAME], "MaxLength" : 10000 }
-        definition.name is string;
-
-        annotation { "Name" : "Description", "MaxLength" : 256, "Default" : "" }
-        definition.description is string;
-
         initialQueryPredicate(definition);
+        
+        // Name and description are only needed when NOT loading from derive
+        if (definition.selectionType != SelectionType.LOAD_FROM_DERIVE)
+        {
+            annotation { "Name" : "Name", "UIHint" : [UIHint.UNCONFIGURABLE, UIHint.QUERY_VARIABLE_NAME], "MaxLength" : 10000 }
+            definition.name is string;
+
+            annotation { "Name" : "Description", "MaxLength" : 256, "Default" : "" }
+            definition.description is string;
+        }
 
         annotation { "Name" : "Add additional queries" }
         definition.addAdditionalQueries is boolean;
@@ -757,18 +761,19 @@ export const queryVariable = defineFeature(function(context is Context, id is Id
             }
         }
 
-        if (length(definition.name) == 0)
-        {
-            throw regenError(ErrorStringEnum.QUERY_VARIABLE_EMPTY_NAME);
-        }
-        checkQueryVariableName(context, definition.name);
-
         // Special handling for LOAD_FROM_DERIVE: reconstruct all query variables from a derive feature
         if (definition.selectionType == SelectionType.LOAD_FROM_DERIVE)
         {
             loadAllQueryVariablesFromDerive(context, id, definition);
             return; // Early return - we handle everything in the helper function
         }
+
+        // Validate name for all other selection types
+        if (length(definition.name) == 0)
+        {
+            throw regenError(ErrorStringEnum.QUERY_VARIABLE_EMPTY_NAME);
+        }
+        checkQueryVariableName(context, definition.name);
 
         var query = mapSelectionTypeToQuery(context, definition);
 
@@ -1414,25 +1419,24 @@ function loadAllQueryVariablesFromDerive(context is Context, id is Id, definitio
         throw regenError("No entities with saved query variable attributes found from the selected derive feature. Ensure the original query variables were created with 'Save for derived studios' enabled.", ["deriveFeature"]);
     }
     
-    // Get all attributes from entities with QV attributes
-    const attributesList = getAttributes(context, {
-        "entities" : entitiesWithQVAttribute,
-        "name" : QUERY_VARIABLE_ATTRIBUTE_NAME
-    });
-    
     // Build a map of query variable names to their entities
     var queryVariableMap = {};
     
-    for (var attributeHolder in attributesList)
+    const entityArray = evaluateQuery(context, entitiesWithQVAttribute);
+    for (var entity in entityArray)
     {
-        const qvName = attributeHolder.value;
+        const qvName = getAttribute(context, {
+            "entity" : entity,
+            "name" : QUERY_VARIABLE_ATTRIBUTE_NAME
+        });
+        
         if (qvName != undefined && qvName is string)
         {
             if (queryVariableMap[qvName] == undefined)
             {
                 queryVariableMap[qvName] = [];
             }
-            queryVariableMap[qvName] = append(queryVariableMap[qvName], attributeHolder.entity);
+            queryVariableMap[qvName] = append(queryVariableMap[qvName], entity);
         }
     }
     
