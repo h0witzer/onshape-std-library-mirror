@@ -709,17 +709,13 @@ annotation { "Feature Type Name" : "Query variable+", "Feature Name Template" : 
 export const queryVariable = defineFeature(function(context is Context, id is Id, definition is map)
     precondition
     {
-        initialQueryPredicate(definition);
-        
-        // Name and description are only needed when NOT loading from derive
-        if (definition.selectionType != SelectionType.LOAD_FROM_DERIVE)
-        {
-            annotation { "Name" : "Name", "UIHint" : [UIHint.UNCONFIGURABLE, UIHint.QUERY_VARIABLE_NAME], "MaxLength" : 10000 }
-            definition.name is string;
+        annotation { "Name" : "Name", "UIHint" : [UIHint.UNCONFIGURABLE, UIHint.QUERY_VARIABLE_NAME], "MaxLength" : 10000 }
+        definition.name is string;
 
-            annotation { "Name" : "Description", "MaxLength" : 256, "Default" : "" }
-            definition.description is string;
-        }
+        annotation { "Name" : "Description", "MaxLength" : 256, "Default" : "" }
+        definition.description is string;
+
+        initialQueryPredicate(definition);
 
         annotation { "Name" : "Add additional queries" }
         definition.addAdditionalQueries is boolean;
@@ -808,11 +804,38 @@ export const queryVariable = defineFeature(function(context is Context, id is Id
                 const evaluatedEntities = evaluateQuery(context, query);
                 if (size(evaluatedEntities) > 0)
                 {
-                    setAttribute(context, {
-                        "entities" : query,
-                        "name" : QUERY_VARIABLE_ATTRIBUTE_NAME,
-                        "attribute" : definition.name
-                    });
+                    // For each entity, append this QV name to the list of QV names
+                    for (var entity in evaluatedEntities)
+                    {
+                        // Get existing QV names array, or create new one
+                        var qvNames = getAttribute(context, {
+                            "entity" : entity,
+                            "name" : QUERY_VARIABLE_ATTRIBUTE_NAME
+                        });
+                        
+                        if (qvNames == undefined)
+                        {
+                            qvNames = [];
+                        }
+                        else if (qvNames is string)
+                        {
+                            // Handle old format: convert single string to array
+                            qvNames = [qvNames];
+                        }
+                        
+                        // Append this QV name if not already in the list
+                        if (indexOf(qvNames, definition.name) == -1)
+                        {
+                            qvNames = append(qvNames, definition.name);
+                        }
+                        
+                        // Set the updated array
+                        setAttribute(context, {
+                            "entities" : entity,
+                            "name" : QUERY_VARIABLE_ATTRIBUTE_NAME,
+                            "attribute" : qvNames
+                        });
+                    }
                 }
             }
         }
@@ -1425,18 +1448,38 @@ function loadAllQueryVariablesFromDerive(context is Context, id is Id, definitio
     const entityArray = evaluateQuery(context, entitiesWithQVAttribute);
     for (var entity in entityArray)
     {
-        const qvName = getAttribute(context, {
+        const qvNames = getAttribute(context, {
             "entity" : entity,
             "name" : QUERY_VARIABLE_ATTRIBUTE_NAME
         });
         
-        if (qvName != undefined && qvName is string)
+        // Handle both old format (string) and new format (array)
+        var namesArray = [];
+        if (qvNames != undefined)
         {
-            if (queryVariableMap[qvName] == undefined)
+            if (qvNames is string)
             {
-                queryVariableMap[qvName] = [];
+                // Old format: single string
+                namesArray = [qvNames];
             }
-            queryVariableMap[qvName] = append(queryVariableMap[qvName], entity);
+            else if (qvNames is array)
+            {
+                // New format: array of strings
+                namesArray = qvNames;
+            }
+        }
+        
+        // Add this entity to each QV name it belongs to
+        for (var qvName in namesArray)
+        {
+            if (qvName is string)
+            {
+                if (queryVariableMap[qvName] == undefined)
+                {
+                    queryVariableMap[qvName] = [];
+                }
+                queryVariableMap[qvName] = append(queryVariableMap[qvName], entity);
+            }
         }
     }
     
