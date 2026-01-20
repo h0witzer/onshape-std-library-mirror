@@ -817,11 +817,6 @@ export const queryVariable = defineFeature(function(context is Context, id is Id
                         {
                             qvNames = [];
                         }
-                        else if (qvNames is string)
-                        {
-                            // Handle old format: convert single string to array
-                            qvNames = [qvNames];
-                        }
                         
                         // Append this QV name if not already in the list
                         if (indexOf(qvNames, definition.name) == -1)
@@ -1453,32 +1448,20 @@ function loadAllQueryVariablesFromDerive(context is Context, id is Id, definitio
             "name" : QUERY_VARIABLE_ATTRIBUTE_NAME
         });
         
-        // Handle both old format (string) and new format (array)
-        var namesArray = [];
-        if (qvNames != undefined)
+        // Expect an array of QV names
+        if (qvNames != undefined && qvNames is array)
         {
-            if (qvNames is string)
+            // Add this entity to each QV name it belongs to
+            for (var qvName in qvNames)
             {
-                // Old format: single string
-                namesArray = [qvNames];
-            }
-            else if (qvNames is array)
-            {
-                // New format: array of strings
-                namesArray = qvNames;
-            }
-        }
-        
-        // Add this entity to each QV name it belongs to
-        for (var qvName in namesArray)
-        {
-            if (qvName is string)
-            {
-                if (queryVariableMap[qvName] == undefined)
+                if (qvName is string)
                 {
-                    queryVariableMap[qvName] = [];
+                    if (queryVariableMap[qvName] == undefined)
+                    {
+                        queryVariableMap[qvName] = [];
+                    }
+                    queryVariableMap[qvName] = append(queryVariableMap[qvName], entity);
                 }
-                queryVariableMap[qvName] = append(queryVariableMap[qvName], entity);
             }
         }
     }
