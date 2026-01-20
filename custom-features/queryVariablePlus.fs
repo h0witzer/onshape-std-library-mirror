@@ -1426,7 +1426,7 @@ function loadAllQueryVariablesFromDerive(context is Context, id is Id, definitio
     for (var attributeHolder in attributesList)
     {
         const qvName = attributeHolder.value;
-        if (qvName != undefined && is(qvName, string))
+        if (qvName != undefined && qvName is string)
         {
             if (queryVariableMap[qvName] == undefined)
             {
