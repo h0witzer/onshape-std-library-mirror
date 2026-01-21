@@ -24,8 +24,14 @@ import(path : "onshape/std/containers.fs", version : "2815.0");
 import(path : "onshape/std/error.fs", version : "2815.0");
 import(path : "onshape/std/sketch.fs", version : "2815.0");
 import(path : "onshape/std/variable.fs", version : "2815.0");
+import(path : "onshape/std/attributes.fs", version : "2815.0");
 
 icon::import(path : "7bc16b71641d1c179b59eb92", version : "8da46da443ae592e706756d7");
+
+/**
+ * Attribute name used to store query variable names on entities for persistence through derived part studios.
+ */
+const QUERY_VARIABLE_ATTRIBUTE_NAME = "queryVariableName";
 
 
 /**
@@ -78,7 +84,9 @@ export enum SelectionType
     annotation { "Name" : "Everything" }
     EVERYTHING,
     annotation { "Name" : "Edge convexity" }
-    EDGE_CONVEXITY
+    EDGE_CONVEXITY,
+    annotation { "Name" : "Load from derive feature" }
+    LOAD_FROM_DERIVE
 }
 
 /**
@@ -107,7 +115,8 @@ const SelectionTypeToLowercaseName = {
         SelectionType.GEOMETRY : "geometry type",
         SelectionType.ALL_SOLID_BODIES : "all solid bodies",
         SelectionType.EVERYTHING : "everything",
-        SelectionType.EDGE_CONVEXITY : "edge convexity"
+        SelectionType.EDGE_CONVEXITY : "edge convexity",
+        SelectionType.LOAD_FROM_DERIVE : "load from derive feature"
     };
 
 const MATCHING_BODY_CLUSTER_RELATIVE_TOLERANCE = 1e-4;
@@ -420,6 +429,12 @@ export predicate initialQueryPredicate(definition is map)
         annotation { "Name" : "Cap type", "Default" : CapType.EITHER }
         definition.capType is CapType;
     }
+    
+    if (definition.selectionType == SelectionType.LOAD_FROM_DERIVE)
+    {
+        annotation { "Name" : "Derive feature", "UIHint" : UIHint.ALLOW_FEATURE_SELECTION, "MaxNumberOfPicks" : 1 }
+        definition.deriveFeature is FeatureList;
+    }
 }
 
 /**
@@ -623,6 +638,12 @@ export predicate additionalQueryPredicate(addQ is map)
         annotation { "Name" : "Cap type", "Default" : CapType.EITHER }
         addQ.addQcapType is CapType;
     }
+    
+    if (addQ.addQselectionType == SelectionType.LOAD_FROM_DERIVE)
+    {
+        annotation { "Name" : "Derive feature", "UIHint" : UIHint.ALLOW_FEATURE_SELECTION, "MaxNumberOfPicks" : 1 }
+        addQ.addQderiveFeature is FeatureList;
+    }
 }
 
 /**
@@ -720,6 +741,9 @@ export const queryVariable = defineFeature(function(context is Context, id is Id
 
         annotation { "Name" : "Show selection", "Default" : true }
         definition.showSelection is boolean;
+        
+        annotation { "Name" : "Save for derived studios", "Default" : false }
+        definition.saveForDerivedStudios is boolean;
     }
     {
         if (definition.addAdditionalQueries)
@@ -733,6 +757,14 @@ export const queryVariable = defineFeature(function(context is Context, id is Id
             }
         }
 
+        // Special handling for LOAD_FROM_DERIVE: reconstruct all query variables from a derive feature
+        if (definition.selectionType == SelectionType.LOAD_FROM_DERIVE)
+        {
+            loadAllQueryVariablesFromDerive(context, id, definition);
+            return; // Early return - we handle everything in the helper function
+        }
+
+        // Validate name for all other selection types
         if (length(definition.name) == 0)
         {
             throw regenError(ErrorStringEnum.QUERY_VARIABLE_EMPTY_NAME);
@@ -763,6 +795,45 @@ export const queryVariable = defineFeature(function(context is Context, id is Id
         }
 
         setQueryVariable(context, definition.name, definition.description, query);
+        
+        // If saveForDerivedStudios is enabled, attach the query variable name as an attribute to all entities
+        if (definition.saveForDerivedStudios == true)
+        {
+            try silent
+            {
+                const evaluatedEntities = evaluateQuery(context, query);
+                if (size(evaluatedEntities) > 0)
+                {
+                    // For each entity, append this QV name to the list of QV names
+                    for (var entity in evaluatedEntities)
+                    {
+                        // Get existing QV names array, or create new one
+                        var qvNames = getAttribute(context, {
+                            "entity" : entity,
+                            "name" : QUERY_VARIABLE_ATTRIBUTE_NAME
+                        });
+                        
+                        if (qvNames == undefined)
+                        {
+                            qvNames = [];
+                        }
+                        
+                        // Append this QV name if not already in the list
+                        if (indexOf(qvNames, definition.name) == -1)
+                        {
+                            qvNames = append(qvNames, definition.name);
+                        }
+                        
+                        // Set the updated array
+                        setAttribute(context, {
+                            "entities" : entity,
+                            "name" : QUERY_VARIABLE_ATTRIBUTE_NAME,
+                            "attribute" : qvNames
+                        });
+                    }
+                }
+            }
+        }
 
         if (definition.showSelection)
         {
@@ -1318,6 +1389,127 @@ function checkQueryVariableName(context is Context, name is string)
     if (exists)
     {
         throw regenError(ErrorStringEnum.QUERY_VARIABLE_NAME_ALREADY_USED_IN_NON_QUERY_VARIABLE, ["name"]);
+    }
+}
+
+/**
+ * Loads and reconstructs all query variables from a derive feature by scanning for queryVariableName attributes.
+ * This creates multiple query variables automatically based on the attribute values found.
+ *
+ * @param context {Context} : The context in which the query variables are created.
+ * @param id {Id} : The feature ID.
+ * @param definition {map} : Map containing:
+ *      - deriveFeature {FeatureList} : The derive feature to scan for entities with QV attributes
+ */
+function loadAllQueryVariablesFromDerive(context is Context, id is Id, definition is map)
+{
+    if (definition.deriveFeature == undefined || size(definition.deriveFeature) == 0)
+    {
+        throw regenError("No derive feature selected. Please select a derive feature to load query variables from.", ["deriveFeature"]);
+    }
+    
+    // Get the derive feature ID
+    var deriveFeatureId;
+    for (var featureId, _ in definition.deriveFeature)
+    {
+        deriveFeatureId = featureId;
+        break; // We only expect one derive feature based on MaxNumberOfPicks : 1
+    }
+    
+    if (deriveFeatureId == undefined)
+    {
+        throw regenError("Could not extract derive feature ID.", ["deriveFeature"]);
+    }
+    
+    // Query all entities created by the derive feature
+    const allDerivedEntities = qUnion([
+        qCreatedBy(deriveFeatureId, EntityType.BODY),
+        qCreatedBy(deriveFeatureId, EntityType.FACE),
+        qCreatedBy(deriveFeatureId, EntityType.EDGE),
+        qCreatedBy(deriveFeatureId, EntityType.VERTEX)
+    ]);
+    
+    // Get all entities that have the query variable attribute
+    const entitiesWithQVAttribute = qHasAttribute(allDerivedEntities, QUERY_VARIABLE_ATTRIBUTE_NAME);
+    
+    if (isQueryEmpty(context, entitiesWithQVAttribute))
+    {
+        throw regenError("No entities with saved query variable attributes found from the selected derive feature. Ensure the original query variables were created with 'Save for derived studios' enabled.", ["deriveFeature"]);
+    }
+    
+    // Build a map of query variable names to their entities
+    var queryVariableMap = {};
+    
+    const entityArray = evaluateQuery(context, entitiesWithQVAttribute);
+    for (var entity in entityArray)
+    {
+        const qvNames = getAttribute(context, {
+            "entity" : entity,
+            "name" : QUERY_VARIABLE_ATTRIBUTE_NAME
+        });
+        
+        // Expect an array of QV names
+        if (qvNames != undefined && qvNames is array)
+        {
+            // Add this entity to each QV name it belongs to
+            for (var qvName in qvNames)
+            {
+                if (qvName is string)
+                {
+                    if (queryVariableMap[qvName] == undefined)
+                    {
+                        queryVariableMap[qvName] = [];
+                    }
+                    queryVariableMap[qvName] = append(queryVariableMap[qvName], entity);
+                }
+            }
+        }
+    }
+    
+    // Create a query variable for each unique name found
+    var createdCount = 0;
+    var createdNames = [];
+    var allLoadedEntities = [];
+    for (var qvName, entities in queryVariableMap)
+    {
+        if (size(entities) > 0)
+        {
+            const entityQuery = qUnion(entities);
+            setQueryVariable(context, qvName, "Loaded from derive feature", entityQuery);
+            createdCount += 1;
+            createdNames = append(createdNames, qvName);
+            
+            // Collect all entities for show selection
+            for (var entity in entities)
+            {
+                allLoadedEntities = append(allLoadedEntities, entity);
+            }
+        }
+    }
+    
+    if (createdCount == 0)
+    {
+        throw regenError("No valid query variables could be reconstructed from the derive feature.", ["deriveFeature"]);
+    }
+    
+    // Report which query variables were loaded
+    var statusMessage = "Loaded " ~ createdCount ~ " query variable" ~ (createdCount > 1 ? "s" : "") ~ ": ";
+    statusMessage = statusMessage ~ createdNames[0];
+    for (var i = 1; i < size(createdNames); i += 1)
+    {
+        statusMessage = statusMessage ~ ", " ~ createdNames[i];
+    }
+    reportFeatureInfo(context, id, statusMessage);
+    
+    // Show selection if enabled
+    if (definition.showSelection == true)
+    {
+        const allEntitiesQuery = qUnion(allLoadedEntities);
+        try silent
+        {
+            addDebugEntities(context, allEntitiesQuery, DebugColor.YELLOW);
+        }
+        setHighlightedEntities(context, { "entities" : allEntitiesQuery });
     }
 }
 
