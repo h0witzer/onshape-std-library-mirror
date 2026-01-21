@@ -133,7 +133,7 @@ function traceMedialAxisByNormals(context is Context, boundaryEdges is array, fa
             
             for (var k = 0; k < numSamples1; k += 1)
             {
-                const param1 = k / (numSamples1 - 1);
+                const param1 = (numSamples1 > 1) ? (k / (numSamples1 - 1)) : 0.5;
                 
                 // Get point and normal on edge1
                 const tangentLine1 = try silent(evEdgeTangentLine(context, {
@@ -155,7 +155,7 @@ function traceMedialAxisByNormals(context is Context, boundaryEdges is array, fa
                 
                 for (var m = 0; m < numSamples2; m += 1)
                 {
-                    const param2 = m / (numSamples2 - 1);
+                    const param2 = (numSamples2 > 1) ? (m / (numSamples2 - 1)) : 0.5;
                     
                     // Get point and normal on edge2
                     const tangentLine2 = try silent(evEdgeTangentLine(context, {
@@ -268,7 +268,10 @@ function intersectLines(point1 is Vector, direction1 is Vector, point2 is Vector
     
     const det = d1_2d[0] * (-d2_2d[1]) - d1_2d[1] * (-d2_2d[0]);
     
-    if (abs(det) < TOLERANCE.zeroLength * meter * meter)
+    // Check if determinant is too small (parallel lines in 2D)
+    // det has units of (length^2), so compare with tolerance squared
+    const detTolerance = TOLERANCE.zeroLength * TOLERANCE.zeroLength * meter * meter;
+    if (abs(det) < detTolerance)
         return undefined;
     
     const t1 = (dx * (-d2_2d[1]) - dy * (-d2_2d[0])) / det;
@@ -309,7 +312,9 @@ function checkCurvatureCriterion(context is Context, edge is Query, parameter is
     
     // Radius of curvature is 1/curvature
     // For straight edges, curvature is 0, so radius is infinite
-    if (abs(curvature) < TOLERANCE.zeroAngle / meter)
+    // curvature has units of 1/length, so use zeroLength for comparison
+    const curvatureTolerance = TOLERANCE.zeroLength / (meter * meter);
+    if (abs(curvature) < curvatureTolerance)
         return true; // Straight edge, criterion always satisfied
     
     const radiusOfCurvature = 1 / abs(curvature);
