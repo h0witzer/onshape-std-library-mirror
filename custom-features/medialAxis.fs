@@ -281,12 +281,15 @@ function intersectLines(point1 is Vector, direction1 is Vector, point2 is Vector
     const p1_2d = worldToPlane(plane, point1);
     const p2_2d = worldToPlane(plane, point2);
     
-    // Project directions onto plane
+    // Project directions onto plane by removing component perpendicular to plane
     const d1_3d = direction1 - dot(direction1, plane.normal) * plane.normal;
     const d2_3d = direction2 - dot(direction2, plane.normal) * plane.normal;
     
-    const d1_2d = worldToPlane(plane, point1 + d1_3d) - p1_2d;
-    const d2_2d = worldToPlane(plane, point2 + d2_3d) - p2_2d;
+    // Convert 3D directions to 2D plane coordinates
+    // We need to express the directions in the plane's coordinate system
+    // Use the plane's x and y axes to get 2D components
+    const d1_2d = vector(dot(d1_3d, plane.x), dot(d1_3d, plane.y));
+    const d2_2d = vector(dot(d2_3d, plane.x), dot(d2_3d, plane.y));
     
     // Solve for intersection in 2D: p1 + t1*d1 = p2 + t2*d2
     // This gives: t1*d1 - t2*d2 = p2 - p1
