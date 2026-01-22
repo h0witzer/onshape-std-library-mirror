@@ -19,13 +19,15 @@ import(path : "onshape/std/projectiontype.gen.fs", version : "2837.0");
  * 2. Applying a 45-degree draft to all side faces, creating peaks
  * 3. Trying to delete the end cap face; if that fails, moving it by the diagonal distance
  * 4. Querying peak edges from the resulting geometry
- * 5. Combining peak edges with edges created by the delete/move operation
- * 6. Projecting all medial edges back onto the input face
+ * 5. Optionally filtering out boundary edges adjacent to the start cap
+ * 6. Combining peak edges with edges created by the delete/move operation
+ * 7. Projecting all medial edges back onto the input face
  * 
  * @param context {Context}: The context of the feature
  * @param id {Id}: The identifier for this feature
  * @param definition {map}: Feature parameters containing:
  *   - face {Query}: The planar face to compute the medial axis for
+ *   - includeBoundaryEdges {boolean}: When true, includes boundary edges adjacent to the input face in the projection
  */
 annotation { "Feature Type Name" : "Medial Axis" }
 export const medialAxis = defineFeature(function(context is Context, id is Id, definition is map)
@@ -35,6 +37,9 @@ export const medialAxis = defineFeature(function(context is Context, id is Id, d
                     "Filter" : EntityType.FACE && GeometryType.PLANE,
                     "MaxNumberOfPicks" : 1 }
         definition.face is Query;
+        
+        annotation { "Name" : "Include boundary edges", "Default" : false }
+        definition.includeBoundaryEdges is boolean;
         
     }
     {
@@ -116,11 +121,20 @@ export const medialAxis = defineFeature(function(context is Context, id is Id, d
         // Peak edges now exist after the end cap has been modified
         const allEdgesAfterOperation = qOwnedByBody(extrudedBody, EntityType.EDGE);
         
-        // Step 5: Filter out edges that are vertex-adjacent to the start cap face
-        const edgesAdjacentToStartCap = qAdjacent(startCapFace, AdjacencyType.VERTEX, EntityType.EDGE);
-        
-        // Get the peak edges by subtracting edges adjacent to the start cap
-        const peakEdges = qSubtraction(allEdgesAfterOperation, edgesAdjacentToStartCap);
+        // Step 5: Filter out edges that are vertex-adjacent to the start cap face (boundary edges)
+        // unless the user has opted to include them
+        var peakEdges;
+        if (definition.includeBoundaryEdges)
+        {
+            // Include all edges (boundary edges + peak edges)
+            peakEdges = allEdgesAfterOperation;
+        }
+        else
+        {
+            // Exclude boundary edges (default behavior)
+            const edgesAdjacentToStartCap = qAdjacent(startCapFace, AdjacencyType.VERTEX, EntityType.EDGE);
+            peakEdges = qSubtraction(allEdgesAfterOperation, edgesAdjacentToStartCap);
+        }
         
         // Step 6: Query edges created by the delete or move operation
         const edgesCreatedByOperation = deleteFaceSucceeded ? 
