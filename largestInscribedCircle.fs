@@ -58,7 +58,7 @@ predicate canBeLargestInscribedCircleOptions(value)
  * Result of the largest inscribed circle calculation.
  * 
  * @type {{
- *      @field center {Vector} : The 3D world position of the circle center.
+ *      @field center {Vector} : The 3D world position of the circle center (length vector).
  *      @field radius {ValueWithUnits} : The radius of the largest inscribed circle.
  *      @field plane {Plane} : The plane on which the circle lies.
  * }}
@@ -68,7 +68,7 @@ export type LargestInscribedCircleResult typecheck canBeLargestInscribedCircleRe
 predicate canBeLargestInscribedCircleResult(value)
 {
     value is map;
-    is3dLengthVector(value.center);
+    is3dLengthVector(value.center); // Center is a 3D world position with length units
     isLength(value.radius);
     value.plane is Plane;
 }
@@ -79,12 +79,16 @@ predicate canBeLargestInscribedCircleResult(value)
  * inside the face that is farthest from all edges (the Chebyshev center).
  * 
  * @param context {Context} : The context in which to evaluate.
- * @param face {Query} : A query that resolves to a single planar face.
- * @param options {LargestInscribedCircleOptions} : Optional configuration for the algorithm. @optional
+ * @param definition {{
+ *      @field face {Query} : A query that resolves to a single planar face.
+ *      @field options {LargestInscribedCircleOptions} : Optional configuration for the algorithm. @optional
+ * }}
  * @returns {LargestInscribedCircleResult} : The center, radius, and plane of the largest inscribed circle.
  * 
  * @example `var result = evLargestInscribedCircle(context, { "face" : qNthElement(qEverything(EntityType.FACE), 0) })`
- *          returns the largest inscribed circle for the first face.
+ *          returns the largest inscribed circle for the first face with default options.
+ * @example `var result = evLargestInscribedCircle(context, { "face" : myFaceQuery, "options" : { "gridResolution" : 30 } as LargestInscribedCircleOptions })`
+ *          returns the largest inscribed circle with custom grid resolution.
  */
 export function evLargestInscribedCircle(context is Context, definition is map) returns LargestInscribedCircleResult
 precondition
