@@ -132,7 +132,7 @@ export const medialAxis = defineFeature(function(context is Context, id is Id, d
 
 /**
  * Calculate a conservative under-extrusion distance for the medial axis computation.
- * Uses a fraction of the bounding box diagonal to intentionally under-extrude.
+ * Uses a fraction of the shortest edge length of the face to intentionally under-extrude.
  * This approach prevents overshooting that can create degenerate geometry.
  * The end cap will be deleted after the draft operation to create additional
  * medial edges where the healing geometry meets the drafted walls.
@@ -143,10 +143,30 @@ export const medialAxis = defineFeature(function(context is Context, id is Id, d
  */
 function calculateExtrusionDistance(context is Context, face is Query) returns ValueWithUnits
 {
-    const boundingBox = evBox3d(context, { "topology" : face });
-    const diagonal = norm(boundingBox.maxCorner - boundingBox.minCorner);
+    // Get all edges that bound the face
+    const faceEdges = qAdjacent(face, AdjacencyType.EDGE, EntityType.EDGE);
+    const edgeArray = evaluateQuery(context, faceEdges);
     
-    // Use half the diagonal as a conservative under-extrusion distance
-    // This prevents overshooting while still providing enough height for the draft
-    return 0.5 * diagonal;
+    if (size(edgeArray) == 0)
+    {
+        // Fallback to bounding box diagonal if no edges found
+        const boundingBox = evBox3d(context, { "topology" : face });
+        const diagonal = norm(boundingBox.maxCorner - boundingBox.minCorner);
+        return 0.5 * diagonal;
+    }
+    
+    // Find the shortest edge length
+    var shortestLength = undefined;
+    for (var edge in edgeArray)
+    {
+        const edgeLength = evLength(context, { "entities" : edge });
+        if (shortestLength == undefined || edgeLength < shortestLength)
+        {
+            shortestLength = edgeLength;
+        }
+    }
+    
+    // Use a fraction of the shortest edge as the extrusion distance
+    // This provides a more proportional under-extrusion relative to the face geometry
+    return 0.5 * shortestLength;
 }
