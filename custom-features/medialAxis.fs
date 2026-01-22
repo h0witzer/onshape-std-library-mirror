@@ -16,11 +16,11 @@ import(path : "onshape/std/projectiontype.gen.fs", version : "2837.0");
  * 
  * The medial axis is computed by:
  * 1. Under-extruding the face profile normally to a conservative distance
- * 2. Deleting and healing the end cap face
- * 3. Applying a 45-degree draft to all side faces, naturally creating peaks
- * 4. Querying all edges from the drafted body
- * 5. Filtering out edges that are vertex-adjacent to the start cap face
- * 6. Projecting the remaining peak edges back onto the input face
+ * 2. Applying a 45-degree draft to all side faces, creating peaks
+ * 3. Querying peak edges from the drafted body
+ * 4. Deleting and healing the end cap face to create additional medial edges
+ * 5. Combining peak edges with edges created by the delete operation
+ * 6. Projecting all medial edges back onto the input face
  * 
  * @param context {Context}: The context of the feature
  * @param id {Id}: The identifier for this feature
@@ -61,22 +61,13 @@ export const medialAxis = defineFeature(function(context is Context, id is Id, d
         
         const extrudedBody = qCreatedBy(id + "extrude", EntityType.BODY);
         
-        // Step 1.5: Delete the end cap face and heal the void
-        // This prevents overshooting and allows the draft to naturally create peaks
-        const endCapFace = qCapEntity(id + "extrude", CapType.END, EntityType.FACE);
-        opDeleteFace(context, id + "deleteEndCap", {
-            "deleteFaces" : endCapFace,
-            "includeFillet" : false,
-            "capVoid" : false,
-            "leaveOpen" : false
-        });
-        
         // Step 2: Apply 45-degree inward draft to create a tapered body
         // We need to draft the side faces (walls) of the extrusion inward
-        // Get all faces of the extruded body except the start cap
+        // Get all faces of the extruded body except the start and end caps
         const allExtrudedFaces = qOwnedByBody(extrudedBody, EntityType.FACE);
         const startCapFace = qCapEntity(id + "extrude", CapType.START, EntityType.FACE);
-        const sideFaces = qSubtraction(allExtrudedFaces, startCapFace);
+        const endCapFace = qCapEntity(id + "extrude", CapType.END, EntityType.FACE);
+        const sideFaces = qSubtraction(allExtrudedFaces, qUnion([startCapFace, endCapFace]));
         
         // Apply draft to the side faces using the input face plane as the reference surface
         // Use try/catch to handle draft failures gracefully
@@ -106,21 +97,36 @@ export const medialAxis = defineFeature(function(context is Context, id is Id, d
         // from all edges in the drafted body
         const peakEdges = qSubtraction(allEdgesAfterDraft, edgesAdjacentToStartCap);
         
-        if (isQueryEmpty(context, peakEdges))
+        // Step 5: Delete the end cap face and heal the void
+        // This operation will create new edges where the healing occurs
+        opDeleteFace(context, id + "deleteEndCap", {
+            "deleteFaces" : endCapFace,
+            "includeFillet" : false,
+            "capVoid" : false,
+            "leaveOpen" : false
+        });
+        
+        // Step 6: Query edges created by the delete face operation
+        const edgesCreatedByDelete = qCreatedBy(id + "deleteEndCap", EntityType.EDGE);
+        
+        // Combine peak edges from draft with edges created by delete face
+        const allMedialEdges = qUnion([peakEdges, edgesCreatedByDelete]);
+        
+        if (isQueryEmpty(context, allMedialEdges))
         {
             // Clean up the extruded body and report error
             opDeleteBodies(context, id + "cleanup", { "entities" : extrudedBody });
             throw regenError("No peak edges found. The extrusion may not have created a proper medial axis.");
         }
         
-        // Step 5: Project the peak edges back onto the original face
+        // Step 7: Project the peak edges back onto the original face
         opDropCurve(context, id + "project", {
-            "tools" : peakEdges,
+            "tools" : allMedialEdges,
             "targets" : inputFace,
             "projectionType" : ProjectionType.NORMAL_TO_TARGET
         });
         
-        // Step 6: Delete the temporary extruded body
+        // Step 8: Delete the temporary extruded body
         opDeleteBodies(context, id + "cleanup", { "entities" : extrudedBody });
     });
 
@@ -128,8 +134,8 @@ export const medialAxis = defineFeature(function(context is Context, id is Id, d
  * Calculate a conservative under-extrusion distance for the medial axis computation.
  * Uses a fraction of the bounding box diagonal to intentionally under-extrude.
  * This approach prevents overshooting that can create degenerate geometry.
- * The end cap will be deleted after extrusion, allowing the draft operation
- * to naturally create the correct peak edges without overshooting.
+ * The end cap will be deleted after the draft operation to create additional
+ * medial edges where the healing geometry meets the drafted walls.
  * 
  * @param context {Context}: The context
  * @param face {Query}: The face to compute the distance for
