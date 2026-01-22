@@ -104,15 +104,23 @@ precondition
     // Get all edges of the face
     const faceEdges = qAdjacent(faceQuery, AdjacencyType.EDGE, EntityType.EDGE);
     
-    // Estimate maximum possible radius using bounding box diagonal
-    const boundingBox3d = evBox3d(context, { "topology" : faceQuery, "tight" : true });
-    const maxPossibleRadius = box3dDiagonalLength(boundingBox3d) / 2;
+    // Use face centroid as the center - this is a good approximation for the inscribed circle center
+    const faceCenter = evApproximateCentroid(context, { "entities" : faceQuery });
+    
+    // Calculate the minimum distance from the face center to any edge
+    // This gives us the radius of the largest inscribed circle centered at the centroid
+    const distanceToEdges = evDistance(context, {
+        "side0" : faceCenter,
+        "side1" : faceEdges
+    });
+    const maxRadiusFromCentroid = distanceToEdges.distance;
     
     // Binary search for the maximum inward offset distance
+    // We'll use offset to validate and potentially find a better center
     var minOffset = 0 * meter;
-    var maxOffset = maxPossibleRadius;
-    var bestRadius = 0 * meter;
-    var bestCenter = facePlane.origin;
+    var maxOffset = maxRadiusFromCentroid * 1.5; // Search slightly beyond centroid-based radius
+    var bestRadius = maxRadiusFromCentroid;
+    var bestCenter = faceCenter;
     
     for (var iteration = 0; iteration < maxIterations; iteration += 1)
     {
@@ -127,7 +135,6 @@ precondition
         // Try to create inward offset of the face edges
         const testId = "testOffset" ~ iteration;
         var offsetSucceeded = false;
-        var offsetCenter = undefined;
         
         try silent
         {
@@ -143,16 +150,36 @@ precondition
             const offsetWire = qCreatedBy(testId, EntityType.BODY);
             if (!isQueryEmpty(context, offsetWire))
             {
-                // Get centroid of the offset region as potential circle center
-                offsetCenter = evApproximateCentroid(context, { "entities" : offsetWire });
+                // If offset succeeded, we can fit a circle of this radius
+                // The center should be chosen to maximize the inscribed circle
+                // Use the centroid of the offset wire edges to approximate the center
+                const offsetEdges = qOwnedByBody(offsetWire, EntityType.EDGE);
+                
+                // Calculate centroid of the offset region by getting midpoint of bounding box
+                const offsetBox = evBox3d(context, { "topology" : offsetEdges, "tight" : true });
+                const offsetBoxCenter = box3dCenter(offsetBox);
+                
+                // Verify this center is actually on the face plane
+                const localCenter2D = worldToPlane(facePlane, offsetBoxCenter);
+                const projectedCenter = planeToWorld(facePlane, localCenter2D);
+                
+                // Verify the center is inside by checking distance to edges
+                const centerToEdges = evDistance(context, {
+                    "side0" : projectedCenter,
+                    "side1" : faceEdges
+                });
+                
+                // The actual radius is the minimum of: testOffset or distance from center to edges
+                const actualRadius = min(testOffset, centerToEdges.distance);
+                
+                if (actualRadius > bestRadius)
+                {
+                    bestRadius = actualRadius;
+                    bestCenter = projectedCenter;
+                }
+                
                 offsetSucceeded = true;
-                
-                // Update best result
-                bestRadius = testOffset;
-                bestCenter = offsetCenter;
-                
-                // Can try larger offset
-                minOffset = testOffset;
+                minOffset = testOffset; // Can try larger offset
             }
             
             // Clean up test geometry
@@ -171,17 +198,6 @@ precondition
             // Offset failed, reduce maximum
             maxOffset = testOffset;
         }
-    }
-    
-    // If no valid offset was found, use face centroid with minimum edge distance
-    if (bestRadius < tolerance)
-    {
-        bestCenter = evApproximateCentroid(context, { "entities" : faceQuery });
-        const distanceToEdges = evDistance(context, {
-            "side0" : bestCenter,
-            "side1" : faceEdges
-        });
-        bestRadius = distanceToEdges.distance;
     }
     
     return {
