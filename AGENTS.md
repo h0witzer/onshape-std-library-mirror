@@ -22,6 +22,8 @@
 - Prioritize solutions to problems that apply to more than the most trivial cases, for example when working on a feature that interacts with surface geometry don't assume a planar constraint unless it's explicitly clear that the function will only be called on planar geometry when another solution exists that would generalize to cylinders and cones
 - Before working with Arrays in preconditions, look up the correct fields for implementation. isArray() is not a function that exists in the standard library
 - Validate all other precondition examples with the standard library
+- Try Silent blocks should only be used after a function has been thoroughly tested and validated. The try block is useful for graceful error handling but adding silent to this block will squash all reports to the console and make diagnostics exponentially harder with no information to go off of.
+- Adding Silent to a try block does not fix the problem when an error is encountered, just continues the execution and hides the reporting state. 
 
 ## Testing Instructions
 - Since there is no way to run Onshape in a localized environment here we will rely mostly on comparing code samples with existing functions in the standard library and against the reference docs to ensure consistency with the code base
