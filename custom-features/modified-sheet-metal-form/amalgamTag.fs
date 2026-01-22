@@ -134,7 +134,15 @@ function doTagForm(context is Context, topLevelId is Id, definition is map)
                 FORM_BODY_NEGATIVE_PART,FORM_BODY_NEW_PART, FORM_BODY_SKETCH_FOR_FLAT_VIEW, FORM_BODY_CSYS_MATE_CONNECTOR]);
     if (!isQueryEmpty(context, bodiesWithFormAttribute))
     {
-        throw regenError(ErrorStringEnum.FORMED_TAG_FORM_BODIES_ALREADY_TAGGED, bodiesWithFormAttribute);
+        // Display status message to user about detected tagged bodies
+        reportFeatureInfo(context, topLevelId, "Bodies with amalgam tag information detected. Stripping existing attributes to provide a clean slate.");
+        
+        // Remove existing form attributes from all tagged bodies
+        setAttribute(context, {
+            "entities" : bodiesWithFormAttribute,
+            "name" : "formBodyAttribute",
+            "attribute" : undefined
+        });
     }
 
     var positivePartSelected = !isQueryEmpty(context, definition.positivePart);
