@@ -138,6 +138,8 @@ function doTagForm(context is Context, topLevelId is Id, definition is map)
         reportFeatureInfo(context, topLevelId, "Bodies with amalgam tag information detected. Stripping existing attributes to provide a clean slate.");
         
         // Remove existing form attributes from all tagged bodies
+        // Using hardcoded "formBodyAttribute" string because FORM_BODY_ATTRIBUTE_NAME is not exported from modifiedFormedUtils
+        // Setting attribute to undefined is the correct way to remove named attributes per attributes.fs documentation
         setAttribute(context, {
             "entities" : bodiesWithFormAttribute,
             "name" : "formBodyAttribute",
