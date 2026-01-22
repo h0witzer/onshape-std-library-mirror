@@ -101,26 +101,113 @@ precondition
     const tolerance = (definition.options != undefined && definition.options.tolerance != undefined) ? 
                      definition.options.tolerance : 1e-6 * meter;
     
-    // Get all edges of the face
+    // Get all edges and vertices of the face
     const faceEdges = qAdjacent(faceQuery, AdjacencyType.EDGE, EntityType.EDGE);
+    const faceVertices = qAdjacent(faceQuery, AdjacencyType.VERTEX, EntityType.VERTEX);
     
-    // Use face centroid as the center - this is a good approximation for the inscribed circle center
-    const faceCenter = evApproximateCentroid(context, { "entities" : faceQuery });
+    // Helper function to check if a point is inside the face and get its distance to edges
+    function evaluatePoint(point) returns map
+    {
+        // Check if point is on the face by projecting to face and checking distance
+        const projectionResult = evDistance(context, {
+            "side0" : point,
+            "side1" : faceQuery
+        });
+        
+        // If point is not very close to face, it's not a valid candidate
+        if (projectionResult.distance > tolerance)
+        {
+            return { "valid" : false, "radius" : 0 * meter, "center" : point };
+        }
+        
+        // Calculate distance to edges
+        const distanceToEdges = evDistance(context, {
+            "side0" : point,
+            "side1" : faceEdges
+        });
+        
+        // Point is valid if distance to edges is positive (inside face)
+        const isValid = distanceToEdges.distance > tolerance;
+        
+        return {
+            "valid" : isValid,
+            "radius" : distanceToEdges.distance,
+            "center" : point
+        };
+    }
     
-    // Calculate the minimum distance from the face center to any edge
-    // This gives us the radius of the largest inscribed circle centered at the centroid
-    const distanceToEdges = evDistance(context, {
-        "side0" : faceCenter,
-        "side1" : faceEdges
-    });
-    const maxRadiusFromCentroid = distanceToEdges.distance;
+    // Collect candidate centers
+    var candidates = [];
     
-    // Binary search for the maximum inward offset distance
-    // We'll use offset to validate and potentially find a better center
-    var minOffset = 0 * meter;
-    var maxOffset = maxRadiusFromCentroid * 1.5; // Search slightly beyond centroid-based radius
-    var bestRadius = maxRadiusFromCentroid;
-    var bestCenter = faceCenter;
+    // Candidate 1: Face centroid (may be outside for concave faces)
+    const faceCentroid = evApproximateCentroid(context, { "entities" : faceQuery });
+    candidates = append(candidates, faceCentroid);
+    
+    // Candidate 2: Bounding box center
+    const boundingBox = evBox3d(context, { "topology" : faceQuery, "tight" : true });
+    const boxCenter = box3dCenter(boundingBox);
+    candidates = append(candidates, boxCenter);
+    
+    // Candidate 3: Sample points along angle bisectors at vertices
+    const vertices = evaluateQuery(context, faceVertices);
+    for (var vertex in vertices)
+    {
+        try silent
+        {
+            const vertexPoint = evVertexPoint(context, { "vertex" : vertex });
+            
+            // Get adjacent edges to this vertex
+            const adjacentEdges = qAdjacent(vertex, AdjacencyType.VERTEX, EntityType.EDGE);
+            const adjacentEdgesList = evaluateQuery(context, adjacentEdges);
+            
+            if (size(adjacentEdgesList) == 2)
+            {
+                // Get tangent directions at vertex
+                const edge1Tangent = evEdgeTangentLine(context, {
+                    "edge" : adjacentEdgesList[0],
+                    "parameter" : 0.01,
+                    "arcLengthParameterization" : false
+                });
+                
+                const edge2Tangent = evEdgeTangentLine(context, {
+                    "edge" : adjacentEdgesList[1],
+                    "parameter" : 0.01,
+                    "arcLengthParameterization" : false
+                });
+                
+                // Calculate angle bisector direction
+                const dir1 = normalize(edge1Tangent.direction);
+                const dir2 = normalize(edge2Tangent.direction);
+                const bisector = normalize(dir1 + dir2);
+                
+                // Sample points along bisector at various distances
+                const maxDist = box3dDiagonalLength(boundingBox) / 4;
+                for (var distFactor = 0.1; distFactor <= 1.0; distFactor += 0.3)
+                {
+                    const testPoint = vertexPoint + bisector * maxDist * distFactor;
+                    candidates = append(candidates, testPoint);
+                }
+            }
+        }
+    }
+    
+    // Find best candidate from all samples
+    var bestRadius = 0 * meter;
+    var bestCenter = faceCentroid;
+    
+    for (var candidate in candidates)
+    {
+        const result = evaluatePoint(candidate);
+        if (result.valid && result.radius > bestRadius)
+        {
+            bestRadius = result.radius;
+            bestCenter = result.center;
+        }
+    }
+    
+    // Use binary search with offset to refine and find even better solutions
+    var minOffset = bestRadius;
+    var maxOffset = bestRadius * 2; // Search for potentially larger circles
     
     for (var iteration = 0; iteration < maxIterations; iteration += 1)
     {
@@ -150,36 +237,30 @@ precondition
             const offsetWire = qCreatedBy(testId, EntityType.BODY);
             if (!isQueryEmpty(context, offsetWire))
             {
-                // If offset succeeded, we can fit a circle of this radius
-                // The center should be chosen to maximize the inscribed circle
-                // Use the centroid of the offset wire edges to approximate the center
+                // Calculate center candidates from offset region
                 const offsetEdges = qOwnedByBody(offsetWire, EntityType.EDGE);
-                
-                // Calculate centroid of the offset region by getting midpoint of bounding box
                 const offsetBox = evBox3d(context, { "topology" : offsetEdges, "tight" : true });
                 const offsetBoxCenter = box3dCenter(offsetBox);
                 
-                // Verify this center is actually on the face plane
+                // Project to face plane
                 const localCenter2D = worldToPlane(facePlane, offsetBoxCenter);
                 const projectedCenter = planeToWorld(facePlane, localCenter2D);
                 
-                // Verify the center is inside by checking distance to edges
-                const centerToEdges = evDistance(context, {
-                    "side0" : projectedCenter,
-                    "side1" : faceEdges
-                });
+                // Evaluate this center
+                const centerResult = evaluatePoint(projectedCenter);
                 
-                // The actual radius is the minimum of: testOffset or distance from center to edges
-                const actualRadius = min(testOffset, centerToEdges.distance);
-                
-                if (actualRadius > bestRadius)
+                if (centerResult.valid && centerResult.radius > bestRadius)
                 {
-                    bestRadius = actualRadius;
+                    bestRadius = centerResult.radius;
                     bestCenter = projectedCenter;
+                    minOffset = testOffset; // Can try larger offset
+                    offsetSucceeded = true;
                 }
-                
-                offsetSucceeded = true;
-                minOffset = testOffset; // Can try larger offset
+                else
+                {
+                    // This offset didn't improve, try smaller
+                    maxOffset = testOffset;
+                }
             }
             
             // Clean up test geometry
@@ -189,15 +270,16 @@ precondition
         }
         catch
         {
-            // Offset failed (edges collapsed or intersected), try smaller offset
-            offsetSucceeded = false;
-        }
-        
-        if (!offsetSucceeded)
-        {
-            // Offset failed, reduce maximum
+            // Offset failed, try smaller offset
             maxOffset = testOffset;
         }
+    }
+    
+    // Final validation: ensure center is on face and radius is correct
+    const finalResult = evaluatePoint(bestCenter);
+    if (finalResult.valid)
+    {
+        bestRadius = finalResult.radius;
     }
     
     return {
