@@ -16,6 +16,7 @@ import(path : "onshape/std/featureList.fs", version : "2815.0");
 import(path : "5418313fd7f629d9c7f1ac10", version : "b97acafda22e3375bf349519"); //modifiedFormedUtils.fs
 import(path : "onshape/std/frameAttributes.fs", version : "2815.0");
 import(path : "onshape/std/frameUtils.fs", version : "2815.0");
+import(path : "onshape/std/properties.fs", version : "2815.0");
 import(path : "onshape/std/surfaceGeometry.fs", version : "2815.0");
 import(path : "onshape/std/units.fs", version : "2815.0");
 import(path : "onshape/std/vector.fs", version : "2815.0");
@@ -134,7 +135,17 @@ function doTagForm(context is Context, topLevelId is Id, definition is map)
                 FORM_BODY_NEGATIVE_PART,FORM_BODY_NEW_PART, FORM_BODY_SKETCH_FOR_FLAT_VIEW, FORM_BODY_CSYS_MATE_CONNECTOR]);
     if (!isQueryEmpty(context, bodiesWithFormAttribute))
     {
-        throw regenError(ErrorStringEnum.FORMED_TAG_FORM_BODIES_ALREADY_TAGGED, bodiesWithFormAttribute);
+        // Display status message to user about detected tagged bodies
+        reportFeatureInfo(context, topLevelId, "Bodies with amalgam tag information detected. Stripping existing attributes to provide a clean slate.");
+        
+        // Remove existing form attributes from all tagged bodies
+        // Using hardcoded "formBodyAttribute" string because FORM_BODY_ATTRIBUTE_NAME is not exported from modifiedFormedUtils
+        // Setting attribute to undefined is the correct way to remove named attributes per attributes.fs documentation
+        setAttribute(context, {
+            "entities" : bodiesWithFormAttribute,
+            "name" : "formBodyAttribute",
+            "attribute" : undefined
+        });
     }
 
     var positivePartSelected = !isQueryEmpty(context, definition.positivePart);
@@ -205,6 +216,12 @@ function doTagForm(context is Context, topLevelId is Id, definition is map)
     if (negativePartSelected)
     {
         setFormAttribute(context, definition.negativePart, FORM_BODY_NEGATIVE_PART);
+        // Apply magenta appearance with 0.2 alpha to subtraction tool bodies for user identification
+        setProperty(context, {
+            "entities" : definition.negativePart,
+            "propertyType" : PropertyType.APPEARANCE,
+            "value" : color(1, 0, 1, 0.2)
+        });
     }
         if (newPartSelected)
     {
