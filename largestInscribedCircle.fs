@@ -68,6 +68,47 @@ predicate canBeLargestInscribedCircleResult(value)
 }
 
 /**
+ * Helper function to check if a point is inside a face and calculate its inscribed circle radius.
+ * Returns a map with validation status, radius, and center point.
+ * 
+ * @param context {Context} : The context in which to evaluate.
+ * @param point {Vector} : The 3D point to evaluate.
+ * @param faceQuery {Query} : The face to check against.
+ * @param faceEdges {Query} : The edges of the face.
+ * @param tolerance {ValueWithUnits} : Distance tolerance for validation.
+ * @returns {map} : Map with "valid" (boolean), "radius" (ValueWithUnits), and "center" (Vector) fields.
+ */
+function evaluateCandidatePoint(context is Context, point is Vector, faceQuery is Query, faceEdges is Query, tolerance is ValueWithUnits) returns map
+{
+    // Check if point is on the face by projecting to face and checking distance
+    const projectionResult = evDistance(context, {
+        "side0" : point,
+        "side1" : faceQuery
+    });
+    
+    // If point is not very close to face, it's not a valid candidate
+    if (projectionResult.distance > tolerance)
+    {
+        return { "valid" : false, "radius" : 0 * meter, "center" : point };
+    }
+    
+    // Calculate distance to edges
+    const distanceToEdges = evDistance(context, {
+        "side0" : point,
+        "side1" : faceEdges
+    });
+    
+    // Point is valid if distance to edges is positive (inside face)
+    const isValid = distanceToEdges.distance > tolerance;
+    
+    return {
+        "valid" : isValid,
+        "radius" : distanceToEdges.distance,
+        "center" : point
+    };
+}
+
+/**
  * Calculate the largest inscribed circle for a planar face.
  * Uses binary search with inward offset operations to efficiently find the maximum inscribed circle.
  * This approach leverages Onshape's native geometric operations for optimal performance.
@@ -104,37 +145,6 @@ precondition
     // Get all edges and vertices of the face
     const faceEdges = qAdjacent(faceQuery, AdjacencyType.EDGE, EntityType.EDGE);
     const faceVertices = qAdjacent(faceQuery, AdjacencyType.VERTEX, EntityType.VERTEX);
-    
-    // Helper function to check if a point is inside the face and get its distance to edges
-    function evaluatePoint(point) returns map
-    {
-        // Check if point is on the face by projecting to face and checking distance
-        const projectionResult = evDistance(context, {
-            "side0" : point,
-            "side1" : faceQuery
-        });
-        
-        // If point is not very close to face, it's not a valid candidate
-        if (projectionResult.distance > tolerance)
-        {
-            return { "valid" : false, "radius" : 0 * meter, "center" : point };
-        }
-        
-        // Calculate distance to edges
-        const distanceToEdges = evDistance(context, {
-            "side0" : point,
-            "side1" : faceEdges
-        });
-        
-        // Point is valid if distance to edges is positive (inside face)
-        const isValid = distanceToEdges.distance > tolerance;
-        
-        return {
-            "valid" : isValid,
-            "radius" : distanceToEdges.distance,
-            "center" : point
-        };
-    }
     
     // Collect candidate centers
     var candidates = [];
@@ -197,7 +207,7 @@ precondition
     
     for (var candidate in candidates)
     {
-        const result = evaluatePoint(candidate);
+        const result = evaluateCandidatePoint(context, candidate, faceQuery, faceEdges, tolerance);
         if (result.valid && result.radius > bestRadius)
         {
             bestRadius = result.radius;
@@ -247,7 +257,7 @@ precondition
                 const projectedCenter = planeToWorld(facePlane, localCenter2D);
                 
                 // Evaluate this center
-                const centerResult = evaluatePoint(projectedCenter);
+                const centerResult = evaluateCandidatePoint(context, projectedCenter, faceQuery, faceEdges, tolerance);
                 
                 if (centerResult.valid && centerResult.radius > bestRadius)
                 {
@@ -276,7 +286,7 @@ precondition
     }
     
     // Final validation: ensure center is on face and radius is correct
-    const finalResult = evaluatePoint(bestCenter);
+    const finalResult = evaluateCandidatePoint(context, bestCenter, faceQuery, faceEdges, tolerance);
     if (finalResult.valid)
     {
         bestRadius = finalResult.radius;
