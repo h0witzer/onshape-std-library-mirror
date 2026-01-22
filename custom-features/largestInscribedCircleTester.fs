@@ -32,14 +32,11 @@ export const largestInscribedCircleTester = defineFeature(function(context is Co
         
         annotation { "Group Name" : "Algorithm options", "Collapsed By Default" : false }
         {
-            annotation { "Name" : "Grid resolution" }
-            isInteger(definition.gridResolution, { (unitless) : [5, 20, 50] } as IntegerBoundSpec);
-            
-            annotation { "Name" : "Refinement iterations" }
-            isInteger(definition.refinementIterations, { (unitless) : [0, 3, 10] } as IntegerBoundSpec);
+            annotation { "Name" : "Max iterations" }
+            isInteger(definition.maxIterations, { (unitless) : [5, 20, 50] } as IntegerBoundSpec);
             
             annotation { "Name" : "Tolerance" }
-            isLength(definition.tolerance, { (meter) : [1e-9, 1e-7, 1e-4] } as LengthBoundSpec);
+            isLength(definition.tolerance, { (meter) : [1e-9, 1e-6, 1e-3] } as LengthBoundSpec);
         }
         
         annotation { "Group Name" : "Display options", "Collapsed By Default" : false }
@@ -70,8 +67,7 @@ export const largestInscribedCircleTester = defineFeature(function(context is Co
         
         // Build options map for the algorithm
         const options = {
-            "gridResolution" : definition.gridResolution,
-            "refinementIterations" : definition.refinementIterations,
+            "maxIterations" : definition.maxIterations,
             "tolerance" : definition.tolerance
         } as LargestInscribedCircleOptions;
         
@@ -150,9 +146,8 @@ export const largestInscribedCircleTester = defineFeature(function(context is Co
     {
         // Default values
         "createCircles" : true,
-        "gridResolution" : 20,
-        "refinementIterations" : 3,
-        "tolerance" : 1e-7 * meter,
+        "maxIterations" : 20,
+        "tolerance" : 1e-6 * meter,
         "showCenterPoints" : false,
         "showRadiusInfo" : false,
         "debugHighlight" : false

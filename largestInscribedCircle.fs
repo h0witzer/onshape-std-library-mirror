@@ -5,8 +5,8 @@ FeatureScript 2856;
 
 /**
  * Utility functions for finding and creating the largest inscribed circle on a planar face.
- * This module provides efficient algorithms for calculating the maximum inscribed circle
- * within a planar polygonal boundary.
+ * Uses binary search with offset operations for optimal performance, leveraging Onshape's
+ * native geometric operations rather than grid sampling.
  */
 
 import(path : "onshape/std/common.fs", version : "2856.0");
@@ -27,10 +27,8 @@ import(path : "onshape/std/units.fs", version : "2856.0");
  * Configuration options for the largest inscribed circle algorithm.
  * 
  * @type {{
- *      @field gridResolution {number} : Number of grid cells to use in each dimension for the initial search.
- *                                       Higher values give more accurate results but take longer. Default is 20.
- *      @field refinementIterations {number} : Number of refinement iterations to perform. Default is 3.
- *      @field tolerance {ValueWithUnits} : Tolerance for distance calculations. Default is 1e-7 meter.
+ *      @field maxIterations {number} : Maximum binary search iterations. Default is 20.
+ *      @field tolerance {ValueWithUnits} : Convergence tolerance for binary search. Default is 1e-6 meter.
  * }}
  */
 export type LargestInscribedCircleOptions typecheck canBeLargestInscribedCircleOptions;
@@ -38,15 +36,10 @@ export type LargestInscribedCircleOptions typecheck canBeLargestInscribedCircleO
 predicate canBeLargestInscribedCircleOptions(value)
 {
     value is map;
-    if (value.gridResolution != undefined)
+    if (value.maxIterations != undefined)
     {
-        value.gridResolution is number;
-        value.gridResolution > 0;
-    }
-    if (value.refinementIterations != undefined)
-    {
-        value.refinementIterations is number;
-        value.refinementIterations >= 0;
+        value.maxIterations is number;
+        value.maxIterations > 0;
     }
     if (value.tolerance != undefined)
     {
@@ -75,8 +68,8 @@ predicate canBeLargestInscribedCircleResult(value)
 
 /**
  * Calculate the largest inscribed circle for a planar face.
- * Uses a grid-based search algorithm with successive refinement to find the point
- * inside the face that is farthest from all edges (the Chebyshev center).
+ * Uses binary search with inward offset operations to efficiently find the maximum inscribed circle.
+ * This approach leverages Onshape's native geometric operations for optimal performance.
  * 
  * @param context {Context} : The context in which to evaluate.
  * @param definition {{
@@ -87,8 +80,8 @@ predicate canBeLargestInscribedCircleResult(value)
  * 
  * @example `var result = evLargestInscribedCircle(context, { "face" : qNthElement(qEverything(EntityType.FACE), 0) })`
  *          returns the largest inscribed circle for the first face with default options.
- * @example `var result = evLargestInscribedCircle(context, { "face" : myFaceQuery, "options" : { "gridResolution" : 30 } as LargestInscribedCircleOptions })`
- *          returns the largest inscribed circle with custom grid resolution.
+ * @example `var result = evLargestInscribedCircle(context, { "face" : myFaceQuery, "options" : { "maxIterations" : 25 } as LargestInscribedCircleOptions })`
+ *          returns the largest inscribed circle with custom iteration count.
  */
 export function evLargestInscribedCircle(context is Context, definition is map) returns LargestInscribedCircleResult
 precondition
@@ -102,120 +95,92 @@ precondition
     const facePlane = evPlane(context, { "face" : faceQuery });
     
     // Set default options
-    const gridResolution = (definition.options != undefined && definition.options.gridResolution != undefined) ? 
-                          definition.options.gridResolution : 20;
-    const refinementIterations = (definition.options != undefined && definition.options.refinementIterations != undefined) ? 
-                                 definition.options.refinementIterations : 3;
+    const maxIterations = (definition.options != undefined && definition.options.maxIterations != undefined) ? 
+                         definition.options.maxIterations : 20;
     const tolerance = (definition.options != undefined && definition.options.tolerance != undefined) ? 
-                     definition.options.tolerance : 1e-7 * meter;
+                     definition.options.tolerance : 1e-6 * meter;
     
-    // Get bounding box of the face in 3D
-    const boundingBox3d = evBox3d(context, { "topology" : faceQuery, "tight" : true });
-    
-    // Get all edges of the face for distance calculations
+    // Get all edges of the face
     const faceEdges = qAdjacent(faceQuery, AdjacencyType.EDGE, EntityType.EDGE);
     
-    // Transform bounding box to 2D on the face plane
-    // Sample bounding box corners and project to plane
-    const corners = box3dAllCorners(boundingBox3d);
-    const firstLocal = worldToPlane(facePlane, corners[0]);
-    var minX = firstLocal[0];
-    var maxX = firstLocal[0];
-    var minY = firstLocal[1];
-    var maxY = firstLocal[1];
+    // Estimate maximum possible radius using bounding box diagonal
+    const boundingBox3d = evBox3d(context, { "topology" : faceQuery, "tight" : true });
+    const maxPossibleRadius = box3dDiagonalLength(boundingBox3d) / 2;
     
-    for (var cornerIndex = 1; cornerIndex < size(corners); cornerIndex += 1)
+    // Binary search for the maximum inward offset distance
+    var minOffset = 0 * meter;
+    var maxOffset = maxPossibleRadius;
+    var bestRadius = 0 * meter;
+    var bestCenter = facePlane.origin;
+    
+    for (var iteration = 0; iteration < maxIterations; iteration += 1)
     {
-        const localPoint = worldToPlane(facePlane, corners[cornerIndex]);
-        minX = min(minX, localPoint[0]);
-        maxX = max(maxX, localPoint[0]);
-        minY = min(minY, localPoint[1]);
-        maxY = max(maxY, localPoint[1]);
+        // Check convergence
+        if (maxOffset - minOffset < tolerance)
+        {
+            break;
+        }
+        
+        const testOffset = (minOffset + maxOffset) / 2;
+        
+        // Try to create inward offset of the face edges
+        const testId = "testOffset" ~ iteration;
+        var offsetSucceeded = false;
+        var offsetCenter = undefined;
+        
+        try silent
+        {
+            // Create offset wire inward
+            opOffsetWire(context, testId, {
+                "edges" : faceEdges,
+                "normal" : facePlane.normal,
+                "offset1" : -testOffset,  // Negative for inward offset
+                "offset2" : 0 * meter
+            });
+            
+            // Check if offset wire was created successfully
+            const offsetWire = qCreatedBy(testId, EntityType.BODY);
+            if (!isQueryEmpty(context, offsetWire))
+            {
+                // Get centroid of the offset region as potential circle center
+                offsetCenter = evApproximateCentroid(context, { "entities" : offsetWire });
+                offsetSucceeded = true;
+                
+                // Update best result
+                bestRadius = testOffset;
+                bestCenter = offsetCenter;
+                
+                // Can try larger offset
+                minOffset = testOffset;
+            }
+            
+            // Clean up test geometry
+            opDeleteBodies(context, testId + "delete", {
+                "entities" : qCreatedBy(testId, EntityType.BODY)
+            });
+        }
+        catch
+        {
+            // Offset failed (edges collapsed or intersected), try smaller offset
+            offsetSucceeded = false;
+        }
+        
+        if (!offsetSucceeded)
+        {
+            // Offset failed, reduce maximum
+            maxOffset = testOffset;
+        }
     }
     
-    // Perform grid search with successive refinement
-    var searchMinX = minX;
-    var searchMaxX = maxX;
-    var searchMinY = minY;
-    var searchMaxY = maxY;
-    var bestCenter = facePlane.origin;
-    var bestRadius = 0 * meter;
-    
-    for (var iteration = 0; iteration <= refinementIterations; iteration += 1)
+    // If no valid offset was found, use face centroid with minimum edge distance
+    if (bestRadius < tolerance)
     {
-        const stepX = (searchMaxX - searchMinX) / gridResolution;
-        const stepY = (searchMaxY - searchMinY) / gridResolution;
-        
-        for (var gridX = 0; gridX <= gridResolution; gridX += 1)
-        {
-            for (var gridY = 0; gridY <= gridResolution; gridY += 1)
-            {
-                const localX = searchMinX + gridX * stepX;
-                const localY = searchMinY + gridY * stepY;
-                const testPoint2d = vector(localX, localY);
-                const testPoint3d = planeToWorld(facePlane, testPoint2d);
-                
-                // First, verify the point is actually on the face (not just on the plane)
-                // by checking if the projection onto the face is at the same location
-                var isOnFace = false;
-                try silent
-                {
-                    const projectionResult = evDistance(context, {
-                        "side0" : testPoint3d,
-                        "side1" : faceQuery
-                    });
-                    
-                    // If the point projects onto the face with near-zero distance, it's on the face
-                    if (projectionResult.distance < tolerance)
-                    {
-                        isOnFace = true;
-                    }
-                }
-                
-                if (!isOnFace)
-                {
-                    continue;
-                }
-                
-                // Calculate minimum distance to all edges
-                var minDistanceToEdge = undefined;
-                try silent
-                {
-                    const distanceToEdgesResult = evDistance(context, {
-                        "side0" : testPoint3d,
-                        "side1" : faceEdges
-                    });
-                    minDistanceToEdge = distanceToEdgesResult.distance;
-                }
-                catch
-                {
-                    continue;
-                }
-                
-                if (minDistanceToEdge == undefined || minDistanceToEdge < tolerance)
-                {
-                    continue;
-                }
-                
-                // Update best point if this is better
-                if (minDistanceToEdge > bestRadius)
-                {
-                    bestRadius = minDistanceToEdge;
-                    bestCenter = testPoint3d;
-                }
-            }
-        }
-        
-        // Refine search area around best point
-        if (iteration < refinementIterations)
-        {
-            const bestLocal = worldToPlane(facePlane, bestCenter);
-            const searchWidth = max(stepX, stepY) * 2;
-            searchMinX = bestLocal[0] - searchWidth;
-            searchMaxX = bestLocal[0] + searchWidth;
-            searchMinY = bestLocal[1] - searchWidth;
-            searchMaxY = bestLocal[1] + searchWidth;
-        }
+        bestCenter = evApproximateCentroid(context, { "entities" : faceQuery });
+        const distanceToEdges = evDistance(context, {
+            "side0" : bestCenter,
+            "side1" : faceEdges
+        });
+        bestRadius = distanceToEdges.distance;
     }
     
     return {

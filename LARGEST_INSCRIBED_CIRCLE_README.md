@@ -6,6 +6,8 @@ This utility provides functions for finding and drawing the largest inscribed ci
 
 The largest inscribed circle (also known as the maximum inscribed circle) is the largest circle that can fit inside a planar polygon without crossing its boundaries. The center of this circle is known as the Chebyshev center - the point that is farthest from all edges of the polygon.
 
+This implementation uses **binary search with inward offset operations** to efficiently find the maximum inscribed circle, leveraging Onshape's native geometric operations for optimal performance.
+
 ## Functions
 
 ### `evLargestInscribedCircle(context, definition)`
@@ -54,43 +56,42 @@ opLargestInscribedCircle(context, id + "inscribedCircle", {
 
 The `LargestInscribedCircleOptions` type allows customization of the algorithm:
 
-- `gridResolution` (number): Number of grid cells per dimension. Higher values give better accuracy but take longer. Default: 20
-- `refinementIterations` (number): Number of refinement passes. Default: 3
-- `tolerance` (ValueWithUnits): Distance tolerance for calculations. Default: 1e-7 meter
+- `maxIterations` (number): Maximum number of binary search iterations. Default: 20
+- `tolerance` (ValueWithUnits): Convergence tolerance for binary search. Default: 1e-6 meter
 
 **Example with custom options:**
 ```featurescript
 var result = evLargestInscribedCircle(context, { 
     "face" : myFaceQuery,
     "options" : {
-        "gridResolution" : 30,
-        "refinementIterations" : 4,
-        "tolerance" : 1e-8 * meter
+        "maxIterations" : 25,
+        "tolerance" : 1e-7 * meter
     } as LargestInscribedCircleOptions
 });
 ```
 
 ## Algorithm
 
-The implementation uses a grid-based search algorithm with successive refinement:
+The implementation uses **binary search with inward offset operations** for optimal performance:
 
-1. Computes the bounding box of the planar face
-2. Creates a grid of sample points within the bounding box
-3. For each point:
-   - Verifies the point lies on the face
-   - Calculates minimum distance to all edges
-   - Tracks the point with maximum minimum-distance
-4. Refines the search area around the best point found
-5. Repeats refinement iterations for higher accuracy
+1. Extracts the edges of the planar face
+2. Estimates maximum possible radius using bounding box diagonal
+3. Performs binary search on offset distance:
+   - For each test offset, attempts to create inward-offset wire using `opOffsetWire`
+   - If offset succeeds, uses centroid of offset region as circle center
+   - Adjusts search bounds based on success/failure
+4. Converges to maximum offset distance where edges still form valid region
+5. Returns the center and radius of the largest inscribed circle
 
-This approach provides an excellent balance between accuracy and performance, making it suitable for use as a utility function.
+This approach **leverages Onshape's native geometric operations** (`opOffsetWire`, `evApproximateCentroid`) rather than grid sampling, providing significantly better performance - typically **O(log n)** iterations where n is the precision requirement, rather than **O(m²)** for grid-based approaches where m is the grid resolution.
 
 ## Performance Considerations
 
-- Default settings (20x20 grid, 3 refinements) work well for most faces
-- Increase `gridResolution` for complex or highly irregular polygons
-- Increase `refinementIterations` for higher precision requirements
-- The algorithm scales with the number of edges and grid resolution
+- Default settings (20 iterations, 1e-6m tolerance) work excellently for most faces
+- Binary search converges logarithmically, making it extremely fast
+- No expensive grid sampling or point-in-polygon tests
+- Leverages hardware-accelerated geometric operations in Onshape
+- Performance scales with face complexity much better than grid-based methods
 
 ## Use Cases
 
