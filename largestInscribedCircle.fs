@@ -230,9 +230,19 @@ precondition
                 // Calculate angle bisector direction (average of two unit vectors)
                 var bisectorDir = normalize(dir1 + dir2);
                 
-                // For inscribed circle, we want bisectors pointing inward
-                // Check if the bisector points inward by testing against a reference point
-                // For now, process all vertices and let the distance calculation determine validity
+                // For inscribed circle, we want bisectors pointing inward (into the face)
+                // Check orientation: if cross product of dir1 and dir2 points same direction as face normal,
+                // then the bisector points outward (convex corner from exterior view), so flip it
+                const crossProduct = cross(dir1, dir2);
+                const dotWithNormal = dot(crossProduct, facePlane.normal);
+                
+                // If dot product is positive, dirs are ordered counterclockwise when viewed from normal direction
+                // This means the bisector points outward, so flip it to point inward
+                if (dotWithNormal > 0)
+                {
+                    bisectorDir = -bisectorDir;
+                }
+                
                 
                 println("DEBUG: Processing vertex at " ~ vertexPoint);
                 println("DEBUG:   dir1: " ~ dir1 ~ ", dir2: " ~ dir2);
