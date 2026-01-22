@@ -110,8 +110,9 @@ function evaluateCandidatePoint(context is Context, point is Vector, faceQuery i
 
 /**
  * Calculate the largest inscribed circle for a planar face.
- * Uses binary search with inward offset operations to efficiently find the maximum inscribed circle.
- * This approach leverages Onshape's native geometric operations for optimal performance.
+ * Uses angle bisector intersection method to find the optimal inscribed circle center.
+ * This approach finds bisector lines from convex corners and identifies the longest
+ * intersecting pair to determine the inscribed circle center and radius.
  * 
  * @param context {Context} : The context in which to evaluate.
  * @param definition {{
@@ -137,29 +138,18 @@ precondition
     const facePlane = evPlane(context, { "face" : faceQuery });
     
     // Set default options
-    const maxIterations = (definition.options != undefined && definition.options.maxIterations != undefined) ? 
-                         definition.options.maxIterations : 20;
     const tolerance = (definition.options != undefined && definition.options.tolerance != undefined) ? 
                      definition.options.tolerance : 1e-6 * meter;
     
     // Get all edges and vertices of the face
     const faceEdges = qAdjacent(faceQuery, AdjacencyType.EDGE, EntityType.EDGE);
     const faceVertices = qAdjacent(faceQuery, AdjacencyType.VERTEX, EntityType.VERTEX);
-    
-    // Collect candidate centers
-    var candidates = [];
-    
-    // Candidate 1: Face centroid (may be outside for concave faces)
-    const faceCentroid = evApproximateCentroid(context, { "entities" : faceQuery });
-    candidates = append(candidates, faceCentroid);
-    
-    // Candidate 2: Bounding box center
-    const boundingBox = evBox3d(context, { "topology" : faceQuery, "tight" : true });
-    const boxCenter = box3dCenter(boundingBox);
-    candidates = append(candidates, boxCenter);
-    
-    // Candidate 3: Sample points along angle bisectors at vertices
     const vertices = evaluateQuery(context, faceVertices);
+    const edges = evaluateQuery(context, faceEdges);
+    
+    // Build bisector information for convex corners
+    var bisectors = [];
+    
     for (var vertex in vertices)
     {
         try silent
@@ -185,107 +175,148 @@ precondition
                     "arcLengthParameterization" : false
                 });
                 
-                // Calculate angle bisector direction
+                // Calculate angle bisector direction (inward pointing for convex corners)
                 const dir1 = normalize(edge1Tangent.direction);
                 const dir2 = normalize(edge2Tangent.direction);
-                const bisector = normalize(dir1 + dir2);
+                var bisectorDir = normalize(dir1 + dir2);
                 
-                // Sample points along bisector at various distances
-                const maxDist = box3dDiagonalLength(boundingBox) / 4;
-                for (var distFactor = 0.1; distFactor <= 1.0; distFactor += 0.3)
+                // Check if this is a convex corner (bisector points inward)
+                // by checking if cross product with face normal has correct sign
+                const cross = cross(dir1, dir2);
+                const dotWithNormal = dot(cross, facePlane.normal);
+                
+                // If concave, flip bisector direction
+                if (dotWithNormal < 0)
                 {
-                    const testPoint = vertexPoint + bisector * maxDist * distFactor;
-                    candidates = append(candidates, testPoint);
+                    bisectorDir = -bisectorDir;
+                }
+                
+                // Find distance along bisector to nearest edge
+                // Cast a ray along bisector and find intersection with edges
+                var minDistToEdge = undefined;
+                
+                for (var edge in edges)
+                {
+                    try silent
+                    {
+                        // Get edge tangent at midpoint
+                        const edgeTangent = evEdgeTangentLine(context, {
+                            "edge" : edge,
+                            "parameter" : 0.5,
+                            "arcLengthParameterization" : true
+                        });
+                        
+                        // Calculate distance from vertex along bisector to this edge
+                        const distResult = evDistance(context, {
+                            "side0" : line(vertexPoint, bisectorDir),
+                            "side1" : edge
+                        });
+                        
+                        if (minDistToEdge == undefined || distResult.distance < minDistToEdge)
+                        {
+                            minDistToEdge = distResult.distance;
+                        }
+                    }
+                }
+                
+                if (minDistToEdge != undefined && minDistToEdge > tolerance)
+                {
+                    bisectors = append(bisectors, {
+                        "vertex" : vertexPoint,
+                        "direction" : bisectorDir,
+                        "distance" : minDistToEdge,
+                        "line" : line(vertexPoint, bisectorDir)
+                    });
                 }
             }
         }
     }
     
-    // Find best candidate from all samples
-    var bestRadius = 0 * meter;
-    var bestCenter = faceCentroid;
+    // Find the longest bisector
+    var longestBisector = undefined;
+    var longestDistance = 0 * meter;
     
-    for (var candidate in candidates)
+    for (var bisector in bisectors)
     {
-        const result = evaluateCandidatePoint(context, candidate, faceQuery, faceEdges, tolerance);
-        if (result.valid && result.radius > bestRadius)
+        if (bisector.distance > longestDistance)
         {
-            bestRadius = result.radius;
-            bestCenter = result.center;
+            longestDistance = bisector.distance;
+            longestBisector = bisector;
         }
     }
     
-    // Use binary search with offset to refine and find even better solutions
-    var minOffset = bestRadius;
-    var maxOffset = bestRadius * 2; // Search for potentially larger circles
-    
-    for (var iteration = 0; iteration < maxIterations; iteration += 1)
+    // If no valid bisectors found, fall back to centroid
+    if (longestBisector == undefined)
     {
-        // Check convergence
-        if (maxOffset - minOffset < tolerance)
+        const centroid = evApproximateCentroid(context, { "entities" : faceQuery });
+        const distToEdges = evDistance(context, {
+            "side0" : centroid,
+            "side1" : faceEdges
+        });
+        
+        return {
+            "center" : centroid,
+            "radius" : max(distToEdges.distance, tolerance),
+            "plane" : facePlane
+        } as LargestInscribedCircleResult;
+    }
+    
+    // Find bisectors that intersect with the longest bisector
+    var bestRadius = longestDistance;
+    var bestCenter = longestBisector.vertex + longestBisector.direction * longestDistance;
+    
+    // Check intersections with other bisectors
+    for (var bisector in bisectors)
+    {
+        if (bisector != longestBisector)
         {
-            break;
-        }
-        
-        const testOffset = (minOffset + maxOffset) / 2;
-        
-        // Try to create inward offset of the face edges
-        const testId = "testOffset" ~ iteration;
-        var offsetSucceeded = false;
-        
-        try silent
-        {
-            // Create offset wire inward
-            opOffsetWire(context, testId, {
-                "edges" : faceEdges,
-                "normal" : facePlane.normal,
-                "offset1" : -testOffset,  // Negative for inward offset
-                "offset2" : 0 * meter
-            });
+            // Find intersection point between the two bisector lines
+            // Using line-line closest point approach
+            const line1 = longestBisector.line;
+            const line2 = bisector.line;
             
-            // Check if offset wire was created successfully
-            const offsetWire = qCreatedBy(testId, EntityType.BODY);
-            if (!isQueryEmpty(context, offsetWire))
+            // Calculate intersection in 3D (projected to plane)
+            const p1 = line1.origin;
+            const d1 = line1.direction;
+            const p2 = line2.origin;
+            const d2 = line2.direction;
+            
+            // Solve for intersection: p1 + t1*d1 = p2 + t2*d2
+            // Project to 2D on face plane for easier calculation
+            const p1_2d = worldToPlane(facePlane, p1);
+            const p2_2d = worldToPlane(facePlane, p2);
+            const d1_2d = vector(dot(d1, facePlane.x), dot(d1, facePlane.y));
+            const d2_2d = vector(dot(d2, facePlane.x), dot(d2, facePlane.y));
+            
+            // Solve 2D line intersection
+            const denom = d1_2d[0] * d2_2d[1] - d1_2d[1] * d2_2d[0];
+            
+            if (abs(denom) > 1e-10)
             {
-                // Calculate center candidates from offset region
-                const offsetEdges = qOwnedByBody(offsetWire, EntityType.EDGE);
-                const offsetBox = evBox3d(context, { "topology" : offsetEdges, "tight" : true });
-                const offsetBoxCenter = box3dCenter(offsetBox);
+                const t1 = ((p2_2d[0] - p1_2d[0]) * d2_2d[1] - (p2_2d[1] - p1_2d[1]) * d2_2d[0]) / denom;
+                const t2 = ((p2_2d[0] - p1_2d[0]) * d1_2d[1] - (p2_2d[1] - p1_2d[1]) * d1_2d[0]) / denom;
                 
-                // Project to face plane
-                const localCenter2D = worldToPlane(facePlane, offsetBoxCenter);
-                const projectedCenter = planeToWorld(facePlane, localCenter2D);
-                
-                // Evaluate this center
-                const centerResult = evaluateCandidatePoint(context, projectedCenter, faceQuery, faceEdges, tolerance);
-                
-                if (centerResult.valid && centerResult.radius > bestRadius)
+                // Check if intersection is valid (positive parameters)
+                if (t1 > 0 && t2 > 0)
                 {
-                    bestRadius = centerResult.radius;
-                    bestCenter = projectedCenter;
-                    minOffset = testOffset; // Can try larger offset
-                    offsetSucceeded = true;
-                }
-                else
-                {
-                    // This offset didn't improve, try smaller
-                    maxOffset = testOffset;
+                    // Calculate intersection point
+                    const intersection2d = p1_2d + t1 * d1_2d;
+                    const intersectionPoint = planeToWorld(facePlane, intersection2d);
+                    
+                    // Validate this point and get its radius
+                    const result = evaluateCandidatePoint(context, intersectionPoint, faceQuery, faceEdges, tolerance);
+                    
+                    if (result.valid && result.radius > bestRadius)
+                    {
+                        bestRadius = result.radius;
+                        bestCenter = intersectionPoint;
+                    }
                 }
             }
-            
-            // Clean up test geometry
-            opDeleteBodies(context, testId + "delete", {
-                "entities" : qCreatedBy(testId, EntityType.BODY)
-            });
-        }
-        catch
-        {
-            // Offset failed, try smaller offset
-            maxOffset = testOffset;
         }
     }
     
-    // Final validation: ensure center is on face and radius is correct
+    // Final validation
     const finalResult = evaluateCandidatePoint(context, bestCenter, faceQuery, faceEdges, tolerance);
     if (finalResult.valid)
     {
