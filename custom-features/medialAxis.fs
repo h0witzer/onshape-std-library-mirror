@@ -102,11 +102,11 @@ export const medialAxis = defineFeature(function(context is Context, id is Id, d
  * 
  * @param context : The context
  * @param boundaryEdges : Array of boundary edge queries
- * @param facePlane : The plane of the face
- * @param stepSize : Step size for tracing along edges
- * @param tolerance : Tolerance for distance equality check
+ * @param facePlane : The plane of the face (normal and x are unitless, origin has length units)
+ * @param stepSize : Step size for tracing along edges (ValueWithUnits - length)
+ * @param tolerance : Tolerance for distance equality check (ValueWithUnits - length)
  * 
- * @returns Array of medial axis points with positions and radii
+ * @returns Array of medial axis points with positions (ValueWithUnits - length) and radii (ValueWithUnits - length)
  */
 function traceMedialAxisByNormals(context is Context, boundaryEdges is array, facePlane is Plane, stepSize is ValueWithUnits, tolerance is ValueWithUnits) returns array
 {
@@ -231,10 +231,10 @@ function traceMedialAxisByNormals(context is Context, boundaryEdges is array, fa
  * Computes the inward normal to an edge in a planar face.
  * The normal is perpendicular to the edge tangent and lies in the face plane.
  * 
- * @param tangent : Tangent vector to the edge
- * @param facePlane : Plane of the face
+ * @param tangent : Tangent vector to the edge (unitless direction vector)
+ * @param facePlane : Plane of the face (normal and x are unitless)
  * 
- * @returns Inward normal vector (unit vector)
+ * @returns Inward normal vector (unitless unit vector)
  */
 function computeInwardNormal(tangent is Vector, facePlane is Plane) returns Vector
 {
@@ -259,13 +259,13 @@ function computeInwardNormal(tangent is Vector, facePlane is Plane) returns Vect
  * Finds the intersection point of two lines in 3D space projected onto a plane.
  * Uses least squares approach for non-intersecting lines.
  * 
- * @param point1 : Point on first line
- * @param direction1 : Direction of first line
- * @param point2 : Point on second line  
- * @param direction2 : Direction of second line
- * @param plane : Plane to project onto
+ * @param point1 : Point on first line (ValueWithUnits - length, 3D position)
+ * @param direction1 : Direction of first line (unitless, 3D direction vector)
+ * @param point2 : Point on second line (ValueWithUnits - length, 3D position)
+ * @param direction2 : Direction of second line (unitless, 3D direction vector)
+ * @param plane : Plane to project onto (normal and x are unitless, origin has length units)
  * 
- * @returns Intersection point (Vector), or undefined if lines are parallel
+ * @returns Intersection point (Vector with ValueWithUnits - length), or undefined if lines are parallel
  */
 function intersectLines(point1 is Vector, direction1 is Vector, point2 is Vector, direction2 is Vector, plane is Plane)
 {
@@ -287,9 +287,10 @@ function intersectLines(point1 is Vector, direction1 is Vector, point2 is Vector
     
     // Convert 3D directions to 2D plane coordinates
     // We need to express the directions in the plane's coordinate system
-    // Use the plane's x and y axes to get 2D components
-    const d1_2d = vector(dot(d1_3d, plane.x), dot(d1_3d, plane.y));
-    const d2_2d = vector(dot(d2_3d, plane.x), dot(d2_3d, plane.y));
+    // Compute the y-axis of the plane as cross(normal, x)
+    const planeY = cross(plane.normal, plane.x);
+    const d1_2d = vector(dot(d1_3d, plane.x), dot(d1_3d, planeY));
+    const d2_2d = vector(dot(d2_3d, plane.x), dot(d2_3d, planeY));
     
     // Solve for intersection in 2D: p1 + t1*d1 = p2 + t2*d2
     // This gives: t1*d1 - t2*d2 = p2 - p1
@@ -322,9 +323,9 @@ function intersectLines(point1 is Vector, direction1 is Vector, point2 is Vector
  * 
  * @param context : The context
  * @param edge : The boundary edge
- * @param parameter : Parameter on the edge
- * @param diskRadius : Radius of the maximal disk
- * @param tolerance : Tolerance for comparison
+ * @param parameter : Parameter on the edge (unitless, 0 to 1)
+ * @param diskRadius : Radius of the maximal disk (ValueWithUnits - length)
+ * @param tolerance : Tolerance for comparison (ValueWithUnits - length)
  * 
  * @returns true if criterion is satisfied, false otherwise
  */
@@ -360,7 +361,7 @@ function checkCurvatureCriterion(context is Context, edge is Query, parameter is
  * 
  * @param context : The context
  * @param id : The feature id
- * @param medialPoints : Array of medial axis points
+ * @param medialPoints : Array of medial axis points (each with position: Vector with ValueWithUnits - length, radius: ValueWithUnits - length)
  * @param createComposite : Whether to create a composite curve
  */
 function createMedialAxisCurves(context is Context, id is Id, medialPoints is array, createComposite is boolean)
@@ -435,8 +436,8 @@ function createMedialAxisCurves(context is Context, id is Id, medialPoints is ar
 /**
  * Removes duplicate points from the medial axis point set.
  * 
- * @param points : Array of points
- * @param tolerance : Distance tolerance for considering points duplicates
+ * @param points : Array of points (each with position: Vector with ValueWithUnits - length)
+ * @param tolerance : Distance tolerance for considering points duplicates (ValueWithUnits - length)
  * 
  * @returns Array of unique points
  */
@@ -476,8 +477,8 @@ function removeDuplicatePoints(points is array, tolerance is ValueWithUnits) ret
  * Connects medial axis points into chains based on proximity.
  * Uses a greedy nearest-neighbor approach to build connected chains.
  * 
- * @param medialPoints : Array of medial axis points
- * @param maxDistance : Maximum distance to consider points connected
+ * @param medialPoints : Array of medial axis points (each with position: Vector with ValueWithUnits - length)
+ * @param maxDistance : Maximum distance to consider points connected (ValueWithUnits - length)
  * 
  * @returns Array of chains (each chain is an array of points)
  */
