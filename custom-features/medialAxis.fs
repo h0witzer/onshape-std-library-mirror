@@ -179,8 +179,24 @@ function traceMedialAxisByNormals(context is Context, boundaryEdges is array, fa
                         continue;
                     
                     // Check distance criterion: point should be equidistant from both edges
-                    const dist1 = norm(intersection - point1);
-                    const dist2 = norm(intersection - point2);
+                    // Use squaredNorm for performance (avoids sqrt)
+                    const distSquared1 = squaredNorm(intersection - point1);
+                    const distSquared2 = squaredNorm(intersection - point2);
+                    
+                    // Check if approximately equal: |dist1 - dist2| < tolerance
+                    // Equivalent to: |dist1^2 - dist2^2| < (dist1 + dist2) * tolerance
+                    // For small differences, we can approximate with: |dist1^2 - dist2^2| < 2*dist1*tolerance
+                    const toleranceSquared = tolerance * tolerance;
+                    const avgDistSquared = (distSquared1 + distSquared2) / 2;
+                    const diffSquared = abs(distSquared1 - distSquared2);
+                    
+                    // Only compute sqrt if the squared difference check passes a rough threshold
+                    if (diffSquared > 4 * avgDistSquared * toleranceSquared)
+                        continue;
+                    
+                    // Now verify with actual distances
+                    const dist1 = sqrt(distSquared1);
+                    const dist2 = sqrt(distSquared2);
                     
                     if (abs(dist1 - dist2) > tolerance)
                         continue;
@@ -219,7 +235,11 @@ function computeInwardNormal(tangent is Vector, facePlane is Plane) returns Vect
     // Cross product of face normal and edge tangent gives perpendicular in plane
     var perpendicular = cross(facePlane.normal, tangent);
     
-    if (norm(perpendicular) < TOLERANCE.zeroLength * meter)
+    // Use squaredNorm for performance
+    const perpendicularLengthSquared = squaredNorm(perpendicular);
+    const zeroLengthSquared = TOLERANCE.zeroLength * TOLERANCE.zeroLength * meter * meter;
+    
+    if (perpendicularLengthSquared < zeroLengthSquared)
     {
         // Tangent parallel to face normal - shouldn't happen for planar face
         // Return arbitrary perpendicular
@@ -243,9 +263,12 @@ function computeInwardNormal(tangent is Vector, facePlane is Plane) returns Vect
  */
 function intersectLines(point1 is Vector, direction1 is Vector, point2 is Vector, direction2 is Vector, plane is Plane) returns Vector
 {
-    // Check if directions are parallel
+    // Check if directions are parallel using squaredNorm for performance
     const crossProd = cross(direction1, direction2);
-    if (norm(crossProd) < TOLERANCE.zeroLength * meter)
+    const crossProdLengthSquared = squaredNorm(crossProd);
+    const zeroLengthSquared = TOLERANCE.zeroLength * TOLERANCE.zeroLength * meter * meter;
+    
+    if (crossProdLengthSquared < zeroLengthSquared)
         return undefined;
     
     // Convert to 2D in plane coordinate system
@@ -415,6 +438,7 @@ function removeDuplicatePoints(points is array, tolerance is ValueWithUnits) ret
         return [];
     
     var uniquePoints = [points[0]];
+    const toleranceSquared = tolerance * tolerance;
     
     for (var i = 1; i < size(points); i += 1)
     {
@@ -422,7 +446,9 @@ function removeDuplicatePoints(points is array, tolerance is ValueWithUnits) ret
         
         for (var uniquePt in uniquePoints)
         {
-            if (norm(points[i].position - uniquePt.position) < tolerance)
+            // Use squaredNorm for performance
+            const distanceSquared = squaredNorm(points[i].position - uniquePt.position);
+            if (distanceSquared < toleranceSquared)
             {
                 isDuplicate = true;
                 break;
@@ -461,6 +487,8 @@ function connectMedialPoints(medialPoints is array, maxDistance is ValueWithUnit
         used = append(used, false);
     }
     
+    const maxDistanceSquared = maxDistance * maxDistance;
+    
     // Build chains by connecting nearby points
     for (var i = 0; i < size(medialPoints); i += 1)
     {
@@ -477,18 +505,18 @@ function connectMedialPoints(medialPoints is array, maxDistance is ValueWithUnit
             growing = false;
             const lastPoint = chain[size(chain) - 1];
             var nearestIndex = -1;
-            var nearestDist = maxDistance;
+            var nearestDistSquared = maxDistanceSquared;
             
-            // Find nearest unused point
+            // Find nearest unused point using squaredNorm for performance
             for (var j = 0; j < size(medialPoints); j += 1)
             {
                 if (used[j])
                     continue;
                 
-                const dist = norm(lastPoint.position - medialPoints[j].position);
-                if (dist < nearestDist)
+                const distSquared = squaredNorm(lastPoint.position - medialPoints[j].position);
+                if (distSquared < nearestDistSquared)
                 {
-                    nearestDist = dist;
+                    nearestDistSquared = distSquared;
                     nearestIndex = j;
                 }
             }
