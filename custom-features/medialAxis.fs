@@ -16,7 +16,7 @@ import(path : "onshape/std/projectiontype.gen.fs", version : "2837.0");
  * 
  * The medial axis is computed by:
  * 1. Under-extruding the face profile normally to a conservative distance
- * 2. Deleting the end cap face to open the extrusion
+ * 2. Deleting and healing the end cap face
  * 3. Applying a 45-degree draft to all side faces, naturally creating peaks
  * 4. Querying all edges from the drafted body
  * 5. Filtering out edges that are vertex-adjacent to the start cap face
@@ -61,14 +61,14 @@ export const medialAxis = defineFeature(function(context is Context, id is Id, d
         
         const extrudedBody = qCreatedBy(id + "extrude", EntityType.BODY);
         
-        // Step 1.5: Delete the end cap face to open up the extrusion
+        // Step 1.5: Delete the end cap face and heal the void
         // This prevents overshooting and allows the draft to naturally create peaks
         const endCapFace = qCapEntity(id + "extrude", CapType.END, EntityType.FACE);
         opDeleteFace(context, id + "deleteEndCap", {
             "deleteFaces" : endCapFace,
             "includeFillet" : false,
             "capVoid" : false,
-            "leaveOpen" : true
+            "leaveOpen" : false
         });
         
         // Step 2: Apply 45-degree inward draft to create a tapered body
