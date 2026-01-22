@@ -152,15 +152,22 @@ precondition
     // Step 1: Build bisector information for convex corners
     var bisectors = [];
     
+    println("DEBUG: Number of vertices: " ~ size(vertices));
+    println("DEBUG: Number of edges: " ~ size(edges));
+    
     for (var vertex in vertices)
     {
-        try silent
+        println("DEBUG: Starting to process a vertex...");
+        try
         {
             const vertexPoint = evVertexPoint(context, { "vertex" : vertex });
+            println("DEBUG: Vertex point: " ~ vertexPoint);
             
             // Get adjacent edges to this vertex
             const adjacentEdges = qAdjacent(vertex, AdjacencyType.VERTEX, EntityType.EDGE);
             const adjacentEdgesList = evaluateQuery(context, adjacentEdges);
+            
+            println("DEBUG: Number of adjacent edges: " ~ size(adjacentEdgesList));
             
             if (size(adjacentEdgesList) == 2)
             {
@@ -280,6 +287,14 @@ precondition
                     println("DEBUG:   Rejected bisector (minDistToEdge too small or undefined)");
                 }
             }
+            else
+            {
+                println("DEBUG: Vertex has " ~ size(adjacentEdgesList) ~ " adjacent edges (expected 2)");
+            }
+        }
+        catch (error)
+        {
+            println("DEBUG: ERROR processing vertex: " ~ error);
         }
     }
     
@@ -319,7 +334,6 @@ precondition
     
     // Step 3: Find all bisectors that intersect with the longest bisector
     // and identify the longest among those
-    var longestIntersectingBisector = undefined;
     var longestIntersectingDistance = 0 * meter;
     var bestIntersectionPoint = undefined;
     
@@ -357,7 +371,6 @@ precondition
                     if (bisector.distance > longestIntersectingDistance)
                     {
                         longestIntersectingDistance = bisector.distance;
-                        longestIntersectingBisector = bisector;
                         
                         // Calculate intersection point
                         const intersection2d = p1_2d + t1 * d1_2d;
