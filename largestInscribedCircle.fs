@@ -219,62 +219,65 @@ precondition
                 // Calculate angle bisector direction (average of two unit vectors)
                 var bisectorDir = normalize(dir1 + dir2);
                 
-                // Check if this is a convex corner
-                // Cross product tells us about the turn direction
-                const crossProd = cross(dir1, dir2);
-                const turnDirection = dot(crossProd, facePlane.normal);
+                // For inscribed circle, we want bisectors pointing inward
+                // Check if the bisector points inward by testing against a reference point
+                // For now, process all vertices and let the distance calculation determine validity
                 
-                // If turn direction is positive, it's a left turn (convex)
-                // If negative, it's a right turn (reflex/concave)
-                // For a convex corner, the bisector points inward
-                const isConvex = turnDirection > 0;
+                println("DEBUG: Processing vertex at " ~ vertexPoint);
+                println("DEBUG:   dir1: " ~ dir1 ~ ", dir2: " ~ dir2);
+                println("DEBUG:   bisectorDir: " ~ bisectorDir);
                 
-                // Only process convex corners
-                if (isConvex)
+                // Cast ray from vertex along bisector to find distance to opposite edge
+                var minDistToEdge = undefined;
+                
+                for (var edge in edges)
                 {
-                    // Cast ray from vertex along bisector to find distance to opposite edge
-                    var minDistToEdge = undefined;
-                    
-                    for (var edge in edges)
+                    // Skip adjacent edges
+                    var isAdjacent = false;
+                    for (var adjEdge in adjacentEdgesList)
                     {
-                        // Skip adjacent edges
-                        var isAdjacent = false;
-                        for (var adjEdge in adjacentEdgesList)
+                        if (edge == adjEdge)
                         {
-                            if (edge == adjEdge)
-                            {
-                                isAdjacent = true;
-                                break;
-                            }
-                        }
-                        
-                        if (!isAdjacent)
-                        {
-                            try silent
-                            {
-                                // Calculate distance from vertex along bisector to this edge
-                                const distResult = evDistance(context, {
-                                    "side0" : line(vertexPoint, bisectorDir),
-                                    "side1" : edge
-                                });
-                                
-                                if (minDistToEdge == undefined || distResult.distance < minDistToEdge)
-                                {
-                                    minDistToEdge = distResult.distance;
-                                }
-                            }
+                            isAdjacent = true;
+                            break;
                         }
                     }
                     
-                    if (minDistToEdge != undefined && minDistToEdge > tolerance)
+                    if (!isAdjacent)
                     {
-                        bisectors = append(bisectors, {
-                            "vertex" : vertexPoint,
-                            "direction" : bisectorDir,
-                            "distance" : minDistToEdge,
-                            "line" : line(vertexPoint, bisectorDir)
-                        });
+                        try silent
+                        {
+                            // Calculate distance from vertex along bisector to this edge
+                            const distResult = evDistance(context, {
+                                "side0" : line(vertexPoint, bisectorDir),
+                                "side1" : edge
+                            });
+                            
+                            println("DEBUG:     Distance to edge: " ~ distResult.distance);
+                            
+                            if (minDistToEdge == undefined || distResult.distance < minDistToEdge)
+                            {
+                                minDistToEdge = distResult.distance;
+                            }
+                        }
                     }
+                }
+                
+                println("DEBUG:   minDistToEdge: " ~ minDistToEdge);
+                
+                if (minDistToEdge != undefined && minDistToEdge > tolerance)
+                {
+                    bisectors = append(bisectors, {
+                        "vertex" : vertexPoint,
+                        "direction" : bisectorDir,
+                        "distance" : minDistToEdge,
+                        "line" : line(vertexPoint, bisectorDir)
+                    });
+                    println("DEBUG:   Added bisector!");
+                }
+                else
+                {
+                    println("DEBUG:   Rejected bisector (minDistToEdge too small or undefined)");
                 }
             }
         }
