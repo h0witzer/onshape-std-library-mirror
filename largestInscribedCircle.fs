@@ -253,16 +253,8 @@ precondition
                 
                 for (var edge in edges)
                 {
-                    // Skip adjacent edges
-                    var isAdjacent = false;
-                    for (var adjEdge in adjacentEdgesList)
-                    {
-                        if (edge == adjEdge)
-                        {
-                            isAdjacent = true;
-                            break;
-                        }
-                    }
+                    // Skip adjacent edges - use qContains to check membership
+                    const isAdjacent = qContains(adjacentEdges, edge);
                     
                     if (!isAdjacent)
                     {
@@ -274,13 +266,17 @@ precondition
                                 "side1" : edge
                             });
                             
-                            println("DEBUG:     Distance to edge: " ~ distResult.distance);
+                            println("DEBUG:     Distance to edge (non-adjacent): " ~ distResult.distance);
                             
                             if (minDistToEdge == undefined || distResult.distance < minDistToEdge)
                             {
                                 minDistToEdge = distResult.distance;
                             }
                         }
+                    }
+                    else
+                    {
+                        println("DEBUG:     Skipping adjacent edge");
                     }
                 }
                 
@@ -330,20 +326,10 @@ precondition
         }
     }
     
-    // If no valid bisectors found, fall back to centroid
+    // If no valid bisectors found, fail the feature
     if (longestBisector == undefined)
     {
-        const centroid = evApproximateCentroid(context, { "entities" : faceQuery });
-        const distToEdges = evDistance(context, {
-            "side0" : centroid,
-            "side1" : faceEdges
-        });
-        
-        return {
-            "center" : centroid,
-            "radius" : max(distToEdges.distance, tolerance),
-            "plane" : facePlane
-        } as LargestInscribedCircleResult;
+        throw regenError("No valid angle bisectors found. Unable to compute inscribed circle for this face geometry.");
     }
     
     // Step 3: Find all bisectors that intersect with the longest bisector
