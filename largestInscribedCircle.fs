@@ -164,32 +164,70 @@ precondition
             
             if (size(adjacentEdgesList) == 2)
             {
-                // Get tangent directions at vertex (pointing away from vertex)
-                const edge1Tangent = evEdgeTangentLine(context, {
+                // Get edge tangent lines at the vertex
+                // Need to determine which direction points away from the vertex
+                var dir1 = undefined;
+                var dir2 = undefined;
+                
+                // For first edge
+                const edge1Start = evEdgeTangentLine(context, {
                     "edge" : adjacentEdgesList[0],
-                    "parameter" : 0.01,
-                    "arcLengthParameterization" : false
+                    "parameter" : 0.0
+                });
+                const edge1End = evEdgeTangentLine(context, {
+                    "edge" : adjacentEdgesList[0],
+                    "parameter" : 1.0
                 });
                 
-                const edge2Tangent = evEdgeTangentLine(context, {
+                // Check which end is closer to our vertex
+                const dist1Start = norm(edge1Start.origin - vertexPoint);
+                const dist1End = norm(edge1End.origin - vertexPoint);
+                
+                if (dist1Start < dist1End)
+                {
+                    // Vertex is at start, direction points away
+                    dir1 = normalize(edge1Start.direction);
+                }
+                else
+                {
+                    // Vertex is at end, direction points toward, so flip
+                    dir1 = -normalize(edge1End.direction);
+                }
+                
+                // For second edge
+                const edge2Start = evEdgeTangentLine(context, {
                     "edge" : adjacentEdgesList[1],
-                    "parameter" : 0.01,
-                    "arcLengthParameterization" : false
+                    "parameter" : 0.0
+                });
+                const edge2End = evEdgeTangentLine(context, {
+                    "edge" : adjacentEdgesList[1],
+                    "parameter" : 1.0
                 });
                 
-                // Calculate angle bisector direction
-                const dir1 = normalize(edge1Tangent.direction);
-                const dir2 = normalize(edge2Tangent.direction);
+                const dist2Start = norm(edge2Start.origin - vertexPoint);
+                const dist2End = norm(edge2End.origin - vertexPoint);
+                
+                if (dist2Start < dist2End)
+                {
+                    dir2 = normalize(edge2Start.direction);
+                }
+                else
+                {
+                    dir2 = -normalize(edge2End.direction);
+                }
+                
+                // Calculate angle bisector direction (average of two unit vectors)
                 var bisectorDir = normalize(dir1 + dir2);
                 
-                // Check if this is a convex corner by checking angle
-                // If dot product is negative, it's a reflex angle (concave)
-                const dotProduct = dot(dir1, dir2);
-                
-                // For convex corners, bisector should point inward
-                // Check using cross product with face normal
+                // Check if this is a convex corner
+                // Cross product tells us about the turn direction
                 const crossProd = cross(dir1, dir2);
-                const isConvex = dot(crossProd, facePlane.normal) > 0;
+                const turnDirection = dot(crossProd, facePlane.normal);
+                
+                // If turn direction is positive, it's a left turn (convex)
+                // If negative, it's a right turn (reflex/concave)
+                // For a convex corner, the bisector points inward
+                const isConvex = turnDirection > 0;
                 
                 // Only process convex corners
                 if (isConvex)
@@ -241,6 +279,9 @@ precondition
             }
         }
     }
+    
+    // Debug: Print bisector count
+    println("DEBUG: Found " ~ size(bisectors) ~ " convex corner bisectors");
     
     // Step 2: Find the longest bisector
     var longestBisector = undefined;
