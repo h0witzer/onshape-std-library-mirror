@@ -89,6 +89,9 @@ export const medialAxis = defineFeature(function(context is Context, id is Id, d
         createComposite : true
     });
 
+// Helper constant for squared zero length tolerance (used in multiple places)
+const ZERO_LENGTH_SQUARED = TOLERANCE.zeroLength * TOLERANCE.zeroLength * meter * meter;
+
 /**
  * Traces the medial axis by finding intersections of normals from boundary edge pairs.
  * This implements the core algorithm from the paper.
@@ -183,14 +186,18 @@ function traceMedialAxisByNormals(context is Context, boundaryEdges is array, fa
                     const distSquared1 = squaredNorm(intersection - point1);
                     const distSquared2 = squaredNorm(intersection - point2);
                     
-                    // Check if approximately equal: |dist1 - dist2| < tolerance
-                    // Equivalent to: |dist1^2 - dist2^2| < (dist1 + dist2) * tolerance
-                    // For small differences, we can approximate with: |dist1^2 - dist2^2| < 2*dist1*tolerance
+                    // Early rejection using squared distances to avoid sqrt when possible
+                    // We want: |sqrt(d1^2) - sqrt(d2^2)| < tolerance
+                    // A conservative approximation: if |d1^2 - d2^2| is large relative to the
+                    // distances, then the difference in distances will also be large.
                     const toleranceSquared = tolerance * tolerance;
                     const avgDistSquared = (distSquared1 + distSquared2) / 2;
                     const diffSquared = abs(distSquared1 - distSquared2);
                     
-                    // Only compute sqrt if the squared difference check passes a rough threshold
+                    // Conservative early rejection: if squared difference > 4 * avgDist * tolerance^2
+                    // This is derived from: |d1 - d2| ≈ |d1^2 - d2^2| / (d1 + d2) for d1 ≈ d2
+                    // Rearranging: |d1^2 - d2^2| ≈ (d1 + d2) * |d1 - d2| ≈ 2*avgDist * tolerance
+                    // Using factor of 4 for safety margin to avoid false rejections
                     if (diffSquared > 4 * avgDistSquared * toleranceSquared)
                         continue;
                     
@@ -237,9 +244,8 @@ function computeInwardNormal(tangent is Vector, facePlane is Plane) returns Vect
     
     // Use squaredNorm for performance
     const perpendicularLengthSquared = squaredNorm(perpendicular);
-    const zeroLengthSquared = TOLERANCE.zeroLength * TOLERANCE.zeroLength * meter * meter;
     
-    if (perpendicularLengthSquared < zeroLengthSquared)
+    if (perpendicularLengthSquared < ZERO_LENGTH_SQUARED)
     {
         // Tangent parallel to face normal - shouldn't happen for planar face
         // Return arbitrary perpendicular
@@ -266,9 +272,8 @@ function intersectLines(point1 is Vector, direction1 is Vector, point2 is Vector
     // Check if directions are parallel using squaredNorm for performance
     const crossProd = cross(direction1, direction2);
     const crossProdLengthSquared = squaredNorm(crossProd);
-    const zeroLengthSquared = TOLERANCE.zeroLength * TOLERANCE.zeroLength * meter * meter;
     
-    if (crossProdLengthSquared < zeroLengthSquared)
+    if (crossProdLengthSquared < ZERO_LENGTH_SQUARED)
         return undefined;
     
     // Convert to 2D in plane coordinate system
