@@ -163,8 +163,12 @@ precondition
             const vertexPoint = evVertexPoint(context, { "vertex" : vertex });
             println("DEBUG: Vertex point: " ~ vertexPoint);
             
-            // Get adjacent edges to this vertex
-            const adjacentEdges = qAdjacent(vertex, AdjacencyType.VERTEX, EntityType.EDGE);
+            // Get edges of the face that are adjacent to this vertex
+            // Use qIntersection to get only face edges that touch this vertex
+            const adjacentEdges = qIntersection([
+                faceEdges,
+                qAdjacent(vertex, AdjacencyType.VERTEX, EntityType.EDGE)
+            ]);
             const adjacentEdgesList = evaluateQuery(context, adjacentEdges);
             
             println("DEBUG: Number of adjacent edges: " ~ size(adjacentEdgesList));
