@@ -17,9 +17,9 @@ import(path : "onshape/std/projectiontype.gen.fs", version : "2837.0");
  * The medial axis is computed by:
  * 1. Under-extruding the face profile normally to a conservative distance
  * 2. Applying a 45-degree draft to all side faces, creating peaks
- * 3. Querying peak edges from the drafted body
- * 4. Moving the end cap face by the diagonal distance to regenerate peaks
- * 5. Combining peak edges with edges created by the move operation
+ * 3. Trying to delete the end cap face; if that fails, moving it by the diagonal distance
+ * 4. Querying peak edges from the resulting geometry
+ * 5. Combining peak edges with edges created by the delete/move operation
  * 6. Projecting all medial edges back onto the input face
  * 
  * @param context {Context}: The context of the feature
@@ -89,29 +89,46 @@ export const medialAxis = defineFeature(function(context is Context, id is Id, d
             // The undrafted extrusion may still provide useful edges
         }
         
-        // Step 3: Query all edges from the drafted body
-        const allEdgesAfterDraft = qOwnedByBody(extrudedBody, EntityType.EDGE);
+        // Step 3: Try to delete the end cap face first, fall back to move face if that fails
+        // Either operation will regenerate peaks where the geometry meets the drafted walls
+        var deleteFaceSucceeded = false;
+        try
+        {
+            opDeleteFace(context, id + "deleteEndCap", {
+                "deleteFaces" : endCapFace,
+                "includeFillet" : false,
+                "capVoid" : false,
+                "leaveOpen" : false
+            });
+            deleteFaceSucceeded = true;
+        }
+        catch
+        {
+            // Delete face failed, fall back to move face operation
+            const moveTransform = transform(facePlane.normal * moveDistance);
+            opMoveFace(context, id + "moveEndCap", {
+                "moveFaces" : endCapFace,
+                "transform" : moveTransform
+            });
+        }
         
-        // Step 4: Filter out edges that are vertex-adjacent to the start cap face
+        // Step 4: Query all edges from the body after delete/move operation
+        // Peak edges now exist after the end cap has been modified
+        const allEdgesAfterOperation = qOwnedByBody(extrudedBody, EntityType.EDGE);
+        
+        // Step 5: Filter out edges that are vertex-adjacent to the start cap face
         const edgesAdjacentToStartCap = qAdjacent(startCapFace, AdjacencyType.VERTEX, EntityType.EDGE);
         
         // Get the peak edges by subtracting edges adjacent to the start cap
-        // from all edges in the drafted body
-        const peakEdges = qSubtraction(allEdgesAfterDraft, edgesAdjacentToStartCap);
+        const peakEdges = qSubtraction(allEdgesAfterOperation, edgesAdjacentToStartCap);
         
-        // Step 5: Move the end cap face by the diagonal distance to regenerate peaks
-        // This operation will create new edges where the moved face meets the drafted walls
-        const moveTransform = transform(facePlane.normal * moveDistance);
-        opMoveFace(context, id + "moveEndCap", {
-            "moveFaces" : endCapFace,
-            "transform" : moveTransform
-        });
+        // Step 6: Query edges created by the delete or move operation
+        const edgesCreatedByOperation = deleteFaceSucceeded ? 
+            qCreatedBy(id + "deleteEndCap", EntityType.EDGE) : 
+            qCreatedBy(id + "moveEndCap", EntityType.EDGE);
         
-        // Step 6: Query edges created by the move face operation
-        const edgesCreatedByMove = qCreatedBy(id + "moveEndCap", EntityType.EDGE);
-        
-        // Combine peak edges from draft with edges created by move face
-        const allMedialEdges = qUnion([peakEdges, edgesCreatedByMove]);
+        // Combine peak edges with edges created by the operation
+        const allMedialEdges = qUnion([peakEdges, edgesCreatedByOperation]);
         
         if (isQueryEmpty(context, allMedialEdges))
         {
