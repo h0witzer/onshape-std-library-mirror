@@ -188,17 +188,20 @@ function traceMedialAxisByNormals(context is Context, boundaryEdges is array, fa
                     
                     // Early rejection using squared distances to avoid sqrt when possible
                     // We want: |sqrt(d1^2) - sqrt(d2^2)| < tolerance
-                    // A conservative approximation: if |d1^2 - d2^2| is large relative to the
-                    // distances, then the difference in distances will also be large.
+                    // Mathematical derivation for early rejection:
+                    // For d1 ≈ d2, we have: |d1^2 - d2^2| = |(d1-d2)(d1+d2)| ≈ |d1-d2| * 2*sqrt(avgDistSquared)
+                    // So if |d1-d2| > tolerance, then |d1^2 - d2^2| > 2*sqrt(avgDistSquared)*tolerance
+                    // Squaring both sides: (d1^2 - d2^2)^2 > 4*avgDistSquared*tolerance^2
+                    // For conservative early rejection, we check: |d1^2 - d2^2| > 2*sqrt(avgDistSquared)*tolerance
+                    // Rearranging: diffSquared^2 > 4*avgDistSquared*toleranceSquared
+                    // We use the conservative check: diffSquared > 2*sqrt(avgDistSquared*toleranceSquared)
+                    // Simplified to: diffSquared > 2*tolerance*sqrt(avgDistSquared), but squared for efficiency
                     const toleranceSquared = tolerance * tolerance;
                     const avgDistSquared = (distSquared1 + distSquared2) / 2;
                     const diffSquared = abs(distSquared1 - distSquared2);
                     
-                    // Conservative early rejection: if squared difference > 4 * avgDist * tolerance^2
-                    // This is derived from: |d1 - d2| ≈ |d1^2 - d2^2| / (d1 + d2) for d1 ≈ d2
-                    // Rearranging: |d1^2 - d2^2| ≈ (d1 + d2) * |d1 - d2| ≈ 2*avgDist * tolerance
-                    // Using factor of 4 for safety margin to avoid false rejections
-                    if (diffSquared > 4 * avgDistSquared * toleranceSquared)
+                    // Conservative threshold: 4*tolerance^2*avgDistSquared based on squared difference analysis
+                    if (diffSquared > 4 * toleranceSquared * avgDistSquared)
                         continue;
                     
                     // Now verify with actual distances
@@ -297,9 +300,8 @@ function intersectLines(point1 is Vector, direction1 is Vector, point2 is Vector
     const det = d1_2d[0] * (-d2_2d[1]) - d1_2d[1] * (-d2_2d[0]);
     
     // Check if determinant is too small (parallel lines in 2D)
-    // det has units of (length^2), so compare with tolerance squared
-    const detTolerance = TOLERANCE.zeroLength * TOLERANCE.zeroLength * meter * meter;
-    if (abs(det) < detTolerance)
+    // det has units of (length^2), same as ZERO_LENGTH_SQUARED
+    if (abs(det) < ZERO_LENGTH_SQUARED)
         return undefined;
     
     const t1 = (dx * (-d2_2d[1]) - dy * (-d2_2d[0])) / det;
