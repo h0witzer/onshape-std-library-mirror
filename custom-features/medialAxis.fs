@@ -89,9 +89,6 @@ export const medialAxis = defineFeature(function(context is Context, id is Id, d
         createComposite : true
     });
 
-// Helper constant for squared zero length tolerance (used in multiple places)
-const ZERO_LENGTH_SQUARED = TOLERANCE.zeroLength * TOLERANCE.zeroLength * meter * meter;
-
 /**
  * Traces the medial axis by finding intersections of normals from boundary edge pairs.
  * This implements the core algorithm from the paper.
@@ -245,9 +242,10 @@ function computeInwardNormal(tangent is Vector, facePlane is Plane) returns Vect
     var perpendicular = cross(facePlane.normal, tangent);
     
     // Use squaredNorm for performance
+    // Compare to 0 is valid for ValueWithUnits (FeatureScript allows this)
     const perpendicularLengthSquared = squaredNorm(perpendicular);
     
-    if (perpendicularLengthSquared < ZERO_LENGTH_SQUARED)
+    if (perpendicularLengthSquared < TOLERANCE.zeroLength * TOLERANCE.zeroLength)
     {
         // Tangent parallel to face normal - shouldn't happen for planar face
         // Return arbitrary perpendicular
@@ -275,7 +273,8 @@ function intersectLines(point1 is Vector, direction1 is Vector, point2 is Vector
     const crossProd = cross(direction1, direction2);
     const crossProdLengthSquared = squaredNorm(crossProd);
     
-    if (crossProdLengthSquared < ZERO_LENGTH_SQUARED)
+    // Compare to squared tolerance (both are unitless when comparing ratios)
+    if (crossProdLengthSquared < TOLERANCE.zeroLength * TOLERANCE.zeroLength)
         return undefined;
     
     // Convert to 2D in plane coordinate system
@@ -299,8 +298,8 @@ function intersectLines(point1 is Vector, direction1 is Vector, point2 is Vector
     const det = d1_2d[0] * (-d2_2d[1]) - d1_2d[1] * (-d2_2d[0]);
     
     // Check if determinant is too small (parallel lines in 2D)
-    // det has units of (length^2), same as ZERO_LENGTH_SQUARED
-    if (abs(det) < ZERO_LENGTH_SQUARED)
+    // det has units of (length^2), compare to squared tolerance
+    if (abs(det) < TOLERANCE.zeroLength * TOLERANCE.zeroLength)
         return undefined;
     
     const t1 = (dx * (-d2_2d[1]) - dy * (-d2_2d[0])) / det;
