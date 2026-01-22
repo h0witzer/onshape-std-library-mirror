@@ -253,8 +253,8 @@ precondition
                 
                 for (var edge in edges)
                 {
-                    // Skip adjacent edges - use qContains to check membership
-                    const isAdjacent = qContains(adjacentEdges, edge);
+                    // Skip adjacent edges - check if edge is in adjacentEdges query
+                    const isAdjacent = !isQueryEmpty(context, qIntersection(adjacentEdges, edge));
                     
                     if (!isAdjacent)
                     {
