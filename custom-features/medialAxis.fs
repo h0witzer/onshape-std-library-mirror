@@ -15,11 +15,12 @@ import(path : "onshape/std/projectiontype.gen.fs", version : "2837.0");
  * Feature that creates a medial axis curve from a planar face.
  * 
  * The medial axis is computed by:
- * 1. Extruding the face profile normally in the direction of the face normal
- * 2. Applying a 45-degree draft to all side faces at once
- * 3. Querying all edges from the drafted body
- * 4. Filtering out edges that are vertex-adjacent to the start cap face
- * 5. Projecting the remaining peak edges back onto the input face
+ * 1. Under-extruding the face profile normally to a conservative distance
+ * 2. Deleting the end cap face to open the extrusion
+ * 3. Applying a 45-degree draft to all side faces, naturally creating peaks
+ * 4. Querying all edges from the drafted body
+ * 5. Filtering out edges that are vertex-adjacent to the start cap face
+ * 6. Projecting the remaining peak edges back onto the input face
  * 
  * @param context {Context}: The context of the feature
  * @param id {Id}: The identifier for this feature
@@ -50,7 +51,7 @@ export const medialAxis = defineFeature(function(context is Context, id is Id, d
         // Calculate extrusion distance based on bounding box
         const extrusionDistance = calculateExtrusionDistance(context, inputFace);
         
-        // Step 1: Extrude the face normally
+        // Step 1: Extrude the face normally (using a conservative under-extrusion distance)
         opExtrude(context, id + "extrude", {
             "entities" : inputFace,
             "direction" : facePlane.normal,
@@ -60,13 +61,22 @@ export const medialAxis = defineFeature(function(context is Context, id is Id, d
         
         const extrudedBody = qCreatedBy(id + "extrude", EntityType.BODY);
         
+        // Step 1.5: Delete the end cap face to open up the extrusion
+        // This prevents overshooting and allows the draft to naturally create peaks
+        const endCapFace = qCapEntity(id + "extrude", CapType.END, EntityType.FACE);
+        opDeleteFace(context, id + "deleteEndCap", {
+            "deleteFaces" : endCapFace,
+            "includeFillet" : false,
+            "capVoid" : false,
+            "leaveOpen" : true
+        });
+        
         // Step 2: Apply 45-degree inward draft to create a tapered body
         // We need to draft the side faces (walls) of the extrusion inward
-        // Get all faces of the extruded body except the start and end caps
+        // Get all faces of the extruded body except the start cap
         const allExtrudedFaces = qOwnedByBody(extrudedBody, EntityType.FACE);
         const startCapFace = qCapEntity(id + "extrude", CapType.START, EntityType.FACE);
-        const endCapFace = qCapEntity(id + "extrude", CapType.END, EntityType.FACE);
-        const sideFaces = qSubtraction(allExtrudedFaces, qUnion([startCapFace, endCapFace]));
+        const sideFaces = qSubtraction(allExtrudedFaces, startCapFace);
         
         // Apply draft to the side faces using the input face plane as the reference surface
         // Use try/catch to handle draft failures gracefully
@@ -115,22 +125,22 @@ export const medialAxis = defineFeature(function(context is Context, id is Id, d
     });
 
 /**
- * Calculate a safe extrusion distance for the medial axis computation.
- * Uses the bounding box diagonal as a conservative upper bound.
- * For a 45-degree draft, the ideal distance would be the radius of the
- * largest inscribed circle, but since we don't have that function available,
- * we use the bounding box diagonal which ensures the extrusion is sufficient.
+ * Calculate a conservative under-extrusion distance for the medial axis computation.
+ * Uses a fraction of the bounding box diagonal to intentionally under-extrude.
+ * This approach prevents overshooting that can create degenerate geometry.
+ * The end cap will be deleted after extrusion, allowing the draft operation
+ * to naturally create the correct peak edges without overshooting.
  * 
  * @param context {Context}: The context
  * @param face {Query}: The face to compute the distance for
- * @returns {ValueWithUnits}: The computed extrusion distance
+ * @returns {ValueWithUnits}: The computed under-extrusion distance
  */
 function calculateExtrusionDistance(context is Context, face is Query) returns ValueWithUnits
 {
     const boundingBox = evBox3d(context, { "topology" : face });
     const diagonal = norm(boundingBox.maxCorner - boundingBox.minCorner);
     
-    // Use the diagonal as a safe upper bound
-    // For a 45-degree draft, this ensures we extrude far enough
-    return diagonal;
+    // Use half the diagonal as a conservative under-extrusion distance
+    // This prevents overshooting while still providing enough height for the draft
+    return 0.5 * diagonal;
 }
