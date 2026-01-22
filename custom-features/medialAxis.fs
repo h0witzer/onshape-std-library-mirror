@@ -339,8 +339,8 @@ function checkCurvatureCriterion(context is Context, edge is Query, parameter is
     
     // Radius of curvature is 1/curvature
     // For straight edges, curvature is 0, so radius is infinite
-    // curvature has units of 1/length, so use zeroLength for comparison
-    const curvatureTolerance = TOLERANCE.zeroLength / (meter * meter);
+    // curvature has units of 1/length, so compare to zeroLength/meter
+    const curvatureTolerance = TOLERANCE.zeroLength / meter;
     if (abs(curvature) < curvatureTolerance)
         return true; // Straight edge, criterion always satisfied
     
