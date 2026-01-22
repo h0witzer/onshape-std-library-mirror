@@ -21,6 +21,7 @@ import(path : "onshape/std/surfaceGeometry.fs", version : "2856.0");
 import(path : "onshape/std/vector.fs", version : "2856.0");
 import(path : "onshape/std/box.fs", version : "2856.0");
 import(path : "onshape/std/math.fs", version : "2856.0");
+import(path : "onshape/std/units.fs", version : "2856.0");
 
 /**
  * Configuration options for the largest inscribed circle algorithm.
@@ -150,23 +151,24 @@ precondition
                 const testPoint2d = vector(localX, localY);
                 const testPoint3d = planeToWorld(facePlane, testPoint2d);
                 
-                // Check if point is inside the face using evDistance with the face itself
-                var isInside = false;
+                // First, verify the point is actually on the face (not just on the plane)
+                // by checking if the projection onto the face is at the same location
+                var isOnFace = false;
                 try silent
                 {
-                    const distanceToFaceResult = evDistance(context, {
+                    const projectionResult = evDistance(context, {
                         "side0" : testPoint3d,
                         "side1" : faceQuery
                     });
                     
-                    // If distance is very small, the point is on or very near the face
-                    if (distanceToFaceResult.distance < tolerance)
+                    // If the point projects onto the face with near-zero distance, it's on the face
+                    if (projectionResult.distance < tolerance)
                     {
-                        isInside = true;
+                        isOnFace = true;
                     }
                 }
                 
-                if (!isInside)
+                if (!isOnFace)
                 {
                     continue;
                 }
@@ -186,7 +188,7 @@ precondition
                     continue;
                 }
                 
-                if (minDistanceToEdge == undefined)
+                if (minDistanceToEdge == undefined || minDistanceToEdge < tolerance)
                 {
                     continue;
                 }
