@@ -184,20 +184,15 @@ function traceMedialAxisByNormals(context is Context, boundaryEdges is array, fa
                     const distSquared2 = squaredNorm(intersection - point2);
                     
                     // Early rejection using squared distances to avoid sqrt when possible
-                    // We want to check: |sqrt(d1^2) - sqrt(d2^2)| < tolerance
-                    // 
-                    // For d1 ≈ d2, we can derive: |d1^2 - d2^2| = |(d1-d2)(d1+d2)| 
-                    // Since we want |d1-d2| < tolerance and d1+d2 ≈ 2*sqrt(avgDistSquared),
-                    // we get: |d1^2 - d2^2| < 2*tolerance*sqrt(avgDistSquared)
-                    // 
-                    // Squaring for computational efficiency: diffSquared < 4*tolerance^2*avgDistSquared
-                    // This is a conservative early rejection - some valid points may pass this check
-                    // but still fail the actual distance check below, which is fine for performance.
-                    const toleranceSquared = tolerance * tolerance;
+                    // Mathematical derivation:
+                    // For d1 ≈ d2: |d1^2 - d2^2| = |(d1-d2)(d1+d2)| ≈ |d1-d2| * 2*sqrt(avgDistSquared)
+                    // If |d1-d2| would exceed tolerance, then: |d1^2 - d2^2| > 2*tolerance*sqrt(avgDistSquared)
+                    // This allows early rejection with only one sqrt instead of two
                     const avgDistSquared = (distSquared1 + distSquared2) / 2;
                     const diffSquared = abs(distSquared1 - distSquared2);
+                    const earlyRejectThreshold = 2 * tolerance * sqrt(avgDistSquared);
                     
-                    if (diffSquared > 4 * toleranceSquared * avgDistSquared)
+                    if (diffSquared > earlyRejectThreshold)
                         continue;
                     
                     // Now verify with actual distances
