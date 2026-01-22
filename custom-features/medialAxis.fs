@@ -265,9 +265,9 @@ function computeInwardNormal(tangent is Vector, facePlane is Plane) returns Vect
  * @param direction2 : Direction of second line
  * @param plane : Plane to project onto
  * 
- * @returns Intersection point, or undefined if lines are parallel
+ * @returns Intersection point (Vector), or undefined if lines are parallel
  */
-function intersectLines(point1 is Vector, direction1 is Vector, point2 is Vector, direction2 is Vector, plane is Plane) returns Vector
+function intersectLines(point1 is Vector, direction1 is Vector, point2 is Vector, direction2 is Vector, plane is Plane)
 {
     // Check if directions are parallel using squaredNorm for performance
     const crossProd = cross(direction1, direction2);
