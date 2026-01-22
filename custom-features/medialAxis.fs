@@ -18,8 +18,8 @@ import(path : "onshape/std/projectiontype.gen.fs", version : "2837.0");
  * 1. Under-extruding the face profile normally to a conservative distance
  * 2. Applying a 45-degree draft to all side faces, creating peaks
  * 3. Querying peak edges from the drafted body
- * 4. Deleting and healing the end cap face to create additional medial edges
- * 5. Combining peak edges with edges created by the delete operation
+ * 4. Moving the end cap face by the diagonal distance to regenerate peaks
+ * 5. Combining peak edges with edges created by the move operation
  * 6. Projecting all medial edges back onto the input face
  * 
  * @param context {Context}: The context of the feature
@@ -48,8 +48,10 @@ export const medialAxis = defineFeature(function(context is Context, id is Id, d
         // Get the plane definition of the face
         const facePlane = evPlane(context, { "face" : inputFace });
         
-        // Calculate extrusion distance based on bounding box
-        const extrusionDistance = calculateExtrusionDistance(context, inputFace);
+        // Calculate extrusion distance and move distance
+        const distances = calculateDistances(context, inputFace);
+        const extrusionDistance = distances.extrusionDistance;
+        const moveDistance = distances.moveDistance;
         
         // Step 1: Extrude the face normally (using a conservative under-extrusion distance)
         opExtrude(context, id + "extrude", {
@@ -97,20 +99,19 @@ export const medialAxis = defineFeature(function(context is Context, id is Id, d
         // from all edges in the drafted body
         const peakEdges = qSubtraction(allEdgesAfterDraft, edgesAdjacentToStartCap);
         
-        // Step 5: Delete the end cap face and heal the void
-        // This operation will create new edges where the healing occurs
-        opDeleteFace(context, id + "deleteEndCap", {
-            "deleteFaces" : endCapFace,
-            "includeFillet" : false,
-            "capVoid" : false,
-            "leaveOpen" : false
+        // Step 5: Move the end cap face by the diagonal distance to regenerate peaks
+        // This operation will create new edges where the moved face meets the drafted walls
+        const moveTransform = transform(facePlane.normal * moveDistance);
+        opMoveFace(context, id + "moveEndCap", {
+            "moveFaces" : endCapFace,
+            "transform" : moveTransform
         });
         
-        // Step 6: Query edges created by the delete face operation
-        const edgesCreatedByDelete = qCreatedBy(id + "deleteEndCap", EntityType.EDGE);
+        // Step 6: Query edges created by the move face operation
+        const edgesCreatedByMove = qCreatedBy(id + "moveEndCap", EntityType.EDGE);
         
-        // Combine peak edges from draft with edges created by delete face
-        const allMedialEdges = qUnion([peakEdges, edgesCreatedByDelete]);
+        // Combine peak edges from draft with edges created by move face
+        const allMedialEdges = qUnion([peakEdges, edgesCreatedByMove]);
         
         if (isQueryEmpty(context, allMedialEdges))
         {
@@ -131,42 +132,51 @@ export const medialAxis = defineFeature(function(context is Context, id is Id, d
     });
 
 /**
- * Calculate a conservative under-extrusion distance for the medial axis computation.
- * Uses a fraction of the shortest edge length of the face to intentionally under-extrude.
- * This approach prevents overshooting that can create degenerate geometry.
- * The end cap will be deleted after the draft operation to create additional
- * medial edges where the healing geometry meets the drafted walls.
+ * Calculate distances for the medial axis computation.
+ * Uses a fraction of the shortest edge length for under-extrusion and the
+ * bounding box diagonal for moving the end cap to regenerate peaks.
  * 
  * @param context {Context}: The context
- * @param face {Query}: The face to compute the distance for
- * @returns {ValueWithUnits}: The computed under-extrusion distance
+ * @param face {Query}: The face to compute distances for
+ * @returns {map}: A map containing:
+ *   - extrusionDistance {ValueWithUnits}: The under-extrusion distance (0.25× shortest edge)
+ *   - moveDistance {ValueWithUnits}: The distance to move end cap (bounding box diagonal)
  */
-function calculateExtrusionDistance(context is Context, face is Query) returns ValueWithUnits
+function calculateDistances(context is Context, face is Query) returns map
 {
     // Get all edges that bound the face
     const faceEdges = qAdjacent(face, AdjacencyType.EDGE, EntityType.EDGE);
     const edgeArray = evaluateQuery(context, faceEdges);
     
+    // Calculate bounding box diagonal for move distance
+    const boundingBox = evBox3d(context, { "topology" : face });
+    const diagonal = norm(boundingBox.maxCorner - boundingBox.minCorner);
+    
+    var extrusionDistance;
     if (size(edgeArray) == 0)
     {
         // Fallback to bounding box diagonal if no edges found
-        const boundingBox = evBox3d(context, { "topology" : face });
-        const diagonal = norm(boundingBox.maxCorner - boundingBox.minCorner);
-        return 0.5 * diagonal;
+        extrusionDistance = 0.25 * diagonal;
     }
-    
-    // Find the shortest edge length
-    var shortestLength = undefined;
-    for (var edge in edgeArray)
+    else
     {
-        const edgeLength = evLength(context, { "entities" : edge });
-        if (shortestLength == undefined || edgeLength < shortestLength)
+        // Find the shortest edge length
+        var shortestLength = undefined;
+        for (var edge in edgeArray)
         {
-            shortestLength = edgeLength;
+            const edgeLength = evLength(context, { "entities" : edge });
+            if (shortestLength == undefined || edgeLength < shortestLength)
+            {
+                shortestLength = edgeLength;
+            }
         }
+        
+        // Use 0.25× the shortest edge as the extrusion distance for stability
+        extrusionDistance = 0.25 * shortestLength;
     }
     
-    // Use a fraction of the shortest edge as the extrusion distance
-    // This provides a more proportional under-extrusion relative to the face geometry
-    return 0.5 * shortestLength;
+    return {
+        "extrusionDistance" : extrusionDistance,
+        "moveDistance" : diagonal
+    };
 }
