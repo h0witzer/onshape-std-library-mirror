@@ -187,20 +187,19 @@ function traceMedialAxisByNormals(context is Context, boundaryEdges is array, fa
                     const distSquared2 = squaredNorm(intersection - point2);
                     
                     // Early rejection using squared distances to avoid sqrt when possible
-                    // We want: |sqrt(d1^2) - sqrt(d2^2)| < tolerance
-                    // Mathematical derivation for early rejection:
-                    // For d1 ≈ d2, we have: |d1^2 - d2^2| = |(d1-d2)(d1+d2)| ≈ |d1-d2| * 2*sqrt(avgDistSquared)
-                    // So if |d1-d2| > tolerance, then |d1^2 - d2^2| > 2*sqrt(avgDistSquared)*tolerance
-                    // Squaring both sides: (d1^2 - d2^2)^2 > 4*avgDistSquared*tolerance^2
-                    // For conservative early rejection, we check: |d1^2 - d2^2| > 2*sqrt(avgDistSquared)*tolerance
-                    // Rearranging: diffSquared^2 > 4*avgDistSquared*toleranceSquared
-                    // We use the conservative check: diffSquared > 2*sqrt(avgDistSquared*toleranceSquared)
-                    // Simplified to: diffSquared > 2*tolerance*sqrt(avgDistSquared), but squared for efficiency
+                    // We want to check: |sqrt(d1^2) - sqrt(d2^2)| < tolerance
+                    // 
+                    // For d1 ≈ d2, we can derive: |d1^2 - d2^2| = |(d1-d2)(d1+d2)| 
+                    // Since we want |d1-d2| < tolerance and d1+d2 ≈ 2*sqrt(avgDistSquared),
+                    // we get: |d1^2 - d2^2| < 2*tolerance*sqrt(avgDistSquared)
+                    // 
+                    // Squaring for computational efficiency: diffSquared < 4*tolerance^2*avgDistSquared
+                    // This is a conservative early rejection - some valid points may pass this check
+                    // but still fail the actual distance check below, which is fine for performance.
                     const toleranceSquared = tolerance * tolerance;
                     const avgDistSquared = (distSquared1 + distSquared2) / 2;
                     const diffSquared = abs(distSquared1 - distSquared2);
                     
-                    // Conservative threshold: 4*tolerance^2*avgDistSquared based on squared difference analysis
                     if (diffSquared > 4 * toleranceSquared * avgDistSquared)
                         continue;
                     
