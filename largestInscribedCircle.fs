@@ -111,8 +111,8 @@ function evaluateCandidatePoint(context is Context, point is Vector, faceQuery i
 /**
  * Calculate the largest inscribed circle for a planar face.
  * Uses angle bisector intersection method to find the optimal inscribed circle center.
- * This approach finds bisector lines from convex corners and identifies the longest
- * intersecting pair to determine the inscribed circle center and radius.
+ * Finds the longest bisector, then the longest intersecting bisector, uses their intersection
+ * as starting point, and refines to find the optimal inscribed circle.
  * 
  * @param context {Context} : The context in which to evaluate.
  * @param definition {{
@@ -138,6 +138,8 @@ precondition
     const facePlane = evPlane(context, { "face" : faceQuery });
     
     // Set default options
+    const maxIterations = (definition.options != undefined && definition.options.maxIterations != undefined) ? 
+                         definition.options.maxIterations : 20;
     const tolerance = (definition.options != undefined && definition.options.tolerance != undefined) ? 
                      definition.options.tolerance : 1e-6 * meter;
     
@@ -147,7 +149,7 @@ precondition
     const vertices = evaluateQuery(context, faceVertices);
     const edges = evaluateQuery(context, faceEdges);
     
-    // Build bisector information for convex corners
+    // Step 1: Build bisector information for convex corners
     var bisectors = [];
     
     for (var vertex in vertices)
@@ -162,7 +164,7 @@ precondition
             
             if (size(adjacentEdgesList) == 2)
             {
-                // Get tangent directions at vertex
+                // Get tangent directions at vertex (pointing away from vertex)
                 const edge1Tangent = evEdgeTangentLine(context, {
                     "edge" : adjacentEdgesList[0],
                     "parameter" : 0.01,
@@ -175,73 +177,83 @@ precondition
                     "arcLengthParameterization" : false
                 });
                 
-                // Calculate angle bisector direction (inward pointing for convex corners)
+                // Calculate angle bisector direction
                 const dir1 = normalize(edge1Tangent.direction);
                 const dir2 = normalize(edge2Tangent.direction);
                 var bisectorDir = normalize(dir1 + dir2);
                 
-                // Check if this is a convex corner (bisector points inward)
-                // by checking if cross product with face normal has correct sign
-                const cross = cross(dir1, dir2);
-                const dotWithNormal = dot(cross, facePlane.normal);
+                // Check if this is a convex corner by checking angle
+                // If dot product is negative, it's a reflex angle (concave)
+                const dotProduct = dot(dir1, dir2);
                 
-                // If concave, flip bisector direction
-                if (dotWithNormal < 0)
+                // For convex corners, bisector should point inward
+                // Check using cross product with face normal
+                const crossProd = cross(dir1, dir2);
+                const isConvex = dot(crossProd, facePlane.normal) > 0;
+                
+                // Only process convex corners
+                if (isConvex)
                 {
-                    bisectorDir = -bisectorDir;
-                }
-                
-                // Find distance along bisector to nearest edge
-                // Cast a ray along bisector and find intersection with edges
-                var minDistToEdge = undefined;
-                
-                for (var edge in edges)
-                {
-                    try silent
+                    // Cast ray from vertex along bisector to find distance to opposite edge
+                    var minDistToEdge = undefined;
+                    
+                    for (var edge in edges)
                     {
-                        // Get edge tangent at midpoint
-                        const edgeTangent = evEdgeTangentLine(context, {
-                            "edge" : edge,
-                            "parameter" : 0.5,
-                            "arcLengthParameterization" : true
-                        });
-                        
-                        // Calculate distance from vertex along bisector to this edge
-                        const distResult = evDistance(context, {
-                            "side0" : line(vertexPoint, bisectorDir),
-                            "side1" : edge
-                        });
-                        
-                        if (minDistToEdge == undefined || distResult.distance < minDistToEdge)
+                        // Skip adjacent edges
+                        var isAdjacent = false;
+                        for (var adjEdge in adjacentEdgesList)
                         {
-                            minDistToEdge = distResult.distance;
+                            if (edge == adjEdge)
+                            {
+                                isAdjacent = true;
+                                break;
+                            }
+                        }
+                        
+                        if (!isAdjacent)
+                        {
+                            try silent
+                            {
+                                // Calculate distance from vertex along bisector to this edge
+                                const distResult = evDistance(context, {
+                                    "side0" : line(vertexPoint, bisectorDir),
+                                    "side1" : edge
+                                });
+                                
+                                if (minDistToEdge == undefined || distResult.distance < minDistToEdge)
+                                {
+                                    minDistToEdge = distResult.distance;
+                                }
+                            }
                         }
                     }
-                }
-                
-                if (minDistToEdge != undefined && minDistToEdge > tolerance)
-                {
-                    bisectors = append(bisectors, {
-                        "vertex" : vertexPoint,
-                        "direction" : bisectorDir,
-                        "distance" : minDistToEdge,
-                        "line" : line(vertexPoint, bisectorDir)
-                    });
+                    
+                    if (minDistToEdge != undefined && minDistToEdge > tolerance)
+                    {
+                        bisectors = append(bisectors, {
+                            "vertex" : vertexPoint,
+                            "direction" : bisectorDir,
+                            "distance" : minDistToEdge,
+                            "line" : line(vertexPoint, bisectorDir)
+                        });
+                    }
                 }
             }
         }
     }
     
-    // Find the longest bisector
+    // Step 2: Find the longest bisector
     var longestBisector = undefined;
     var longestDistance = 0 * meter;
+    var longestIndex = -1;
     
-    for (var bisector in bisectors)
+    for (var i = 0; i < size(bisectors); i += 1)
     {
-        if (bisector.distance > longestDistance)
+        if (bisectors[i].distance > longestDistance)
         {
-            longestDistance = bisector.distance;
-            longestBisector = bisector;
+            longestDistance = bisectors[i].distance;
+            longestBisector = bisectors[i];
+            longestIndex = i;
         }
     }
     
@@ -261,34 +273,31 @@ precondition
         } as LargestInscribedCircleResult;
     }
     
-    // Find bisectors that intersect with the longest bisector
-    var bestRadius = longestDistance;
-    var bestCenter = longestBisector.vertex + longestBisector.direction * longestDistance;
+    // Step 3: Find all bisectors that intersect with the longest bisector
+    // and identify the longest among those
+    var longestIntersectingBisector = undefined;
+    var longestIntersectingDistance = 0 * meter;
+    var bestIntersectionPoint = undefined;
     
-    // Check intersections with other bisectors
-    for (var bisector in bisectors)
+    for (var i = 0; i < size(bisectors); i += 1)
     {
-        if (bisector != longestBisector)
+        if (i != longestIndex)
         {
-            // Find intersection point between the two bisector lines
-            // Using line-line closest point approach
-            const line1 = longestBisector.line;
-            const line2 = bisector.line;
+            const bisector = bisectors[i];
             
-            // Calculate intersection in 3D (projected to plane)
-            const p1 = line1.origin;
-            const d1 = line1.direction;
-            const p2 = line2.origin;
-            const d2 = line2.direction;
+            // Calculate 2D intersection on face plane
+            const p1 = longestBisector.vertex;
+            const d1 = longestBisector.direction;
+            const p2 = bisector.vertex;
+            const d2 = bisector.direction;
             
-            // Solve for intersection: p1 + t1*d1 = p2 + t2*d2
-            // Project to 2D on face plane for easier calculation
+            // Project to 2D on face plane
             const p1_2d = worldToPlane(facePlane, p1);
             const p2_2d = worldToPlane(facePlane, p2);
             const d1_2d = vector(dot(d1, facePlane.x), dot(d1, facePlane.y));
             const d2_2d = vector(dot(d2, facePlane.x), dot(d2, facePlane.y));
             
-            // Solve 2D line intersection
+            // Solve 2D line intersection: p1 + t1*d1 = p2 + t2*d2
             const denom = d1_2d[0] * d2_2d[1] - d1_2d[1] * d2_2d[0];
             
             if (abs(denom) > 1e-10)
@@ -296,23 +305,64 @@ precondition
                 const t1 = ((p2_2d[0] - p1_2d[0]) * d2_2d[1] - (p2_2d[1] - p1_2d[1]) * d2_2d[0]) / denom;
                 const t2 = ((p2_2d[0] - p1_2d[0]) * d1_2d[1] - (p2_2d[1] - p1_2d[1]) * d1_2d[0]) / denom;
                 
-                // Check if intersection is valid (positive parameters)
+                // Check if intersection is valid (positive parameters - intersection ahead of both vertices)
                 if (t1 > 0 && t2 > 0)
                 {
-                    // Calculate intersection point
-                    const intersection2d = p1_2d + t1 * d1_2d;
-                    const intersectionPoint = planeToWorld(facePlane, intersection2d);
-                    
-                    // Validate this point and get its radius
-                    const result = evaluateCandidatePoint(context, intersectionPoint, faceQuery, faceEdges, tolerance);
-                    
-                    if (result.valid && result.radius > bestRadius)
+                    // This bisector intersects the longest one
+                    // Check if this is the longest intersecting bisector
+                    if (bisector.distance > longestIntersectingDistance)
                     {
-                        bestRadius = result.radius;
-                        bestCenter = intersectionPoint;
+                        longestIntersectingDistance = bisector.distance;
+                        longestIntersectingBisector = bisector;
+                        
+                        // Calculate intersection point
+                        const intersection2d = p1_2d + t1 * d1_2d;
+                        bestIntersectionPoint = planeToWorld(facePlane, intersection2d);
                     }
                 }
             }
+        }
+    }
+    
+    // Step 4: Use the intersection point as starting point
+    var bestCenter = undefined;
+    var bestRadius = 0 * meter;
+    
+    if (bestIntersectionPoint != undefined)
+    {
+        // Validate intersection point
+        const intersectionResult = evaluateCandidatePoint(context, bestIntersectionPoint, faceQuery, faceEdges, tolerance);
+        if (intersectionResult.valid)
+        {
+            bestCenter = bestIntersectionPoint;
+            bestRadius = intersectionResult.radius;
+        }
+    }
+    
+    // If no valid intersection found, use longest bisector endpoint
+    if (bestCenter == undefined)
+    {
+        bestCenter = longestBisector.vertex + longestBisector.direction * longestDistance;
+        bestRadius = longestDistance;
+    }
+    
+    // Step 5: Refine further using local optimization
+    // Sample points around the best center to find local maximum
+    const sampleRadius = bestRadius * 0.5;
+    const numSamples = 8;
+    
+    for (var i = 0; i < numSamples; i += 1)
+    {
+        const angle = 2 * PI * i / numSamples;
+        const offset = vector(cos(angle), sin(angle)) * sampleRadius;
+        const samplePoint2d = worldToPlane(facePlane, bestCenter) + offset;
+        const samplePoint = planeToWorld(facePlane, samplePoint2d);
+        
+        const sampleResult = evaluateCandidatePoint(context, samplePoint, faceQuery, faceEdges, tolerance);
+        if (sampleResult.valid && sampleResult.radius > bestRadius)
+        {
+            bestRadius = sampleResult.radius;
+            bestCenter = samplePoint;
         }
     }
     
@@ -321,6 +371,7 @@ precondition
     if (finalResult.valid)
     {
         bestRadius = finalResult.radius;
+        bestCenter = finalResult.center;
     }
     
     return {
