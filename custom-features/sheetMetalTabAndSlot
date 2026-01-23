@@ -225,7 +225,8 @@ export const tabAndSlotBossDisplay = defineSheetMetalFeature(function(context is
         // Filter to only laminar (one-sided/boundary) edges to avoid EXTEND_NON_LAMINAR error
         const extractedEdgesToExtend = qEdgeTopologyFilter(trackedTabSegmentsAfterExtraction, EdgeTopology.ONE_SIDED);
 
-        // Track the edges that will be extended - these edges will "move" during extension
+        // Track the tab segment edges before extension
+        // Tracking follows edges through operations - after extension, these edges will be in new positions
         const trackedEdgesThatMove = startTracking(context, extractedEdgesToExtend);
         
         if (size(evaluateQuery(context, extractedEdgesToExtend)) > 0)
@@ -246,10 +247,13 @@ export const tabAndSlotBossDisplay = defineSheetMetalFeature(function(context is
             }
         }
 
-        // After extension, find vertices adjacent to the tracked edges that moved
-        // The tracking persists through the extension, and we get vertices at the outer ends of extended tabs
+        // After extension, resolve tracked edges (now in extended positions) and get their vertices
+        // This gives us vertices at both ends of the extended tab segment edges
         const movedEdges = qEntityFilter(trackedEdgesThatMove, EntityType.EDGE);
         const verticesOnMovedEdges = qAdjacent(movedEdges, AdjacencyType.VERTEX, EntityType.VERTEX);
+        
+        // Track these vertices through the boolean union operation
+        // After union, tracking resolves to include vertices from the merged geometry
         const trackedExtensionVertices = startTracking(context, verticesOnMovedEdges);
 
         // Phase 4: Merge the extended surface bodies back with the sheet metal model
@@ -923,18 +927,22 @@ function subtractTab(context is Context, id is Id, definition is map, subtractQu
 }
 
 /**
- * Applies corner break attributes to vertices on tab extensions.
+ * Applies corner break attributes to vertices at tab-to-wall connections.
  * 
- * After extending tab edges and merging with the sheet metal model, this function applies corner break
- * attributes to the vertices at the outer ends of the tabs. The tracking query resolves to vertices
- * after the boolean union, which includes both the outer corner vertices (with multiple tab faces)
- * and the connection vertices (with wall faces). Only vertices adjacent to wall faces get corner breaks.
+ * This function processes vertices tracked from the tab extension edges. After tracking through
+ * the extension operation and boolean union, the vertex set includes both:
+ * - Vertices at outer tab corners (surrounded by tab faces, no wall faces)
+ * - Vertices at tab-to-wall connections (have adjacent wall faces)
  * 
- * Inputs:
- *   context - The evaluation context
- *   id - Operation ID for this corner break application
- *   definition - Feature definition containing extensionVerticesTracking and tabChamfer
- *   wallFaces - Query for sheet metal wall faces (unused, kept for signature compatibility)
+ * Only vertices adjacent to wall faces receive corner break attributes. Vertices at outer tab
+ * corners are automatically skipped because they have no adjacent wall faces.
+ * 
+ * @param context - The evaluation context
+ * @param id - Operation ID for this corner break application
+ * @param definition - Feature definition containing:
+ *                     - extensionVerticesTracking: tracked vertices from tab segment edges
+ *                     - tabChamfer: the chamfer width for corner breaks
+ * @param wallFaces - Query for sheet metal wall faces (unused, kept for signature compatibility)
  */
 function applyCornerBreaksToExtensionVertices(context is Context, id is Id, definition is map, wallFaces is Query)
 {
@@ -966,7 +974,7 @@ function applyCornerBreaksToExtensionVertices(context is Context, id is Id, defi
                     break;
             }
 
-            // Skip vertices not adjacent to walls (outer corners)
+            // Skip vertices not adjacent to walls (outer tab corners)
             if (wallAttribute == undefined || wallAttribute.attributeId == undefined)
                 continue;
 
