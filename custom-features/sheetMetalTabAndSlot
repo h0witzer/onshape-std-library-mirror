@@ -251,8 +251,8 @@ export const tabAndSlotBossDisplay = defineSheetMetalFeature(function(context is
         println("Extension created edges count: " ~ size(evaluateQuery(context, extensionCreatedEdges)));
         
         // Instead of tracking vertices created by the operation (which may be 0),
-        // find vertices adjacent to the newly created edges (the boundary of the extension)
-        const extensionBoundaryVertices = qAdjacent(extensionCreatedEdges, AdjacencyType.EDGE, EntityType.VERTEX);
+        // find vertices at the endpoints of the newly created edges (the boundary of the extension)
+        const extensionBoundaryVertices = qAdjacent(extensionCreatedEdges, AdjacencyType.VERTEX, EntityType.VERTEX);
         const trackedExtensionVertices = startTracking(context, extensionBoundaryVertices);
         
         println("Extension boundary vertices count: " ~ size(evaluateQuery(context, extensionBoundaryVertices)));
