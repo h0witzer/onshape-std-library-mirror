@@ -247,12 +247,15 @@ export const tabAndSlotBossDisplay = defineSheetMetalFeature(function(context is
         const extensionCreatedEdges = qCreatedBy(id + "extendTabs", EntityType.EDGE);
         const trackedExtensionEdges = startTracking(context, extensionCreatedEdges);
 
-        // Track vertices created by extension for corner chamfering
-        const extensionCreatedVertices = qCreatedBy(id + "extendTabs", EntityType.VERTEX);
-        const trackedExtensionVertices = startTracking(context, extensionCreatedVertices);
-        
         println("=== EXTENSION TRACKING DEBUG ===");
-        println("Extension created vertices count: " ~ size(evaluateQuery(context, extensionCreatedVertices)));
+        println("Extension created edges count: " ~ size(evaluateQuery(context, extensionCreatedEdges)));
+        
+        // Instead of tracking vertices created by the operation (which may be 0),
+        // find vertices adjacent to the newly created edges (the boundary of the extension)
+        const extensionBoundaryVertices = qAdjacent(extensionCreatedEdges, AdjacencyType.EDGE, EntityType.VERTEX);
+        const trackedExtensionVertices = startTracking(context, extensionBoundaryVertices);
+        
+        println("Extension boundary vertices count: " ~ size(evaluateQuery(context, extensionBoundaryVertices)));
         println("Tracked extension vertices query defined: " ~ (trackedExtensionVertices != undefined));
 
         // Phase 4: Merge the extended surface bodies back with the sheet metal model
