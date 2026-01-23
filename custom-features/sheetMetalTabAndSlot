@@ -246,22 +246,11 @@ export const tabAndSlotBossDisplay = defineSheetMetalFeature(function(context is
             }
         }
 
-        // Track edges and vertices created by the sheet extension operation
-        const extensionCreatedEdges = qCreatedBy(id + "extendTabs", EntityType.EDGE);
-        const trackedExtensionEdges = startTracking(context, extensionCreatedEdges);
-
-        println("=== EXTENSION TRACKING DEBUG ===");
-        println("Extension created edges count: " ~ size(evaluateQuery(context, extensionCreatedEdges)));
-        
-        // After extension, the tracked edges have moved and now have new vertices at their ends
-        // Find vertices adjacent to the tracked edges that moved
+        // After extension, find vertices adjacent to the tracked edges that moved
+        // The tracking persists through the extension, and we get vertices at the outer ends of extended tabs
         const movedEdges = qEntityFilter(trackedEdgesThatMove, EntityType.EDGE);
         const verticesOnMovedEdges = qAdjacent(movedEdges, AdjacencyType.VERTEX, EntityType.VERTEX);
         const trackedExtensionVertices = startTracking(context, verticesOnMovedEdges);
-        
-        println("Moved edges count: " ~ size(evaluateQuery(context, movedEdges)));
-        println("Vertices on moved edges (for corner breaks): " ~ size(evaluateQuery(context, verticesOnMovedEdges)));
-        println("Tracked extension vertices query defined: " ~ (trackedExtensionVertices != undefined));
 
         // Phase 4: Merge the extended surface bodies back with the sheet metal model
         // Call mergeTabSurfacesWithSheetMetal to integrate the surface bodies using integrated helper functions
@@ -269,7 +258,8 @@ export const tabAndSlotBossDisplay = defineSheetMetalFeature(function(context is
 
         if (!isQueryEmpty(context, extractedBodies))
         {
-            definition.extensionEdgesTracking = trackedExtensionEdges;
+            const extensionCreatedEdges = qCreatedBy(id + "extendTabs", EntityType.EDGE);
+            definition.extensionEdgesTracking = startTracking(context, extensionCreatedEdges);
             definition.extensionVerticesTracking = trackedExtensionVertices;
             mergeTabSurfacesWithSheetMetal(context, id + "mergeTabsWithModel", extractedBodies, wallFaces, definition);
         }
@@ -933,105 +923,60 @@ function subtractTab(context is Context, id is Id, definition is map, subtractQu
 }
 
 /**
- * Applies corner break attributes to vertices created by the edge extension operation.
- * This function identifies vertices on the tabs that resulted from extending edges and applies
- * corner break attributes to them, following the pattern from sheetMetalCornerBreakAttributeBased.fs.
+ * Applies corner break attributes to vertices on tab extensions.
+ * 
+ * After extending tab edges and merging with the sheet metal model, this function applies corner break
+ * attributes to the vertices at the outer ends of the tabs. The tracking query resolves to vertices
+ * after the boolean union, which includes both the outer corner vertices (with multiple tab faces)
+ * and the connection vertices (with wall faces). Only vertices adjacent to wall faces get corner breaks.
  * 
  * Inputs:
  *   context - The evaluation context
  *   id - Operation ID for this corner break application
- *   definition - The feature definition containing extensionVerticesTracking (tracked vertices from extension)
- *                and tabChamfer (the chamfer width to use for corner breaks)
- *   wallFaces - Query for the sheet metal wall faces that the tabs were merged with
+ *   definition - Feature definition containing extensionVerticesTracking and tabChamfer
+ *   wallFaces - Query for sheet metal wall faces (unused, kept for signature compatibility)
  */
 function applyCornerBreaksToExtensionVertices(context is Context, id is Id, definition is map, wallFaces is Query)
 {
-    println("=== CORNER BREAK DEBUG: applyCornerBreaksToExtensionVertices called ===");
-    println("extensionVerticesTracking defined: " ~ (definition.extensionVerticesTracking != undefined));
-    println("tabChamfer value: " ~ definition.tabChamfer);
-    
-    // Check if we have tracked extension vertices and a non-zero chamfer width
+    // Early exit if no tracking or zero chamfer
     if (definition.extensionVerticesTracking == undefined || definition.tabChamfer <= 0 * meter)
-    {
-        println("EARLY EXIT: extensionVerticesTracking undefined or tabChamfer <= 0");
         return;
-    }
 
-    // Find vertices that were created by the extension operation
-    // These are now part of the sheet metal model after the boolean union
+    // Resolve tracked vertices after boolean union
     const extensionVertices = qEntityFilter(definition.extensionVerticesTracking, EntityType.VERTEX);
     const vertexArray = evaluateQuery(context, extensionVertices);
 
-    println("Number of extension vertices found: " ~ size(vertexArray));
-
     if (size(vertexArray) == 0)
-    {
-        println("EARLY EXIT: No extension vertices found");
         return;
-    }
 
-    // For each vertex, we need to find the adjacent wall and apply a corner break attribute
+    // Apply corner breaks to vertices adjacent to wall faces
     var attributeCounter = 0;
-    var vertexIndex = 0;
     for (var vertex in vertexArray)
     {
-        println("--- Processing vertex " ~ vertexIndex ~ " ---");
         try
         {
-            // Get faces adjacent to this vertex
-            const adjacentFaces = qAdjacent(vertex, AdjacencyType.VERTEX, EntityType.FACE);
-            const allAdjacentFacesArray = evaluateQuery(context, adjacentFaces);
+            // Find adjacent faces with wall attributes
+            const adjacentFaces = evaluateQuery(context, qAdjacent(vertex, AdjacencyType.VERTEX, EntityType.FACE));
             
-            println("  Total adjacent faces: " ~ size(allAdjacentFacesArray));
-            
-            // Find wall faces by checking attributes directly (query intersection doesn't work reliably after boolean)
-            var adjacentWallFaces = [];
-            for (var face in allAdjacentFacesArray)
+            var wallAttribute = undefined;
+            for (var face in adjacentFaces)
             {
-                const wallAttr = try silent(getWallAttribute(context, face));
-                if (wallAttr != undefined)
-                {
-                    adjacentWallFaces = append(adjacentWallFaces, face);
-                }
-            }
-            
-            println("  Adjacent wall faces found: " ~ size(adjacentWallFaces));
-
-            if (size(adjacentWallFaces) == 0)
-            {
-                println("  SKIP: No adjacent wall faces");
-                vertexIndex += 1;
-                continue;
-            }
-
-            // Get the wall attribute from one of the adjacent walls
-            var wallAttribute;
-            for (var wallFace in adjacentWallFaces)
-            {
-                wallAttribute = try silent(getWallAttribute(context, wallFace));
+                wallAttribute = try silent(getWallAttribute(context, face));
                 if (wallAttribute != undefined && wallAttribute.attributeId != undefined)
-                {
-                    println("  Found wall attribute with ID: " ~ wallAttribute.attributeId);
                     break;
-                }
             }
 
+            // Skip vertices not adjacent to walls (outer corners)
             if (wallAttribute == undefined || wallAttribute.attributeId == undefined)
-            {
-                println("  SKIP: No wall attribute found");
-                vertexIndex += 1;
                 continue;
-            }
 
             const wallId = wallAttribute.attributeId;
 
-            // Check if the vertex already has a corner attribute
+            // Check for existing corner attribute
             var existingAttribute = getCornerAttribute(context, vertex);
             var hasExistingAttribute = (existingAttribute != undefined);
 
-            println("  Existing corner attribute: " ~ hasExistingAttribute);
-
-            // Check if a corner break for this wall already exists
+            // Skip if corner break already exists for this wall
             if (hasExistingAttribute && existingAttribute.cornerBreaks != undefined)
             {
                 var breakExists = false;
@@ -1044,46 +989,29 @@ function applyCornerBreaksToExtensionVertices(context is Context, id is Id, defi
                     }
                 }
                 if (breakExists)
-                {
-                    println("  SKIP: Corner break already exists for this wall");
-                    vertexIndex += 1;
                     continue;
-                }
             }
 
-            // Create or update the corner attribute with a chamfer break
+            // Create or update corner attribute with chamfer break
             var cornerAttribute = hasExistingAttribute ? existingAttribute : makeSMCornerAttribute(toAttributeId(id + ("corner" ~ attributeCounter)));
-            
-            // Create a chamfer corner break with the specified width
             var cornerBreak = makeSMCornerBreak(SMCornerBreakStyle.CHAMFER, definition.tabChamfer, wallId);
             var cornerBreakMap = { "value" : cornerBreak, "canBeEdited" : false, "controllingFeatureId" : id };
             cornerAttribute = addCornerBreakToSMAttribute(cornerAttribute, cornerBreakMap);
 
-            // Apply the attribute to the vertex
+            // Apply the attribute
             if (hasExistingAttribute)
-            {
-                println("  APPLIED: Replaced existing corner attribute");
                 replaceSMAttribute(context, existingAttribute, cornerAttribute);
-            }
             else
-            {
-                println("  APPLIED: Set new corner attribute");
                 setAttribute(context, { "entities" : vertex, "attribute" : cornerAttribute });
-            }
 
             attributeCounter += 1;
         }
-        catch (error)
+        catch
         {
-            // Skip vertices that cause errors and continue with the rest
-            println("  ERROR processing vertex " ~ vertexIndex ~ ": " ~ error);
-            vertexIndex += 1;
+            // Skip vertices that cause errors
             continue;
         }
-        vertexIndex += 1;
     }
-    
-    println("=== CORNER BREAK DEBUG: Complete. Applied " ~ attributeCounter ~ " corner breaks ===");
 }
 
 /**
@@ -1227,9 +1155,6 @@ function booleanOneTabGroup(context is Context, id is Id, definition is map, coi
         remapCornerBreaks(context, cornerBreakTracking);
 
     // Apply corner break attributes to extension-created vertices before the sheet metal update
-    println("=== CALLING applyCornerBreaksToExtensionVertices ===");
-    println("definition keys: " ~ keys(definition));
-    println("coincidentGrouping.walls query defined: " ~ (coincidentGrouping.walls != undefined));
     applyCornerBreaksToExtensionVertices(context, id + "applyCornerBreaks", definition, coincidentGrouping.walls);
 
     return getFeatureStatus(context, id + "boolean");
