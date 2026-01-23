@@ -1,6 +1,6 @@
 FeatureScript 2837;
 import(path : "onshape/std/common.fs", version : "2837.0");
-// ICON::import(path : "a34fe683b4cf0eb1de011a4b", version : "ec72feda3911e2ee01d24e0e");
+ICON::import(path : "a34fe683b4cf0eb1de011a4b", version : "ec72feda3911e2ee01d24e0e");
 import(path : "onshape/std/query.fs", version : "2837.0");
 import(path : "onshape/std/evaluate.fs", version : "2837.0");
 import(path : "onshape/std/valueBounds.fs", version : "2837.0");
@@ -21,12 +21,10 @@ import(path : "onshape/std/sheetMetalUtils.fs", version : "2837.0");
 import(path : "onshape/std/surfaceGeometry.fs", version : "2837.0");
 import(path : "onshape/std/topologyUtils.fs", version : "2837.0");
 import(path : "onshape/std/vector.fs", version : "2837.0");
-// Written by Caden Armstrong - SmartBench Software
-// Hacked by Derek Van Allen - Boss Display
+// Original framework by Caden Armstrong - SmartBench Software
+// Hacked by Derek Van Allen
 // Created for Boss Display
-// For support contact caden.armstrong@smartbenchsoftware.com
-// 
-// Refactored to use edge splitting method from custom-features/onlyTabs-refactor/splitSmEdgeChainToSegments.fs
+// For support contact Derek Van Allen on the Onshape forums
 
 const EDGE_LENGTH_TOLERANCE = 1e-9 * meter;
 const EDGE_PARAMETER_TOLERANCE = 1e-6;
@@ -64,7 +62,7 @@ export enum SpacingType
     LENGTH
 }
 
-annotation { "Feature Type Name" : "OnlyTabs - Boss Display", "Feature Type Description" : "Tab and Slot feature for Boss Display"}
+annotation { "Feature Type Name" : "OnlyTabs - Boss Display", "Icon" : ICON::BLOB_DATA, "Feature Type Description" : "Tab and Slot feature for Boss Display" }
 export const tabAndSlotBossDisplay = defineSheetMetalFeature(function(context is Context, id is Id, definition is map)
     precondition
     {
