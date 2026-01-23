@@ -225,8 +225,8 @@ export const tabAndSlotBossDisplay = defineSheetMetalFeature(function(context is
         // Filter to only laminar (one-sided/boundary) edges to avoid EXTEND_NON_LAMINAR error
         const extractedEdgesToExtend = qEdgeTopologyFilter(trackedTabSegmentsAfterExtraction, EdgeTopology.ONE_SIDED);
 
-        // Track vertices BEFORE extension - these are the root vertices
-        const verticesBeforeExtension = qAdjacent(extractedEdgesToExtend, AdjacencyType.VERTEX, EntityType.VERTEX);
+        // Track the edges that will be extended - these edges will "move" during extension
+        const trackedEdgesThatMove = startTracking(context, extractedEdgesToExtend);
         
         if (size(evaluateQuery(context, extractedEdgesToExtend)) > 0)
         {
@@ -253,18 +253,14 @@ export const tabAndSlotBossDisplay = defineSheetMetalFeature(function(context is
         println("=== EXTENSION TRACKING DEBUG ===");
         println("Extension created edges count: " ~ size(evaluateQuery(context, extensionCreatedEdges)));
         
-        // After extension, find vertices on the extended edges
-        // The OUTER corners are vertices that didn't exist before extension
-        const verticesAfterExtension = qAdjacent(extractedEdgesToExtend, AdjacencyType.VERTEX, EntityType.VERTEX);
+        // After extension, the tracked edges have moved and now have new vertices at their ends
+        // Find vertices adjacent to the tracked edges that moved
+        const movedEdges = qEntityFilter(trackedEdgesThatMove, EntityType.EDGE);
+        const verticesOnMovedEdges = qAdjacent(movedEdges, AdjacencyType.VERTEX, EntityType.VERTEX);
+        const trackedExtensionVertices = startTracking(context, verticesOnMovedEdges);
         
-        // New vertices = vertices after MINUS vertices before
-        // These are the vertices that "moved" or were created at the outer end
-        const outerCornerVertices = qSubtraction(verticesAfterExtension, verticesBeforeExtension);
-        const trackedExtensionVertices = startTracking(context, outerCornerVertices);
-        
-        println("Vertices before extension count: " ~ size(evaluateQuery(context, verticesBeforeExtension)));
-        println("Vertices after extension count: " ~ size(evaluateQuery(context, verticesAfterExtension)));
-        println("Outer corner vertices count (for corner breaks): " ~ size(evaluateQuery(context, outerCornerVertices)));
+        println("Moved edges count: " ~ size(evaluateQuery(context, movedEdges)));
+        println("Vertices on moved edges (for corner breaks): " ~ size(evaluateQuery(context, verticesOnMovedEdges)));
         println("Tracked extension vertices query defined: " ~ (trackedExtensionVertices != undefined));
 
         // Phase 4: Merge the extended surface bodies back with the sheet metal model
