@@ -237,10 +237,6 @@ export const tabAndSlotBossDisplay = defineSheetMetalFeature(function(context is
 
         // Filter to only laminar (one-sided/boundary) edges to avoid EXTEND_NON_LAMINAR error
         const extractedEdgesToExtend = qEdgeTopologyFilter(trackedTabSegmentsAfterExtraction, EdgeTopology.ONE_SIDED);
-
-        // Track the tab segment edges before extension
-        // Tracking follows edges through operations - after extension, these edges will be in new positions
-        const trackedEdgesThatMove = startTracking(context, extractedEdgesToExtend);
         
         if (size(evaluateQuery(context, extractedEdgesToExtend)) > 0)
         {
@@ -260,24 +256,22 @@ export const tabAndSlotBossDisplay = defineSheetMetalFeature(function(context is
             }
         }
 
-        // After extension, resolve tracked edges (now in extended positions) and get their vertices
-        // This gives us vertices at both ends of the extended tab segment edges
-        const movedEdges = qEntityFilter(trackedEdgesThatMove, EntityType.EDGE);
-        const verticesOnMovedEdges = qAdjacent(movedEdges, AdjacencyType.VERTEX, EntityType.VERTEX);
-        
-        // Track these vertices through the boolean union operation
-        // After union, tracking resolves to include vertices from the merged geometry
-        const trackedExtensionVertices = startTracking(context, verticesOnMovedEdges);
-
         // Phase 4: Merge the extended surface bodies back with the sheet metal model
         // Call mergeTabSurfacesWithSheetMetal to integrate the surface bodies using integrated helper functions
         // The wallFaces we extracted from are the sheet metal definition faces to add material to
 
         if (!isQueryEmpty(context, extractedBodies))
         {
+            // Get the edges created by the extension operation (the new outer edges at tab tips)
             const extensionCreatedEdges = qCreatedBy(id + "extendTabs", EntityType.EDGE);
             definition.extensionEdgesTracking = startTracking(context, extensionCreatedEdges);
-            definition.extensionVerticesTracking = trackedExtensionVertices;
+            
+            // Get vertices specifically from the extension-created edges
+            // These are the corner vertices at the outer tips of tabs, not internal vertices
+            // where multiple segments may meet within a single tab
+            const cornerVerticesAtTabEnds = qAdjacent(extensionCreatedEdges, AdjacencyType.EDGE, EntityType.VERTEX);
+            definition.extensionVerticesTracking = startTracking(context, cornerVerticesAtTabEnds);
+            
             mergeTabSurfacesWithSheetMetal(context, id + "mergeTabsWithModel", extractedBodies, wallFaces, definition);
         }
     }, { mergeScope : qNothing() });
