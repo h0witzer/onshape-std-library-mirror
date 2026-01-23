@@ -238,9 +238,6 @@ export const tabAndSlotBossDisplay = defineSheetMetalFeature(function(context is
         // Filter to only laminar (one-sided/boundary) edges to avoid EXTEND_NON_LAMINAR error
         const extractedEdgesToExtend = qEdgeTopologyFilter(trackedTabSegmentsAfterExtraction, EdgeTopology.ONE_SIDED);
         
-        // Track these edges through the extension operation to find where they move
-        const trackedExtensionEdges = startTracking(context, extractedEdgesToExtend);
-        
         if (size(evaluateQuery(context, extractedEdgesToExtend)) > 0)
         {
             try
@@ -269,16 +266,15 @@ export const tabAndSlotBossDisplay = defineSheetMetalFeature(function(context is
             const extensionCreatedEdges = qCreatedBy(id + "extendTabs", EntityType.EDGE);
             definition.extensionEdgesTracking = startTracking(context, extensionCreatedEdges);
             
-            // Get the moved edges after extension (the top edges of tabs that moved during extension)
-            const movedEdges = qEntityFilter(trackedExtensionEdges, EntityType.EDGE);
-            
-            // Get vertices from both sets of edges
-            const verticesFromMovedEdges = qAdjacent(movedEdges, AdjacencyType.VERTEX, EntityType.VERTEX);
+            // Get vertices from both sets of edges:
+            // - extractedEdgesToExtend: the top edges of tabs (after extension moved them)
+            // - extensionCreatedEdges: the new edges created by the extension operation
+            const verticesFromExtendedEdges = qAdjacent(extractedEdgesToExtend, AdjacencyType.VERTEX, EntityType.VERTEX);
             const verticesFromCreatedEdges = qAdjacent(extensionCreatedEdges, AdjacencyType.VERTEX, EntityType.VERTEX);
             
             // The intersection gives us vertices that are common to both edge sets
-            // These are the corner vertices at the tips where moved edges meet created edges
-            const cornerVertices = qIntersection([verticesFromMovedEdges, verticesFromCreatedEdges]);
+            // These are the corner vertices at the tips where extended edges meet created edges
+            const cornerVertices = qIntersection([verticesFromExtendedEdges, verticesFromCreatedEdges]);
             definition.extensionVerticesTracking = startTracking(context, cornerVertices);
             
             mergeTabSurfacesWithSheetMetal(context, id + "mergeTabsWithModel", extractedBodies, wallFaces, definition);
