@@ -250,12 +250,22 @@ export const tabAndSlotBossDisplay = defineSheetMetalFeature(function(context is
         println("=== EXTENSION TRACKING DEBUG ===");
         println("Extension created edges count: " ~ size(evaluateQuery(context, extensionCreatedEdges)));
         
-        // Instead of tracking vertices created by the operation (which may be 0),
-        // find vertices at the endpoints of the newly created edges (the boundary of the extension)
-        const extensionBoundaryVertices = qAdjacent(extensionCreatedEdges, AdjacencyType.VERTEX, EntityType.VERTEX);
-        const trackedExtensionVertices = startTracking(context, extensionBoundaryVertices);
+        // Find vertices at the endpoints of the newly created edges (the boundary of the extension)
+        // But we only want the vertices at the OUTER end of the tabs, not at the root
+        // The root vertices are adjacent to both the created edges AND the original edges we extended
+        const allExtensionBoundaryVertices = qAdjacent(extensionCreatedEdges, AdjacencyType.VERTEX, EntityType.VERTEX);
         
-        println("Extension boundary vertices count: " ~ size(evaluateQuery(context, extensionBoundaryVertices)));
+        // Find vertices on the original edges we extended from
+        const originalEdgeVertices = qAdjacent(extractedEdgesToExtend, AdjacencyType.VERTEX, EntityType.VERTEX);
+        
+        // Only track vertices that are on the NEW edges but NOT on the original edges
+        // These are the vertices at the outer corners of the tabs
+        const outerCornerVertices = qSubtraction(allExtensionBoundaryVertices, originalEdgeVertices);
+        const trackedExtensionVertices = startTracking(context, outerCornerVertices);
+        
+        println("All extension boundary vertices count: " ~ size(evaluateQuery(context, allExtensionBoundaryVertices)));
+        println("Original edge vertices count: " ~ size(evaluateQuery(context, originalEdgeVertices)));
+        println("Outer corner vertices count (for corner breaks): " ~ size(evaluateQuery(context, outerCornerVertices)));
         println("Tracked extension vertices query defined: " ~ (trackedExtensionVertices != undefined));
 
         // Phase 4: Merge the extended surface bodies back with the sheet metal model
