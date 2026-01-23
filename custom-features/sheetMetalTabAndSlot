@@ -380,9 +380,10 @@ function calculateLengthSpacedTabDomains(totalLength is ValueWithUnits, tabWidth
 //   Returns true if domains are valid (no overlaps), false if any domains overlap
 function validateTabDomainsNoOverlap(tabDomains is array) returns boolean
 {
+    // Single tab cannot overlap with itself
     if (size(tabDomains) <= 1)
     {
-        return true; // Single tab or no tabs cannot overlap
+        return true;
     }
     
     // Check each consecutive pair of tab domains
@@ -391,9 +392,9 @@ function validateTabDomainsNoOverlap(tabDomains is array) returns boolean
         const currentTabEnd = tabDomains[i].end;
         const nextTabStart = tabDomains[i + 1].start;
         
-        // If current tab's end is greater than or equal to next tab's start (within tolerance),
-        // domains overlap
-        if (currentTabEnd >= nextTabStart - FRACTION_TOLERANCE)
+        // Tabs overlap if the current tab extends beyond the start of the next tab
+        // Account for floating-point tolerance in the comparison
+        if (currentTabEnd > nextTabStart + FRACTION_TOLERANCE)
         {
             return false;
         }
