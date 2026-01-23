@@ -266,11 +266,10 @@ export const tabAndSlotBossDisplay = defineSheetMetalFeature(function(context is
             const extensionCreatedEdges = qCreatedBy(id + "extendTabs", EntityType.EDGE);
             definition.extensionEdgesTracking = startTracking(context, extensionCreatedEdges);
             
-            // Get vertices specifically from the extension-created edges
-            // These are the corner vertices at the outer tips of tabs, not internal vertices
-            // where multiple segments may meet within a single tab
-            const cornerVerticesAtTabEnds = qAdjacent(extensionCreatedEdges, AdjacencyType.VERTEX, EntityType.VERTEX);
-            definition.extensionVerticesTracking = startTracking(context, cornerVerticesAtTabEnds);
+            // Get vertices only from the extension-created edges (tip vertices only)
+            // This excludes both root vertices and internal vertices where segments meet within tabs
+            const tipVertices = qAdjacent(extensionCreatedEdges, AdjacencyType.VERTEX, EntityType.VERTEX);
+            definition.extensionVerticesTracking = startTracking(context, tipVertices);
             
             mergeTabSurfacesWithSheetMetal(context, id + "mergeTabsWithModel", extractedBodies, wallFaces, definition);
         }
