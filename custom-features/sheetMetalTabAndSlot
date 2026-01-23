@@ -147,6 +147,19 @@ export const tabAndSlotBossDisplay = defineSheetMetalFeature(function(context is
             throw regenError("No tabs can fit with the specified parameters", ["tabWidth", "spacing"]);
         }
 
+        // Validate that tab domains do not overlap
+        if (!validateTabDomainsNoOverlap(tabDomains))
+        {
+            if (definition.spacingType == SpacingType.EQUAL)
+            {
+                throw regenError("Resultant tabs would overlap. Reduce tab count or tab width to avoid overlapping tabs.", ["tabCount", "tabWidth"]);
+            }
+            else
+            {
+                throw regenError("Resultant tabs would overlap. Increase spacing or reduce tab width to avoid overlapping tabs.", ["spacing", "tabWidth"]);
+            }
+        }
+
         // Use mixInTracking pattern: union the original query with a tracking query
         // This ensures we capture both affected (split) and unaffected edges
         const trackedEdges = qUnion([orderedEdgeQuery, startTracking(context, orderedEdgeQuery)]);
@@ -356,6 +369,37 @@ function calculateLengthSpacedTabDomains(totalLength is ValueWithUnits, tabWidth
         currentPos += tabWidthParam + spacingParam;
     }
     return tabDomains;
+}
+
+// Validates that tab domains do not overlap.
+// Checks each consecutive pair of tab domains to ensure the end of one tab
+// does not exceed the start of the next tab (with a small tolerance).
+// Inputs:
+//   tabDomains - Array of {start, end} maps with normalized parameters (0 to 1) for each tab location
+// Outputs:
+//   Returns true if domains are valid (no overlaps), false if any domains overlap
+function validateTabDomainsNoOverlap(tabDomains is array) returns boolean
+{
+    if (size(tabDomains) <= 1)
+    {
+        return true; // Single tab or no tabs cannot overlap
+    }
+    
+    // Check each consecutive pair of tab domains
+    for (var i = 0; i < size(tabDomains) - 1; i += 1)
+    {
+        const currentTabEnd = tabDomains[i].end;
+        const nextTabStart = tabDomains[i + 1].start;
+        
+        // If current tab's end is greater than or equal to next tab's start (within tolerance),
+        // domains overlap
+        if (currentTabEnd >= nextTabStart - FRACTION_TOLERANCE)
+        {
+            return false;
+        }
+    }
+    
+    return true;
 }
 
 // Extracts all split parameters from tab domains.
