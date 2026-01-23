@@ -250,21 +250,26 @@ export const tabAndSlotBossDisplay = defineSheetMetalFeature(function(context is
         println("=== EXTENSION TRACKING DEBUG ===");
         println("Extension created edges count: " ~ size(evaluateQuery(context, extensionCreatedEdges)));
         
-        // Find vertices at the endpoints of the newly created edges (the boundary of the extension)
-        // But we only want the vertices at the OUTER end of the tabs, not at the root
-        // The root vertices are adjacent to both the created edges AND the original edges we extended
+        // We want vertices at the OUTER end of the tabs, not at the root where tab connects to wall
+        // The extension creates new edges. We need vertices on those new edges that are NOT on the 
+        // original edges we extended from (extractedEdgesToExtend)
+        
+        // Get all vertices adjacent to extension created edges
         const allExtensionBoundaryVertices = qAdjacent(extensionCreatedEdges, AdjacencyType.VERTEX, EntityType.VERTEX);
         
-        // Find vertices on the original edges we extended from
-        const originalEdgeVertices = qAdjacent(extractedEdgesToExtend, AdjacencyType.VERTEX, EntityType.VERTEX);
+        // The original edges we extended are still part of the body
+        // Vertices at the root are adjacent to BOTH new edges and original edges
+        // Vertices at the outer corners are ONLY adjacent to new edges
         
-        // Only track vertices that are on the NEW edges but NOT on the original edges
-        // These are the vertices at the outer corners of the tabs
-        const outerCornerVertices = qSubtraction(allExtensionBoundaryVertices, originalEdgeVertices);
+        // Get vertices that are on extractedEdgesToExtend (these are at the root)
+        const rootVertices = qAdjacent(extractedEdgesToExtend, AdjacencyType.VERTEX, EntityType.VERTEX);
+        
+        // Outer corners = all extension boundary vertices MINUS root vertices
+        const outerCornerVertices = qSubtraction(allExtensionBoundaryVertices, rootVertices);
         const trackedExtensionVertices = startTracking(context, outerCornerVertices);
         
         println("All extension boundary vertices count: " ~ size(evaluateQuery(context, allExtensionBoundaryVertices)));
-        println("Original edge vertices count: " ~ size(evaluateQuery(context, originalEdgeVertices)));
+        println("Root vertices count: " ~ size(evaluateQuery(context, rootVertices)));
         println("Outer corner vertices count (for corner breaks): " ~ size(evaluateQuery(context, outerCornerVertices)));
         println("Tracked extension vertices query defined: " ~ (trackedExtensionVertices != undefined));
 
@@ -989,110 +994,20 @@ function applyCornerBreaksToExtensionVertices(context is Context, id is Id, defi
             
             println("  Total adjacent faces: " ~ size(allAdjacentFacesArray));
             
-            // Filter to only sheet metal wall faces
-            const adjacentWallFaces = qIntersection([adjacentFaces, wallFaces]);
-            const adjacentWallArray = evaluateQuery(context, adjacentWallFaces);
-
-            println("  Adjacent wall faces found: " ~ size(adjacentWallArray));
-            
-            // Debug: Try to find ANY wall faces adjacent to this vertex
-            var wallFacesFound = 0;
+            // Find wall faces by checking attributes directly (query intersection doesn't work reliably after boolean)
+            var adjacentWallFaces = [];
             for (var face in allAdjacentFacesArray)
             {
                 const wallAttr = try silent(getWallAttribute(context, face));
                 if (wallAttr != undefined)
                 {
-                    wallFacesFound += 1;
+                    adjacentWallFaces = append(adjacentWallFaces, face);
                 }
             }
-            println("  Adjacent faces with wall attributes: " ~ wallFacesFound);
+            
+            println("  Adjacent wall faces found: " ~ size(adjacentWallFaces));
 
-            // If the intersection didn't work, try finding wall faces directly
-            if (size(adjacentWallArray) == 0 && wallFacesFound > 0)
-            {
-                println("  WARNING: Wall faces exist but intersection failed, using direct search");
-                // Build a new array of adjacent wall faces by checking attributes
-                var directWallFaces = [];
-                for (var face in allAdjacentFacesArray)
-                {
-                    const wallAttr = try silent(getWallAttribute(context, face));
-                    if (wallAttr != undefined)
-                    {
-                        directWallFaces = append(directWallFaces, face);
-                    }
-                }
-                if (size(directWallFaces) > 0)
-                {
-                    // Use the directly found wall faces
-                    const adjacentWallArray = directWallFaces;
-                    
-                    // Get the wall attribute from one of the adjacent walls
-                    var wallAttribute;
-                    for (var wallFace in adjacentWallArray)
-                    {
-                        wallAttribute = try silent(getWallAttribute(context, wallFace));
-                        if (wallAttribute != undefined && wallAttribute.attributeId != undefined)
-                        {
-                            println("  Found wall attribute with ID: " ~ wallAttribute.attributeId);
-                            
-                            const wallId = wallAttribute.attributeId;
-
-                            // Check if the vertex already has a corner attribute
-                            var existingAttribute = getCornerAttribute(context, vertex);
-                            var hasExistingAttribute = (existingAttribute != undefined);
-
-                            println("  Existing corner attribute: " ~ hasExistingAttribute);
-
-                            // Check if a corner break for this wall already exists
-                            if (hasExistingAttribute && existingAttribute.cornerBreaks != undefined)
-                            {
-                                var breakExists = false;
-                                for (var existingBreak in existingAttribute.cornerBreaks)
-                                {
-                                    if (existingBreak.value.wallId == wallId)
-                                    {
-                                        breakExists = true;
-                                        break;
-                                    }
-                                }
-                                if (breakExists)
-                                {
-                                    println("  SKIP: Corner break already exists for this wall");
-                                    vertexIndex += 1;
-                                    continue;
-                                }
-                            }
-
-                            // Create or update the corner attribute with a chamfer break
-                            var cornerAttribute = hasExistingAttribute ? existingAttribute : makeSMCornerAttribute(toAttributeId(id + ("corner" ~ attributeCounter)));
-                            
-                            // Create a chamfer corner break with the specified width
-                            var cornerBreak = makeSMCornerBreak(SMCornerBreakStyle.CHAMFER, definition.tabChamfer, wallId);
-                            var cornerBreakMap = { "value" : cornerBreak, "canBeEdited" : false, "controllingFeatureId" : id };
-                            cornerAttribute = addCornerBreakToSMAttribute(cornerAttribute, cornerBreakMap);
-
-                            // Apply the attribute to the vertex
-                            if (hasExistingAttribute)
-                            {
-                                println("  APPLIED: Replaced existing corner attribute");
-                                replaceSMAttribute(context, existingAttribute, cornerAttribute);
-                            }
-                            else
-                            {
-                                println("  APPLIED: Set new corner attribute");
-                                setAttribute(context, { "entities" : vertex, "attribute" : cornerAttribute });
-                            }
-
-                            attributeCounter += 1;
-                            break; // Only process the first wall
-                        }
-                    }
-                    vertexIndex += 1;
-                    continue;
-                }
-            }
-
-            if (size(adjacentWallArray) == 0)
+            if (size(adjacentWallFaces) == 0)
             {
                 println("  SKIP: No adjacent wall faces");
                 vertexIndex += 1;
@@ -1101,7 +1016,7 @@ function applyCornerBreaksToExtensionVertices(context is Context, id is Id, defi
 
             // Get the wall attribute from one of the adjacent walls
             var wallAttribute;
-            for (var wallFace in adjacentWallArray)
+            for (var wallFace in adjacentWallFaces)
             {
                 wallAttribute = try silent(getWallAttribute(context, wallFace));
                 if (wallAttribute != undefined && wallAttribute.attributeId != undefined)
