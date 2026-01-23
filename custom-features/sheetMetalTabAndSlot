@@ -250,6 +250,10 @@ export const tabAndSlotBossDisplay = defineSheetMetalFeature(function(context is
         // Track vertices created by extension for corner chamfering
         const extensionCreatedVertices = qCreatedBy(id + "extendTabs", EntityType.VERTEX);
         const trackedExtensionVertices = startTracking(context, extensionCreatedVertices);
+        
+        println("=== EXTENSION TRACKING DEBUG ===");
+        println("Extension created vertices count: " ~ size(evaluateQuery(context, extensionCreatedVertices)));
+        println("Tracked extension vertices query defined: " ~ (trackedExtensionVertices != undefined));
 
         // Phase 4: Merge the extended surface bodies back with the sheet metal model
         // Call mergeTabSurfacesWithSheetMetal to integrate the surface bodies using integrated helper functions
@@ -934,9 +938,14 @@ function subtractTab(context is Context, id is Id, definition is map, subtractQu
  */
 function applyCornerBreaksToExtensionVertices(context is Context, id is Id, definition is map, wallFaces is Query)
 {
+    println("=== CORNER BREAK DEBUG: applyCornerBreaksToExtensionVertices called ===");
+    println("extensionVerticesTracking defined: " ~ (definition.extensionVerticesTracking != undefined));
+    println("tabChamfer value: " ~ definition.tabChamfer);
+    
     // Check if we have tracked extension vertices and a non-zero chamfer width
     if (definition.extensionVerticesTracking == undefined || definition.tabChamfer <= 0 * meter)
     {
+        println("EARLY EXIT: extensionVerticesTracking undefined or tabChamfer <= 0");
         return;
     }
 
@@ -945,15 +954,20 @@ function applyCornerBreaksToExtensionVertices(context is Context, id is Id, defi
     const extensionVertices = qEntityFilter(definition.extensionVerticesTracking, EntityType.VERTEX);
     const vertexArray = evaluateQuery(context, extensionVertices);
 
+    println("Number of extension vertices found: " ~ size(vertexArray));
+
     if (size(vertexArray) == 0)
     {
+        println("EARLY EXIT: No extension vertices found");
         return;
     }
 
     // For each vertex, we need to find the adjacent wall and apply a corner break attribute
     var attributeCounter = 0;
+    var vertexIndex = 0;
     for (var vertex in vertexArray)
     {
+        println("--- Processing vertex " ~ vertexIndex ~ " ---");
         try
         {
             // Get faces adjacent to this vertex
@@ -963,8 +977,12 @@ function applyCornerBreaksToExtensionVertices(context is Context, id is Id, defi
             const adjacentWallFaces = qIntersection([adjacentFaces, wallFaces]);
             const adjacentWallArray = evaluateQuery(context, adjacentWallFaces);
 
+            println("  Adjacent wall faces found: " ~ size(adjacentWallArray));
+
             if (size(adjacentWallArray) == 0)
             {
+                println("  SKIP: No adjacent wall faces");
+                vertexIndex += 1;
                 continue;
             }
 
@@ -975,12 +993,15 @@ function applyCornerBreaksToExtensionVertices(context is Context, id is Id, defi
                 wallAttribute = try silent(getWallAttribute(context, wallFace));
                 if (wallAttribute != undefined && wallAttribute.attributeId != undefined)
                 {
+                    println("  Found wall attribute with ID: " ~ wallAttribute.attributeId);
                     break;
                 }
             }
 
             if (wallAttribute == undefined || wallAttribute.attributeId == undefined)
             {
+                println("  SKIP: No wall attribute found");
+                vertexIndex += 1;
                 continue;
             }
 
@@ -989,6 +1010,8 @@ function applyCornerBreaksToExtensionVertices(context is Context, id is Id, defi
             // Check if the vertex already has a corner attribute
             var existingAttribute = getCornerAttribute(context, vertex);
             var hasExistingAttribute = (existingAttribute != undefined);
+
+            println("  Existing corner attribute: " ~ hasExistingAttribute);
 
             // Check if a corner break for this wall already exists
             if (hasExistingAttribute && existingAttribute.cornerBreaks != undefined)
@@ -1004,6 +1027,8 @@ function applyCornerBreaksToExtensionVertices(context is Context, id is Id, defi
                 }
                 if (breakExists)
                 {
+                    println("  SKIP: Corner break already exists for this wall");
+                    vertexIndex += 1;
                     continue;
                 }
             }
@@ -1019,21 +1044,28 @@ function applyCornerBreaksToExtensionVertices(context is Context, id is Id, defi
             // Apply the attribute to the vertex
             if (hasExistingAttribute)
             {
+                println("  APPLIED: Replaced existing corner attribute");
                 replaceSMAttribute(context, existingAttribute, cornerAttribute);
             }
             else
             {
+                println("  APPLIED: Set new corner attribute");
                 setAttribute(context, { "entities" : vertex, "attribute" : cornerAttribute });
             }
 
             attributeCounter += 1;
         }
-        catch
+        catch (error)
         {
             // Skip vertices that cause errors and continue with the rest
+            println("  ERROR processing vertex " ~ vertexIndex ~ ": " ~ error);
+            vertexIndex += 1;
             continue;
         }
+        vertexIndex += 1;
     }
+    
+    println("=== CORNER BREAK DEBUG: Complete. Applied " ~ attributeCounter ~ " corner breaks ===");
 }
 
 /**
@@ -1177,6 +1209,9 @@ function booleanOneTabGroup(context is Context, id is Id, definition is map, coi
         remapCornerBreaks(context, cornerBreakTracking);
 
     // Apply corner break attributes to extension-created vertices before the sheet metal update
+    println("=== CALLING applyCornerBreaksToExtensionVertices ===");
+    println("definition keys: " ~ keys(definition));
+    println("coincidentGrouping.walls query defined: " ~ (coincidentGrouping.walls != undefined));
     applyCornerBreaksToExtensionVertices(context, id + "applyCornerBreaks", definition, coincidentGrouping.walls);
 
     return getFeatureStatus(context, id + "boolean");
