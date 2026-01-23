@@ -17,7 +17,7 @@ import(path : "onshape/std/projectiontype.gen.fs", version : "2837.0");
  * The medial axis is computed by:
  * 1. Under-extruding the face profile normally to a conservative distance
  * 2. Applying a 45-degree draft to all side faces, creating peaks
- * 3. Trying to delete the end cap face; if that fails, moving it by the diagonal distance
+ * 3. Trying to delete the end cap face; if that fails, moving it by a specified distance
  * 4. Querying peak edges from the resulting geometry
  * 5. Filtering edges based on adjacency to the start cap (vertex or edge adjacency)
  * 6. Combining filtered edges with edges created by the delete/move operation
@@ -29,6 +29,8 @@ import(path : "onshape/std/projectiontype.gen.fs", version : "2837.0");
  *   - face {Query}: The planar face to compute the medial axis for
  *   - includeBoundaryEdges {boolean}: When false (default), excludes edges that share vertices with the input face.
  *                                      When true, excludes only edges that share edges with the input face (less strict).
+ *   - overrideMoveDistance {boolean}: When true, allows manual specification of the move face distance.
+ *   - manualMoveDistance {ValueWithUnits}: Manual override for the move face distance (only used when overrideMoveDistance is true).
  */
 annotation { "Feature Type Name" : "Medial Axis" }
 export const medialAxis = defineFeature(function(context is Context, id is Id, definition is map)
@@ -41,6 +43,15 @@ export const medialAxis = defineFeature(function(context is Context, id is Id, d
         
         annotation { "Name" : "Include boundary edges", "Default" : false }
         definition.includeBoundaryEdges is boolean;
+        
+        annotation { "Name" : "Override move distance", "Default" : false }
+        definition.overrideMoveDistance is boolean;
+        
+        if (definition.overrideMoveDistance)
+        {
+            annotation { "Name" : "Move distance" }
+            isLength(definition.manualMoveDistance, NONNEGATIVE_ZERO_DEFAULT_LENGTH_BOUNDS);
+        }
         
     }
     {
@@ -57,7 +68,11 @@ export const medialAxis = defineFeature(function(context is Context, id is Id, d
         // Calculate extrusion distance and move distance
         const distances = calculateDistances(context, inputFace);
         const extrusionDistance = distances.extrusionDistance;
-        const moveDistance = distances.moveDistance;
+        
+        // Use manual move distance if override is enabled, otherwise use calculated distance
+        const moveDistance = definition.overrideMoveDistance ? 
+            definition.manualMoveDistance : 
+            distances.moveDistance;
         
         // Step 1: Extrude the face normally (using a conservative under-extrusion distance)
         opExtrude(context, id + "extrude", {
