@@ -21,6 +21,7 @@ import(path : "onshape/std/sheetMetalUtils.fs", version : "2837.0");
 import(path : "onshape/std/surfaceGeometry.fs", version : "2837.0");
 import(path : "onshape/std/topologyUtils.fs", version : "2837.0");
 import(path : "onshape/std/vector.fs", version : "2837.0");
+import(path : "onshape/std/smcornerbreakstyle.gen.fs", version : "2837.0");
 // Original framework by Caden Armstrong - SmartBench Software
 // Hacked by Derek Van Allen
 // Created for Boss Display
@@ -224,6 +225,10 @@ export const tabAndSlotBossDisplay = defineSheetMetalFeature(function(context is
         // Filter to only laminar (one-sided/boundary) edges to avoid EXTEND_NON_LAMINAR error
         const extractedEdgesToExtend = qEdgeTopologyFilter(trackedTabSegmentsAfterExtraction, EdgeTopology.ONE_SIDED);
 
+        // Track the tab segment edges before extension
+        // Tracking follows edges through operations - after extension, these edges will be in new positions
+        const trackedEdgesThatMove = startTracking(context, extractedEdgesToExtend);
+        
         if (size(evaluateQuery(context, extractedEdgesToExtend)) > 0)
         {
             try
@@ -242,13 +247,14 @@ export const tabAndSlotBossDisplay = defineSheetMetalFeature(function(context is
             }
         }
 
-        // Track edges and vertices created by the sheet extension operation
-        const extensionCreatedEdges = qCreatedBy(id + "extendTabs", EntityType.EDGE);
-        const trackedExtensionEdges = startTracking(context, extensionCreatedEdges);
-
-        // Track vertices created by extension for corner chamfering
-        const extensionCreatedVertices = qCreatedBy(id + "extendTabs", EntityType.VERTEX);
-        const trackedExtensionVertices = startTracking(context, extensionCreatedVertices);
+        // After extension, resolve tracked edges (now in extended positions) and get their vertices
+        // This gives us vertices at both ends of the extended tab segment edges
+        const movedEdges = qEntityFilter(trackedEdgesThatMove, EntityType.EDGE);
+        const verticesOnMovedEdges = qAdjacent(movedEdges, AdjacencyType.VERTEX, EntityType.VERTEX);
+        
+        // Track these vertices through the boolean union operation
+        // After union, tracking resolves to include vertices from the merged geometry
+        const trackedExtensionVertices = startTracking(context, verticesOnMovedEdges);
 
         // Phase 4: Merge the extended surface bodies back with the sheet metal model
         // Call mergeTabSurfacesWithSheetMetal to integrate the surface bodies using integrated helper functions
@@ -256,7 +262,8 @@ export const tabAndSlotBossDisplay = defineSheetMetalFeature(function(context is
 
         if (!isQueryEmpty(context, extractedBodies))
         {
-            definition.extensionEdgesTracking = trackedExtensionEdges;
+            const extensionCreatedEdges = qCreatedBy(id + "extendTabs", EntityType.EDGE);
+            definition.extensionEdgesTracking = startTracking(context, extensionCreatedEdges);
             definition.extensionVerticesTracking = trackedExtensionVertices;
             mergeTabSurfacesWithSheetMetal(context, id + "mergeTabsWithModel", extractedBodies, wallFaces, definition);
         }
@@ -905,39 +912,6 @@ function subtractTab(context is Context, id is Id, definition is map, subtractQu
             }
         }
 
-        // Apply corner chamfers to extension-created vertices on the tab body
-        if (definition.tabChamfer > 0 * meter && definition.extensionVerticesTracking != undefined)
-        {
-            const thickenedBody = qCreatedBy(id + "thicken", EntityType.BODY);
-            const thickenedEdges = qOwnedByBody(thickenedBody, EntityType.EDGE);
-
-            // Tracked vertices from extension resolve to edges on thickened body
-            const extensionEdges = qIntersection([definition.extensionVerticesTracking, thickenedEdges]);
-
-            // Filter to only convex edges
-            const convexEdges = qEdgeConvexityTypeFilter(extensionEdges, EdgeConvexityType.CONVEX);
-
-            // Get vertices from convex edges for corner break application
-            const verticesToChamfer = qAdjacent(convexEdges, AdjacencyType.EDGE, EntityType.VERTEX);
-
-            if (!isQueryEmpty(context, verticesToChamfer))
-            {
-                // Apply corner break chamfer using SMEdgeBlendImpl
-                const cornerBreakDefinition = {
-                        "entities" : verticesToChamfer,
-                        "blendType" : EdgeBlendType.CHAMFER,
-                        "width" : definition.tabChamfer,
-                        "crossSection" : FilletCrossSection.CHAMFER,
-                        "chamferMethod" : ChamferMethod.FACE_OFFSET
-                    };
-
-                try silent
-                {
-                    SMEdgeBlendImpl(context, id + "cornerChamfer", cornerBreakDefinition);
-                }
-            }
-        }
-
         smSubtractTab(context, id + "sm", qCreatedBy(id + "thicken", EntityType.BODY), subtractSMFaces);
         solidSubtractTab(context, id + "solid", qCreatedBy(id + "thicken", EntityType.BODY), subtractQueries.nonSheetMetalQueries);
     }
@@ -950,6 +924,102 @@ function subtractTab(context is Context, id is Id, definition is map, subtractQu
     try silent(opDeleteBodies(context, id + "deleteBodies", {
                     "entities" : qCreatedBy(id + "thicken", EntityType.BODY)
                 }));
+}
+
+/**
+ * Applies corner break attributes to vertices at tab-to-wall connections.
+ * 
+ * This function processes vertices tracked from the tab extension edges. After tracking through
+ * the extension operation and boolean union, the vertex set includes both:
+ * - Vertices at outer tab corners (surrounded by tab faces, no wall faces)
+ * - Vertices at tab-to-wall connections (have adjacent wall faces)
+ * 
+ * Only vertices adjacent to wall faces receive corner break attributes. Vertices at outer tab
+ * corners are automatically skipped because they have no adjacent wall faces.
+ * 
+ * @param context - The evaluation context
+ * @param id - Operation ID for this corner break application
+ * @param definition - Feature definition containing:
+ *                     - extensionVerticesTracking: tracked vertices from tab segment edges
+ *                     - tabChamfer: the chamfer width for corner breaks
+ * @param wallFaces - Query for sheet metal wall faces (unused, kept for signature compatibility)
+ */
+function applyCornerBreaksToExtensionVertices(context is Context, id is Id, definition is map, wallFaces is Query)
+{
+    // Early exit if no tracking or zero chamfer
+    if (definition.extensionVerticesTracking == undefined || definition.tabChamfer <= 0 * meter)
+        return;
+
+    // Resolve tracked vertices after boolean union
+    const extensionVertices = qEntityFilter(definition.extensionVerticesTracking, EntityType.VERTEX);
+    const vertexArray = evaluateQuery(context, extensionVertices);
+
+    if (size(vertexArray) == 0)
+        return;
+
+    // Apply corner breaks to vertices adjacent to wall faces
+    var attributeCounter = 0;
+    for (var vertex in vertexArray)
+    {
+        try
+        {
+            // Find adjacent faces with wall attributes
+            const adjacentFaces = evaluateQuery(context, qAdjacent(vertex, AdjacencyType.VERTEX, EntityType.FACE));
+            
+            var wallAttribute = undefined;
+            for (var face in adjacentFaces)
+            {
+                wallAttribute = try silent(getWallAttribute(context, face));
+                if (wallAttribute != undefined && wallAttribute.attributeId != undefined)
+                    break;
+            }
+
+            // Skip vertices not adjacent to walls (outer tab corners)
+            if (wallAttribute == undefined || wallAttribute.attributeId == undefined)
+                continue;
+
+            const wallId = wallAttribute.attributeId;
+
+            // Check for existing corner attribute
+            var existingAttribute = getCornerAttribute(context, vertex);
+            var hasExistingAttribute = (existingAttribute != undefined);
+
+            // Skip if corner break already exists for this wall
+            if (hasExistingAttribute && existingAttribute.cornerBreaks != undefined)
+            {
+                var breakExists = false;
+                for (var existingBreak in existingAttribute.cornerBreaks)
+                {
+                    if (existingBreak.value.wallId == wallId)
+                    {
+                        breakExists = true;
+                        break;
+                    }
+                }
+                if (breakExists)
+                    continue;
+            }
+
+            // Create or update corner attribute with chamfer break
+            var cornerAttribute = hasExistingAttribute ? existingAttribute : makeSMCornerAttribute(toAttributeId(id + ("corner" ~ attributeCounter)));
+            var cornerBreak = makeSMCornerBreak(SMCornerBreakStyle.CHAMFER, definition.tabChamfer, wallId);
+            var cornerBreakMap = { "value" : cornerBreak, "canBeEdited" : false, "controllingFeatureId" : id };
+            cornerAttribute = addCornerBreakToSMAttribute(cornerAttribute, cornerBreakMap);
+
+            // Apply the attribute
+            if (hasExistingAttribute)
+                replaceSMAttribute(context, existingAttribute, cornerAttribute);
+            else
+                setAttribute(context, { "entities" : vertex, "attribute" : cornerAttribute });
+
+            attributeCounter += 1;
+        }
+        catch
+        {
+            // Skip vertices that cause errors
+            continue;
+        }
+    }
 }
 
 /**
@@ -1091,6 +1161,9 @@ function booleanOneTabGroup(context is Context, id is Id, definition is map, coi
 
     if (fixCornerBreaks)
         remapCornerBreaks(context, cornerBreakTracking);
+
+    // Apply corner break attributes to extension-created vertices before the sheet metal update
+    applyCornerBreaksToExtensionVertices(context, id + "applyCornerBreaks", definition, coincidentGrouping.walls);
 
     return getFeatureStatus(context, id + "boolean");
 }
