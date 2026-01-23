@@ -21,6 +21,7 @@ import(path : "onshape/std/sheetMetalUtils.fs", version : "2837.0");
 import(path : "onshape/std/surfaceGeometry.fs", version : "2837.0");
 import(path : "onshape/std/topologyUtils.fs", version : "2837.0");
 import(path : "onshape/std/vector.fs", version : "2837.0");
+import(path : "onshape/std/smcornerbreakstyle.gen.fs", version : "2837.0");
 // Original framework by Caden Armstrong - SmartBench Software
 // Hacked by Derek Van Allen
 // Created for Boss Display
@@ -905,39 +906,6 @@ function subtractTab(context is Context, id is Id, definition is map, subtractQu
             }
         }
 
-        // Apply corner chamfers to extension-created vertices on the tab body
-        if (definition.tabChamfer > 0 * meter && definition.extensionVerticesTracking != undefined)
-        {
-            const thickenedBody = qCreatedBy(id + "thicken", EntityType.BODY);
-            const thickenedEdges = qOwnedByBody(thickenedBody, EntityType.EDGE);
-
-            // Tracked vertices from extension resolve to edges on thickened body
-            const extensionEdges = qIntersection([definition.extensionVerticesTracking, thickenedEdges]);
-
-            // Filter to only convex edges
-            const convexEdges = qEdgeConvexityTypeFilter(extensionEdges, EdgeConvexityType.CONVEX);
-
-            // Get vertices from convex edges for corner break application
-            const verticesToChamfer = qAdjacent(convexEdges, AdjacencyType.EDGE, EntityType.VERTEX);
-
-            if (!isQueryEmpty(context, verticesToChamfer))
-            {
-                // Apply corner break chamfer using SMEdgeBlendImpl
-                const cornerBreakDefinition = {
-                        "entities" : verticesToChamfer,
-                        "blendType" : EdgeBlendType.CHAMFER,
-                        "width" : definition.tabChamfer,
-                        "crossSection" : FilletCrossSection.CHAMFER,
-                        "chamferMethod" : ChamferMethod.FACE_OFFSET
-                    };
-
-                try silent
-                {
-                    SMEdgeBlendImpl(context, id + "cornerChamfer", cornerBreakDefinition);
-                }
-            }
-        }
-
         smSubtractTab(context, id + "sm", qCreatedBy(id + "thicken", EntityType.BODY), subtractSMFaces);
         solidSubtractTab(context, id + "solid", qCreatedBy(id + "thicken", EntityType.BODY), subtractQueries.nonSheetMetalQueries);
     }
@@ -950,6 +918,122 @@ function subtractTab(context is Context, id is Id, definition is map, subtractQu
     try silent(opDeleteBodies(context, id + "deleteBodies", {
                     "entities" : qCreatedBy(id + "thicken", EntityType.BODY)
                 }));
+}
+
+/**
+ * Applies corner break attributes to vertices created by the edge extension operation.
+ * This function identifies vertices on the tabs that resulted from extending edges and applies
+ * corner break attributes to them, following the pattern from sheetMetalCornerBreakAttributeBased.fs.
+ * 
+ * Inputs:
+ *   context - The evaluation context
+ *   id - Operation ID for this corner break application
+ *   definition - The feature definition containing extensionVerticesTracking (tracked vertices from extension)
+ *                and tabChamfer (the chamfer width to use for corner breaks)
+ *   wallFaces - Query for the sheet metal wall faces that the tabs were merged with
+ */
+function applyCornerBreaksToExtensionVertices(context is Context, id is Id, definition is map, wallFaces is Query)
+{
+    // Check if we have tracked extension vertices and a non-zero chamfer width
+    if (definition.extensionVerticesTracking == undefined || definition.tabChamfer <= 0 * meter)
+    {
+        return;
+    }
+
+    // Find vertices that were created by the extension operation
+    // These are now part of the sheet metal model after the boolean union
+    const extensionVertices = qEntityFilter(definition.extensionVerticesTracking, EntityType.VERTEX);
+    const vertexArray = evaluateQuery(context, extensionVertices);
+
+    if (size(vertexArray) == 0)
+    {
+        return;
+    }
+
+    // For each vertex, we need to find the adjacent wall and apply a corner break attribute
+    var attributeCounter = 0;
+    for (var vertex in vertexArray)
+    {
+        try
+        {
+            // Get faces adjacent to this vertex
+            const adjacentFaces = qAdjacent(vertex, AdjacencyType.VERTEX, EntityType.FACE);
+            
+            // Filter to only sheet metal wall faces
+            const adjacentWallFaces = qIntersection([adjacentFaces, wallFaces]);
+            const adjacentWallArray = evaluateQuery(context, adjacentWallFaces);
+
+            if (size(adjacentWallArray) == 0)
+            {
+                continue;
+            }
+
+            // Get the wall attribute from one of the adjacent walls
+            var wallAttribute;
+            for (var wallFace in adjacentWallArray)
+            {
+                wallAttribute = try silent(getWallAttribute(context, wallFace));
+                if (wallAttribute != undefined && wallAttribute.attributeId != undefined)
+                {
+                    break;
+                }
+            }
+
+            if (wallAttribute == undefined || wallAttribute.attributeId == undefined)
+            {
+                continue;
+            }
+
+            const wallId = wallAttribute.attributeId;
+
+            // Check if the vertex already has a corner attribute
+            var existingAttribute = getCornerAttribute(context, vertex);
+            var hasExistingAttribute = (existingAttribute != undefined);
+
+            // Check if a corner break for this wall already exists
+            if (hasExistingAttribute && existingAttribute.cornerBreaks != undefined)
+            {
+                var breakExists = false;
+                for (var existingBreak in existingAttribute.cornerBreaks)
+                {
+                    if (existingBreak.value.wallId == wallId)
+                    {
+                        breakExists = true;
+                        break;
+                    }
+                }
+                if (breakExists)
+                {
+                    continue;
+                }
+            }
+
+            // Create or update the corner attribute with a chamfer break
+            var cornerAttribute = hasExistingAttribute ? existingAttribute : makeSMCornerAttribute(toAttributeId(id + ("corner" ~ attributeCounter)));
+            
+            // Create a chamfer corner break with the specified width
+            var cornerBreak = makeSMCornerBreak(SMCornerBreakStyle.CHAMFER, definition.tabChamfer, wallId);
+            var cornerBreakMap = { "value" : cornerBreak, "canBeEdited" : false, "controllingFeatureId" : id };
+            cornerAttribute = addCornerBreakToSMAttribute(cornerAttribute, cornerBreakMap);
+
+            // Apply the attribute to the vertex
+            if (hasExistingAttribute)
+            {
+                replaceSMAttribute(context, existingAttribute, cornerAttribute);
+            }
+            else
+            {
+                setAttribute(context, { "entities" : vertex, "attribute" : cornerAttribute });
+            }
+
+            attributeCounter += 1;
+        }
+        catch
+        {
+            // Skip vertices that cause errors and continue with the rest
+            continue;
+        }
+    }
 }
 
 /**
@@ -1091,6 +1175,9 @@ function booleanOneTabGroup(context is Context, id is Id, definition is map, coi
 
     if (fixCornerBreaks)
         remapCornerBreaks(context, cornerBreakTracking);
+
+    // Apply corner break attributes to extension-created vertices before the sheet metal update
+    applyCornerBreaksToExtensionVertices(context, id + "applyCornerBreaks", definition, coincidentGrouping.walls);
 
     return getFeatureStatus(context, id + "boolean");
 }
