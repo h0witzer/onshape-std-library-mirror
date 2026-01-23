@@ -225,6 +225,9 @@ export const tabAndSlotBossDisplay = defineSheetMetalFeature(function(context is
         // Filter to only laminar (one-sided/boundary) edges to avoid EXTEND_NON_LAMINAR error
         const extractedEdgesToExtend = qEdgeTopologyFilter(trackedTabSegmentsAfterExtraction, EdgeTopology.ONE_SIDED);
 
+        // Track vertices BEFORE extension - these are the root vertices
+        const verticesBeforeExtension = qAdjacent(extractedEdgesToExtend, AdjacencyType.VERTEX, EntityType.VERTEX);
+        
         if (size(evaluateQuery(context, extractedEdgesToExtend)) > 0)
         {
             try
@@ -250,26 +253,17 @@ export const tabAndSlotBossDisplay = defineSheetMetalFeature(function(context is
         println("=== EXTENSION TRACKING DEBUG ===");
         println("Extension created edges count: " ~ size(evaluateQuery(context, extensionCreatedEdges)));
         
-        // We want vertices at the OUTER end of the tabs, not at the root where tab connects to wall
-        // The extension creates new edges. We need vertices on those new edges that are NOT on the 
-        // original edges we extended from (extractedEdgesToExtend)
+        // After extension, find vertices on the extended edges
+        // The OUTER corners are vertices that didn't exist before extension
+        const verticesAfterExtension = qAdjacent(extractedEdgesToExtend, AdjacencyType.VERTEX, EntityType.VERTEX);
         
-        // Get all vertices adjacent to extension created edges
-        const allExtensionBoundaryVertices = qAdjacent(extensionCreatedEdges, AdjacencyType.VERTEX, EntityType.VERTEX);
-        
-        // The original edges we extended are still part of the body
-        // Vertices at the root are adjacent to BOTH new edges and original edges
-        // Vertices at the outer corners are ONLY adjacent to new edges
-        
-        // Get vertices that are on extractedEdgesToExtend (these are at the root)
-        const rootVertices = qAdjacent(extractedEdgesToExtend, AdjacencyType.VERTEX, EntityType.VERTEX);
-        
-        // Outer corners = all extension boundary vertices MINUS root vertices
-        const outerCornerVertices = qSubtraction(allExtensionBoundaryVertices, rootVertices);
+        // New vertices = vertices after MINUS vertices before
+        // These are the vertices that "moved" or were created at the outer end
+        const outerCornerVertices = qSubtraction(verticesAfterExtension, verticesBeforeExtension);
         const trackedExtensionVertices = startTracking(context, outerCornerVertices);
         
-        println("All extension boundary vertices count: " ~ size(evaluateQuery(context, allExtensionBoundaryVertices)));
-        println("Root vertices count: " ~ size(evaluateQuery(context, rootVertices)));
+        println("Vertices before extension count: " ~ size(evaluateQuery(context, verticesBeforeExtension)));
+        println("Vertices after extension count: " ~ size(evaluateQuery(context, verticesAfterExtension)));
         println("Outer corner vertices count (for corner breaks): " ~ size(evaluateQuery(context, outerCornerVertices)));
         println("Tracked extension vertices query defined: " ~ (trackedExtensionVertices != undefined));
 
