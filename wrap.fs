@@ -781,7 +781,7 @@ function projectDestinationAnchor(context is Context, destinationPlane is Plane,
         }).parameter
     }));
     const faceAndSurfaceAntiAligned = faceNormal != undefined && dot(faceNormal, destinationPlane.normal) < 0;
-    
+
     return {
             "anchor" : anchor,
             "uDirection" : destinationPlane.x,
@@ -826,7 +826,7 @@ function getDefaultAnchors(context is Context, sourceInfo is map, destinationPla
         (sourceInfo.bbox.minCorner[1] + sourceInfo.bbox.maxCorner[1]) / 2,
         0 * meter
     ));
-    
+
     return {
             "sourceAnchor" : sourceAnchor,
             "destinationAnchorInfo" : projectDestinationAnchor(context, destinationPlane, destinationFace, sourceAnchor, false)
@@ -908,9 +908,9 @@ function getDestinationManipulatorInfo(context is Context, destinationPlane is P
     const uTranslation = transform(definition.uShift * destinationAnchorInfo.uDirection);
     const vTranslation = transform(definition.vShift * destinationAnchorInfo.vDirection);
     const destinationAnchorTransform = uTranslation * vTranslation;
-    
+
     const shiftedAnchor = destinationAnchorTransform * destinationAnchorInfo.anchor;
-    
+
     return {
             "uShiftedAnchor" : uTranslation * destinationAnchorInfo.anchor,
             "vShiftedAnchor" : vTranslation * destinationAnchorInfo.anchor,
