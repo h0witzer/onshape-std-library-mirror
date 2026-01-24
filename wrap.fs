@@ -77,29 +77,11 @@ export const wrap = defineFeature(function(context is Context, id is Id, definit
             booleanStepTypePredicate(definition);
         }
 
-        // Source and destination filters change based on operation type
-        // WRAP: plane → cylinder/cone, UNWRAP: cylinder/cone → plane
-        if (definition.wrapOperationType == WrapOperationType.WRAP)
-        {
-            annotation { "Name" : "Tools", "Filter" : EntityType.FACE && GeometryType.PLANE && ConstructionObject.NO }
-            definition.source is Query;
-        }
-        else
-        {
-            annotation { "Name" : "Tools", "Filter" : EntityType.FACE && (GeometryType.CYLINDER || GeometryType.CONE) && ConstructionObject.NO }
-            definition.source is Query;
-        }
+        annotation { "Name" : "Tools", "Filter" : EntityType.FACE && (GeometryType.PLANE || GeometryType.CYLINDER || GeometryType.CONE) && ConstructionObject.NO }
+        definition.source is Query;
 
-        if (definition.wrapOperationType == WrapOperationType.WRAP)
-        {
-            annotation { "Name" : "Target", "Filter" : EntityType.FACE && (GeometryType.CYLINDER || GeometryType.CONE), "MaxNumberOfPicks" : 1 }
-            definition.destination is Query;
-        }
-        else
-        {
-            annotation { "Name" : "Target", "Filter" : EntityType.FACE && GeometryType.PLANE, "MaxNumberOfPicks" : 1 }
-            definition.destination is Query;
-        }
+        annotation { "Name" : "Target", "Filter" : EntityType.FACE && (GeometryType.PLANE || GeometryType.CYLINDER || GeometryType.CONE), "MaxNumberOfPicks" : 1 }
+        definition.destination is Query;
 
         annotation { "Name" : "Flip alignment", "UIHint" : UIHint.OPPOSITE_DIRECTION, "Default" : false }
         definition.flipAlignment is boolean;
@@ -166,6 +148,35 @@ export const wrap = defineFeature(function(context is Context, id is Id, definit
         if (size(evaluateQuery(context, definition.destination)) != 1)
         {
             throw regenError(ErrorStringEnum.WRAP_SELECT_TARGET, ["destination"]);
+        }
+
+        // Validate that source and destination geometry types match the operation type
+        const sourceSurfaceDef = try silent(evSurfaceDefinition(context, { "face" : qNthElement(definition.source, 0) }));
+        const destSurfaceDef = try silent(evSurfaceDefinition(context, { "face" : definition.destination }));
+
+        if (definition.wrapOperationType == WrapOperationType.WRAP)
+        {
+            // WRAP mode: source must be plane, destination must be cylinder or cone
+            if (sourceSurfaceDef != undefined && !(sourceSurfaceDef is Plane))
+            {
+                throw regenError(ErrorStringEnum.WRAP_SELECT_TOOLS, ["source"]);
+            }
+            if (destSurfaceDef != undefined && !(destSurfaceDef is Cylinder) && !(destSurfaceDef is Cone))
+            {
+                throw regenError(ErrorStringEnum.WRAP_SELECT_TARGET, ["destination"]);
+            }
+        }
+        else // UNWRAP mode
+        {
+            // UNWRAP mode: source must be cylinder or cone, destination must be plane
+            if (sourceSurfaceDef != undefined && !(sourceSurfaceDef is Cylinder) && !(sourceSurfaceDef is Cone))
+            {
+                throw regenError(ErrorStringEnum.WRAP_SELECT_TOOLS, ["source"]);
+            }
+            if (destSurfaceDef != undefined && !(destSurfaceDef is Plane))
+            {
+                throw regenError(ErrorStringEnum.WRAP_SELECT_TARGET, ["destination"]);
+            }
         }
 
         // For unwrap operations, internally swap source and destination so that all the existing
