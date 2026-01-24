@@ -77,19 +77,26 @@ export const wrap = defineFeature(function(context is Context, id is Id, definit
             booleanStepTypePredicate(definition);
         }
 
+        // Source and destination filters change based on operation type
+        // WRAP: plane → cylinder/cone, UNWRAP: cylinder/cone → plane
         if (definition.wrapOperationType == WrapOperationType.WRAP)
         {
             annotation { "Name" : "Tools", "Filter" : EntityType.FACE && GeometryType.PLANE && ConstructionObject.NO }
             definition.source is Query;
-
-            annotation { "Name" : "Target", "Filter" : EntityType.FACE && (GeometryType.CYLINDER || GeometryType.CONE), "MaxNumberOfPicks" : 1 }
-            definition.destination is Query;
         }
-        else // UNWRAP
+        else
         {
             annotation { "Name" : "Tools", "Filter" : EntityType.FACE && (GeometryType.CYLINDER || GeometryType.CONE) && ConstructionObject.NO }
             definition.source is Query;
+        }
 
+        if (definition.wrapOperationType == WrapOperationType.WRAP)
+        {
+            annotation { "Name" : "Target", "Filter" : EntityType.FACE && (GeometryType.CYLINDER || GeometryType.CONE), "MaxNumberOfPicks" : 1 }
+            definition.destination is Query;
+        }
+        else
+        {
             annotation { "Name" : "Target", "Filter" : EntityType.FACE && GeometryType.PLANE, "MaxNumberOfPicks" : 1 }
             definition.destination is Query;
         }
@@ -773,14 +780,11 @@ function projectDestinationAnchor(context is Context, destinationPlane is Plane,
 {
     // For plane destinations (unwrapping case), project the anchor onto the plane
     const anchor = project(destinationPlane, worldDestinationAnchor);
-    const faceNormal = try silent(evFaceNormal(context, {
+    const tangentPlane = try silent(evFaceTangentPlane(context, {
         "face" : destinationFace,
-        "parameter" : evFaceTangentPlane(context, {
-            "face" : destinationFace,
-            "point" : anchor
-        }).parameter
+        "parameter" : vector(0.5, 0.5)
     }));
-    const faceAndSurfaceAntiAligned = faceNormal != undefined && dot(faceNormal, destinationPlane.normal) < 0;
+    const faceAndSurfaceAntiAligned = tangentPlane != undefined && dot(tangentPlane.normal, destinationPlane.normal) < 0;
 
     return {
             "anchor" : anchor,
