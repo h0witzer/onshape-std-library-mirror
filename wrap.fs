@@ -29,6 +29,19 @@ import(path : "onshape/std/vector.fs", version : "✨");
 import(path : "onshape/std/wrapSurface.fs", version : "✨");
 
 /**
+ * Defines the operation type for the Wrap feature.
+ * @value WRAP : Wrap faces from a plane onto a cylinder or cone.
+ * @value UNWRAP : Unwrap faces from a cylinder or cone onto a plane.
+ */
+export enum WrapOperationType
+{
+    annotation { "Name" : "Wrap" }
+    WRAP,
+    annotation { "Name" : "Unwrap" }
+    UNWRAP
+}
+
+/**
  * Defines what type of output the Wrap feature should produce.
  * @value SOLID : The wrap operation will produce thickened solid bodies.
  * @value SURFACE : The wrap operation will produce surface bodies.
@@ -53,6 +66,9 @@ annotation { "Feature Type Name" : "Wrap",
 export const wrap = defineFeature(function(context is Context, id is Id, definition is map)
     precondition
     {
+        annotation { "Name" : "Operation type", "UIHint" : UIHint.HORIZONTAL_ENUM, "Default" : WrapOperationType.WRAP }
+        definition.wrapOperationType is WrapOperationType;
+
         annotation { "Name" : "Creation type", "UIHint" : UIHint.HORIZONTAL_ENUM, "Default" : WrapResultType.SURFACE }
         definition.resultType is WrapResultType;
 
@@ -61,11 +77,22 @@ export const wrap = defineFeature(function(context is Context, id is Id, definit
             booleanStepTypePredicate(definition);
         }
 
-        annotation { "Name" : "Tools", "Filter" : EntityType.FACE && GeometryType.PLANE && ConstructionObject.NO }
-        definition.source is Query;
+        if (definition.wrapOperationType == WrapOperationType.WRAP)
+        {
+            annotation { "Name" : "Tools", "Filter" : EntityType.FACE && GeometryType.PLANE && ConstructionObject.NO }
+            definition.source is Query;
 
-        annotation { "Name" : "Target", "Filter" : EntityType.FACE && (GeometryType.CYLINDER || GeometryType.CONE), "MaxNumberOfPicks" : 1 }
-        definition.destination is Query;
+            annotation { "Name" : "Target", "Filter" : EntityType.FACE && (GeometryType.CYLINDER || GeometryType.CONE), "MaxNumberOfPicks" : 1 }
+            definition.destination is Query;
+        }
+        else // UNWRAP
+        {
+            annotation { "Name" : "Tools", "Filter" : EntityType.FACE && (GeometryType.CYLINDER || GeometryType.CONE) && ConstructionObject.NO }
+            definition.source is Query;
+
+            annotation { "Name" : "Target", "Filter" : EntityType.FACE && GeometryType.PLANE, "MaxNumberOfPicks" : 1 }
+            definition.destination is Query;
+        }
 
         annotation { "Name" : "Flip alignment", "UIHint" : UIHint.OPPOSITE_DIRECTION, "Default" : false }
         definition.flipAlignment is boolean;
@@ -134,48 +161,61 @@ export const wrap = defineFeature(function(context is Context, id is Id, definit
             throw regenError(ErrorStringEnum.WRAP_SELECT_TARGET, ["destination"]);
         }
 
+        // For unwrap operations, internally swap source and destination so that all the existing
+        // wrap logic works correctly (wrap logic expects plane as source, cylinder/cone as destination)
+        var internalDefinition = definition;
+        if (definition.wrapOperationType == WrapOperationType.UNWRAP)
+        {
+            internalDefinition = mergeMaps(definition, {
+                "source" : definition.destination,
+                "destination" : definition.source,
+                "sourceAnchor" : definition.destinationAnchor,
+                "destinationAnchor" : definition.sourceAnchor
+            });
+        }
+
         // Adjust definition variables to apply flips and fall within some reasonable bounds
-        definition.angle = adjustAngle(context, definition.angle) * (definition.angleOppositeDirection ? -1 : 1);
-        definition.uShift = definition.uShift * (definition.uShiftOppositeDirection ? -1 : 1);
-        definition.vShift = definition.vShift * (definition.vShiftOppositeDirection ? -1 : 1);
+        internalDefinition.angle = adjustAngle(context, internalDefinition.angle) * (internalDefinition.angleOppositeDirection ? -1 : 1);
+        internalDefinition.uShift = internalDefinition.uShift * (internalDefinition.uShiftOppositeDirection ? -1 : 1);
+        internalDefinition.vShift = internalDefinition.vShift * (internalDefinition.vShiftOppositeDirection ? -1 : 1);
         // Null out flipper fields to prevent accidental reliance on them
-        definition.angleOppositeDirection = undefined;
-        definition.uShiftOppositeDirection = undefined;
-        definition.vShiftOppositeDirection = undefined;
+        internalDefinition.angleOppositeDirection = undefined;
+        internalDefinition.uShiftOppositeDirection = undefined;
+        internalDefinition.vShiftOppositeDirection = undefined;
 
         // Gather information defining the source and destination surfaces
-        const sourceInfo = getSourceInfo(context, definition);
-        const destinationSurfaceDefinition = evSurfaceDefinition(context, { "face" : definition.destination });
-        checkDestinationSurfaceType(definition, destinationSurfaceDefinition);
+        const sourceInfo = getSourceInfo(context, internalDefinition);
+        const destinationSurfaceDefinition = evSurfaceDefinition(context, { "face" : internalDefinition.destination });
+        checkDestinationSurfaceType(internalDefinition, destinationSurfaceDefinition);
 
         // Construct anchors based on the source and destination surfaces
-        const anchorInfo = getAnchorInfo(context, sourceInfo, destinationSurfaceDefinition, definition);
+        const anchorInfo = getAnchorInfo(context, sourceInfo, destinationSurfaceDefinition, internalDefinition);
 
         // Get the base starting angle so that "0" angle is as expected. See [getCanonicalAngle] for description of what `canonicalAngle` represents
         const canonicalAngle = getCanonicalAngle(sourceInfo.plane, anchorInfo);
 
         // Construct wrap surfaces for opWrap
-        const wrapSurfaces = constructWrapSurfaces(context, sourceInfo.plane, anchorInfo, canonicalAngle, destinationSurfaceDefinition, definition);
+        const wrapSurfaces = constructWrapSurfaces(context, sourceInfo.plane, anchorInfo, canonicalAngle, destinationSurfaceDefinition, internalDefinition);
 
-        addWrapManipulators(context, id, canonicalAngle, sourceInfo, destinationSurfaceDefinition, anchorInfo, definition);
+        addWrapManipulators(context, id, canonicalAngle, sourceInfo, destinationSurfaceDefinition, anchorInfo, internalDefinition);
 
         // ----- Show a useful display along with an error if the user is trying to imprint on sheet metal -----
-        if (instructedToImprintOnSheetMetal(context, definition))
+        if (instructedToImprintOnSheetMetal(context, internalDefinition))
         {
             opWrap(context, id, {
                         "wrapType" : WrapType.SIMPLE,
-                        "entities" : definition.source,
+                        "entities" : internalDefinition.source,
                         "source" : wrapSurfaces.source,
                         "destination" : wrapSurfaces.destination
                     });
-            const errorEntities = qUnion([definition.destination, qCreatedBy(id, EntityType.EDGE)]);
+            const errorEntities = qUnion([internalDefinition.destination, qCreatedBy(id, EntityType.EDGE)]);
             throw regenError(ErrorStringEnum.WRAP_IMPRINT_SHEET_METAL, ["resultType", "destination"], errorEntities);
         }
 
         // ----- Apply geometric changes -----
         opWrap(context, id, {
-                    "wrapType" : getWrapType(definition),
-                    "entities" : definition.source,
+                    "wrapType" : getWrapType(internalDefinition),
+                    "entities" : internalDefinition.source,
                     "source" : wrapSurfaces.source,
                     "destination" : wrapSurfaces.destination
                 });
@@ -186,6 +226,7 @@ export const wrap = defineFeature(function(context is Context, id is Id, definit
         }
 
     }, {
+            wrapOperationType : WrapOperationType.WRAP,
             resultType : WrapResultType.SURFACE, flipAlignment : false, trim : false, customAnchors : false,
             angle : 0 * radian, angleOppositeDirection : false,
             uShift : 0 * meter, uShiftOppositeDirection : false,
@@ -577,6 +618,12 @@ function checkDestinationSurfaceType(definition is map, destinationSurfaceDefini
     // Do nothing, as the point of this function is to throw an error for unsupported types.
 }
 
+function checkDestinationSurfaceType(definition is map, destinationSurfaceDefinition is Plane)
+{
+    // Do nothing, as the point of this function is to throw an error for unsupported types.
+    // Plane is supported for unwrapping operations.
+}
+
 // - projectDestinationAnchor -
 
 /**
@@ -957,8 +1004,10 @@ export function wrapManipulatorChange(context is Context, definition is map, new
         const newAngle = newManipulators[U_ANGLE_MANIPULATOR].angle;
         var radius = norm(newManipulators[U_ANGLE_MANIPULATOR].rotationOrigin - newManipulators[U_ANGLE_MANIPULATOR].axisOrigin);
 
+        // For unwrap mode, the cylindrical/conical surface is the source, not destination
+        const cylindricalFace = (definition.wrapOperationType == WrapOperationType.UNWRAP) ? definition.source : definition.destination;
         const surfDef = try silent(evSurfaceDefinition(context, {
-                "face" : definition.destination
+                "face" : cylindricalFace
         }));
         if (surfDef is Cone)
         {
@@ -984,15 +1033,27 @@ export function wrapManipulatorChange(context is Context, definition is map, new
 export function wrapEditLogic(context is Context, id is Id, oldDefinition is map, definition is map,
     specifiedParameters is map) returns map
 {
-    const sourceInfo = try silent(getSourceInfo(context, definition));
-    const destinationSurfaceDefinition = try silent(evSurfaceDefinition(context, { "face" : definition.destination }));
+    // For unwrap mode, swap source and destination to get the correct internal representation
+    var internalDefinition = definition;
+    if (definition.wrapOperationType == WrapOperationType.UNWRAP)
+    {
+        internalDefinition = mergeMaps(definition, {
+            "source" : definition.destination,
+            "destination" : definition.source,
+            "sourceAnchor" : definition.destinationAnchor,
+            "destinationAnchor" : definition.sourceAnchor
+        });
+    }
+
+    const sourceInfo = try silent(getSourceInfo(context, internalDefinition));
+    const destinationSurfaceDefinition = try silent(evSurfaceDefinition(context, { "face" : internalDefinition.destination }));
     if (sourceInfo != undefined && destinationSurfaceDefinition != undefined)
     {
         if (!definition.customAnchors && !specifiedParameters.customAnchors)
         {
             try silent
             {
-                getDefaultAnchors(context, sourceInfo, destinationSurfaceDefinition, definition.destination);
+                getDefaultAnchors(context, sourceInfo, destinationSurfaceDefinition, internalDefinition.destination);
             }
             catch
             {
