@@ -206,11 +206,18 @@ export const wrap = defineFeature(function(context is Context, id is Id, definit
         // Construct wrap surfaces for opWrap
         const wrapSurfaces = constructWrapSurfaces(context, sourceInfo.plane, anchorInfo, canonicalAngle, destinationSurfaceDefinition, internalDefinition);
 
-        // Manipulators are designed for cylindrical/conical destinations
-        // In WRAP mode, add them normally. In UNWRAP mode, skip them since the destination is a plane.
+        // Add manipulators based on operation type
         if (definition.wrapOperationType == WrapOperationType.WRAP)
         {
+            // WRAP mode: cylindrical/conical destination, use existing manipulator logic
             addWrapManipulators(context, id, canonicalAngle, sourceInfo, destinationSurfaceDefinition, anchorInfo, internalDefinition);
+        }
+        else // UNWRAP mode
+        {
+            // UNWRAP mode: planar destination, use plane-specific manipulators
+            // For plane destinations, we need the original (user-facing) destination which is the plane
+            const planeDestinationSurfaceDef = evSurfaceDefinition(context, { "face" : definition.destination });
+            addUnwrapManipulators(context, id, canonicalAngle, sourceInfo, planeDestinationSurfaceDef, anchorInfo, definition);
         }
 
         // For opWrap, we need to pass the actual entities and WrapSurfaces in the correct order
@@ -1030,6 +1037,66 @@ function getUManipulatorAndName(destinationManipulatorInfo is map, definition is
         };
 }
 
+// ----- Plane destination manipulators for UNWRAP mode -----
+
+/**
+ * Add manipulators for unwrapping to a plane destination.
+ * Creates linear manipulators for U/V shifts and an angular manipulator for rotation.
+ */
+function addUnwrapManipulators(context is Context, id is Id, canonicalAngle is ValueWithUnits, sourceInfo is map, planeDestinationSurfaceDef is Plane, anchorInfo is map, definition is map)
+{
+    // Get the destination anchor projected onto the plane
+    const destAnchor = project(planeDestinationSurfaceDef, anchorInfo.sourceAnchor);
+    
+    // Calculate shifted positions for manipulators
+    const uDirection = planeDestinationSurfaceDef.x;
+    const vDirection = yAxis(planeDestinationSurfaceDef);
+    const uShiftedAnchor = destAnchor + definition.uShift * uDirection;
+    const vShiftedAnchor = destAnchor + definition.vShift * vDirection;
+    const uvShiftedAnchor = destAnchor + definition.uShift * uDirection + definition.vShift * vDirection;
+    
+    var manipulators = {
+        (ANGLE_MANIPULATOR) : getPlaneAngleManipulator(canonicalAngle, sourceInfo, destAnchor, planeDestinationSurfaceDef, definition),
+        (V_MANIPULATOR) : linearManipulator({
+            "base" : uShiftedAnchor,
+            "direction" : vDirection,
+            "offset" : definition.vShift,
+            "primaryParameterId" : "vShift"
+        }),
+        ("uShiftManipulator") : linearManipulator({
+            "base" : vShiftedAnchor,
+            "direction" : uDirection,
+            "offset" : definition.uShift,
+            "primaryParameterId" : "uShift"
+        })
+    };
+    
+    addManipulators(context, id, manipulators);
+}
+
+/**
+ * Create an angular manipulator for rotation around the plane normal
+ */
+function getPlaneAngleManipulator(canonicalAngle is ValueWithUnits, sourceInfo is map, destAnchor is Vector, planeDestinationSurfaceDef is Plane, definition is map) returns Manipulator
+{
+    const axisOrigin = destAnchor;
+    const axisNormal = planeDestinationSurfaceDef.normal;
+    const uDirection = planeDestinationSurfaceDef.x;
+    
+    // Create a direction perpendicular to the plane normal for the manipulator display
+    const zeroDirectionLine = rotationAround(line(axisOrigin, axisNormal), canonicalAngle) * line(axisOrigin, uDirection);
+    const angleManipulatorRadius = ANGLE_MANIPULATOR_RADIUS_SCALE * box3dDiagonalLength(sourceInfo.bbox);
+    const rotationOrigin = axisOrigin + zeroDirectionLine.direction * angleManipulatorRadius;
+    
+    return angularManipulator({
+        "axisOrigin" : axisOrigin,
+        "axisDirection" : axisNormal,
+        "rotationOrigin" : rotationOrigin,
+        "angle" : definition.angle,
+        "primaryParameterId" : "angle"
+    });
+}
+
 /**
  * Helper function to get the cylindrical/conical face based on operation type.
  * For WRAP mode, returns the destination face.
@@ -1061,8 +1128,16 @@ export function wrapManipulatorChange(context is Context, definition is map, new
         definition.vShift = abs(newVShift);
         definition.vShiftOppositeDirection = newVShift < 0 * meter;
     }
+    if (newManipulators["uShiftManipulator"] is Manipulator)
+    {
+        // Linear U-shift manipulator (for plane destinations in UNWRAP mode)
+        const newUShift = newManipulators["uShiftManipulator"].offset;
+        definition.uShift = abs(newUShift);
+        definition.uShiftOppositeDirection = newUShift < 0 * meter;
+    }
     if (newManipulators[U_ANGLE_MANIPULATOR] is Manipulator)
     {
+        // Angular U-shift manipulator (for cylindrical/conical destinations in WRAP mode)
         const newAngle = newManipulators[U_ANGLE_MANIPULATOR].angle;
         var radius = norm(newManipulators[U_ANGLE_MANIPULATOR].rotationOrigin - newManipulators[U_ANGLE_MANIPULATOR].axisOrigin);
 
