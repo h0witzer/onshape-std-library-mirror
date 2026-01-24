@@ -206,7 +206,12 @@ export const wrap = defineFeature(function(context is Context, id is Id, definit
         // Construct wrap surfaces for opWrap
         const wrapSurfaces = constructWrapSurfaces(context, sourceInfo.plane, anchorInfo, canonicalAngle, destinationSurfaceDefinition, internalDefinition);
 
-        addWrapManipulators(context, id, canonicalAngle, sourceInfo, destinationSurfaceDefinition, anchorInfo, internalDefinition);
+        // Manipulators are designed for cylindrical/conical destinations
+        // In WRAP mode, add them normally. In UNWRAP mode, skip them since the destination is a plane.
+        if (definition.wrapOperationType == WrapOperationType.WRAP)
+        {
+            addWrapManipulators(context, id, canonicalAngle, sourceInfo, destinationSurfaceDefinition, anchorInfo, internalDefinition);
+        }
 
         // For opWrap, we need to pass the actual entities and WrapSurfaces in the correct order
         // In UNWRAP mode, the internal definition is swapped for processing, but opWrap needs the original entities
