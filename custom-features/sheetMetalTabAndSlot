@@ -147,6 +147,19 @@ export const tabAndSlotBossDisplay = defineSheetMetalFeature(function(context is
             throw regenError("No tabs can fit with the specified parameters", ["tabWidth", "spacing"]);
         }
 
+        // Validate that tab domains do not overlap
+        if (!validateTabDomainsNoOverlap(tabDomains))
+        {
+            if (definition.spacingType == SpacingType.EQUAL)
+            {
+                throw regenError("Resultant tabs would overlap. Reduce tab count or tab width to avoid overlapping tabs.", ["tabCount", "tabWidth"]);
+            }
+            else
+            {
+                throw regenError("Resultant tabs would overlap. Increase spacing or reduce tab width to avoid overlapping tabs.", ["spacing", "tabWidth"]);
+            }
+        }
+
         // Use mixInTracking pattern: union the original query with a tracking query
         // This ensures we capture both affected (split) and unaffected edges
         const trackedEdges = qUnion([orderedEdgeQuery, startTracking(context, orderedEdgeQuery)]);
@@ -224,10 +237,6 @@ export const tabAndSlotBossDisplay = defineSheetMetalFeature(function(context is
 
         // Filter to only laminar (one-sided/boundary) edges to avoid EXTEND_NON_LAMINAR error
         const extractedEdgesToExtend = qEdgeTopologyFilter(trackedTabSegmentsAfterExtraction, EdgeTopology.ONE_SIDED);
-
-        // Track the tab segment edges before extension
-        // Tracking follows edges through operations - after extension, these edges will be in new positions
-        const trackedEdgesThatMove = startTracking(context, extractedEdgesToExtend);
         
         if (size(evaluateQuery(context, extractedEdgesToExtend)) > 0)
         {
@@ -247,24 +256,27 @@ export const tabAndSlotBossDisplay = defineSheetMetalFeature(function(context is
             }
         }
 
-        // After extension, resolve tracked edges (now in extended positions) and get their vertices
-        // This gives us vertices at both ends of the extended tab segment edges
-        const movedEdges = qEntityFilter(trackedEdgesThatMove, EntityType.EDGE);
-        const verticesOnMovedEdges = qAdjacent(movedEdges, AdjacencyType.VERTEX, EntityType.VERTEX);
-        
-        // Track these vertices through the boolean union operation
-        // After union, tracking resolves to include vertices from the merged geometry
-        const trackedExtensionVertices = startTracking(context, verticesOnMovedEdges);
-
         // Phase 4: Merge the extended surface bodies back with the sheet metal model
         // Call mergeTabSurfacesWithSheetMetal to integrate the surface bodies using integrated helper functions
         // The wallFaces we extracted from are the sheet metal definition faces to add material to
 
         if (!isQueryEmpty(context, extractedBodies))
         {
+            // Get the edges created by the extension operation (the new outer edges at tab tips)
             const extensionCreatedEdges = qCreatedBy(id + "extendTabs", EntityType.EDGE);
             definition.extensionEdgesTracking = startTracking(context, extensionCreatedEdges);
-            definition.extensionVerticesTracking = trackedExtensionVertices;
+            
+            // Get vertices from both sets of edges:
+            // - extractedEdgesToExtend: the top edges of tabs (after extension moved them)
+            // - extensionCreatedEdges: the new edges created by the extension operation
+            const verticesFromExtendedEdges = qAdjacent(extractedEdgesToExtend, AdjacencyType.VERTEX, EntityType.VERTEX);
+            const verticesFromCreatedEdges = qAdjacent(extensionCreatedEdges, AdjacencyType.VERTEX, EntityType.VERTEX);
+            
+            // The intersection gives us vertices that are common to both edge sets
+            // These are the corner vertices at the tips where extended edges meet created edges
+            const cornerVertices = qIntersection([verticesFromExtendedEdges, verticesFromCreatedEdges]);
+            definition.extensionVerticesTracking = startTracking(context, cornerVertices);
+            
             mergeTabSurfacesWithSheetMetal(context, id + "mergeTabsWithModel", extractedBodies, wallFaces, definition);
         }
     }, { mergeScope : qNothing() });
@@ -356,6 +368,38 @@ function calculateLengthSpacedTabDomains(totalLength is ValueWithUnits, tabWidth
         currentPos += tabWidthParam + spacingParam;
     }
     return tabDomains;
+}
+
+// Validates that tab domains do not overlap.
+// Checks each consecutive pair of tab domains to ensure the end of one tab
+// does not exceed the start of the next tab (with a small tolerance).
+// Inputs:
+//   tabDomains - Array of {start, end} maps with normalized parameters (0 to 1) for each tab location
+// Outputs:
+//   Returns true if domains are valid (no overlaps), false if any domains overlap
+function validateTabDomainsNoOverlap(tabDomains is array) returns boolean
+{
+    // No validation needed for 0 or 1 tabs
+    if (size(tabDomains) <= 1)
+    {
+        return true;
+    }
+    
+    // Check each consecutive pair of tab domains
+    for (var i = 0; i < size(tabDomains) - 1; i += 1)
+    {
+        const currentTabEnd = tabDomains[i].end;
+        const nextTabStart = tabDomains[i + 1].start;
+        
+        // Tabs overlap if the current tab end exceeds the next tab start by more than tolerance
+        // The tolerance accounts for floating-point precision when tabs are exactly touching
+        if (currentTabEnd > nextTabStart + FRACTION_TOLERANCE)
+        {
+            return false;
+        }
+    }
+    
+    return true;
 }
 
 // Extracts all split parameters from tab domains.

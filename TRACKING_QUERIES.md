@@ -157,6 +157,69 @@ You don't need tracking when:
 - Using `qCreatedBy` to get entities created by a specific operation
 - Querying entities that definitely weren't modified (e.g., selecting from a different part)
 - The operation creates entirely new geometry rather than modifying existing
+- **You already have direct access to the geometry you need** - tracking is only for finding geometry *resultant from* an operation, not for accessing geometry you already have a query for
+
+### Important: Direct Access vs. Tracking
+
+**❌ Wrong: Unnecessary tracking**
+```featurescript
+const extractedEdgesToExtend = qEdgeTopologyFilter(edges, EdgeTopology.ONE_SIDED);
+
+// UNNECESSARY: We already have direct access to these edges
+const tracked = startTracking(context, extractedEdgesToExtend);
+
+opExtendSheetBody(context, id, {
+    "entities" : extractedEdgesToExtend,
+    ...
+});
+
+// WRONG: Using tracked query when we can use the original directly
+const movedEdges = qEntityFilter(tracked, EntityType.EDGE);
+```
+
+**✅ Correct: Use direct access when available**
+```featurescript
+const extractedEdgesToExtend = qEdgeTopologyFilter(edges, EdgeTopology.ONE_SIDED);
+
+opExtendSheetBody(context, id, {
+    "entities" : extractedEdgesToExtend,
+    ...
+});
+
+// CORRECT: The original query still references these edges after extension
+const extendedEdges = extractedEdgesToExtend;
+```
+
+**Key Insight:** Operations like `opExtendSheetBody` modify edges *in place*. The original query `extractedEdgesToExtend` still references those same edges after they've been extended. Tracking is only needed when you need to find *new* geometry created by the operation (e.g., with `qCreatedBy`) or when some entities might be split/modified while others remain unchanged.
+
+### Real-World Example: Corner Vertex Identification
+
+From `sheetMetalTabAndSlot`, identifying vertices at tab tips where extended edges meet created edges:
+
+```featurescript
+// Edges that will be extended (we have direct access to these)
+const extractedEdgesToExtend = qEdgeTopologyFilter(edges, EdgeTopology.ONE_SIDED);
+
+// Perform extension
+opExtendSheetBody(context, id + "extendTabs", {
+    "entities" : extractedEdgesToExtend,
+    "extendDistance" : tabDepth,
+    ...
+});
+
+// Get edges created by the extension operation (tracking not needed - use qCreatedBy)
+const extensionCreatedEdges = qCreatedBy(id + "extendTabs", EntityType.EDGE);
+
+// Find vertices common to both edge sets (no tracking needed for either)
+const verticesFromExtendedEdges = qAdjacent(extractedEdgesToExtend, AdjacencyType.VERTEX, EntityType.VERTEX);
+const verticesFromCreatedEdges = qAdjacent(extensionCreatedEdges, AdjacencyType.VERTEX, EntityType.VERTEX);
+const cornerVertices = qIntersection([verticesFromExtendedEdges, verticesFromCreatedEdges]);
+```
+
+**Why no tracking is needed:**
+- `extractedEdgesToExtend` still references the extended edges directly (they moved in place)
+- `extensionCreatedEdges` uses `qCreatedBy` to get new edges (standard query, not tracking)
+- Both queries give us exactly what we need without additional tracking overhead
 
 ## Common Pitfalls
 
