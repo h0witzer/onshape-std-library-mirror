@@ -1,32 +1,32 @@
-FeatureScript ✨; /* Automatically generated version */
+FeatureScript 2856; /* Automatically generated version */
 // This module is part of the FeatureScript Standard Library and is distributed under the MIT License.
 // See the LICENSE tab for the license text.
 // Copyright (c) 2013-Present PTC Inc.
 
 // Imports used in interface
-export import(path : "onshape/std/query.fs", version : "✨");
-export import(path : "onshape/std/tool.fs", version : "✨");
-export import(path : "onshape/std/wraptype.gen.fs", version : "✨");
+export import(path : "onshape/std/query.fs", version : "2856.0");
+export import(path : "onshape/std/tool.fs", version : "2856.0");
+export import(path : "onshape/std/wraptype.gen.fs", version : "2856.0");
 
 // Features using manipulators must export manipulator.fs
-export import(path : "onshape/std/manipulator.fs", version : "✨");
+export import(path : "onshape/std/manipulator.fs", version : "2856.0");
 
 // Imports used internally
-import(path : "onshape/std/boolean.fs", version : "✨");
-import(path : "onshape/std/booleanHeuristics.fs", version : "✨");
-import(path : "onshape/std/box.fs", version : "✨");
-import(path : "onshape/std/containers.fs", version : "✨");
-import(path : "onshape/std/coordSystem.fs", version : "✨");
-import(path : "onshape/std/curveGeometry.fs", version : "✨");
-import(path : "onshape/std/debug.fs", version : "✨");
-import(path : "onshape/std/evaluate.fs", version : "✨");
-import(path : "onshape/std/feature.fs", version : "✨");
-import(path : "onshape/std/sheetMetalUtils.fs", version : "✨");
-import(path : "onshape/std/surfaceGeometry.fs", version : "✨");
-import(path : "onshape/std/transform.fs", version : "✨");
-import(path : "onshape/std/valueBounds.fs", version : "✨");
-import(path : "onshape/std/vector.fs", version : "✨");
-import(path : "onshape/std/wrapSurface.fs", version : "✨");
+import(path : "onshape/std/boolean.fs", version : "2856.0");
+import(path : "onshape/std/booleanHeuristics.fs", version : "2856.0");
+import(path : "onshape/std/box.fs", version : "2856.0");
+import(path : "onshape/std/containers.fs", version : "2856.0");
+import(path : "onshape/std/coordSystem.fs", version : "2856.0");
+import(path : "onshape/std/curveGeometry.fs", version : "2856.0");
+import(path : "onshape/std/debug.fs", version : "2856.0");
+import(path : "onshape/std/evaluate.fs", version : "2856.0");
+import(path : "onshape/std/feature.fs", version : "2856.0");
+import(path : "onshape/std/sheetMetalUtils.fs", version : "2856.0");
+import(path : "onshape/std/surfaceGeometry.fs", version : "2856.0");
+import(path : "onshape/std/transform.fs", version : "2856.0");
+import(path : "onshape/std/valueBounds.fs", version : "2856.0");
+import(path : "onshape/std/vector.fs", version : "2856.0");
+import(path : "onshape/std/wrapSurface.fs", version : "2856.0");
 
 /**
  * Defines the operation type for the Wrap feature.
@@ -163,16 +163,7 @@ export const wrap = defineFeature(function(context is Context, id is Id, definit
 
         // For unwrap operations, internally swap source and destination so that all the existing
         // wrap logic works correctly (wrap logic expects plane as source, cylinder/cone as destination)
-        var internalDefinition = definition;
-        if (definition.wrapOperationType == WrapOperationType.UNWRAP)
-        {
-            internalDefinition = mergeMaps(definition, {
-                "source" : definition.destination,
-                "destination" : definition.source,
-                "sourceAnchor" : definition.destinationAnchor,
-                "destinationAnchor" : definition.sourceAnchor
-            });
-        }
+        var internalDefinition = getInternalDefinitionForUnwrap(definition);
 
         // Adjust definition variables to apply flips and fall within some reasonable bounds
         internalDefinition.angle = adjustAngle(context, internalDefinition.angle) * (internalDefinition.angleOppositeDirection ? -1 : 1);
@@ -552,6 +543,59 @@ function constructWrapSurfaces(context is Context, sourcePlane is Plane, anchorI
         };
 }
 
+function constructWrapSurfaces(context is Context, sourcePlane is Plane, anchorInfo is map, canonicalAngle is ValueWithUnits, destinationSurfaceDefinition is Plane, definition is map) returns map
+{
+    // For plane destinations (unwrapping case), construct wrap surfaces for unwrapping
+    const userFlip = definition.flipAlignment ? -1 : 1;
+    const sourceAndDestinationAlignmentFlip = anchorInfo.sourceAndDestinationAntiAligned ? -1 : 1;
+    const faceAndSurfaceAlignmentFlip = anchorInfo.destinationAnchorInfo.faceAndSurfaceAntiAligned ? -1 : 1;
+
+    // Translate the source based on user-assigned shift
+    const shiftVector = vector(-definition.uShift, userFlip * sourceAndDestinationAlignmentFlip * -definition.vShift, 0 * meter);
+    // Rotate source based on user-assigned rotation
+    const angleToRotateSource = sourceAndDestinationAlignmentFlip * -1 * (canonicalAngle + definition.angle);
+    const sourceDirection = (cos(angleToRotateSource) * userFlip * sourcePlane.x) + (sin(angleToRotateSource) * yAxis(sourcePlane));
+    const adjustedSourcePlaneNormal = sourcePlane.normal * (userFlip * sourceAndDestinationAlignmentFlip * faceAndSurfaceAlignmentFlip);
+    const sourceShiftedAnchor = toWorld(coordSystem(anchorInfo.sourceAnchor, sourceDirection, sourcePlane.normal), shiftVector);
+    const sourceSurface = makeWrapPlane(plane(sourcePlane.origin, adjustedSourcePlaneNormal), sourceShiftedAnchor, sourceDirection);
+
+    // -- Destination --
+    const remainingTransform = getRemainderPatternTransform(context, { "references" : definition.source });
+    const destinationAnchor = remainingTransform * anchorInfo.destinationAnchorInfo.anchor;
+    const destinationUDirection = remainingTransform * anchorInfo.destinationAnchorInfo.uDirection;
+    const adjustedDestinationNormal = destinationSurfaceDefinition.normal * (userFlip ? -1 : 1) * (faceAndSurfaceAlignmentFlip);
+    const destinationSurface = makeWrapPlane(plane(destinationSurfaceDefinition.origin, adjustedDestinationNormal), destinationAnchor, destinationUDirection);
+
+    return {
+            "source" : sourceSurface,
+            "destination" : destinationSurface
+        };
+}
+
+// ----- Source specific functions -----
+
+/**
+ * Helper function to create an internal definition for unwrap mode by swapping source and destination.
+ * For WRAP mode, returns the original definition unchanged.
+ * For UNWRAP mode, returns a new definition with source and destination (and anchors) swapped.
+ *
+ * @param definition : The user-facing definition from the feature
+ * @return {map} : The internal definition to use for processing
+ */
+function getInternalDefinitionForUnwrap(definition is map) returns map
+{
+    if (definition.wrapOperationType == WrapOperationType.UNWRAP)
+    {
+        return mergeMaps(definition, {
+            "source" : definition.destination,
+            "destination" : definition.source,
+            "sourceAnchor" : definition.destinationAnchor,
+            "destinationAnchor" : definition.sourceAnchor
+        });
+    }
+    return definition;
+}
+
 // ----- Source specific functions -----
 
 /**
@@ -725,6 +769,28 @@ function projectDestinationAnchor(context is Context, destinationCylinder is Cyl
         };
 }
 
+function projectDestinationAnchor(context is Context, destinationPlane is Plane, destinationFace is Query, worldDestinationAnchor is Vector, isCustomAnchor is boolean) returns map
+{
+    // For plane destinations (unwrapping case), project the anchor onto the plane
+    const anchor = project(destinationPlane, worldDestinationAnchor);
+    const faceNormal = try silent(evFaceNormal(context, {
+        "face" : destinationFace,
+        "parameter" : evFaceTangentPlane(context, {
+            "face" : destinationFace,
+            "point" : anchor
+        }).parameter
+    }));
+    const faceAndSurfaceAntiAligned = faceNormal != undefined && dot(faceNormal, destinationPlane.normal) < 0;
+    
+    return {
+            "anchor" : anchor,
+            "uDirection" : destinationPlane.x,
+            "vDirection" : yAxis(destinationPlane),
+            "surfaceNormal" : destinationPlane.normal,
+            "faceAndSurfaceAntiAligned" : faceAndSurfaceAntiAligned
+        };
+}
+
 // - getDefaultAnchors -
 
 /**
@@ -750,6 +816,21 @@ function getDefaultAnchors(context is Context, sourceInfo is map, destinationCon
 {
     const coneAxis = line(destinationCone.coordSystem.origin, destinationCone.coordSystem.zAxis);
     return getDefaultAnchorsForDestinationWithAxis(context, sourceInfo, coneAxis, destinationCone, destinationFace);
+}
+
+function getDefaultAnchors(context is Context, sourceInfo is map, destinationPlane is Plane, destinationFace is Query) returns map
+{
+    // For plane destinations (unwrapping case), use the center of the source bounding box as the source anchor
+    const sourceAnchor = toWorld(coordSystem(sourceInfo.plane), vector(
+        (sourceInfo.bbox.minCorner[0] + sourceInfo.bbox.maxCorner[0]) / 2,
+        (sourceInfo.bbox.minCorner[1] + sourceInfo.bbox.maxCorner[1]) / 2,
+        0 * meter
+    ));
+    
+    return {
+            "sourceAnchor" : sourceAnchor,
+            "destinationAnchorInfo" : projectDestinationAnchor(context, destinationPlane, destinationFace, sourceAnchor, false)
+        };
 }
 
 // - getManipulatorInformation -
@@ -817,6 +898,26 @@ function getDestinationManipulatorInfo(context is Context, destinationCylinder i
             "shiftedAnchor" : shiftedAnchorSurfaceNormalLine.origin,
             "shiftedSurfaceNormal" : shiftedAnchorSurfaceNormalLine.direction,
             "shiftedUDirection" : shiftedAnchorULine.direction
+        };
+}
+
+function getDestinationManipulatorInfo(context is Context, destinationPlane is Plane, destinationAnchorInfo is map, definition is map) returns map
+{
+    // For plane destinations (unwrapping case), provide simple manipulator info
+    // Apply user-defined shifts to the anchor
+    const uTranslation = transform(definition.uShift * destinationAnchorInfo.uDirection);
+    const vTranslation = transform(definition.vShift * destinationAnchorInfo.vDirection);
+    const destinationAnchorTransform = uTranslation * vTranslation;
+    
+    const shiftedAnchor = destinationAnchorTransform * destinationAnchorInfo.anchor;
+    
+    return {
+            "uShiftedAnchor" : uTranslation * destinationAnchorInfo.anchor,
+            "vShiftedAnchor" : vTranslation * destinationAnchorInfo.anchor,
+            "shiftedAnchor" : shiftedAnchor,
+            "shiftedSurfaceNormal" : destinationAnchorInfo.surfaceNormal,
+            "shiftedUDirection" : destinationAnchorInfo.uDirection,
+            "shiftedVDirection" : destinationAnchorInfo.vDirection
         };
 }
 
@@ -982,6 +1083,19 @@ function getUManipulatorAndName(destinationManipulatorInfo is map, definition is
 }
 
 /**
+ * Helper function to get the cylindrical/conical face based on operation type.
+ * For WRAP mode, returns the destination face.
+ * For UNWRAP mode, returns the source face.
+ *
+ * @param definition : The user-facing definition from the feature
+ * @return {Query} : The face query for the cylindrical/conical surface
+ */
+function getCylindricalFaceForManipulator(definition is map) returns Query
+{
+    return (definition.wrapOperationType == WrapOperationType.UNWRAP) ? definition.source : definition.destination;
+}
+
+/**
  * @internal
  * Manipulator change function for `wrap`.
  */
@@ -1005,7 +1119,7 @@ export function wrapManipulatorChange(context is Context, definition is map, new
         var radius = norm(newManipulators[U_ANGLE_MANIPULATOR].rotationOrigin - newManipulators[U_ANGLE_MANIPULATOR].axisOrigin);
 
         // For unwrap mode, the cylindrical/conical surface is the source, not destination
-        const cylindricalFace = (definition.wrapOperationType == WrapOperationType.UNWRAP) ? definition.source : definition.destination;
+        const cylindricalFace = getCylindricalFaceForManipulator(definition);
         const surfDef = try silent(evSurfaceDefinition(context, {
                 "face" : cylindricalFace
         }));
@@ -1034,16 +1148,7 @@ export function wrapEditLogic(context is Context, id is Id, oldDefinition is map
     specifiedParameters is map) returns map
 {
     // For unwrap mode, swap source and destination to get the correct internal representation
-    var internalDefinition = definition;
-    if (definition.wrapOperationType == WrapOperationType.UNWRAP)
-    {
-        internalDefinition = mergeMaps(definition, {
-            "source" : definition.destination,
-            "destination" : definition.source,
-            "sourceAnchor" : definition.destinationAnchor,
-            "destinationAnchor" : definition.sourceAnchor
-        });
-    }
+    var internalDefinition = getInternalDefinitionForUnwrap(definition);
 
     const sourceInfo = try silent(getSourceInfo(context, internalDefinition));
     const destinationSurfaceDefinition = try silent(evSurfaceDefinition(context, { "face" : internalDefinition.destination }));
