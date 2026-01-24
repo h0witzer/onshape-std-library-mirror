@@ -1041,60 +1041,51 @@ function getUManipulatorAndName(destinationManipulatorInfo is map, definition is
 
 /**
  * Add manipulators for unwrapping to a plane destination.
- * Creates linear manipulators for U/V shifts and an angular manipulator for rotation.
+ * Uses independent manipulators to avoid coupling between U/V shifts and rotation.
  */
 function addUnwrapManipulators(context is Context, id is Id, canonicalAngle is ValueWithUnits, sourceInfo is map, planeDestinationSurfaceDef is Plane, anchorInfo is map, definition is map)
 {
-    // Get the destination anchor projected onto the plane
+    // For plane destinations, we need a simpler manipulator setup
+    // The anchor point should be fixed and not affected by shifts
     const destAnchor = project(planeDestinationSurfaceDef, anchorInfo.sourceAnchor);
     
-    // Calculate shifted positions for manipulators
+    // Create a coordinate system aligned with the plane
+    const planeCoordSys = coordSystem(planeDestinationSurfaceDef.origin, planeDestinationSurfaceDef.x, planeDestinationSurfaceDef.normal);
+    
+    // Calculate the offset in the plane's coordinate system
+    // This represents the combined U and V shifts
     const uDirection = planeDestinationSurfaceDef.x;
     const vDirection = yAxis(planeDestinationSurfaceDef);
-    const uShiftedAnchor = destAnchor + definition.uShift * uDirection;
-    const vShiftedAnchor = destAnchor + definition.vShift * vDirection;
-    const uvShiftedAnchor = destAnchor + definition.uShift * uDirection + definition.vShift * vDirection;
+    const combinedOffset = definition.uShift * uDirection + definition.vShift * vDirection;
     
-    var manipulators = {
-        (ANGLE_MANIPULATOR) : getPlaneAngleManipulator(canonicalAngle, sourceInfo, destAnchor, planeDestinationSurfaceDef, definition),
-        (V_MANIPULATOR) : linearManipulator({
-            "base" : uShiftedAnchor,
-            "direction" : vDirection,
-            "offset" : definition.vShift,
-            "primaryParameterId" : "vShift"
-        }),
-        ("uShiftManipulator") : linearManipulator({
-            "base" : vShiftedAnchor,
-            "direction" : uDirection,
-            "offset" : definition.uShift,
-            "primaryParameterId" : "uShift"
-        })
-    };
+    // Use a triad manipulator at the anchor point for planar movement
+    // This provides independent U and V control without coupling
+    const offsetVector = combinedOffset;
     
-    addManipulators(context, id, manipulators);
-}
-
-/**
- * Create an angular manipulator for rotation around the plane normal
- */
-function getPlaneAngleManipulator(canonicalAngle is ValueWithUnits, sourceInfo is map, destAnchor is Vector, planeDestinationSurfaceDef is Plane, definition is map) returns Manipulator
-{
-    const axisOrigin = destAnchor;
-    const axisNormal = planeDestinationSurfaceDef.normal;
-    const uDirection = planeDestinationSurfaceDef.x;
+    var manipulators = {};
     
-    // Create a direction perpendicular to the plane normal for the manipulator display
-    const zeroDirectionLine = rotationAround(line(axisOrigin, axisNormal), canonicalAngle) * line(axisOrigin, uDirection);
+    // Add triad manipulator for U/V positioning
+    // Note: triadManipulator provides 3D movement, but we'll constrain it to the plane in the change handler
+    manipulators["positionTriad"] = triadManipulator({
+        "base" : destAnchor,
+        "offset" : offsetVector,
+        "style" : ManipulatorStyleEnum.DEFAULT
+    });
+    
+    // Add angular manipulator for rotation around the plane normal
     const angleManipulatorRadius = ANGLE_MANIPULATOR_RADIUS_SCALE * box3dDiagonalLength(sourceInfo.bbox);
-    const rotationOrigin = axisOrigin + zeroDirectionLine.direction * angleManipulatorRadius;
+    const rotatedDirection = rotationAround(line(destAnchor, planeDestinationSurfaceDef.normal), canonicalAngle + definition.angle) * line(destAnchor, uDirection);
+    const rotationOrigin = destAnchor + rotatedDirection.direction * angleManipulatorRadius;
     
-    return angularManipulator({
-        "axisOrigin" : axisOrigin,
-        "axisDirection" : axisNormal,
+    manipulators[ANGLE_MANIPULATOR] = angularManipulator({
+        "axisOrigin" : destAnchor,
+        "axisDirection" : planeDestinationSurfaceDef.normal,
         "rotationOrigin" : rotationOrigin,
         "angle" : definition.angle,
         "primaryParameterId" : "angle"
     });
+    
+    addManipulators(context, id, manipulators);
 }
 
 /**
@@ -1122,18 +1113,38 @@ export function wrapManipulatorChange(context is Context, definition is map, new
         definition.angle = abs(newAngle);
         definition.angleOppositeDirection = newAngle < 0 * radian;
     }
+    if (newManipulators["positionTriad"] is Manipulator)
+    {
+        // Triad manipulator for plane destinations in UNWRAP mode
+        // The offset represents the combined U and V shift in 3D space
+        const offsetVector = newManipulators["positionTriad"].offset;
+        
+        // Project the offset onto the plane to get U and V components
+        // We need the plane surface definition
+        if (definition.wrapOperationType == WrapOperationType.UNWRAP)
+        {
+            const planeDef = try silent(evSurfaceDefinition(context, { "face" : definition.destination }));
+            if (planeDef is Plane)
+            {
+                const uDirection = planeDef.x;
+                const vDirection = yAxis(planeDef);
+                
+                // Project offset onto U and V directions
+                const uComponent = dot(offsetVector, uDirection);
+                const vComponent = dot(offsetVector, vDirection);
+                
+                definition.uShift = abs(uComponent);
+                definition.uShiftOppositeDirection = uComponent < 0 * meter;
+                definition.vShift = abs(vComponent);
+                definition.vShiftOppositeDirection = vComponent < 0 * meter;
+            }
+        }
+    }
     if (newManipulators[V_MANIPULATOR] is Manipulator)
     {
         const newVShift = newManipulators[V_MANIPULATOR].offset;
         definition.vShift = abs(newVShift);
         definition.vShiftOppositeDirection = newVShift < 0 * meter;
-    }
-    if (newManipulators["uShiftManipulator"] is Manipulator)
-    {
-        // Linear U-shift manipulator (for plane destinations in UNWRAP mode)
-        const newUShift = newManipulators["uShiftManipulator"].offset;
-        definition.uShift = abs(newUShift);
-        definition.uShiftOppositeDirection = newUShift < 0 * meter;
     }
     if (newManipulators[U_ANGLE_MANIPULATOR] is Manipulator)
     {
