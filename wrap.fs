@@ -204,7 +204,10 @@ export const wrap = defineFeature(function(context is Context, id is Id, definit
         const canonicalAngle = getCanonicalAngle(sourceInfo.plane, anchorInfo);
 
         // Construct wrap surfaces for opWrap
-        const wrapSurfaces = constructWrapSurfaces(context, sourceInfo.plane, anchorInfo, canonicalAngle, destinationSurfaceDefinition, internalDefinition);
+        // For UNWRAP mode, we need different positioning logic to avoid coupling
+        const wrapSurfaces = (definition.wrapOperationType == WrapOperationType.UNWRAP) ?
+            constructUnwrapSurfaces(context, sourceInfo, anchorInfo, canonicalAngle, destinationSurfaceDefinition, definition) :
+            constructWrapSurfaces(context, sourceInfo.plane, anchorInfo, canonicalAngle, destinationSurfaceDefinition, internalDefinition);
 
         // Add manipulators based on operation type
         if (definition.wrapOperationType == WrapOperationType.WRAP)
@@ -220,17 +223,11 @@ export const wrap = defineFeature(function(context is Context, id is Id, definit
             addUnwrapManipulators(context, id, canonicalAngle, sourceInfo, planeDestinationSurfaceDef, anchorInfo, definition);
         }
 
-        // For opWrap, we need to pass the actual entities and WrapSurfaces in the correct order
-        // In UNWRAP mode, the internal definition is swapped for processing, but opWrap needs the original entities
-        // and the WrapSurfaces in the unwrap direction (cylinder/cone → plane)
+        // For opWrap, pass the correct entities and WrapSurfaces
+        // In UNWRAP mode, constructUnwrapSurfaces already returns them in the right order
+        // In WRAP mode, wrapSurfaces are in the standard order
         var opWrapSource = wrapSurfaces.source;
         var opWrapDestination = wrapSurfaces.destination;
-        if (definition.wrapOperationType == WrapOperationType.UNWRAP)
-        {
-            // Swap back the WrapSurfaces for opWrap in unwrap mode
-            opWrapSource = wrapSurfaces.destination;
-            opWrapDestination = wrapSurfaces.source;
-        }
 
         // ----- Show a useful display along with an error if the user is trying to imprint on sheet metal -----
         if (instructedToImprintOnSheetMetal(context, internalDefinition))
@@ -608,6 +605,63 @@ function getInternalDefinitionForUnwrap(definition is map) returns map
         });
     }
     return definition;
+}
+
+/**
+ * Construct wrap surfaces for UNWRAP operations (cylinder/cone → plane).
+ * Uses simple, independent positioning logic to avoid coupling between U/V shifts and rotation.
+ *
+ * @return {{
+ *      @field source {WrapSurface} : The cylinder/cone source WrapSurface for `opWrap`.
+ *      @field destination {WrapSurface} : The plane destination WrapSurface for `opWrap`.
+ * }}
+ */
+function constructUnwrapSurfaces(context is Context, sourceInfo is map, anchorInfo is map, canonicalAngle is ValueWithUnits, destinationSurfaceDefinition, definition is map) returns map
+{
+    // For UNWRAP mode, we need to think about it differently:
+    // - User selects cylinder/cone faces as SOURCE
+    // - User selects plane face as DESTINATION
+    // - Internally, we swapped so sourceInfo.plane is the actual destination plane
+    // - destinationSurfaceDefinition is the actual source cylinder/cone
+    
+    // The actual user destination is the plane (which is sourceInfo.plane after swapping)
+    const destPlane = sourceInfo.plane;
+    const destAnchor = anchorInfo.sourceAnchor;
+    
+    // The actual user source is the cylinder/cone (which is destinationSurfaceDefinition after swapping)
+    const srcCylinderCone = destinationSurfaceDefinition;
+    const srcAnchor = anchorInfo.destinationAnchorInfo.anchor;
+    
+    const userFlip = definition.flipAlignment ? -1 : 1;
+    const sourceAndDestinationAlignmentFlip = anchorInfo.sourceAndDestinationAntiAligned ? -1 : 1;
+    const faceAndSurfaceAlignmentFlip = anchorInfo.destinationAnchorInfo.faceAndSurfaceAntiAligned ? -1 : 1;
+    
+    // For unwrapping, U and V shifts are INDEPENDENT translations on the destination plane
+    // No complex coupling like in the wrap case
+    const destUDirection = destPlane.x;
+    const destVDirection = yAxis(destPlane);
+    
+    // Apply shifts independently (no coupling)
+    const destShiftedAnchor = destAnchor + definition.uShift * destUDirection + definition.vShift * destVDirection;
+    
+    // Apply rotation independently (no coupling with shifts)
+    const destAngle = canonicalAngle + definition.angle;
+    const destDirection = (cos(destAngle) * userFlip * destUDirection) + (sin(destAngle) * destVDirection);
+    
+    // Construct the destination plane WrapSurface with independent positioning
+    const adjustedDestPlaneNormal = destPlane.normal * (userFlip * sourceAndDestinationAlignmentFlip * faceAndSurfaceAlignmentFlip);
+    const destSurface = makeWrapPlane(plane(destPlane.origin, adjustedDestPlaneNormal), destShiftedAnchor, destDirection);
+    
+    // Construct the source cylinder/cone WrapSurface
+    const remainingTransform = getRemainderPatternTransform(context, { "references" : definition.source });
+    const srcAnchorLine = remainingTransform * line(srcAnchor, anchorInfo.destinationAnchorInfo.uDirection);
+    const srcSurface = makeWrapSurface(context, definition.source, srcAnchorLine.origin, srcAnchorLine.direction);
+    
+    // Return in the order opWrap expects for unwrapping: source=cylinder/cone, destination=plane
+    return {
+            "source" : srcSurface,
+            "destination" : destSurface
+        };
 }
 
 // ----- Source specific functions -----
