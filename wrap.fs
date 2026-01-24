@@ -208,25 +208,37 @@ export const wrap = defineFeature(function(context is Context, id is Id, definit
 
         addWrapManipulators(context, id, canonicalAngle, sourceInfo, destinationSurfaceDefinition, anchorInfo, internalDefinition);
 
+        // For opWrap, we need to pass the actual entities and WrapSurfaces in the correct order
+        // In UNWRAP mode, the internal definition is swapped for processing, but opWrap needs the original entities
+        // and the WrapSurfaces in the unwrap direction (cylinder/cone → plane)
+        var opWrapSource = wrapSurfaces.source;
+        var opWrapDestination = wrapSurfaces.destination;
+        if (definition.wrapOperationType == WrapOperationType.UNWRAP)
+        {
+            // Swap back the WrapSurfaces for opWrap in unwrap mode
+            opWrapSource = wrapSurfaces.destination;
+            opWrapDestination = wrapSurfaces.source;
+        }
+
         // ----- Show a useful display along with an error if the user is trying to imprint on sheet metal -----
         if (instructedToImprintOnSheetMetal(context, internalDefinition))
         {
             opWrap(context, id, {
                         "wrapType" : WrapType.SIMPLE,
-                        "entities" : internalDefinition.source,
-                        "source" : wrapSurfaces.source,
-                        "destination" : wrapSurfaces.destination
+                        "entities" : definition.source,
+                        "source" : opWrapSource,
+                        "destination" : opWrapDestination
                     });
-            const errorEntities = qUnion([internalDefinition.destination, qCreatedBy(id, EntityType.EDGE)]);
+            const errorEntities = qUnion([definition.destination, qCreatedBy(id, EntityType.EDGE)]);
             throw regenError(ErrorStringEnum.WRAP_IMPRINT_SHEET_METAL, ["resultType", "destination"], errorEntities);
         }
 
         // ----- Apply geometric changes -----
         opWrap(context, id, {
                     "wrapType" : getWrapType(internalDefinition),
-                    "entities" : internalDefinition.source,
-                    "source" : wrapSurfaces.source,
-                    "destination" : wrapSurfaces.destination
+                    "entities" : definition.source,
+                    "source" : opWrapSource,
+                    "destination" : opWrapDestination
                 });
 
         if (definition.resultType == WrapResultType.SOLID)
@@ -561,34 +573,6 @@ function constructWrapSurfaces(context is Context, sourcePlane is Plane, anchorI
         };
 }
 
-function constructWrapSurfaces(context is Context, sourcePlane is Plane, anchorInfo is map, canonicalAngle is ValueWithUnits, destinationSurfaceDefinition is Plane, definition is map) returns map
-{
-    // For plane destinations (unwrapping case), construct wrap surfaces for unwrapping
-    const userFlip = definition.flipAlignment ? -1 : 1;
-    const sourceAndDestinationAlignmentFlip = anchorInfo.sourceAndDestinationAntiAligned ? -1 : 1;
-    const faceAndSurfaceAlignmentFlip = anchorInfo.destinationAnchorInfo.faceAndSurfaceAntiAligned ? -1 : 1;
-
-    // Translate the source based on user-assigned shift
-    const shiftVector = vector(-definition.uShift, userFlip * sourceAndDestinationAlignmentFlip * -definition.vShift, 0 * meter);
-    // Rotate source based on user-assigned rotation
-    const angleToRotateSource = sourceAndDestinationAlignmentFlip * -1 * (canonicalAngle + definition.angle);
-    const sourceDirection = (cos(angleToRotateSource) * userFlip * sourcePlane.x) + (sin(angleToRotateSource) * yAxis(sourcePlane));
-    const adjustedSourcePlaneNormal = sourcePlane.normal * (userFlip * sourceAndDestinationAlignmentFlip * faceAndSurfaceAlignmentFlip);
-    const sourceShiftedAnchor = toWorld(coordSystem(anchorInfo.sourceAnchor, sourceDirection, sourcePlane.normal), shiftVector);
-    const sourceSurface = makeWrapPlane(plane(sourcePlane.origin, adjustedSourcePlaneNormal), sourceShiftedAnchor, sourceDirection);
-
-    // -- Destination --
-    const remainingTransform = getRemainderPatternTransform(context, { "references" : definition.source });
-    const destinationAnchor = remainingTransform * anchorInfo.destinationAnchorInfo.anchor;
-    const destinationUDirection = remainingTransform * anchorInfo.destinationAnchorInfo.uDirection;
-    const adjustedDestinationNormal = destinationSurfaceDefinition.normal * (userFlip ? -1 : 1) * (faceAndSurfaceAlignmentFlip);
-    const destinationSurface = makeWrapPlane(plane(destinationSurfaceDefinition.origin, adjustedDestinationNormal), destinationAnchor, destinationUDirection);
-
-    return {
-            "source" : sourceSurface,
-            "destination" : destinationSurface
-        };
-}
 
 // ----- Source specific functions -----
 
@@ -680,11 +664,6 @@ function checkDestinationSurfaceType(definition is map, destinationSurfaceDefini
     // Do nothing, as the point of this function is to throw an error for unsupported types.
 }
 
-function checkDestinationSurfaceType(definition is map, destinationSurfaceDefinition is Plane)
-{
-    // Do nothing, as the point of this function is to throw an error for unsupported types.
-    // Plane is supported for unwrapping operations.
-}
 
 // - projectDestinationAnchor -
 
@@ -787,24 +766,6 @@ function projectDestinationAnchor(context is Context, destinationCylinder is Cyl
         };
 }
 
-function projectDestinationAnchor(context is Context, destinationPlane is Plane, destinationFace is Query, worldDestinationAnchor is Vector, isCustomAnchor is boolean) returns map
-{
-    // For plane destinations (unwrapping case), project the anchor onto the plane
-    const anchor = project(destinationPlane, worldDestinationAnchor);
-    const tangentPlane = try silent(evFaceTangentPlane(context, {
-        "face" : destinationFace,
-        "parameter" : vector(0.5, 0.5)
-    }));
-    const faceAndSurfaceAntiAligned = tangentPlane != undefined && dot(tangentPlane.normal, destinationPlane.normal) < 0;
-
-    return {
-            "anchor" : anchor,
-            "uDirection" : destinationPlane.x,
-            "vDirection" : yAxis(destinationPlane),
-            "surfaceNormal" : destinationPlane.normal,
-            "faceAndSurfaceAntiAligned" : faceAndSurfaceAntiAligned
-        };
-}
 
 // - getDefaultAnchors -
 
@@ -833,20 +794,6 @@ function getDefaultAnchors(context is Context, sourceInfo is map, destinationCon
     return getDefaultAnchorsForDestinationWithAxis(context, sourceInfo, coneAxis, destinationCone, destinationFace);
 }
 
-function getDefaultAnchors(context is Context, sourceInfo is map, destinationPlane is Plane, destinationFace is Query) returns map
-{
-    // For plane destinations (unwrapping case), use the center of the source bounding box as the source anchor
-    const sourceAnchor = toWorld(coordSystem(sourceInfo.plane), vector(
-        (sourceInfo.bbox.minCorner[0] + sourceInfo.bbox.maxCorner[0]) / 2,
-        (sourceInfo.bbox.minCorner[1] + sourceInfo.bbox.maxCorner[1]) / 2,
-        0 * meter
-    ));
-
-    return {
-            "sourceAnchor" : sourceAnchor,
-            "destinationAnchorInfo" : projectDestinationAnchor(context, destinationPlane, destinationFace, sourceAnchor, false)
-        };
-}
 
 // - getManipulatorInformation -
 
@@ -916,25 +863,6 @@ function getDestinationManipulatorInfo(context is Context, destinationCylinder i
         };
 }
 
-function getDestinationManipulatorInfo(context is Context, destinationPlane is Plane, destinationAnchorInfo is map, definition is map) returns map
-{
-    // For plane destinations (unwrapping case), provide simple manipulator info
-    // Apply user-defined shifts to the anchor
-    const uTranslation = transform(definition.uShift * destinationAnchorInfo.uDirection);
-    const vTranslation = transform(definition.vShift * destinationAnchorInfo.vDirection);
-    const destinationAnchorTransform = uTranslation * vTranslation;
-
-    const shiftedAnchor = destinationAnchorTransform * destinationAnchorInfo.anchor;
-
-    return {
-            "uShiftedAnchor" : uTranslation * destinationAnchorInfo.anchor,
-            "vShiftedAnchor" : vTranslation * destinationAnchorInfo.anchor,
-            "shiftedAnchor" : shiftedAnchor,
-            "shiftedSurfaceNormal" : destinationAnchorInfo.surfaceNormal,
-            "shiftedUDirection" : destinationAnchorInfo.uDirection,
-            "shiftedVDirection" : destinationAnchorInfo.vDirection
-        };
-}
 
 
 // ----- Engrave/Emboss -----
