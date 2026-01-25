@@ -205,9 +205,18 @@ export const wrap = defineFeature(function(context is Context, id is Id, definit
 
         // Construct wrap surfaces for opWrap
         // For UNWRAP mode, we need different positioning logic to avoid coupling
-        const wrapSurfaces = (definition.wrapOperationType == WrapOperationType.UNWRAP) ?
-            constructUnwrapSurfaces(context, sourceInfo, anchorInfo, canonicalAngle, destinationSurfaceDefinition, definition) :
-            constructWrapSurfaces(context, sourceInfo.plane, anchorInfo, canonicalAngle, destinationSurfaceDefinition, internalDefinition);
+        var wrapSurfaces;
+        if (definition.wrapOperationType == WrapOperationType.UNWRAP)
+        {
+            // For UNWRAP, calculate everything based on the original (non-swapped) definition
+            // to ensure positioning is based on destination plane topology
+            wrapSurfaces = constructUnwrapSurfaces(context, definition);
+        }
+        else
+        {
+            // For WRAP, use the existing logic with internal swapping
+            wrapSurfaces = constructWrapSurfaces(context, sourceInfo.plane, anchorInfo, canonicalAngle, destinationSurfaceDefinition, internalDefinition);
+        }
 
         // Add manipulators based on operation type
         if (definition.wrapOperationType == WrapOperationType.WRAP)
@@ -609,52 +618,89 @@ function getInternalDefinitionForUnwrap(definition is map) returns map
 
 /**
  * Construct wrap surfaces for UNWRAP operations (cylinder/cone → plane).
- * Uses simple, independent positioning logic to avoid coupling between U/V shifts and rotation.
+ * Uses simple, independent positioning logic based on destination plane topology.
+ * Calculates everything fresh from the original definition without swapping.
  *
+ * @param definition : The original user-facing definition (NOT swapped)
  * @return {{
  *      @field source {WrapSurface} : The cylinder/cone source WrapSurface for `opWrap`.
  *      @field destination {WrapSurface} : The plane destination WrapSurface for `opWrap`.
  * }}
  */
-function constructUnwrapSurfaces(context is Context, sourceInfo is map, anchorInfo is map, canonicalAngle is ValueWithUnits, destinationSurfaceDefinition, definition is map) returns map
+function constructUnwrapSurfaces(context is Context, definition is map) returns map
 {
-    // For UNWRAP mode, we need to think about it differently:
-    // - User selects cylinder/cone faces as SOURCE
-    // - User selects plane face as DESTINATION
-    // - Internally, we swapped so sourceInfo.plane is the actual destination plane
-    // - destinationSurfaceDefinition is the actual source cylinder/cone
+    // For UNWRAP: user's source = cylinder/cone, user's destination = plane
+    // All calculations should be based on the destination plane's topology
     
-    // The actual user destination is the plane (which is sourceInfo.plane after swapping)
-    const destPlane = sourceInfo.plane;
-    const destAnchor = anchorInfo.sourceAnchor;
+    // Get source (cylinder/cone) information
+    const sourceSurfaceDef = evSurfaceDefinition(context, { "face" : definition.source });
+    const sourceFirstFace = qNthElement(definition.source, 0);
     
-    // The actual user source is the cylinder/cone (which is destinationSurfaceDefinition after swapping)
-    const srcCylinderCone = destinationSurfaceDefinition;
-    const srcAnchor = anchorInfo.destinationAnchorInfo.anchor;
+    // Get destination (plane) information
+    const destPlane = evSurfaceDefinition(context, { "face" : definition.destination });
+    const destFirstFace = qNthElement(definition.destination, 0);
     
-    const userFlip = definition.flipAlignment ? -1 : 1;
-    const sourceAndDestinationAlignmentFlip = anchorInfo.sourceAndDestinationAntiAligned ? -1 : 1;
-    const faceAndSurfaceAlignmentFlip = anchorInfo.destinationAnchorInfo.faceAndSurfaceAntiAligned ? -1 : 1;
+    // Get or calculate anchors on ACTUAL source and destination (not swapped)
+    var sourceAnchor;
+    if (definition.sourceAnchor != undefined && !isQueryEmpty(context, definition.sourceAnchor))
+    {
+        sourceAnchor = evVertexPoint(context, { "vertex" : definition.sourceAnchor });
+    }
+    else
+    {
+        // Default: use a point on the source cylinder/cone
+        sourceAnchor = evFaceTangentPlane(context, {
+            "face" : sourceFirstFace,
+            "parameter" : vector(0.5, 0.5)
+        }).origin;
+    }
     
-    // For unwrapping, U and V shifts are INDEPENDENT translations on the destination plane
-    // No complex coupling like in the wrap case
+    var destAnchor;
+    if (definition.destinationAnchor != undefined && !isQueryEmpty(context, definition.destinationAnchor))
+    {
+        destAnchor = evVertexPoint(context, { "vertex" : definition.destinationAnchor });
+    }
+    else
+    {
+        // Default: project source anchor onto destination plane
+        destAnchor = project(destPlane, sourceAnchor);
+    }
+    
+    // Calculate positioning on destination plane based on plane's own topology
     const destUDirection = destPlane.x;
     const destVDirection = yAxis(destPlane);
+    const destNormal = destPlane.normal;
     
-    // Apply shifts independently (no coupling)
+    // Apply independent U and V shifts on the destination plane
     const destShiftedAnchor = destAnchor + definition.uShift * destUDirection + definition.vShift * destVDirection;
     
-    // Apply rotation independently (no coupling with shifts)
-    const destAngle = canonicalAngle + definition.angle;
+    // Calculate rotation direction on destination plane
+    // Use destPlane's coordinate system as the reference (no canonical angle from source)
+    const destAngle = definition.angle;  // Pure rotation, no adjustment needed
+    const userFlip = definition.flipAlignment ? -1 : 1;
     const destDirection = (cos(destAngle) * userFlip * destUDirection) + (sin(destAngle) * destVDirection);
     
-    // Construct the destination plane WrapSurface with independent positioning
-    const adjustedDestPlaneNormal = destPlane.normal * (userFlip * sourceAndDestinationAlignmentFlip * faceAndSurfaceAlignmentFlip);
-    const destSurface = makeWrapPlane(plane(destPlane.origin, adjustedDestPlaneNormal), destShiftedAnchor, destDirection);
+    // Check alignment between face and surface
+    const destFaceTangent = try silent(evFaceTangentPlane(context, {
+        "face" : destFirstFace,
+        "parameter" : vector(0.5, 0.5)
+    }));
+    const faceAndSurfaceAntiAligned = destFaceTangent != undefined && dot(destFaceTangent.normal, destNormal) < 0;
+    const faceFlip = faceAndSurfaceAntiAligned ? -1 : 1;
     
-    // Construct the source cylinder/cone WrapSurface
+    // Construct destination plane WrapSurface with independent positioning
+    const adjustedDestNormal = destNormal * (userFlip * faceFlip);
+    const destSurface = makeWrapPlane(plane(destPlane.origin, adjustedDestNormal), destShiftedAnchor, destDirection);
+    
+    // Construct source cylinder/cone WrapSurface
     const remainingTransform = getRemainderPatternTransform(context, { "references" : definition.source });
-    const srcAnchorLine = remainingTransform * line(srcAnchor, anchorInfo.destinationAnchorInfo.uDirection);
+    
+    // For the source, we just need an anchor and direction on the cylinder/cone
+    const sourceTangent = evFaceTangentPlane(context, {
+        "face" : sourceFirstFace,
+        "parameter" : vector(0.5, 0.5)
+    });
+    const srcAnchorLine = remainingTransform * line(sourceAnchor, sourceTangent.x);
     const srcSurface = makeWrapSurface(context, definition.source, srcAnchorLine.origin, srcAnchorLine.direction);
     
     // Return in the order opWrap expects for unwrapping: source=cylinder/cone, destination=plane
@@ -1095,22 +1141,24 @@ function getUManipulatorAndName(destinationManipulatorInfo is map, definition is
 
 /**
  * Add manipulators for unwrapping to a plane destination.
- * Uses independent linear manipulators for U and V to avoid coupling and rotation artifacts.
+ * Positions manipulators at the center of the unwrapped object as it moves.
  */
 function addUnwrapManipulators(context is Context, id is Id, canonicalAngle is ValueWithUnits, sourceInfo is map, planeDestinationSurfaceDef is Plane, anchorInfo is map, definition is map)
 {
-    // For plane destinations, use independent linear manipulators at a fixed anchor
+    // For plane destinations, position manipulators at the shifted location (center of unwrapped object)
     const destAnchor = project(planeDestinationSurfaceDef, anchorInfo.sourceAnchor);
     
     const uDirection = planeDestinationSurfaceDef.x;
     const vDirection = yAxis(planeDestinationSurfaceDef);
     
+    // Calculate the shifted position where the unwrapped object is centered
+    const shiftedCenter = destAnchor + definition.uShift * uDirection + definition.vShift * vDirection;
+    
     var manipulators = {};
     
-    // Add independent U and V linear manipulators at the fixed anchor point
-    // This eliminates coupling - each manipulator stays at the anchor regardless of the other's value
+    // Position U and V manipulators at the shifted center so they follow the unwrapped object
     manipulators["uShiftManipulator"] = linearManipulator({
-        "base" : destAnchor,
+        "base" : shiftedCenter,
         "direction" : uDirection,
         "offset" : definition.uShift,
         "primaryParameterId" : "uShift",
@@ -1118,20 +1166,20 @@ function addUnwrapManipulators(context is Context, id is Id, canonicalAngle is V
     });
     
     manipulators[V_MANIPULATOR] = linearManipulator({
-        "base" : destAnchor,
+        "base" : shiftedCenter,
         "direction" : vDirection,
         "offset" : definition.vShift,
         "primaryParameterId" : "vShift",
         "style" : ManipulatorStyleEnum.DEFAULT
     });
     
-    // Add angular manipulator for rotation around the plane normal
+    // Add angular manipulator at the shifted center
     const angleManipulatorRadius = ANGLE_MANIPULATOR_RADIUS_SCALE * box3dDiagonalLength(sourceInfo.bbox);
-    const rotatedDirection = rotationAround(line(destAnchor, planeDestinationSurfaceDef.normal), canonicalAngle + definition.angle) * line(destAnchor, uDirection);
-    const rotationOrigin = destAnchor + rotatedDirection.direction * angleManipulatorRadius;
+    const rotatedDirection = rotationAround(line(shiftedCenter, planeDestinationSurfaceDef.normal), canonicalAngle + definition.angle) * line(shiftedCenter, uDirection);
+    const rotationOrigin = shiftedCenter + rotatedDirection.direction * angleManipulatorRadius;
     
     manipulators[ANGLE_MANIPULATOR] = angularManipulator({
-        "axisOrigin" : destAnchor,
+        "axisOrigin" : shiftedCenter,
         "axisDirection" : planeDestinationSurfaceDef.normal,
         "rotationOrigin" : rotationOrigin,
         "angle" : definition.angle,
