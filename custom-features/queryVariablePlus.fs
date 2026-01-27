@@ -1303,20 +1303,17 @@ function sheetMetalAttributeSelection(context is Context, definition is map) ret
         
         // Step 4: Map back to folded model entities using association attributes
         // Each association attribute connects a definition entity to its folded model entity
-        var foldedEntities = [];
+        var correspondingQueries = [];
         for (var attribute in associationAttributes)
         {
             // Query for entities with this association attribute (finds folded model entities)
-            const correspondingEntities = qAttributeQuery(attribute);
-            // Intersect with original selection to ensure we only return entities from user's input
-            const matchingEntities = qIntersection([correspondingEntities, seedEntities]);
-            if (!isQueryEmpty(context, matchingEntities))
-            {
-                foldedEntities = append(foldedEntities, matchingEntities);
-            }
+            correspondingQueries = append(correspondingQueries, qAttributeQuery(attribute));
         }
         
-        return size(foldedEntities) > 0 ? qUnion(foldedEntities) : qNothing();
+        // Union all corresponding entities and intersect with original selection
+        // to ensure we only return entities from user's input
+        const allCorrespondingEntities = qUnion(correspondingQueries);
+        return qIntersection([allCorrespondingEntities, seedEntities]);
     }
     catch
     {
