@@ -7,6 +7,7 @@ import(path : "onshape/std/common.fs", version : "2856.0");
 import(path : "onshape/std/query.fs", version : "2856.0");
 import(path : "onshape/std/evaluate.fs", version : "2856.0");
 import(path : "onshape/std/sheetMetalAttribute.fs", version : "2856.0");
+import(path : "onshape/std/sheetMetalUtils.fs", version : "2856.0");
 import(path : "onshape/std/smobjecttype.gen.fs", version : "2856.0");
 import(path : "onshape/std/smjointtype.gen.fs", version : "2856.0");
 import(path : "onshape/std/smbendtype.gen.fs", version : "2856.0");
