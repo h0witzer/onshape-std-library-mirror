@@ -1297,7 +1297,7 @@ function activeSheetMetalSelection(definition is map) returns Query
 {
     var seedEntities = qNothing();
     
-    if (definition.activeSheetMetalUseAll == true)
+    if (definition.activeSheetMetalUseAll)
     {
         seedEntities = qEverything();
     }
@@ -1323,7 +1323,7 @@ function sheetMetalAttributeSelection(context is Context, definition is map) ret
 {
     var seedEntities = qNothing();
     
-    if (definition.sheetMetalAttributeUseAll == true)
+    if (definition.sheetMetalAttributeUseAll)
     {
         seedEntities = qEverything();
     }
@@ -1337,9 +1337,17 @@ function sheetMetalAttributeSelection(context is Context, definition is map) ret
     // Sheet metal attributes exist on the master sheet body (definition entities),
     // not on the folded model. We must transform the user's selection to definition
     // entities before applying the attribute filter.
-    const definitionEntities = qUnion(getSMDefinitionEntities(context, seedEntities));
-    
-    return qAttributeFilter(definitionEntities, asSMAttribute({ "objectType" : objectType }));
+    try
+    {
+        const definitionEntities = qUnion(getSMDefinitionEntities(context, seedEntities));
+        return qAttributeFilter(definitionEntities, asSMAttribute({ "objectType" : objectType }));
+    }
+    catch
+    {
+        // If getSMDefinitionEntities fails (e.g., no sheet metal entities found),
+        // return an empty query rather than throwing an error
+        return qNothing();
+    }
 }
 
 function filterSketchEdgesAndVerticesFromSheetDeprecated(context is Context, definition is map) returns Query
