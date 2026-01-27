@@ -16,32 +16,32 @@ import(path : "onshape/std/sheetMetalUtils.fs", version : "2856.0");
  */
 
 /**
- * Query for all faces on the flat pattern of a sheet metal part that correspond to 
- * the cut profile that would be made on a laser cutter, waterjet, or other 2D cutting process.
+ * Query for all faces on a 3D sheet metal part that correspond to the edge/profile
+ * geometry that would be cut on a laser cutter in the 2D flat pattern.
  * 
- * This function works by analyzing the flat pattern representation of the sheet metal part.
- * Cut faces are identified as faces that are perpendicular to the sheet (parallel to Z-axis)
- * in the flat pattern, representing the edges that would be cut by a 2D cutting process.
+ * This function identifies the 3D model faces whose flat pattern counterparts represent
+ * the vertical edge faces (cut profiles). These are the faces that correspond to the
+ * perimeter and internal cutout edges that would be cut by a laser cutter, waterjet,
+ * or other 2D cutting process.
  * 
- * Stock faces (the top and bottom faces of the sheet metal) are parallel to the XY plane
- * and are NOT returned by this function. This function specifically returns the edge/profile
- * faces that define the perimeter and internal cutouts of the flat pattern.
+ * Stock faces (the top and bottom faces of the sheet metal in the flat pattern) are
+ * parallel to the XY plane and are NOT returned by this function. This function 
+ * specifically returns the 3D faces whose flat counterparts define the cut perimeter.
  * 
- * Implementation: The function gets the flat pattern entities corresponding to the 3D part,
- * then filters for faces that are parallel to the Z-axis (perpendicular to the sheet plane).
+ * Implementation: The function gets the flat pattern entities and uses robust query
+ * functions to filter based on geometry, then returns the corresponding 3D model faces.
  * 
  * @param context : The context in which to evaluate the query
  * @param sheetMetalPart : Query for the sheet metal part(s) to analyze.
  *                         This should be a query for one or more sheet metal solid bodies.
  * 
- * @returns Query for all cut profile faces in the flat pattern. These are the faces
- *          perpendicular to the sheet that represent the laser-cut edges. Returns a query
- *          that matches faces when evaluated, or matches nothing if the input is not a
- *          valid sheet metal part.
+ * @returns Query for all 3D model faces whose flat pattern counterparts are cut profile
+ *          edges. Returns a query that matches 3D faces when evaluated, or matches nothing
+ *          if the input is not a valid sheet metal part.
  * 
  * @example
  * ```
- * // Get all laser-cut edge faces from a sheet metal part's flat pattern
+ * // Get all 3D faces corresponding to laser-cut edges from a sheet metal part
  * const cutFacesQuery = qSheetMetalCutFaces(context, definition.sheetMetalPart);
  * 
  * // Use in a feature to highlight or operate on cut profile faces
@@ -59,40 +59,37 @@ export function qSheetMetalCutFaces(context is Context, sheetMetalPart is Query)
     // Get the corresponding faces in the flat pattern
     const flatFaces = qCorrespondingInFlat(modelFaces);
     
-    // Evaluate the flat faces to filter them by orientation
-    const flatFaceEntities = evaluateQuery(context, flatFaces);
+    // In the flat pattern, stock faces (top/bottom) have normals perpendicular to Z-axis
+    // They are parallel to the XY plane (top plane)
+    const zDirection = vector(0, 0, 1);
+    const stockFacesInFlat = qParallelPlanes(flatFaces, zDirection);
     
-    var cutFaceQueries = [];
+    // Cut faces are all the faces that are NOT stock faces
+    // These are the vertical edge faces in the flat pattern
+    const cutFacesInFlat = qSubtraction(flatFaces, stockFacesInFlat);
     
-    // Filter faces based on their normal direction in the flat pattern
-    // Cut faces are perpendicular to the sheet (parallel to Z-axis)
-    for (var face in flatFaceEntities)
+    // Now we need to find which 3D model faces correspond to these cut faces in flat
+    // We do this by filtering the original model faces
+    const cutFaceEntitiesInFlat = evaluateQuery(context, cutFacesInFlat);
+    
+    var cutFacesIn3D = [];
+    
+    // For each 3D model face, check if its flat counterpart is a cut face
+    const modelFaceEntities = evaluateQuery(context, modelFaces);
+    for (var modelFace in modelFaceEntities)
     {
-        try
+        const correspondingFlatFace = evaluateQuery(context, qCorrespondingInFlat(modelFace));
+        
+        // Check if this flat face is in our cut faces list
+        for (var cutFace in cutFaceEntitiesInFlat)
         {
-            // Get the plane of the face
-            const facePlane = evPlane(context, {
-                "face" : face
-            });
-            
-            // Check if the face normal is parallel to Z-axis (perpendicular to sheet)
-            // The Z-axis vector is (0, 0, 1)
-            const zAxis = vector(0, 0, 1);
-            const normalDotZ = abs(dot(facePlane.normal, zAxis));
-            
-            // If the face normal is parallel to Z (normalDotZ ≈ 1), it's a cut face
-            // If the face normal is perpendicular to Z (normalDotZ ≈ 0), it's a stock face (top/bottom)
-            // We want faces that are parallel to Z (the vertical edges of the flat pattern)
-            if (normalDotZ > 0.99) // Close to 1, meaning parallel to Z
+            if (size(correspondingFlatFace) > 0 && correspondingFlatFace[0] == cutFace)
             {
-                cutFaceQueries = append(cutFaceQueries, face);
+                cutFacesIn3D = append(cutFacesIn3D, modelFace);
+                break;
             }
-        }
-        catch
-        {
-            // If face is not planar or evaluation fails, skip it
         }
     }
     
-    return qUnion(cutFaceQueries);
+    return qUnion(cutFacesIn3D);
 }
