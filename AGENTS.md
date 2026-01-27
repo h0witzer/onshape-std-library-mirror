@@ -25,6 +25,29 @@
 - Try Silent blocks should only be used after a function has been thoroughly tested and validated. The try block is useful for graceful error handling but adding silent to this block will squash all reports to the console and make diagnostics exponentially harder with no information to go off of.
 - Adding Silent to a try block does not fix the problem when an error is encountered, just continues the execution and hides the reporting state. 
 
+### Why Not Dot Products?
+
+**Avoid manual vector math when robust query functions exist.**
+
+❌ **Wrong approach:**
+```featurescript
+// Don't do this
+const normalDotZ = abs(dot(facePlane.normal, zAxis));
+if (normalDotZ > 0.99) { ... }
+```
+
+✅ **Correct approach:**
+```featurescript
+// Use built-in query functions
+const cutFaces = qFacesParallelToDirection(flatFaces, zDirection);
+```
+
+**Reasons:**
+1. Query functions are optimized and tested
+2. Avoid floating-point comparison errors
+3. More maintainable and readable
+4. Less error-prone
+
 ## Testing Instructions
 - Since there is no way to run Onshape in a localized environment here we will rely mostly on comparing code samples with existing functions in the standard library and against the reference docs to ensure consistency with the code base
 - Debugging will be done largely via reports delivered via console log
