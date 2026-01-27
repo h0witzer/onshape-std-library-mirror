@@ -39,7 +39,7 @@ export const sheetMetalQueriesTester = defineFeature(function(context is Context
         
         if (definition.queryFunction == QueryFunctionType.SHEET_METAL_CUT_FACES)
         {
-            resultQuery = qSheetMetalCutFaces(definition.sheetMetalPart);
+            resultQuery = qSheetMetalCutFaces(context, definition.sheetMetalPart);
         }
         
         // Evaluate the query to get actual entities
