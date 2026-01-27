@@ -10,6 +10,7 @@ import(path : "onshape/std/sheetMetalAttribute.fs", version : "2856.0");
 import(path : "onshape/std/sheetMetalUtils.fs", version : "2856.0");
 import(path : "onshape/std/smobjecttype.gen.fs", version : "2856.0");
 import(path : "onshape/std/smjointtype.gen.fs", version : "2856.0");
+import(path : "onshape/std/smjointstyle.gen.fs", version : "2856.0");
 import(path : "onshape/std/smbendtype.gen.fs", version : "2856.0");
 import(path : "onshape/std/attributes.fs", version : "2856.0");
 import(path : "onshape/std/containers.fs", version : "2856.0");
@@ -340,5 +341,224 @@ export function qSheetMetalBoundaryEdges(context is Context, wallFaces is Query)
     
     // Subtract bend edges from all wall edges to get boundary edges
     return qSubtraction(allWallEdges, bendEdges);
+}
+
+/**
+ * Query all joint faces (bend cylindrical faces) on solid sheet metal bodies.
+ * When a solid active sheet metal body is selected, this returns the cylindrical
+ * faces that correspond to bends in the sheet metal model.
+ *
+ * @param context {Context} : The context of the current part studio
+ * @param sheetMetalBody {Query} : The solid sheet metal body to search within
+ * 
+ * @returns {Query} : A query for all joint faces on the solid body
+ */
+export function qSheetMetalJointFaces(context is Context, sheetMetalBody is Query) returns Query
+{
+    // Get all faces owned by the solid body
+    const allFaces = qOwnedByBody(sheetMetalBody, EntityType.FACE);
+    
+    // Get the definition entities (edges) that correspond to the solid body
+    const definitionEdges = getSMDefinitionEntities(context, sheetMetalBody, EntityType.EDGE);
+    
+    // Find which definition edges are bend edges
+    var bendEdges = [];
+    for (var edge in definitionEdges)
+    {
+        const attributes = getSmObjectTypeAttributes(context, edge, SMObjectType.JOINT);
+        for (var attribute in attributes)
+        {
+            if (attribute.jointType != undefined && attribute.jointType.value == SMJointType.BEND)
+            {
+                bendEdges = append(bendEdges, edge);
+                break;
+            }
+        }
+    }
+    
+    // Now find the cylindrical faces on the solid body that correspond to these bend edges
+    // Cylindrical faces on sheet metal solids represent the bends
+    const cylindricalFaces = qGeometry(allFaces, GeometryType.CYLINDER);
+    
+    // Filter to only those that have association attributes matching bend edges
+    const evaluatedCylinderFaces = evaluateQuery(context, cylindricalFaces);
+    var jointFaces = [];
+    
+    for (var face in evaluatedCylinderFaces)
+    {
+        // Get the association attribute for this face
+        const associations = getSMAssociationAttributes(context, face);
+        
+        // Check if any association links to a bend edge
+        for (var assoc in associations)
+        {
+            const linkedDefinitionEntities = evaluateQuery(context, qAttributeQuery(assoc));
+            for (var defEntity in linkedDefinitionEntities)
+            {
+                // Check if this definition entity is in our bend edges list
+                for (var bendEdge in bendEdges)
+                {
+                    if (defEntity == bendEdge)
+                    {
+                        jointFaces = append(jointFaces, face);
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    
+    return qUnion(jointFaces);
+}
+
+/**
+ * Query joint faces on solid sheet metal bodies filtered by joint type.
+ * Returns cylindrical faces corresponding to bends, rips, or tangent joints.
+ *
+ * @param context {Context} : The context of the current part studio
+ * @param sheetMetalBody {Query} : The solid sheet metal body to search within
+ * @param jointType {SMJointType} : The type of joint to filter by (BEND, RIP, TANGENT)
+ * 
+ * @returns {Query} : A query for joint faces of the specified type
+ */
+export function qSheetMetalJointFacesByType(context is Context, sheetMetalBody is Query, jointType is SMJointType) returns Query
+{
+    // Get all faces owned by the solid body
+    const allFaces = qOwnedByBody(sheetMetalBody, EntityType.FACE);
+    
+    // Get the definition entities (edges) that correspond to the solid body
+    const definitionEdges = getSMDefinitionEntities(context, sheetMetalBody, EntityType.EDGE);
+    
+    // Find which definition edges match the specified joint type
+    var matchingEdges = [];
+    for (var edge in definitionEdges)
+    {
+        const attributes = getSmObjectTypeAttributes(context, edge, SMObjectType.JOINT);
+        for (var attribute in attributes)
+        {
+            if (attribute.jointType != undefined && attribute.jointType.value == jointType)
+            {
+                matchingEdges = append(matchingEdges, edge);
+                break;
+            }
+        }
+    }
+    
+    if (size(matchingEdges) == 0)
+    {
+        return qNothing();
+    }
+    
+    // For BEND joints, find cylindrical faces on the solid body
+    if (jointType == SMJointType.BEND)
+    {
+        const cylindricalFaces = qGeometry(allFaces, GeometryType.CYLINDER);
+        const evaluatedCylinderFaces = evaluateQuery(context, cylindricalFaces);
+        var jointFaces = [];
+        
+        for (var face in evaluatedCylinderFaces)
+        {
+            const associations = getSMAssociationAttributes(context, face);
+            
+            for (var assoc in associations)
+            {
+                const linkedDefinitionEntities = evaluateQuery(context, qAttributeQuery(assoc));
+                for (var defEntity in linkedDefinitionEntities)
+                {
+                    for (var matchingEdge in matchingEdges)
+                    {
+                        if (defEntity == matchingEdge)
+                        {
+                            jointFaces = append(jointFaces, face);
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+        
+        return qUnion(jointFaces);
+    }
+    
+    // For RIP and TANGENT joints, the joint is represented by the planar faces meeting at an edge
+    // Return the faces adjacent to the matching edges
+    var adjacentFaces = [];
+    for (var matchingEdge in matchingEdges)
+    {
+        // Get solid faces that correspond to this definition edge
+        const associations = getSMAssociationAttributes(context, matchingEdge);
+        for (var assoc in associations)
+        {
+            const linkedSolidEntities = evaluateQuery(context, qIntersection([
+                qBodyType(qAttributeQuery(assoc), BodyType.SOLID),
+                qEntityFilter(qAttributeQuery(assoc), EntityType.FACE)
+            ]));
+            for (var solidFace in linkedSolidEntities)
+            {
+                adjacentFaces = append(adjacentFaces, solidFace);
+            }
+        }
+    }
+    
+    return qUnion(adjacentFaces);
+}
+
+/**
+ * Query joint faces on solid sheet metal bodies filtered by joint style.
+ * This applies primarily to RIP joints which can have different styles (EDGE, OVERLAP, etc.).
+ *
+ * @param context {Context} : The context of the current part studio
+ * @param sheetMetalBody {Query} : The solid sheet metal body to search within
+ * @param jointStyle {SMJointStyle} : The style of joint to filter by
+ * 
+ * @returns {Query} : A query for joint faces of the specified style
+ */
+export function qSheetMetalJointFacesByStyle(context is Context, sheetMetalBody is Query, jointStyle is SMJointStyle) returns Query
+{
+    // Get all faces owned by the solid body
+    const allFaces = qOwnedByBody(sheetMetalBody, EntityType.FACE);
+    
+    // Get the definition entities (edges) that correspond to the solid body
+    const definitionEdges = getSMDefinitionEntities(context, sheetMetalBody, EntityType.EDGE);
+    
+    // Find which definition edges match the specified joint style
+    var matchingEdges = [];
+    for (var edge in definitionEdges)
+    {
+        const attributes = getSmObjectTypeAttributes(context, edge, SMObjectType.JOINT);
+        for (var attribute in attributes)
+        {
+            if (attribute.jointStyle != undefined && attribute.jointStyle.value == jointStyle)
+            {
+                matchingEdges = append(matchingEdges, edge);
+                break;
+            }
+        }
+    }
+    
+    if (size(matchingEdges) == 0)
+    {
+        return qNothing();
+    }
+    
+    // Get solid faces that correspond to these definition edges
+    var adjacentFaces = [];
+    for (var matchingEdge in matchingEdges)
+    {
+        const associations = getSMAssociationAttributes(context, matchingEdge);
+        for (var assoc in associations)
+        {
+            const linkedSolidEntities = evaluateQuery(context, qIntersection([
+                qBodyType(qAttributeQuery(assoc), BodyType.SOLID),
+                qEntityFilter(qAttributeQuery(assoc), EntityType.FACE)
+            ]));
+            for (var solidFace in linkedSolidEntities)
+            {
+                adjacentFaces = append(adjacentFaces, solidFace);
+            }
+        }
+    }
+    
+    return qUnion(adjacentFaces);
 }
 

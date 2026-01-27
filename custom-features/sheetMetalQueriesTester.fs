@@ -16,14 +16,12 @@ import(path : "onshape/std/debug.fs", version : "2856.0");
 import(path : "onshape/std/debugcolor.gen.fs", version : "2856.0");
 
 // Import the custom sheet metal query libraries
-// NOTE: These imports use empty version strings for local development/testing
-// When using in Onshape, you should:
-// 1. Upload these files to an Onshape document
-// 2. Use the full Onshape document path with proper version, e.g.:
-//    import(path : "c234567890abcdef12345678/v/abc123/e/def456/sheetMetalQueries.fs", version : "");
-// 3. Or reference by document name if using the standard library pattern
-import(path : "sheetMetalQueries.fs", version : "");
-import(path : "sheetMetalQueriesUtils.fs", version : "");
+// NOTE: When using in Onshape, use the actual document paths provided:
+import(path : "943642034066bc27de5d166f", version : "69b99f9a9a085a7e6f9298ec"); // "sheetMetalQueries.fs"
+import(path : "fba4b55b04a2fe9dc396f4c4", version : "4833906c31694f269cdc2f75"); // "sheetMetalQueriesUtils.fs"
+// For local development/testing, use:
+// import(path : "sheetMetalQueries.fs", version : "");
+// import(path : "sheetMetalQueriesUtils.fs", version : "");
 
 /**
  * Enumeration of available query operations to test.
@@ -47,6 +45,12 @@ export enum SMQueryTestOperation
     ADJACENT_WALLS,
     annotation { "Name" : "Query boundary edges" }
     BOUNDARY_EDGES,
+    annotation { "Name" : "Query joint faces (all)" }
+    JOINT_FACES,
+    annotation { "Name" : "Query joint faces (BEND type)" }
+    JOINT_FACES_BEND,
+    annotation { "Name" : "Query joint faces (RIP type)" }
+    JOINT_FACES_RIP,
     annotation { "Name" : "Count bend edges" }
     COUNT_BENDS,
     annotation { "Name" : "Count wall faces" }
@@ -175,7 +179,40 @@ export const sheetMetalQueryTester = defineFeature(function(context is Context, 
             
             if (definition.showDebug && boundaryCount > 0)
             {
-                debug(context, resultQuery, DebugColor.PURPLE);
+                debug(context, resultQuery, DebugColor.BLACK);
+            }
+        }
+        else if (definition.operation == SMQueryTestOperation.JOINT_FACES)
+        {
+            resultQuery = qSheetMetalJointFaces(context, definition.sheetMetalInput);
+            const jointFaceCount = size(evaluateQuery(context, resultQuery));
+            resultMessage = "Found " ~ jointFaceCount ~ " joint face(s)";
+            
+            if (definition.showDebug && jointFaceCount > 0)
+            {
+                debug(context, resultQuery, DebugColor.MAGENTA);
+            }
+        }
+        else if (definition.operation == SMQueryTestOperation.JOINT_FACES_BEND)
+        {
+            resultQuery = qSheetMetalJointFacesByType(context, definition.sheetMetalInput, SMJointType.BEND);
+            const jointFaceCount = size(evaluateQuery(context, resultQuery));
+            resultMessage = "Found " ~ jointFaceCount ~ " BEND joint face(s)";
+            
+            if (definition.showDebug && jointFaceCount > 0)
+            {
+                debug(context, resultQuery, DebugColor.CYAN);
+            }
+        }
+        else if (definition.operation == SMQueryTestOperation.JOINT_FACES_RIP)
+        {
+            resultQuery = qSheetMetalJointFacesByType(context, definition.sheetMetalInput, SMJointType.RIP);
+            const jointFaceCount = size(evaluateQuery(context, resultQuery));
+            resultMessage = "Found " ~ jointFaceCount ~ " RIP joint face(s)";
+            
+            if (definition.showDebug && jointFaceCount > 0)
+            {
+                debug(context, resultQuery, DebugColor.YELLOW);
             }
         }
         else if (definition.operation == SMQueryTestOperation.COUNT_BENDS)
