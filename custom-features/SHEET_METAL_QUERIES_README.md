@@ -16,16 +16,19 @@ The sheet metal query helpers consist of three main files:
 
 This is the primary library containing robust query functions for sheet metal entities. It provides functions to query:
 
-- **Bend Edges**: Edges with BEND joint attributes
-- **Rip Edges**: Edges with RIP joint attributes  
-- **Wall Faces**: Faces with WALL attributes
-- **Corner Vertices**: Vertices with CORNER attributes
-- **Planar Walls**: Wall faces that are planar surfaces
-- **Cylindrical Walls**: Wall faces that are cylindrical surfaces (rolled walls)
+- **Bend Edges**: Edges with BEND joint attributes (on definition body)
+- **Rip Edges**: Edges with RIP joint attributes (on definition body)
+- **Wall Faces**: Faces with WALL attributes (on definition body)
+- **Corner Vertices**: Vertices with CORNER attributes (on definition body)
+- **Planar Walls**: Wall faces that are planar surfaces (on definition body)
+- **Cylindrical Walls**: Wall faces that are cylindrical surfaces (on definition body)
 - **Adjacent Walls**: Wall faces connected by bend edges
 - **Boundary Edges**: Non-bend edges on walls
 - **Edges by Joint Type**: Filter edges by specific joint types
 - **Bends by Bend Type**: Filter bend edges by bend type
+- **Joint Faces**: Cylindrical bend faces on solid sheet metal bodies *(NEW)*
+- **Joint Faces by Type**: Filter joint faces by joint type (BEND, RIP, TANGENT) *(NEW)*
+- **Joint Faces by Style**: Filter joint faces by joint style *(NEW)*
 
 ### sheetMetalQueriesUtils.fs
 
@@ -54,24 +57,43 @@ An interactive feature that lets you test and visualize the query functions:
 
 ## Usage Examples
 
-### Basic Query Usage
+### Basic Query Usage (Definition Body Queries)
 
 ```featurescript
 // Import the libraries (adjust paths as needed for your Onshape document)
-import(path : "sheetMetalQueries.fs", version : "");
-import(path : "sheetMetalQueriesUtils.fs", version : "");
+import(path : "943642034066bc27de5d166f", version : "69b99f9a9a085a7e6f9298ec"); // sheetMetalQueries.fs
+import(path : "fba4b55b04a2fe9dc396f4c4", version : "4833906c31694f269cdc2f75"); // sheetMetalQueriesUtils.fs
 
-// Query all bend edges in a sheet metal part
+// Query all bend edges in a sheet metal part (definition body)
 const bendEdges = qSheetMetalBendEdges(context, definition.sheetMetalBody);
 
-// Query all planar wall faces
+// Query all planar wall faces (definition body)
 const planarWalls = qSheetMetalPlanarWalls(context, definition.sheetMetalBody);
 
-// Query adjacent walls to a selected wall
+// Query adjacent walls to a selected wall (definition body)
 const adjacentWalls = qSheetMetalAdjacentWalls(context, definition.selectedWall);
 
 // Query boundary edges (non-bend edges)
 const boundaryEdges = qSheetMetalBoundaryEdges(context, definition.wallFaces);
+```
+
+### Solid Body Queries (NEW - For Joint Faces)
+
+```featurescript
+// These queries work when selecting a SOLID sheet metal body
+// They return the cylindrical faces that represent bends on the solid
+
+// Query all joint faces (bend cylindrical faces) on a solid sheet metal body
+const jointFaces = qSheetMetalJointFaces(context, definition.solidSheetMetalBody);
+
+// Query only BEND type joint faces
+const bendJointFaces = qSheetMetalJointFacesByType(context, definition.solidSheetMetalBody, SMJointType.BEND);
+
+// Query only RIP type joint faces
+const ripJointFaces = qSheetMetalJointFacesByType(context, definition.solidSheetMetalBody, SMJointType.RIP);
+
+// Query joint faces by style (e.g., EDGE style rips)
+const edgeRipFaces = qSheetMetalJointFacesByStyle(context, definition.solidSheetMetalBody, SMJointStyle.EDGE);
 ```
 
 ### Utility Function Usage
@@ -110,17 +132,20 @@ const allRadii = getAllBendRadii(context, bendEdges);
 
 | Function | Parameters | Returns | Description |
 |----------|------------|---------|-------------|
-| `qSheetMetalBendEdges` | context, sheetMetalEntities | Query | All bend edges |
-| `qSheetMetalRipEdges` | context, sheetMetalEntities | Query | All rip edges |
-| `qSheetMetalWallFaces` | context, sheetMetalEntities | Query | All wall faces |
-| `qSheetMetalCornerVertices` | context, sheetMetalEntities | Query | All corner vertices |
-| `qSheetMetalPlanarWalls` | context, sheetMetalEntities | Query | Planar wall faces |
-| `qSheetMetalCylindricalWalls` | context, sheetMetalEntities | Query | Cylindrical wall faces |
-| `qSheetMetalAdjacentWalls` | context, wallFaces | Query | Walls adjacent to input |
+| `qSheetMetalBendEdges` | context, sheetMetalEntities | Query | All bend edges (definition) |
+| `qSheetMetalRipEdges` | context, sheetMetalEntities | Query | All rip edges (definition) |
+| `qSheetMetalWallFaces` | context, sheetMetalEntities | Query | All wall faces (definition) |
+| `qSheetMetalCornerVertices` | context, sheetMetalEntities | Query | All corner vertices (definition) |
+| `qSheetMetalPlanarWalls` | context, sheetMetalEntities | Query | Planar wall faces (definition) |
+| `qSheetMetalCylindricalWalls` | context, sheetMetalEntities | Query | Cylindrical wall faces (definition) |
+| `qSheetMetalAdjacentWalls` | context, wallFaces | Query | Walls adjacent to input (definition) |
 | `qSheetMetalBendsBetweenWalls` | context, wallFaces1, wallFaces2 | Query | Bends connecting two walls |
 | `qSheetMetalEdgesByJointType` | context, entities, jointType | Query | Edges with specific joint type |
 | `qSheetMetalBendsByType` | context, entities, bendType | Query | Bends with specific bend type |
 | `qSheetMetalBoundaryEdges` | context, wallFaces | Query | Non-bend edges on walls |
+| `qSheetMetalJointFaces` | context, sheetMetalBody | Query | All joint faces on solid body *(NEW)* |
+| `qSheetMetalJointFacesByType` | context, body, jointType | Query | Joint faces by type on solid *(NEW)* |
+| `qSheetMetalJointFacesByStyle` | context, body, jointStyle | Query | Joint faces by style on solid *(NEW)* |
 
 ### Utility Functions (sheetMetalQueriesUtils.fs)
 
@@ -156,7 +181,21 @@ const allRadii = getAllBendRadii(context, bendEdges);
 - `SMObjectType.JOINT` - Edges connecting walls (bends, rips, tangents)
 - `SMObjectType.CORNER` - Corner vertices where walls meet
 
-**Definition vs Solid**: Sheet metal has both a definition body (surface) and solid bodies (3D folded, flat pattern). These functions work with either, automatically resolving to definition entities when needed.
+**Definition vs Solid Bodies**: 
+Sheet metal has both a definition body (surface/master body) and solid bodies (3D folded, flat pattern):
+- **Definition Body Queries** (most original functions): Query entities on the hidden master surface body that defines the sheet metal. These queries work with edges, faces, and vertices that have sheet metal attributes attached.
+- **Solid Body Queries** (NEW functions): Query entities on the visible solid 3D body. These are useful when:
+  - You want to select a visible solid sheet metal part
+  - You need the cylindrical faces that represent bends on the solid
+  - You're working with the actual 3D geometry users can see and select
+
+**NEW: Joint Faces on Solid Bodies**:
+- When you select a solid active sheet metal body, the cylindrical faces represent the bends
+- `qSheetMetalJointFaces()` returns all these cylindrical bend faces
+- `qSheetMetalJointFacesByType()` filters by BEND, RIP, or TANGENT joint types
+- `qSheetMetalJointFacesByStyle()` filters by joint style (e.g., EDGE, OVERLAP for rips)
+
+These functions use association attributes to map between solid body faces and definition body edges.
 
 ### Common Use Cases
 
@@ -165,6 +204,11 @@ const allRadii = getAllBendRadii(context, bendEdges);
 3. **Wall Modifications**: Find and modify specific walls based on criteria
 4. **Pattern Operations**: Create patterns based on bend locations
 5. **Quality Checks**: Verify bend radii, wall counts, etc.
+6. **Joint Face Selection** *(NEW)*: Select cylindrical bend faces on solid bodies for operations like:
+   - Adding reinforcement ribs at bends
+   - Applying different materials or colors to bend regions
+   - Measuring bend face areas for manufacturing analysis
+   - Filtering specific types of joints (BEND vs RIP) for different operations
 
 ## Testing and Validation
 
