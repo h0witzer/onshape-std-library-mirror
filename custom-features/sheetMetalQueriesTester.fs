@@ -41,6 +41,10 @@ export const sheetMetalQueriesTester = defineFeature(function(context is Context
         {
             resultQuery = qSheetMetalCutFaces(context, definition.sheetMetalPart);
         }
+        else if (definition.queryFunction == QueryFunctionType.SHEET_METAL_STOCK_FACES)
+        {
+            resultQuery = qSheetMetalStockFaces(context, definition.sheetMetalPart);
+        }
         
         // Evaluate the query to get actual entities
         const resultEntities = evaluateQuery(context, resultQuery);
@@ -75,6 +79,8 @@ export const sheetMetalQueriesTester = defineFeature(function(context is Context
  */
 export enum QueryFunctionType
 {
-    annotation { "Name" : "qSheetMetalCutFaces - Laser-cuttable wall faces" }
-    SHEET_METAL_CUT_FACES
+    annotation { "Name" : "qSheetMetalCutFaces - Laser-cut edge profiles" }
+    SHEET_METAL_CUT_FACES,
+    annotation { "Name" : "qSheetMetalStockFaces - Top/bottom stock surfaces" }
+    SHEET_METAL_STOCK_FACES
 }
