@@ -1279,8 +1279,8 @@ function activeSheetMetalSelection(definition is map) returns Query
 
 /**
  * Filters entities by sheet metal attribute type (MODEL, WALL, JOINT, or CORNER).
- * Uses getSMDefinitionEntities to properly map folded model entities to their 
- * master sheet body definition entities where the attributes are stored.
+ * Maps to definition entities to check attributes, then returns the corresponding
+ * folded model entities from the original selection that match the filter.
  * @param context {Context} : The context in which the query is executed.
  * @param definition {map} : Parameters that describe the sheet metal attribute filter.
  *      Expected keys: `sheetMetalAttributeSeedEntities`, `smObjectType`.
@@ -1290,17 +1290,37 @@ function sheetMetalAttributeSelection(context is Context, definition is map) ret
     const seedEntities = definition.sheetMetalAttributeSeedEntities as Query;
     const objectType = definition.smObjectType as SMObjectType;
     
-    // Sheet metal attributes exist on the master sheet body (definition entities),
-    // not on the folded model. We must transform the user's selection to definition
-    // entities before applying the attribute filter.
     try
     {
+        // Step 1: Map the user's selection to definition entities where attributes exist
         const definitionEntities = qUnion(getSMDefinitionEntities(context, seedEntities));
-        return qAttributeFilter(definitionEntities, asSMAttribute({ "objectType" : objectType }));
+        
+        // Step 2: Filter definition entities by the specified SMObjectType attribute
+        const filteredDefinitionEntities = qAttributeFilter(definitionEntities, asSMAttribute({ "objectType" : objectType }));
+        
+        // Step 3: Get association attributes from the filtered definition entities
+        const associationAttributes = getSMAssociationAttributes(context, filteredDefinitionEntities);
+        
+        // Step 4: Map back to folded model entities using association attributes
+        // Each association attribute connects a definition entity to its folded model entity
+        var foldedEntities = [];
+        for (var attribute in associationAttributes)
+        {
+            // Query for entities with this association attribute (finds folded model entities)
+            const correspondingEntities = qAttributeQuery(attribute);
+            // Intersect with original selection to ensure we only return entities from user's input
+            const matchingEntities = qIntersection([correspondingEntities, seedEntities]);
+            if (!isQueryEmpty(context, matchingEntities))
+            {
+                foldedEntities = append(foldedEntities, matchingEntities);
+            }
+        }
+        
+        return size(foldedEntities) > 0 ? qUnion(foldedEntities) : qNothing();
     }
     catch
     {
-        // If getSMDefinitionEntities fails (e.g., no sheet metal entities found),
+        // If any step fails (e.g., no sheet metal entities found),
         // return an empty query rather than throwing an error
         return qNothing();
     }
