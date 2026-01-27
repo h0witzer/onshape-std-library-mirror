@@ -456,8 +456,14 @@ export predicate initialQueryPredicate(definition is map)
     
     if (definition.selectionType == SelectionType.ACTIVE_SHEET_METAL)
     {
-        annotation { "Name" : "Seed entities", "Filter" : AllowMeshGeometry.YES && AllowFlattenedGeometry.YES }
-        definition.activeSheetMetalSeedEntities is Query;
+        annotation { "Name" : "Use all entities", "Default" : false }
+        definition.activeSheetMetalUseAll is boolean;
+        
+        if (!definition.activeSheetMetalUseAll)
+        {
+            annotation { "Name" : "Seed entities", "Filter" : AllowMeshGeometry.YES && AllowFlattenedGeometry.YES }
+            definition.activeSheetMetalSeedEntities is Query;
+        }
         
         annotation { "Name" : "Filter to", "Default" : ActiveSheetMetal.YES }
         definition.activeSheetMetalFilter is ActiveSheetMetal;
@@ -465,8 +471,14 @@ export predicate initialQueryPredicate(definition is map)
     
     if (definition.selectionType == SelectionType.SHEET_METAL_ATTRIBUTE)
     {
-        annotation { "Name" : "Seed entities", "Filter" : AllowMeshGeometry.YES && AllowFlattenedGeometry.YES }
-        definition.sheetMetalAttributeSeedEntities is Query;
+        annotation { "Name" : "Use all entities", "Default" : false }
+        definition.sheetMetalAttributeUseAll is boolean;
+        
+        if (!definition.sheetMetalAttributeUseAll)
+        {
+            annotation { "Name" : "Seed entities", "Filter" : AllowMeshGeometry.YES && AllowFlattenedGeometry.YES }
+            definition.sheetMetalAttributeSeedEntities is Query;
+        }
         
         annotation { "Name" : "Attribute type" }
         definition.smObjectType is SMObjectType;
@@ -689,8 +701,14 @@ export predicate additionalQueryPredicate(addQ is map)
     
     if (addQ.addQselectionType == SelectionType.ACTIVE_SHEET_METAL)
     {
-        annotation { "Name" : "Seed entities", "Filter" : AllowMeshGeometry.YES && AllowFlattenedGeometry.YES }
-        addQ.addQactiveSheetMetalSeedEntities is Query;
+        annotation { "Name" : "Use all entities", "Default" : false }
+        addQ.addQactiveSheetMetalUseAll is boolean;
+        
+        if (!addQ.addQactiveSheetMetalUseAll)
+        {
+            annotation { "Name" : "Seed entities", "Filter" : AllowMeshGeometry.YES && AllowFlattenedGeometry.YES }
+            addQ.addQactiveSheetMetalSeedEntities is Query;
+        }
         
         annotation { "Name" : "Filter to", "Default" : ActiveSheetMetal.YES }
         addQ.addQactiveSheetMetalFilter is ActiveSheetMetal;
@@ -698,8 +716,14 @@ export predicate additionalQueryPredicate(addQ is map)
     
     if (addQ.addQselectionType == SelectionType.SHEET_METAL_ATTRIBUTE)
     {
-        annotation { "Name" : "Seed entities", "Filter" : AllowMeshGeometry.YES && AllowFlattenedGeometry.YES }
-        addQ.addQsheetMetalAttributeSeedEntities is Query;
+        annotation { "Name" : "Use all entities", "Default" : false }
+        addQ.addQsheetMetalAttributeUseAll is boolean;
+        
+        if (!addQ.addQsheetMetalAttributeUseAll)
+        {
+            annotation { "Name" : "Seed entities", "Filter" : AllowMeshGeometry.YES && AllowFlattenedGeometry.YES }
+            addQ.addQsheetMetalAttributeSeedEntities is Query;
+        }
         
         annotation { "Name" : "Attribute type" }
         addQ.addQsmObjectType is SMObjectType;
@@ -936,7 +960,7 @@ function mapSelectionTypeToQuery(context is Context, definition is map) returns 
                 SelectionType.EVERYTHING : everythingSelection(context, definition),
                 SelectionType.EDGE_CONVEXITY : qEdgeConvexityTypeFilter(qOwnedByBody(definition.seedBodies, EntityType.EDGE), definition.edgeConvexityType),
                 SelectionType.ACTIVE_SHEET_METAL : activeSheetMetalSelection(definition),
-                SelectionType.SHEET_METAL_ATTRIBUTE : sheetMetalAttributeSelection(definition)
+                SelectionType.SHEET_METAL_ATTRIBUTE : sheetMetalAttributeSelection(context, definition)
             };
 }
 
@@ -1267,11 +1291,21 @@ function qMatchingBodies(context is Context, seedBodies is Query) returns Query
 /**
  * Filters entities to include only those that match the specified active sheet metal state.
  * @param definition {map} : Parameters that describe the active sheet metal filter.
- *      Expected keys: `activeSheetMetalSeedEntities`, `activeSheetMetalFilter`.
+ *      Expected keys: `activeSheetMetalSeedEntities` (or `activeSheetMetalUseAll`), `activeSheetMetalFilter`.
  */
 function activeSheetMetalSelection(definition is map) returns Query
 {
-    const seedEntities = definition.activeSheetMetalSeedEntities as Query;
+    var seedEntities = qNothing();
+    
+    if (definition.activeSheetMetalUseAll == true)
+    {
+        seedEntities = qEverything();
+    }
+    else
+    {
+        seedEntities = definition.activeSheetMetalSeedEntities as Query;
+    }
+    
     const filterType = definition.activeSheetMetalFilter as ActiveSheetMetal;
     
     return qActiveSheetMetalFilter(seedEntities, filterType);
@@ -1279,15 +1313,33 @@ function activeSheetMetalSelection(definition is map) returns Query
 
 /**
  * Filters entities by sheet metal attribute type (MODEL, WALL, JOINT, or CORNER).
+ * Uses getSMDefinitionEntities to properly map folded model entities to their 
+ * master sheet body definition entities where the attributes are stored.
+ * @param context {Context} : The context in which the query is executed.
  * @param definition {map} : Parameters that describe the sheet metal attribute filter.
- *      Expected keys: `sheetMetalAttributeSeedEntities`, `smObjectType`.
+ *      Expected keys: `sheetMetalAttributeSeedEntities` (or `sheetMetalAttributeUseAll`), `smObjectType`.
  */
-function sheetMetalAttributeSelection(definition is map) returns Query
+function sheetMetalAttributeSelection(context is Context, definition is map) returns Query
 {
-    const seedEntities = definition.sheetMetalAttributeSeedEntities as Query;
+    var seedEntities = qNothing();
+    
+    if (definition.sheetMetalAttributeUseAll == true)
+    {
+        seedEntities = qEverything();
+    }
+    else
+    {
+        seedEntities = definition.sheetMetalAttributeSeedEntities as Query;
+    }
+    
     const objectType = definition.smObjectType as SMObjectType;
     
-    return qAttributeFilter(seedEntities, asSMAttribute({ "objectType" : objectType }));
+    // Sheet metal attributes exist on the master sheet body (definition entities),
+    // not on the folded model. We must transform the user's selection to definition
+    // entities before applying the attribute filter.
+    const definitionEntities = qUnion(getSMDefinitionEntities(context, seedEntities));
+    
+    return qAttributeFilter(definitionEntities, asSMAttribute({ "objectType" : objectType }));
 }
 
 function filterSketchEdgesAndVerticesFromSheetDeprecated(context is Context, definition is map) returns Query
