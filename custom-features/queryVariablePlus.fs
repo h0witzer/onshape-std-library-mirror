@@ -1310,6 +1310,12 @@ function sheetMetalAttributeSelection(context is Context, definition is map) ret
             correspondingQueries = append(correspondingQueries, qAttributeQuery(attribute));
         }
         
+        // If no corresponding entities found, return empty query
+        if (size(correspondingQueries) == 0)
+        {
+            return qNothing();
+        }
+        
         // Union all corresponding entities and intersect with original selection
         // to ensure we only return entities from user's input
         const allCorrespondingEntities = qUnion(correspondingQueries);
