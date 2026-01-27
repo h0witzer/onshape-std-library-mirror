@@ -3,9 +3,59 @@
 This guide outlines how to extend **Query Variable Plus** with additional query types. It contrasts the Plus implementation with the standard **Query Variable** feature so future updates stay consistent with the existing patterns.
 
 ## Key differences vs. Query Variable
-- **Expanded selection set**: Plus already supports `MATCHING_BODIES`, `ADJACENT`, `GEOMETRY`, and `LOAD_FROM_DERIVE` selection types that are not present in the base feature. The SelectionType enum and its lowercase label map include these entries, and any new type must follow the same pattern. 【F:custom-features/queryVariablePlus.fs†L25-L90】【F:queryVariable.fs†L23-L73】
-- **Additional parameter blocks**: New selection types often require custom inputs in both `initialQueryPredicate` and `additionalQueryPredicate` (for array items). For example, adjacency selections add seed entities, adjacency type, and result entity options, while geometry selections capture a geometry type filter. Matching bodies reuse the body-seed branch used by OWNED_BY/EDGE_CONVEXITY. 【F:custom-features/queryVariablePlus.fs†L158-L240】【F:custom-features/queryVariablePlus.fs†L270-L342】
-- **Custom query builders**: The Plus feature maps new selection types to dedicated helper functions such as `adjacencySelection` and `qMatchingBodies`, keeping `mapSelectionTypeToQuery` readable. Any new selection should have a similar mapper entry and, if needed, a focused helper for validation or pre/post-processing. 【F:custom-features/queryVariablePlus.fs†L517-L629】
+- **Expanded selection set**: Plus already supports `MATCHING_BODIES`, `ADJACENT`, `GEOMETRY`, `LOAD_FROM_DERIVE`, `ACTIVE_SHEET_METAL`, and `SHEET_METAL_ATTRIBUTE` selection types that are not present in the base feature. The SelectionType enum and its lowercase label map include these entries, and any new type must follow the same pattern. 【F:custom-features/queryVariablePlus.fs†L25-L95】【F:queryVariable.fs†L23-L73】
+- **Additional parameter blocks**: New selection types often require custom inputs in both `initialQueryPredicate` and `additionalQueryPredicate` (for array items). For example, adjacency selections add seed entities, adjacency type, and result entity options, while geometry selections capture a geometry type filter. Matching bodies reuse the body-seed branch used by OWNED_BY/EDGE_CONVEXITY. Sheet metal selections add filtering by active status or attribute type. 【F:custom-features/queryVariablePlus.fs†L158-L475】【F:custom-features/queryVariablePlus.fs†L270-L708】
+- **Custom query builders**: The Plus feature maps new selection types to dedicated helper functions such as `adjacencySelection`, `qMatchingBodies`, `activeSheetMetalSelection`, and `sheetMetalAttributeSelection`, keeping `mapSelectionTypeToQuery` readable. Any new selection should have a similar mapper entry and, if needed, a focused helper for validation or pre/post-processing. 【F:custom-features/queryVariablePlus.fs†L517-L940】
+
+## Sheet Metal Support
+
+Query Variable Plus now includes dedicated sheet metal filtering capabilities to help work with active sheet metal models and their components.
+
+### Active Sheet Metal Filter
+
+The **"Active sheet metal"** selection type filters entities based on whether they belong to active sheet metal models.
+
+**Usage:**
+1. Create a new Query Variable+ feature
+2. Set **Selection type** to **"Active sheet metal"**
+3. Select **Seed entities** (the entities to filter)
+4. Choose **Filter to**:
+   - **YES** - Include only entities from active sheet metal models
+   - **NO** - Include only entities that are NOT from active sheet metal models
+
+**Use cases:**
+- Separate sheet metal parts from regular solid bodies in mixed models
+- Apply different operations to sheet metal vs non-sheet metal geometry
+- Create procedural workflows that handle sheet metal and solid bodies differently
+- Filter out active sheet metal to avoid "Active sheet metal models are not allowed" errors
+
+### Sheet Metal Attribute Filter
+
+The **"Sheet metal attribute"** selection type filters entities by their sheet metal component type using SMObjectType attributes.
+
+**Usage:**
+1. Create a new Query Variable+ feature
+2. Set **Selection type** to **"Sheet metal attribute"**
+3. Select **Seed entities** (the entities to filter)
+4. Choose **Attribute type**:
+   - **MODEL** - Sheet metal definition bodies (the master surface body)
+   - **WALL** - Wall faces of sheet metal parts
+   - **JOINT** - Bend/joint edges and cylindrical bend faces
+   - **CORNER** - Corner vertices at bends, fillets, and chamfers
+
+**Use cases:**
+- Select all wall faces for applying features like holes or cuts
+- Identify all bend edges for annotation or measurement
+- Query corner vertices for relief operations
+- Access the sheet metal definition body for advanced operations
+- Build parametric workflows that work with specific sheet metal components
+
+**Example workflow:**
+1. Create a sheet metal part with walls, bends, and corners
+2. Create a Query Variable+ with type "Sheet metal attribute", filter to WALL
+3. Use this variable in downstream features to operate only on wall faces
+4. Create another variable filtered to JOINT to select all bend edges
+5. Combine with other query types (like SIZE_COMPARISON) for advanced filtering
 
 ## Derived Part Studio Support
 
