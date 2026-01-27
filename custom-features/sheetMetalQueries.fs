@@ -138,16 +138,18 @@ export function qSheetMetalCornerVertices(context is Context, sheetMetalEntities
  */
 export function qSheetMetalPlanarWalls(context is Context, sheetMetalEntities is Query) returns Query
 {
-    const wallFaces = qSheetMetalWallFaces(context, sheetMetalEntities);
-    const evaluatedWalls = evaluateQuery(context, wallFaces);
+    const definitionEntities = getSMDefinitionEntities(context, sheetMetalEntities, EntityType.FACE);
     var planarWalls = [];
     
-    for (var face in evaluatedWalls)
+    for (var face in definitionEntities)
     {
-        const surface = evSurfaceDefinition(context, { "face" : face });
-        if (surface is Plane)
+        if (hasSheetMetalAttribute(context, face, SMObjectType.WALL))
         {
-            planarWalls = append(planarWalls, face);
+            const surface = evSurfaceDefinition(context, { "face" : face });
+            if (surface is Plane)
+            {
+                planarWalls = append(planarWalls, face);
+            }
         }
     }
     
@@ -165,16 +167,18 @@ export function qSheetMetalPlanarWalls(context is Context, sheetMetalEntities is
  */
 export function qSheetMetalCylindricalWalls(context is Context, sheetMetalEntities is Query) returns Query
 {
-    const wallFaces = qSheetMetalWallFaces(context, sheetMetalEntities);
-    const evaluatedWalls = evaluateQuery(context, wallFaces);
+    const definitionEntities = getSMDefinitionEntities(context, sheetMetalEntities, EntityType.FACE);
     var cylindricalWalls = [];
     
-    for (var face in evaluatedWalls)
+    for (var face in definitionEntities)
     {
-        const surface = evSurfaceDefinition(context, { "face" : face });
-        if (surface is Cylinder)
+        if (hasSheetMetalAttribute(context, face, SMObjectType.WALL))
         {
-            cylindricalWalls = append(cylindricalWalls, face);
+            const surface = evSurfaceDefinition(context, { "face" : face });
+            if (surface is Cylinder)
+            {
+                cylindricalWalls = append(cylindricalWalls, face);
+            }
         }
     }
     
@@ -291,16 +295,18 @@ export function qSheetMetalEdgesByJointType(context is Context, sheetMetalEntiti
  */
 export function qSheetMetalBendsByType(context is Context, sheetMetalEntities is Query, bendType is SMBendType) returns Query
 {
-    const bendEdges = qSheetMetalBendEdges(context, sheetMetalEntities);
-    const evaluatedBends = evaluateQuery(context, bendEdges);
+    const definitionEntities = getSMDefinitionEntities(context, sheetMetalEntities, EntityType.EDGE);
     var matchingBends = [];
     
-    for (var edge in evaluatedBends)
+    for (var edge in definitionEntities)
     {
         const attributes = getSmObjectTypeAttributes(context, edge, SMObjectType.JOINT);
         for (var attribute in attributes)
         {
-            if (attribute.bendType != undefined && attribute.bendType.value == bendType)
+            if (attribute.jointType != undefined && 
+                attribute.jointType.value == SMJointType.BEND &&
+                attribute.bendType != undefined && 
+                attribute.bendType.value == bendType)
             {
                 matchingBends = append(matchingBends, edge);
                 break;
