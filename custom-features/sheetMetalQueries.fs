@@ -25,11 +25,12 @@ import(path : "onshape/std/sheetMetalUtils.fs", version : "2856.0");
  * or other 2D cutting process.
  * 
  * Stock faces (the top and bottom faces of the sheet metal in the flat pattern) are
- * parallel to the XY plane and are NOT returned by this function. This function 
- * specifically returns the 3D faces whose flat counterparts define the cut perimeter.
+ * horizontal and are NOT returned by this function. This function specifically returns
+ * the 3D faces whose flat counterparts define the cut perimeter.
  * 
- * Implementation: The function gets the flat pattern entities and uses robust query
- * functions to filter based on geometry, then returns the corresponding 3D model faces.
+ * Implementation: The function uses qFacesParallelToDirection on the flat pattern to
+ * identify cut faces (faces parallel to Z direction = vertical edges), then maps those
+ * back to the corresponding 3D model faces.
  * 
  * @param context : The context in which to evaluate the query
  * @param sheetMetalPart : Query for the sheet metal part(s) to analyze.
@@ -59,14 +60,11 @@ export function qSheetMetalCutFaces(context is Context, sheetMetalPart is Query)
     // Get the corresponding faces in the flat pattern
     const flatFaces = qCorrespondingInFlat(modelFaces);
     
-    // In the flat pattern, stock faces (top/bottom) have normals perpendicular to Z-axis
-    // They are parallel to the XY plane (top plane)
+    // In the flat pattern, cut faces are parallel to Z direction (vertical edges)
+    // Use qFacesParallelToDirection to get faces parallel to Z direction
+    // For planar faces, this means their normals are perpendicular to Z (vertical edges)
     const zDirection = vector(0, 0, 1);
-    const stockFacesInFlat = qParallelPlanes(flatFaces, zDirection);
-    
-    // Cut faces are all the faces that are NOT stock faces
-    // These are the vertical edge faces in the flat pattern
-    const cutFacesInFlat = qSubtraction(flatFaces, stockFacesInFlat);
+    const cutFacesInFlat = qFacesParallelToDirection(flatFaces, zDirection);
     
     // Now we need to find which 3D model faces correspond to these cut faces in flat
     // We do this by filtering the original model faces
