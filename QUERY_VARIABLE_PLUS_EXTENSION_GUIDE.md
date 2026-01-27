@@ -18,8 +18,9 @@ The **"Active sheet metal"** selection type filters entities based on whether th
 **Usage:**
 1. Create a new Query Variable+ feature
 2. Set **Selection type** to **"Active sheet metal"**
-3. Select **Seed entities** (the entities to filter)
-4. Choose **Filter to**:
+3. **Optional:** Enable **"Use all entities"** to automatically use qEverything() instead of manual selection
+4. If not using all entities, select **Seed entities** (the entities to filter)
+5. Choose **Filter to**:
    - **YES** - Include only entities from active sheet metal models
    - **NO** - Include only entities that are NOT from active sheet metal models
 
@@ -28,20 +29,26 @@ The **"Active sheet metal"** selection type filters entities based on whether th
 - Apply different operations to sheet metal vs non-sheet metal geometry
 - Create procedural workflows that handle sheet metal and solid bodies differently
 - Filter out active sheet metal to avoid "Active sheet metal models are not allowed" errors
+- Use "all entities" mode for diagnostic queries without manual selection
 
 ### Sheet Metal Attribute Filter
 
 The **"Sheet metal attribute"** selection type filters entities by their sheet metal component type using SMObjectType attributes.
 
+**Important:** This filter automatically transforms folded model entities to their master sheet body definition entities where attributes are stored. You can select folded model faces/edges and the filter will correctly map them to the definition geometry.
+
 **Usage:**
 1. Create a new Query Variable+ feature
 2. Set **Selection type** to **"Sheet metal attribute"**
-3. Select **Seed entities** (the entities to filter)
-4. Choose **Attribute type**:
+3. **Optional:** Enable **"Use all entities"** to automatically use qEverything() instead of manual selection
+4. If not using all entities, select **Seed entities** (the entities to filter - can be folded model or definition entities)
+5. Choose **Attribute type**:
    - **MODEL** - Sheet metal definition bodies (the master surface body)
    - **WALL** - Wall faces of sheet metal parts
    - **JOINT** - Bend/joint edges and cylindrical bend faces
    - **CORNER** - Corner vertices at bends, fillets, and chamfers
+
+**Technical note:** The filter uses `getSMDefinitionEntities()` to properly map your selection from the folded model to the master sheet body where attributes exist. This ensures that attribute filtering works correctly regardless of whether you select from the folded or flat view.
 
 **Use cases:**
 - Select all wall faces for applying features like holes or cuts
@@ -49,11 +56,12 @@ The **"Sheet metal attribute"** selection type filters entities by their sheet m
 - Query corner vertices for relief operations
 - Access the sheet metal definition body for advanced operations
 - Build parametric workflows that work with specific sheet metal components
+- Use "all entities" mode to find all entities of a specific type without pre-selection
 
 **Example workflow:**
 1. Create a sheet metal part with walls, bends, and corners
-2. Create a Query Variable+ with type "Sheet metal attribute", filter to WALL
-3. Use this variable in downstream features to operate only on wall faces
+2. Create a Query Variable+ with type "Sheet metal attribute", enable "Use all entities", filter to WALL
+3. This will automatically select all wall faces from all sheet metal parts in the document
 4. Create another variable filtered to JOINT to select all bend edges
 5. Combine with other query types (like SIZE_COMPARISON) for advanced filtering
 
