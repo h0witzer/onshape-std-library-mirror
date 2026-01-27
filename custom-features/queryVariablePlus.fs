@@ -13,6 +13,7 @@ FeatureScript 2815;
 export import(path : "onshape/std/query.fs", version : "2815.0");
 export import(path : "onshape/std/edgeconvexitytype.gen.fs", version : "2815.0");
 export import(path : "onshape/std/booleanoperationtype.gen.fs", version : "2815.0");
+export import(path : "onshape/std/smobjecttype.gen.fs", version : "2815.0");
 
 import(path : "onshape/std/common.fs", version : "2815.0");
 import(path : "onshape/std/debug.fs", version : "2815.0");
@@ -25,6 +26,7 @@ import(path : "onshape/std/error.fs", version : "2815.0");
 import(path : "onshape/std/sketch.fs", version : "2815.0");
 import(path : "onshape/std/variable.fs", version : "2815.0");
 import(path : "onshape/std/attributes.fs", version : "2815.0");
+import(path : "onshape/std/sheetMetalAttribute.fs", version : "2815.0");
 
 icon::import(path : "7bc16b71641d1c179b59eb92", version : "8da46da443ae592e706756d7");
 
@@ -86,7 +88,11 @@ export enum SelectionType
     annotation { "Name" : "Edge convexity" }
     EDGE_CONVEXITY,
     annotation { "Name" : "Load from derive feature" }
-    LOAD_FROM_DERIVE
+    LOAD_FROM_DERIVE,
+    annotation { "Name" : "Active sheet metal" }
+    ACTIVE_SHEET_METAL,
+    annotation { "Name" : "Sheet metal attribute" }
+    SHEET_METAL_ATTRIBUTE
 }
 
 /**
@@ -116,7 +122,9 @@ const SelectionTypeToLowercaseName = {
         SelectionType.ALL_SOLID_BODIES : "all solid bodies",
         SelectionType.EVERYTHING : "everything",
         SelectionType.EDGE_CONVEXITY : "edge convexity",
-        SelectionType.LOAD_FROM_DERIVE : "load from derive feature"
+        SelectionType.LOAD_FROM_DERIVE : "load from derive feature",
+        SelectionType.ACTIVE_SHEET_METAL : "active sheet metal",
+        SelectionType.SHEET_METAL_ATTRIBUTE : "sheet metal attribute"
     };
 
 const MATCHING_BODY_CLUSTER_RELATIVE_TOLERANCE = 1e-4;
@@ -445,6 +453,24 @@ export predicate initialQueryPredicate(definition is map)
         annotation { "Name" : "Derive feature", "UIHint" : UIHint.ALLOW_FEATURE_SELECTION, "MaxNumberOfPicks" : 1 }
         definition.deriveFeature is FeatureList;
     }
+    
+    if (definition.selectionType == SelectionType.ACTIVE_SHEET_METAL)
+    {
+        annotation { "Name" : "Seed entities", "Filter" : AllowMeshGeometry.YES && AllowFlattenedGeometry.YES }
+        definition.activeSheetMetalSeedEntities is Query;
+        
+        annotation { "Name" : "Filter to", "Default" : ActiveSheetMetal.YES }
+        definition.activeSheetMetalFilter is ActiveSheetMetal;
+    }
+    
+    if (definition.selectionType == SelectionType.SHEET_METAL_ATTRIBUTE)
+    {
+        annotation { "Name" : "Seed entities", "Filter" : AllowMeshGeometry.YES && AllowFlattenedGeometry.YES }
+        definition.sheetMetalAttributeSeedEntities is Query;
+        
+        annotation { "Name" : "Attribute type" }
+        definition.smObjectType is SMObjectType;
+    }
 }
 
 /**
@@ -659,6 +685,24 @@ export predicate additionalQueryPredicate(addQ is map)
     {
         annotation { "Name" : "Derive feature", "UIHint" : UIHint.ALLOW_FEATURE_SELECTION, "MaxNumberOfPicks" : 1 }
         addQ.addQderiveFeature is FeatureList;
+    }
+    
+    if (addQ.addQselectionType == SelectionType.ACTIVE_SHEET_METAL)
+    {
+        annotation { "Name" : "Seed entities", "Filter" : AllowMeshGeometry.YES && AllowFlattenedGeometry.YES }
+        addQ.addQactiveSheetMetalSeedEntities is Query;
+        
+        annotation { "Name" : "Filter to", "Default" : ActiveSheetMetal.YES }
+        addQ.addQactiveSheetMetalFilter is ActiveSheetMetal;
+    }
+    
+    if (addQ.addQselectionType == SelectionType.SHEET_METAL_ATTRIBUTE)
+    {
+        annotation { "Name" : "Seed entities", "Filter" : AllowMeshGeometry.YES && AllowFlattenedGeometry.YES }
+        addQ.addQsheetMetalAttributeSeedEntities is Query;
+        
+        annotation { "Name" : "Attribute type" }
+        addQ.addQsmObjectType is SMObjectType;
     }
 }
 
@@ -890,7 +934,9 @@ function mapSelectionTypeToQuery(context is Context, definition is map) returns 
                 SelectionType.GEOMETRY : qGeometry(definition.geometrySeedEntities, definition.geometryType),
                 SelectionType.ALL_SOLID_BODIES : qAllSolidBodies(),
                 SelectionType.EVERYTHING : everythingSelection(context, definition),
-                SelectionType.EDGE_CONVEXITY : qEdgeConvexityTypeFilter(qOwnedByBody(definition.seedBodies, EntityType.EDGE), definition.edgeConvexityType)
+                SelectionType.EDGE_CONVEXITY : qEdgeConvexityTypeFilter(qOwnedByBody(definition.seedBodies, EntityType.EDGE), definition.edgeConvexityType),
+                SelectionType.ACTIVE_SHEET_METAL : activeSheetMetalSelection(definition),
+                SelectionType.SHEET_METAL_ATTRIBUTE : sheetMetalAttributeSelection(context, definition)
             };
 }
 
@@ -1216,6 +1262,71 @@ function qMatchingBodies(context is Context, seedBodies is Query) returns Query
     }
 
     return size(matchedBodies) == 0 ? qUnion(seedBodiesArray) : qUnion(matchedBodies);
+}
+
+/**
+ * Filters entities to include only those that match the specified active sheet metal state.
+ * @param definition {map} : Parameters that describe the active sheet metal filter.
+ *      Expected keys: `activeSheetMetalSeedEntities`, `activeSheetMetalFilter`.
+ */
+function activeSheetMetalSelection(definition is map) returns Query
+{
+    const seedEntities = definition.activeSheetMetalSeedEntities as Query;
+    const filterType = definition.activeSheetMetalFilter as ActiveSheetMetal;
+    
+    return qActiveSheetMetalFilter(seedEntities, filterType);
+}
+
+/**
+ * Filters entities by sheet metal attribute type (MODEL, WALL, JOINT, or CORNER).
+ * Maps to definition entities to check attributes, then returns the corresponding
+ * folded model entities from the original selection that match the filter.
+ * @param context {Context} : The context in which the query is executed.
+ * @param definition {map} : Parameters that describe the sheet metal attribute filter.
+ *      Expected keys: `sheetMetalAttributeSeedEntities`, `smObjectType`.
+ */
+function sheetMetalAttributeSelection(context is Context, definition is map) returns Query
+{
+    const seedEntities = definition.sheetMetalAttributeSeedEntities as Query;
+    const objectType = definition.smObjectType as SMObjectType;
+    
+    try
+    {
+        // Step 1: Map the user's selection to definition entities where attributes exist
+        const definitionEntities = qUnion(getSMDefinitionEntities(context, seedEntities));
+        
+        // Step 2: Filter definition entities by the specified SMObjectType attribute
+        const filteredDefinitionEntities = qAttributeFilter(definitionEntities, asSMAttribute({ "objectType" : objectType }));
+        
+        // Step 3: Get association attributes from the filtered definition entities
+        const associationAttributes = getSMAssociationAttributes(context, filteredDefinitionEntities);
+        
+        // Step 4: Map back to folded model entities using association attributes
+        // Each association attribute connects a definition entity to its folded model entity
+        var correspondingQueries = [];
+        for (var attribute in associationAttributes)
+        {
+            // Query for entities with this association attribute (finds folded model entities)
+            correspondingQueries = append(correspondingQueries, qAttributeQuery(attribute));
+        }
+        
+        // If no corresponding entities found, return empty query
+        if (size(correspondingQueries) == 0)
+        {
+            return qNothing();
+        }
+        
+        // Union all corresponding entities and intersect with original selection
+        // to ensure we only return entities from user's input
+        const allCorrespondingEntities = qUnion(correspondingQueries);
+        return qIntersection([allCorrespondingEntities, seedEntities]);
+    }
+    catch
+    {
+        // If any step fails (e.g., no sheet metal entities found),
+        // return an empty query rather than throwing an error
+        return qNothing();
+    }
 }
 
 function filterSketchEdgesAndVerticesFromSheetDeprecated(context is Context, definition is map) returns Query
