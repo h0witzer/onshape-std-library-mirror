@@ -62,6 +62,50 @@ export const CHAMFER_WIDTH_BOUNDS =
             (inch) : [0, .02, 1]
         } as LengthBoundSpec;
 
+/**
+ * Custom spacing predicate for tab and slot feature.
+ * Differs from curvePatternSpacingPredicate in that instance count is read-only
+ * for DISTANCE mode since it's auto-calculated based on available space.
+ */
+predicate tabAndSlotSpacingPredicate(definition is map)
+{
+    annotation { "Name" : "Spacing type" }
+    definition.spacingType is CurvePatternSpacingType;
+
+    if (definition.spacingType == CurvePatternSpacingType.DISTANCE)
+    {
+        annotation { "Name" : "Distance" }
+        isLength(definition.distance, PATTERN_OFFSET_BOUND);
+        
+        annotation { "Name" : "Instance count", "UIHint" : UIHint.READ_ONLY }
+        isAnything(definition.instanceCount);
+    }
+
+    if (definition.spacingType == CurvePatternSpacingType.EQUAL)
+    {
+        annotation { "Name" : "Instance count" }
+        isInteger(definition.instanceCount, CURVE_PATTERN_BOUNDS);
+        
+        annotation { "Name" : "Actual pitch", "UIHint" : UIHint.READ_ONLY }
+        isAnything(definition.actualPitchEqual);
+    }
+
+    if (definition.spacingType == CurvePatternSpacingType.BESTFIT)
+    {
+        annotation { "Name" : "Target pitch" }
+        isLength(definition.targetPitch, PATTERN_OFFSET_BOUND);
+
+        annotation { "Name" : "Actual pitch", "UIHint" : UIHint.READ_ONLY }
+        isAnything(definition.actualPitch);
+
+        annotation { "Name" : "Instance count", "UIHint" : UIHint.READ_ONLY }
+        isAnything(definition.actualCount);
+
+        annotation { "Name" : "Pitch ceiling", "Default" : false }
+        definition.doPitchCeiling is boolean;
+    }
+}
+
 annotation { "Feature Type Name" : "OnlyTabs", "Icon" : ICON::BLOB_DATA, "Feature Type Description" : "Tab and Slot feature for Boss Display" }
 export const tabAndSlotBossDisplay = defineSheetMetalFeature(function(context is Context, id is Id, definition is map)
     precondition
@@ -70,8 +114,8 @@ export const tabAndSlotBossDisplay = defineSheetMetalFeature(function(context is
         annotation { "Name" : "Edges", "Filter" : EntityType.EDGE, "UIHint" : UIHint.SHOW_CREATE_SELECTION }
         definition.edges is Query;
 
-        // Use centralized spacing predicate from spacingUtils
-        curvePatternSpacingPredicate(definition);
+        // Use custom spacing predicate with read-only instance count in DISTANCE mode
+        tabAndSlotSpacingPredicate(definition);
 
         annotation { "Name" : "Tab Width" }
         isLength(definition.tabWidth, TAB_WIDTH_BOUNDS);
