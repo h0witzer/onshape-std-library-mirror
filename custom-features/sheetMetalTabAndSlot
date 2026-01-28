@@ -1,31 +1,39 @@
-FeatureScript 2837;
-import(path : "onshape/std/common.fs", version : "2837.0");
+FeatureScript 2856;
+import(path : "onshape/std/common.fs", version : "2856.0");
 ICON::import(path : "a34fe683b4cf0eb1de011a4b", version : "ec72feda3911e2ee01d24e0e");
-import(path : "onshape/std/query.fs", version : "2837.0");
-import(path : "onshape/std/evaluate.fs", version : "2837.0");
-import(path : "onshape/std/valueBounds.fs", version : "2837.0");
-import(path : "onshape/std/geomOperations.fs", version : "2837.0");
-import(path : "onshape/std/path.fs", version : "2837.0");
-import(path : "onshape/std/sheetMetalAttribute.fs", version : "2837.0");
-import(path : "onshape/std/feature.fs", version : "2837.0");
-import(path : "onshape/std/extendendtype.gen.fs", version : "2837.0");
-import(path : "onshape/std/extendsheetshapetype.gen.fs", version : "2837.0");
-import(path : "onshape/std/edgetopology.gen.fs", version : "2837.0");
-import(path : "onshape/std/attributes.fs", version : "2837.0");
-import(path : "onshape/std/boolean.fs", version : "2837.0");
-import(path : "onshape/std/containers.fs", version : "2837.0");
-import(path : "onshape/std/math.fs", version : "2837.0");
-import(path : "onshape/std/moveFace.fs", version : "2837.0");
-import(path : "onshape/std/transform.fs", version : "2837.0");
-import(path : "onshape/std/sheetMetalUtils.fs", version : "2837.0");
-import(path : "onshape/std/surfaceGeometry.fs", version : "2837.0");
-import(path : "onshape/std/topologyUtils.fs", version : "2837.0");
-import(path : "onshape/std/vector.fs", version : "2837.0");
-import(path : "onshape/std/smcornerbreakstyle.gen.fs", version : "2837.0");
+import(path : "onshape/std/query.fs", version : "2856.0");
+import(path : "onshape/std/evaluate.fs", version : "2856.0");
+import(path : "onshape/std/valueBounds.fs", version : "2856.0");
+import(path : "onshape/std/geomOperations.fs", version : "2856.0");
+import(path : "onshape/std/path.fs", version : "2856.0");
+import(path : "onshape/std/sheetMetalAttribute.fs", version : "2856.0");
+import(path : "onshape/std/feature.fs", version : "2856.0");
+import(path : "onshape/std/extendendtype.gen.fs", version : "2856.0");
+import(path : "onshape/std/extendsheetshapetype.gen.fs", version : "2856.0");
+import(path : "onshape/std/edgetopology.gen.fs", version : "2856.0");
+import(path : "onshape/std/attributes.fs", version : "2856.0");
+import(path : "onshape/std/boolean.fs", version : "2856.0");
+import(path : "onshape/std/containers.fs", version : "2856.0");
+import(path : "onshape/std/math.fs", version : "2856.0");
+import(path : "onshape/std/moveFace.fs", version : "2856.0");
+import(path : "onshape/std/transform.fs", version : "2856.0");
+import(path : "onshape/std/sheetMetalUtils.fs", version : "2856.0");
+import(path : "onshape/std/surfaceGeometry.fs", version : "2856.0");
+import(path : "onshape/std/topologyUtils.fs", version : "2856.0");
+import(path : "onshape/std/vector.fs", version : "2856.0");
+import(path : "onshape/std/smcornerbreakstyle.gen.fs", version : "2856.0");
+import(path : "spacing_utilities/spacingUtils.fs", version : "");
+
 // Original framework by Caden Armstrong - SmartBench Software
 // Hacked by Derek Van Allen
 // Created for Boss Display
 // For support contact Derek Van Allen on the Onshape forums
+//
+// NOTE: This feature uses spacing logic patterns aligned with the spacingUtils.fs module
+// for consistency across the codebase. The TabAndSlotSpacingType enum and field naming
+// (e.g., 'distance' instead of 'spacing', 'instanceCount' instead of 'tabCount')
+// follow the conventions established in spacingUtils.fs to enable future consolidation
+// and feature enhancements like BESTFIT spacing mode.
 
 const EDGE_LENGTH_TOLERANCE = 1e-9 * meter;
 const EDGE_PARAMETER_TOLERANCE = 1e-6;
@@ -55,12 +63,17 @@ export const CHAMFER_WIDTH_BOUNDS =
             (inch) : [0, .02, 1]
         } as LengthBoundSpec;
 
-export enum SpacingType
+/**
+ * Tab and slot spacing type enum.
+ * Aligned with spacingUtils.fs CurvePatternSpacingType for consistency.
+ * Note: BESTFIT mode from spacingUtils can be added in future iterations.
+ */
+export enum TabAndSlotSpacingType
 {
     annotation { "Name" : "Equal" }
     EQUAL,
-    annotation { "Name" : "Length" }
-    LENGTH
+    annotation { "Name" : "Distance" }
+    DISTANCE
 }
 
 annotation { "Feature Type Name" : "OnlyTabs", "Icon" : ICON::BLOB_DATA, "Feature Type Description" : "Tab and Slot feature for Boss Display" }
@@ -72,18 +85,18 @@ export const tabAndSlotBossDisplay = defineSheetMetalFeature(function(context is
         definition.edges is Query;
 
         annotation { "Name" : "Spacing Type" }
-        definition.spacingType is SpacingType;
+        definition.spacingType is TabAndSlotSpacingType;
 
-        if (definition.spacingType == SpacingType.LENGTH)
+        if (definition.spacingType == TabAndSlotSpacingType.DISTANCE)
         {
-            annotation { "Name" : "Spacing" }
-            isLength(definition.spacing, SPACING_BOUNDS);
+            annotation { "Name" : "Distance" }
+            isLength(definition.distance, SPACING_BOUNDS);
         }
 
-        if (definition.spacingType == SpacingType.EQUAL)
+        if (definition.spacingType == TabAndSlotSpacingType.EQUAL)
         {
-            annotation { "Name" : "Tab Count" }
-            isInteger(definition.tabCount, POSITIVE_COUNT_BOUNDS);
+            annotation { "Name" : "Instance count" }
+            isInteger(definition.instanceCount, POSITIVE_COUNT_BOUNDS);
         }
 
 
@@ -131,32 +144,32 @@ export const tabAndSlotBossDisplay = defineSheetMetalFeature(function(context is
         var tabCount = 0;
         var tabDomains = []; // Array of {start, end} maps representing tab positions as normalized parameters
 
-        if (definition.spacingType == SpacingType.EQUAL)
+        if (definition.spacingType == TabAndSlotSpacingType.EQUAL)
         {
-            tabCount = definition.tabCount;
+            tabCount = definition.instanceCount;
             tabDomains = calculateEqualSpacedTabDomains(totalLength, definition.tabWidth, tabCount);
         }
-        else if (definition.spacingType == SpacingType.LENGTH)
+        else if (definition.spacingType == TabAndSlotSpacingType.DISTANCE)
         {
-            tabCount = floor((totalLength - definition.tabWidth) / definition.spacing);
-            tabDomains = calculateLengthSpacedTabDomains(totalLength, definition.tabWidth, definition.spacing, tabCount);
+            tabCount = floor((totalLength - definition.tabWidth) / definition.distance);
+            tabDomains = calculateDistanceSpacedTabDomains(totalLength, definition.tabWidth, definition.distance, tabCount);
         }
 
         if (tabCount == 0 || size(tabDomains) == 0)
         {
-            throw regenError("No tabs can fit with the specified parameters", ["tabWidth", "spacing"]);
+            throw regenError("No tabs can fit with the specified parameters", ["tabWidth", "distance"]);
         }
 
         // Validate that tab domains do not overlap
         if (!validateTabDomainsNoOverlap(tabDomains))
         {
-            if (definition.spacingType == SpacingType.EQUAL)
+            if (definition.spacingType == TabAndSlotSpacingType.EQUAL)
             {
-                throw regenError("Resultant tabs would overlap. Reduce tab count or tab width to avoid overlapping tabs.", ["tabCount", "tabWidth"]);
+                throw regenError("Resultant tabs would overlap. Reduce tab count or tab width to avoid overlapping tabs.", ["instanceCount", "tabWidth"]);
             }
             else
             {
-                throw regenError("Resultant tabs would overlap. Increase spacing or reduce tab width to avoid overlapping tabs.", ["spacing", "tabWidth"]);
+                throw regenError("Resultant tabs would overlap. Increase distance or reduce tab width to avoid overlapping tabs.", ["distance", "tabWidth"]);
             }
         }
 
@@ -331,8 +344,17 @@ function filterSheetMetalWallFaces(context is Context, faceQuery is Query) retur
     return qUnion(wallFaceQueries);
 }
 
-// Calculates tab domains for equal spacing distribution.
-// Returns array of {start, end} maps with normalized parameters (0 to 1) for each tab location.
+/**
+ * Calculates tab domains for equal spacing distribution.
+ * This function distributes tabs evenly along the edge chain with equal gaps between them.
+ * Follows the pattern established in spacingUtils.fs for consistent spacing logic.
+ * 
+ * @param totalLength {ValueWithUnits} : The total length of the edge chain
+ * @param tabWidth {ValueWithUnits} : The width of each tab
+ * @param tabCount {number} : The number of tabs to distribute
+ * 
+ * @returns {array} : Array of {start, end} maps with normalized parameters (0 to 1) for each tab location
+ */
 function calculateEqualSpacedTabDomains(totalLength is ValueWithUnits, tabWidth is ValueWithUnits, tabCount is number) returns array
 {
     const tabWidthParam = tabWidth / totalLength;
@@ -348,15 +370,25 @@ function calculateEqualSpacedTabDomains(totalLength is ValueWithUnits, tabWidth 
     return tabDomains;
 }
 
-// Calculates tab domains for length-based spacing distribution.
-// Returns array of {start, end} maps with normalized parameters (0 to 1) for each tab location.
-function calculateLengthSpacedTabDomains(totalLength is ValueWithUnits, tabWidth is ValueWithUnits, spacing is ValueWithUnits, tabCount is number) returns array
+/**
+ * Calculates tab domains for distance-based spacing distribution.
+ * This function places tabs at fixed distance intervals along the edge chain.
+ * Follows the pattern established in spacingUtils.fs for consistent spacing logic.
+ * 
+ * @param totalLength {ValueWithUnits} : The total length of the edge chain
+ * @param tabWidth {ValueWithUnits} : The width of each tab
+ * @param distance {ValueWithUnits} : The distance between consecutive tabs
+ * @param tabCount {number} : The number of tabs that fit with the given spacing
+ * 
+ * @returns {array} : Array of {start, end} maps with normalized parameters (0 to 1) for each tab location
+ */
+function calculateDistanceSpacedTabDomains(totalLength is ValueWithUnits, tabWidth is ValueWithUnits, distance is ValueWithUnits, tabCount is number) returns array
 {
     const tabWidthParam = tabWidth / totalLength;
-    const spacingParam = spacing / totalLength;
+    const distanceParam = distance / totalLength;
 
     var tabDomains = [];
-    var currentPos = spacingParam; // Start after first gap
+    var currentPos = distanceParam; // Start after first gap
 
     for (var i = 0; i < tabCount; i += 1)
     {
@@ -365,7 +397,8 @@ function calculateLengthSpacedTabDomains(totalLength is ValueWithUnits, tabWidth
             break; // Don't exceed the edge chain
         }
         tabDomains = append(tabDomains, { "start" : currentPos, "end" : currentPos + tabWidthParam });
-        currentPos += tabWidthParam + spacingParam;
+        currentPos += tabWidthParam + distanceParam;
+    }
     }
     return tabDomains;
 }
