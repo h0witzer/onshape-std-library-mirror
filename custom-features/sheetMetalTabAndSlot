@@ -113,7 +113,11 @@ export const tabAndSlotBossDisplay = defineSheetMetalFeature(function(context is
                     "entities" : definition.edges
                 });
 
-        // For DISTANCE mode, calculate instance count based on available space
+        // For DISTANCE mode, auto-calculate instance count to fit as many tabs as possible.
+        // Note: The predicate requires instanceCount input for DISTANCE mode, but we override
+        // it here to automatically fit tabs based on available space. The user's input value
+        // for instanceCount in DISTANCE mode is used only as an initial/default and will be
+        // recalculated based on the actual edge length and specified distance.
         if (definition.spacingType == CurvePatternSpacingType.DISTANCE)
         {
             definition.instanceCount = floor((totalLength - definition.tabWidth) / definition.distance);
@@ -141,26 +145,34 @@ export const tabAndSlotBossDisplay = defineSheetMetalFeature(function(context is
 
         if (tabCount == 0 || size(tabDomains) == 0)
         {
-            if (definition.spacingType == CurvePatternSpacingType.EQUAL || definition.spacingType == CurvePatternSpacingType.BESTFIT)
+            if (definition.spacingType == CurvePatternSpacingType.EQUAL)
             {
                 throw regenError("No tabs can fit with the specified parameters", ["tabWidth", "instanceCount"]);
             }
-            else
+            else if (definition.spacingType == CurvePatternSpacingType.DISTANCE)
             {
                 throw regenError("No tabs can fit with the specified parameters", ["tabWidth", "distance"]);
+            }
+            else // BESTFIT
+            {
+                throw regenError("No tabs can fit with the specified parameters", ["tabWidth", "targetPitch"]);
             }
         }
 
         // Validate that tab domains do not overlap
         if (!validateTabDomainsNoOverlap(tabDomains))
         {
-            if (definition.spacingType == CurvePatternSpacingType.EQUAL || definition.spacingType == CurvePatternSpacingType.BESTFIT)
+            if (definition.spacingType == CurvePatternSpacingType.EQUAL)
             {
-                throw regenError("Resultant tabs would overlap. Reduce tab count or tab width to avoid overlapping tabs.", ["instanceCount", "tabWidth"]);
+                throw regenError("Resultant tabs would overlap. Reduce instance count or tab width to avoid overlapping tabs.", ["instanceCount", "tabWidth"]);
             }
-            else
+            else if (definition.spacingType == CurvePatternSpacingType.DISTANCE)
             {
                 throw regenError("Resultant tabs would overlap. Increase distance or reduce tab width to avoid overlapping tabs.", ["distance", "tabWidth"]);
+            }
+            else // BESTFIT
+            {
+                throw regenError("Resultant tabs would overlap. Increase target pitch or reduce tab width to avoid overlapping tabs.", ["targetPitch", "tabWidth"]);
             }
         }
 
