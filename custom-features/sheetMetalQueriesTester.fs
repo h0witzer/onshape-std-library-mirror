@@ -18,19 +18,26 @@ import(path : "943642034066bc27de5d166f", version : "d693581e2a8766ea1378a36d");
  * Features:
  * - Visual highlighting of query results in the 3D view
  * - Entity count reporting
- * - Query variable export for use in other features (via setVariable)
+ * - Query variable output for use in other features (proper query variable)
  * - Support for multiple query types (cut faces, stock faces)
  * 
- * To use the exported query variable in another feature:
- * 1. Enable "Export Query Variable" and set a variable name
- * 2. In another feature, use getVariable(context, variableName) to access the query
+ * To use the query variable in another feature:
+ * 1. The variable name is automatically set based on the feature name
+ * 2. In another feature's query parameter, reference this variable by name
  * 3. The query can be used as input to operations or further filtering
  */
 
-annotation { "Feature Type Name" : "Sheet Metal Queries Tester" }
+annotation { "Feature Type Name" : "Sheet Metal Queries Tester", 
+             "Feature Name Template" : "###name",
+             "UIHint" : UIHint.NO_PREVIEW_PROVIDED }
 export const sheetMetalQueriesTester = defineFeature(function(context is Context, id is Id, definition is map)
     precondition
     {
+        annotation { "Name" : "Name", 
+                     "UIHint" : [UIHint.UNCONFIGURABLE, UIHint.QUERY_VARIABLE_NAME], 
+                     "MaxLength" : 10000 }
+        definition.name is string;
+        
         annotation { "Name" : "Sheet Metal Part",
                      "Filter" : EntityType.BODY && BodyType.SOLID,
                      "MaxNumberOfPicks" : 1 }
@@ -43,17 +50,6 @@ export const sheetMetalQueriesTester = defineFeature(function(context is Context
         annotation { "Name" : "Highlight Results",
                      "Default" : true }
         definition.highlightResults is boolean;
-        
-        annotation { "Name" : "Export Query Variable",
-                     "Default" : false }
-        definition.exportQueryVariable is boolean;
-        
-        if (definition.exportQueryVariable)
-        {
-            annotation { "Name" : "Variable Name",
-                         "Default" : "sheetMetalQuery" }
-            definition.variableName is string;
-        }
     }
     {
         // Execute the selected query function
@@ -95,13 +91,8 @@ export const sheetMetalQueriesTester = defineFeature(function(context is Context
             });
         }
         
-        // Export query variable if requested
-        if (definition.exportQueryVariable)
-        {
-            const varName = definition.variableName;
-            setVariable(context, varName, resultQuery);
-            reportFeatureInfo(context, id, "Query exported as variable '" ~ varName ~ "' for use in other features");
-        }
+        // Set the query variable - makes it available to other features
+        setQueryVariable(context, definition.name, resultQuery);
     });
 
 /**
