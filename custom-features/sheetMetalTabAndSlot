@@ -117,10 +117,11 @@ export const tabAndSlotBossDisplay = defineSheetMetalFeature(function(context is
         // Note: The predicate requires instanceCount input for DISTANCE mode, but we override
         // it here to automatically fit tabs based on available space. The user's input value
         // for instanceCount in DISTANCE mode is used only as an initial/default and will be
-        // recalculated based on the actual edge length and specified distance.
+        // recalculated based on the actual edge length and specified distance (pitch).
+        // DISTANCE represents the pitch (center-to-center distance) between tabs.
         if (definition.spacingType == CurvePatternSpacingType.DISTANCE)
         {
-            definition.instanceCount = floor((totalLength - definition.tabWidth) / definition.distance);
+            definition.instanceCount = floor(totalLength / definition.distance);
         }
         
         // Use centralized spacing calculation from spacingUtils
@@ -374,33 +375,40 @@ function calculateEqualSpacedTabDomains(totalLength is ValueWithUnits, tabWidth 
 }
 
 /**
- * Calculates tab domains for distance-based spacing distribution.
- * This function places tabs at fixed distance intervals along the edge chain.
+ * Calculates tab domains for distance-based (pitch) spacing distribution.
+ * This function places tabs at fixed pitch intervals along the edge chain.
+ * Distance represents the pitch (center-to-center distance) between consecutive tabs.
+ * The first tab is positioned with its leading edge at the start of the chain.
  * Follows the pattern established in spacingUtils.fs for consistent spacing logic.
  * 
  * @param totalLength {ValueWithUnits} : The total length of the edge chain
  * @param tabWidth {ValueWithUnits} : The width of each tab
- * @param distance {ValueWithUnits} : The distance between consecutive tabs
- * @param tabCount {number} : The number of tabs that fit with the given spacing
+ * @param distance {ValueWithUnits} : The pitch (center-to-center distance) between consecutive tabs
+ * @param tabCount {number} : The number of tabs that fit with the given pitch
  * 
  * @returns {array} : Array of {start, end} maps with normalized parameters (0 to 1) for each tab location
  */
 function calculateDistanceSpacedTabDomains(totalLength is ValueWithUnits, tabWidth is ValueWithUnits, distance is ValueWithUnits, tabCount is number) returns array
 {
     const tabWidthParam = tabWidth / totalLength;
-    const distanceParam = distance / totalLength;
+    const pitchParam = distance / totalLength;
+    const halfTabWidthParam = tabWidthParam / 2;
 
     var tabDomains = [];
-    var currentPos = distanceParam; // Start after first gap
 
     for (var i = 0; i < tabCount; i += 1)
     {
-        if (currentPos + tabWidthParam > 1)
+        // Position tabs by their centers at pitch intervals
+        // First tab center is at tabWidth/2 (tab starts at edge), subsequent tabs at pitch intervals
+        const centerPos = halfTabWidthParam + (pitchParam * i);
+        const start = centerPos - halfTabWidthParam;
+        const end = centerPos + halfTabWidthParam;
+        
+        if (end > 1)
         {
-            break; // Don't exceed the edge chain
+            break; // Don't exceed the edge chain boundaries
         }
-        tabDomains = append(tabDomains, { "start" : currentPos, "end" : currentPos + tabWidthParam });
-        currentPos += tabWidthParam + distanceParam;
+        tabDomains = append(tabDomains, { "start" : start, "end" : end });
     }
     return tabDomains;
 }
