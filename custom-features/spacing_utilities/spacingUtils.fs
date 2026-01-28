@@ -82,6 +82,28 @@ export predicate curvePatternSpacingPredicate(definition is map)
         annotation { "Name" : "Pitch ceiling", "Default" : false }
         definition.doPitchCeiling is boolean;
     }
+
+    // Offset controls for EQUAL and BESTFIT modes
+    if (definition.spacingType == CurvePatternSpacingType.EQUAL || definition.spacingType == CurvePatternSpacingType.BESTFIT)
+    {
+        annotation { "Name" : "Use offsets", "Default" : false }
+        definition.useOffsets is boolean;
+
+        if (definition.useOffsets)
+        {
+            annotation { "Name" : "Opposite offsets", "Default" : false }
+            definition.oppositeOffsets is boolean;
+
+            annotation { "Name" : "Start offset", "UIHint" : UIHint.OPPOSITE_DIRECTION }
+            isLength(definition.startOffset, PATTERN_OFFSET_BOUND);
+
+            if (definition.oppositeOffsets)
+            {
+                annotation { "Name" : "End offset" }
+                isLength(definition.endOffset, PATTERN_OFFSET_BOUND);
+            }
+        }
+    }
 }
 
 /**
@@ -96,6 +118,10 @@ export predicate curvePatternSpacingPredicate(definition is map)
  *      @field instanceCount {number} : Input/output instance count
  *      @field targetPitch {ValueWithUnits} : Target pitch for best-fit spacing
  *      @field doPitchCeiling {boolean} : Whether to use ceiling for rounding
+ *      @field useOffsets {boolean} : Whether to use start/end offsets
+ *      @field startOffset {ValueWithUnits} : Offset from start of curve
+ *      @field endOffset {ValueWithUnits} : Offset from end of curve (if oppositeOffsets)
+ *      @field oppositeOffsets {boolean} : Whether to use different offsets at each end
  * 
  * @returns {map} : Updated definition with computed spacing parameters
  */
@@ -104,6 +130,15 @@ export function computeCurvePatternSpacing(context is Context, id is Id, definit
     const curveLength = evLength(context, {
                 "entities" : definition.edges
             });
+
+    // Calculate effective length accounting for offsets
+    var effectiveLength = curveLength;
+    if (definition.useOffsets)
+    {
+        const startOffset = definition.startOffset;
+        const endOffset = definition.oppositeOffsets ? definition.endOffset : definition.startOffset;
+        effectiveLength = curveLength - startOffset - endOffset;
+    }
 
     var corrector = 0;
     try silent
@@ -117,7 +152,7 @@ export function computeCurvePatternSpacing(context is Context, id is Id, definit
 
     if (definition.spacingType == CurvePatternSpacingType.EQUAL)
     {
-        const actualPitch = curveLength / (definition.instanceCount - corrector);
+        const actualPitch = effectiveLength / (definition.instanceCount - corrector);
 
         setFeatureComputedParameter(context, id, {
                     "name" : "actualPitchEqual",
@@ -127,7 +162,7 @@ export function computeCurvePatternSpacing(context is Context, id is Id, definit
 
     if (definition.spacingType == CurvePatternSpacingType.BESTFIT)
     {
-        const computedInstanceNumber = curveLength / definition.targetPitch + corrector;
+        const computedInstanceNumber = effectiveLength / definition.targetPitch + corrector;
 
         var integerComputedInstanceNumber;
 
@@ -142,7 +177,7 @@ export function computeCurvePatternSpacing(context is Context, id is Id, definit
 
         definition.instanceCount = integerComputedInstanceNumber;
 
-        const actualPitch = curveLength / (integerComputedInstanceNumber - corrector);
+        const actualPitch = effectiveLength / (integerComputedInstanceNumber - corrector);
 
         setFeatureComputedParameter(context, id, {
                     "name" : "actualPitch",
@@ -320,18 +355,25 @@ export function computeCircularPatternSpacing(context is Context, id is Id, defi
  * @param totalLength {ValueWithUnits} : The total length of the path
  * @param instanceWidth {ValueWithUnits} : The width of each instance
  * @param instanceCount {number} : The number of instances to distribute
+ * @param startOffset {ValueWithUnits} : Optional offset from the start of the path (default: 0)
+ * @param endOffset {ValueWithUnits} : Optional offset from the end of the path (default: 0)
  * 
  * @returns {array} : Array of {start, end} maps with normalized parameters (0 to 1) for each instance location
  */
-export function calculateEqualSpacedDomains(totalLength is ValueWithUnits, instanceWidth is ValueWithUnits, instanceCount is number) returns array
+export function calculateEqualSpacedDomains(totalLength is ValueWithUnits, instanceWidth is ValueWithUnits, instanceCount is number, startOffset is ValueWithUnits, endOffset is ValueWithUnits) returns array
 {
+    // Calculate normalized offsets
+    const startOffsetParam = startOffset / totalLength;
+    const endOffsetParam = endOffset / totalLength;
+    const effectiveLength = 1 - startOffsetParam - endOffsetParam;
+    
     const widthParam = instanceWidth / totalLength;
-    const spacing = (1 - (instanceCount * widthParam)) / (instanceCount + 1);
+    const spacing = (effectiveLength - (instanceCount * widthParam)) / (instanceCount + 1);
 
     var domains = [];
     for (var i = 0; i < instanceCount; i += 1)
     {
-        const start = spacing * (i + 1) + (widthParam * i);
+        const start = startOffsetParam + spacing * (i + 1) + (widthParam * i);
         const end = start + widthParam;
         domains = append(domains, { "start" : start, "end" : end });
     }
@@ -342,18 +384,24 @@ export function calculateEqualSpacedDomains(totalLength is ValueWithUnits, insta
  * Calculates normalized domains for distance-based (pitch) spacing distribution.
  * This function places instances at fixed pitch intervals along a path.
  * Distance represents the pitch (center-to-center distance) between consecutive instances.
- * The first instance is positioned with its leading edge at the start of the path.
+ * The first instance is positioned with its leading edge at the start of the path (or offset).
  * Returns normalized parameters (0 to 1) for each instance location.
  * 
  * @param totalLength {ValueWithUnits} : The total length of the path
  * @param instanceWidth {ValueWithUnits} : The width of each instance
  * @param distance {ValueWithUnits} : The pitch (center-to-center distance) between consecutive instances
  * @param instanceCount {number} : The number of instances that fit with the given pitch
+ * @param startOffset {ValueWithUnits} : Optional offset from the start of the path (default: 0)
+ * @param endOffset {ValueWithUnits} : Optional offset from the end of the path (default: 0)
  * 
  * @returns {array} : Array of {start, end} maps with normalized parameters (0 to 1) for each instance location
  */
-export function calculateDistanceSpacedDomains(totalLength is ValueWithUnits, instanceWidth is ValueWithUnits, distance is ValueWithUnits, instanceCount is number) returns array
+export function calculateDistanceSpacedDomains(totalLength is ValueWithUnits, instanceWidth is ValueWithUnits, distance is ValueWithUnits, instanceCount is number, startOffset is ValueWithUnits, endOffset is ValueWithUnits) returns array
 {
+    // Calculate normalized offsets
+    const startOffsetParam = startOffset / totalLength;
+    const endOffsetParam = endOffset / totalLength;
+    
     const widthParam = instanceWidth / totalLength;
     const pitchParam = distance / totalLength;
     const halfWidthParam = widthParam / 2;
@@ -362,15 +410,15 @@ export function calculateDistanceSpacedDomains(totalLength is ValueWithUnits, in
 
     for (var i = 0; i < instanceCount; i += 1)
     {
-        // Position instances by their centers at pitch intervals
-        // First instance center is at instanceWidth/2 (instance starts at edge), subsequent instances at pitch intervals
-        const centerPos = halfWidthParam + (pitchParam * i);
+        // Position instances by their centers at pitch intervals, starting from the offset
+        // First instance center is at startOffset + instanceWidth/2 (instance starts at offset edge)
+        const centerPos = startOffsetParam + halfWidthParam + (pitchParam * i);
         const start = centerPos - halfWidthParam;
         const end = centerPos + halfWidthParam;
         
-        if (end > 1)
+        if (end > (1 - endOffsetParam))
         {
-            break; // Don't exceed the path boundaries
+            break; // Don't exceed the path boundaries (accounting for end offset)
         }
         domains = append(domains, { "start" : start, "end" : end });
     }
