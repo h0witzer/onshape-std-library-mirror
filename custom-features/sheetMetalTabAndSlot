@@ -575,11 +575,11 @@ function calculateEdgeSplitInstructionsFromParameters(context is Context, path i
 }
 
 // Identifies edges that correspond to tab segments by checking edge midpoints against tab domains.
-// Uses geometric projection to find each edge's position along the original path, eliminating
-// dependency on edge ordering and path reconstruction.
+// For each edge, calculates its midpoint position along the edge chain and checks if it falls
+// within any tab domain. This works for all edges after splitting.
 // Inputs:
 //   allSplitEdges - Query for all edges created by split operations
-//   path - Original path before splitting (used for projection)
+//   path - Original path before splitting (used for reference)
 //   totalLength - Total length of the edge chain
 //   tabDomains - Array of {start, end} maps with normalized parameters for each tab
 // Outputs: Query containing all edges that fall within tab domains
@@ -590,7 +590,7 @@ function identifyTabSegmentsByEdgeMidpoints(context is Context, allSplitEdges is
         return qNothing();
     }
 
-    // Get all split edges
+    // Get all split edges and try to reconstruct them into an ordered path
     const edges = evaluateQuery(context, allSplitEdges);
     const edgeCount = size(edges);
 
@@ -599,74 +599,44 @@ function identifyTabSegmentsByEdgeMidpoints(context is Context, allSplitEdges is
         return qNothing();
     }
 
-    // For each edge, find its position along the original path using geometric projection
+    // Try to construct a path from the split edges to get them in order
+    const orderedPath = try silent(constructPath(context, qUnion(edges)));
+    var orderedEdges = edges;
+    if (orderedPath != undefined)
+    {
+        orderedEdges = orderedPath.edges;
+    }
+
+    // Calculate the normalized position (0 to 1) of each edge's midpoint along the chain
+    var edgeMidpointParameters = [];
+    var accumulatedLength = 0 * meter;
+
+    for (var edge in orderedEdges)
+    {
+        const edgeLength = evLength(context, { "entities" : edge });
+        const midpointParameter = (accumulatedLength + edgeLength / 2) / totalLength;
+        edgeMidpointParameters = append(edgeMidpointParameters, midpointParameter);
+        accumulatedLength += edgeLength;
+    }
+
+    // Check which edges fall within tab domains
     var tabEdgeQueries = [];
 
-    for (var edge in edges)
+    for (var i = 0; i < size(orderedEdges); i += 1)
     {
-        // Get the edge's geometric midpoint
-        const edgeLine = evLine(context, { "edge" : edge });
-        const edgeMidpoint = edgeLine.origin + edgeLine.direction * evLength(context, { "entities" : edge }) / 2;
-
-        // Project this point onto the original path to find its parameter
-        var edgeParameter = 0;
-        var foundParameter = false;
-        
-        try silent
-        {
-            // Try to find the closest point on the path to this edge midpoint
-            // Use each edge in the original path and find which one this point is closest to
-            var minDistance = undefined;
-            var accumulatedPathLength = 0 * meter;
-            
-            for (var pathEdge in path.edges)
-            {
-                const pathEdgeLength = evLength(context, { "entities" : pathEdge });
-                
-                // Get distance from edge midpoint to this path edge
-                const distanceResult = evDistance(context, {
-                    "side0" : edgeMidpoint,
-                    "side1" : pathEdge
-                });
-                
-                if (minDistance == undefined || distanceResult.distance < minDistance)
-                {
-                    minDistance = distanceResult.distance;
-                    
-                    // Get the closest point on this path edge
-                    const closestPoint = distanceResult.sides[1].point;
-                    
-                    // Find parameter along this specific path edge
-                    const pathEdgeLine = evLine(context, { "edge" : pathEdge });
-                    const edgeStart = pathEdgeLine.origin;
-                    const edgeDir = pathEdgeLine.direction;
-                    const vectorToPoint = closestPoint - edgeStart;
-                    const paramOnEdge = dot(vectorToPoint, edgeDir);
-                    
-                    // Calculate total parameter along the full path
-                    const absolutePosition = accumulatedPathLength + paramOnEdge;
-                    edgeParameter = absolutePosition / totalLength;
-                    foundParameter = true;
-                }
-                
-                accumulatedPathLength += pathEdgeLength;
-            }
-        }
-
-        if (!foundParameter)
-        {
-            // Fallback: if projection fails, skip this edge
-            continue;
-        }
+        const edge = orderedEdges[i];
+        const midpointParameter = edgeMidpointParameters[i];
 
         // Check if this parameter falls within any tab domain
         var isInTabDomain = false;
+        var domainIndex = -1;
         for (var j = 0; j < size(tabDomains); j += 1)
         {
             const domain = tabDomains[j];
-            if (edgeParameter >= domain.start && edgeParameter <= domain.end)
+            if (midpointParameter >= domain.start && midpointParameter <= domain.end)
             {
                 isInTabDomain = true;
+                domainIndex = j;
                 break;
             }
         }
