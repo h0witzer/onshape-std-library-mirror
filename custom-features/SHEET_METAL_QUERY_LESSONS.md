@@ -14,29 +14,51 @@ This document captures the key lessons learned during the development of sheet m
 
 ## Sheet Metal Architecture
 
-### Two Parallel Representations
+### Three Parallel Representations
 
-Sheet metal parts in Onshape maintain two distinct but linked representations:
+Sheet metal parts in Onshape maintain three distinct but linked representations:
 
 1. **Definition Body (Master Body)**
    - Type: `BodyType.SHEET` (surface body)
    - Contains the master definition of the sheet metal geometry
    - Stores all SMObjectType attributes (WALL, BEND, CORNER, etc.)
-   - Hidden from normal view
+   - **Hidden from normal view and invisible to end users**
    - Source of truth for sheet metal semantics
+   - **Only editable via indirect means** (through standard sheet metal features)
+   - **Many functions are explicitly disallowed** from interacting with master bodies
+   - Direct interactions that don't match standard sheet metal tool implementations have unexpected behavior
 
 2. **Model Body (3D Folded Body)**
    - Type: `BodyType.SOLID` (solid body)
    - The visible 3D representation users interact with
    - Does NOT contain SMObjectType attributes directly
    - Linked to definition body via association attributes
+   - **Primary interface for user operations** (extrude, move face, etc.)
+   - Fully accessible to all standard geometry operations
+
+3. **Flat Pattern (2D Representation)**
+   - Also a resultant representation derived from the master body
+   - Visible in 2D viewport when flat pattern is shown
+   - **Limited user interaction** - only a subset of tools and features work in 2D view
+   - Generated from master body, not directly from 3D model
+   - Cannot be directly edited by most operations
 
 ### Why This Architecture Matters
 
-Operations on sheet metal must understand this dual representation:
-- **Attributes exist only on the definition body** - querying model entities directly for SMObjectType attributes returns nothing
-- **Users work with model bodies** - all visible entities and operations target the model
+Operations on sheet metal must understand this triple representation:
+- **Attributes exist only on the definition body** - querying model or flat entities directly for SMObjectType attributes returns nothing
+- **Users primarily work with 3D model bodies** - all visible entities and most operations target the 3D model
+- **Master body is off-limits** - direct manipulation of master bodies is strongly discouraged and may break sheet metal functionality
+- **Flat pattern has limited access** - most features cannot operate in the 2D view
 - **Mapping is required** - to use attribute information, you must map between representations
+
+### Critical Warnings
+
+⚠️ **Do NOT attempt to directly modify master bodies** unless implementing standard sheet metal features. The master body is maintained by the sheet metal system and direct modifications can corrupt the model.
+
+⚠️ **Flat pattern is read-only for most operations**. While you can query flat pattern entities using `qCorrespondingInFlat`, most geometry operations will fail if applied directly to flat entities.
+
+⚠️ **Always return 3D model entities** from custom query functions. Users expect to work with the visible 3D representation.
 
 ---
 
@@ -288,6 +310,42 @@ export function qSomeQuery(query is Query) returns Query { ... }
 export function qSheetMetalCutFaces(context is Context, query is Query) returns Query { ... }
 ```
 
+### 6. Attempting Direct Operations on Master Bodies
+
+❌ **Wrong:**
+```featurescript
+const definitionBody = getSheetMetalModelForPart(context, part);
+opMoveFace(context, id, { "moveFaces" : qOwnedByBody(definitionBody, EntityType.FACE) });
+// FAILS! Most operations disallowed on master bodies
+```
+
+✅ **Correct:**
+```featurescript
+// Work with 3D model entities only
+const modelFaces = qOwnedByBody(part, EntityType.FACE);
+opMoveFace(context, id, { "moveFaces" : modelFaces });
+// Sheet metal system will update master body automatically
+```
+
+**Why this matters:** The master body is maintained by the sheet metal system. Direct operations on it are explicitly disallowed and will throw errors. Always work with 3D model entities.
+
+### 7. Trying to Edit Flat Pattern Entities Directly
+
+❌ **Wrong:**
+```featurescript
+const flatFaces = qCorrespondingInFlat(modelFaces);
+opExtrude(context, id, { "entities" : flatFaces }); // FAILS!
+```
+
+✅ **Correct:**
+```featurescript
+// Identify which 3D faces you want based on flat pattern analysis
+const facesToExtrude = findModelFacesMatchingFlatCriteria(context, modelFaces);
+opExtrude(context, id, { "entities" : facesToExtrude }); // Works!
+```
+
+**Why this matters:** Flat pattern is a derived representation. Operations must be performed on the 3D model, and the flat pattern will update automatically.
+
 ---
 
 ## Best Practices
@@ -341,14 +399,17 @@ const modelFaces = qOwnedByBody(sheetMetalPart, EntityType.FACE);
 
 ## Summary of Key Concepts
 
-1. **Sheet metal has three representations**: definition body (master), 3D model body, and flat pattern
-2. **Attributes exist on definition body only**, not on model entities
-3. **Association attributes link definition to model** via matching attributeId
-4. **qFacesParallelToDirection returns faces perpendicular to direction** (for planar faces)
-5. **qParallelPlanes returns faces with normals parallel to the given normal**
-6. **Always return 3D model entities** from query functions users will call
-7. **Avoid manual vector math** when robust query functions exist
-8. **Map from flat to 3D requires iteration**, no direct query exists
+1. **Sheet metal has three representations**: definition body (master, invisible), 3D model body (primary user interface), and flat pattern (derived, limited access)
+2. **Master body is off-limits**: Only editable via standard sheet metal features, direct manipulation is disallowed
+3. **Flat pattern is derived**: Automatically generated from master body, most operations cannot target it directly
+4. **Attributes exist on definition body only**, not on model or flat entities
+5. **Association attributes link definition to model** via matching attributeId
+6. **qFacesParallelToDirection returns faces perpendicular to direction** (for planar faces)
+7. **qParallelPlanes returns faces with normals parallel to the given normal**
+8. **Always return 3D model entities** from query functions users will call
+9. **Avoid manual vector math** when robust query functions exist
+10. **Map from flat to 3D requires iteration**, no direct query exists
+11. **Users primarily work with 3D model** - this is the accessible representation for operations
 
 ---
 
