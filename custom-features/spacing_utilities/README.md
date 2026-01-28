@@ -4,17 +4,21 @@ This directory contains reusable spacing logic utilities for pattern features in
 
 ## Files
 
-### curvePatternSpacingUtils.fs
-Provides spacing calculation utilities for curve patterns, including:
+### spacingUtils.fs
+**Consolidated pattern spacing utilities module** providing spacing calculation utilities for both curve and circular patterns.
+
+#### Curve Pattern Utilities
 - `CurvePatternSpacingType` enum (EQUAL, DISTANCE, BESTFIT)
 - `curvePatternSpacingPredicate()` - Predicate for UI configuration of curve pattern spacing
 - `computeCurvePatternSpacing()` - Function to calculate instance count and spacing for curve patterns
 
-### circularPatternSpacingUtils.fs
-Provides spacing calculation utilities for circular patterns, including:
+#### Circular Pattern Utilities
 - `CircularPatternSpacingType` enum (EQUAL, BESTFIT)
 - `circularPatternSpacingPredicate()` - Predicate for UI configuration of circular pattern spacing
 - `computeCircularPatternSpacing()` - Function to calculate instance count and spacing for circular patterns
+
+#### Shared Utilities
+- `isFeaturePattern()` - Helper function to check if a pattern type is a feature pattern
 
 ## Usage
 
@@ -26,9 +30,8 @@ These utilities extract the spacing logic from `curvePatternBestFit.fs` and `cir
 FeatureScript 2856;
 import(path : "onshape/std/common.fs", version : "2856.0");
 
-// Import the spacing utilities
-// Replace with actual document ID when published to Onshape
-export import(path : "CURVE_PATTERN_SPACING_UTILS_DOC_ID", version : "VERSION");
+// Import the consolidated spacing utilities
+export import(path : "8ce820287d75ed2e92412d90", version : "a414d4542f7ae1196125cfbe");//spacingUtils.fs
 
 annotation { "Feature Type Name" : "My Custom Pattern Feature" }
 export const myCustomPattern = defineFeature(function(context is Context, id is Id, definition is map)
@@ -50,17 +53,40 @@ export const myCustomPattern = defineFeature(function(context is Context, id is 
     });
 ```
 
-## Deployment to Onshape
+### Example: Using Circular Pattern Spacing
 
-When deploying these utilities to Onshape:
+```featurescript
+// Import the consolidated spacing utilities
+export import(path : "8ce820287d75ed2e92412d90", version : "a414d4542f7ae1196125cfbe");//spacingUtils.fs
 
-1. Publish `curvePatternSpacingUtils.fs` as an Onshape FeatureScript document
-2. Publish `circularPatternSpacingUtils.fs` as an Onshape FeatureScript document
-3. Update the import statements in `curvePatternBestFit.fs` and `circularPatternBestFit.fs` with the actual document IDs and versions
-4. Update any other custom features that want to use these utilities with the proper document IDs
+annotation { "Feature Type Name" : "My Custom Circular Pattern" }
+export const myCustomCircularPattern = defineFeature(function(context is Context, id is Id, definition is map)
+    precondition
+    {
+        // Use the spacing predicate
+        circularPatternSpacingPredicate(definition);
+    }
+    {
+        // Compute axis line first
+        const axis = computePatternAxis(context, definition.axis, ...);
+        
+        // Compute spacing parameters
+        definition = computeCircularPatternSpacing(context, id, definition, axis);
+        
+        // Pattern logic continues...
+    });
+```
+
+## Import Path
+
+**Single import for all spacing utilities:**
+```featurescript
+import(path : "8ce820287d75ed2e92412d90", version : "a414d4542f7ae1196125cfbe");//spacingUtils.fs
+```
 
 ## Benefits
 
+- **Single import**: One import path for all pattern spacing utilities
 - **Reusability**: Spacing logic can be imported and used in any pattern feature
 - **Maintainability**: Changes to spacing logic only need to be made in one place
 - **Consistency**: All features using these utilities will have consistent spacing behavior
@@ -71,3 +97,4 @@ When deploying these utilities to Onshape:
 - `curvePatternBestFit.fs` - Uses curve pattern spacing utilities
 - `circularPatternBestFit.fs` - Uses circular pattern spacing utilities
 - `ctPointsBackend.fs` - Similar pattern for control points utilities
+

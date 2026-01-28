@@ -19,9 +19,8 @@ import(path : "onshape/std/surfaceGeometry.fs", version : "2856.0");
 import(path : "onshape/std/topologyUtils.fs", version : "2856.0");
 import(path : "onshape/std/recordpatterntype.gen.fs", version : "2856.0");
 
-// Import spacing utilities for curve pattern best fit logic
-// TODO: Replace with actual Onshape document ID when curvePatternSpacingUtils.fs is published
-export import(path : "CURVE_PATTERN_SPACING_UTILS_DOC_ID", version : "CURVE_PATTERN_SPACING_UTILS_VERSION");
+// Import consolidated spacing utilities
+export import(path : "8ce820287d75ed2e92412d90", version : "a414d4542f7ae1196125cfbe");//spacingUtils.fs
 
 /**
  * Performs a body, face, or feature curve pattern. Internally, performs
