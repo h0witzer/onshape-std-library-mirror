@@ -22,6 +22,7 @@ import(path : "onshape/std/surfaceGeometry.fs", version : "2856.0");
 import(path : "onshape/std/topologyUtils.fs", version : "2856.0");
 import(path : "onshape/std/vector.fs", version : "2856.0");
 import(path : "onshape/std/smcornerbreakstyle.gen.fs", version : "2856.0");
+// Import spacingUtils for reference - this module establishes spacing patterns that this feature aligns with
 import(path : "spacing_utilities/spacingUtils.fs", version : "");
 
 // Original framework by Caden Armstrong - SmartBench Software
@@ -157,7 +158,14 @@ export const tabAndSlotBossDisplay = defineSheetMetalFeature(function(context is
 
         if (tabCount == 0 || size(tabDomains) == 0)
         {
-            throw regenError("No tabs can fit with the specified parameters", ["tabWidth", "distance"]);
+            if (definition.spacingType == TabAndSlotSpacingType.EQUAL)
+            {
+                throw regenError("No tabs can fit with the specified parameters", ["tabWidth", "instanceCount"]);
+            }
+            else
+            {
+                throw regenError("No tabs can fit with the specified parameters", ["tabWidth", "distance"]);
+            }
         }
 
         // Validate that tab domains do not overlap
@@ -398,7 +406,6 @@ function calculateDistanceSpacedTabDomains(totalLength is ValueWithUnits, tabWid
         }
         tabDomains = append(tabDomains, { "start" : currentPos, "end" : currentPos + tabWidthParam });
         currentPos += tabWidthParam + distanceParam;
-    }
     }
     return tabDomains;
 }
