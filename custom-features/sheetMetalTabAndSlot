@@ -138,16 +138,16 @@ export const tabAndSlotBossDisplay = defineSheetMetalFeature(function(context is
 
         if (definition.spacingType == CurvePatternSpacingType.EQUAL)
         {
-            tabDomains = calculateEqualSpacedTabDomains(totalLength, definition.tabWidth, tabCount);
+            tabDomains = calculateEqualSpacedDomains(totalLength, definition.tabWidth, tabCount);
         }
         else if (definition.spacingType == CurvePatternSpacingType.DISTANCE)
         {
-            tabDomains = calculateDistanceSpacedTabDomains(totalLength, definition.tabWidth, definition.distance, tabCount);
+            tabDomains = calculateDistanceSpacedDomains(totalLength, definition.tabWidth, definition.distance, tabCount);
         }
         else if (definition.spacingType == CurvePatternSpacingType.BESTFIT)
         {
             // For BESTFIT, instanceCount is computed by computeCurvePatternSpacing
-            tabDomains = calculateEqualSpacedTabDomains(totalLength, definition.tabWidth, tabCount);
+            tabDomains = calculateEqualSpacedDomains(totalLength, definition.tabWidth, tabCount);
         }
 
         if (tabCount == 0 || size(tabDomains) == 0)
@@ -167,7 +167,7 @@ export const tabAndSlotBossDisplay = defineSheetMetalFeature(function(context is
         }
 
         // Validate that tab domains do not overlap
-        if (!validateTabDomainsNoOverlap(tabDomains))
+        if (!validateDomainsNoOverlap(tabDomains, FRACTION_TOLERANCE))
         {
             if (definition.spacingType == CurvePatternSpacingType.EQUAL)
             {
@@ -352,103 +352,6 @@ function filterSheetMetalWallFaces(context is Context, faceQuery is Query) retur
     }
 
     return qUnion(wallFaceQueries);
-}
-
-/**
- * Calculates tab domains for equal spacing distribution.
- * This function distributes tabs evenly along the edge chain with equal gaps between them.
- * Follows the pattern established in spacingUtils.fs for consistent spacing logic.
- * 
- * @param totalLength {ValueWithUnits} : The total length of the edge chain
- * @param tabWidth {ValueWithUnits} : The width of each tab
- * @param tabCount {number} : The number of tabs to distribute
- * 
- * @returns {array} : Array of {start, end} maps with normalized parameters (0 to 1) for each tab location
- */
-function calculateEqualSpacedTabDomains(totalLength is ValueWithUnits, tabWidth is ValueWithUnits, tabCount is number) returns array
-{
-    const tabWidthParam = tabWidth / totalLength;
-    const spacing = (1 - (tabCount * tabWidthParam)) / (tabCount + 1);
-
-    var tabDomains = [];
-    for (var i = 0; i < tabCount; i += 1)
-    {
-        const start = spacing * (i + 1) + (tabWidthParam * i);
-        const end = start + tabWidthParam;
-        tabDomains = append(tabDomains, { "start" : start, "end" : end });
-    }
-    return tabDomains;
-}
-
-/**
- * Calculates tab domains for distance-based (pitch) spacing distribution.
- * This function places tabs at fixed pitch intervals along the edge chain.
- * Distance represents the pitch (center-to-center distance) between consecutive tabs.
- * The first tab is positioned with its leading edge at the start of the chain.
- * Follows the pattern established in spacingUtils.fs for consistent spacing logic.
- * 
- * @param totalLength {ValueWithUnits} : The total length of the edge chain
- * @param tabWidth {ValueWithUnits} : The width of each tab
- * @param distance {ValueWithUnits} : The pitch (center-to-center distance) between consecutive tabs
- * @param tabCount {number} : The number of tabs that fit with the given pitch
- * 
- * @returns {array} : Array of {start, end} maps with normalized parameters (0 to 1) for each tab location
- */
-function calculateDistanceSpacedTabDomains(totalLength is ValueWithUnits, tabWidth is ValueWithUnits, distance is ValueWithUnits, tabCount is number) returns array
-{
-    const tabWidthParam = tabWidth / totalLength;
-    const pitchParam = distance / totalLength;
-    const halfTabWidthParam = tabWidthParam / 2;
-
-    var tabDomains = [];
-
-    for (var i = 0; i < tabCount; i += 1)
-    {
-        // Position tabs by their centers at pitch intervals
-        // First tab center is at tabWidth/2 (tab starts at edge), subsequent tabs at pitch intervals
-        const centerPos = halfTabWidthParam + (pitchParam * i);
-        const start = centerPos - halfTabWidthParam;
-        const end = centerPos + halfTabWidthParam;
-        
-        if (end > 1)
-        {
-            break; // Don't exceed the edge chain boundaries
-        }
-        tabDomains = append(tabDomains, { "start" : start, "end" : end });
-    }
-    return tabDomains;
-}
-
-// Validates that tab domains do not overlap.
-// Checks each consecutive pair of tab domains to ensure the end of one tab
-// does not exceed the start of the next tab (with a small tolerance).
-// Inputs:
-//   tabDomains - Array of {start, end} maps with normalized parameters (0 to 1) for each tab location
-// Outputs:
-//   Returns true if domains are valid (no overlaps), false if any domains overlap
-function validateTabDomainsNoOverlap(tabDomains is array) returns boolean
-{
-    // No validation needed for 0 or 1 tabs
-    if (size(tabDomains) <= 1)
-    {
-        return true;
-    }
-    
-    // Check each consecutive pair of tab domains
-    for (var i = 0; i < size(tabDomains) - 1; i += 1)
-    {
-        const currentTabEnd = tabDomains[i].end;
-        const nextTabStart = tabDomains[i + 1].start;
-        
-        // Tabs overlap if the current tab end exceeds the next tab start by more than tolerance
-        // The tolerance accounts for floating-point precision when tabs are exactly touching
-        if (currentTabEnd > nextTabStart + FRACTION_TOLERANCE)
-        {
-            return false;
-        }
-    }
-    
-    return true;
 }
 
 // Extracts all split parameters from tab domains.
