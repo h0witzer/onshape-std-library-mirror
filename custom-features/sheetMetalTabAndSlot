@@ -120,21 +120,21 @@ export const tabAndSlotBossDisplay = defineSheetMetalFeature(function(context is
         var tabDomains = []; // Array of {start, end} maps representing tab positions as normalized parameters
 
         // Get offsets (default to 0 if not using offsets)
-        const startOffset = (definition.useOffsets == true) ? definition.startOffset : (0 * meter);
-        const endOffset = (definition.useOffsets == true && definition.oppositeOffsets == true) ? definition.endOffset : (definition.useOffsets == true ? definition.startOffset : (0 * meter));
+        const offset1 = (definition.useOffsets == true) ? definition.offset1 : (0 * meter);
+        const offset2 = (definition.useOffsets == true && definition.oppositeDirection == true) ? definition.offset2 : (definition.useOffsets == true ? definition.offset1 : (0 * meter));
 
         if (definition.spacingType == CurvePatternSpacingType.EQUAL)
         {
-            tabDomains = calculateEqualSpacedDomains(totalLength, definition.tabWidth, tabCount, startOffset, endOffset);
+            tabDomains = calculateEqualSpacedDomains(totalLength, definition.tabWidth, tabCount, offset1, offset2);
         }
         else if (definition.spacingType == CurvePatternSpacingType.DISTANCE)
         {
-            tabDomains = calculateDistanceSpacedDomains(totalLength, definition.tabWidth, definition.distance, tabCount, startOffset, endOffset);
+            tabDomains = calculateDistanceSpacedDomains(totalLength, definition.tabWidth, definition.distance, tabCount, offset1, offset2);
         }
         else if (definition.spacingType == CurvePatternSpacingType.BESTFIT)
         {
             // For BESTFIT, instanceCount is computed by computeCurvePatternSpacing
-            tabDomains = calculateEqualSpacedDomains(totalLength, definition.tabWidth, tabCount, startOffset, endOffset);
+            tabDomains = calculateEqualSpacedDomains(totalLength, definition.tabWidth, tabCount, offset1, offset2);
         }
 
         if (tabCount == 0 || size(tabDomains) == 0)

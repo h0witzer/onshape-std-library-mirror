@@ -91,19 +91,16 @@ export predicate curvePatternSpacingPredicate(definition is map)
 
         if (definition.useOffsets)
         {
-            annotation { "Name" : "Opposite offsets", "Default" : false }
-            definition.oppositeOffsets is boolean;
+            annotation { "Name" : "Offset 1" }
+            isLength(definition.offset1, PATTERN_OFFSET_BOUND);
 
-            annotation { "Name" : "Start offset" }
-            isLength(definition.startOffset, PATTERN_OFFSET_BOUND);
+            annotation { "Name" : "Opposite direction", "UIHint" : UIHint.OPPOSITE_DIRECTION, "Default" : false }
+            definition.oppositeDirection is boolean;
 
-            annotation { "Name" : "Flip offset direction", "UIHint" : UIHint.OPPOSITE_DIRECTION, "Default" : false }
-            definition.flipOffsetDirection is boolean;
-
-            if (definition.oppositeOffsets)
+            if (definition.oppositeDirection)
             {
-                annotation { "Name" : "End offset" }
-                isLength(definition.endOffset, PATTERN_OFFSET_BOUND);
+                annotation { "Name" : "Offset 2" }
+                isLength(definition.offset2, PATTERN_OFFSET_BOUND);
             }
         }
     }
@@ -122,9 +119,9 @@ export predicate curvePatternSpacingPredicate(definition is map)
  *      @field targetPitch {ValueWithUnits} : Target pitch for best-fit spacing
  *      @field doPitchCeiling {boolean} : Whether to use ceiling for rounding
  *      @field useOffsets {boolean} : Whether to use start/end offsets
- *      @field startOffset {ValueWithUnits} : Offset from start of curve
- *      @field endOffset {ValueWithUnits} : Offset from end of curve (if oppositeOffsets)
- *      @field oppositeOffsets {boolean} : Whether to use different offsets at each end
+ *      @field offset1 {ValueWithUnits} : First offset from curve end
+ *      @field offset2 {ValueWithUnits} : Second offset from curve end (if oppositeDirection)
+ *      @field oppositeDirection {boolean} : Whether to use different offsets at each end
  * 
  * @returns {map} : Updated definition with computed spacing parameters
  */
@@ -138,9 +135,9 @@ export function computeCurvePatternSpacing(context is Context, id is Id, definit
     var effectiveLength = curveLength;
     if (definition.useOffsets)
     {
-        const startOffset = definition.startOffset;
-        const endOffset = definition.oppositeOffsets ? definition.endOffset : definition.startOffset;
-        effectiveLength = curveLength - startOffset - endOffset;
+        const offset1 = definition.offset1;
+        const offset2 = definition.oppositeDirection ? definition.offset2 : definition.offset1;
+        effectiveLength = curveLength - offset1 - offset2;
     }
 
     var corrector = 0;
