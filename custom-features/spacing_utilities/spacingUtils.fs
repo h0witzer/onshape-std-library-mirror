@@ -94,8 +94,11 @@ export predicate curvePatternSpacingPredicate(definition is map)
             annotation { "Name" : "Opposite offsets", "Default" : false }
             definition.oppositeOffsets is boolean;
 
-            annotation { "Name" : "Start offset", "UIHint" : UIHint.OPPOSITE_DIRECTION }
+            annotation { "Name" : "Start offset" }
             isLength(definition.startOffset, PATTERN_OFFSET_BOUND);
+
+            annotation { "Name" : "Flip offset direction", "UIHint" : UIHint.OPPOSITE_DIRECTION, "Default" : false }
+            definition.flipOffsetDirection is boolean;
 
             if (definition.oppositeOffsets)
             {
