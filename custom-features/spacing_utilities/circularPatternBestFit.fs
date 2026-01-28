@@ -1,28 +1,22 @@
-FeatureScript 2345;
+FeatureScript 2856;
 /* Automatically generated version */
 // This module is part of the FeatureScript Standard Library and is distributed under the MIT License.
 // See the LICENSE tab for the license text.
 // Copyright (c) 2013-Present PTC Inc.
 
 // Imports used in interface
-export import(path : "onshape/std/query.fs", version : "2345.0");
-export import(path : "onshape/std/tool.fs", version : "2345.0");
-export import(path : "onshape/std/patternUtils.fs", version : "2345.0");
+export import(path : "onshape/std/query.fs", version : "2856.0");
+export import(path : "onshape/std/tool.fs", version : "2856.0");
+export import(path : "onshape/std/patternUtils.fs", version : "2856.0");
 
 // Imports used internally
-import(path : "onshape/std/curveGeometry.fs", version : "2345.0");
-import(path : "onshape/std/manipulator.fs", version : "2345.0");
-import(path : "onshape/std/mathUtils.fs", version : "2345.0");
-import(path : "onshape/std/recordpatterntype.gen.fs", version : "2345.0");
+import(path : "onshape/std/curveGeometry.fs", version : "2856.0");
+import(path : "onshape/std/manipulator.fs", version : "2856.0");
+import(path : "onshape/std/mathUtils.fs", version : "2856.0");
+import(path : "onshape/std/recordpatterntype.gen.fs", version : "2856.0");
 
-//added for Best fit
-export enum CircularPatternSpacingType
-{
-    annotation { "Name" : "Equal spacing" }
-    EQUAL,
-    annotation { "Name" : "Best fit" }
-    BESTFIT,
-}
+// Import spacing utilities for circular pattern best fit logic
+export import(path : "292286148f0044bbd7ef4042", version : "51203dd1425955172d13b65b"); // circularPatternSpacingUtils.fs
 
 /**
  * Performs a body, face, or feature circular pattern. Internally, performs
@@ -88,55 +82,8 @@ export const circularPatternBestFit = defineFeature(function(context is Context,
         annotation { "Name" : "Angle" }
         isAngle(definition.angle, ANGLE_360_FULL_DEFAULT_BOUNDS);
 
-        // Best fit modification (PART 1 of 3)
-        annotation { "Name" : "Spacing type" }
-        definition.spacingType is CircularPatternSpacingType;
-
-        if (definition.spacingType == CircularPatternSpacingType.EQUAL)
-        {
-
-            annotation { "Name" : "Instance count" }
-            isInteger(definition.instanceCount, CIRCULAR_PATTERN_BOUNDS);
-
-            annotation { "Name" : "Opposite direction", "UIHint" : UIHint.OPPOSITE_DIRECTION_CIRCULAR }
-            definition.oppositeDirection is boolean;
-
-            annotation { "Name" : "Equal spacing", "Default" : true }
-            definition.equalSpace is boolean;
-
-            annotation { "Name" : "Centered" }
-            definition.isCentered is boolean;
-
-        }
-
-        if (definition.spacingType == CircularPatternSpacingType.BESTFIT)
-        {
-            annotation { "Name" : "Target pitch" }
-            isLength(definition.targetPitch, PATTERN_OFFSET_BOUND);
-
-            annotation { "Name" : "Use reference point" }
-            definition.useReferencePoint is boolean;
-
-            if (definition.useReferencePoint)
-            {
-                annotation { "Name" : "Reference point", "Filter" : QueryFilterCompound.ALLOWS_VERTEX, "MaxNumberOfPicks" : 1 }
-                definition.referencePoint is Query;
-            }
-
-            annotation { "Name" : "Actual pitch", "UIHint" : UIHint.READ_ONLY }
-            isAnything(definition.actualPitch);
-
-            // annotation { "Name" : "Pitch error", "UIHint" : UIHint.READ_ONLY }
-            // isAnything(definition.pitchError);
-
-            annotation { "Name" : "Instance count", "UIHint" : UIHint.READ_ONLY }
-            isAnything(definition.actualCount);
-
-            annotation { "Name" : "Pitch ceiling", "Default" : false }
-            definition.doPitchCeiling is boolean;
-
-        }
-        //... End of Best fit modification (PART 1 of 3)
+        // Use the spacing utilities predicate for spacing configuration
+        circularPatternSpacingPredicate(definition);
 
         if (definition.patternType == PatternType.PART)
         {
@@ -172,13 +119,6 @@ export const circularPatternBestFit = defineFeature(function(context is Context,
 
         definition = adjustPatternDefinitionEntities(context, definition, false);
 
-        // Added for Best fit (PART 2 of 3)
-        const entityBox = evBox3d(context, {
-                    "topology" : isFeaturePattern(definition.patternType) ? qCreatedBy(definition.instanceFunction) : definition.entities,
-                    "tight" : true
-                });
-        // End of PART 2 of 3
-
         verifyPatternSize(context, id, definition.instanceCount);
 
         var angle = adjustAngle(context, definition.angle);
@@ -192,60 +132,8 @@ export const circularPatternBestFit = defineFeature(function(context is Context,
         if (axis == undefined)
             throw regenError(ErrorStringEnum.PATTERN_CIRCULAR_NO_AXIS, ["axis"]);
 
-        // Best fit modification (PART 3 of 3)
-        var direction = computePatternAxis(context, definition.axis, withAxisTransform, remainingTransform);
-        if (direction == undefined)
-            throw regenError(ErrorStringEnum.PATTERN_CIRCULAR_NO_AXIS, ["axis"]);
-
-        if (definition.spacingType == CircularPatternSpacingType.BESTFIT)
-        {
-            const referencePoint = !definition.useReferencePoint ? box3dCenter(entityBox) : evVertexPoint(context, {
-                            "vertex" : definition.referencePoint
-                        });
-
-            const radius = evDistance(context, {
-                            "side0" : referencePoint,
-                            "side1" : direction
-                        }).distance;
-
-            const circumference = 2 * PI * radius * definition.angle / (360 * degree);
-
-            // handle the case of an open path (angle less than 360)
-            const corrector = (definition.angle < 360 * degree) ? 1 : 0;
-            const computedNum = (circumference / definition.targetPitch) + corrector;
-
-            // Now modify the original feature definition
-            var integerComputedNum;
-            if (definition.doPitchCeiling)
-            {
-                integerComputedNum = ceil(computedNum);
-            }
-            else
-            {
-                integerComputedNum = round(computedNum);
-            }
-            definition.instanceCount = integerComputedNum;
-
-            const actualPitch = circumference / (integerComputedNum - corrector);
-            const targetPitch = definition.targetPitch;
-            const pitchError = actualPitch - targetPitch;
-
-            setFeatureComputedParameter(context, id, {
-                        "name" : "actualPitch",
-                        "value" : actualPitch
-                    });
-
-            // setFeatureComputedParameter(context, id, {
-            //             "name" : "pitchError",
-            //             "value" : pitchError
-            //         });
-
-            setFeatureComputedParameter(context, id, {
-                        "name" : "actualCount",
-                        "value" : definition.instanceCount
-                    });
-        }
-        //... End of Best fit modification (PART 3 of 3)
+        // Use spacing utilities to compute spacing parameters
+        definition = computeCircularPatternSpacing(context, id, definition, axis);
 
         if (definition.equalSpace)
         {
