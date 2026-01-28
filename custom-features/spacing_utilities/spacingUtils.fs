@@ -44,38 +44,26 @@ export enum CurvePatternSpacingType
  *      @field actualPitch {ValueWithUnits} : Read-only actual pitch for BESTFIT spacing
  *      @field actualCount {number} : Read-only computed instance count for BESTFIT spacing
  *      @field doPitchCeiling {boolean} : Whether to round up (ceiling) the instance count for BESTFIT
- * @param autoCalculateDistanceCount {boolean} : Optional - if true, makes instance count read-only in DISTANCE mode (default: false)
  */
-export predicate curvePatternSpacingPredicate(definition is map, autoCalculateDistanceCount is boolean)
+export predicate curvePatternSpacingPredicate(definition is map)
 {
     annotation { "Name" : "Spacing type" }
     definition.spacingType is CurvePatternSpacingType;
+
+    if (definition.spacingType == CurvePatternSpacingType.DISTANCE || definition.spacingType == CurvePatternSpacingType.EQUAL)
+    {
+        annotation { "Name" : "Instance count" }
+        isInteger(definition.instanceCount, CURVE_PATTERN_BOUNDS);
+    }
 
     if (definition.spacingType == CurvePatternSpacingType.DISTANCE)
     {
         annotation { "Name" : "Distance" }
         isLength(definition.distance, PATTERN_OFFSET_BOUND);
-        
-        // Instance count field behavior depends on autoCalculateDistanceCount parameter
-        if (autoCalculateDistanceCount == true)
-        {
-            // Read-only: instance count is auto-calculated (e.g., for tab and slot)
-            annotation { "Name" : "Instance count", "UIHint" : UIHint.READ_ONLY }
-            isAnything(definition.instanceCount);
-        }
-        else
-        {
-            // Editable: user specifies both distance and count (default behavior)
-            annotation { "Name" : "Instance count" }
-            isInteger(definition.instanceCount, CURVE_PATTERN_BOUNDS);
-        }
     }
 
     if (definition.spacingType == CurvePatternSpacingType.EQUAL)
     {
-        annotation { "Name" : "Instance count" }
-        isInteger(definition.instanceCount, CURVE_PATTERN_BOUNDS);
-        
         annotation { "Name" : "Actual pitch", "UIHint" : UIHint.READ_ONLY }
         isAnything(definition.actualPitchEqual);
     }

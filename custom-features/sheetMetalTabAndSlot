@@ -71,8 +71,7 @@ export const tabAndSlotBossDisplay = defineSheetMetalFeature(function(context is
         definition.edges is Query;
 
         // Use centralized spacing predicate from spacingUtils
-        // Pass true to make instance count read-only in DISTANCE mode (auto-calculated)
-        curvePatternSpacingPredicate(definition, true);
+        curvePatternSpacingPredicate(definition);
 
         annotation { "Name" : "Tab Width" }
         isLength(definition.tabWidth, TAB_WIDTH_BOUNDS);
@@ -114,19 +113,6 @@ export const tabAndSlotBossDisplay = defineSheetMetalFeature(function(context is
                     "entities" : definition.edges
                 });
 
-        // For DISTANCE mode, auto-calculate instance count to fit as many tabs as possible.
-        // Note: The predicate requires instanceCount input for DISTANCE mode, but we override
-        // it here to automatically fit tabs based on available space. The user's input value
-        // for instanceCount in DISTANCE mode is used only as an initial/default and will be
-        // recalculated based on the actual edge length and specified distance (pitch).
-        // DISTANCE represents the pitch (center-to-center distance) between tabs.
-        // Formula: With first tab at position 0, subsequent tabs at pitch intervals,
-        // we can fit: floor((totalLength - tabWidth) / distance) + 1 tabs
-        if (definition.spacingType == CurvePatternSpacingType.DISTANCE)
-        {
-            definition.instanceCount = floor((totalLength - definition.tabWidth) / definition.distance) + 1;
-        }
-        
         // Use centralized spacing calculation from spacingUtils
         definition = computeCurvePatternSpacing(context, id, definition);
 
