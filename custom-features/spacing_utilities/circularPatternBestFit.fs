@@ -16,7 +16,8 @@ import(path : "onshape/std/mathUtils.fs", version : "2856.0");
 import(path : "onshape/std/recordpatterntype.gen.fs", version : "2856.0");
 
 // Import spacing utilities for circular pattern best fit logic
-export import(path : "292286148f0044bbd7ef4042", version : "51203dd1425955172d13b65b"); // circularPatternSpacingUtils.fs
+// TODO: Replace with actual Onshape document ID when circularPatternSpacingUtils.fs is published
+export import(path : "CIRCULAR_PATTERN_SPACING_UTILS_DOC_ID", version : "CIRCULAR_PATTERN_SPACING_UTILS_VERSION");
 
 /**
  * Performs a body, face, or feature circular pattern. Internally, performs
