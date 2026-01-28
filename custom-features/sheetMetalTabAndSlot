@@ -119,9 +119,11 @@ export const tabAndSlotBossDisplay = defineSheetMetalFeature(function(context is
         // for instanceCount in DISTANCE mode is used only as an initial/default and will be
         // recalculated based on the actual edge length and specified distance (pitch).
         // DISTANCE represents the pitch (center-to-center distance) between tabs.
+        // Formula: With first tab at position 0, subsequent tabs at pitch intervals,
+        // we can fit: floor((totalLength - tabWidth) / distance) + 1 tabs
         if (definition.spacingType == CurvePatternSpacingType.DISTANCE)
         {
-            definition.instanceCount = floor(totalLength / definition.distance);
+            definition.instanceCount = floor((totalLength - definition.tabWidth) / definition.distance) + 1;
         }
         
         // Use centralized spacing calculation from spacingUtils
