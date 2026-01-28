@@ -22,19 +22,17 @@ import(path : "onshape/std/surfaceGeometry.fs", version : "2856.0");
 import(path : "onshape/std/topologyUtils.fs", version : "2856.0");
 import(path : "onshape/std/vector.fs", version : "2856.0");
 import(path : "onshape/std/smcornerbreakstyle.gen.fs", version : "2856.0");
-// Import spacingUtils for reference - this module establishes spacing patterns that this feature aligns with
-import(path : "spacing_utilities/spacingUtils.fs", version : "");
+// Import spacingUtils module for centralized pattern spacing logic
+export import(path : "c51f6558b7346f455a634ff5/6f6023994aba32507825b3fe/8ce820287d75ed2e92412d90", version : "6649d8199886b2041cd02aae");//spacingUtils.fs
 
 // Original framework by Caden Armstrong - SmartBench Software
 // Hacked by Derek Van Allen
 // Created for Boss Display
 // For support contact Derek Van Allen on the Onshape forums
 //
-// NOTE: This feature uses spacing logic patterns aligned with the spacingUtils.fs module
-// for consistency across the codebase. The TabAndSlotSpacingType enum and field naming
-// (e.g., 'distance' instead of 'spacing', 'instanceCount' instead of 'tabCount')
-// follow the conventions established in spacingUtils.fs to enable future consolidation
-// and feature enhancements like BESTFIT spacing mode.
+// NOTE: This feature uses the centralized spacingUtils.fs module for spacing logic.
+// All spacing types, predicates, and calculations are imported from spacingUtils
+// to ensure consistency across pattern generation tools.
 
 const EDGE_LENGTH_TOLERANCE = 1e-9 * meter;
 const EDGE_PARAMETER_TOLERANCE = 1e-6;
@@ -64,19 +62,6 @@ export const CHAMFER_WIDTH_BOUNDS =
             (inch) : [0, .02, 1]
         } as LengthBoundSpec;
 
-/**
- * Tab and slot spacing type enum.
- * Aligned with spacingUtils.fs CurvePatternSpacingType for consistency.
- * Note: BESTFIT mode from spacingUtils can be added in future iterations.
- */
-export enum TabAndSlotSpacingType
-{
-    annotation { "Name" : "Equal" }
-    EQUAL,
-    annotation { "Name" : "Distance" }
-    DISTANCE
-}
-
 annotation { "Feature Type Name" : "OnlyTabs", "Icon" : ICON::BLOB_DATA, "Feature Type Description" : "Tab and Slot feature for Boss Display" }
 export const tabAndSlotBossDisplay = defineSheetMetalFeature(function(context is Context, id is Id, definition is map)
     precondition
@@ -85,22 +70,8 @@ export const tabAndSlotBossDisplay = defineSheetMetalFeature(function(context is
         annotation { "Name" : "Edges", "Filter" : EntityType.EDGE, "UIHint" : UIHint.SHOW_CREATE_SELECTION }
         definition.edges is Query;
 
-        annotation { "Name" : "Spacing Type" }
-        definition.spacingType is TabAndSlotSpacingType;
-
-        if (definition.spacingType == TabAndSlotSpacingType.DISTANCE)
-        {
-            annotation { "Name" : "Distance" }
-            isLength(definition.distance, SPACING_BOUNDS);
-        }
-
-        if (definition.spacingType == TabAndSlotSpacingType.EQUAL)
-        {
-            annotation { "Name" : "Instance count" }
-            isInteger(definition.instanceCount, POSITIVE_COUNT_BOUNDS);
-        }
-
-
+        // Use centralized spacing predicate from spacingUtils
+        curvePatternSpacingPredicate(definition);
 
         annotation { "Name" : "Tab Width" }
         isLength(definition.tabWidth, TAB_WIDTH_BOUNDS);
@@ -142,23 +113,35 @@ export const tabAndSlotBossDisplay = defineSheetMetalFeature(function(context is
                     "entities" : definition.edges
                 });
 
-        var tabCount = 0;
+        // For DISTANCE mode, calculate instance count based on available space
+        if (definition.spacingType == CurvePatternSpacingType.DISTANCE)
+        {
+            definition.instanceCount = floor((totalLength - definition.tabWidth) / definition.distance);
+        }
+        
+        // Use centralized spacing calculation from spacingUtils
+        definition = computeCurvePatternSpacing(context, id, definition);
+
+        var tabCount = definition.instanceCount;
         var tabDomains = []; // Array of {start, end} maps representing tab positions as normalized parameters
 
-        if (definition.spacingType == TabAndSlotSpacingType.EQUAL)
+        if (definition.spacingType == CurvePatternSpacingType.EQUAL)
         {
-            tabCount = definition.instanceCount;
             tabDomains = calculateEqualSpacedTabDomains(totalLength, definition.tabWidth, tabCount);
         }
-        else if (definition.spacingType == TabAndSlotSpacingType.DISTANCE)
+        else if (definition.spacingType == CurvePatternSpacingType.DISTANCE)
         {
-            tabCount = floor((totalLength - definition.tabWidth) / definition.distance);
             tabDomains = calculateDistanceSpacedTabDomains(totalLength, definition.tabWidth, definition.distance, tabCount);
+        }
+        else if (definition.spacingType == CurvePatternSpacingType.BESTFIT)
+        {
+            // For BESTFIT, instanceCount is computed by computeCurvePatternSpacing
+            tabDomains = calculateEqualSpacedTabDomains(totalLength, definition.tabWidth, tabCount);
         }
 
         if (tabCount == 0 || size(tabDomains) == 0)
         {
-            if (definition.spacingType == TabAndSlotSpacingType.EQUAL)
+            if (definition.spacingType == CurvePatternSpacingType.EQUAL || definition.spacingType == CurvePatternSpacingType.BESTFIT)
             {
                 throw regenError("No tabs can fit with the specified parameters", ["tabWidth", "instanceCount"]);
             }
@@ -171,7 +154,7 @@ export const tabAndSlotBossDisplay = defineSheetMetalFeature(function(context is
         // Validate that tab domains do not overlap
         if (!validateTabDomainsNoOverlap(tabDomains))
         {
-            if (definition.spacingType == TabAndSlotSpacingType.EQUAL)
+            if (definition.spacingType == CurvePatternSpacingType.EQUAL || definition.spacingType == CurvePatternSpacingType.BESTFIT)
             {
                 throw regenError("Resultant tabs would overlap. Reduce tab count or tab width to avoid overlapping tabs.", ["instanceCount", "tabWidth"]);
             }
