@@ -5,6 +5,7 @@ import(path : "onshape/std/box.fs", version : "2856.0");
 import(path : "onshape/std/feature.fs", version : "2856.0");
 import(path : "onshape/std/valueBounds.fs", version : "2856.0");
 import(path : "onshape/std/math.fs", version : "2856.0");
+import(path : "onshape/std/patternUtils.fs", version : "2856.0");
 
 /**
  * Specifies the type of spacing between circular pattern instances.
@@ -87,12 +88,12 @@ export predicate circularPatternSpacingPredicate(definition is map)
  * 
  * @param context {Context} : The context for this operation
  * @param id {Id} : The feature ID for setting computed parameters
+ * @param axisLine {Line} : The axis of rotation for the pattern
  * @param definition {map} : The feature definition containing spacing configuration
  *      @field patternType {PatternType} : The type of pattern (PART, FEATURE, or FACE)
  *      @field entities {Query} : The entities to pattern (for PART patterns)
  *      @field instanceFunction {FeatureList} : The features to pattern (for FEATURE patterns)
  *      @field angle {ValueWithUnits} : The angle for the pattern
- *      @field axis {Line} : The axis of rotation for the pattern
  *      @field spacingType {CircularPatternSpacingType} : The spacing type
  *      @field instanceCount {number} : Input/output instance count
  *      @field targetPitch {ValueWithUnits} : Target pitch for best-fit spacing
@@ -137,8 +138,6 @@ export function computeCircularPatternSpacing(context is Context, id is Id, defi
         definition.instanceCount = integerComputedInstanceNumber;
 
         const actualPitch = circumference / (integerComputedInstanceNumber - corrector);
-        const targetPitch = definition.targetPitch;
-        const pitchError = actualPitch - targetPitch;
 
         setFeatureComputedParameter(context, id, {
                     "name" : "actualPitch",
@@ -160,7 +159,7 @@ export function computeCircularPatternSpacing(context is Context, id is Id, defi
  * @param patternType {PatternType} : The pattern type to check
  * @returns {boolean} : True if the pattern type is FEATURE
  */
-function isFeaturePattern(patternType) returns boolean
+export function isFeaturePattern(patternType) returns boolean
 {
     return patternType == PatternType.FEATURE;
 }

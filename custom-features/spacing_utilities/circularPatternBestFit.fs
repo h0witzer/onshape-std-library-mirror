@@ -70,7 +70,7 @@ export import(path : "CIRCULAR_PATTERN_SPACING_UTILS_DOC_ID", version : "CIRCULA
  * }}
  */
 annotation { "Feature Type Name" : "Circular pattern (Best fit)", "Filter Selector" : "allparts", "Manipulator Change Function" : "circularPatternPointChange",
-        "Feature Type Description" : "Create circlar pattern with Best fit spacing.<br>" ~
+        "Feature Type Description" : "Create circular pattern with Best fit spacing.<br>" ~
         "This will automatically determine the correct number of instances for a circular pattern with a specified target pitch." }
 export const circularPatternBestFit = defineFeature(function(context is Context, id is Id, definition is map)
     precondition

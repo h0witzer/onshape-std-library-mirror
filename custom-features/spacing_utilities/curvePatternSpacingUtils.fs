@@ -133,8 +133,6 @@ export function computeCurvePatternSpacing(context is Context, id is Id, definit
         definition.instanceCount = integerComputedInstanceNumber;
 
         const actualPitch = curveLength / (integerComputedInstanceNumber - corrector);
-        const targetPitch = definition.targetPitch;
-        const pitchError = actualPitch - targetPitch;
 
         setFeatureComputedParameter(context, id, {
                     "name" : "actualPitch",
