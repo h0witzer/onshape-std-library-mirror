@@ -39,14 +39,14 @@ export enum CurvePatternSpacingType
  *      @field spacingType {CurvePatternSpacingType} : The type of spacing to use
  *      @field distance {ValueWithUnits} : Distance between instances (required if spacingType is DISTANCE)
  *      @field instanceCount {number} : Number of instances (required if spacingType is DISTANCE or EQUAL)
- *      @field autoCalculateDistanceCount {boolean} : Optional - if true, makes instance count read-only in DISTANCE mode
  *      @field actualPitchEqual {ValueWithUnits} : Read-only actual pitch for EQUAL spacing
  *      @field targetPitch {ValueWithUnits} : Target pitch for BESTFIT spacing
  *      @field actualPitch {ValueWithUnits} : Read-only actual pitch for BESTFIT spacing
  *      @field actualCount {number} : Read-only computed instance count for BESTFIT spacing
  *      @field doPitchCeiling {boolean} : Whether to round up (ceiling) the instance count for BESTFIT
+ * @param autoCalculateDistanceCount {boolean} : Optional - if true, makes instance count read-only in DISTANCE mode (default: false)
  */
-export predicate curvePatternSpacingPredicate(definition is map)
+export predicate curvePatternSpacingPredicate(definition is map, autoCalculateDistanceCount is boolean)
 {
     annotation { "Name" : "Spacing type" }
     definition.spacingType is CurvePatternSpacingType;
@@ -56,8 +56,8 @@ export predicate curvePatternSpacingPredicate(definition is map)
         annotation { "Name" : "Distance" }
         isLength(definition.distance, PATTERN_OFFSET_BOUND);
         
-        // Instance count field behavior depends on autoCalculateDistanceCount flag
-        if (definition.autoCalculateDistanceCount == true)
+        // Instance count field behavior depends on autoCalculateDistanceCount parameter
+        if (autoCalculateDistanceCount == true)
         {
             // Read-only: instance count is auto-calculated (e.g., for tab and slot)
             annotation { "Name" : "Instance count", "UIHint" : UIHint.READ_ONLY }

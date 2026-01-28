@@ -83,7 +83,8 @@ export const curvePatternBestFit = defineFeature(function(context is Context, id
         definition.edges is Query;
 
         // Use the spacing utilities predicate for spacing configuration
-        curvePatternSpacingPredicate(definition);
+        // Pass false for editable instance count in DISTANCE mode
+        curvePatternSpacingPredicate(definition, false);
 
         annotation { "Name" : "Keep orientation" }
         definition.keepOrientation is boolean;

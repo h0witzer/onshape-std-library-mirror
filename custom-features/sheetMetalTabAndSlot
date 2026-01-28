@@ -70,12 +70,9 @@ export const tabAndSlotBossDisplay = defineSheetMetalFeature(function(context is
         annotation { "Name" : "Edges", "Filter" : EntityType.EDGE, "UIHint" : UIHint.SHOW_CREATE_SELECTION }
         definition.edges is Query;
 
-        // Set flag to make instance count read-only in DISTANCE mode (auto-calculated)
-        annotation { "Name" : "Auto-calculate distance count", "Default" : true, "UIHint" : UIHint.ALWAYS_HIDDEN }
-        definition.autoCalculateDistanceCount is boolean;
-
         // Use centralized spacing predicate from spacingUtils
-        curvePatternSpacingPredicate(definition);
+        // Pass true to make instance count read-only in DISTANCE mode (auto-calculated)
+        curvePatternSpacingPredicate(definition, true);
 
         annotation { "Name" : "Tab Width" }
         isLength(definition.tabWidth, TAB_WIDTH_BOUNDS);
@@ -536,14 +533,12 @@ function identifyTabSegmentsByEdgeMidpoints(context is Context, allSplitEdges is
 
         // Check if this parameter falls within any tab domain
         var isInTabDomain = false;
-        var domainIndex = -1;
         for (var j = 0; j < size(tabDomains); j += 1)
         {
             const domain = tabDomains[j];
             if (midpointParameter >= domain.start && midpointParameter <= domain.end)
             {
                 isInTabDomain = true;
-                domainIndex = j;
                 break;
             }
         }
