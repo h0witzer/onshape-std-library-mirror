@@ -1,5 +1,6 @@
 FeatureScript 2856;
 import(path : "onshape/std/common.fs", version : "2856.0");
+import(path : "onshape/std/queryVariable.fs", version : "2856.0");
 
 // Import the sheet metal queries library
 import(path : "943642034066bc27de5d166f", version : "d693581e2a8766ea1378a36d");// sheetMetalQueries.fs
