@@ -19,8 +19,8 @@ This refactoring successfully extracts the spacing logic from `curvePatternBestF
     - `CircularPatternSpacingType` enum (EQUAL, BESTFIT)
     - `circularPatternSpacingPredicate()` - Predicate for UI configuration
     - `computeCircularPatternSpacing()` - Function to calculate instance count and spacing
-  - **Shared Utilities**:
-    - `isFeaturePattern()` - Helper function to check pattern type
+  - **Internal Utilities**:
+    - `isFeaturePattern()` - Private helper (not exported; standard library provides public version)
 - **Size**: ~320 lines of code
 - **Import Path**: `import(path : "8ce820287d75ed2e92412d90", version : "a414d4542f7ae1196125cfbe");//spacingUtils.fs`
 
@@ -67,8 +67,8 @@ spacingUtils.fs
 │   ├── CircularPatternSpacingType enum
 │   ├── circularPatternSpacingPredicate()
 │   └── computeCircularPatternSpacing()
-└── Shared Utilities Section
-    └── isFeaturePattern()
+└── Internal Utilities Section
+    └── isFeaturePattern() (private - not exported)
 ```
 
 ### 3. Consistent Import Pattern

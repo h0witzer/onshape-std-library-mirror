@@ -17,8 +17,7 @@ This directory contains reusable spacing logic utilities for pattern features in
 - `circularPatternSpacingPredicate()` - Predicate for UI configuration of circular pattern spacing
 - `computeCircularPatternSpacing()` - Function to calculate instance count and spacing for circular patterns
 
-#### Shared Utilities
-- `isFeaturePattern()` - Helper function to check if a pattern type is a feature pattern
+**Note**: The module uses `isFeaturePattern()` internally, but this is not exported as it's already available from the standard library's `patternUtils.fs`.
 
 ## Usage
 

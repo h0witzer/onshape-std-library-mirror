@@ -59,10 +59,12 @@ FeatureScript 2856;
 - computeCircularPatternSpacing()
 
 // ============================================================================
-// SHARED UTILITIES
+// INTERNAL UTILITIES (not exported)
 // ============================================================================
-- isFeaturePattern()
+- isFeaturePattern() - private helper; standard library provides public version
 ```
+
+**Note**: `isFeaturePattern()` is available from standard library's `patternUtils.fs`, not from this module.
 
 ## Benefits
 
@@ -86,7 +88,7 @@ curvePatternSpacingPredicate(definition);        // ✅ Available
 circularPatternSpacingPredicate(definition);     // ✅ Available
 computeCurvePatternSpacing(context, id, def);    // ✅ Available
 computeCircularPatternSpacing(context, id, def, axis); // ✅ Available
-isFeaturePattern(patternType);                   // ✅ Available
+// isFeaturePattern is available from standard library's patternUtils.fs
 ```
 
 ### 4. Better Organization ✅

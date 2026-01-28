@@ -314,11 +314,12 @@ export function computeCircularPatternSpacing(context is Context, id is Id, defi
 
 /**
  * Helper function to check if a pattern type is a feature pattern.
+ * Internal use only - standard library provides public version via patternUtils.fs
  * 
  * @param patternType {PatternType} : The pattern type to check
  * @returns {boolean} : True if the pattern type is FEATURE
  */
-export function isFeaturePattern(patternType) returns boolean
+function isFeaturePattern(patternType) returns boolean
 {
     return patternType == PatternType.FEATURE;
 }
