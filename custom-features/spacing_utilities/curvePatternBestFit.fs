@@ -1,38 +1,26 @@
-FeatureScript 2345;
+FeatureScript 2856;
 /* Automatically generated version */
 // This module is part of the FeatureScript Standard Library and is distributed under the MIT License.
 // See the LICENSE tab for the license text.
 // Copyright (c) 2013-Present PTC Inc.
 
 // Imports used in interface
-export import(path : "onshape/std/patternUtils.fs", version : "2345.0");
+export import(path : "onshape/std/patternUtils.fs", version : "2856.0");
 
 // Useful export for users
-export import(path : "onshape/std/path.fs", version : "2345.0");
+export import(path : "onshape/std/path.fs", version : "2856.0");
 
 // Imports used internally
-import(path : "onshape/std/curveGeometry.fs", version : "2345.0");
-import(path : "onshape/std/manipulator.fs", version : "2345.0");
-import(path : "onshape/std/mathUtils.fs", version : "2345.0");
-import(path : "onshape/std/sketch.fs", version : "2345.0");
-import(path : "onshape/std/surfaceGeometry.fs", version : "2345.0");
-import(path : "onshape/std/topologyUtils.fs", version : "2345.0");
-import(path : "onshape/std/recordpatterntype.gen.fs", version : "2345.0");
+import(path : "onshape/std/curveGeometry.fs", version : "2856.0");
+import(path : "onshape/std/manipulator.fs", version : "2856.0");
+import(path : "onshape/std/mathUtils.fs", version : "2856.0");
+import(path : "onshape/std/sketch.fs", version : "2856.0");
+import(path : "onshape/std/surfaceGeometry.fs", version : "2856.0");
+import(path : "onshape/std/topologyUtils.fs", version : "2856.0");
+import(path : "onshape/std/recordpatterntype.gen.fs", version : "2856.0");
 
-/**
- * Specifies the type of spacing between pattern instances.
- * @value EQUAL : Equal-spaced instances along the length of curve
- * @value DISTANCE : Instances spaced by custom distance
- */
-export enum CurvePatternSpacingType
-{
-    annotation { "Name" : "Equal spacing" }
-    EQUAL,
-    annotation { "Name" : "Distance" }
-    DISTANCE,
-    annotation { "Name" : "Best fit" }
-    BESTFIT,
-}
+// Import consolidated spacing utilities
+export import(path : "8ce820287d75ed2e92412d90", version : "a414d4542f7ae1196125cfbe");//spacingUtils.fs
 
 /**
  * Performs a body, face, or feature curve pattern. Internally, performs
@@ -94,44 +82,8 @@ export const curvePatternBestFit = defineFeature(function(context is Context, id
         annotation { "Name" : "Path to pattern along", "Filter" : EntityType.EDGE || (EntityType.BODY && BodyType.WIRE && SketchObject.NO) }
         definition.edges is Query;
 
-        annotation { "Name" : "Spacing type" }
-        definition.spacingType is CurvePatternSpacingType;
-
-        if (definition.spacingType == CurvePatternSpacingType.DISTANCE)
-        {
-            annotation { "Name" : "Distance" }
-            isLength(definition.distance, PATTERN_OFFSET_BOUND);
-        }
-
-        if (definition.spacingType == CurvePatternSpacingType.DISTANCE || definition.spacingType == CurvePatternSpacingType.EQUAL)
-        {
-            annotation { "Name" : "Instance count" }
-            isInteger(definition.instanceCount, CURVE_PATTERN_BOUNDS);
-        }
-
-        if (definition.spacingType == CurvePatternSpacingType.EQUAL)
-        {
-            annotation { "Name" : "Actual pitch", "UIHint" : UIHint.READ_ONLY }
-            isAnything(definition.actualPitchEqual);
-        }
-
-        if (definition.spacingType == CurvePatternSpacingType.BESTFIT)
-        {
-            annotation { "Name" : "Target pitch" }
-            isLength(definition.targetPitch, PATTERN_OFFSET_BOUND);
-
-            annotation { "Name" : "Actual pitch", "UIHint" : UIHint.READ_ONLY }
-            isAnything(definition.actualPitch);
-
-            // annotation { "Name" : "Pitch error", "UIHint" : UIHint.READ_ONLY }
-            // isAnything(definition.pitchError);
-
-            annotation { "Name" : "Instance count", "UIHint" : UIHint.READ_ONLY }
-            isAnything(definition.actualCount);
-
-            annotation { "Name" : "Pitch ceiling", "Default" : false }
-            definition.doPitchCeiling is boolean;
-        }
+        // Use the spacing utilities predicate for spacing configuration
+        curvePatternSpacingPredicate(definition);
 
         annotation { "Name" : "Keep orientation" }
         definition.keepOrientation is boolean;
@@ -165,74 +117,8 @@ export const curvePatternBestFit = defineFeature(function(context is Context, id
         }
     }
     {
-        // Added for "Best fit"
-        const curveLength = evLength(context, {
-                    "entities" : definition.edges
-                });
-                
-        var corrector = 0;
-        try silent
-        {
-            const evalCurve = evCurveDefinition(context, {
-                        "edge" : definition.edges
-                    });
-
-            corrector = (evalCurve.curveType == CurveType.SPLINE && evalCurve.isPeriodic) ? 0 : 1; // accounts for periodic curves
-        }
-        
-        if (definition.spacingType == CurvePatternSpacingType.EQUAL)
-        {
-            const actualPitch = curveLength / (definition.instanceCount - corrector);
-
-            setFeatureComputedParameter(context, id, {
-                        "name" : "actualPitchEqual",
-                        "value" : actualPitch
-                    });
-        }
-
-        if (definition.spacingType == CurvePatternSpacingType.BESTFIT)
-        {
-            const computedNum = curveLength / definition.targetPitch + corrector;
-
-            // Now I update the original definition.instanceCount
-            var integerComputedNum;
-
-            if (definition.doPitchCeiling)
-            {
-                integerComputedNum = ceil(computedNum);
-            }
-            else
-            {
-                integerComputedNum = round(computedNum);
-            }
-
-            definition.instanceCount = integerComputedNum;
-
-            const actualPitch = curveLength / (integerComputedNum - corrector);
-            const targetPitch = definition.targetPitch;
-            const pitchError = actualPitch - targetPitch;
-
-            setFeatureComputedParameter(context, id, {
-                        "name" : "actualPitch",
-                        "value" : actualPitch
-                    });
-
-            // setFeatureComputedParameter(context, id, {
-            //             "name" : "pitchError",
-            //             "value" : pitchError
-            //         });
-
-            setFeatureComputedParameter(context, id, {
-                        "name" : "actualCount",
-                        "value" : definition.instanceCount
-                    });
-        }
-        //END "Best fit" additions
-
-
-
-
-
+        // Use spacing utilities to compute spacing parameters
+        definition = computeCurvePatternSpacing(context, id, definition);
 
         verifyNoMesh(context, definition, "edges");
 
