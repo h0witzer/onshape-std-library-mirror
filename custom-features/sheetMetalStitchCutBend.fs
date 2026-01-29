@@ -244,11 +244,16 @@ export const sheetMetalStitchCutBend = defineSheetMetalFeature(function(context 
         const allEdgesAfterSplit = qEntityFilter(qUnion([orderedEdgeQuery, trackedEdges]), EntityType.EDGE);
         
         // Remove the inherited attribute from all split segments
-        var inheritedAttribute = getJointAttribute(context, jointEntity);
-        if (inheritedAttribute != undefined)
+        // Get the attribute from one of the actual split edges (they all share the same inherited attribute)
+        const splitEdgesList = evaluateQuery(context, allEdgesAfterSplit);
+        if (size(splitEdgesList) > 0)
         {
-            // This removes the attribute from all segments at once
-            removeAttributes(context, { "entities" : allEdgesAfterSplit, "attributePattern" : inheritedAttribute });
+            var inheritedAttribute = getJointAttribute(context, qUnion([splitEdgesList[0]]));
+            if (inheritedAttribute != undefined)
+            {
+                // This removes the attribute from all segments that share this attribute
+                removeAttributes(context, { "entities" : allEdgesAfterSplit, "attributePattern" : inheritedAttribute });
+            }
         }
 
         // Bridge segments are the ones that fall within the calculated domains (the bend connections)
