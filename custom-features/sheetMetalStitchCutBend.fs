@@ -224,12 +224,15 @@ export const sheetMetalStitchCutBend = defineSheetMetalFeature(function(context 
         var splitOperationIndex = 0;
         for (var instruction in splitInstructions)
         {
+            const splitId = splitOperationId + ("split" ~ toString(splitOperationIndex));
             try
             {
-                opSplitEdges(context, splitOperationId + ("split" ~ toString(splitOperationIndex)), {
+                opSplitEdges(context, splitId, {
                             "edges" : instruction.edge,
                             "parameters" : [instruction.parameters]
                         });
+                // Add external disambiguation to help track split edges
+                setExternalDisambiguation(context, splitId, instruction.edge);
             }
             catch
             {
