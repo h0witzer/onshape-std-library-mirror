@@ -316,15 +316,15 @@ function findJointDefinitionEntity(context is Context, entity is Query, entityTy
 
 /**
  * Applies joint attributes to a set of edge segments.
- * Creates appropriate bend, rip, or tangent attributes and assigns them to the segments using setAttribute.
- * This function does NOT use replaceSMAttribute because we're working with newly split edges.
+ * Creates appropriate bend or rip attributes and assigns them to the segments.
+ * Split edges inherit attributes from parent, so we must remove them before setting new ones.
  * The proper attribute propagation will be handled by assignSMAttributesToNewOrSplitEntities.
  * Inputs:
  *   context - Evaluation context
  *   id - Operation ID for this attribute assignment
  *   segmentEdges - Query for edge segments to modify
  *   existingAttribute - The original joint attribute from before splitting
- *   targetJointType - The joint type to apply (BEND, RIP, or TANGENT)
+ *   targetJointType - The joint type to apply (BEND or RIP only)
  *   definition - Feature definition with parameters
  *   isFaceBend - Whether the original joint was a face bend
  *   isBridge - Whether these are bridge segments (true = bend) or stitch segments (false = rip)
@@ -387,14 +387,6 @@ function applyJointAttributesToSegments(context is Context, id is Id, segmentEdg
             var ripStyle = SMJointStyle.EDGE;
             newAttribute = createNewRipAttribute(context, edgeQuery, id + ("rip" ~ toString(i)), existingAttribute, ripStyle);
         }
-        else if (targetJointType == SMJointType.TANGENT)
-        {
-            if (isFaceBend)
-            {
-                throw regenError("Cannot create tangent attributes on face bend segments", ["entity"]);
-            }
-            newAttribute = createNewTangentAttribute(id + ("tangent" ~ toString(i)), existingAttribute);
-        }
         else
         {
             throw regenError("Unsupported joint type for stitch cut bend: " ~ toString(targetJointType), ["entity"]);
@@ -405,8 +397,14 @@ function applyJointAttributesToSegments(context is Context, id is Id, segmentEdg
             throw regenError("Cannot assign " ~ toString(targetJointType) ~ " attribute to edge segment", ["entity"], edgeQuery);
         }
         
-        // Use setAttribute to assign the new attribute to this split edge
-        // This is the correct approach for newly created edges from splits
+        // CRITICAL: Split edges inherit the parent's attribute. Remove it before setting new one.
+        // Without this, we get "Entity can not have more than one attribute of the same custom type"
+        removeAttributes(context, {
+            "entities" : edgeQuery,
+            "attributePattern" : {} as SMAttribute
+        });
+        
+        // Now set the new attribute
         setAttribute(context, {
             "entities" : edgeQuery,
             "attribute" : newAttribute
@@ -540,26 +538,6 @@ function createNewRipAttribute(context is Context, edge is Query, id is Id, exis
     // Use the standard utility function which properly handles angle calculation
     // Pass attributeId from existing attribute to preserve association
     return createRipAttribute(context, edge, existingAttribute.attributeId, jointStyle, undefined);
-}
-
-/**
- * Creates a new tangent attribute from an existing joint attribute.
- * Inputs:
- *   id - Operation ID
- *   existingAttribute - Existing joint attribute to use as template
- * Outputs: New tangent attribute
- */
-function createNewTangentAttribute(id is Id, existingAttribute is SMAttribute) returns SMAttribute
-{
-    // IMPORTANT: Use existingAttribute.attributeId to preserve the association
-    var tangentAttribute = makeSMJointAttribute(existingAttribute.attributeId);
-    tangentAttribute.jointType = {
-            "value" : SMJointType.TANGENT,
-            "controllingFeatureId" : toAttributeId(id),
-            "parameterIdInFeature" : "jointType",
-            "canBeEdited" : true
-        };
-    return tangentAttribute;
 }
 
 /**
