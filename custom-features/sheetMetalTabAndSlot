@@ -66,30 +66,41 @@ annotation { "Feature Type Name" : "OnlyTabs", "Icon" : ICON::BLOB_DATA, "Featur
 export const tabAndSlotBossDisplay = defineSheetMetalFeature(function(context is Context, id is Id, definition is map)
     precondition
     {
-        // Define the parameters of the feature type
+        // Edge selection
         annotation { "Name" : "Edges", "Filter" : EntityType.EDGE, "UIHint" : UIHint.SHOW_CREATE_SELECTION }
         definition.edges is Query;
 
-        // Use centralized spacing predicate from spacingUtils
+        // Spacing parameters (uses centralized spacing predicate from spacingUtils)
         curvePatternSpacingPredicate(definition);
 
-        annotation { "Name" : "Tab Width" }
-        isLength(definition.tabWidth, TAB_WIDTH_BOUNDS);
+        // Tab parameters group
+        annotation { "Name" : "Tab parameters" }
+        definition.showTabParameters is boolean;
+        
+        annotation { "Group Name" : "Tab parameters", "Driving Parameter" : "showTabParameters", "Collapsed By Default" : false }
+        {
+            annotation { "Name" : "Tab width" }
+            isLength(definition.tabWidth, TAB_WIDTH_BOUNDS);
 
-        annotation { "Name" : "Tab Depth" }
-        isLength(definition.tabDepth, TAB_DEPTH_BOUNDS);
+            annotation { "Name" : "Tab depth" }
+            isLength(definition.tabDepth, TAB_DEPTH_BOUNDS);
 
-        annotation { "Name" : "Tab Chamfer Width" }
-        isLength(definition.tabChamfer, CHAMFER_WIDTH_BOUNDS);
+            annotation { "Name" : "Tab chamfer width" }
+            isLength(definition.tabChamfer, CHAMFER_WIDTH_BOUNDS);
+        }
 
-        annotation { "Name" : "Slot Width Margin" }
-        isLength(definition.slotMargin, SLOT_MARGIN_BOUNDS);
+        // Slot parameters group
+        annotation { "Name" : "Slot parameters" }
+        definition.showSlotParameters is boolean;
+        
+        annotation { "Group Name" : "Slot parameters", "Driving Parameter" : "showSlotParameters", "Collapsed By Default" : false }
+        {
+            annotation { "Name" : "Slot width margin" }
+            isLength(definition.slotMargin, SLOT_MARGIN_BOUNDS);
 
-        annotation { "Name" : "Slot Bodies (for overlapping tabs)", "Filter" : EntityType.BODY }
-        definition.mergeScope is Query;
-
-        annotation { "Name" : "Remove Rip Joints" }
-        definition.removeRipJoints is boolean;
+            annotation { "Name" : "Slot bodies (for overlapping tabs)", "Filter" : EntityType.BODY }
+            definition.mergeScope is Query;
+        }
 
     }
     {
