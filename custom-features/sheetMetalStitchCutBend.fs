@@ -270,11 +270,11 @@ export const sheetMetalStitchCutBend = defineSheetMetalFeature(function(context 
                 SMJointType.RIP, definition, isFaceBend, false);
         }
 
-        // Update sheet metal geometry - pass the original joint entity which now contains all modified segments
-        // The split segments are all children of jointEntity, so updating it will rebuild all of them
+        // Update sheet metal geometry with all modified edges
+        const allModifiedEdges = qUnion([bridgeSegmentEdges, stitchSegmentEdges]);
         updateSheetMetalGeometry(context, id, { 
-            "entities" : jointEntity,
-            "associatedChanges" : jointEntity
+            "entities" : allModifiedEdges,
+            "associatedChanges" : allModifiedEdges
         });
     }, { 
         useDefaultRadius : true, 
