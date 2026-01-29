@@ -23,7 +23,7 @@ import(path : "onshape/std/topologyUtils.fs", version : "2856.0");
 import(path : "onshape/std/vector.fs", version : "2856.0");
 import(path : "onshape/std/smcornerbreakstyle.gen.fs", version : "2856.0");
 // Import spacingUtils module for centralized pattern spacing logic
-export import(path : "c51f6558b7346f455a634ff5/6f6023994aba32507825b3fe/8ce820287d75ed2e92412d90", version : "6649d8199886b2041cd02aae");//spacingUtils.fs
+export import(path : "c51f6558b7346f455a634ff5/89645624be30e0ee0e2ad98d/8ce820287d75ed2e92412d90", version : "5d62715b8aae99049ee68c1a");//spacingUtils.fs
 
 // Original framework by Caden Armstrong - SmartBench Software
 // Hacked by Derek Van Allen
