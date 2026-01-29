@@ -270,11 +270,12 @@ export const sheetMetalStitchCutBend = defineSheetMetalFeature(function(context 
                 SMJointType.RIP, definition, isFaceBend, false);
         }
 
-        // Update sheet metal geometry - pass the joint entity like Modify Joint does
-        // After we've modified attributes on the split segments, update the whole joint
+        // Update sheet metal geometry with the modified segment edges
+        // Using the actual segment queries (not jointEntity) ensures proper tracking
+        const modifiedEdges = qUnion([bridgeSegmentEdges, stitchSegmentEdges]);
         updateSheetMetalGeometry(context, id, { 
-            "entities" : jointEntity,
-            "associatedChanges" : jointEntity
+            "entities" : modifiedEdges,
+            "associatedChanges" : modifiedEdges
         });
     }, { 
         useDefaultRadius : true, 
@@ -323,18 +324,22 @@ function applyJointAttributesToSegments(context is Context, id is Id, segmentEdg
     // Get each individual edge segment
     const edges = evaluateQuery(context, segmentEdges);
     
+    // First pass: Remove all inherited attributes from these edges
+    for (var edge in edges)
+    {
+        const edgeQuery = qUnion([edge]);
+        var edgeAttribute = getJointAttribute(context, edgeQuery);
+        if (edgeAttribute != undefined)
+        {
+            removeAttributes(context, { "entities" : edgeQuery, "attributePattern" : edgeAttribute });
+        }
+    }
+    
+    // Second pass: Set new attributes on each edge
     for (var i = 0; i < size(edges); i += 1)
     {
         const edge = edges[i];
         const edgeQuery = qUnion([edge]);
-        
-        // Get the attribute from this specific edge (inherited from parent after split)
-        var edgeAttribute = getJointAttribute(context, edgeQuery);
-        if (edgeAttribute == undefined)
-        {
-            // If no attribute found, something went wrong
-            throw regenError("Split edge segment has no sheet metal attribute", ["entity"], edgeQuery);
-        }
         
         // Create new attribute based on target joint type
         var newAttribute;
@@ -368,7 +373,7 @@ function applyJointAttributesToSegments(context is Context, id is Id, segmentEdg
                 kFactor = definition.kFactor;
             }
             
-            newAttribute = createNewEdgeBendAttribute(context, id + ("bend" ~ toString(i)), edgeQuery, edgeAttribute,
+            newAttribute = createNewEdgeBendAttribute(context, id + ("bend" ~ toString(i)), edgeQuery, existingAttribute,
                 radius, definition.useDefaultRadius, kFactor, definition.useDefaultKFactor);
         }
         else if (targetJointType == SMJointType.RIP)
@@ -380,7 +385,7 @@ function applyJointAttributesToSegments(context is Context, id is Id, segmentEdg
             
             // Always use EDGE style for rip segments (stitches)
             var ripStyle = SMJointStyle.EDGE;
-            newAttribute = createNewRipAttribute(id + ("rip" ~ toString(i)), edgeAttribute, ripStyle);
+            newAttribute = createNewRipAttribute(id + ("rip" ~ toString(i)), existingAttribute, ripStyle);
         }
         else if (targetJointType == SMJointType.TANGENT)
         {
@@ -388,7 +393,7 @@ function applyJointAttributesToSegments(context is Context, id is Id, segmentEdg
             {
                 throw regenError("Cannot create tangent attributes on face bend segments", ["entity"]);
             }
-            newAttribute = createNewTangentAttribute(id + ("tangent" ~ toString(i)), edgeAttribute);
+            newAttribute = createNewTangentAttribute(id + ("tangent" ~ toString(i)), existingAttribute);
         }
         else
         {
@@ -400,9 +405,8 @@ function applyJointAttributesToSegments(context is Context, id is Id, segmentEdg
             throw regenError("Cannot assign " ~ toString(targetJointType) ~ " attribute to edge segment", ["entity"], edgeQuery);
         }
         
-        // Replace the edge's attribute with the new one
-        // This removes the old attribute and sets the new one atomically
-        replaceSMAttribute(context, edgeAttribute, newAttribute);
+        // Set the new attribute on this edge (no attribute exists after removal)
+        setAttribute(context, { "entities" : edgeQuery, "attribute" : newAttribute });
     }
 }
 
