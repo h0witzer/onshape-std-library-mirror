@@ -114,8 +114,8 @@ export const sheetMetalStitchCutBend = defineSheetMetalFeature(function(context 
             throw regenError(ErrorStringEnum.SHEET_METAL_ACTIVE_JOIN_NEEDED, ["entity"]);
         }
 
-        // Calculate edge length and validate
-        const selectedEdgesQuery = qEntityFilter(definition.entity, EntityType.EDGE);
+        // Calculate edge length and validate using the joint definition entity
+        const selectedEdgesQuery = qEntityFilter(jointEntity, EntityType.EDGE);
         const selectedEdges = evaluateQuery(context, selectedEdgesQuery);
         if (size(selectedEdges) == 0)
         {
@@ -126,11 +126,11 @@ export const sheetMetalStitchCutBend = defineSheetMetalFeature(function(context 
         const path = try silent(constructPath(context, orderedEdgeQuery));
         if (path == undefined)
         {
-            throw regenError("Unable to order the selected edges into a continuous chain", ["entity"], definition.entity);
+            throw regenError("Unable to order the selected edges into a continuous chain", ["entity"], jointEntity);
         }
 
         const totalLength = evLength(context, {
-                    "entities" : definition.entity
+                    "entities" : jointEntity
                 });
 
         if (totalLength <= EDGE_LENGTH_TOLERANCE)
@@ -139,7 +139,7 @@ export const sheetMetalStitchCutBend = defineSheetMetalFeature(function(context 
         }
 
         // Set edges for spacing calculation (spacing utilities expect definition.edges)
-        definition.edges = definition.entity;
+        definition.edges = jointEntity;
 
         // Use centralized spacing calculation from spacingUtils
         definition = computeCurvePatternSpacing(context, id, definition);
