@@ -151,7 +151,7 @@ export const tabAndSlotBossDisplay = defineSheetMetalFeature(function(context is
 
         if (definition.spacingType == CurvePatternSpacingType.EQUAL)
         {
-            tabDomains = calculateEqualSpacedDomains(totalLength, definition.tabWidth, tabCount, startOffset, endOffset);
+            tabDomains = calculateEqualSpacedDomains(totalLength, definition.tabWidth, tabCount, startOffset, endOffset, definition.endMode);
         }
         else if (definition.spacingType == CurvePatternSpacingType.DISTANCE)
         {
@@ -160,7 +160,7 @@ export const tabAndSlotBossDisplay = defineSheetMetalFeature(function(context is
         else if (definition.spacingType == CurvePatternSpacingType.BESTFIT)
         {
             // For BESTFIT, instanceCount is computed by computeCurvePatternSpacing
-            tabDomains = calculateEqualSpacedDomains(totalLength, definition.tabWidth, tabCount, startOffset, endOffset);
+            tabDomains = calculateEqualSpacedDomains(totalLength, definition.tabWidth, tabCount, startOffset, endOffset, definition.endMode);
         }
 
         if (tabCount == 0 || size(tabDomains) == 0)

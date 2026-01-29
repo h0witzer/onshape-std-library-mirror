@@ -32,6 +32,19 @@ export enum CurvePatternSpacingType
 }
 
 /**
+ * Specifies whether pattern instances start and end on gaps or on tabs.
+ * @value GAP : Pattern starts and ends with gaps (gaps at boundaries)
+ * @value TAB : Pattern starts and ends with tabs (tabs at boundaries)
+ */
+export enum CurvePatternEndMode
+{
+    annotation { "Name" : "Start/end on gap" }
+    GAP,
+    annotation { "Name" : "Start/end on tab" }
+    TAB,
+}
+
+/**
  * Predicate for curve pattern spacing configuration.
  * Defines the UI fields and validation for spacing type, distance, instance count, and best-fit parameters.
  * 
@@ -49,6 +62,12 @@ export predicate curvePatternSpacingPredicate(definition is map)
 {
     annotation { "Name" : "Spacing type" }
     definition.spacingType is CurvePatternSpacingType;
+
+    if (definition.spacingType == CurvePatternSpacingType.EQUAL || definition.spacingType == CurvePatternSpacingType.BESTFIT)
+    {
+        annotation { "Name" : "Pattern mode", "UIHint" : UIHint.SHOW_LABEL }
+        definition.endMode is CurvePatternEndMode;
+    }
 
     if (definition.spacingType == CurvePatternSpacingType.DISTANCE || definition.spacingType == CurvePatternSpacingType.EQUAL)
     {
@@ -382,7 +401,21 @@ export function computeCircularPatternSpacing(context is Context, id is Id, defi
  * 
  * @returns {array} : Array of {start, end} maps with normalized parameters (0 to 1) for each instance location
  */
-export function calculateEqualSpacedDomains(totalLength is ValueWithUnits, instanceWidth is ValueWithUnits, instanceCount is number, startOffset is ValueWithUnits, endOffset is ValueWithUnits) returns array
+/**
+ * Calculates normalized domains for equal spacing distribution.
+ * This function distributes instances evenly along a path with equal gaps between them.
+ * Returns normalized parameters (0 to 1) for each instance location.
+ * 
+ * @param totalLength {ValueWithUnits} : The total length of the path
+ * @param instanceWidth {ValueWithUnits} : The width of each instance
+ * @param instanceCount {number} : The number of instances to distribute
+ * @param startOffset {ValueWithUnits} : Optional offset from the start of the path (default: 0)
+ * @param endOffset {ValueWithUnits} : Optional offset from the end of the path (default: 0)
+ * @param endMode {CurvePatternEndMode} : Whether to start/end on gaps (GAP) or tabs (TAB)
+ * 
+ * @returns {array} : Array of {start, end} maps with normalized parameters (0 to 1) for each instance location
+ */
+export function calculateEqualSpacedDomains(totalLength is ValueWithUnits, instanceWidth is ValueWithUnits, instanceCount is number, startOffset is ValueWithUnits, endOffset is ValueWithUnits, endMode is CurvePatternEndMode) returns array
 {
     // Calculate normalized offsets
     const startOffsetParam = startOffset / totalLength;
@@ -390,12 +423,31 @@ export function calculateEqualSpacedDomains(totalLength is ValueWithUnits, insta
     const effectiveLength = 1 - startOffsetParam - endOffsetParam;
     
     const widthParam = instanceWidth / totalLength;
-    const spacing = (effectiveLength - (instanceCount * widthParam)) / (instanceCount + 1);
+    
+    var spacing;
+    var firstStart;
+    
+    if (endMode == CurvePatternEndMode.GAP)
+    {
+        // GAP mode: Start and end with gaps
+        // Formula: spacing * (n+1) + width * n = effectiveLength
+        // Creates: |_gap_|tab|_gap_|tab|_gap_|
+        spacing = (effectiveLength - (instanceCount * widthParam)) / (instanceCount + 1);
+        firstStart = startOffsetParam + spacing;
+    }
+    else
+    {
+        // TAB mode: Start and end with tabs
+        // Formula: spacing * (n-1) + width * n = effectiveLength
+        // Creates: |tab|_gap_|tab|_gap_|tab|
+        spacing = (effectiveLength - (instanceCount * widthParam)) / (instanceCount - 1);
+        firstStart = startOffsetParam;
+    }
 
     var domains = [];
     for (var i = 0; i < instanceCount; i += 1)
     {
-        const start = startOffsetParam + spacing * (i + 1) + (widthParam * i);
+        const start = firstStart + (spacing + widthParam) * i;
         const end = start + widthParam;
         domains = append(domains, { "start" : start, "end" : end });
     }
