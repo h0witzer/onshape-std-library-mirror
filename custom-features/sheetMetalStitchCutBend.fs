@@ -256,22 +256,27 @@ export const sheetMetalStitchCutBend = defineSheetMetalFeature(function(context 
             throw regenError("No edge segments found after splitting", ["entity"]);
         }
 
-        // Create attributes for bridge segments (the bend connections)
+        // Create attributes for bridge segments (the bend connections) and collect modified edges
+        var modifiedBridgeEdges = [];
         if (bridgeSegmentCount > 0)
         {
-            applyJointAttributesToSegments(context, id + "bridges", bridgeSegmentEdges, existingAttribute, 
+            modifiedBridgeEdges = applyJointAttributesToSegments(context, id + "bridges", bridgeSegmentEdges, existingAttribute, 
                 SMJointType.BEND, definition, isFaceBend, true);
         }
 
-        // Create attributes for stitch segments (the rip/cut segments)
+        // Create attributes for stitch segments (the rip/cut segments) and collect modified edges
+        var modifiedStitchEdges = [];
         if (stitchCount > 0)
         {
-            applyJointAttributesToSegments(context, id + "stitches", stitchSegmentEdges, existingAttribute, 
+            modifiedStitchEdges = applyJointAttributesToSegments(context, id + "stitches", stitchSegmentEdges, existingAttribute, 
                 SMJointType.RIP, definition, isFaceBend, false);
         }
 
-        // Update sheet metal geometry with all modified edges
-        const allModifiedEdges = qUnion([bridgeSegmentEdges, stitchSegmentEdges]);
+        // Combine all modified edges into a single query
+        var allModifiedEdgesList = concatenateArrays([modifiedBridgeEdges, modifiedStitchEdges]);
+        const allModifiedEdges = qUnion(allModifiedEdgesList);
+        
+        // Update sheet metal geometry with the modified edges
         updateSheetMetalGeometry(context, id, { 
             "entities" : allModifiedEdges,
             "associatedChanges" : allModifiedEdges
@@ -306,6 +311,7 @@ function findJointDefinitionEntity(context is Context, entity is Query, entityTy
 /**
  * Applies joint attributes to a set of edge segments.
  * Creates appropriate bend, rip, or tangent attributes and assigns them to the segments.
+ * Returns array of modified entities for tracking.
  * Inputs:
  *   context - Evaluation context
  *   id - Operation ID for this attribute assignment
@@ -315,13 +321,15 @@ function findJointDefinitionEntity(context is Context, entity is Query, entityTy
  *   definition - Feature definition with parameters
  *   isFaceBend - Whether the original joint was a face bend
  *   isBridge - Whether these are bridge segments (true = bend) or stitch segments (false = rip)
+ * Outputs: Array of transient queries for modified edges
  */
 function applyJointAttributesToSegments(context is Context, id is Id, segmentEdges is Query, 
     existingAttribute is SMAttribute, targetJointType is SMJointType, definition is map, 
-    isFaceBend is boolean, isBridge is boolean)
+    isFaceBend is boolean, isBridge is boolean) returns array
 {
     // Get each individual edge segment
     const edges = evaluateQuery(context, segmentEdges);
+    var modifiedEdges = [];
     
     for (var i = 0; i < size(edges); i += 1)
     {
@@ -405,7 +413,12 @@ function applyJointAttributesToSegments(context is Context, id is Id, segmentEdg
         
         // Set the new attribute on this edge
         setAttribute(context, { "entities" : edgeQuery, "attribute" : newAttribute });
+        
+        // Collect the modified edge
+        modifiedEdges = append(modifiedEdges, edge);
     }
+    
+    return modifiedEdges;
 }
 
 /**
