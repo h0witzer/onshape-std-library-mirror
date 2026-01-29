@@ -7,6 +7,7 @@ FeatureScript 2856;
 // Imports used in interface - enums must be exported for use in preconditions
 export import(path : "onshape/std/smjointtype.gen.fs", version : "2856.0");
 export import(path : "onshape/std/smjointstyle.gen.fs", version : "2856.0");
+export import(path : "onshape/std/smbendtype.gen.fs", version : "2856.0");
 
 // Imports used internally
 import(path : "onshape/std/common.fs", version : "2856.0");
