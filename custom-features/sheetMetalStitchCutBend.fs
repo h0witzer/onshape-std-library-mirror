@@ -400,8 +400,13 @@ function applyJointAttributesToSegments(context is Context, id is Id, segmentEdg
             throw regenError("Cannot assign " ~ toString(targetJointType) ~ " attribute to edge segment", ["entity"], edgeQuery);
         }
         
-        // Replace the attribute on this edge
-        replaceSMAttribute(context, edgeAttribute, newAttribute);
+        // Remove old attribute and set new one on this specific edge only
+        // We can't use replaceSMAttribute because it would affect all edges with the same attribute
+        if (edgeAttribute != undefined)
+        {
+            removeAttributes(context, { "entities" : edgeQuery, "attributePattern" : edgeAttribute });
+        }
+        setAttribute(context, { "entities" : edgeQuery, "attribute" : newAttribute });
     }
 }
 
