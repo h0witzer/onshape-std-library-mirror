@@ -32,16 +32,16 @@ export enum CurvePatternSpacingType
 }
 
 /**
- * Specifies whether pattern instances start and end on gaps or on tabs.
+ * Specifies whether pattern instances start and end on gaps or on instances.
  * @value GAP : Pattern starts and ends with gaps (gaps at boundaries)
- * @value TAB : Pattern starts and ends with tabs (tabs at boundaries)
+ * @value INSTANCE : Pattern starts and ends with instances (instances at boundaries)
  */
 export enum CurvePatternEndMode
 {
-    annotation { "Name" : "Start/end on gap" }
+    annotation { "Name" : "Gap at ends" }
     GAP,
-    annotation { "Name" : "Start/end on tab" }
-    TAB,
+    annotation { "Name" : "Instance at ends" }
+    INSTANCE,
 }
 
 /**
@@ -411,7 +411,7 @@ export function computeCircularPatternSpacing(context is Context, id is Id, defi
  * @param instanceCount {number} : The number of instances to distribute
  * @param startOffset {ValueWithUnits} : Optional offset from the start of the path (default: 0)
  * @param endOffset {ValueWithUnits} : Optional offset from the end of the path (default: 0)
- * @param endMode {CurvePatternEndMode} : Whether to start/end on gaps (GAP) or tabs (TAB)
+ * @param endMode {CurvePatternEndMode} : Whether to start/end with gaps (GAP) or instances (INSTANCE)
  * 
  * @returns {array} : Array of {start, end} maps with normalized parameters (0 to 1) for each instance location
  */
@@ -431,15 +431,15 @@ export function calculateEqualSpacedDomains(totalLength is ValueWithUnits, insta
     {
         // GAP mode: Start and end with gaps
         // Formula: spacing * (n+1) + width * n = effectiveLength
-        // Creates: |_gap_|tab|_gap_|tab|_gap_|
+        // Creates: |_gap_|instance|_gap_|instance|_gap_|
         spacing = (effectiveLength - (instanceCount * widthParam)) / (instanceCount + 1);
         firstStart = startOffsetParam + spacing;
     }
     else
     {
-        // TAB mode: Start and end with tabs
+        // INSTANCE mode: Start and end with instances
         // Formula: spacing * (n-1) + width * n = effectiveLength
-        // Creates: |tab|_gap_|tab|_gap_|tab|
+        // Creates: |instance|_gap_|instance|_gap_|instance|
         spacing = (effectiveLength - (instanceCount * widthParam)) / (instanceCount - 1);
         firstStart = startOffsetParam;
     }
