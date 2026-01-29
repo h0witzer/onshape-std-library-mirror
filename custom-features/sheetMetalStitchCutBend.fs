@@ -328,17 +328,6 @@ function applyJointAttributesToSegments(context is Context, id is Id, segmentEdg
         const edge = edges[i];
         const edgeQuery = qUnion([edge]);
         
-        // Remove any existing attribute from this edge first
-        // This ensures we start fresh without inheriting the parent's attribute
-        try silent
-        {
-            const existingEdgeAttr = getJointAttribute(context, edgeQuery);
-            if (existingEdgeAttr != undefined)
-            {
-                removeAttributes(context, { "entities" : edgeQuery, "attributePattern" : existingEdgeAttr });
-            }
-        }
-        
         // Create new attribute based on target joint type
         var newAttribute;
         
