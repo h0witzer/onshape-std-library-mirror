@@ -32,6 +32,19 @@ export enum CurvePatternSpacingType
 }
 
 /**
+ * Specifies whether pattern instances start and end on gaps or on instances.
+ * @value GAP : Pattern starts and ends with gaps (gaps at boundaries)
+ * @value INSTANCE : Pattern starts and ends with instances (instances at boundaries)
+ */
+export enum CurvePatternEndMode
+{
+    annotation { "Name" : "Gap at ends" }
+    GAP,
+    annotation { "Name" : "Instance at ends" }
+    INSTANCE,
+}
+
+/**
  * Predicate for curve pattern spacing configuration.
  * Defines the UI fields and validation for spacing type, distance, instance count, and best-fit parameters.
  * 
@@ -50,16 +63,22 @@ export predicate curvePatternSpacingPredicate(definition is map)
     annotation { "Name" : "Spacing type" }
     definition.spacingType is CurvePatternSpacingType;
 
-    if (definition.spacingType == CurvePatternSpacingType.DISTANCE)
+    if (definition.spacingType == CurvePatternSpacingType.EQUAL || definition.spacingType == CurvePatternSpacingType.BESTFIT)
     {
-        annotation { "Name" : "Distance" }
-        isLength(definition.distance, PATTERN_OFFSET_BOUND);
+        annotation { "Name" : "Pattern mode", "UIHint" : UIHint.SHOW_LABEL }
+        definition.endMode is CurvePatternEndMode;
     }
 
     if (definition.spacingType == CurvePatternSpacingType.DISTANCE || definition.spacingType == CurvePatternSpacingType.EQUAL)
     {
         annotation { "Name" : "Instance count" }
         isInteger(definition.instanceCount, CURVE_PATTERN_BOUNDS);
+    }
+
+    if (definition.spacingType == CurvePatternSpacingType.DISTANCE)
+    {
+        annotation { "Name" : "Distance" }
+        isLength(definition.distance, PATTERN_OFFSET_BOUND);
     }
 
     if (definition.spacingType == CurvePatternSpacingType.EQUAL)
@@ -82,6 +101,38 @@ export predicate curvePatternSpacingPredicate(definition is map)
         annotation { "Name" : "Pitch ceiling", "Default" : false }
         definition.doPitchCeiling is boolean;
     }
+
+    // Offset controls for EQUAL and BESTFIT modes
+    if (definition.spacingType == CurvePatternSpacingType.EQUAL || definition.spacingType == CurvePatternSpacingType.BESTFIT)
+    {
+        annotation { "Name" : "Use offsets", "Default" : false }
+        definition.useOffsets is boolean;
+
+        if (definition.useOffsets)
+        {
+            annotation { "Name" : "Two offsets", "Default" : false }
+            definition.twoOffsets is boolean;
+
+            // Single offset mode (like EQUAL_OFFSETS in chamfer)
+            if (!definition.twoOffsets)
+            {
+                annotation { "Name" : "Offset" }
+                isLength(definition.offset, PATTERN_OFFSET_BOUND);
+            }
+            else
+            {
+                // Two offset mode (like TWO_OFFSETS in chamfer)
+                annotation { "Name" : "Offset 1" }
+                isLength(definition.offset1, PATTERN_OFFSET_BOUND);
+
+                annotation { "Name" : "Opposite direction", "UIHint" : UIHint.OPPOSITE_DIRECTION, "Default" : false }
+                definition.oppositeDirection is boolean;
+
+                annotation { "Name" : "Offset 2" }
+                isLength(definition.offset2, PATTERN_OFFSET_BOUND);
+            }
+        }
+    }
 }
 
 /**
@@ -96,6 +147,12 @@ export predicate curvePatternSpacingPredicate(definition is map)
  *      @field instanceCount {number} : Input/output instance count
  *      @field targetPitch {ValueWithUnits} : Target pitch for best-fit spacing
  *      @field doPitchCeiling {boolean} : Whether to use ceiling for rounding
+ *      @field useOffsets {boolean} : Whether to use offsets
+ *      @field twoOffsets {boolean} : Whether to use two different offsets (false = equal offsets)
+ *      @field offset {ValueWithUnits} : Single offset for equal offset mode
+ *      @field offset1 {ValueWithUnits} : First offset for two offset mode
+ *      @field offset2 {ValueWithUnits} : Second offset for two offset mode
+ *      @field oppositeDirection {boolean} : Whether to flip which offset applies where (two offset mode only)
  * 
  * @returns {map} : Updated definition with computed spacing parameters
  */
@@ -104,6 +161,25 @@ export function computeCurvePatternSpacing(context is Context, id is Id, definit
     const curveLength = evLength(context, {
                 "entities" : definition.edges
             });
+
+    // Calculate effective length accounting for offsets
+    var effectiveLength = curveLength;
+    if (definition.useOffsets)
+    {
+        if (!definition.twoOffsets)
+        {
+            // Equal offsets mode: same offset on both ends
+            const offset = definition.offset;
+            effectiveLength = curveLength - offset - offset;
+        }
+        else
+        {
+            // Two offsets mode: different offsets on each end
+            const offset1 = definition.offset1;
+            const offset2 = definition.offset2;
+            effectiveLength = curveLength - offset1 - offset2;
+        }
+    }
 
     var corrector = 0;
     try silent
@@ -117,7 +193,7 @@ export function computeCurvePatternSpacing(context is Context, id is Id, definit
 
     if (definition.spacingType == CurvePatternSpacingType.EQUAL)
     {
-        const actualPitch = curveLength / (definition.instanceCount - corrector);
+        const actualPitch = effectiveLength / (definition.instanceCount - corrector);
 
         setFeatureComputedParameter(context, id, {
                     "name" : "actualPitchEqual",
@@ -127,7 +203,7 @@ export function computeCurvePatternSpacing(context is Context, id is Id, definit
 
     if (definition.spacingType == CurvePatternSpacingType.BESTFIT)
     {
-        const computedInstanceNumber = curveLength / definition.targetPitch + corrector;
+        const computedInstanceNumber = effectiveLength / definition.targetPitch + corrector;
 
         var integerComputedInstanceNumber;
 
@@ -142,7 +218,7 @@ export function computeCurvePatternSpacing(context is Context, id is Id, definit
 
         definition.instanceCount = integerComputedInstanceNumber;
 
-        const actualPitch = curveLength / (integerComputedInstanceNumber - corrector);
+        const actualPitch = effectiveLength / (integerComputedInstanceNumber - corrector);
 
         setFeatureComputedParameter(context, id, {
                     "name" : "actualPitch",
@@ -306,6 +382,156 @@ export function computeCircularPatternSpacing(context is Context, id is Id, defi
     }
 
     return definition;
+}
+
+// ============================================================================
+// DOMAIN CALCULATION UTILITIES
+// ============================================================================
+
+/**
+ * Calculates normalized domains for equal spacing distribution.
+ * This function distributes instances evenly along a path with equal gaps between them.
+ * Returns normalized parameters (0 to 1) for each instance location.
+ * 
+ * @param totalLength {ValueWithUnits} : The total length of the path
+ * @param instanceWidth {ValueWithUnits} : The width of each instance
+ * @param instanceCount {number} : The number of instances to distribute
+ * @param startOffset {ValueWithUnits} : Optional offset from the start of the path (default: 0)
+ * @param endOffset {ValueWithUnits} : Optional offset from the end of the path (default: 0)
+ * 
+ * @returns {array} : Array of {start, end} maps with normalized parameters (0 to 1) for each instance location
+ */
+/**
+ * Calculates normalized domains for equal spacing distribution.
+ * This function distributes instances evenly along a path with equal gaps between them.
+ * Returns normalized parameters (0 to 1) for each instance location.
+ * 
+ * @param totalLength {ValueWithUnits} : The total length of the path
+ * @param instanceWidth {ValueWithUnits} : The width of each instance
+ * @param instanceCount {number} : The number of instances to distribute
+ * @param startOffset {ValueWithUnits} : Optional offset from the start of the path (default: 0)
+ * @param endOffset {ValueWithUnits} : Optional offset from the end of the path (default: 0)
+ * @param endMode {CurvePatternEndMode} : Whether to start/end with gaps (GAP) or instances (INSTANCE)
+ * 
+ * @returns {array} : Array of {start, end} maps with normalized parameters (0 to 1) for each instance location
+ */
+export function calculateEqualSpacedDomains(totalLength is ValueWithUnits, instanceWidth is ValueWithUnits, instanceCount is number, startOffset is ValueWithUnits, endOffset is ValueWithUnits, endMode is CurvePatternEndMode) returns array
+{
+    // Calculate normalized offsets
+    const startOffsetParam = startOffset / totalLength;
+    const endOffsetParam = endOffset / totalLength;
+    const effectiveLength = 1 - startOffsetParam - endOffsetParam;
+    
+    const widthParam = instanceWidth / totalLength;
+    
+    var spacing;
+    var firstStart;
+    
+    if (endMode == CurvePatternEndMode.GAP)
+    {
+        // GAP mode: Start and end with gaps
+        // Formula: spacing * (n+1) + width * n = effectiveLength
+        // Creates: |_gap_|instance|_gap_|instance|_gap_|
+        spacing = (effectiveLength - (instanceCount * widthParam)) / (instanceCount + 1);
+        firstStart = startOffsetParam + spacing;
+    }
+    else
+    {
+        // INSTANCE mode: Start and end with instances
+        // Formula: spacing * (n-1) + width * n = effectiveLength
+        // Creates: |instance|_gap_|instance|_gap_|instance|
+        spacing = (effectiveLength - (instanceCount * widthParam)) / (instanceCount - 1);
+        firstStart = startOffsetParam;
+    }
+
+    var domains = [];
+    for (var i = 0; i < instanceCount; i += 1)
+    {
+        const start = firstStart + (spacing + widthParam) * i;
+        const end = start + widthParam;
+        domains = append(domains, { "start" : start, "end" : end });
+    }
+    return domains;
+}
+
+/**
+ * Calculates normalized domains for distance-based (pitch) spacing distribution.
+ * This function places instances at fixed pitch intervals along a path.
+ * Distance represents the pitch (center-to-center distance) between consecutive instances.
+ * The first instance is positioned with its leading edge at the start of the path (or offset).
+ * Returns normalized parameters (0 to 1) for each instance location.
+ * 
+ * @param totalLength {ValueWithUnits} : The total length of the path
+ * @param instanceWidth {ValueWithUnits} : The width of each instance
+ * @param distance {ValueWithUnits} : The pitch (center-to-center distance) between consecutive instances
+ * @param instanceCount {number} : The number of instances that fit with the given pitch
+ * @param startOffset {ValueWithUnits} : Optional offset from the start of the path (default: 0)
+ * @param endOffset {ValueWithUnits} : Optional offset from the end of the path (default: 0)
+ * 
+ * @returns {array} : Array of {start, end} maps with normalized parameters (0 to 1) for each instance location
+ */
+export function calculateDistanceSpacedDomains(totalLength is ValueWithUnits, instanceWidth is ValueWithUnits, distance is ValueWithUnits, instanceCount is number, startOffset is ValueWithUnits, endOffset is ValueWithUnits) returns array
+{
+    // Calculate normalized offsets
+    const startOffsetParam = startOffset / totalLength;
+    const endOffsetParam = endOffset / totalLength;
+    
+    const widthParam = instanceWidth / totalLength;
+    const pitchParam = distance / totalLength;
+    const halfWidthParam = widthParam / 2;
+
+    var domains = [];
+
+    for (var i = 0; i < instanceCount; i += 1)
+    {
+        // Position instances by their centers at pitch intervals, starting from the offset
+        // First instance center is at startOffset + instanceWidth/2 (instance starts at offset edge)
+        const centerPos = startOffsetParam + halfWidthParam + (pitchParam * i);
+        const start = centerPos - halfWidthParam;
+        const end = centerPos + halfWidthParam;
+        
+        if (end > (1 - endOffsetParam))
+        {
+            break; // Don't exceed the path boundaries (accounting for end offset)
+        }
+        domains = append(domains, { "start" : start, "end" : end });
+    }
+    return domains;
+}
+
+/**
+ * Validates that domains do not overlap.
+ * Checks each consecutive pair of domains to ensure the end of one instance
+ * does not exceed the start of the next instance (with a small tolerance).
+ * 
+ * @param domains {array} : Array of {start, end} maps with normalized parameters (0 to 1)
+ * @param tolerance {number} : Optional tolerance for floating-point comparison (default: 1e-9)
+ * 
+ * @returns {boolean} : True if domains are valid (no overlaps), false if any domains overlap
+ */
+export function validateDomainsNoOverlap(domains is array, tolerance is number) returns boolean
+{
+    // No validation needed for 0 or 1 instances
+    if (size(domains) <= 1)
+    {
+        return true;
+    }
+    
+    // Check each consecutive pair of domains
+    for (var i = 0; i < size(domains) - 1; i += 1)
+    {
+        const currentEnd = domains[i].end;
+        const nextStart = domains[i + 1].start;
+        
+        // Domains overlap if the current end exceeds the next start by more than tolerance
+        // The tolerance accounts for floating-point precision when instances are exactly touching
+        if (currentEnd > nextStart + tolerance)
+        {
+            return false;
+        }
+    }
+    
+    return true;
 }
 
 // ============================================================================

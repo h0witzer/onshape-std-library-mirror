@@ -1,31 +1,38 @@
-FeatureScript 2837;
-import(path : "onshape/std/common.fs", version : "2837.0");
+FeatureScript 2856;
+import(path : "onshape/std/common.fs", version : "2856.0");
 ICON::import(path : "a34fe683b4cf0eb1de011a4b", version : "ec72feda3911e2ee01d24e0e");
-import(path : "onshape/std/query.fs", version : "2837.0");
-import(path : "onshape/std/evaluate.fs", version : "2837.0");
-import(path : "onshape/std/valueBounds.fs", version : "2837.0");
-import(path : "onshape/std/geomOperations.fs", version : "2837.0");
-import(path : "onshape/std/path.fs", version : "2837.0");
-import(path : "onshape/std/sheetMetalAttribute.fs", version : "2837.0");
-import(path : "onshape/std/feature.fs", version : "2837.0");
-import(path : "onshape/std/extendendtype.gen.fs", version : "2837.0");
-import(path : "onshape/std/extendsheetshapetype.gen.fs", version : "2837.0");
-import(path : "onshape/std/edgetopology.gen.fs", version : "2837.0");
-import(path : "onshape/std/attributes.fs", version : "2837.0");
-import(path : "onshape/std/boolean.fs", version : "2837.0");
-import(path : "onshape/std/containers.fs", version : "2837.0");
-import(path : "onshape/std/math.fs", version : "2837.0");
-import(path : "onshape/std/moveFace.fs", version : "2837.0");
-import(path : "onshape/std/transform.fs", version : "2837.0");
-import(path : "onshape/std/sheetMetalUtils.fs", version : "2837.0");
-import(path : "onshape/std/surfaceGeometry.fs", version : "2837.0");
-import(path : "onshape/std/topologyUtils.fs", version : "2837.0");
-import(path : "onshape/std/vector.fs", version : "2837.0");
-import(path : "onshape/std/smcornerbreakstyle.gen.fs", version : "2837.0");
+import(path : "onshape/std/query.fs", version : "2856.0");
+import(path : "onshape/std/evaluate.fs", version : "2856.0");
+import(path : "onshape/std/valueBounds.fs", version : "2856.0");
+import(path : "onshape/std/geomOperations.fs", version : "2856.0");
+import(path : "onshape/std/path.fs", version : "2856.0");
+import(path : "onshape/std/sheetMetalAttribute.fs", version : "2856.0");
+import(path : "onshape/std/feature.fs", version : "2856.0");
+import(path : "onshape/std/extendendtype.gen.fs", version : "2856.0");
+import(path : "onshape/std/extendsheetshapetype.gen.fs", version : "2856.0");
+import(path : "onshape/std/edgetopology.gen.fs", version : "2856.0");
+import(path : "onshape/std/attributes.fs", version : "2856.0");
+import(path : "onshape/std/boolean.fs", version : "2856.0");
+import(path : "onshape/std/containers.fs", version : "2856.0");
+import(path : "onshape/std/math.fs", version : "2856.0");
+import(path : "onshape/std/moveFace.fs", version : "2856.0");
+import(path : "onshape/std/transform.fs", version : "2856.0");
+import(path : "onshape/std/sheetMetalUtils.fs", version : "2856.0");
+import(path : "onshape/std/surfaceGeometry.fs", version : "2856.0");
+import(path : "onshape/std/topologyUtils.fs", version : "2856.0");
+import(path : "onshape/std/vector.fs", version : "2856.0");
+import(path : "onshape/std/smcornerbreakstyle.gen.fs", version : "2856.0");
+// Import spacingUtils module for centralized pattern spacing logic
+export import(path : "c51f6558b7346f455a634ff5/6f6023994aba32507825b3fe/8ce820287d75ed2e92412d90", version : "6649d8199886b2041cd02aae");//spacingUtils.fs
+
 // Original framework by Caden Armstrong - SmartBench Software
 // Hacked by Derek Van Allen
 // Created for Boss Display
 // For support contact Derek Van Allen on the Onshape forums
+//
+// NOTE: This feature uses the centralized spacingUtils.fs module for spacing logic.
+// All spacing types, predicates, and calculations are imported from spacingUtils
+// to ensure consistency across pattern generation tools.
 
 const EDGE_LENGTH_TOLERANCE = 1e-9 * meter;
 const EDGE_PARAMETER_TOLERANCE = 1e-6;
@@ -55,56 +62,45 @@ export const CHAMFER_WIDTH_BOUNDS =
             (inch) : [0, .02, 1]
         } as LengthBoundSpec;
 
-export enum SpacingType
-{
-    annotation { "Name" : "Equal" }
-    EQUAL,
-    annotation { "Name" : "Length" }
-    LENGTH
-}
-
 annotation { "Feature Type Name" : "OnlyTabs", "Icon" : ICON::BLOB_DATA, "Feature Type Description" : "Tab and Slot feature for Boss Display" }
 export const tabAndSlotBossDisplay = defineSheetMetalFeature(function(context is Context, id is Id, definition is map)
     precondition
     {
-        // Define the parameters of the feature type
+        // Edge selection
         annotation { "Name" : "Edges", "Filter" : EntityType.EDGE, "UIHint" : UIHint.SHOW_CREATE_SELECTION }
         definition.edges is Query;
 
-        annotation { "Name" : "Spacing Type" }
-        definition.spacingType is SpacingType;
+        // Spacing parameters (uses centralized spacing predicate from spacingUtils)
+        curvePatternSpacingPredicate(definition);
 
-        if (definition.spacingType == SpacingType.LENGTH)
+        // Tab parameters group - always visible but collapsible
+        annotation { "Name" : "Tab parameters", "Default" : true, "UIHint" : UIHint.ALWAYS_HIDDEN }
+        definition.showTabParameters is boolean;
+        
+        annotation { "Group Name" : "Tab parameters", "Driving Parameter" : "showTabParameters", "Collapsed By Default" : false }
         {
-            annotation { "Name" : "Spacing" }
-            isLength(definition.spacing, SPACING_BOUNDS);
+            annotation { "Name" : "Tab width" }
+            isLength(definition.tabWidth, TAB_WIDTH_BOUNDS);
+
+            annotation { "Name" : "Tab depth" }
+            isLength(definition.tabDepth, TAB_DEPTH_BOUNDS);
+
+            annotation { "Name" : "Tab chamfer width" }
+            isLength(definition.tabChamfer, CHAMFER_WIDTH_BOUNDS);
         }
 
-        if (definition.spacingType == SpacingType.EQUAL)
+        // Slot parameters group - always visible but collapsible
+        annotation { "Name" : "Slot parameters", "Default" : true, "UIHint" : UIHint.ALWAYS_HIDDEN }
+        definition.showSlotParameters is boolean;
+        
+        annotation { "Group Name" : "Slot parameters", "Driving Parameter" : "showSlotParameters", "Collapsed By Default" : false }
         {
-            annotation { "Name" : "Tab Count" }
-            isInteger(definition.tabCount, POSITIVE_COUNT_BOUNDS);
+            annotation { "Name" : "Slot width margin" }
+            isLength(definition.slotMargin, SLOT_MARGIN_BOUNDS);
+
+            annotation { "Name" : "Slot bodies (for overlapping tabs)", "Filter" : EntityType.BODY }
+            definition.mergeScope is Query;
         }
-
-
-
-        annotation { "Name" : "Tab Width" }
-        isLength(definition.tabWidth, TAB_WIDTH_BOUNDS);
-
-        annotation { "Name" : "Tab Depth" }
-        isLength(definition.tabDepth, TAB_DEPTH_BOUNDS);
-
-        annotation { "Name" : "Tab Chamfer Width" }
-        isLength(definition.tabChamfer, CHAMFER_WIDTH_BOUNDS);
-
-        annotation { "Name" : "Slot Width Margin" }
-        isLength(definition.slotMargin, SLOT_MARGIN_BOUNDS);
-
-        annotation { "Name" : "Slot Bodies (for overlapping tabs)", "Filter" : EntityType.BODY }
-        definition.mergeScope is Query;
-
-        annotation { "Name" : "Remove Rip Joints" }
-        definition.removeRipJoints is boolean;
 
     }
     {
@@ -128,35 +124,86 @@ export const tabAndSlotBossDisplay = defineSheetMetalFeature(function(context is
                     "entities" : definition.edges
                 });
 
-        var tabCount = 0;
+        // Use centralized spacing calculation from spacingUtils
+        definition = computeCurvePatternSpacing(context, id, definition);
+
+        var tabCount = definition.instanceCount;
         var tabDomains = []; // Array of {start, end} maps representing tab positions as normalized parameters
 
-        if (definition.spacingType == SpacingType.EQUAL)
+        // Get offsets based on mode
+        var startOffset = 0 * meter;
+        var endOffset = 0 * meter;
+        
+        if (definition.useOffsets == true)
         {
-            tabCount = definition.tabCount;
-            tabDomains = calculateEqualSpacedTabDomains(totalLength, definition.tabWidth, tabCount);
+            if (!definition.twoOffsets)
+            {
+                // Equal offsets mode: same offset on both ends
+                startOffset = definition.offset;
+                endOffset = definition.offset;
+            }
+            else
+            {
+                // Two offsets mode: different offsets on each end
+                // oppositeDirection controls which offset goes to which end
+                if (!definition.oppositeDirection)
+                {
+                    startOffset = definition.offset1;
+                    endOffset = definition.offset2;
+                }
+                else
+                {
+                    // Flipped: swap which offset goes where
+                    startOffset = definition.offset2;
+                    endOffset = definition.offset1;
+                }
+            }
         }
-        else if (definition.spacingType == SpacingType.LENGTH)
+
+        if (definition.spacingType == CurvePatternSpacingType.EQUAL)
         {
-            tabCount = floor((totalLength - definition.tabWidth) / definition.spacing);
-            tabDomains = calculateLengthSpacedTabDomains(totalLength, definition.tabWidth, definition.spacing, tabCount);
+            tabDomains = calculateEqualSpacedDomains(totalLength, definition.tabWidth, tabCount, startOffset, endOffset, definition.endMode);
+        }
+        else if (definition.spacingType == CurvePatternSpacingType.DISTANCE)
+        {
+            tabDomains = calculateDistanceSpacedDomains(totalLength, definition.tabWidth, definition.distance, tabCount, startOffset, endOffset);
+        }
+        else if (definition.spacingType == CurvePatternSpacingType.BESTFIT)
+        {
+            // For BESTFIT, instanceCount is computed by computeCurvePatternSpacing
+            tabDomains = calculateEqualSpacedDomains(totalLength, definition.tabWidth, tabCount, startOffset, endOffset, definition.endMode);
         }
 
         if (tabCount == 0 || size(tabDomains) == 0)
         {
-            throw regenError("No tabs can fit with the specified parameters", ["tabWidth", "spacing"]);
+            if (definition.spacingType == CurvePatternSpacingType.EQUAL)
+            {
+                throw regenError("No tabs can fit with the specified parameters", ["tabWidth", "instanceCount"]);
+            }
+            else if (definition.spacingType == CurvePatternSpacingType.DISTANCE)
+            {
+                throw regenError("No tabs can fit with the specified parameters", ["tabWidth", "distance"]);
+            }
+            else // BESTFIT
+            {
+                throw regenError("No tabs can fit with the specified parameters", ["tabWidth", "targetPitch"]);
+            }
         }
 
         // Validate that tab domains do not overlap
-        if (!validateTabDomainsNoOverlap(tabDomains))
+        if (!validateDomainsNoOverlap(tabDomains, FRACTION_TOLERANCE))
         {
-            if (definition.spacingType == SpacingType.EQUAL)
+            if (definition.spacingType == CurvePatternSpacingType.EQUAL)
             {
-                throw regenError("Resultant tabs would overlap. Reduce tab count or tab width to avoid overlapping tabs.", ["tabCount", "tabWidth"]);
+                throw regenError("Resultant tabs would overlap. Reduce instance count or tab width to avoid overlapping tabs.", ["instanceCount", "tabWidth"]);
             }
-            else
+            else if (definition.spacingType == CurvePatternSpacingType.DISTANCE)
             {
-                throw regenError("Resultant tabs would overlap. Increase spacing or reduce tab width to avoid overlapping tabs.", ["spacing", "tabWidth"]);
+                throw regenError("Resultant tabs would overlap. Increase distance or reduce tab width to avoid overlapping tabs.", ["distance", "tabWidth"]);
+            }
+            else // BESTFIT
+            {
+                throw regenError("Resultant tabs would overlap. Increase target pitch or reduce tab width to avoid overlapping tabs.", ["targetPitch", "tabWidth"]);
             }
         }
 
@@ -329,77 +376,6 @@ function filterSheetMetalWallFaces(context is Context, faceQuery is Query) retur
     }
 
     return qUnion(wallFaceQueries);
-}
-
-// Calculates tab domains for equal spacing distribution.
-// Returns array of {start, end} maps with normalized parameters (0 to 1) for each tab location.
-function calculateEqualSpacedTabDomains(totalLength is ValueWithUnits, tabWidth is ValueWithUnits, tabCount is number) returns array
-{
-    const tabWidthParam = tabWidth / totalLength;
-    const spacing = (1 - (tabCount * tabWidthParam)) / (tabCount + 1);
-
-    var tabDomains = [];
-    for (var i = 0; i < tabCount; i += 1)
-    {
-        const start = spacing * (i + 1) + (tabWidthParam * i);
-        const end = start + tabWidthParam;
-        tabDomains = append(tabDomains, { "start" : start, "end" : end });
-    }
-    return tabDomains;
-}
-
-// Calculates tab domains for length-based spacing distribution.
-// Returns array of {start, end} maps with normalized parameters (0 to 1) for each tab location.
-function calculateLengthSpacedTabDomains(totalLength is ValueWithUnits, tabWidth is ValueWithUnits, spacing is ValueWithUnits, tabCount is number) returns array
-{
-    const tabWidthParam = tabWidth / totalLength;
-    const spacingParam = spacing / totalLength;
-
-    var tabDomains = [];
-    var currentPos = spacingParam; // Start after first gap
-
-    for (var i = 0; i < tabCount; i += 1)
-    {
-        if (currentPos + tabWidthParam > 1)
-        {
-            break; // Don't exceed the edge chain
-        }
-        tabDomains = append(tabDomains, { "start" : currentPos, "end" : currentPos + tabWidthParam });
-        currentPos += tabWidthParam + spacingParam;
-    }
-    return tabDomains;
-}
-
-// Validates that tab domains do not overlap.
-// Checks each consecutive pair of tab domains to ensure the end of one tab
-// does not exceed the start of the next tab (with a small tolerance).
-// Inputs:
-//   tabDomains - Array of {start, end} maps with normalized parameters (0 to 1) for each tab location
-// Outputs:
-//   Returns true if domains are valid (no overlaps), false if any domains overlap
-function validateTabDomainsNoOverlap(tabDomains is array) returns boolean
-{
-    // No validation needed for 0 or 1 tabs
-    if (size(tabDomains) <= 1)
-    {
-        return true;
-    }
-    
-    // Check each consecutive pair of tab domains
-    for (var i = 0; i < size(tabDomains) - 1; i += 1)
-    {
-        const currentTabEnd = tabDomains[i].end;
-        const nextTabStart = tabDomains[i + 1].start;
-        
-        // Tabs overlap if the current tab end exceeds the next tab start by more than tolerance
-        // The tolerance accounts for floating-point precision when tabs are exactly touching
-        if (currentTabEnd > nextTabStart + FRACTION_TOLERANCE)
-        {
-            return false;
-        }
-    }
-    
-    return true;
 }
 
 // Extracts all split parameters from tab domains.
@@ -584,14 +560,12 @@ function identifyTabSegmentsByEdgeMidpoints(context is Context, allSplitEdges is
 
         // Check if this parameter falls within any tab domain
         var isInTabDomain = false;
-        var domainIndex = -1;
         for (var j = 0; j < size(tabDomains); j += 1)
         {
             const domain = tabDomains[j];
             if (midpointParameter >= domain.start && midpointParameter <= domain.end)
             {
                 isInTabDomain = true;
-                domainIndex = j;
                 break;
             }
         }
