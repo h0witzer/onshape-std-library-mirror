@@ -29,15 +29,16 @@ const EDGE_LENGTH_TOLERANCE = 1e-9 * meter;
 const EDGE_PARAMETER_TOLERANCE = 1e-6;
 const FRACTION_TOLERANCE = 1e-9;
 
-export const BRIDGE_WIDTH_BOUNDS =
+export const STITCH_WIDTH_BOUNDS =
 {
             (inch) : [1e-6, 0.25, 1e6]
         } as LengthBoundSpec;
 
 /**
  * Sheet Metal Stitch Cut Bend feature.
- * Modifies sheet metal joints by splitting edges into alternating bend/rip segments (stitches).
- * Uses spacing logic from Tab and Slot to control bridge details.
+ * Modifies sheet metal joints by splitting edges into alternating bend/rip segments.
+ * Stitches are the bend segments (connections), and gaps between them become rips (cuts).
+ * Uses spacing logic from Tab and Slot to control stitch placement and sizing.
  */
 annotation { "Feature Type Name" : "Stitch cut bend",
         "Filter Selector" : "allparts",
@@ -51,13 +52,13 @@ export const sheetMetalStitchCutBend = defineSheetMetalFeature(function(context 
                     "MaxNumberOfPicks" : 1 }
         definition.entity is Query;
 
-        // Target joint type for stitch segments (bend or rip)
+        // Target joint type for stitch segments (the connections - typically BEND)
         annotation { "Name" : "Stitch type", "Default" : SMJointType.BEND }
         definition.stitchJointType is SMJointType;
 
-        // Bridge type - determines what's between stitches
-        annotation { "Name" : "Bridge type", "Default" : SMJointType.RIP }
-        definition.bridgeJointType is SMJointType;
+        // Gap type - determines what's between stitches (typically RIP for cuts)
+        annotation { "Name" : "Gap type", "Default" : SMJointType.RIP }
+        definition.gapJointType is SMJointType;
 
         // Bend parameters for stitches (if stitch type is BEND)
         if (definition.stitchJointType == SMJointType.BEND)
@@ -78,16 +79,16 @@ export const sheetMetalStitchCutBend = defineSheetMetalFeature(function(context 
             }
         }
 
-        // Rip style for bridges (if bridge type is RIP)
-        if (definition.bridgeJointType == SMJointType.RIP)
+        // Rip style for gaps (if gap type is RIP)
+        if (definition.gapJointType == SMJointType.RIP)
         {
-            annotation { "Name" : "Bridge style", "Default" : SMJointStyle.EDGE }
-            definition.bridgeStyle is SMJointStyle;
+            annotation { "Name" : "Gap style", "Default" : SMJointStyle.EDGE }
+            definition.gapStyle is SMJointStyle;
         }
 
-        // Spacing parameters for stitches and bridges
-        annotation { "Name" : "Bridge width" }
-        isLength(definition.bridgeWidth, BRIDGE_WIDTH_BOUNDS);
+        // Spacing parameters - stitch width is the width of each bend segment (connection)
+        annotation { "Name" : "Stitch width" }
+        isLength(definition.stitchWidth, STITCH_WIDTH_BOUNDS);
 
         // Use centralized spacing predicate from spacingUtils
         curvePatternSpacingPredicate(definition);
@@ -157,7 +158,8 @@ export const sheetMetalStitchCutBend = defineSheetMetalFeature(function(context 
 
         var stitchCount = definition.instanceCount;
 
-        // Calculate domains for stitches (these will become bend or rip based on stitchJointType)
+        // Calculate domains for stitches (bend segments - the connections)
+        // These domains represent where the bend segments will be positioned
         var stitchDomains = []; // Array of {start, end} maps representing stitch positions as normalized parameters
 
         // Get offsets based on mode
@@ -191,29 +193,30 @@ export const sheetMetalStitchCutBend = defineSheetMetalFeature(function(context 
         }
 
         // Calculate stitch positions using spacing type
+        // Stitches are the bend segments (connections), gaps between become rips (cuts)
         if (definition.spacingType == CurvePatternSpacingType.EQUAL)
         {
-            stitchDomains = calculateEqualSpacedDomains(totalLength, definition.bridgeWidth, stitchCount, startOffset, endOffset, definition.endMode);
+            stitchDomains = calculateEqualSpacedDomains(totalLength, definition.stitchWidth, stitchCount, startOffset, endOffset, definition.endMode);
         }
         else if (definition.spacingType == CurvePatternSpacingType.DISTANCE)
         {
-            stitchDomains = calculateDistanceSpacedDomains(totalLength, definition.bridgeWidth, definition.distance, stitchCount, startOffset, endOffset);
+            stitchDomains = calculateDistanceSpacedDomains(totalLength, definition.stitchWidth, definition.distance, stitchCount, startOffset, endOffset);
         }
         else if (definition.spacingType == CurvePatternSpacingType.BESTFIT)
         {
             // For BESTFIT, instanceCount is computed by computeCurvePatternSpacing
-            stitchDomains = calculateEqualSpacedDomains(totalLength, definition.bridgeWidth, stitchCount, startOffset, endOffset, definition.endMode);
+            stitchDomains = calculateEqualSpacedDomains(totalLength, definition.stitchWidth, stitchCount, startOffset, endOffset, definition.endMode);
         }
 
         if (stitchCount == 0 || size(stitchDomains) == 0)
         {
-            throw regenError("No stitches can fit with the specified parameters", ["bridgeWidth", "instanceCount"]);
+            throw regenError("No stitches can fit with the specified parameters", ["stitchWidth", "instanceCount"]);
         }
 
         // Validate that stitch domains do not overlap
         if (!validateDomainsNoOverlap(stitchDomains, FRACTION_TOLERANCE))
         {
-            throw regenError("Resultant stitches would overlap. Adjust spacing parameters to avoid overlapping stitches.", ["bridgeWidth", "instanceCount"]);
+            throw regenError("Resultant stitches would overlap. Adjust spacing parameters to avoid overlapping stitches.", ["stitchWidth", "instanceCount"]);
         }
 
         // Use mixInTracking pattern: union the original query with a tracking query
@@ -247,46 +250,46 @@ export const sheetMetalStitchCutBend = defineSheetMetalFeature(function(context 
             splitOperationIndex += 1;
         }
 
-        // After splitting, identify which segments are bridges vs stitches
+        // After splitting, identify which segments are stitches (bend segments) vs gaps (rips)
         const allEdgesAfterSplit = qEntityFilter(qUnion([orderedEdgeQuery, trackedEdges]), EntityType.EDGE);
 
-        // Bridge segments are the ones that fall within the domains
-        const bridgeSegmentEdges = identifySegmentsByEdgeMidpoints(context, allEdgesAfterSplit, path, totalLength, stitchDomains);
+        // Stitch segments are the ones that fall within the calculated domains (the connections)
+        const stitchSegmentEdges = identifySegmentsByEdgeMidpoints(context, allEdgesAfterSplit, path, totalLength, stitchDomains);
 
-        // Stitch segments are everything else
-        const stitchSegmentEdges = qSubtraction(allEdgesAfterSplit, bridgeSegmentEdges);
+        // Gap segments are everything else (the cuts between stitches)
+        const gapSegmentEdges = qSubtraction(allEdgesAfterSplit, stitchSegmentEdges);
 
         // Validate we have both types of segments
-        const bridgeCount = size(evaluateQuery(context, bridgeSegmentEdges));
         const stitchSegmentCount = size(evaluateQuery(context, stitchSegmentEdges));
+        const gapCount = size(evaluateQuery(context, gapSegmentEdges));
 
-        if (bridgeCount == 0 && stitchSegmentCount == 0)
+        if (stitchSegmentCount == 0 && gapCount == 0)
         {
             throw regenError("No edge segments found after splitting", ["entity"]);
         }
 
-        // Create attributes for bridge segments
-        if (bridgeCount > 0)
-        {
-            applyJointAttributesToSegments(context, id + "bridges", bridgeSegmentEdges, existingAttribute, 
-                definition.bridgeJointType, definition, isFaceBend, true);
-        }
-
-        // Create attributes for stitch segments
+        // Create attributes for stitch segments (the bend connections)
         if (stitchSegmentCount > 0)
         {
             applyJointAttributesToSegments(context, id + "stitches", stitchSegmentEdges, existingAttribute, 
                 definition.stitchJointType, definition, isFaceBend, false);
         }
 
+        // Create attributes for gap segments (the cuts between stitches)
+        if (gapCount > 0)
+        {
+            applyJointAttributesToSegments(context, id + "gaps", gapSegmentEdges, existingAttribute, 
+                definition.gapJointType, definition, isFaceBend, true);
+        }
+
         // Update sheet metal geometry with all modified edges
-        const allModifiedEdges = qUnion([bridgeSegmentEdges, stitchSegmentEdges]);
+        const allModifiedEdges = qUnion([stitchSegmentEdges, gapSegmentEdges]);
         updateSheetMetalGeometry(context, id, { 
             "entities" : allModifiedEdges,
             "associatedChanges" : allModifiedEdges
         });
     }, { 
-        bridgeStyle : SMJointStyle.EDGE, 
+        gapStyle : SMJointStyle.EDGE, 
         useDefaultRadius : true, 
         useDefaultKFactor : true 
     });
@@ -324,11 +327,11 @@ function findJointDefinitionEntity(context is Context, entity is Query, entityTy
  *   targetJointType - The joint type to apply (BEND, RIP, or TANGENT)
  *   definition - Feature definition with parameters
  *   isFaceBend - Whether the original joint was a face bend
- *   isBridge - Whether these are bridge segments (true) or stitch segments (false)
+ *   isGap - Whether these are gap segments (true) or stitch segments (false)
  */
 function applyJointAttributesToSegments(context is Context, id is Id, segmentEdges is Query, 
     existingAttribute is SMAttribute, targetJointType is SMJointType, definition is map, 
-    isFaceBend is boolean, isBridge is boolean)
+    isFaceBend is boolean, isGap is boolean)
 {
     // Get each individual edge segment
     const edges = evaluateQuery(context, segmentEdges);
@@ -388,8 +391,8 @@ function applyJointAttributesToSegments(context is Context, id is Id, segmentEdg
                 throw regenError("Cannot create rip attributes on face bend segments", ["entity"]);
             }
             
-            // Use bridge style if this is a bridge, otherwise use default edge style
-            var ripStyle = isBridge ? definition.bridgeStyle : SMJointStyle.EDGE;
+            // Use gap style if this is a gap, otherwise use default edge style
+            var ripStyle = isGap ? definition.gapStyle : SMJointStyle.EDGE;
             newAttribute = createNewRipAttribute(id + ("rip" ~ toString(i)), edgeAttribute, ripStyle);
         }
         else if (targetJointType == SMJointType.TANGENT)
@@ -523,7 +526,7 @@ function createNewRipAttribute(id is Id, existingAttribute is SMAttribute, joint
                 "value" : SMJointType.RIP,
                 "canBeEdited" : false,
                 "controllingFeatureId" : toAttributeId(id),
-                "parameterIdInFeature" : "bridgeJointType"
+                "parameterIdInFeature" : "gapJointType"
             };
     }
     else
@@ -537,7 +540,7 @@ function createNewRipAttribute(id is Id, existingAttribute is SMAttribute, joint
             "value" : jointStyle,
             "canBeEdited" : true,
             "controllingFeatureId" : toAttributeId(id),
-            "parameterIdInFeature" : "bridgeStyle"
+            "parameterIdInFeature" : "gapStyle"
         };
 
     return ripAttribute;
@@ -564,7 +567,7 @@ function createNewTangentAttribute(id is Id, existingAttribute is SMAttribute) r
 
 /**
  * Converts domain definitions (start/end normalized parameters) into split parameters.
- * Each domain represents a bridge, so we need to split at both the start and end of each domain.
+ * Each domain represents a stitch (bend segment), so we need to split at both the start and end of each domain.
  * Inputs:
  *   domains - Array of {start, end} maps with normalized parameters (0 to 1)
  * Outputs: Sorted array of unique split parameters
@@ -575,7 +578,7 @@ function calculateSplitParametersFromDomains(domains is array) returns array
     
     for (var domain in domains)
     {
-        // Add both start and end of each domain as split points
+        // Add both start and end of each domain (stitch) as split points
         splitParameters = append(splitParameters, domain.start);
         splitParameters = append(splitParameters, domain.end);
     }
