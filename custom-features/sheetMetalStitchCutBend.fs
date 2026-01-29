@@ -138,6 +138,9 @@ export const sheetMetalStitchCutBend = defineSheetMetalFeature(function(context 
             throw regenError("Selected edge must have a measurable length", ["entity"]);
         }
 
+        // Set edges for spacing calculation (spacing utilities expect definition.edges)
+        definition.edges = definition.entity;
+
         // Use centralized spacing calculation from spacingUtils
         definition = computeCurvePatternSpacing(context, id, definition);
 
