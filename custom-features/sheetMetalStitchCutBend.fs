@@ -270,16 +270,11 @@ export const sheetMetalStitchCutBend = defineSheetMetalFeature(function(context 
                 SMJointType.RIP, definition, isFaceBend, false);
         }
 
-        // Query for all edges on the joint entity's body that have sheet metal joint attributes
-        // This should capture all the modified segments we just set attributes on
-        const bodyQuery = qOwnerBody(jointEntity);
-        const allJointEdges = qOwnedByBody(bodyQuery, EntityType.EDGE);
-        const edgesWithAttributes = qHasAttribute(allJointEdges, SMAttribute);
-        
-        // Update sheet metal geometry with edges that have attributes
+        // Update sheet metal geometry - pass the joint entity like Modify Joint does
+        // After we've modified attributes on the split segments, update the whole joint
         updateSheetMetalGeometry(context, id, { 
-            "entities" : edgesWithAttributes,
-            "associatedChanges" : edgesWithAttributes
+            "entities" : jointEntity,
+            "associatedChanges" : jointEntity
         });
     }, { 
         useDefaultRadius : true, 
