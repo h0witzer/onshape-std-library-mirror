@@ -119,22 +119,48 @@ export const tabAndSlotBossDisplay = defineSheetMetalFeature(function(context is
         var tabCount = definition.instanceCount;
         var tabDomains = []; // Array of {start, end} maps representing tab positions as normalized parameters
 
-        // Get offsets (default to 0 if not using offsets)
-        const offset1 = (definition.useOffsets == true) ? definition.offset1 : (0 * meter);
-        const offset2 = (definition.useOffsets == true && definition.oppositeDirection == true) ? definition.offset2 : (definition.useOffsets == true ? definition.offset1 : (0 * meter));
+        // Get offsets based on mode
+        var startOffset = 0 * meter;
+        var endOffset = 0 * meter;
+        
+        if (definition.useOffsets == true)
+        {
+            if (!definition.twoOffsets)
+            {
+                // Equal offsets mode: same offset on both ends
+                startOffset = definition.offset;
+                endOffset = definition.offset;
+            }
+            else
+            {
+                // Two offsets mode: different offsets on each end
+                // oppositeDirection controls which offset goes to which end
+                if (!definition.oppositeDirection)
+                {
+                    startOffset = definition.offset1;
+                    endOffset = definition.offset2;
+                }
+                else
+                {
+                    // Flipped: swap which offset goes where
+                    startOffset = definition.offset2;
+                    endOffset = definition.offset1;
+                }
+            }
+        }
 
         if (definition.spacingType == CurvePatternSpacingType.EQUAL)
         {
-            tabDomains = calculateEqualSpacedDomains(totalLength, definition.tabWidth, tabCount, offset1, offset2);
+            tabDomains = calculateEqualSpacedDomains(totalLength, definition.tabWidth, tabCount, startOffset, endOffset);
         }
         else if (definition.spacingType == CurvePatternSpacingType.DISTANCE)
         {
-            tabDomains = calculateDistanceSpacedDomains(totalLength, definition.tabWidth, definition.distance, tabCount, offset1, offset2);
+            tabDomains = calculateDistanceSpacedDomains(totalLength, definition.tabWidth, definition.distance, tabCount, startOffset, endOffset);
         }
         else if (definition.spacingType == CurvePatternSpacingType.BESTFIT)
         {
             // For BESTFIT, instanceCount is computed by computeCurvePatternSpacing
-            tabDomains = calculateEqualSpacedDomains(totalLength, definition.tabWidth, tabCount, offset1, offset2);
+            tabDomains = calculateEqualSpacedDomains(totalLength, definition.tabWidth, tabCount, startOffset, endOffset);
         }
 
         if (tabCount == 0 || size(tabDomains) == 0)

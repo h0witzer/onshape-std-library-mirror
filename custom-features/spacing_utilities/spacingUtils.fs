@@ -91,14 +91,24 @@ export predicate curvePatternSpacingPredicate(definition is map)
 
         if (definition.useOffsets)
         {
-            annotation { "Name" : "Offset 1" }
-            isLength(definition.offset1, PATTERN_OFFSET_BOUND);
+            annotation { "Name" : "Two offsets", "Default" : false }
+            definition.twoOffsets is boolean;
 
-            annotation { "Name" : "Opposite direction", "UIHint" : UIHint.OPPOSITE_DIRECTION, "Default" : false }
-            definition.oppositeDirection is boolean;
-
-            if (definition.oppositeDirection)
+            // Single offset mode (like EQUAL_OFFSETS in chamfer)
+            if (!definition.twoOffsets)
             {
+                annotation { "Name" : "Offset" }
+                isLength(definition.offset, PATTERN_OFFSET_BOUND);
+            }
+            else
+            {
+                // Two offset mode (like TWO_OFFSETS in chamfer)
+                annotation { "Name" : "Offset 1" }
+                isLength(definition.offset1, PATTERN_OFFSET_BOUND);
+
+                annotation { "Name" : "Opposite direction", "UIHint" : UIHint.OPPOSITE_DIRECTION, "Default" : false }
+                definition.oppositeDirection is boolean;
+
                 annotation { "Name" : "Offset 2" }
                 isLength(definition.offset2, PATTERN_OFFSET_BOUND);
             }
@@ -118,10 +128,12 @@ export predicate curvePatternSpacingPredicate(definition is map)
  *      @field instanceCount {number} : Input/output instance count
  *      @field targetPitch {ValueWithUnits} : Target pitch for best-fit spacing
  *      @field doPitchCeiling {boolean} : Whether to use ceiling for rounding
- *      @field useOffsets {boolean} : Whether to use start/end offsets
- *      @field offset1 {ValueWithUnits} : First offset from curve end
- *      @field offset2 {ValueWithUnits} : Second offset from curve end (if oppositeDirection)
- *      @field oppositeDirection {boolean} : Whether to use different offsets at each end
+ *      @field useOffsets {boolean} : Whether to use offsets
+ *      @field twoOffsets {boolean} : Whether to use two different offsets (false = equal offsets)
+ *      @field offset {ValueWithUnits} : Single offset for equal offset mode
+ *      @field offset1 {ValueWithUnits} : First offset for two offset mode
+ *      @field offset2 {ValueWithUnits} : Second offset for two offset mode
+ *      @field oppositeDirection {boolean} : Whether to flip which offset applies where (two offset mode only)
  * 
  * @returns {map} : Updated definition with computed spacing parameters
  */
@@ -135,9 +147,19 @@ export function computeCurvePatternSpacing(context is Context, id is Id, definit
     var effectiveLength = curveLength;
     if (definition.useOffsets)
     {
-        const offset1 = definition.offset1;
-        const offset2 = definition.oppositeDirection ? definition.offset2 : definition.offset1;
-        effectiveLength = curveLength - offset1 - offset2;
+        if (!definition.twoOffsets)
+        {
+            // Equal offsets mode: same offset on both ends
+            const offset = definition.offset;
+            effectiveLength = curveLength - offset - offset;
+        }
+        else
+        {
+            // Two offsets mode: different offsets on each end
+            const offset1 = definition.offset1;
+            const offset2 = definition.offset2;
+            effectiveLength = curveLength - offset1 - offset2;
+        }
     }
 
     var corrector = 0;
