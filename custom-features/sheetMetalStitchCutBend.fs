@@ -31,8 +31,8 @@ const FRACTION_TOLERANCE = 1e-9;
 
 export const STITCH_WIDTH_BOUNDS =
 {
-            (inch) : [1e-6, 0.25, 1e6]
-        } as LengthBoundSpec;
+    (inch) : [1e-6, 0.25, 1e6]
+} as LengthBoundSpec;
 
 /**
  * Sheet Metal Stitch Cut Bend feature.
@@ -222,7 +222,7 @@ export const sheetMetalStitchCutBend = defineSheetMetalFeature(function(context 
         // Use mixInTracking pattern: union the original query with a tracking query
         const trackedEdges = qUnion([orderedEdgeQuery, startTracking(context, orderedEdgeQuery)]);
 
-        // Split the edges at stitch boundaries (domains represent bridges, so we need both start and end points)
+        // Split the edges at stitch boundaries (domains represent stitches, so we need both start and end points)
         const splitParameters = calculateSplitParametersFromDomains(stitchDomains);
         const splitInstructions = calculateEdgeSplitInstructionsFromParameters(context, path, splitParameters);
 
@@ -405,12 +405,12 @@ function applyJointAttributesToSegments(context is Context, id is Id, segmentEdg
         }
         else
         {
-            throw "Unsupported joint type for stitch cut bend";
+            throw regenError("Unsupported joint type for stitch cut bend: " ~ toString(targetJointType), ["stitchJointType", "gapJointType"]);
         }
         
         if (!isEntityAppropriateForAttribute(context, edgeQuery, newAttribute))
         {
-            throw "Cannot assign attribute type to edge segment";
+            throw regenError("Cannot assign " ~ toString(targetJointType) ~ " attribute to edge segment", ["entity"], edgeQuery);
         }
         
         // Replace the attribute on this edge
@@ -814,38 +814,6 @@ function identifySegmentsByEdgeMidpoints(context is Context, allSplitEdges is Qu
     }
 
     return qUnion(domainEdgeQueries);
-}
-
-/**
- * Validates that domains do not overlap.
- * Inputs:
- *   domains - Array of {start, end} maps
- *   tolerance - Tolerance for comparison
- * Outputs: true if no overlaps, false if overlaps detected
- */
-function validateDomainsNoOverlap(domains is array, tolerance is number) returns boolean
-{
-    for (var i = 0; i < size(domains); i += 1)
-    {
-        for (var j = i + 1; j < size(domains); j += 1)
-        {
-            const domain1 = domains[i];
-            const domain2 = domains[j];
-            
-            // Check if domain2.start is within domain1
-            if (domain2.start >= domain1.start - tolerance && domain2.start <= domain1.end + tolerance)
-            {
-                return false;
-            }
-            
-            // Check if domain1.start is within domain2
-            if (domain1.start >= domain2.start - tolerance && domain1.start <= domain2.end + tolerance)
-            {
-                return false;
-            }
-        }
-    }
-    return true;
 }
 
 /**
