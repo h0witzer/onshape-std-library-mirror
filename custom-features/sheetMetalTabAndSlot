@@ -73,8 +73,8 @@ export const tabAndSlotBossDisplay = defineSheetMetalFeature(function(context is
         // Spacing parameters (uses centralized spacing predicate from spacingUtils)
         curvePatternSpacingPredicate(definition);
 
-        // Tab parameters group
-        annotation { "Name" : "Tab parameters" }
+        // Tab parameters group - always visible but collapsible
+        annotation { "Name" : "Tab parameters", "Default" : true, "UIHint" : UIHint.ALWAYS_HIDDEN }
         definition.showTabParameters is boolean;
         
         annotation { "Group Name" : "Tab parameters", "Driving Parameter" : "showTabParameters", "Collapsed By Default" : false }
@@ -89,8 +89,8 @@ export const tabAndSlotBossDisplay = defineSheetMetalFeature(function(context is
             isLength(definition.tabChamfer, CHAMFER_WIDTH_BOUNDS);
         }
 
-        // Slot parameters group
-        annotation { "Name" : "Slot parameters" }
+        // Slot parameters group - always visible but collapsible
+        annotation { "Name" : "Slot parameters", "Default" : true, "UIHint" : UIHint.ALWAYS_HIDDEN }
         definition.showSlotParameters is boolean;
         
         annotation { "Group Name" : "Slot parameters", "Driving Parameter" : "showSlotParameters", "Collapsed By Default" : false }
