@@ -397,18 +397,13 @@ function applyJointAttributesToSegments(context is Context, id is Id, segmentEdg
             throw regenError("Cannot assign " ~ toString(targetJointType) ~ " attribute to edge segment", ["entity"], edgeQuery);
         }
         
-        // CRITICAL: Split edges inherit the parent's attribute. Remove it before setting new one.
-        // Without this, we get "Entity can not have more than one attribute of the same custom type"
-        removeAttributes(context, {
-            "entities" : edgeQuery,
-            "attributePattern" : {} as SMAttribute
-        });
+        // Get the inherited attribute from THIS specific split edge
+        // Each split edge inherits the parent's attribute, so we need to get it individually
+        const edgeAttribute = getJointAttribute(context, edgeQuery);
         
-        // Now set the new attribute
-        setAttribute(context, {
-            "entities" : edgeQuery,
-            "attribute" : newAttribute
-        });
+        // Use replaceSMAttribute to replace the inherited attribute with the new one
+        // This function handles remove + set internally and is scoped to this specific edge
+        replaceSMAttribute(context, edgeAttribute, newAttribute);
     }
 }
 
