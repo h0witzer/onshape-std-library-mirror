@@ -4,6 +4,11 @@ FeatureScript 2856;
 // It allows changing any joint style into a stitch bend by splitting the edge into segments
 // that are alternately assigned bend or rip attributes.
 
+// Imports used in interface - enums must be exported for use in preconditions
+export import(path : "onshape/std/smjointtype.gen.fs", version : "2856.0");
+export import(path : "onshape/std/smjointstyle.gen.fs", version : "2856.0");
+
+// Imports used internally
 import(path : "onshape/std/common.fs", version : "2856.0");
 import(path : "onshape/std/query.fs", version : "2856.0");
 import(path : "onshape/std/evaluate.fs", version : "2856.0");
@@ -11,8 +16,6 @@ import(path : "onshape/std/valueBounds.fs", version : "2856.0");
 import(path : "onshape/std/sheetMetalAttribute.fs", version : "2856.0");
 import(path : "onshape/std/sheetMetalUtils.fs", version : "2856.0");
 import(path : "onshape/std/feature.fs", version : "2856.0");
-import(path : "onshape/std/smjointtype.gen.fs", version : "2856.0");
-import(path : "onshape/std/smjointstyle.gen.fs", version : "2856.0");
 import(path : "onshape/std/attributes.fs", version : "2856.0");
 import(path : "onshape/std/containers.fs", version : "2856.0");
 import(path : "onshape/std/surfaceGeometry.fs", version : "2856.0");
