@@ -49,13 +49,13 @@ annotation { "Feature Type Name" : "Stitch cut bend",
 export const sheetMetalStitchCutBend = defineSheetMetalFeature(function(context is Context, id is Id, definition is map)
     precondition
     {
-        // Joint edge selection
+        // Joint edge selection - matches Modify Joint filter pattern
         annotation { "Name" : "Joint edge",
-                    "Filter" : SheetMetalDefinitionEntityType.EDGE && AllowFlattenedGeometry.YES && ModifiableEntityOnly.YES,
+                    "Filter" : (SheetMetalDefinitionEntityType.FACE || SheetMetalDefinitionEntityType.EDGE) && AllowFlattenedGeometry.YES && ModifiableEntityOnly.YES,
                     "MaxNumberOfPicks" : 1 }
         definition.entity is Query;
 
-        // Bend parameters for stitch segments
+        // Bend parameters for bridge segments
         annotation { "Name" : "Use model bend radius", "Default" : true }
         definition.useDefaultRadius is boolean;
         if (!definition.useDefaultRadius)
@@ -70,10 +70,6 @@ export const sheetMetalStitchCutBend = defineSheetMetalFeature(function(context 
             annotation { "Name" : "K Factor" }
             isReal(definition.kFactor, K_FACTOR_BOUNDS);
         }
-
-        // Rip style for stitch segments (the cuts)
-        annotation { "Name" : "Stitch style", "Default" : SMJointStyle.EDGE }
-        definition.stitchStyle is SMJointStyle;
 
         // Spacing parameters - bridge width is the width of each bend segment (connection)
         annotation { "Name" : "Bridge width" }
@@ -278,7 +274,6 @@ export const sheetMetalStitchCutBend = defineSheetMetalFeature(function(context 
             "associatedChanges" : allModifiedEdges
         });
     }, { 
-        stitchStyle : SMJointStyle.EDGE, 
         useDefaultRadius : true, 
         useDefaultKFactor : true 
     });
@@ -380,8 +375,8 @@ function applyJointAttributesToSegments(context is Context, id is Id, segmentEdg
                 throw regenError("Cannot create rip attributes on face bend segments", ["entity"]);
             }
             
-            // Use stitch style for rip segments
-            var ripStyle = definition.stitchStyle;
+            // Always use EDGE style for rip segments (stitches)
+            var ripStyle = SMJointStyle.EDGE;
             newAttribute = createNewRipAttribute(id + ("rip" ~ toString(i)), edgeAttribute, ripStyle);
         }
         else if (targetJointType == SMJointType.TANGENT)
@@ -515,7 +510,7 @@ function createNewRipAttribute(id is Id, existingAttribute is SMAttribute, joint
                 "value" : SMJointType.RIP,
                 "canBeEdited" : false,
                 "controllingFeatureId" : toAttributeId(id),
-                "parameterIdInFeature" : "stitchStyle"
+                "parameterIdInFeature" : "entity"
             };
     }
     else
@@ -527,9 +522,9 @@ function createNewRipAttribute(id is Id, existingAttribute is SMAttribute, joint
     // Set joint style
     ripAttribute.jointStyle = {
             "value" : jointStyle,
-            "canBeEdited" : true,
+            "canBeEdited" : false,
             "controllingFeatureId" : toAttributeId(id),
-            "parameterIdInFeature" : "stitchStyle"
+            "parameterIdInFeature" : "entity"
         };
 
     return ripAttribute;
