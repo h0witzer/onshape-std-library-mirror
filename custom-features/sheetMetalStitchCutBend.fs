@@ -257,22 +257,23 @@ export const sheetMetalStitchCutBend = defineSheetMetalFeature(function(context 
         }
 
         // Create attributes for bridge segments (the bend connections)
+        var bridgeModifiedQuery = qNothing();
         if (bridgeSegmentCount > 0)
         {
-            applyJointAttributesToSegments(context, id + "bridges", bridgeSegmentEdges, existingAttribute, 
+            bridgeModifiedQuery = applyJointAttributesToSegments(context, id + "bridges", bridgeSegmentEdges, existingAttribute, 
                 SMJointType.BEND, definition, isFaceBend, true);
         }
 
         // Create attributes for stitch segments (the rip/cut segments)
+        var stitchModifiedQuery = qNothing();
         if (stitchCount > 0)
         {
-            applyJointAttributesToSegments(context, id + "stitches", stitchSegmentEdges, existingAttribute, 
+            stitchModifiedQuery = applyJointAttributesToSegments(context, id + "stitches", stitchSegmentEdges, existingAttribute, 
                 SMJointType.RIP, definition, isFaceBend, false);
         }
 
-        // Update sheet metal geometry with the modified segment edges
-        // Using the actual segment queries (not jointEntity) ensures proper tracking
-        const modifiedEdges = qUnion([bridgeSegmentEdges, stitchSegmentEdges]);
+        // Update sheet metal geometry with queries returned from replaceSMAttribute (like Modify Joint)
+        const modifiedEdges = qUnion([bridgeModifiedQuery, stitchModifiedQuery]);
         updateSheetMetalGeometry(context, id, { 
             "entities" : modifiedEdges,
             "associatedChanges" : modifiedEdges
@@ -307,6 +308,7 @@ function findJointDefinitionEntity(context is Context, entity is Query, entityTy
 /**
  * Applies joint attributes to a set of edge segments.
  * Creates appropriate bend, rip, or tangent attributes and assigns them to the segments.
+ * Returns query for modified entities from replaceSMAttribute.
  * Inputs:
  *   context - Evaluation context
  *   id - Operation ID for this attribute assignment
@@ -316,30 +318,29 @@ function findJointDefinitionEntity(context is Context, entity is Query, entityTy
  *   definition - Feature definition with parameters
  *   isFaceBend - Whether the original joint was a face bend
  *   isBridge - Whether these are bridge segments (true = bend) or stitch segments (false = rip)
+ * Outputs: Query for entities with replaced attributes
  */
 function applyJointAttributesToSegments(context is Context, id is Id, segmentEdges is Query, 
     existingAttribute is SMAttribute, targetJointType is SMJointType, definition is map, 
-    isFaceBend is boolean, isBridge is boolean)
+    isFaceBend is boolean, isBridge is boolean) returns Query
 {
     // Get each individual edge segment
     const edges = evaluateQuery(context, segmentEdges);
     
-    // First pass: Remove all inherited attributes from these edges
-    for (var edge in edges)
-    {
-        const edgeQuery = qUnion([edge]);
-        var edgeAttribute = getJointAttribute(context, edgeQuery);
-        if (edgeAttribute != undefined)
-        {
-            removeAttributes(context, { "entities" : edgeQuery, "attributePattern" : edgeAttribute });
-        }
-    }
+    // Collect queries from replaceSMAttribute calls
+    var modifiedQueries = [];
     
-    // Second pass: Set new attributes on each edge
     for (var i = 0; i < size(edges); i += 1)
     {
         const edge = edges[i];
         const edgeQuery = qUnion([edge]);
+        
+        // Get the edge's current attribute (inherited from parent)
+        var edgeAttribute = getJointAttribute(context, edgeQuery);
+        if (edgeAttribute == undefined)
+        {
+            throw regenError("Split edge has no sheet metal attribute", ["entity"], edgeQuery);
+        }
         
         // Create new attribute based on target joint type
         var newAttribute;
@@ -373,7 +374,7 @@ function applyJointAttributesToSegments(context is Context, id is Id, segmentEdg
                 kFactor = definition.kFactor;
             }
             
-            newAttribute = createNewEdgeBendAttribute(context, id + ("bend" ~ toString(i)), edgeQuery, existingAttribute,
+            newAttribute = createNewEdgeBendAttribute(context, id + ("bend" ~ toString(i)), edgeQuery, edgeAttribute,
                 radius, definition.useDefaultRadius, kFactor, definition.useDefaultKFactor);
         }
         else if (targetJointType == SMJointType.RIP)
@@ -385,7 +386,7 @@ function applyJointAttributesToSegments(context is Context, id is Id, segmentEdg
             
             // Always use EDGE style for rip segments (stitches)
             var ripStyle = SMJointStyle.EDGE;
-            newAttribute = createNewRipAttribute(id + ("rip" ~ toString(i)), existingAttribute, ripStyle);
+            newAttribute = createNewRipAttribute(id + ("rip" ~ toString(i)), edgeAttribute, ripStyle);
         }
         else if (targetJointType == SMJointType.TANGENT)
         {
@@ -393,7 +394,7 @@ function applyJointAttributesToSegments(context is Context, id is Id, segmentEdg
             {
                 throw regenError("Cannot create tangent attributes on face bend segments", ["entity"]);
             }
-            newAttribute = createNewTangentAttribute(id + ("tangent" ~ toString(i)), existingAttribute);
+            newAttribute = createNewTangentAttribute(id + ("tangent" ~ toString(i)), edgeAttribute);
         }
         else
         {
@@ -405,9 +406,13 @@ function applyJointAttributesToSegments(context is Context, id is Id, segmentEdg
             throw regenError("Cannot assign " ~ toString(targetJointType) ~ " attribute to edge segment", ["entity"], edgeQuery);
         }
         
-        // Set the new attribute on this edge (no attribute exists after removal)
-        setAttribute(context, { "entities" : edgeQuery, "attribute" : newAttribute });
+        // Use replaceSMAttribute like Modify Joint does - it returns query for modified entities
+        var modifiedQuery = replaceSMAttribute(context, edgeAttribute, newAttribute);
+        modifiedQueries = append(modifiedQueries, modifiedQuery);
     }
+    
+    // Return union of all modified entity queries
+    return qUnion(modifiedQueries);
 }
 
 /**
