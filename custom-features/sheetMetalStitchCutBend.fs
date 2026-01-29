@@ -328,12 +328,15 @@ function applyJointAttributesToSegments(context is Context, id is Id, segmentEdg
         const edge = edges[i];
         const edgeQuery = qUnion([edge]);
         
-        // Get the joint attribute for this specific edge (it may have been created from the split)
-        var edgeAttribute = try silent(getJointAttribute(context, edgeQuery));
-        if (edgeAttribute == undefined)
+        // Remove any existing attribute from this edge first
+        // This ensures we start fresh without inheriting the parent's attribute
+        try silent
         {
-            // If no attribute exists yet, use the existing one as template
-            edgeAttribute = existingAttribute;
+            const existingEdgeAttr = getJointAttribute(context, edgeQuery);
+            if (existingEdgeAttr != undefined)
+            {
+                removeAttributes(context, { "entities" : edgeQuery, "attributePattern" : existingEdgeAttr });
+            }
         }
         
         // Create new attribute based on target joint type
@@ -368,7 +371,7 @@ function applyJointAttributesToSegments(context is Context, id is Id, segmentEdg
                 kFactor = definition.kFactor;
             }
             
-            newAttribute = createNewEdgeBendAttribute(context, id + ("bend" ~ toString(i)), edgeQuery, edgeAttribute,
+            newAttribute = createNewEdgeBendAttribute(context, id + ("bend" ~ toString(i)), edgeQuery, existingAttribute,
                 radius, definition.useDefaultRadius, kFactor, definition.useDefaultKFactor);
         }
         else if (targetJointType == SMJointType.RIP)
@@ -380,7 +383,7 @@ function applyJointAttributesToSegments(context is Context, id is Id, segmentEdg
             
             // Always use EDGE style for rip segments (stitches)
             var ripStyle = SMJointStyle.EDGE;
-            newAttribute = createNewRipAttribute(id + ("rip" ~ toString(i)), edgeAttribute, ripStyle);
+            newAttribute = createNewRipAttribute(id + ("rip" ~ toString(i)), existingAttribute, ripStyle);
         }
         else if (targetJointType == SMJointType.TANGENT)
         {
@@ -388,7 +391,7 @@ function applyJointAttributesToSegments(context is Context, id is Id, segmentEdg
             {
                 throw regenError("Cannot create tangent attributes on face bend segments", ["entity"]);
             }
-            newAttribute = createNewTangentAttribute(id + ("tangent" ~ toString(i)), edgeAttribute);
+            newAttribute = createNewTangentAttribute(id + ("tangent" ~ toString(i)), existingAttribute);
         }
         else
         {
@@ -400,12 +403,7 @@ function applyJointAttributesToSegments(context is Context, id is Id, segmentEdg
             throw regenError("Cannot assign " ~ toString(targetJointType) ~ " attribute to edge segment", ["entity"], edgeQuery);
         }
         
-        // Remove old attribute and set new one on this specific edge only
-        // We can't use replaceSMAttribute because it would affect all edges with the same attribute
-        if (edgeAttribute != undefined)
-        {
-            removeAttributes(context, { "entities" : edgeQuery, "attributePattern" : edgeAttribute });
-        }
+        // Set the new attribute on this edge
         setAttribute(context, { "entities" : edgeQuery, "attribute" : newAttribute });
     }
 }
