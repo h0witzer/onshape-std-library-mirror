@@ -23,9 +23,6 @@ import(path : "onshape/std/topologyUtils.fs", version : "✨");
 import(path : "onshape/std/valueBounds.fs", version : "✨");
 import(path : "onshape/std/vector.fs", version : "✨");
 
-// Import custom numberUtils for pseudo-random number generation
-import(path : "custom-features/numberUtils.fs", version : "");
-
 /**
  * Feature adding tabs to parallel sheet metal faces.
  *
@@ -46,24 +43,6 @@ export const sheetMetalTab = defineSheetMetalFeature(function(context is Context
 
         annotation { "Name" : "Subtraction scope", "Filter" : (SheetMetalDefinitionEntityType.FACE && AllowFlattenedGeometry.YES && ModifiableEntityOnly.YES) || (BodyType.SOLID && EntityType.BODY && ActiveSheetMetal.NO) }
         definition.booleanSubtractScope is Query;
-
-        annotation { "Group Name" : "Tab width randomization", "Collapsed By Default" : true }
-        {
-            annotation { "Name" : "Enable randomization", "Default" : false }
-            definition.enableRandomization is boolean;
-
-            if (definition.enableRandomization)
-            {
-                annotation { "Name" : "Random seed", "Default" : 1000 }
-                isInteger(definition.randomSeed, { "Default" : 1000 } as IntegerBoundSpec);
-
-                annotation { "Name" : "Width variation", "Description" : "Maximum variation in tab width (+ or -)" }
-                isLength(definition.widthVariation, NONNEGATIVE_ZERO_DEFAULT_LENGTH_BOUNDS);
-
-                annotation { "Name" : "Generate new seed", "UIHint" : UIHint.OPPOSITE_DIRECTION_CIRCULAR, "Default" : false }
-                definition.generateNewSeed is boolean;
-            }
-        }
     }
     {
         // this is not necessary but helps with correct error reporting in feature pattern
@@ -378,75 +357,6 @@ function moveTabsToPlane(context is Context, id is Id, tabs is Query, toPlane is
     applyPlaneToPlaneTransform(context, id, tabs, tabPlane, toPlane);
 }
 
-/**
- * Applies size randomization to individual tab bodies based on the definition parameters.
- * Uses a pseudorandom number generator with an incrementing seed for each tab instance.
- * Scales tabs uniformly in the plane (both width and height) while maintaining thickness.
- * 
- * @param context : The context in which the operation is performed
- * @param id : The operation ID
- * @param tabs : Query for the tab bodies to randomize
- * @param definition : Map containing randomization parameters (enableRandomization, randomSeed, widthVariation)
- * @param tabIndex : The index of the current tab instance (used to increment the seed)
- * @param plane : The plane of the tab face for proper scaling direction
- */
-function applyTabWidthRandomization(context is Context, id is Id, tabs is Query, definition is map, tabIndex is number, plane is Plane)
-{
-    if (!definition.enableRandomization || definition.widthVariation <= 0 * meter)
-    {
-        return;
-    }
-
-    // Evaluate all tab bodies in this group
-    const tabBodies = evaluateQuery(context, tabs);
-    
-    for (var bodyIndex = 0; bodyIndex < size(tabBodies); bodyIndex += 1)
-    {
-        const currentTabBody = tabBodies[bodyIndex];
-        
-        // Calculate a unique seed for this specific tab instance
-        const currentSeed = definition.randomSeed + tabIndex + bodyIndex;
-        
-        // Get the current tab face to measure its dimensions
-        const tabFace = qOwnedByBody(currentTabBody, EntityType.FACE);
-        const tabBox = evBox3d(context, {
-            "topology" : tabFace,
-            "tight" : true
-        });
-        
-        // Calculate the current size in the plane
-        const boxSize = tabBox.maxCorner - tabBox.minCorner;
-        
-        // Use the maximum dimension in the bounding box as reference for scaling
-        // This ensures we're scaling based on the largest feature of the tab
-        const maxDimension = max(boxSize[0], max(boxSize[1], boxSize[2]));
-        
-        // Generate a random variation in the range [-widthVariation, +widthVariation]
-        const randomVariation = pseudoRandomNumber(currentSeed, -definition.widthVariation, definition.widthVariation, meter);
-        
-        // Clamp the variation to prevent negative or zero dimensions
-        // Ensure the new dimension is at least 10% of the original to avoid degenerate geometry
-        const minAllowedDimension = maxDimension * 0.1;
-        const clampedVariation = max(randomVariation, minAllowedDimension - maxDimension);
-        
-        // Calculate scale factor based on the maximum dimension
-        const scaleFactor = (maxDimension + clampedVariation) / maxDimension;
-        
-        // Apply consistent scaling in the plane directions (X and Y) while keeping thickness (Z) constant
-        // Create a coordinate system aligned with the plane
-        const xAxisInPlane = perpendicularVector(plane.normal);
-        const tabCenterInPlane = (tabBox.minCorner + tabBox.maxCorner) / 2;
-        
-        const scaleCsys = coordSystem(tabCenterInPlane, xAxisInPlane, plane.normal);
-        const scaleTransform = scaleNonuniformly(scaleFactor, scaleFactor, 1.0, scaleCsys);
-        
-        opTransform(context, id + unstableIdComponent(bodyIndex), {
-            "bodies" : currentTabBody,
-            "transform" : scaleTransform
-        });
-    }
-}
-
 function reportBooleanIssues(context is Context, id is Id, tabBody is Query, wallFaces is Query)
 {
     const collisions = evCollision(context, {
@@ -639,9 +549,6 @@ function booleanOneTabGroup(context is Context, id is Id, definition is map, coi
 
     subtractTab(context, id + "subtract", definition, subtractQueries, coincidentGrouping, rootId);
     moveTabsToPlane(context, id + "transform", coincidentGrouping.tabs, coincidentGrouping.plane);
-    
-    // Apply width randomization if enabled
-    applyTabWidthRandomization(context, id + "randomize", coincidentGrouping.tabs, definition, tabIndex, coincidentGrouping.plane);
 
     opPattern(context, id + "copyTool", {
                 "entities" : coincidentGrouping.tabs,
@@ -815,16 +722,6 @@ export function sheetMetalTabEditingLogic(context is Context, id is Id, oldDefin
             definition.booleanOffset = modelParameters.minimalClearance;
         }
     }
-    
-    // Handle "generate new seed" button click
-    if (definition.enableRandomization && definition.generateNewSeed && !oldDefinition.generateNewSeed)
-    {
-        // Generate a new random seed using the current seed
-        definition.randomSeed = floor(pseudoRandomNumber(definition.randomSeed));
-        // Reset the button state
-        definition.generateNewSeed = false;
-    }
-    
     return definition;
 }
 
