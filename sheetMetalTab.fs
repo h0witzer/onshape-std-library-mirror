@@ -413,22 +413,18 @@ function applyTabWidthRandomization(context is Context, id is Id, tabs is Query,
             "tight" : true
         });
         
-        // Calculate the current width (use the larger of the two dimensions in the plane)
+        // Calculate the current size in the plane
         const boxSize = tabBox.maxCorner - tabBox.minCorner;
         
-        // Find dimensions perpendicular to the plane normal
-        const normalDir = abs(dot(plane.normal, vector(1, 0, 0))) > 0.9 ? 
-                          (abs(dot(plane.normal, vector(0, 1, 0))) > abs(dot(plane.normal, vector(0, 0, 1))) ? 
-                           boxSize[1] : boxSize[2]) :
-                          boxSize[0];
-        const currentWidth = normalDir;
+        // Use the maximum dimension in the bounding box as reference for scaling
+        // This ensures we're scaling based on the largest feature of the tab
+        const maxDimension = max(boxSize[0], max(boxSize[1], boxSize[2]));
         
         // Generate a random variation in the range [-widthVariation, +widthVariation]
         const randomVariation = pseudoRandomNumber(currentSeed, -definition.widthVariation, definition.widthVariation, meter);
         
-        // Calculate scale factor
-        const newWidth = currentWidth + randomVariation;
-        const scaleFactor = newWidth / currentWidth;
+        // Calculate scale factor based on the maximum dimension
+        const scaleFactor = (maxDimension + randomVariation) / maxDimension;
         
         // Apply uniform scale in the plane (keeping thickness constant)
         // Create a coordinate system aligned with the plane
