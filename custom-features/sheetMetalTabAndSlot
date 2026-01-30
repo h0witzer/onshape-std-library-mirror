@@ -125,6 +125,10 @@ export const tabAndSlotBossDisplay = defineSheetMetalFeature(function(context is
 
                 annotation { "Name" : "Generate new seed" }
                 isButton(definition.generateNewSeed);
+                
+                // Hidden parameter to force UI refresh
+                annotation { "UIHint" : UIHint.ALWAYS_HIDDEN }
+                definition.refreshTrigger is boolean;
             }
         }
 
@@ -1435,6 +1439,8 @@ export function tabAndSlotEditingLogic(context is Context, id is Id, oldDefiniti
         const seed = definition.randomSeed != undefined ? definition.randomSeed : 1000;
         // Generate new random seed and assign directly
         definition.randomSeed = pseudoRandomNumber(seed);
+        // Toggle hidden parameter to potentially force UI refresh
+        definition.refreshTrigger = !definition.refreshTrigger;
         return definition;
     }
     
