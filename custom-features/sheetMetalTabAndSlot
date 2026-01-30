@@ -1432,7 +1432,8 @@ export function tabAndSlotEditingLogic(context is Context, id is Id, oldDefiniti
     if (clickedButton == "generateNewSeed")
     {
         // Generate a new random seed using the current seed
-        definition.randomSeed = floor(pseudoRandomNumber(definition.randomSeed));
+        // The pseudoRandomNumber function returns a value in range [0, 2^31)
+        definition.randomSeed = pseudoRandomNumber(definition.randomSeed);
     }
     
     return definition;
