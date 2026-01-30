@@ -118,7 +118,7 @@ export const tabAndSlotBossDisplay = defineSheetMetalFeature(function(context is
             if (definition.enableRandomization)
             {
                 annotation { "Name" : "Random seed", "Default" : 1000 }
-                isInteger(definition.randomSeed, { "Default" : 1000 } as IntegerBoundSpec);
+                isInteger(definition.randomSeed, { (unitless) : [0, 1000, 2147483647] } as IntegerBoundSpec);
 
                 annotation { "Name" : "Width variation", "Description" : "Maximum variation in tab width (+ or -)" }
                 isLength(definition.widthVariation, WIDTH_VARIATION_BOUNDS);
@@ -1426,10 +1426,10 @@ function applyWidthRandomizationToTabDomains(tabDomains is array, totalLength is
  * Handles the "Generate new seed" button click to create a new random seed.
  */
 export function tabAndSlotEditingLogic(context is Context, id is Id, oldDefinition is map, definition is map,
-    specifiedParameters is map, hiddenBodies is Query) returns map
+    specifiedParameters is map, hiddenBodies is Query, clickedButton is string) returns map
 {
     // Handle "Generate new seed" button click
-    if (definition.enableRandomization && definition.generateNewSeed)
+    if (clickedButton == "generateNewSeed")
     {
         // Generate a new random seed using the current seed
         definition.randomSeed = floor(pseudoRandomNumber(definition.randomSeed));
