@@ -1433,7 +1433,17 @@ export function tabAndSlotEditingLogic(context is Context, id is Id, oldDefiniti
     {
         // Generate a new random seed using the current seed
         // The pseudoRandomNumber function returns a value in range [0, 2^31)
-        definition.randomSeed = pseudoRandomNumber(definition.randomSeed);
+        // Ensure we have a valid starting seed
+        const currentSeed = definition.randomSeed != undefined ? definition.randomSeed : 1000;
+        
+        // Generate new seed value
+        const newSeed = pseudoRandomNumber(currentSeed);
+        
+        // Clamp to valid bounds [0, 2147483648]
+        definition.randomSeed = max(0, min(newSeed, 2147483648));
+        
+        // Return immediately after handling button click
+        return definition;
     }
     
     return definition;
