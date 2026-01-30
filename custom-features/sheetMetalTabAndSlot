@@ -118,17 +118,13 @@ export const tabAndSlotBossDisplay = defineSheetMetalFeature(function(context is
             if (definition.enableRandomization)
             {
                 annotation { "Name" : "Random seed", "Default" : 1000 }
-                isInteger(definition.randomSeed, { (unitless) : [0, 1000, 2147483648] } as IntegerBoundSpec);
+                isInteger(definition.randomSeed, { (unitless) : [0, 1000, 2147483647] } as IntegerBoundSpec);
 
                 annotation { "Name" : "Width variation", "Description" : "Maximum variation in tab width (+ or -)" }
                 isLength(definition.widthVariation, WIDTH_VARIATION_BOUNDS);
 
                 annotation { "Name" : "Generate new seed" }
                 isButton(definition.generateNewSeed);
-                
-                // Hidden parameter to force UI refresh
-                annotation { "UIHint" : UIHint.ALWAYS_HIDDEN }
-                definition.refreshTrigger is boolean;
             }
         }
 
@@ -1435,12 +1431,8 @@ export function tabAndSlotEditingLogic(context is Context, id is Id, oldDefiniti
     // Handle "Generate new seed" button click
     if (clickedButton == "generateNewSeed")
     {
-        // Use current seed value or default to 1000
-        const seed = definition.randomSeed != undefined ? definition.randomSeed : 1000;
-        // Generate new random seed and assign directly
-        definition.randomSeed = pseudoRandomNumber(seed);
-        // Toggle hidden parameter to potentially force UI refresh
-        definition.refreshTrigger = !definition.refreshTrigger;
+        // Generate new random seed from current value (or default 1000)
+        definition.randomSeed = pseudoRandomNumber(definition.randomSeed != undefined ? definition.randomSeed : 1000);
         return definition;
     }
     
