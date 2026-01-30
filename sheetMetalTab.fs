@@ -379,8 +379,9 @@ function moveTabsToPlane(context is Context, id is Id, tabs is Query, toPlane is
 }
 
 /**
- * Applies width randomization to individual tab bodies based on the definition parameters.
+ * Applies size randomization to individual tab bodies based on the definition parameters.
  * Uses a pseudorandom number generator with an incrementing seed for each tab instance.
+ * Scales tabs uniformly in the plane (both width and height) while maintaining thickness.
  * 
  * @param context : The context in which the operation is performed
  * @param id : The operation ID
@@ -423,13 +424,17 @@ function applyTabWidthRandomization(context is Context, id is Id, tabs is Query,
         // Generate a random variation in the range [-widthVariation, +widthVariation]
         const randomVariation = pseudoRandomNumber(currentSeed, -definition.widthVariation, definition.widthVariation, meter);
         
-        // Calculate scale factor based on the maximum dimension
-        const scaleFactor = (maxDimension + randomVariation) / maxDimension;
+        // Clamp the variation to prevent negative or zero dimensions
+        // Ensure the new dimension is at least 10% of the original to avoid degenerate geometry
+        const minAllowedDimension = maxDimension * 0.1;
+        const clampedVariation = max(randomVariation, minAllowedDimension - maxDimension);
         
-        // Apply uniform scale in the plane (keeping thickness constant)
+        // Calculate scale factor based on the maximum dimension
+        const scaleFactor = (maxDimension + clampedVariation) / maxDimension;
+        
+        // Apply consistent scaling in the plane directions (X and Y) while keeping thickness (Z) constant
         // Create a coordinate system aligned with the plane
         const xAxisInPlane = perpendicularVector(plane.normal);
-        const yAxisInPlane = cross(plane.normal, xAxisInPlane);
         const tabCenterInPlane = (tabBox.minCorner + tabBox.maxCorner) / 2;
         
         const scaleCsys = coordSystem(tabCenterInPlane, xAxisInPlane, plane.normal);
