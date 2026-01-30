@@ -25,7 +25,7 @@ import(path : "onshape/std/smcornerbreakstyle.gen.fs", version : "2856.0");
 // Import spacingUtils module for centralized pattern spacing logic
 export import(path : "c51f6558b7346f455a634ff5/cf14633de6fca78124306ce9/8ce820287d75ed2e92412d90", version : "cf26b6d26aa41f8853237904");//spacingUtils.fs
 // Import numberUtils for pseudo-random number generation
-import(path : "custom-features/numberUtils.fs", version : "");
+import(path : "8d600084e4c200dab6048804", version : "3a97953bde21514c8d56d7ac");
 
 // Original framework by Caden Armstrong - SmartBench Software
 // Hacked by Derek Van Allen
