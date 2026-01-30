@@ -1430,7 +1430,7 @@ function applyWidthRandomizationToTabDomains(tabDomains is array, totalLength is
  * Handles the "Generate new seed" button click to create a new random seed.
  */
 export function tabAndSlotEditingLogic(context is Context, id is Id, oldDefinition is map, definition is map,
-    specifiedParameters is map, hiddenBodies is Query, clickedButton is string) returns map
+    isCreating is boolean, specifiedParameters is map, hiddenBodies is Query, clickedButton is string) returns map
 {
     // Handle "Generate new seed" button click
     if (clickedButton == "generateNewSeed")
