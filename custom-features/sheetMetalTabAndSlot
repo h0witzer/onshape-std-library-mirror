@@ -118,7 +118,7 @@ export const tabAndSlotBossDisplay = defineSheetMetalFeature(function(context is
             if (definition.enableRandomization)
             {
                 annotation { "Name" : "Random seed", "Default" : 1000 }
-                isInteger(definition.randomSeed, { (unitless) : [0, 1000, 2147483647] } as IntegerBoundSpec);
+                isInteger(definition.randomSeed, { (unitless) : [0, 1000, 10000000] } as IntegerBoundSpec);
 
                 annotation { "Name" : "Width variation", "Description" : "Maximum variation in tab width (+ or -)" }
                 isLength(definition.widthVariation, WIDTH_VARIATION_BOUNDS);
@@ -1432,7 +1432,15 @@ export function tabAndSlotEditingLogic(context is Context, id is Id, oldDefiniti
     if (clickedButton == "generateNewSeed")
     {
         // Generate new random seed from current value (or default 1000)
-        definition.randomSeed = pseudoRandomNumber(definition.randomSeed != undefined ? definition.randomSeed : 1000);
+        const currentSeed = definition.randomSeed != undefined ? definition.randomSeed : 1000;
+        const lcgOutput = pseudoRandomNumber(currentSeed);
+        
+        // Map LCG output [0, 2147483647] to UI range [0, 10000000]
+        // This preserves uniform distribution while respecting UI constraints
+        const uiMaxSeed = 10000000;
+        const lcgMaxOutput = 2147483647;
+        definition.randomSeed = floor(remap(lcgOutput, 0, lcgMaxOutput, 0, uiMaxSeed));
+        
         return definition;
     }
     
