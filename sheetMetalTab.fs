@@ -406,61 +406,38 @@ function applyTabWidthRandomization(context is Context, id is Id, tabs is Query,
         // Calculate a unique seed for this specific tab instance
         const currentSeed = definition.randomSeed + tabIndex + bodyIndex;
         
-        // Generate a random variation in the range [-widthVariation, +widthVariation]
-        const randomVariation = pseudoRandomNumber(currentSeed, -definition.widthVariation, definition.widthVariation, meter);
-        
-        // Get the bounding box of the tab to determine scale direction
+        // Get the current tab face to measure its dimensions
+        const tabFace = qOwnedByBody(currentTabBody, EntityType.FACE);
         const tabBox = evBox3d(context, {
-            "topology" : currentTabBody,
+            "topology" : tabFace,
             "tight" : true
         });
         
-        // Calculate the tab's width direction (perpendicular to the plane normal)
-        // We need to find which direction is the width (not the thickness)
+        // Calculate the current width (use the larger of the two dimensions in the plane)
         const boxSize = tabBox.maxCorner - tabBox.minCorner;
         
-        // Find the two largest dimensions (width and height, not thickness)
-        var dimensions = [
-            { "size" : boxSize[0], "axis" : vector(1, 0, 0) },
-            { "size" : boxSize[1], "axis" : vector(0, 1, 0) },
-            { "size" : boxSize[2], "axis" : vector(0, 0, 1) }
-        ];
+        // Find dimensions perpendicular to the plane normal
+        const normalDir = abs(dot(plane.normal, vector(1, 0, 0))) > 0.9 ? 
+                          (abs(dot(plane.normal, vector(0, 1, 0))) > abs(dot(plane.normal, vector(0, 0, 1))) ? 
+                           boxSize[1] : boxSize[2]) :
+                          boxSize[0];
+        const currentWidth = normalDir;
         
-        // Sort by size
-        if (dimensions[0].size < dimensions[1].size)
-        {
-            const temp = dimensions[0];
-            dimensions[0] = dimensions[1];
-            dimensions[1] = temp;
-        }
-        if (dimensions[1].size < dimensions[2].size)
-        {
-            const temp = dimensions[1];
-            dimensions[1] = dimensions[2];
-            dimensions[2] = temp;
-        }
-        if (dimensions[0].size < dimensions[1].size)
-        {
-            const temp = dimensions[0];
-            dimensions[0] = dimensions[1];
-            dimensions[1] = temp;
-        }
-        
-        // The smallest dimension is likely the thickness (parallel to plane normal)
-        // We want to scale along one of the larger dimensions
-        // Choose the direction most perpendicular to the plane normal
-        var scaleDirection = dimensions[0].axis;
-        if (abs(dot(dimensions[1].axis, plane.normal)) < abs(dot(dimensions[0].axis, plane.normal)))
-        {
-            scaleDirection = dimensions[1].axis;
-        }
+        // Generate a random variation in the range [-widthVariation, +widthVariation]
+        const randomVariation = pseudoRandomNumber(currentSeed, -definition.widthVariation, definition.widthVariation, meter);
         
         // Calculate scale factor
-        const currentWidth = max(dimensions[0].size, dimensions[1].size);
-        const scaleFactor = (currentWidth + randomVariation) / currentWidth;
+        const newWidth = currentWidth + randomVariation;
+        const scaleFactor = newWidth / currentWidth;
         
-        // Apply the scale transform
-        const scaleTransform = scaleNonuniformly(scaleFactor, 1.0, 1.0, tabBox.center, scaleDirection, cross(scaleDirection, plane.normal));
+        // Apply uniform scale in the plane (keeping thickness constant)
+        // Create a coordinate system aligned with the plane
+        const xAxisInPlane = perpendicularVector(plane.normal);
+        const yAxisInPlane = cross(plane.normal, xAxisInPlane);
+        const tabCenterInPlane = (tabBox.minCorner + tabBox.maxCorner) / 2;
+        
+        const scaleCsys = coordSystem(tabCenterInPlane, xAxisInPlane, plane.normal);
+        const scaleTransform = scaleNonuniformly(scaleFactor, scaleFactor, 1.0, scaleCsys);
         
         opTransform(context, id + unstableIdComponent(bodyIndex), {
             "bodies" : currentTabBody,
