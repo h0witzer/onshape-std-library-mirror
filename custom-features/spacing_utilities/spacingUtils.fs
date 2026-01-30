@@ -60,24 +60,24 @@ export enum CurvePatternEndMode
  */
 export predicate curvePatternSpacingPredicate(definition is map)
 {
-    annotation { "Name" : "Spacing type" }
+    annotation { "Name" : "Spacing type", "UIHint" : UIHint.REMEMBER_PREVIOUS_VALUE }
     definition.spacingType is CurvePatternSpacingType;
 
     if (definition.spacingType == CurvePatternSpacingType.EQUAL || definition.spacingType == CurvePatternSpacingType.BESTFIT)
     {
-        annotation { "Name" : "Pattern mode", "UIHint" : UIHint.SHOW_LABEL }
+        annotation { "Name" : "Pattern mode", "UIHint" : [UIHint.SHOW_LABEL, UIHint.REMEMBER_PREVIOUS_VALUE] }
         definition.endMode is CurvePatternEndMode;
     }
 
     if (definition.spacingType == CurvePatternSpacingType.DISTANCE || definition.spacingType == CurvePatternSpacingType.EQUAL)
     {
-        annotation { "Name" : "Instance count" }
+        annotation { "Name" : "Instance count", "UIHint" : UIHint.REMEMBER_PREVIOUS_VALUE }
         isInteger(definition.instanceCount, CURVE_PATTERN_BOUNDS);
     }
 
     if (definition.spacingType == CurvePatternSpacingType.DISTANCE)
     {
-        annotation { "Name" : "Distance" }
+        annotation { "Name" : "Distance", "UIHint" : UIHint.REMEMBER_PREVIOUS_VALUE }
         isLength(definition.distance, PATTERN_OFFSET_BOUND);
     }
 
@@ -89,7 +89,7 @@ export predicate curvePatternSpacingPredicate(definition is map)
 
     if (definition.spacingType == CurvePatternSpacingType.BESTFIT)
     {
-        annotation { "Name" : "Target pitch" }
+        annotation { "Name" : "Target pitch", "UIHint" : UIHint.REMEMBER_PREVIOUS_VALUE }
         isLength(definition.targetPitch, PATTERN_OFFSET_BOUND);
 
         annotation { "Name" : "Actual pitch", "UIHint" : UIHint.READ_ONLY }
@@ -116,19 +116,19 @@ export predicate curvePatternSpacingPredicate(definition is map)
             // Single offset mode (like EQUAL_OFFSETS in chamfer)
             if (!definition.twoOffsets)
             {
-                annotation { "Name" : "Offset" }
+                annotation { "Name" : "Offset", "UIHint" : UIHint.REMEMBER_PREVIOUS_VALUE }
                 isLength(definition.offset, PATTERN_OFFSET_BOUND);
             }
             else
             {
                 // Two offset mode (like TWO_OFFSETS in chamfer)
-                annotation { "Name" : "Offset 1" }
+                annotation { "Name" : "Offset 1", "UIHint" : UIHint.REMEMBER_PREVIOUS_VALUE }
                 isLength(definition.offset1, PATTERN_OFFSET_BOUND);
 
                 annotation { "Name" : "Opposite direction", "UIHint" : UIHint.OPPOSITE_DIRECTION, "Default" : false }
                 definition.oppositeDirection is boolean;
 
-                annotation { "Name" : "Offset 2" }
+                annotation { "Name" : "Offset 2", "UIHint" : UIHint.REMEMBER_PREVIOUS_VALUE }
                 isLength(definition.offset2, PATTERN_OFFSET_BOUND);
             }
         }
