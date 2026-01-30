@@ -118,7 +118,7 @@ export const tabAndSlotBossDisplay = defineSheetMetalFeature(function(context is
             if (definition.enableRandomization)
             {
                 annotation { "Name" : "Random seed", "Default" : 1000 }
-                isInteger(definition.randomSeed, { (unitless) : [0, 1000, 2.15e9] } as IntegerBoundSpec);
+                isInteger(definition.randomSeed, { (unitless) : [0, 1000, 2.147483647e9] } as IntegerBoundSpec);
 
                 annotation { "Name" : "Width variation", "Description" : "Maximum variation in tab width (+ or -)" }
                 isLength(definition.widthVariation, WIDTH_VARIATION_BOUNDS);
