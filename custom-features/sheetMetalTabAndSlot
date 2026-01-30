@@ -69,6 +69,10 @@ export const WIDTH_VARIATION_BOUNDS =
             (inch) : [0, 0.1, 1e6]
         } as LengthBoundSpec;
 
+// Random seed constants for UI constraint and LCG remapping
+const RANDOM_SEED_UI_MAX = 10000000;
+const LCG_MODULUS = 2147483648; // 2^31, matches pseudoRandomNumber implementation
+
 annotation { "Feature Type Name" : "OnlyTabs", "Icon" : ICON::BLOB_DATA, "Feature Type Description" : "Tab and Slot feature for Boss Display", "Editing Logic Function" : "tabAndSlotEditingLogic" }
 export const tabAndSlotBossDisplay = defineSheetMetalFeature(function(context is Context, id is Id, definition is map)
     precondition
@@ -118,7 +122,7 @@ export const tabAndSlotBossDisplay = defineSheetMetalFeature(function(context is
             if (definition.enableRandomization)
             {
                 annotation { "Name" : "Random seed", "Default" : 1000 }
-                isInteger(definition.randomSeed, { (unitless) : [0, 1000, 10000000] } as IntegerBoundSpec);
+                isInteger(definition.randomSeed, { (unitless) : [0, 1000, RANDOM_SEED_UI_MAX] } as IntegerBoundSpec);
 
                 annotation { "Name" : "Width variation", "Description" : "Maximum variation in tab width (+ or -)" }
                 isLength(definition.widthVariation, WIDTH_VARIATION_BOUNDS);
@@ -1435,11 +1439,9 @@ export function tabAndSlotEditingLogic(context is Context, id is Id, oldDefiniti
         const currentSeed = definition.randomSeed != undefined ? definition.randomSeed : 1000;
         const lcgOutput = pseudoRandomNumber(currentSeed);
         
-        // Map LCG output [0, 2147483647] to UI range [0, 10000000]
-        // This preserves uniform distribution while respecting UI constraints
-        const uiMaxSeed = 10000000;
-        const lcgMaxOutput = 2147483647;
-        definition.randomSeed = floor(remap(lcgOutput, 0, lcgMaxOutput, 0, uiMaxSeed));
+        // Map LCG output [0, LCG_MODULUS) to UI range [0, RANDOM_SEED_UI_MAX]
+        // Uses same remapping pattern as pseudoRandomNumber in numberUtils.fs
+        definition.randomSeed = floor(remap(lcgOutput, 0, LCG_MODULUS, 0, RANDOM_SEED_UI_MAX));
         
         return definition;
     }
