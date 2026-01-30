@@ -116,15 +116,15 @@ export const tabAndSlotBossDisplay = defineSheetMetalFeature(function(context is
         // Tab width randomization group
         annotation { "Group Name" : "Tab width randomization", "Collapsed By Default" : true }
         {
-            annotation { "Name" : "Enable randomization", "Default" : false }
+            annotation { "Name" : "Enable randomization", "Default" : false, "UIHint" : UIHint.REMEMBER_PREVIOUS_VALUE }
             definition.enableRandomization is boolean;
 
             if (definition.enableRandomization)
             {
-                annotation { "Name" : "Random seed", "Default" : 1000 }
+                annotation { "Name" : "Random seed", "Default" : 1000, "UIHint" : UIHint.REMEMBER_PREVIOUS_VALUE }
                 isInteger(definition.randomSeed, { (unitless) : [0, 1000, RANDOM_SEED_UI_MAX] } as IntegerBoundSpec);
 
-                annotation { "Name" : "Width variation", "Description" : "Maximum variation in tab width (+ or -)" }
+                annotation { "Name" : "Width variation", "Description" : "Maximum variation in tab width (+ or -)", "UIHint" : UIHint.REMEMBER_PREVIOUS_VALUE }
                 isLength(definition.widthVariation, WIDTH_VARIATION_BOUNDS);
 
                 annotation { "Name" : "Generate new seed" }
