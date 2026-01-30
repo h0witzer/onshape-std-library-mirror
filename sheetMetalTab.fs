@@ -23,6 +23,9 @@ import(path : "onshape/std/topologyUtils.fs", version : "✨");
 import(path : "onshape/std/valueBounds.fs", version : "✨");
 import(path : "onshape/std/vector.fs", version : "✨");
 
+// Import custom numberUtils for pseudo-random number generation
+import(path : "custom-features/numberUtils.fs", version : "");
+
 /**
  * Feature adding tabs to parallel sheet metal faces.
  *
@@ -43,6 +46,24 @@ export const sheetMetalTab = defineSheetMetalFeature(function(context is Context
 
         annotation { "Name" : "Subtraction scope", "Filter" : (SheetMetalDefinitionEntityType.FACE && AllowFlattenedGeometry.YES && ModifiableEntityOnly.YES) || (BodyType.SOLID && EntityType.BODY && ActiveSheetMetal.NO) }
         definition.booleanSubtractScope is Query;
+
+        annotation { "Group Name" : "Tab width randomization", "Collapsed By Default" : true }
+        {
+            annotation { "Name" : "Enable randomization", "Default" : false }
+            definition.enableRandomization is boolean;
+
+            if (definition.enableRandomization)
+            {
+                annotation { "Name" : "Random seed", "Default" : 1000 }
+                isInteger(definition.randomSeed, { "Default" : 1000 } as IntegerBoundSpec);
+
+                annotation { "Name" : "Width variation", "Description" : "Maximum variation in tab width (+ or -)" }
+                isLength(definition.widthVariation, NONNEGATIVE_ZERO_DEFAULT_LENGTH_BOUNDS);
+
+                annotation { "Name" : "Generate new seed", "UIHint" : UIHint.OPPOSITE_DIRECTION_CIRCULAR, "Default" : false }
+                definition.generateNewSeed is boolean;
+            }
+        }
     }
     {
         // this is not necessary but helps with correct error reporting in feature pattern
@@ -180,7 +201,7 @@ function doOneTabGroup(context is Context, id is Id, definition is map, pairedTu
         for (var coincidentTabs in pairedTuple.tabs)
         {
             const coincidentGrouping = { "tabs" : qOwnerBody(flattenToQuery(coincidentTabs)), "walls" : flattenToQuery(coincidentWalls), "plane" : coincidentWalls[0].plane };
-            const status = booleanOneTabGroup(context, id + unstableIdComponent(index), definition, coincidentGrouping, subtractionScope, rootId);
+            const status = booleanOneTabGroup(context, id + unstableIdComponent(index), definition, coincidentGrouping, subtractionScope, rootId, index);
             index += 1;
 
             if (status.statusEnum != ErrorStringEnum.BOOLEAN_UNION_NO_OP)
@@ -355,6 +376,97 @@ function moveTabsToPlane(context is Context, id is Id, tabs is Query, toPlane is
     const tabFace = qOwnedByBody(tabs, EntityType.FACE);
     const tabPlane = evPlane(context, { "face" : tabFace });
     applyPlaneToPlaneTransform(context, id, tabs, tabPlane, toPlane);
+}
+
+/**
+ * Applies width randomization to individual tab bodies based on the definition parameters.
+ * Uses a pseudorandom number generator with an incrementing seed for each tab instance.
+ * 
+ * @param context : The context in which the operation is performed
+ * @param id : The operation ID
+ * @param tabs : Query for the tab bodies to randomize
+ * @param definition : Map containing randomization parameters (enableRandomization, randomSeed, widthVariation)
+ * @param tabIndex : The index of the current tab instance (used to increment the seed)
+ * @param plane : The plane of the tab face for proper scaling direction
+ */
+function applyTabWidthRandomization(context is Context, id is Id, tabs is Query, definition is map, tabIndex is number, plane is Plane)
+{
+    if (!definition.enableRandomization || definition.widthVariation <= 0 * meter)
+    {
+        return;
+    }
+
+    // Evaluate all tab bodies in this group
+    const tabBodies = evaluateQuery(context, tabs);
+    
+    for (var bodyIndex = 0; bodyIndex < size(tabBodies); bodyIndex += 1)
+    {
+        const currentTabBody = tabBodies[bodyIndex];
+        
+        // Calculate a unique seed for this specific tab instance
+        const currentSeed = definition.randomSeed + tabIndex + bodyIndex;
+        
+        // Generate a random variation in the range [-widthVariation, +widthVariation]
+        const randomVariation = pseudoRandomNumber(currentSeed, -definition.widthVariation, definition.widthVariation, meter);
+        
+        // Get the bounding box of the tab to determine scale direction
+        const tabBox = evBox3d(context, {
+            "topology" : currentTabBody,
+            "tight" : true
+        });
+        
+        // Calculate the tab's width direction (perpendicular to the plane normal)
+        // We need to find which direction is the width (not the thickness)
+        const boxSize = tabBox.maxCorner - tabBox.minCorner;
+        
+        // Find the two largest dimensions (width and height, not thickness)
+        var dimensions = [
+            { "size" : boxSize[0], "axis" : vector(1, 0, 0) },
+            { "size" : boxSize[1], "axis" : vector(0, 1, 0) },
+            { "size" : boxSize[2], "axis" : vector(0, 0, 1) }
+        ];
+        
+        // Sort by size
+        if (dimensions[0].size < dimensions[1].size)
+        {
+            const temp = dimensions[0];
+            dimensions[0] = dimensions[1];
+            dimensions[1] = temp;
+        }
+        if (dimensions[1].size < dimensions[2].size)
+        {
+            const temp = dimensions[1];
+            dimensions[1] = dimensions[2];
+            dimensions[2] = temp;
+        }
+        if (dimensions[0].size < dimensions[1].size)
+        {
+            const temp = dimensions[0];
+            dimensions[0] = dimensions[1];
+            dimensions[1] = temp;
+        }
+        
+        // The smallest dimension is likely the thickness (parallel to plane normal)
+        // We want to scale along one of the larger dimensions
+        // Choose the direction most perpendicular to the plane normal
+        var scaleDirection = dimensions[0].axis;
+        if (abs(dot(dimensions[1].axis, plane.normal)) < abs(dot(dimensions[0].axis, plane.normal)))
+        {
+            scaleDirection = dimensions[1].axis;
+        }
+        
+        // Calculate scale factor
+        const currentWidth = max(dimensions[0].size, dimensions[1].size);
+        const scaleFactor = (currentWidth + randomVariation) / currentWidth;
+        
+        // Apply the scale transform
+        const scaleTransform = scaleNonuniformly(scaleFactor, 1.0, 1.0, tabBox.center, scaleDirection, cross(scaleDirection, plane.normal));
+        
+        opTransform(context, id + unstableIdComponent(bodyIndex), {
+            "bodies" : currentTabBody,
+            "transform" : scaleTransform
+        });
+    }
 }
 
 function reportBooleanIssues(context is Context, id is Id, tabBody is Query, wallFaces is Query)
@@ -538,7 +650,7 @@ function subtractTab(context is Context, id is Id, definition is map, subtractQu
 /**
  * Takes an array of coplanar tabs and coplanar walls and handles the boolean union and subtract operations.
  */
-function booleanOneTabGroup(context is Context, id is Id, definition is map, coincidentGrouping is map, subtractQueries is map, rootId is Id)
+function booleanOneTabGroup(context is Context, id is Id, definition is map, coincidentGrouping is map, subtractQueries is map, rootId is Id, tabIndex is number)
 {
     const wallBodies = qOwnerBody(coincidentGrouping.walls);
 
@@ -549,6 +661,9 @@ function booleanOneTabGroup(context is Context, id is Id, definition is map, coi
 
     subtractTab(context, id + "subtract", definition, subtractQueries, coincidentGrouping, rootId);
     moveTabsToPlane(context, id + "transform", coincidentGrouping.tabs, coincidentGrouping.plane);
+    
+    // Apply width randomization if enabled
+    applyTabWidthRandomization(context, id + "randomize", coincidentGrouping.tabs, definition, tabIndex, coincidentGrouping.plane);
 
     opPattern(context, id + "copyTool", {
                 "entities" : coincidentGrouping.tabs,
@@ -722,6 +837,16 @@ export function sheetMetalTabEditingLogic(context is Context, id is Id, oldDefin
             definition.booleanOffset = modelParameters.minimalClearance;
         }
     }
+    
+    // Handle "generate new seed" button click
+    if (definition.enableRandomization && definition.generateNewSeed && !oldDefinition.generateNewSeed)
+    {
+        // Generate a new random seed using the current seed
+        definition.randomSeed = floor(pseudoRandomNumber(definition.randomSeed));
+        // Reset the button state
+        definition.generateNewSeed = false;
+    }
+    
     return definition;
 }
 
