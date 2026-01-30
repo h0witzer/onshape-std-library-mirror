@@ -180,7 +180,7 @@ function doOneTabGroup(context is Context, id is Id, definition is map, pairedTu
         for (var coincidentTabs in pairedTuple.tabs)
         {
             const coincidentGrouping = { "tabs" : qOwnerBody(flattenToQuery(coincidentTabs)), "walls" : flattenToQuery(coincidentWalls), "plane" : coincidentWalls[0].plane };
-            const status = booleanOneTabGroup(context, id + unstableIdComponent(index), definition, coincidentGrouping, subtractionScope, rootId, index);
+            const status = booleanOneTabGroup(context, id + unstableIdComponent(index), definition, coincidentGrouping, subtractionScope, rootId);
             index += 1;
 
             if (status.statusEnum != ErrorStringEnum.BOOLEAN_UNION_NO_OP)
@@ -538,7 +538,7 @@ function subtractTab(context is Context, id is Id, definition is map, subtractQu
 /**
  * Takes an array of coplanar tabs and coplanar walls and handles the boolean union and subtract operations.
  */
-function booleanOneTabGroup(context is Context, id is Id, definition is map, coincidentGrouping is map, subtractQueries is map, rootId is Id, tabIndex is number)
+function booleanOneTabGroup(context is Context, id is Id, definition is map, coincidentGrouping is map, subtractQueries is map, rootId is Id)
 {
     const wallBodies = qOwnerBody(coincidentGrouping.walls);
 
