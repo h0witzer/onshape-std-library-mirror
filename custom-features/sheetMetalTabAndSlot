@@ -79,13 +79,13 @@ export const tabAndSlotBossDisplay = defineSheetMetalFeature(function(context is
         
         annotation { "Group Name" : "Tab parameters", "Driving Parameter" : "showTabParameters", "Collapsed By Default" : false }
         {
-            annotation { "Name" : "Tab width" }
+            annotation { "Name" : "Tab width", "UIHint" : UIHint.REMEMBER_PREVIOUS_VALUE }
             isLength(definition.tabWidth, TAB_WIDTH_BOUNDS);
 
-            annotation { "Name" : "Tab depth" }
+            annotation { "Name" : "Tab depth", "UIHint" : UIHint.REMEMBER_PREVIOUS_VALUE }
             isLength(definition.tabDepth, TAB_DEPTH_BOUNDS);
 
-            annotation { "Name" : "Tab chamfer width" }
+            annotation { "Name" : "Tab chamfer width", "UIHint" : UIHint.REMEMBER_PREVIOUS_VALUE }
             isLength(definition.tabChamfer, CHAMFER_WIDTH_BOUNDS);
         }
 
@@ -95,7 +95,7 @@ export const tabAndSlotBossDisplay = defineSheetMetalFeature(function(context is
         
         annotation { "Group Name" : "Slot parameters", "Driving Parameter" : "showSlotParameters", "Collapsed By Default" : false }
         {
-            annotation { "Name" : "Slot width margin" }
+            annotation { "Name" : "Slot width margin", "UIHint" : UIHint.REMEMBER_PREVIOUS_VALUE }
             isLength(definition.slotMargin, SLOT_MARGIN_BOUNDS);
 
             annotation { "Name" : "Slot bodies (for overlapping tabs)", "Filter" : EntityType.BODY }
