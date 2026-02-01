@@ -404,58 +404,37 @@ function planarizeQuadSurfaces(context is Context, id is Id)
         const face = faces[i];
         
         // Sample face at midpoint to get a representative plane
-        try silent
+        // If this fails, just skip this face - it's an optional optimization
+        const faceTangentPlaneResult = try silent(evFaceTangentPlane(context, {
+            "face" : face,
+            "parameter" : vector(0.5, 0.5)
+        }));
+        
+        if (faceTangentPlaneResult == undefined)
         {
-            const faceTangentPlane = evFaceTangentPlane(context, {
-                "face" : face,
-                "parameter" : vector(0.5, 0.5)
-            });
+            continue;
+        }
+        
+        // Get the boundary edges of this face
+        const boundaryEdges = qAdjacent(face, AdjacencyType.EDGE, EntityType.EDGE);
+        
+        // Check if we can create a planar surface - need at least 3 edges
+        const edgeCount = evaluateQueryCount(context, boundaryEdges);
+        
+        if (edgeCount >= 3 && edgeCount <= 4)
+        {
+            // Try to create a planar surface using opFillSurface with the boundary edges
+            const fillId = id + ("fill" ~ i);
+            const fillResult = try silent(opFillSurface(context, fillId, {
+                "surfaceEdges" : boundaryEdges
+            }));
             
-            // Get the boundary edges of this face
-            const boundaryEdges = qAdjacent(face, AdjacencyType.EDGE, EntityType.EDGE);
-            
-            // Check if we can create a planar surface - need at least 3 edges
-            const edgeCount = evaluateQueryCount(context, boundaryEdges);
-            
-            if (edgeCount >= 3 && edgeCount <= 4)
+            // Only delete original if fill succeeded
+            if (fillResult != undefined)
             {
-                // Create a sketch on the plane defined by the face midpoint
-                const planeId = id + ("plane" ~ i);
-                const sketchId = id + ("sketch" ~ i);
-                
-                // Create a plane at the sampled tangent plane
-                const plane = plane(faceTangentPlane);
-                
-                // Get all edge vertices and project them onto the plane
-                const edges = evaluateQuery(context, boundaryEdges);
-                var sketchPoints = [];
-                
-                for (var edge in edges)
-                {
-                    const edgeStart = evEdgeTangentLine(context, {
-                        "edge" : edge,
-                        "parameter" : 0.0,
-                        "arcLengthParameterization" : true
-                    }).origin;
-                    
-                    // Project point onto plane
-                    const projectedPoint = project(plane, edgeStart);
-                    sketchPoints = append(sketchPoints, projectedPoint);
-                }
-                
-                // Create a planar surface using opFillSurface with the boundary edges
-                const fillId = id + ("fill" ~ i);
-                try silent
-                {
-                    opFillSurface(context, fillId, {
-                        "surfaceEdges" : boundaryEdges
-                    });
-                    
-                    // Delete the original non-planar surface
-                    opDeleteBodies(context, id + ("deleteOld" ~ i), {
-                        "entities" : face
-                    });
-                }
+                try silent(opDeleteBodies(context, id + ("deleteOld" ~ i), {
+                    "entities" : face
+                }));
             }
         }
     }
@@ -505,16 +484,14 @@ function createQuadrilateralLoft(context is Context, id is Id, profile1Points is
         });
         
         // Loft between these two segments to create a quadrilateral surface
-        try silent
-        {
-            opLoft(context, id + ("loft" ~ i), {
-                "profileSubqueries" : [
-                    qCreatedBy(seg1Id, EntityType.EDGE),
-                    qCreatedBy(seg2Id, EntityType.EDGE)
-                ],
-                "bodyType" : ToolBodyType.SURFACE
-            });
-        }
+        // If loft fails (degenerate segment), skip it
+        try silent(opLoft(context, id + ("loft" ~ i), {
+            "profileSubqueries" : [
+                qCreatedBy(seg1Id, EntityType.EDGE),
+                qCreatedBy(seg2Id, EntityType.EDGE)
+            ],
+            "bodyType" : ToolBodyType.SURFACE
+        }));
     }
     
     // Clean up helper curves
