@@ -151,7 +151,7 @@ The simplified feature follows a clean 6-step workflow:
 ## Usage Examples
 
 ### Example 1: Simple Loft
-```javascript
+```
 // Two sketches with circles
 Profile 1: Circle sketch, radius 10mm
 Profile 2: Circle sketch, radius 20mm, offset 50mm
@@ -161,7 +161,7 @@ Match Connections: No
 ```
 
 ### Example 2: Aligned Loft
-```javascript  
+```
 // Two squares with explicit alignment
 Profile 1: Square 20x20mm
 Profile 2: Square 40x40mm, rotated 45°, offset 100mm
@@ -171,7 +171,7 @@ Connections: 4 vertex pairs to align corners
 ```
 
 ### Example 3: High Resolution Loft
-```javascript
+```
 // Precise loft for visualization
 Profile 1: Complex spline curve
 Profile 2: Complex spline curve
