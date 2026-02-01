@@ -152,18 +152,14 @@ function computeCorrespondingSegmentPoints(context is Context,
     var profile1Points = [];
     var profile2Points = [];
     
-    // Start with first points on both curves
+    // Start with first point on curve1, find corresponding point on curve2
     const startPoint1 = evEdgeTangentLine(context, {
         "edge" : edges1[0],
         "parameter" : 0.0,
         "arcLengthParameterization" : true
     }).origin;
     
-    const startPoint2 = evEdgeTangentLine(context, {
-        "edge" : edges2[0],
-        "parameter" : 0.0,
-        "arcLengthParameterization" : true
-    }).origin;
+    const startPoint2 = findCorrespondingPoint(context, curve2Edges, startPoint1);
     
     profile1Points = append(profile1Points, startPoint1);
     profile2Points = append(profile2Points, startPoint2);
@@ -213,16 +209,13 @@ function computeCorrespondingSegmentPoints(context is Context,
         "arcLengthParameterization" : true
     }).origin;
     
-    const endPoint2 = evEdgeTangentLine(context, {
-        "edge" : edges2[size(edges2) - 1],
-        "parameter" : 1.0,
-        "arcLengthParameterization" : true
-    }).origin;
-    
     // Only add if not already added
     const lastPoint1 = profile1Points[size(profile1Points) - 1];
     if (norm(endPoint1 - lastPoint1) > TOLERANCE.zeroLength * meter)
     {
+        // Find corresponding end point on curve2 using closest point
+        const endPoint2 = findCorrespondingPoint(context, curve2Edges, endPoint1);
+        
         profile1Points = append(profile1Points, endPoint1);
         profile2Points = append(profile2Points, endPoint2);
     }
@@ -453,22 +446,21 @@ function createQuadrilateralLoft(context is Context, id is Id, profile1Points is
         throw regenError("Insufficient points to create loft");
     }
     
-    // Create 3D polylines for both profiles using fitSpline
-    const profile1PolylineId = id + "profile1Polyline";
-    opFitSpline(context, profile1PolylineId, {
-        "points" : profile1Points
-    });
-    
-    const profile2PolylineId = id + "profile2Polyline";
-    opFitSpline(context, profile2PolylineId, {
-        "points" : profile2Points
-    });
-    
     // Now create ruled surface lofts between corresponding segments
     const numSegments = numPoints - 1;
     
     for (var i = 0; i < numSegments; i += 1)
     {
+        // Check if this segment is degenerate (points too close)
+        const dist1 = norm(profile1Points[i + 1] - profile1Points[i]);
+        const dist2 = norm(profile2Points[i + 1] - profile2Points[i]);
+        
+        if (dist1 < TOLERANCE.zeroLength * meter || dist2 < TOLERANCE.zeroLength * meter)
+        {
+            // Skip degenerate segments
+            continue;
+        }
+        
         // Create individual line segments for this quad face
         const seg1Id = id + ("seg1_" ~ i);
         const seg2Id = id + ("seg2_" ~ i);
@@ -496,10 +488,6 @@ function createQuadrilateralLoft(context is Context, id is Id, profile1Points is
     
     // Clean up helper curves
     opDeleteBodies(context, id + "cleanup", {
-        "entities" : qUnion([
-            qCreatedBy(profile1PolylineId, EntityType.BODY),
-            qCreatedBy(profile2PolylineId, EntityType.BODY),
-            qCreatedBy(id, EntityType.BODY)->qBodyType(BodyType.WIRE)
-        ])
+        "entities" : qCreatedBy(id, EntityType.BODY)->qBodyType(BodyType.WIRE)
     });
 }
