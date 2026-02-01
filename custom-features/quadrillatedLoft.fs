@@ -86,16 +86,12 @@ export const quadrillatedLoft = defineFeature(function(context is Context, id is
             throw regenError(ErrorStringEnum.LOFT_SELECT_PROFILES);
         }
         
-        // Determine segment parameters based on combined angular changes from both profiles
-        const segmentParameters = computeUnifiedSegmentParameters(context, profile1Edges, profile2Edges, 
-                                                                   definition.facetAngle, definition.minSegments);
+        // Determine segment parameters based on angular changes and closest-point correspondence
+        const segmentData = computeCorrespondingSegmentPoints(context, profile1Edges, profile2Edges, 
+                                                               definition.facetAngle, definition.minSegments);
         
-        // Sample both profiles at the same relative parameters to maintain alignment
-        const profile1Points = sampleCurveAtParameters(context, profile1Edges, segmentParameters);
-        const profile2Points = sampleCurveAtParameters(context, profile2Edges, segmentParameters);
-        
-        // Create quadrilateral loft between aligned segments
-        createQuadrilateralLoft(context, id, profile1Points, profile2Points);
+        // Create quadrilateral loft between corresponding points
+        createQuadrilateralLoft(context, id, segmentData.profile1Points, segmentData.profile2Points);
         
         // Planarize surfaces if requested (cleanup step for better sheet metal compatibility)
         if (definition.planarizeSurfaces)
@@ -132,111 +128,212 @@ function getProfileEdges(context is Context, profile is Query) returns Query
 }
 
 /**
- * Compute unified segment parameters by analyzing angular changes across both profiles.
- * This ensures corresponding segments on both profiles represent similar curve positions.
+ * Compute segment points with proper geometric correspondence between curves.
+ * Uses closest-point matching to ensure points align geometrically, not just parametrically.
+ * This prevents twisting when curves have different shapes (e.g., S-curve and mirror S-curve).
  * 
  * @param context : The context
  * @param curve1Edges : Query for first curve edges
  * @param curve2Edges : Query for second curve edges
  * @param facetAngle : Angular change threshold
  * @param minSegments : Minimum number of segments
- * @returns Array of normalized parameters (0 to 1) where segments should be created
+ * @returns Map with profile1Points and profile2Points arrays
  */
-function computeUnifiedSegmentParameters(context is Context, 
-                                         curve1Edges is Query, 
-                                         curve2Edges is Query,
-                                         facetAngle is ValueWithUnits, 
-                                         minSegments is number) returns array
+function computeCorrespondingSegmentPoints(context is Context, 
+                                           curve1Edges is Query, 
+                                           curve2Edges is Query,
+                                           facetAngle is ValueWithUnits, 
+                                           minSegments is number) returns map
 {
-    // Get total lengths for both curves
     const edges1 = evaluateQuery(context, curve1Edges);
     const edges2 = evaluateQuery(context, curve2Edges);
     
-    var totalLength1 = 0 * meter;
-    for (var edge in edges1)
-    {
-        totalLength1 += evLength(context, { "entities" : edge });
-    }
+    // Walk curve1 based on angular change, then find corresponding points on curve2
+    var profile1Points = [];
+    var profile2Points = [];
     
-    var totalLength2 = 0 * meter;
-    for (var edge in edges2)
-    {
-        totalLength2 += evLength(context, { "entities" : edge });
-    }
+    // Start with first points on both curves
+    const startPoint1 = evEdgeTangentLine(context, {
+        "edge" : edges1[0],
+        "parameter" : 0.0,
+        "arcLengthParameterization" : true
+    }).origin;
     
-    // Walk both curves simultaneously tracking angular changes
-    // Use normalized parameter space (0 to 1) for both curves
-    var segmentParams = [0.0];
-    var currentParam = 0.0;
+    const startPoint2 = evEdgeTangentLine(context, {
+        "edge" : edges2[0],
+        "parameter" : 0.0,
+        "arcLengthParameterization" : true
+    }).origin;
     
-    // Track accumulated angles for both curves
-    var accumulatedAngle1 = 0.0 * radian;
-    var accumulatedAngle2 = 0.0 * radian;
+    profile1Points = append(profile1Points, startPoint1);
+    profile2Points = append(profile2Points, startPoint2);
     
-    // Get initial tangents for both curves
-    var tangent1 = evEdgeTangentLine(context, {
+    // Walk curve1 tracking angular changes
+    var currentParam1 = 0.0;
+    var accumulatedAngle = 0.0 * radian;
+    
+    var previousTangent = evEdgeTangentLine(context, {
         "edge" : edges1[0],
         "parameter" : 0.0,
         "arcLengthParameterization" : true
     }).direction;
     
-    var tangent2 = evEdgeTangentLine(context, {
-        "edge" : edges2[0],
-        "parameter" : 0.0,
-        "arcLengthParameterization" : true
-    }).direction;
-    
-    var previousTangent1 = tangent1;
-    var previousTangent2 = tangent2;
-    
     const parameterStep = 0.01; // 1% steps
-    currentParam = parameterStep;
+    currentParam1 = parameterStep;
     
-    while (currentParam <= 1.0)
+    while (currentParam1 <= 1.0)
     {
-        // Sample tangents at current parameter on both curves
-        const tangent1Current = sampleTangentAtParameter(context, edges1, currentParam);
-        const tangent2Current = sampleTangentAtParameter(context, edges2, currentParam);
+        const point1 = samplePositionAtParameter(context, edges1, currentParam1);
+        const tangent1 = sampleTangentAtParameter(context, edges1, currentParam1);
         
-        // Calculate angle changes for both curves
-        const angle1Change = acos(max(-1.0, min(1.0, dot(previousTangent1, tangent1Current))));
-        const angle2Change = acos(max(-1.0, min(1.0, dot(previousTangent2, tangent2Current))));
+        // Calculate angle change
+        const angleChange = acos(max(-1.0, min(1.0, dot(previousTangent, tangent1))));
+        accumulatedAngle += angleChange;
         
-        accumulatedAngle1 += angle1Change;
-        accumulatedAngle2 += angle2Change;
-        
-        // Use the maximum accumulated angle to drive segmentation
-        const maxAccumulatedAngle = max(accumulatedAngle1, accumulatedAngle2);
-        
-        if (maxAccumulatedAngle >= facetAngle)
+        // Check if we've accumulated enough angle for a segment
+        if (accumulatedAngle >= facetAngle)
         {
-            segmentParams = append(segmentParams, currentParam);
-            accumulatedAngle1 = 0.0 * radian;
-            accumulatedAngle2 = 0.0 * radian;
+            // Find corresponding point on curve2 using closest point
+            const correspondingPoint2 = findCorrespondingPoint(context, curve2Edges, point1);
+            
+            profile1Points = append(profile1Points, point1);
+            profile2Points = append(profile2Points, correspondingPoint2);
+            
+            accumulatedAngle = 0.0 * radian;
         }
         
-        previousTangent1 = tangent1Current;
-        previousTangent2 = tangent2Current;
-        currentParam = currentParam + parameterStep;
+        previousTangent = tangent1;
+        currentParam1 = currentParam1 + parameterStep;
     }
     
-    // Always add end parameter if not already present
-    if (segmentParams[size(segmentParams) - 1] < 1.0)
+    // Always add end points
+    const endPoint1 = evEdgeTangentLine(context, {
+        "edge" : edges1[size(edges1) - 1],
+        "parameter" : 1.0,
+        "arcLengthParameterization" : true
+    }).origin;
+    
+    const endPoint2 = evEdgeTangentLine(context, {
+        "edge" : edges2[size(edges2) - 1],
+        "parameter" : 1.0,
+        "arcLengthParameterization" : true
+    }).origin;
+    
+    // Only add if not already added
+    const lastPoint1 = profile1Points[size(profile1Points) - 1];
+    if (norm(endPoint1 - lastPoint1) > TOLERANCE.zeroLength * meter)
     {
-        segmentParams = append(segmentParams, 1.0);
+        profile1Points = append(profile1Points, endPoint1);
+        profile2Points = append(profile2Points, endPoint2);
     }
     
     // Ensure minimum segment count
-    if (size(segmentParams) - 1 < minSegments)
+    if (size(profile1Points) - 1 < minSegments)
     {
-        segmentParams = [];
-        for (var i = 0; i <= minSegments; i += 1)
+        return createUniformCorrespondingPoints(context, curve1Edges, curve2Edges, minSegments);
+    }
+    
+    return {
+        "profile1Points" : profile1Points,
+        "profile2Points" : profile2Points
+    };
+}
+
+/**
+ * Find the corresponding point on curve2 for a given point on curve1.
+ * Uses closest point to ensure geometric correspondence.
+ */
+function findCorrespondingPoint(context is Context, curveEdges is Query, referencePoint is Vector) returns Vector
+{
+    const distanceResult = evDistance(context, {
+        "side0" : referencePoint,
+        "side1" : curveEdges,
+        "arcLengthParameterization" : false
+    });
+    
+    return distanceResult.sides[1].point;
+}
+
+/**
+ * Create uniformly spaced points with closest-point correspondence.
+ * Used when minimum segment count is not met.
+ */
+function createUniformCorrespondingPoints(context is Context, 
+                                          curve1Edges is Query, 
+                                          curve2Edges is Query,
+                                          numSegments is number) returns map
+{
+    var profile1Points = [];
+    var profile2Points = [];
+    
+    for (var i = 0; i <= numSegments; i += 1)
+    {
+        const param = i / numSegments;
+        const point1 = samplePositionAtParameter(context, evaluateQuery(context, curve1Edges), param);
+        const point2 = findCorrespondingPoint(context, curve2Edges, point1);
+        
+        profile1Points = append(profile1Points, point1);
+        profile2Points = append(profile2Points, point2);
+    }
+    
+    return {
+        "profile1Points" : profile1Points,
+        "profile2Points" : profile2Points
+    };
+}
+
+/**
+ * Sample position at a normalized parameter on a curve.
+ */
+function samplePositionAtParameter(context is Context, edges is array, normalizedParam is number) returns Vector
+{
+    // Calculate cumulative lengths
+    var cumulativeLengths = [0 * meter];
+    var totalLength = 0 * meter;
+    
+    for (var edge in edges)
+    {
+        const edgeLength = evLength(context, { "entities" : edge });
+        totalLength += edgeLength;
+        cumulativeLengths = append(cumulativeLengths, totalLength);
+    }
+    
+    const targetLength = normalizedParam * totalLength;
+    
+    // Find which edge contains this parameter
+    for (var i = 0; i < size(edges); i += 1)
+    {
+        if (cumulativeLengths[i + 1] >= targetLength || normalizedParam >= 1.0)
         {
-            segmentParams = append(segmentParams, i / minSegments);
+            const edgeLength = cumulativeLengths[i + 1] - cumulativeLengths[i];
+            var paramOnEdge = 0.0;
+            
+            if (edgeLength > TOLERANCE.zeroLength * meter && normalizedParam < 1.0)
+            {
+                paramOnEdge = (targetLength - cumulativeLengths[i]) / edgeLength;
+            }
+            else if (normalizedParam >= 1.0)
+            {
+                paramOnEdge = 1.0;
+            }
+            
+            const tangentLine = evEdgeTangentLine(context, {
+                "edge" : edges[i],
+                "parameter" : paramOnEdge,
+                "arcLengthParameterization" : true
+            });
+            
+            return tangentLine.origin;
         }
     }
     
-    return segmentParams;
+    // Fallback to last edge
+    const lastEdge = edges[size(edges) - 1];
+    return evEdgeTangentLine(context, {
+        "edge" : lastEdge,
+        "parameter" : 1.0,
+        "arcLengthParameterization" : true
+    }).origin;
 }
 
 /**
@@ -288,64 +385,6 @@ function sampleTangentAtParameter(context is Context, edges is array, normalized
         "parameter" : 1.0,
         "arcLengthParameterization" : true
     }).direction;
-}
-
-/**
- * Sample curve positions at given normalized parameters.
- * This ensures both curves are sampled at corresponding relative positions.
- */
-function sampleCurveAtParameters(context is Context, curveEdges is Query, normalizedParams is array) returns array
-{
-    const edges = evaluateQuery(context, curveEdges);
-    
-    // Calculate cumulative lengths
-    var cumulativeLengths = [0 * meter];
-    var totalLength = 0 * meter;
-    
-    for (var edge in edges)
-    {
-        const edgeLength = evLength(context, { "entities" : edge });
-        totalLength += edgeLength;
-        cumulativeLengths = append(cumulativeLengths, totalLength);
-    }
-    
-    var points = [];
-    
-    for (var normalizedParam in normalizedParams)
-    {
-        const targetLength = normalizedParam * totalLength;
-        
-        // Find which edge contains this parameter
-        for (var i = 0; i < size(edges); i += 1)
-        {
-            if (cumulativeLengths[i + 1] >= targetLength || normalizedParam >= 1.0)
-            {
-                // This edge contains the target parameter
-                const edgeLength = cumulativeLengths[i + 1] - cumulativeLengths[i];
-                var paramOnEdge = 0.0;
-                
-                if (edgeLength > TOLERANCE.zeroLength * meter && normalizedParam < 1.0)
-                {
-                    paramOnEdge = (targetLength - cumulativeLengths[i]) / edgeLength;
-                }
-                else if (normalizedParam >= 1.0)
-                {
-                    paramOnEdge = 1.0;
-                }
-                
-                const tangentLine = evEdgeTangentLine(context, {
-                    "edge" : edges[i],
-                    "parameter" : paramOnEdge,
-                    "arcLengthParameterization" : true
-                });
-                
-                points = append(points, tangentLine.origin);
-                break;
-            }
-        }
-    }
-    
-    return points;
 }
 
 /**
