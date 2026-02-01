@@ -159,10 +159,18 @@ function computeCorrespondingSegmentPoints(context is Context,
         "arcLengthParameterization" : true
     }).origin;
     
-    const startPoint2 = findCorrespondingPoint(context, curve2Edges, startPoint1);
+    // For start, we want curve2's start point to ensure proper progression
+    const startPoint2 = evEdgeTangentLine(context, {
+        "edge" : edges2[0],
+        "parameter" : 0.0,
+        "arcLengthParameterization" : true
+    }).origin;
     
     profile1Points = append(profile1Points, startPoint1);
     profile2Points = append(profile2Points, startPoint2);
+    
+    // Track the last parameter on curve2 to ensure monotonic progression
+    var lastParam2 = 0.0;
     
     // Walk curve1 tracking angular changes
     var currentParam1 = 0.0;
@@ -189,11 +197,14 @@ function computeCorrespondingSegmentPoints(context is Context,
         // Check if we've accumulated enough angle for a segment
         if (accumulatedAngle >= facetAngle)
         {
-            // Find corresponding point on curve2 using closest point
-            const correspondingPoint2 = findCorrespondingPoint(context, curve2Edges, point1);
+            // Find corresponding point on curve2, searching forward from last parameter
+            const correspondenceResult = findCorrespondingPointProgressive(context, edges2, point1, lastParam2);
             
             profile1Points = append(profile1Points, point1);
-            profile2Points = append(profile2Points, correspondingPoint2);
+            profile2Points = append(profile2Points, correspondenceResult.point);
+            
+            // Update last parameter to ensure forward progression
+            lastParam2 = correspondenceResult.parameter;
             
             accumulatedAngle = 0.0 * radian;
         }
@@ -209,13 +220,16 @@ function computeCorrespondingSegmentPoints(context is Context,
         "arcLengthParameterization" : true
     }).origin;
     
+    const endPoint2 = evEdgeTangentLine(context, {
+        "edge" : edges2[size(edges2) - 1],
+        "parameter" : 1.0,
+        "arcLengthParameterization" : true
+    }).origin;
+    
     // Only add if not already added
     const lastPoint1 = profile1Points[size(profile1Points) - 1];
     if (norm(endPoint1 - lastPoint1) > TOLERANCE.zeroLength * meter)
     {
-        // Find corresponding end point on curve2 using closest point
-        const endPoint2 = findCorrespondingPoint(context, curve2Edges, endPoint1);
-        
         profile1Points = append(profile1Points, endPoint1);
         profile2Points = append(profile2Points, endPoint2);
     }
@@ -229,6 +243,67 @@ function computeCorrespondingSegmentPoints(context is Context,
     return {
         "profile1Points" : profile1Points,
         "profile2Points" : profile2Points
+    };
+}
+
+/**
+ * Find corresponding point on curve2, searching forward from lastParameter to avoid backtracking.
+ * This ensures monotonic progression along both curves and prevents lofting back on itself.
+ */
+function findCorrespondingPointProgressive(context is Context, edges is array, referencePoint is Vector, lastParameter is number) returns map
+{
+    // Calculate cumulative lengths for parameter conversion
+    var cumulativeLengths = [0 * meter];
+    var totalLength = 0 * meter;
+    
+    for (var edge in edges)
+    {
+        const edgeLength = evLength(context, { "entities" : edge });
+        totalLength += edgeLength;
+        cumulativeLengths = append(cumulativeLengths, totalLength);
+    }
+    
+    const startSearchLength = lastParameter * totalLength;
+    
+    // Search for closest point, but only forward from lastParameter
+    var minDistance = 1e10 * meter;
+    var bestPoint = undefined;
+    var bestParameter = lastParameter;
+    
+    // Sample curve from lastParameter forward in small steps
+    const searchStep = 0.02; // 2% steps for search
+    var searchParam = max(lastParameter, 0.0);
+    
+    while (searchParam <= 1.0)
+    {
+        const samplePoint = samplePositionAtParameter(context, edges, searchParam);
+        const distance = norm(samplePoint - referencePoint);
+        
+        if (distance < minDistance)
+        {
+            minDistance = distance;
+            bestPoint = samplePoint;
+            bestParameter = searchParam;
+        }
+        
+        searchParam += searchStep;
+    }
+    
+    // If we didn't find anything (shouldn't happen), use end point
+    if (bestPoint == undefined)
+    {
+        const lastEdge = edges[size(edges) - 1];
+        bestPoint = evEdgeTangentLine(context, {
+            "edge" : lastEdge,
+            "parameter" : 1.0,
+            "arcLengthParameterization" : true
+        }).origin;
+        bestParameter = 1.0;
+    }
+    
+    return {
+        "point" : bestPoint,
+        "parameter" : bestParameter
     };
 }
 
