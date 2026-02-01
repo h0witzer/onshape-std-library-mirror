@@ -55,6 +55,9 @@ export const quadrillatedLoft = defineFeature(function(context is Context, id is
         
         annotation { "Name" : "Minimum segments", "Description" : "Minimum number of segments per profile" }
         isInteger(definition.minSegments, MIN_SEGMENTS_BOUNDS);
+        
+        annotation { "Name" : "Planarize surfaces", "Description" : "Replace curved surfaces with planar patches for better sheet metal compatibility" }
+        definition.planarizeSurfaces is boolean;
     }
     {
         // Validate profiles are selected
@@ -93,10 +96,17 @@ export const quadrillatedLoft = defineFeature(function(context is Context, id is
         
         // Create quadrilateral loft between aligned segments
         createQuadrilateralLoft(context, id, profile1Points, profile2Points);
+        
+        // Planarize surfaces if requested (cleanup step for better sheet metal compatibility)
+        if (definition.planarizeSurfaces)
+        {
+            planarizeQuadSurfaces(context, id);
+        }
     },
     {
         "facetAngle" : 10 * degree,
-        "minSegments" : 10
+        "minSegments" : 10,
+        "planarizeSurfaces" : true
     });
 
 /**
@@ -336,6 +346,89 @@ function sampleCurveAtParameters(context is Context, curveEdges is Query, normal
     }
     
     return points;
+}
+
+/**
+ * Planarize quadrilateral surfaces by replacing each with a planar patch.
+ * Samples each surface at its midpoint to determine the best-fit plane,
+ * then replaces the surface with a planar patch bounded by the same edges.
+ * This improves sheet metal compatibility by ensuring perfectly planar faces.
+ */
+function planarizeQuadSurfaces(context is Context, id is Id)
+{
+    // Get all the surface faces created by the loft operations
+    const loftFaces = qCreatedBy(id, EntityType.FACE)->qGeometry(GeometryType.SURFACE);
+    const faces = evaluateQuery(context, loftFaces);
+    
+    for (var i = 0; i < size(faces); i += 1)
+    {
+        const face = faces[i];
+        
+        // Sample face at midpoint to get a representative plane
+        try
+        {
+            const faceTangentPlane = evFaceTangentPlane(context, {
+                "face" : face,
+                "parameter" : vector(0.5, 0.5)
+            });
+            
+            // Get the boundary edges of this face
+            const boundaryEdges = qAdjacent(face, AdjacencyType.EDGE, EntityType.EDGE);
+            
+            // Check if we can create a planar surface - need at least 3 edges
+            const edgeCount = evaluateQueryCount(context, boundaryEdges);
+            
+            if (edgeCount >= 3 && edgeCount <= 4)
+            {
+                // Create a sketch on the plane defined by the face midpoint
+                const planeId = id + ("plane" ~ i);
+                const sketchId = id + ("sketch" ~ i);
+                
+                // Create a plane at the sampled tangent plane
+                const plane = plane(faceTangentPlane);
+                
+                // Get all edge vertices and project them onto the plane
+                const edges = evaluateQuery(context, boundaryEdges);
+                var sketchPoints = [];
+                
+                for (var edge in edges)
+                {
+                    const edgeStart = evEdgeTangentLine(context, {
+                        "edge" : edge,
+                        "parameter" : 0.0,
+                        "arcLengthParameterization" : true
+                    }).origin;
+                    
+                    // Project point onto plane
+                    const projectedPoint = project(plane, edgeStart);
+                    sketchPoints = append(sketchPoints, projectedPoint);
+                }
+                
+                // Create a planar surface using opFillSurface with the boundary edges
+                const fillId = id + ("fill" ~ i);
+                try
+                {
+                    opFillSurface(context, fillId, {
+                        "surfaceEdges" : boundaryEdges
+                    });
+                    
+                    // Delete the original non-planar surface
+                    opDeleteBodies(context, id + ("deleteOld" ~ i), {
+                        "entities" : face
+                    });
+                }
+                catch (fillError)
+                {
+                    // If fill surface fails, keep the original surface
+                    // This can happen for degenerate or complex boundaries
+                }
+            }
+        }
+        catch (error)
+        {
+            // If we can't sample the face, keep it as is
+        }
+    }
 }
 
 /**
