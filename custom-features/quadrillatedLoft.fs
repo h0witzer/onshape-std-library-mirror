@@ -396,7 +396,7 @@ function sampleTangentAtParameter(context is Context, edges is array, normalized
 function planarizeQuadSurfaces(context is Context, id is Id)
 {
     // Get all the surface faces created by the loft operations
-    const loftFaces = qCreatedBy(id, EntityType.FACE)->qGeometry(GeometryType.SURFACE);
+    const loftFaces = qCreatedBy(id, EntityType.FACE);
     const faces = evaluateQuery(context, loftFaces);
     
     for (var i = 0; i < size(faces); i += 1)
@@ -404,7 +404,7 @@ function planarizeQuadSurfaces(context is Context, id is Id)
         const face = faces[i];
         
         // Sample face at midpoint to get a representative plane
-        try
+        try silent
         {
             const faceTangentPlane = evFaceTangentPlane(context, {
                 "face" : face,
@@ -445,7 +445,7 @@ function planarizeQuadSurfaces(context is Context, id is Id)
                 
                 // Create a planar surface using opFillSurface with the boundary edges
                 const fillId = id + ("fill" ~ i);
-                try
+                try silent
                 {
                     opFillSurface(context, fillId, {
                         "surfaceEdges" : boundaryEdges
@@ -456,16 +456,7 @@ function planarizeQuadSurfaces(context is Context, id is Id)
                         "entities" : face
                     });
                 }
-                catch (fillError)
-                {
-                    // If fill surface fails, keep the original surface
-                    // This can happen for degenerate or complex boundaries
-                }
             }
-        }
-        catch (error)
-        {
-            // If we can't sample the face, keep it as is
         }
     }
 }
@@ -486,14 +477,12 @@ function createQuadrilateralLoft(context is Context, id is Id, profile1Points is
     // Create 3D polylines for both profiles using fitSpline
     const profile1PolylineId = id + "profile1Polyline";
     opFitSpline(context, profile1PolylineId, {
-        "points" : profile1Points,
-        "tolerance" : 0 * meter
+        "points" : profile1Points
     });
     
     const profile2PolylineId = id + "profile2Polyline";
     opFitSpline(context, profile2PolylineId, {
-        "points" : profile2Points,
-        "tolerance" : 0 * meter
+        "points" : profile2Points
     });
     
     // Now create ruled surface lofts between corresponding segments
@@ -507,18 +496,16 @@ function createQuadrilateralLoft(context is Context, id is Id, profile1Points is
         
         // Create line segment on profile 1 between points i and i+1
         opFitSpline(context, seg1Id, {
-            "points" : [profile1Points[i], profile1Points[i + 1]],
-            "tolerance" : 0 * meter
+            "points" : [profile1Points[i], profile1Points[i + 1]]
         });
         
         // Create line segment on profile 2 between points i and i+1
         opFitSpline(context, seg2Id, {
-            "points" : [profile2Points[i], profile2Points[i + 1]],
-            "tolerance" : 0 * meter
+            "points" : [profile2Points[i], profile2Points[i + 1]]
         });
         
         // Loft between these two segments to create a quadrilateral surface
-        try
+        try silent
         {
             opLoft(context, id + ("loft" ~ i), {
                 "profileSubqueries" : [
@@ -527,11 +514,6 @@ function createQuadrilateralLoft(context is Context, id is Id, profile1Points is
                 ],
                 "bodyType" : ToolBodyType.SURFACE
             });
-        }
-        catch (error)
-        {
-            // If loft fails for this segment, continue to next
-            // This can happen for degenerate segments
         }
     }
     
