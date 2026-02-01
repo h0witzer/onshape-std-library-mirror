@@ -22,7 +22,6 @@ import(path : "onshape/std/valueBounds.fs", version : "2878.0");
 import(path : "onshape/std/vector.fs", version : "2878.0");
 import(path : "onshape/std/debug.fs", version : "2878.0");
 import(path : "onshape/std/math.fs", version : "2878.0");
-import(path : "onshape/std/sketch.fs", version : "2878.0");
 
 const FACET_ANGLE_BOUNDS = {
             (degree) : [0.1, 10, 90],
@@ -375,75 +374,76 @@ function subdividePointsToCount(points is array, targetSegmentCount is number) r
 }
 
 /**
- * Create a quadrilateral loft by generating faces between matched point arrays.
- * Each quad face connects corresponding segments from both profiles.
+ * Create a quadrilateral loft by generating ruled surfaces between matched segments.
+ * Creates polylines from the matched points and lofts between adjacent pairs.
  */
 function createQuadrilateralLoft(context is Context, id is Id, profile1Points is array, profile2Points is array)
 {
-    const numSegments = min(size(profile1Points), size(profile2Points)) - 1;
+    const numPoints = min(size(profile1Points), size(profile2Points));
     
-    if (numSegments < 1)
+    if (numPoints < 2)
     {
         throw regenError("Insufficient points to create loft");
     }
     
-    // Create a sketch for each quadrilateral face
+    // Create 3D polylines for both profiles using fitSpline
+    const profile1PolylineId = id + "profile1Polyline";
+    opFitSpline(context, profile1PolylineId, {
+        "points" : profile1Points,
+        "tolerance" : 0 * meter
+    });
+    
+    const profile2PolylineId = id + "profile2Polyline";
+    opFitSpline(context, profile2PolylineId, {
+        "points" : profile2Points,
+        "tolerance" : 0 * meter
+    });
+    
+    // Now create ruled surface lofts between corresponding segments
+    const numSegments = numPoints - 1;
+    
     for (var i = 0; i < numSegments; i += 1)
     {
-        const p1 = profile1Points[i];
-        const p2 = profile1Points[i + 1];
-        const p3 = profile2Points[i + 1];
-        const p4 = profile2Points[i];
+        // Create individual line segments for this quad face
+        const seg1Id = id + ("seg1_" ~ i);
+        const seg2Id = id + ("seg2_" ~ i);
         
-        // Create a plane for this quad face
-        // Use the first three points to define the plane
-        const v1 = p2 - p1;
-        const v2 = p4 - p1;
-        const normal = cross(v1, v2);
-        const normalMag = norm(normal);
+        // Create line segment on profile 1 between points i and i+1
+        opFitSpline(context, seg1Id, {
+            "points" : [profile1Points[i], profile1Points[i + 1]],
+            "tolerance" : 0 * meter
+        });
         
-        if (normalMag < TOLERANCE.zeroLength * meter)
-        {
-            // Degenerate quad - skip
-            continue;
-        }
+        // Create line segment on profile 2 between points i and i+1
+        opFitSpline(context, seg2Id, {
+            "points" : [profile2Points[i], profile2Points[i + 1]],
+            "tolerance" : 0 * meter
+        });
         
-        const unitNormal = normal / normalMag;
-        
-        // Create coordinate system for the quad
-        const xDir = normalize(v1);
-        const yDir = normalize(cross(unitNormal, xDir));
-        
-        const cSys = coordSystem(p1, xDir, yDir);
-        const plane = plane(cSys);
-        
-        // Create sketch on this plane
-        const sketchId = id + ("quad" ~ i);
-        var sketch = newSketchOnPlane(context, sketchId, { "sketchPlane" : plane });
-        
-        // Transform points to 2D sketch coordinates
-        const p1_2d = worldToPlane(plane, p1);
-        const p2_2d = worldToPlane(plane, p2);
-        const p3_2d = worldToPlane(plane, p3);
-        const p4_2d = worldToPlane(plane, p4);
-        
-        // Draw quadrilateral
-        skLineSegment(sketch, "line1", { "start" : p1_2d, "end" : p2_2d });
-        skLineSegment(sketch, "line2", { "start" : p2_2d, "end" : p3_2d });
-        skLineSegment(sketch, "line3", { "start" : p3_2d, "end" : p4_2d });
-        skLineSegment(sketch, "line4", { "start" : p4_2d, "end" : p1_2d });
-        
-        skSolve(sketch);
-        
-        // Extrude the sketch face to create a surface
+        // Loft between these two segments to create a quadrilateral surface
         try
         {
-            opExtrude(context, id + ("extrude" ~ i), {
-                "entities" : qSketchRegion(sketchId),
-                "direction" : unitNormal,
-                "endBound" : BoundingType.BLIND,
-                "endDepth" : 0 * meter
+            opLoft(context, id + ("loft" ~ i), {
+                "profileSubqueries" : [
+                    qCreatedBy(seg1Id, EntityType.EDGE),
+                    qCreatedBy(seg2Id, EntityType.EDGE)
+                ],
+                "bodyType" : ToolBodyType.SURFACE
             });
         }
+        catch (error)
+        {
+            // If loft fails for this segment, continue to next
+            // This can happen for degenerate segments
+        }
     }
+    
+    // Clean up helper curves
+    opDeleteBodies(context, id + "cleanup", {
+        "entities" : qUnion([
+            qCreatedBy(profile1PolylineId, EntityType.BODY),
+            qCreatedBy(profile2PolylineId, EntityType.BODY),
+            qCreatedBy(id, EntityType.BODY)->qBodyType(BodyType.WIRE)
+        ])
+    });
 }
