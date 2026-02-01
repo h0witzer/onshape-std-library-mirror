@@ -1,6 +1,25 @@
 FeatureScript 2878;
-// This is a standalone tessellated loft feature based on sheetMetalLoft.fs
-// Stripped of all sheet metal specific logic to allow experimentation with the underlying tessellated loft operation.
+/**
+ * Standalone Tessellated Loft Feature
+ * 
+ * This feature provides direct access to the opTessellatedLoft operation introduced in version 2878
+ * of the Onshape Standard Library. It was created by extracting the core lofting logic from 
+ * sheetMetalLoft.fs and removing all sheet metal specific functionality.
+ * 
+ * Purpose:
+ *   - Experiment with tessellated loft operations without sheet metal constraints
+ *   - Create general-purpose faceted lofted surfaces
+ *   - Learn how tessellated loft matching and connections work
+ * 
+ * Key Features:
+ *   - Loft between two edge or vertex profiles
+ *   - Adjustable chordal tolerance for tessellation resolution
+ *   - Automatic profile matching via evTessellatedLoftMatches
+ *   - Optional manual connection definition with rip support
+ * 
+ * For detailed documentation, usage examples, and implementation notes, 
+ * see TESSELLATED_LOFT_README.md in the custom-features directory.
+ */
 
 import(path : "onshape/std/common.fs", version : "2878.0");
 import(path : "onshape/std/containers.fs", version : "2878.0");
