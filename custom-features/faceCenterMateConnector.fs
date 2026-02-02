@@ -8,6 +8,8 @@ import(path : "onshape/std/common.fs", version : "2878.0");
 /**
  * Feature that places a mate connector at the center of a selected face,
  * with the Z-axis aligned to the face's normal at the center point.
+ * Uses evFaceTangentPlane at parameter (0.5, 0.5) to get both the center
+ * point and normal in one evaluation.
  *
  * @param id : Feature identifier
  *      @autocomplete `id + "faceCenterMateConnector1"`
@@ -60,17 +62,16 @@ export const faceCenterMateConnector = defineFeature(function(context is Context
         // Verify face selection is not empty
         verifyNonemptyQuery(context, definition, "face", ErrorStringEnum.CANNOT_RESOLVE_ENTITIES);
 
-        // Get the center point of the face using approximate centroid
-        const centerPoint = evApproximateCentroid(context, {
-            "entities" : definition.face
-        });
-
         // Get the tangent plane at the center of the face in parameter space
         // Parameter vector(0.5, 0.5) represents the center in normalized parameter space
+        // The plane's origin is at the center point and the normal is the face normal
         const tangentPlane = evFaceTangentPlane(context, {
             "face" : definition.face,
             "parameter" : vector(0.5, 0.5)
         });
+
+        // Extract the center point from the tangent plane's origin
+        const centerPoint = tangentPlane.origin;
 
         // Determine the primary axis (Z-axis) direction
         var primaryDirection = tangentPlane.normal;
