@@ -157,7 +157,10 @@ export function faceCenterMateConnectorEditLogic(context is Context, id is Id, o
         {
             // If we can't find an owner, check if there's only one part in the studio
             const allParts = qBodyType(qEverything(EntityType.BODY), BodyType.SOLID);
-            const allSurfaces = qModifiableEntityFilter(qConstructionFilter(qSketchFilter(qBodyType(qEverything(EntityType.BODY), BodyType.SHEET), SketchObject.NO), ConstructionObject.NO));
+            const sheetBodies = qBodyType(qEverything(EntityType.BODY), BodyType.SHEET);
+            const nonSketchSheets = qSketchFilter(sheetBodies, SketchObject.NO);
+            const nonConstructionSheets = qConstructionFilter(nonSketchSheets, ConstructionObject.NO);
+            const allSurfaces = qModifiableEntityFilter(nonConstructionSheets);
             const allBodies = qUnion([allParts, allSurfaces]);
             
             if (size(evaluateQuery(context, allBodies)) == 1)
