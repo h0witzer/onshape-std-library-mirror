@@ -4,6 +4,7 @@ FeatureScript 2878;
 // with the normal aligned with the face's normal at that point
 
 import(path : "onshape/std/common.fs", version : "2878.0");
+export import(path : "onshape/std/mateconnectoraxistype.gen.fs", version : "2878.0");
 
 /**
  * Feature that places a mate connector at the center of a selected face,
