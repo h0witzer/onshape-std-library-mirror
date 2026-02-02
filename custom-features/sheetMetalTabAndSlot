@@ -74,11 +74,6 @@ export const WIDTH_VARIATION_BOUNDS =
 const RANDOM_SEED_UI_MAX = 10000000;
 const LCG_MODULUS = 2147483648; // 2^31, matches pseudoRandomNumber implementation
 
-// RNG improvement constant: Large coprime for better seed distribution
-// Using 48271, a coprime to LCG_MODULUS, to break alternating pattern
-// when incrementing seed by index (avoids big-small-big-small effect)
-const SEED_SKIP_MULTIPLIER = 48271;
-
 annotation { "Feature Type Name" : "OnlyTabs", "Icon" : ICON::BLOB_DATA, "Feature Type Description" : "Tab and Slot feature for Boss Display", "Editing Logic Function" : "tabAndSlotEditingLogic" }
 export const tabAndSlotBossDisplay = defineSheetMetalFeature(function(context is Context, id is Id, definition is map)
     precondition
@@ -1384,15 +1379,8 @@ function mergeTabSurfacesWithSheetMetal(context is Context, id is Id, tabSurface
  * Applies width randomization to tab domains.
  * Modifies each tab's width by a random amount within the specified variation threshold.
  * 
- * IMPORTANT: Uses coprime-based seed skipping to avoid alternating pattern.
- * When using consecutive seeds (seed, seed+1, seed+2, ...), the LCG multiplier (A ≈ 0.514 * M)
- * causes outputs to alternate between high and low values (~51% jumps), creating a visible
- * big-small-big-small pattern. To fix this, we skip by a large coprime (48271) instead of 1,
- * which breaks the correlation and provides better randomness distribution.
- * 
- * Mathematical analysis showed alternating patterns:
- *   - Original (seed+i): 94.4% alternating → big-small-big-small effect
- *   - Fixed (seed+i*48271): 44.4% alternating → much more random
+ * Uses chained LCG approach: each LCG output becomes the next seed.
+ * This is the standard way to use an LCG for generating sequential random values.
  * 
  * @param tabDomains : Array of {start, end} maps representing normalized tab positions (0 to 1)
  * @param totalLength : Total length of the edge chain
@@ -1403,22 +1391,24 @@ function applyWidthRandomizationToTabDomains(tabDomains is array, totalLength is
 {
     var randomizedDomains = [];
     
+    // Initialize with user's random seed, then chain subsequent values
+    var currentSeed = definition.randomSeed;
+    
     for (var i = 0; i < size(tabDomains); i += 1)
     {
         const domain = tabDomains[i];
         
-        // Calculate unique seed using large coprime skip to avoid alternating pattern
-        // Using coprime 48271 instead of consecutive increment breaks the ~51% jump cycle
-        const currentSeed = definition.randomSeed + i * SEED_SKIP_MULTIPLIER;
-        
         // Get current tab width in absolute units
         const currentTabWidth = (domain.end - domain.start) * totalLength;
         
-        // Generate raw LCG output for better control over randomness
+        // Generate LCG output
         const lcgOutput = pseudoRandomNumber(currentSeed);
         
-        // Manually remap to desired range (avoids double-application of LCG)
+        // Remap to desired range
         const randomVariation = remap(lcgOutput, 0, LCG_MODULUS, -definition.widthVariation, definition.widthVariation);
+        
+        // Chain: Use this output as the seed for the next iteration
+        currentSeed = lcgOutput;
         
         // Apply variation with minimum size constraint (at least 10% of original)
         const minAllowedWidth = currentTabWidth * 0.1;

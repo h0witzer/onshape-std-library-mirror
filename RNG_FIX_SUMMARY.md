@@ -1,53 +1,82 @@
 # RNG Fix Summary - Quick Reference
 
 ## The Issue
-Sheet metal tab and slot feature produced tabs with alternating widths: **BIG-small-BIG-small-BIG-small**
+Sheet metal tab and slot feature produced unnatural patterns in tab widths.
 
-## The Fix (One Line Change)
+## Evolution of Solutions
+
+### ORIGINAL (seed + i) - WRONG ❌
 ```featurescript
-// BEFORE (buggy):
-const currentSeed = definition.randomSeed + i;
-
-// AFTER (fixed):
-const currentSeed = definition.randomSeed + i * SEED_SKIP_MULTIPLIER;  // where SEED_SKIP_MULTIPLIER = 48271
+const currentSeed = randomSeed + i;
 ```
+**Problem**: Big-small-big-small alternating (94.4% alternating score)
 
-## Why This Works
-- LCG multiplier ≈ 0.514 causes ~51% jumps with consecutive seeds
-- Using coprime skip (48271) breaks the correlation
-- Result: 94.4% → 44.4% alternating score (50% improvement)
+### FIRST FIX (seed + i * 48271) - STILL WRONG ❌
+```featurescript
+const currentSeed = randomSeed + i * 48271;
+```
+**Problem**: Created cyclic "rainbow" pattern (4-step cycle repeating)
+
+### CORRECT FIX (Chained LCG) - RIGHT ✅
+```featurescript
+var currentSeed = randomSeed;
+for (...) {
+    const lcgOutput = pseudoRandomNumber(currentSeed);
+    const randomValue = remap(lcgOutput, 0, M, min, max);
+    currentSeed = lcgOutput;  // Chain: output becomes next seed
+}
+```
+**Why**: This is the **intended application of LCG RNG methods**
 
 ## Visual Comparison
 
-### BEFORE (Buggy - 94.4% alternating):
+### ORIGINAL (Alternating):
 ```
-Tab  0: +0.0729  ████████████████████████████
-Tab  1: -0.0244  █████████
-Tab  2: +0.0784  ███████████████████████████████
-Tab  3: -0.0188  ███████
-Tab  4: +0.0840  █████████████████████████████████
-Tab  5: -0.0133  █████
+Tab  0: BIG+
+Tab  1: SMALL-
+Tab  2: BIG+
+Tab  3: SMALL-
+Tab  4: BIG+
+Tab  5: SMALL-
 ```
-Pattern: Obvious alternating big-small rhythm
+Pattern: Obvious rhythmic alternation
 
-### AFTER (Fixed - 44.4% alternating):
+### COPRIME SKIP (Rainbow Cycle):
 ```
-Tab  0: +0.0729  ████████████████████████████
-Tab  1: +0.0219  ████████
-Tab  2: -0.0291  ███████████
-Tab  3: -0.0801  ████████████████████████████████
-Tab  4: +0.0689  ███████████████████████████
-Tab  5: +0.0179  ███████
+Tab  0: BIG+
+Tab  1: SMALL+
+Tab  2: SMALL-
+Tab  3: BIG-
+Tab  4: BIG+      ← Cycle repeats every 4
+Tab  5: SMALL+
+Tab  6: SMALL-
+Tab  7: BIG-
 ```
-Pattern: Much more natural variation
+Pattern: Predictable 4-step cycle
+
+### CHAINED LCG (Natural):
+```
+Tab  0: BIG+
+Tab  1: MED-
+Tab  2: BIG-
+Tab  3: MED-
+Tab  4: BIG+
+Tab  5: MED+
+Tab  6: BIG-
+Tab  7: SMALL+
+```
+Pattern: Natural variation, no obvious cycle
+
+## Key Insight
+
+**Chaining is the intended application of all LCG RNG methods.**
+
+In RNG theory, Linear Congruential Generators are designed to be used as a sequence where each output becomes the next seed. Using consecutive seeds or skip patterns violates this design and creates unintended correlations or cycles.
 
 ## Technical Details
-See `RNG_FIX_DOCUMENTATION.md` for complete mathematical analysis.
+See `RNG_FIX_DOCUMENTATION.md` for complete analysis.
 
 ## Files Modified
-- `custom-features/sheetMetalTabAndSlot` - RNG fix implementation
-- `RNG_FIX_DOCUMENTATION.md` - Detailed technical explanation
+- `custom-features/sheetMetalTabAndSlot` - Proper chained LCG implementation
+- `RNG_FIX_DOCUMENTATION.md` - Updated technical explanation
 - `RNG_FIX_SUMMARY.md` - This quick reference
-
-## About floor()
-The `floor()` function in the seed generation was **NOT** the issue. It's correctly used for integer conversion. The bug was in using consecutive seeds in the randomization loop.
