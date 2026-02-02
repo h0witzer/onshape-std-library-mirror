@@ -1,9 +1,31 @@
-FeatureScript 2770;
-import(path : "onshape/std/common.fs", version : "2770.0");
-import(path : "onshape/std/queryVariable.fs", version : "2770.0");
+FeatureScript 2878;
+import(path : "onshape/std/common.fs", version : "2878.0");
+import(path : "onshape/std/feature.fs", version : "2878.0");
+import(path : "onshape/std/queryVariable.fs", version : "2878.0");
 
 icon::import(path : "1b1876c4208ee0105bc5dc22", version : "8b4fcea5cec1f2bcc95aa71f");
 image::import(path : "2423f73366a997651d42c6a3", version : "a8c55fd240b78a829c9517eb");
+
+
+/**
+ * Wrapper function that applies a pattern with an identity transform.
+ * This wrapper allows applyPattern to be used with callSubfeatureAndProcessStatus,
+ * which expects a function with signature (context, id, definition).
+ * 
+ * @param context : The context in which to apply the pattern
+ * @param id : The ID for the pattern operation
+ * @param definition : The pattern definition map containing:
+ *        - patternType : The type of pattern to apply
+ *        - instanceFunction : The features to apply in the pattern
+ *        - fullFeaturePattern : Whether to use full feature pattern
+ *        - transforms : Array of transforms for each instance
+ *        - instanceNames : Array of names for each instance
+ *        - sketchPatternInfo : Information for sketch patterns
+ */
+function applyPatternWithIdentityTransform(context is Context, id is Id, definition is map)
+{
+    applyPattern(context, id, definition, identityTransform());
+}
 
 
 annotation { "Feature Type Name" : "Query pattern",
@@ -34,17 +56,14 @@ export const queryPattern = defineFeature(function(context is Context, id is Id,
 
                 setQueryVariable(context, definition.seedQueryVariableName, targetQuery);
 
-                try
-                {
-                    applyPattern(context, id + "pattern", {
-                                "patternType" : PatternType.FEATURE,
-                                "instanceFunction" : definition.featuresToLoop,
-                                "fullFeaturePattern" : true,
-                                "transforms" : [identityTransform()],
-                                "instanceNames" : ["instanceName"],
-                                "sketchPatternInfo" : "Some sketch pattern info" //hidden parameter of new feature pattern
-                            }, identityTransform());
-                }
+                callSubfeatureAndProcessStatus(id, applyPatternWithIdentityTransform, context, id + "pattern", {
+                            "patternType" : PatternType.FEATURE,
+                            "instanceFunction" : definition.featuresToLoop,
+                            "fullFeaturePattern" : true,
+                            "transforms" : [identityTransform()],
+                            "instanceNames" : ["instanceName"],
+                            "sketchPatternInfo" : "Some sketch pattern info" //hidden parameter of new feature pattern
+                        });
 
             });
     });
