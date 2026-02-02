@@ -25,7 +25,8 @@ import(path : "onshape/std/smcornerbreakstyle.gen.fs", version : "2856.0");
 // Import spacingUtils module for centralized pattern spacing logic
 export import(path : "c51f6558b7346f455a634ff5/cf14633de6fca78124306ce9/8ce820287d75ed2e92412d90", version : "cf26b6d26aa41f8853237904");//spacingUtils.fs
 // Import numberUtils for pseudo-random number generation
-import(path : "8d600084e4c200dab6048804", version : "3a97953bde21514c8d56d7ac");
+import(path : "9f4c9835d8018ff7dbdb5683/c06f405c6cafaa13845f6727/f937aebd788e8d724a4de67b", version : "c6a0a90fd8181defba24bed3");//numberUtils.fs
+
 
 // Original framework by Caden Armstrong - SmartBench Software
 // Hacked by Derek Van Allen
@@ -68,6 +69,10 @@ export const WIDTH_VARIATION_BOUNDS =
 {
             (inch) : [0, 0.1, 1e6]
         } as LengthBoundSpec;
+
+// Random seed constants for UI constraint and LCG remapping
+const RANDOM_SEED_UI_MAX = 10000000;
+const LCG_MODULUS = 2147483648; // 2^31, matches pseudoRandomNumber implementation
 
 annotation { "Feature Type Name" : "OnlyTabs", "Icon" : ICON::BLOB_DATA, "Feature Type Description" : "Tab and Slot feature for Boss Display", "Editing Logic Function" : "tabAndSlotEditingLogic" }
 export const tabAndSlotBossDisplay = defineSheetMetalFeature(function(context is Context, id is Id, definition is map)
@@ -112,15 +117,15 @@ export const tabAndSlotBossDisplay = defineSheetMetalFeature(function(context is
         // Tab width randomization group
         annotation { "Group Name" : "Tab width randomization", "Collapsed By Default" : true }
         {
-            annotation { "Name" : "Enable randomization", "Default" : false }
+            annotation { "Name" : "Enable randomization", "Default" : false, "UIHint" : UIHint.REMEMBER_PREVIOUS_VALUE }
             definition.enableRandomization is boolean;
 
             if (definition.enableRandomization)
             {
-                annotation { "Name" : "Random seed", "Default" : 1000 }
-                isInteger(definition.randomSeed, { (unitless) : [0, 1000, 2148000000] } as IntegerBoundSpec);
+                annotation { "Name" : "Random seed", "Default" : 1000, "UIHint" : UIHint.REMEMBER_PREVIOUS_VALUE }
+                isInteger(definition.randomSeed, { (unitless) : [0, 1000, RANDOM_SEED_UI_MAX] } as IntegerBoundSpec);
 
-                annotation { "Name" : "Width variation", "Description" : "Maximum variation in tab width (+ or -)" }
+                annotation { "Name" : "Width variation", "Description" : "Maximum variation in tab width (+ or -)", "UIHint" : UIHint.REMEMBER_PREVIOUS_VALUE }
                 isLength(definition.widthVariation, WIDTH_VARIATION_BOUNDS);
 
                 annotation { "Name" : "Generate new seed" }
@@ -1432,10 +1437,15 @@ export function tabAndSlotEditingLogic(context is Context, id is Id, oldDefiniti
     if (clickedButton == "generateNewSeed")
     {
         // Generate new random seed from current value (or default 1000)
-        definition.randomSeed = pseudoRandomNumber(definition.randomSeed != undefined ? definition.randomSeed : 1000);
+        const currentSeed = definition.randomSeed != undefined ? definition.randomSeed : 1000;
+        const lcgOutput = pseudoRandomNumber(currentSeed);
+        
+        // Map LCG output [0, LCG_MODULUS) to UI range [0, RANDOM_SEED_UI_MAX]
+        // Uses same remapping pattern as pseudoRandomNumber in numberUtils.fs
+        definition.randomSeed = floor(remap(lcgOutput, 0, LCG_MODULUS, 0, RANDOM_SEED_UI_MAX));
+        
         return definition;
     }
     
     return definition;
 }
-
