@@ -318,18 +318,30 @@ export const sheetMetalStitchCutBend = defineSheetMetalFeature(function(context 
         
         // Step 5: Apply bend relief attributes to vertexes between bend and rip segments
         // These vertexes are at the boundaries where bridges (bends) meet stitches (rips)
+        println("\n====== STEP 5: Bend Relief Attribution ======");
+        println("Bridge segment count: " ~ bridgeSegmentCount);
+        println("Stitch count: " ~ stitchCount);
+        
         if (bridgeSegmentCount > 0 && stitchCount > 0)
         {
+            println("Calling applyBendReliefAttributesToVertexes...");
             applyBendReliefAttributesToVertexes(context, id + "bendReliefs", splitOperationId, 
                 bridgeSegmentEdges, stitchSegmentEdges, modelAttribute);
+        }
+        else
+        {
+            println("Skipping bend relief attribution (no bridges and/or stitches)");
         }
         
         // Update sheet metal geometry with all modified edges
         // The vertexes will be automatically handled by the sheet metal system
+        println("\n====== Calling updateSheetMetalGeometry ======");
+        println("Entities to update: allEdgesAfterSplitQuery");
         updateSheetMetalGeometry(context, id, { 
             "entities" : allEdgesAfterSplitQuery,
             "associatedChanges" : allEdgesAfterSplitQuery
         });
+        println("====== updateSheetMetalGeometry complete ======\n");
     }, { 
         useDefaultRadius : true, 
         useDefaultKFactor : true 
@@ -617,19 +629,31 @@ function getModelAttribute(context is Context, modelBody is Query) returns SMAtt
 function applyBendReliefAttributesToVertexes(context is Context, id is Id, splitOperationId is Id,
     bendEdges is Query, ripEdges is Query, modelAttribute is SMAttribute)
 {
+    println("=== BEGIN applyBendReliefAttributesToVertexes ===");
+    
     // Find vertexes created by the split operations
     // These are at the boundaries between bridges and stitches
     const createdVertexes = qCreatedBy(splitOperationId, EntityType.VERTEX);
+    const createdVertexCount = size(evaluateQuery(context, createdVertexes));
+    println("Created vertexes from split: " ~ createdVertexCount);
     
     // Find vertexes that are at boundaries - adjacent to both bend and rip edges
     const bendAdjacentVertexes = qAdjacent(bendEdges, AdjacencyType.VERTEX, EntityType.VERTEX);
+    const bendAdjacentCount = size(evaluateQuery(context, bendAdjacentVertexes));
+    println("Bend-adjacent vertexes: " ~ bendAdjacentCount);
+    
     const ripAdjacentVertexes = qAdjacent(ripEdges, AdjacencyType.VERTEX, EntityType.VERTEX);
+    const ripAdjacentCount = size(evaluateQuery(context, ripAdjacentVertexes));
+    println("Rip-adjacent vertexes: " ~ ripAdjacentCount);
+    
     const boundaryVertexes = qIntersection([createdVertexes, bendAdjacentVertexes, ripAdjacentVertexes]);
     
     const vertexes = evaluateQuery(context, boundaryVertexes);
+    println("Boundary vertexes (intersection): " ~ size(vertexes));
     
     if (size(vertexes) == 0)
     {
+        println("WARNING: No boundary vertexes found - returning early");
         return; // No boundary vertexes found
     }
     
@@ -640,43 +664,87 @@ function applyBendReliefAttributesToVertexes(context is Context, id is Id, split
     const defaultSquareReliefWidth = modelAttribute.defaultSquareReliefWidth;
     const defaultRoundReliefDiameter = modelAttribute.defaultRoundReliefDiameter;
     
+    println("Model bend relief style: " ~ defaultBendReliefStyle);
+    if (defaultBendReliefScale != undefined)
+        println("Model bend relief scale: " ~ defaultBendReliefScale.value);
+    if (defaultBendReliefDepthScale != undefined)
+        println("Model bend relief depth scale: " ~ defaultBendReliefDepthScale.value);
+    
     // Apply corner attributes to each boundary vertex
+    var appliedCount = 0;
+    var skippedNotCorner = 0;
+    var skippedNotBendEnd = 0;
+    var errorCount = 0;
+    
     for (var i = 0; i < size(vertexes); i += 1)
     {
         const vertex = vertexes[i];
+        println("\n--- Processing vertex " ~ i ~ " of " ~ size(vertexes) ~ " ---");
+        debug(context, vertex, DebugColor.GREEN);
         
         try
         {
             // Check if this is a valid corner vertex
             const cornerInfo = try silent(evCornerType(context, { "vertex" : vertex }));
-            if (cornerInfo == undefined || cornerInfo.cornerType == SMCornerType.NOT_A_CORNER)
+            if (cornerInfo == undefined)
             {
+                println("  cornerInfo is undefined - skipping");
+                skippedNotCorner += 1;
+                continue;
+            }
+            
+            println("  Corner type: " ~ cornerInfo.cornerType);
+            
+            if (cornerInfo.cornerType == SMCornerType.NOT_A_CORNER)
+            {
+                println("  NOT_A_CORNER - skipping");
+                skippedNotCorner += 1;
                 continue; // Skip non-corner vertexes
             }
             
             // Bend reliefs only apply to BEND_END corners
             if (cornerInfo.cornerType != SMCornerType.BEND_END)
             {
+                println("  Not a BEND_END (is " ~ cornerInfo.cornerType ~ ") - skipping");
+                skippedNotBendEnd += 1;
                 continue; // Skip non-bend-end corners
             }
             
+            println("  ✓ Valid BEND_END corner");
+            
             // Use the primary vertex from cornerInfo
             const primaryVertex = cornerInfo.primaryVertex;
+            println("  Using primaryVertex");
+            debug(context, primaryVertex, DebugColor.BLUE);
             
             // Get or create corner attribute
             var existingAttribute = getCornerAttribute(context, primaryVertex);
+            if (existingAttribute != undefined)
+            {
+                println("  Found existing corner attribute");
+            }
+            else
+            {
+                println("  Creating new corner attribute");
+            }
+            
             var cornerAttribute = existingAttribute != undefined ? 
                 existingAttribute : makeSMCornerAttribute(toAttributeId(id + ("vertex" ~ i)));
             
             // Apply bend relief style from model
             if (defaultBendReliefStyle != undefined)
             {
+                println("  Applying bend relief style: " ~ defaultBendReliefStyle);
                 cornerAttribute.cornerStyle = {
                     "value" : defaultBendReliefStyle,
                     "canBeEdited" : false,
                     "controllingFeatureId" : toAttributeId(id),
                     "parameterIdInFeature" : "entity"
                 };
+            }
+            else
+            {
+                println("  WARNING: defaultBendReliefStyle is undefined!");
             }
             
             // Apply scaled relief parameters based on style
@@ -731,20 +799,34 @@ function applyBendReliefAttributesToVertexes(context is Context, id is Id, split
             // Apply the attribute to the vertex
             if (existingAttribute != undefined)
             {
+                println("  Replacing existing attribute");
                 replaceSMAttribute(context, existingAttribute, cornerAttribute);
             }
             else
             {
+                println("  Setting new attribute");
                 setAttribute(context, { "entities" : primaryVertex, "attribute" : cornerAttribute });
             }
+            
+            appliedCount += 1;
+            println("  ✓✓✓ Successfully applied bend relief attribute");
         }
-        catch
+        catch (error)
         {
             // Skip vertexes that cause errors (e.g., not appropriate for corner attributes)
-            // Note: Vertex at index i failed to receive bend relief attribute
+            errorCount += 1;
+            println("  ERROR caught (vertex " ~ i ~ "): " ~ error);
             continue;
         }
     }
+    
+    println("\n=== SUMMARY ===");
+    println("Total vertexes processed: " ~ size(vertexes));
+    println("Successfully applied: " ~ appliedCount);
+    println("Skipped (not corner): " ~ skippedNotCorner);
+    println("Skipped (not BEND_END): " ~ skippedNotBendEnd);
+    println("Errors: " ~ errorCount);
+    println("=== END applyBendReliefAttributesToVertexes ===\n");
 }
 
 
