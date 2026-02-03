@@ -7,27 +7,6 @@ icon::import(path : "1b1876c4208ee0105bc5dc22", version : "8b4fcea5cec1f2bcc95aa
 image::import(path : "2423f73366a997651d42c6a3", version : "a8c55fd240b78a829c9517eb");
 
 
-/**
- * Wrapper function that applies a pattern with an identity transform.
- * This wrapper allows applyPattern to be used with callSubfeatureAndProcessStatus,
- * which expects a function with signature (context, id, definition).
- * 
- * @param context : The context in which to apply the pattern
- * @param id : The ID for the pattern operation
- * @param definition : The pattern definition map containing:
- *        - patternType : The type of pattern to apply
- *        - instanceFunction : The features to apply in the pattern
- *        - fullFeaturePattern : Whether to use full feature pattern
- *        - transforms : Array of transforms for each instance
- *        - instanceNames : Array of names for each instance
- *        - sketchPatternInfo : Information for sketch patterns
- */
-function applyPatternWithIdentityTransform(context is Context, id is Id, definition is map)
-{
-    applyPattern(context, id, definition, identityTransform());
-}
-
-
 annotation { "Feature Type Name" : "Query pattern",
 "Feature Type Description" : "Patterns feature operations on a per-query basis, allowing similar steps to be applied to dissimilar shapes. For example, extruding and filleting a bunch of faces that are all different shapes.",
 "Icon" : icon::BLOB_DATA,
@@ -56,14 +35,45 @@ export const queryPattern = defineFeature(function(context is Context, id is Id,
 
                 setQueryVariable(context, definition.seedQueryVariableName, targetQuery);
 
-                callSubfeatureAndProcessStatus(id, applyPatternWithIdentityTransform, context, id + "pattern", {
-                            "patternType" : PatternType.FEATURE,
-                            "instanceFunction" : definition.featuresToLoop,
-                            "fullFeaturePattern" : true,
-                            "transforms" : [identityTransform()],
-                            "instanceNames" : ["instanceName"],
-                            "sketchPatternInfo" : "Some sketch pattern info" //hidden parameter of new feature pattern
+                // Inline implementation of callSubfeatureAndProcessStatus pattern
+                // Cannot use callSubfeatureAndProcessStatus directly because applyPattern requires
+                // a 4th parameter (transform) that doesn't fit the standard 3-parameter signature
+                const patternId = id + "pattern";
+                var thrownError;
+                try
+                {
+                    applyPattern(context, patternId, {
+                                "patternType" : PatternType.FEATURE,
+                                "instanceFunction" : definition.featuresToLoop,
+                                "fullFeaturePattern" : true,
+                                "transforms" : [identityTransform()],
+                                "instanceNames" : ["instanceName"],
+                                "sketchPatternInfo" : "Some sketch pattern info" //hidden parameter of new feature pattern
+                            }, identityTransform());
+                }
+                catch (e)
+                {
+                    thrownError = e;
+                }
+
+                // Process any subfeature status and propagate errors to the top-level feature
+                processSubfeatureStatus(context, id, {
+                            "subfeatureId" : patternId,
+                            "propagateErrorDisplay" : true
                         });
+
+                // Re-throw feature error if it exists
+                const featureError = getFeatureError(context, id);
+                if (featureError != undefined)
+                {
+                    throw featureError;
+                }
+
+                // Re-throw any thrown error that did not create an ERROR level feature status
+                if (thrownError != undefined)
+                {
+                    throw thrownError;
+                }
 
             });
     });
