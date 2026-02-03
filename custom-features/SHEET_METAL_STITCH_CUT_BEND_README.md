@@ -158,6 +158,18 @@ The feature now:
 - ✅ Bend tables show accurate geometry-specific angles
 - ✅ Modify Joint can independently change each segment
 - ✅ All properties correctly populated with full metadata
+- ✅ **Bend relief attributes applied to vertexes at bend/rip boundaries**
+
+## Recent Enhancement: Automatic Bend Relief Application
+
+The feature now automatically applies bend relief attributes to vertexes at the boundaries between bend and rip segments. This enhancement:
+
+- **Reads model parameters:** Extracts bend relief settings (style, scale, depth) from the sheet metal model
+- **Identifies boundary vertexes:** Finds vertexes that are adjacent to both bend and rip edges
+- **Applies corner attributes:** Creates or updates corner attributes with the model's bend relief settings
+- **Maintains consistency:** Uses the same relief parameters defined in the sheet metal model
+
+This ensures that the stitch cut bend feature properly integrates with the sheet metal model's relief settings without requiring user input for conflicting parameters.
 
 ## Usage
 
@@ -166,6 +178,7 @@ The feature now:
 3. Configure spacing (equal, linear, custom)
 4. Optionally override bend radius and k-factor (defaults to model settings)
 5. Feature splits edge into alternating bend/rip segments
+6. **Bend reliefs are automatically applied using model settings**
 
 ## Files
 
@@ -177,11 +190,16 @@ The feature now:
 
 **Key Functions:**
 - `getModelParameters()` - Get model configuration
+- `getModelAttribute()` - Get full model attribute including relief parameters
 - `opSplitEdges()` - Split edges at parameters
 - `removeAttributes()` - Clear shared attributes
 - `assignSMAssociationAttributes()` - Assign unique associations
 - `makeSMJointAttribute()` - Create definition attributes
+- `makeSMCornerAttribute()` - Create corner attributes for bend reliefs
+- `getCornerAttribute()` - Get existing corner attributes
+- `applyBendReliefAttributesToVertexes()` - Apply bend relief to boundary vertexes
 - `setAttribute()` - Apply attributes to entities
+- `replaceSMAttribute()` - Update existing attributes
 - `bendAngle()` - Compute geometry-accurate bend angle
 - `updateSheetMetalGeometry()` - Process attributed entities
 
@@ -190,4 +208,6 @@ The feature now:
 - `sheetMetalUtils.fs` - Model parameters, geometry updates
 - `geomOperations.fs` - Edge splitting operations
 - `attributes.fs` - Attribute management
+- `evaluate.fs` - Corner type evaluation
+
 
