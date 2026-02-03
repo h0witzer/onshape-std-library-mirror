@@ -165,9 +165,11 @@ The feature now:
 The feature now automatically applies bend relief attributes to vertexes at the boundaries between bend and rip segments. This enhancement:
 
 - **Reads model parameters:** Extracts bend relief settings (style, scale, depth) from the sheet metal model
-- **Identifies boundary vertexes:** Finds vertexes that are adjacent to both bend and rip edges
+- **Identifies boundary vertexes:** Uses `qCreatedBy()` to find vertexes created by split operations, then filters to those adjacent to both bend and rip edges
 - **Applies corner attributes:** Creates or updates corner attributes with the model's bend relief settings
 - **Maintains consistency:** Uses the same relief parameters defined in the sheet metal model
+
+**Implementation Note:** The feature uses `qCreatedBy(splitOperationId, EntityType.VERTEX)` to directly query vertexes created by the `opSplitEdges` operations, rather than using the deprecated `qVertexAdjacent` function. This is more efficient and accurate since these vertexes are precisely what we need to attribute.
 
 This ensures that the stitch cut bend feature properly integrates with the sheet metal model's relief settings without requiring user input for conflicting parameters.
 
@@ -198,6 +200,8 @@ This ensures that the stitch cut bend feature properly integrates with the sheet
 - `makeSMCornerAttribute()` - Create corner attributes for bend reliefs
 - `getCornerAttribute()` - Get existing corner attributes
 - `applyBendReliefAttributesToVertexes()` - Apply bend relief to boundary vertexes
+- `qCreatedBy()` - Query entities created by split operations
+- `qAdjacent()` - Query adjacent entities (replaces deprecated qVertexAdjacent)
 - `setAttribute()` - Apply attributes to entities
 - `replaceSMAttribute()` - Update existing attributes
 - `bendAngle()` - Compute geometry-accurate bend angle
@@ -208,6 +212,7 @@ This ensures that the stitch cut bend feature properly integrates with the sheet
 - `sheetMetalUtils.fs` - Model parameters, geometry updates
 - `geomOperations.fs` - Edge splitting operations
 - `attributes.fs` - Attribute management
+- `query.fs` - Query operations for finding entities
 - `evaluate.fs` - Corner type evaluation
 
 
