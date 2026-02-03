@@ -7,6 +7,8 @@ FeatureScript 2856;
 // Imports used in interface - enums must be exported for use in preconditions
 export import(path : "onshape/std/smjointtype.gen.fs", version : "2856.0");
 export import(path : "onshape/std/smjointstyle.gen.fs", version : "2856.0");
+export import(path : "onshape/std/smcornertype.gen.fs", version : "2856.0");
+export import(path : "onshape/std/smreliefstyle.gen.fs", version : "2856.0");
 
 // Imports used internally
 import(path : "onshape/std/common.fs", version : "2856.0");
@@ -129,6 +131,9 @@ export const sheetMetalStitchCutBend = defineSheetMetalFeature(function(context 
 
         // Get the model body query for later use
         const modelBodyQuery = qOwnerBody(jointEntity);
+        
+        // Get full model attribute for bend relief parameters
+        const modelAttribute = getModelAttribute(context, modelBodyQuery);
 
         // Calculate edge length and validate using the joint definition entity
         const selectedEdgesQuery = qEntityFilter(jointEntity, EntityType.EDGE);
@@ -311,10 +316,19 @@ export const sheetMetalStitchCutBend = defineSheetMetalFeature(function(context 
                 SMJointType.RIP, definition, isFaceBend, false, undefined, undefined);
         }
         
-        // Update sheet metal geometry with all modified edges
+        // Step 5: Apply bend relief attributes to vertexes between bend and rip segments
+        // These vertexes are at the boundaries where bridges (bends) meet stitches (rips)
+        if (bridgeSegmentCount > 0 && stitchCount > 0)
+        {
+            applyBendReliefAttributesToVertexes(context, id + "bendReliefs", bridgeSegmentEdges, 
+                stitchSegmentEdges, modelAttribute);
+        }
+        
+        // Update sheet metal geometry with all modified edges and vertexes
+        const vertexesAtBoundaries = qVertexAdjacent(allEdgesAfterSplitQuery, EntityType.EDGE);
         updateSheetMetalGeometry(context, id, { 
-            "entities" : allEdgesAfterSplitQuery,
-            "associatedChanges" : allEdgesAfterSplitQuery
+            "entities" : qUnion([allEdgesAfterSplitQuery, vertexesAtBoundaries]),
+            "associatedChanges" : qUnion([allEdgesAfterSplitQuery, vertexesAtBoundaries])
         });
     }, { 
         useDefaultRadius : true, 
@@ -565,6 +579,169 @@ function getDefaultSheetMetalKFactor(context is Context, entity is Query)
     var modelParameters = getModelParameters(context, qOwnerBody(sheetmetalEntity));
     return modelParameters["k-factor"];
 }
+
+/**
+ * Gets the full sheet metal model attribute including bend relief parameters.
+ * Inputs:
+ *   context - Evaluation context
+ *   modelBody - Query for the sheet metal model body
+ * Outputs: The SMAttribute for the model with all parameters
+ */
+function getModelAttribute(context is Context, modelBody is Query) returns SMAttribute
+{
+    const attributes = getAttributes(context, {
+        "entities" : modelBody, 
+        "attributePattern" : asSMAttribute({})
+    });
+    
+    if (size(attributes) != 1)
+    {
+        throw regenError("Could not get sheet metal model attribute");
+    }
+    
+    return attributes[0];
+}
+
+/**
+ * Applies bend relief attributes to vertexes between bend and rip segments.
+ * These vertexes are at the boundaries where bridges (bends) meet stitches (rips).
+ * The bend relief parameters are taken from the sheet metal model to maintain consistency.
+ * Inputs:
+ *   context - Evaluation context
+ *   id - Operation ID for this attribute assignment
+ *   bendEdges - Query for edges with bend attributes
+ *   ripEdges - Query for edges with rip attributes
+ *   modelAttribute - The model SMAttribute containing bend relief parameters
+ */
+function applyBendReliefAttributesToVertexes(context is Context, id is Id, bendEdges is Query, 
+    ripEdges is Query, modelAttribute is SMAttribute)
+{
+    // Find vertexes that are adjacent to both bend and rip edges
+    // These are the vertexes at the boundaries between bridges and stitches
+    const bendVertexes = qVertexAdjacent(bendEdges, EntityType.EDGE);
+    const ripVertexes = qVertexAdjacent(ripEdges, EntityType.EDGE);
+    const boundaryVertexes = qIntersection([bendVertexes, ripVertexes]);
+    
+    const vertexes = evaluateQuery(context, boundaryVertexes);
+    
+    if (size(vertexes) == 0)
+    {
+        return; // No boundary vertexes found
+    }
+    
+    // Extract bend relief parameters from model attribute
+    const defaultBendReliefStyle = modelAttribute.defaultBendReliefStyle;
+    const defaultBendReliefScale = modelAttribute.defaultBendReliefScale;
+    const defaultBendReliefDepthScale = modelAttribute.defaultBendReliefDepthScale;
+    const defaultSquareReliefWidth = modelAttribute.defaultSquareReliefWidth;
+    const defaultRoundReliefDiameter = modelAttribute.defaultRoundReliefDiameter;
+    
+    // Apply corner attributes to each boundary vertex
+    for (var i = 0; i < size(vertexes); i += 1)
+    {
+        const vertex = vertexes[i];
+        const vertexQuery = qUnion([vertex]);
+        
+        try
+        {
+            // Check if this is a valid corner vertex
+            const cornerInfo = try silent(evCornerType(context, { "vertex" : vertexQuery }));
+            if (cornerInfo == undefined || cornerInfo.cornerType == SMCornerType.NOT_A_CORNER)
+            {
+                continue; // Skip non-corner vertexes
+            }
+            
+            // Get or create corner attribute
+            var existingAttribute = getCornerAttribute(context, vertexQuery);
+            var cornerAttribute;
+            
+            if (existingAttribute != undefined)
+            {
+                cornerAttribute = existingAttribute;
+            }
+            else
+            {
+                cornerAttribute = makeSMCornerAttribute(toAttributeId(id + ("vertex" ~ i)));
+            }
+            
+            // Apply bend relief style from model
+            if (defaultBendReliefStyle != undefined)
+            {
+                cornerAttribute.cornerStyle = {
+                    "value" : defaultBendReliefStyle,
+                    "canBeEdited" : false,
+                    "controllingFeatureId" : toAttributeId(id),
+                    "parameterIdInFeature" : "entity"
+                };
+            }
+            
+            // Apply scaled relief parameters based on style
+            if (defaultBendReliefStyle == SMReliefStyle.RECTANGLE || 
+                defaultBendReliefStyle == SMReliefStyle.OBROUND)
+            {
+                if (defaultBendReliefScale != undefined && defaultBendReliefScale.value != undefined)
+                {
+                    cornerAttribute.bendReliefScale = {
+                        "value" : defaultBendReliefScale.value,
+                        "canBeEdited" : false,
+                        "controllingFeatureId" : toAttributeId(id),
+                        "parameterIdInFeature" : "entity"
+                    };
+                }
+                
+                if (defaultBendReliefDepthScale != undefined && defaultBendReliefDepthScale.value != undefined)
+                {
+                    cornerAttribute.bendReliefDepthScale = {
+                        "value" : defaultBendReliefDepthScale.value,
+                        "canBeEdited" : false,
+                        "controllingFeatureId" : toAttributeId(id),
+                        "parameterIdInFeature" : "entity"
+                    };
+                }
+            }
+            else if (defaultBendReliefStyle == SMReliefStyle.SIZED_RECTANGLE)
+            {
+                if (defaultSquareReliefWidth != undefined && defaultSquareReliefWidth.value != undefined)
+                {
+                    cornerAttribute.bendReliefDepth = {
+                        "value" : defaultSquareReliefWidth.value,
+                        "canBeEdited" : false,
+                        "controllingFeatureId" : toAttributeId(id),
+                        "parameterIdInFeature" : "entity"
+                    };
+                }
+            }
+            else if (defaultBendReliefStyle == SMReliefStyle.SIZED_OBROUND)
+            {
+                if (defaultRoundReliefDiameter != undefined && defaultRoundReliefDiameter.value != undefined)
+                {
+                    cornerAttribute.bendReliefDepth = {
+                        "value" : defaultRoundReliefDiameter.value,
+                        "canBeEdited" : false,
+                        "controllingFeatureId" : toAttributeId(id),
+                        "parameterIdInFeature" : "entity"
+                    };
+                }
+            }
+            
+            // Apply the attribute to the vertex
+            if (existingAttribute != undefined)
+            {
+                replaceSMAttribute(context, existingAttribute, cornerAttribute);
+            }
+            else
+            {
+                setAttribute(context, { "entities" : vertexQuery, "attribute" : cornerAttribute });
+            }
+        }
+        catch
+        {
+            // Skip vertexes that cause errors (e.g., not appropriate for corner attributes)
+            continue;
+        }
+    }
+}
+
 
 /**
  * Converts domain definitions (start/end normalized parameters) into split parameters.
