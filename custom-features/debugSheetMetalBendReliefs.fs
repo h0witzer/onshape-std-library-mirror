@@ -18,7 +18,7 @@ export import(path : "onshape/std/smjointtype.gen.fs", version : "2878.0");
  * Helps understand how bend reliefs are placed and interact with walls.
  */
 annotation { "Feature Type Name" : "Debug Bend Reliefs" }
-export const debugSheetMetalBendReliefs = defineFeature(function(context is Context, id is Id, definition is map)
+export const debugSheetMetalBendReliefs = defineSheetMetalFeature(function(context is Context, id is Id, definition is map)
     precondition
     {
         annotation { "Name" : "Sheet metal part",
