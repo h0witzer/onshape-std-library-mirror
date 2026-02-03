@@ -30,6 +30,11 @@ export const queryPattern = defineFeature(function(context is Context, id is Id,
 
         const targetQueries = definition.targetQueries->qSubtraction(seedQuery);
 
+        // Track entities where pattern operations succeeded or failed
+        var failedEntities = [];
+        var successCount = 0;
+        var failureCount = 0;
+
         forEachEntity(context, id + "featurePattern", targetQueries, function(targetQuery is Query, id is Id)
             {
 
@@ -40,6 +45,7 @@ export const queryPattern = defineFeature(function(context is Context, id is Id,
                 // a 4th parameter (transform) that doesn't fit the standard 3-parameter signature
                 const patternId = id + "pattern";
                 var thrownError;
+                var hadError = false;
                 try
                 {
                     applyPattern(context, patternId, {
@@ -54,28 +60,51 @@ export const queryPattern = defineFeature(function(context is Context, id is Id,
                 catch (e)
                 {
                     thrownError = e;
+                    hadError = true;
                 }
 
                 // Process any subfeature status and propagate errors to the top-level feature
+                // Include the target query as an additional error entity for highlighting
                 processSubfeatureStatus(context, id, {
                             "subfeatureId" : patternId,
-                            "propagateErrorDisplay" : true
+                            "propagateErrorDisplay" : true,
+                            "additionalErrorEntities" : targetQuery
                         });
 
-                // Re-throw feature error if it exists
+                // Check if an error occurred for this entity
                 const featureError = getFeatureError(context, id);
-                if (featureError != undefined)
+                if (featureError != undefined || hadError)
                 {
-                    throw featureError;
+                    failedEntities = append(failedEntities, targetQuery);
+                    failureCount += 1;
+                    
+                    // Clear the error so we can continue processing other entities
+                    clearFeatureStatus(context, id, {});
                 }
-
-                // Re-throw any thrown error that did not create an ERROR level feature status
-                if (thrownError != undefined)
+                else
                 {
-                    throw thrownError;
+                    successCount += 1;
                 }
 
             });
+
+        // Report overall status after processing all entities
+        if (failureCount > 0)
+        {
+            // Highlight all failed entities for user feedback
+            setErrorEntities(context, id, { "entities" : qUnion(failedEntities) });
+            
+            if (successCount > 0)
+            {
+                // Partial failure - some succeeded, some failed
+                reportFeatureInfo(context, id, ErrorStringEnum.PATTERN_FEATURE_FAILED);
+            }
+            else
+            {
+                // Complete failure - all entities failed
+                throw regenError(ErrorStringEnum.PATTERN_FEATURE_FAILED, qUnion(failedEntities));
+            }
+        }
     });
 
 
