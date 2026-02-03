@@ -84,7 +84,12 @@ export const sheetMetalStitchCutBend = defineSheetMetalFeature(function(context 
     }
     {
         // Extract model's bend relief settings to use automatically
-        const modelAttr = getSMDefinitionEntities(context, qOwnerBody(definition.entity), EntityType.FACE)[0];
+        const modelFaces = getSMDefinitionEntities(context, qOwnerBody(definition.entity), EntityType.FACE);
+        if (size(modelFaces) == 0)
+        {
+            throw regenError("Could not get sheet metal model attributes. Ensure the selected edge is part of an active sheet metal model.");
+        }
+        const modelAttr = modelFaces[0];
         const modelCornerStyle = modelAttr.cornerStyle;
         const modelBendReliefScale = modelAttr.bendReliefScale;
         const modelBendReliefDepthScale = modelAttr.bendReliefDepthScale;
