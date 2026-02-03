@@ -84,16 +84,6 @@ export const sheetMetalStitchCutBend = defineSheetMetalFeature(function(context 
     }
     {
         // Extract model's bend relief settings to use automatically
-        const modelFaces = getSMDefinitionEntities(context, qOwnerBody(definition.entity), EntityType.FACE);
-        if (size(modelFaces) == 0)
-        {
-            throw regenError("Could not get sheet metal model attributes. Ensure the selected edge is part of an active sheet metal model.");
-        }
-        const modelAttr = modelFaces[0];
-        const modelCornerStyle = modelAttr.cornerStyle;
-        const modelBendReliefScale = modelAttr.bendReliefScale;
-        const modelBendReliefDepthScale = modelAttr.bendReliefDepthScale;
-        const modelExtendBendRelief = modelAttr.extendBendRelief;
         // Validate sheet metal context
         checkNotInFeaturePattern(context, definition.entity, ErrorStringEnum.SHEET_METAL_NO_FEATURE_PATTERN);
 
@@ -129,18 +119,27 @@ export const sheetMetalStitchCutBend = defineSheetMetalFeature(function(context 
             throw regenError(ErrorStringEnum.SHEET_METAL_ACTIVE_JOIN_NEEDED, ["entity"]);
         }
 
-        // CRITICAL: Get default values BEFORE any splitting operations
+        // CRITICAL: Get model parameters BEFORE any splitting operations
         // Once edges are split and attributes removed, we can't query the model anymore
+        const modelParams = getModelParameters(context, definition.entity);
+        
+        // Extract bend parameters
         var defaultRadius;
         var defaultKFactor;
         if (definition.useDefaultRadius)
         {
-            defaultRadius = getDefaultSheetMetalRadius(context, definition.entity);
+            defaultRadius = modelParams.defaultBendRadius;
         }
         if (definition.useDefaultKFactor)
         {
-            defaultKFactor = getDefaultSheetMetalKFactor(context, definition.entity);
+            defaultKFactor = modelParams.kFactor;
         }
+        
+        // Extract bend relief parameters from model
+        const modelCornerStyle = modelParams.defaultBendReliefStyle;
+        const modelBendReliefScale = modelParams.defaultBendReliefScale;
+        const modelBendReliefDepthScale = modelParams.bendReliefDepthScale;
+        const modelExtendBendRelief = modelParams.extendBendRelief;
 
         // Get the model body query for later use
         const modelBodyQuery = qOwnerBody(jointEntity);
