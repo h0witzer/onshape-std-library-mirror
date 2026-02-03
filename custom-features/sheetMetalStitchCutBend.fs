@@ -324,12 +324,11 @@ export const sheetMetalStitchCutBend = defineSheetMetalFeature(function(context 
                 bridgeSegmentEdges, stitchSegmentEdges, modelAttribute);
         }
         
-        // Update sheet metal geometry with all modified edges and vertexes
-        // Vertexes are created by the split operations
-        const vertexesCreatedBySplit = qCreatedBy(splitOperationId, EntityType.VERTEX);
+        // Update sheet metal geometry with all modified edges
+        // The vertexes will be automatically handled by the sheet metal system
         updateSheetMetalGeometry(context, id, { 
-            "entities" : qUnion([allEdgesAfterSplitQuery, vertexesCreatedBySplit]),
-            "associatedChanges" : qUnion([allEdgesAfterSplitQuery, vertexesCreatedBySplit])
+            "entities" : allEdgesAfterSplitQuery,
+            "associatedChanges" : allEdgesAfterSplitQuery
         });
     }, { 
         useDefaultRadius : true, 
@@ -655,8 +654,17 @@ function applyBendReliefAttributesToVertexes(context is Context, id is Id, split
                 continue; // Skip non-corner vertexes
             }
             
+            // Bend reliefs only apply to BEND_END corners
+            if (cornerInfo.cornerType != SMCornerType.BEND_END)
+            {
+                continue; // Skip non-bend-end corners
+            }
+            
+            // Use the primary vertex from cornerInfo
+            const primaryVertex = cornerInfo.primaryVertex;
+            
             // Get or create corner attribute
-            var existingAttribute = getCornerAttribute(context, vertex);
+            var existingAttribute = getCornerAttribute(context, primaryVertex);
             var cornerAttribute = existingAttribute != undefined ? 
                 existingAttribute : makeSMCornerAttribute(toAttributeId(id + ("vertex" ~ i)));
             
@@ -727,7 +735,7 @@ function applyBendReliefAttributesToVertexes(context is Context, id is Id, split
             }
             else
             {
-                setAttribute(context, { "entities" : vertex, "attribute" : cornerAttribute });
+                setAttribute(context, { "entities" : primaryVertex, "attribute" : cornerAttribute });
             }
         }
         catch
