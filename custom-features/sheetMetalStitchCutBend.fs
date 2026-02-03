@@ -245,12 +245,36 @@ export const sheetMetalStitchCutBend = defineSheetMetalFeature(function(context 
 
         // After splitting, identify which segments are bridges (bends) vs stitches (rips)
         const allEdgesAfterSplit = qEntityFilter(qUnion([orderedEdgeQuery, trackedEdges]), EntityType.EDGE);
+        
+        println("=== DEBUG: After Split ===");
+        const allEdgesAfterSplitEval = evaluateQuery(context, allEdgesAfterSplit);
+        println("Total edges after split: " ~ size(allEdgesAfterSplitEval));
+        for (var i = 0; i < size(allEdgesAfterSplitEval); i += 1)
+        {
+            println("  Edge " ~ i ~ ": " ~ allEdgesAfterSplitEval[i]);
+        }
 
         // CRITICAL: Give each split segment its own unique association attribute
         // Split edges inherit the same association from the original edge
         // assignSMAttributesToNewOrSplitEntities detects this and gives each a unique association
         // This makes each mini edge independent (the core principle of this feature)
         const toUpdate = assignSMAttributesToNewOrSplitEntities(context, modelBodyQuery, initialData, id + "splitAttribution");
+        
+        println("=== DEBUG: After assignSMAttributesToNewOrSplitEntities ===");
+        println("toUpdate.modifiedEntities: " ~ toUpdate.modifiedEntities);
+        const modifiedEntitiesEval = evaluateQuery(context, toUpdate.modifiedEntities);
+        println("Number of modified entities: " ~ size(modifiedEntitiesEval));
+        println("toUpdate.deletedAttributes count: " ~ size(toUpdate.deletedAttributes));
+        
+        // Check attributes on split edges
+        for (var i = 0; i < size(allEdgesAfterSplitEval); i += 1)
+        {
+            const edgeQ = qUnion([allEdgesAfterSplitEval[i]]);
+            const assocAttrs = try silent(getSMAssociationAttributes(context, edgeQ));
+            const defAttrs = try silent(getAttributes(context, {"entities": edgeQ, "attributePattern": {} as SMAttribute}));
+            println("  Edge " ~ i ~ " association attrs: " ~ (assocAttrs == undefined ? "NONE" : size(assocAttrs)));
+            println("  Edge " ~ i ~ " definition attrs: " ~ (defAttrs == undefined ? "NONE" : size(defAttrs)));
+        }
 
         // Bridge segments are the ones that fall within the calculated domains (the bend connections)
         const bridgeSegmentEdges = identifySegmentsByEdgeMidpoints(context, allEdgesAfterSplit, path, totalLength, bridgeDomains);
@@ -261,6 +285,20 @@ export const sheetMetalStitchCutBend = defineSheetMetalFeature(function(context 
         // Validate we have both types of segments
         const bridgeSegmentCount = size(evaluateQuery(context, bridgeSegmentEdges));
         const stitchCount = size(evaluateQuery(context, stitchSegmentEdges));
+        
+        println("=== DEBUG: Segment Classification ===");
+        println("Bridge segments (bends): " ~ bridgeSegmentCount);
+        println("Stitch segments (rips): " ~ stitchCount);
+        
+        // Create debug entities to visualize the classification
+        if (bridgeSegmentCount > 0)
+        {
+            debug(context, bridgeSegmentEdges, DebugColor.GREEN);  // Bridges in GREEN
+        }
+        if (stitchCount > 0)
+        {
+            debug(context, stitchSegmentEdges, DebugColor.RED);    // Stitches in RED
+        }
 
         if (bridgeSegmentCount == 0 && stitchCount == 0)
         {
@@ -271,15 +309,39 @@ export const sheetMetalStitchCutBend = defineSheetMetalFeature(function(context 
         // Each segment already has its own unique association attribute from above
         if (bridgeSegmentCount > 0)
         {
+            println("=== DEBUG: Applying BEND attributes to " ~ bridgeSegmentCount ~ " bridges ===");
             applyJointAttributesToSegments(context, id + "bridges", bridgeSegmentEdges, existingAttribute, 
                 SMJointType.BEND, definition, isFaceBend, true);
+            
+            // Check attributes after applying bend
+            const bridgeEval = evaluateQuery(context, bridgeSegmentEdges);
+            for (var i = 0; i < size(bridgeEval); i += 1)
+            {
+                const edgeQ = qUnion([bridgeEval[i]]);
+                const jointAttr = try silent(getJointAttribute(context, edgeQ));
+                println("  Bridge " ~ i ~ " joint type: " ~ (jointAttr == undefined ? "NONE" : jointAttr.jointType.value));
+            }
         }
 
         if (stitchCount > 0)
         {
+            println("=== DEBUG: Applying RIP attributes to " ~ stitchCount ~ " stitches ===");
             applyJointAttributesToSegments(context, id + "stitches", stitchSegmentEdges, existingAttribute, 
                 SMJointType.RIP, definition, isFaceBend, false);
+            
+            // Check attributes after applying rip
+            const stitchEval = evaluateQuery(context, stitchSegmentEdges);
+            for (var i = 0; i < size(stitchEval); i += 1)
+            {
+                const edgeQ = qUnion([stitchEval[i]]);
+                const jointAttr = try silent(getJointAttribute(context, edgeQ));
+                println("  Stitch " ~ i ~ " joint type: " ~ (jointAttr == undefined ? "NONE" : jointAttr.jointType.value));
+            }
         }
+        
+        println("=== DEBUG: Before updateSheetMetalGeometry ===");
+        println("Entities to update: " ~ toUpdate.modifiedEntities);
+        println("Associated changes: " ~ qUnion([bridgeSegmentEdges, stitchSegmentEdges]));
 
         // Update sheet metal geometry with all modified edges
         updateSheetMetalGeometry(context, id, { 
@@ -287,6 +349,8 @@ export const sheetMetalStitchCutBend = defineSheetMetalFeature(function(context 
             "deletedAttributes" : toUpdate.deletedAttributes,
             "associatedChanges" : qUnion([bridgeSegmentEdges, stitchSegmentEdges])
         });
+        
+        println("=== DEBUG: After updateSheetMetalGeometry - COMPLETE ===");
     }, { 
         useDefaultRadius : true, 
         useDefaultKFactor : true 
