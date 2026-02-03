@@ -78,7 +78,7 @@ export const smSplitEdgeTester = defineSheetMetalFeature(function(context is Con
         println("=== SPLITTING EDGE AT MIDPOINT ===");
         opSplitEdges(context, id + "split", {
             "edges" : edgeQuery,
-            "parameters" : [splitParam]
+            "parameters" : [[splitParam]]  // Array of arrays of numbers
         });
         
         // Track the edges through the split
