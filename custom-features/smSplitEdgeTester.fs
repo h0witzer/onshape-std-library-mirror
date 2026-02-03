@@ -7,6 +7,7 @@ FeatureScript 2878;
  * maintaining the same attribute type on both segments.
  */
 
+import(path : "onshape/std/common.fs", version : "2878.0");
 import(path : "onshape/std/context.fs", version : "2878.0");
 import(path : "onshape/std/feature.fs", version : "2878.0");
 import(path : "onshape/std/query.fs", version : "2878.0");
@@ -60,7 +61,7 @@ export const smSplitEdgeTester = defineSheetMetalFeature(function(context is Con
         }
         
         const edgeQuery = qUnion([selectedEdges[0]]);
-        const edgeLength = evLength(context, { "edge" : edgeQuery });
+        const edgeLength = evLength(context, { "entities" : edgeQuery });
         
         println("Edge length: " ~ edgeLength);
         
@@ -143,7 +144,7 @@ export const smSplitEdgeTester = defineSheetMetalFeature(function(context is Con
         });
         
         println("=== COMPLETE ===");
-    });
+    }, {});  // Empty defaults map for defineSheetMetalFeature
 
 /**
  * Find the joint definition entity for a given selection
