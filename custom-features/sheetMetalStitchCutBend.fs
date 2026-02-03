@@ -640,29 +640,20 @@ function applyBendReliefAttributesToVertexes(context is Context, id is Id, bendE
     for (var i = 0; i < size(vertexes); i += 1)
     {
         const vertex = vertexes[i];
-        const vertexQuery = qUnion([vertex]);
         
         try
         {
             // Check if this is a valid corner vertex
-            const cornerInfo = try silent(evCornerType(context, { "vertex" : vertexQuery }));
+            const cornerInfo = try silent(evCornerType(context, { "vertex" : vertex }));
             if (cornerInfo == undefined || cornerInfo.cornerType == SMCornerType.NOT_A_CORNER)
             {
                 continue; // Skip non-corner vertexes
             }
             
             // Get or create corner attribute
-            var existingAttribute = getCornerAttribute(context, vertexQuery);
-            var cornerAttribute;
-            
-            if (existingAttribute != undefined)
-            {
-                cornerAttribute = existingAttribute;
-            }
-            else
-            {
-                cornerAttribute = makeSMCornerAttribute(toAttributeId(id + ("vertex" ~ i)));
-            }
+            var existingAttribute = getCornerAttribute(context, vertex);
+            var cornerAttribute = existingAttribute != undefined ? 
+                existingAttribute : makeSMCornerAttribute(toAttributeId(id + ("vertex" ~ i)));
             
             // Apply bend relief style from model
             if (defaultBendReliefStyle != undefined)
@@ -731,12 +722,13 @@ function applyBendReliefAttributesToVertexes(context is Context, id is Id, bendE
             }
             else
             {
-                setAttribute(context, { "entities" : vertexQuery, "attribute" : cornerAttribute });
+                setAttribute(context, { "entities" : vertex, "attribute" : cornerAttribute });
             }
         }
-        catch
+        catch (error)
         {
             // Skip vertexes that cause errors (e.g., not appropriate for corner attributes)
+            // Note: Vertex at index i failed to receive bend relief attribute
             continue;
         }
     }
