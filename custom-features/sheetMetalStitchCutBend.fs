@@ -340,19 +340,17 @@ export const sheetMetalStitchCutBend = defineSheetMetalFeature(function(context 
         }
         
         println("=== DEBUG: Before updateSheetMetalGeometry ===");
-        const allModifiedEdges = qUnion([bridgeSegmentEdges, stitchSegmentEdges]);
-        println("Entities to update: " ~ allModifiedEdges);
-        println("Associated changes: " ~ allModifiedEdges);
+        println("Entities to update: " ~ allEdgesAfterSplit);
+        println("Associated changes: " ~ allEdgesAfterSplit);
         println("Deleted attributes count: " ~ size(toUpdate.deletedAttributes));
 
         // Update sheet metal geometry with all modified edges
-        // BUG FIX: assignSMAttributesToNewOrSplitEntities returns empty modifiedEntities
-        // because split edges already have attributes when it runs (they inherit from original)
-        // So we pass the actual modified edges directly, not toUpdate.modifiedEntities
+        // Use allEdgesAfterSplit (simple query) not complex subtraction query
+        // All split edges have been modified with bend or rip attributes
         updateSheetMetalGeometry(context, id, { 
-            "entities" : allModifiedEdges,  // Use actual modified edges, not toUpdate.modifiedEntities
+            "entities" : allEdgesAfterSplit,  // All 5 split edges (simple query)
             "deletedAttributes" : toUpdate.deletedAttributes,
-            "associatedChanges" : allModifiedEdges
+            "associatedChanges" : allEdgesAfterSplit
         });
         
         println("=== DEBUG: After updateSheetMetalGeometry - COMPLETE ===");
