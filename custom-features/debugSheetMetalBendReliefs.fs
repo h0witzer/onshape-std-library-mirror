@@ -165,6 +165,28 @@ export const debugSheetMetalBendReliefs = defineSheetMetalFeature(function(conte
                     const cornerAttrPrimary = cornerInfo.primaryVertex != undefined ? 
                         try silent(getCornerAttribute(context, cornerInfo.primaryVertex)) : undefined;
                     
+                    // Debug: print what we found
+                    if (definition.showBendReliefDetails)
+                    {
+                        println("\n--- Checking vertex ---");
+                        println("  Corner type: " ~ cornerInfo.cornerType);
+                        println("  Has primaryVertex: " ~ (cornerInfo.primaryVertex != undefined));
+                        println("  cornerAttr: " ~ (cornerAttr != undefined));
+                        if (cornerAttr != undefined)
+                        {
+                            println("    cornerAttr.cornerStyle: " ~ (cornerAttr.cornerStyle != undefined));
+                            println("    cornerAttr.bendReliefScale: " ~ (cornerAttr.bendReliefScale != undefined));
+                            println("    cornerAttr.bendReliefDepthScale: " ~ (cornerAttr.bendReliefDepthScale != undefined));
+                        }
+                        println("  cornerAttrPrimary: " ~ (cornerAttrPrimary != undefined));
+                        if (cornerAttrPrimary != undefined)
+                        {
+                            println("    cornerAttrPrimary.cornerStyle: " ~ (cornerAttrPrimary.cornerStyle != undefined));
+                            println("    cornerAttrPrimary.bendReliefScale: " ~ (cornerAttrPrimary.bendReliefScale != undefined));
+                            println("    cornerAttrPrimary.bendReliefDepthScale: " ~ (cornerAttrPrimary.bendReliefDepthScale != undefined));
+                        }
+                    }
+                    
                     // Check if either the vertex or primaryVertex has corner attributes
                     const hasCornerAttr = (cornerAttr != undefined && cornerAttr.cornerStyle != undefined) ||
                                          (cornerAttrPrimary != undefined && cornerAttrPrimary.cornerStyle != undefined);
