@@ -102,17 +102,44 @@ export const smSplitEdgeTester = defineSheetMetalFeature(function(context is Con
             debug(context, qUnion([splitEdgesEval[1]]), DebugColor.BLUE);
         }
         
-        // STEP 3: Update sheet metal geometry - SIMPLE VERSION, no assignSMAttributesToNewOrSplitEntities
-        println("=== CALLING updateSheetMetalGeometry ===");
+        // CRITICAL FIX: Both split edges share the same association attribute!
+        // We need to give each segment its own unique association attribute
+        println("=== FIXING SHARED ASSOCIATION ATTRIBUTES ===");
         
-        // Create fresh query
         const splitEdgesQuery = qUnion(splitEdgesEval);
+        
+        // Remove the shared association attribute from all split edges
+        removeAttributes(context, {
+            "entities" : splitEdgesQuery,
+            "attributePattern" : {} as SMAssociationAttribute
+        });
+        
+        // Assign new unique association attributes to each segment
+        assignSMAssociationAttributes(context, splitEdgesQuery);
+        
+        // Verify they now have unique attributes
+        println("=== ATTRIBUTES AFTER FIXING ===");
+        for (var i = 0; i < size(splitEdgesEval); i += 1)
+        {
+            const segEdgeQ = qUnion([splitEdgesEval[i]]);
+            const assocAttrs = try silent(getSMAssociationAttributes(context, segEdgeQ));
+            const defAttr = try silent(getJointAttribute(context, segEdgeQ));
+            println("Segment " ~ i ~ ":");
+            println("  Association attrs: " ~ (assocAttrs == undefined ? "NONE" : size(assocAttrs)));
+            if (assocAttrs != undefined && size(assocAttrs) > 0)
+            {
+                println("  Association ID: " ~ assocAttrs[0].attributeId);
+            }
+            println("  Definition attr type: " ~ (defAttr == undefined ? "NONE" : defAttr.jointType.value));
+        }
+        
+        // STEP 3: Update sheet metal geometry
+        println("=== CALLING updateSheetMetalGeometry ===");
         
         println("Split edges query: " ~ splitEdgesQuery);
         println("Number of edges in query: " ~ size(evaluateQuery(context, splitEdgesQuery)));
         
-        // Call updateSheetMetalGeometry WITHOUT deletedAttributes
-        // This is the simplest case - just tell it to update these edges
+        // Now update - each segment has unique association
         updateSheetMetalGeometry(context, id, {
             "entities" : splitEdgesQuery,
             "associatedChanges" : splitEdgesQuery
