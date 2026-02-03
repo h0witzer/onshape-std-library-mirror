@@ -25,6 +25,7 @@ import(path : "onshape/std/modifyFillet.fs", version : "2856.0");
 import(path : "onshape/std/string.fs", version : "2856.0");
 import(path : "onshape/std/path.fs", version : "2856.0");
 import(path : "onshape/std/geomOperations.fs", version : "2856.0");
+import(path : "onshape/std/sheetMetalStart.fs", version : "2856.0");
 
 // Import spacing utilities for bridge/stitch spacing logic
 export import(path : "c51f6558b7346f455a634ff5/89645624be30e0ee0e2ad98d/8ce820287d75ed2e92412d90", version : "5d62715b8aae99049ee68c1a"); // spacingUtils.fs
