@@ -68,34 +68,35 @@ export const debugSheetMetalBendReliefs = defineSheetMetalFeature(function(conte
         }
         println("Selection type: " ~ selectionType);
         
-        // Get master/definition entities using the same approach as stitch cut bend
-        // getSMDefinitionEntities with 2 parameters returns an array
-        // We pass the selection (not owner body) to get the definition entities
-        const definitionEntitiesArray = getSMDefinitionEntities(context, smSelection);
+        // Get all entities from the sheet metal model
+        // First, query all entities from the owner body (these are in folded state for active SM)
+        const allModelEdges = qOwnedByBody(smModelBody, EntityType.EDGE);
+        const allModelFaces = qOwnedByBody(smModelBody, EntityType.FACE);
+        const allModelVertices = qOwnedByBody(smModelBody, EntityType.VERTEX);
         
-        if (size(definitionEntitiesArray) == 0)
-        {
-            println("WARNING: No definition entities found. Trying with owner body...");
-            const definitionEntitiesArray2 = getSMDefinitionEntities(context, smModelBody);
-            if (size(definitionEntitiesArray2) > 0)
-            {
-                println("Found " ~ size(definitionEntitiesArray2) ~ " entities via owner body");
-            }
-        }
+        println("\nFolded model entities:");
+        println("  Edges: " ~ size(evaluateQuery(context, allModelEdges)));
+        println("  Faces: " ~ size(evaluateQuery(context, allModelFaces)));
+        println("  Vertices: " ~ size(evaluateQuery(context, allModelVertices)));
         
-        // Convert array to query and filter by entity type
-        const definitionEntities = qUnion(definitionEntitiesArray);
-        const masterEdges = qEntityFilter(definitionEntities, EntityType.EDGE);
-        const masterFaces = qEntityFilter(definitionEntities, EntityType.FACE);
-        const masterVertices = qEntityFilter(definitionEntities, EntityType.VERTEX);
+        // Now map these to their definition/master counterparts
+        const definitionEdgesArray = getSMDefinitionEntities(context, allModelEdges);
+        const definitionFacesArray = getSMDefinitionEntities(context, allModelFaces);
+        const definitionVerticesArray = getSMDefinitionEntities(context, allModelVertices);
+        
+        // Convert arrays to queries
+        const masterEdges = qUnion(definitionEdgesArray);
+        const masterFaces = qUnion(definitionFacesArray);
+        const masterVertices = qUnion(definitionVerticesArray);
         
         const masterEdgesEval = evaluateQuery(context, masterEdges);
         const masterFacesEval = evaluateQuery(context, masterFaces);
         const masterVerticesEval = evaluateQuery(context, masterVertices);
         
-        println("Master body edges: " ~ size(masterEdgesEval));
-        println("Master body faces: " ~ size(masterFacesEval));
-        println("Master body vertices: " ~ size(masterVerticesEval));
+        println("\nMaster/definition entities:");
+        println("  Master body edges: " ~ size(masterEdgesEval));
+        println("  Master body faces: " ~ size(masterFacesEval));
+        println("  Master body vertices: " ~ size(masterVerticesEval));
         
         // Visualize master body edges in BLUE
         if (definition.showMasterEdges)
