@@ -7,6 +7,7 @@ FeatureScript 2856;
 // Imports used in interface - enums must be exported for use in preconditions
 export import(path : "onshape/std/smjointtype.gen.fs", version : "2856.0");
 export import(path : "onshape/std/smjointstyle.gen.fs", version : "2856.0");
+export import(path : "onshape/std/smreliefstyle.gen.fs", version : "2856.0");
 
 // Imports used internally
 import(path : "onshape/std/common.fs", version : "2856.0");
@@ -24,6 +25,7 @@ import(path : "onshape/std/modifyFillet.fs", version : "2856.0");
 import(path : "onshape/std/string.fs", version : "2856.0");
 import(path : "onshape/std/path.fs", version : "2856.0");
 import(path : "onshape/std/geomOperations.fs", version : "2856.0");
+
 
 // Import spacing utilities for bridge/stitch spacing logic
 export import(path : "c51f6558b7346f455a634ff5/89645624be30e0ee0e2ad98d/8ce820287d75ed2e92412d90", version : "5d62715b8aae99049ee68c1a"); // spacingUtils.fs
@@ -113,6 +115,25 @@ export const sheetMetalStitchCutBend = defineSheetMetalFeature(function(context 
         {
             throw regenError(ErrorStringEnum.SHEET_METAL_ACTIVE_JOIN_NEEDED, ["entity"]);
         }
+
+        // CRITICAL: Get model parameters BEFORE any splitting operations
+        // Once edges are split and attributes removed, we can't query the model anymore
+        const modelParams = getModelParameters(context, definition.entity);
+        
+        // Extract bend parameters
+        var defaultRadius;
+        var defaultKFactor;
+        if (definition.useDefaultRadius)
+        {
+            defaultRadius = modelParams.defaultBendRadius;
+        }
+        if (definition.useDefaultKFactor)
+        {
+            defaultKFactor = modelParams.kFactor;
+        }
+
+        // Get the model body query for later use
+        const modelBodyQuery = qOwnerBody(jointEntity);
 
         // Calculate edge length and validate using the joint definition entity
         const selectedEdgesQuery = qEntityFilter(jointEntity, EntityType.EDGE);
@@ -240,6 +261,31 @@ export const sheetMetalStitchCutBend = defineSheetMetalFeature(function(context 
 
         // After splitting, identify which segments are bridges (bends) vs stitches (rips)
         const allEdgesAfterSplit = qEntityFilter(qUnion([orderedEdgeQuery, trackedEdges]), EntityType.EDGE);
+        const allEdgesAfterSplitEval = evaluateQuery(context, allEdgesAfterSplit);
+        
+        if (size(allEdgesAfterSplitEval) == 0)
+        {
+            throw regenError("No edges found after splitting", ["entity"]);
+        }
+
+        // CRITICAL FIX: Split edges inherit BOTH association and definition attributes from parent
+        // Both must be removed and reassigned uniquely for independent segments
+        const allEdgesAfterSplitQuery = qUnion(allEdgesAfterSplitEval);
+        
+        // Step 1: Remove shared association attribute
+        removeAttributes(context, {
+            "entities" : allEdgesAfterSplitQuery,
+            "attributePattern" : {} as SMAssociationAttribute
+        });
+        
+        // Step 2: Remove shared definition attribute
+        removeAttributes(context, {
+            "entities" : allEdgesAfterSplitQuery,
+            "attributePattern" : {} as SMAttribute
+        });
+        
+        // Step 3: Assign unique association attributes to each segment
+        assignSMAssociationAttributes(context, allEdgesAfterSplitQuery);
 
         // Bridge segments are the ones that fall within the calculated domains (the bend connections)
         const bridgeSegmentEdges = identifySegmentsByEdgeMidpoints(context, allEdgesAfterSplit, path, totalLength, bridgeDomains);
@@ -256,29 +302,28 @@ export const sheetMetalStitchCutBend = defineSheetMetalFeature(function(context 
             throw regenError("No edge segments found after splitting", ["entity"]);
         }
 
-        // Create attributes for bridge segments (the bend connections)
+        // Step 4: Apply unique definition attributes (alternating BEND/RIP) to each segment
+        // Each segment now has its own unique association attribute from Step 3
         if (bridgeSegmentCount > 0)
         {
             applyJointAttributesToSegments(context, id + "bridges", bridgeSegmentEdges, existingAttribute, 
-                SMJointType.BEND, definition, isFaceBend, true);
+                SMJointType.BEND, definition, isFaceBend, true, defaultRadius, defaultKFactor);
         }
 
-        // Create attributes for stitch segments (the rip/cut segments)
         if (stitchCount > 0)
         {
             applyJointAttributesToSegments(context, id + "stitches", stitchSegmentEdges, existingAttribute, 
-                SMJointType.RIP, definition, isFaceBend, false);
+                SMJointType.RIP, definition, isFaceBend, false, undefined, undefined);
         }
-
-        // Update sheet metal geometry with all modified edges
-        const allModifiedEdges = qUnion([bridgeSegmentEdges, stitchSegmentEdges]);
+        
+        // Step 5: Update sheet metal geometry with all modified edges
         updateSheetMetalGeometry(context, id, { 
-            "entities" : allModifiedEdges,
-            "associatedChanges" : allModifiedEdges
+            "entities" : allEdgesAfterSplitQuery,
+            "associatedChanges" : allEdgesAfterSplitQuery
         });
     }, { 
         useDefaultRadius : true, 
-        useDefaultKFactor : true 
+        useDefaultKFactor : true
     });
 
 /**
@@ -304,21 +349,136 @@ function findJointDefinitionEntity(context is Context, entity is Query, entityTy
 }
 
 /**
+ * Creates a new edge bend attribute with proper metadata.
+ * Inputs:
+ *   context - Evaluation context
+ *   id - Operation ID (unique per segment)
+ *   jointEdge - Query for the joint edge
+ *   existingAttribute - Existing joint attribute to reference
+ *   radius - Bend radius
+ *   useDefaultRadius - Whether using default radius
+ *   kFactor - K-factor for bend calculation
+ *   useDefaultKFactor - Whether using default K-factor
+ * Outputs: New bend attribute with full metadata
+ */
+function createNewEdgeBendAttribute(context is Context, id is Id, jointEdge is Query,
+    existingAttribute is SMAttribute,
+    radius, useDefaultRadius is boolean,
+    kFactor, useDefaultKFactor is boolean) returns SMAttribute
+precondition
+{
+    isLength(radius);
+}
+{
+    // Always create a new bend attribute with unique ID
+    var bendAttribute = makeSMJointAttribute(toAttributeId(id));
+    bendAttribute.jointType = {
+            "value" : SMJointType.BEND,
+            "canBeEdited" : false,
+            "controllingFeatureId" : toAttributeId(id),
+            "parameterIdInFeature" : "stitchJointType"
+        };
+    
+    // Set radius with metadata
+    bendAttribute.radius = {
+            "value" : radius,
+            "canBeEdited" : true,
+            "isDefault" : useDefaultRadius,
+            "controllingFeatureId" : toAttributeId(id),
+            "parameterIdInFeature" : "radius"
+        };
+    
+    // Compute angle for this specific segment (geometry-dependent)
+    const computedAngle = try silent(bendAngle(context, id + "angle", jointEdge, radius));
+    if (computedAngle == undefined || abs(computedAngle) < TOLERANCE.zeroAngle * radian)
+    {
+        bendAttribute.angle = undefined;
+    }
+    else
+    {
+        bendAttribute.angle = { "value" : computedAngle, "canBeEdited" : false };
+    }
+    
+    // Set K-factor with metadata
+    bendAttribute.kFactor = {
+            "value" : kFactor,
+            "canBeEdited" : true,
+            "isDefault" : useDefaultKFactor,
+            "controllingFeatureId" : toAttributeId(id),
+            "parameterIdInFeature" : "kFactor"
+        };
+    
+    return bendAttribute;
+}
+
+/**
+ * Creates a new rip attribute with proper metadata.
+ * Inputs:
+ *   id - Operation ID (unique per segment)
+ *   existingAttribute - Existing joint attribute to reference
+ *   jointStyle - Rip joint style (EDGE, BUTT, BUTT2)
+ * Outputs: New rip attribute with full metadata
+ */
+function createNewRipAttribute(id is Id, existingAttribute is SMAttribute, jointStyle is SMJointStyle) returns SMAttribute
+{
+    // Always create a new rip attribute with unique ID
+    var ripAttribute = makeSMJointAttribute(toAttributeId(id));
+    ripAttribute.jointType = {
+            "value" : SMJointType.RIP,
+            "canBeEdited" : false,
+            "controllingFeatureId" : toAttributeId(id),
+            "parameterIdInFeature" : "entity"
+        };
+    
+    // Set joint style with metadata
+    ripAttribute.jointStyle = {
+            "value" : jointStyle,
+            "canBeEdited" : false,
+            "controllingFeatureId" : toAttributeId(id),
+            "parameterIdInFeature" : "entity"
+        };
+    
+    // Copy angle from existing attribute
+    ripAttribute.angle = existingAttribute.angle;
+    
+    // Copy minimal clearance if available
+    if (existingAttribute.minimalClearance != undefined)
+    {
+        ripAttribute.minimalClearance = existingAttribute.minimalClearance;
+    }
+    
+    return ripAttribute;
+}
+
+/**
+ * Creates a corner relief attribute for transitions between bend and rip segments.
+ * Uses the model's bend relief settings.
+ * Inputs:
+ *   id - Unique ID for this corner attribute
+ *   cornerStyle - Relief style from model (OBROUND, RECTANGLE, etc.)
+ *   bendReliefScale - Width scale from model
+ *   bendReliefDepthScale - Depth scale from model
+ *   extendBendRelief - Extend relief flag from model
+ * Outputs: Corner attribute with bend relief settings
+ */
+/**
  * Applies joint attributes to a set of edge segments.
- * Creates appropriate bend, rip, or tangent attributes and assigns them to the segments.
+ * Creates appropriate bend or rip attributes with unique IDs and assigns them to the segments.
  * Inputs:
  *   context - Evaluation context
  *   id - Operation ID for this attribute assignment
  *   segmentEdges - Query for edge segments to modify
- *   existingAttribute - The original joint attribute from before splitting
- *   targetJointType - The joint type to apply (BEND, RIP, or TANGENT)
+ *   existingAttribute - The original joint attribute from before splitting (for property reference)
+ *   targetJointType - The joint type to apply (BEND or RIP)
  *   definition - Feature definition with parameters
  *   isFaceBend - Whether the original joint was a face bend
  *   isBridge - Whether these are bridge segments (true = bend) or stitch segments (false = rip)
+ *   defaultRadius - Pre-fetched default radius (optional, only for BEND)
+ *   defaultKFactor - Pre-fetched default k-factor (optional, only for BEND)
  */
 function applyJointAttributesToSegments(context is Context, id is Id, segmentEdges is Query, 
     existingAttribute is SMAttribute, targetJointType is SMJointType, definition is map, 
-    isFaceBend is boolean, isBridge is boolean)
+    isFaceBend is boolean, isBridge is boolean, defaultRadius, defaultKFactor)
 {
     // Get each individual edge segment
     const edges = evaluateQuery(context, segmentEdges);
@@ -328,15 +488,7 @@ function applyJointAttributesToSegments(context is Context, id is Id, segmentEdg
         const edge = edges[i];
         const edgeQuery = qUnion([edge]);
         
-        // Get the joint attribute for this specific edge (it may have been created from the split)
-        var edgeAttribute = try silent(getJointAttribute(context, edgeQuery));
-        if (edgeAttribute == undefined)
-        {
-            // If no attribute exists yet, use the existing one as template
-            edgeAttribute = existingAttribute;
-        }
-        
-        // Create new attribute based on target joint type
+        // Create new attribute with unique ID based on target joint type
         var newAttribute;
         
         if (targetJointType == SMJointType.BEND)
@@ -350,9 +502,10 @@ function applyJointAttributesToSegments(context is Context, id is Id, segmentEdg
             var radius;
             var kFactor;
             
+            // Use pre-fetched defaults if available, otherwise get from definition
             if (definition.useDefaultRadius)
             {
-                radius = getDefaultSheetMetalRadius(context, definition.entity);
+                radius = defaultRadius;
             }
             else
             {
@@ -361,15 +514,17 @@ function applyJointAttributesToSegments(context is Context, id is Id, segmentEdg
             
             if (definition.useDefaultKFactor)
             {
-                kFactor = getDefaultSheetMetalKFactor(context, definition.entity);
+                kFactor = defaultKFactor;
             }
             else
             {
                 kFactor = definition.kFactor;
             }
             
-            newAttribute = createNewEdgeBendAttribute(context, id + ("bend" ~ toString(i)), edgeQuery, edgeAttribute,
-                radius, definition.useDefaultRadius, kFactor, definition.useDefaultKFactor);
+            // Create new BEND attribute with unique ID and full metadata
+            newAttribute = createNewEdgeBendAttribute(context, id + ("bend" ~ i), edgeQuery,
+                existingAttribute, radius, definition.useDefaultRadius,
+                kFactor, definition.useDefaultKFactor);
         }
         else if (targetJointType == SMJointType.RIP)
         {
@@ -378,17 +533,8 @@ function applyJointAttributesToSegments(context is Context, id is Id, segmentEdg
                 throw regenError("Cannot create rip attributes on face bend segments", ["entity"]);
             }
             
-            // Always use EDGE style for rip segments (stitches)
-            var ripStyle = SMJointStyle.EDGE;
-            newAttribute = createNewRipAttribute(id + ("rip" ~ toString(i)), edgeAttribute, ripStyle);
-        }
-        else if (targetJointType == SMJointType.TANGENT)
-        {
-            if (isFaceBend)
-            {
-                throw regenError("Cannot create tangent attributes on face bend segments", ["entity"]);
-            }
-            newAttribute = createNewTangentAttribute(id + ("tangent" ~ toString(i)), edgeAttribute);
+            // Create new RIP attribute with unique ID and full metadata
+            newAttribute = createNewRipAttribute(id + ("rip" ~ i), existingAttribute, SMJointStyle.EDGE);
         }
         else
         {
@@ -400,8 +546,11 @@ function applyJointAttributesToSegments(context is Context, id is Id, segmentEdg
             throw regenError("Cannot assign " ~ toString(targetJointType) ~ " attribute to edge segment", ["entity"], edgeQuery);
         }
         
-        // Replace the attribute on this edge
-        replaceSMAttribute(context, edgeAttribute, newAttribute);
+        // Set the new attribute on this edge
+        setAttribute(context, {
+            "entities" : edgeQuery,
+            "attribute" : newAttribute
+        });
     }
 }
 
@@ -431,125 +580,6 @@ function getDefaultSheetMetalKFactor(context is Context, entity is Query)
     var sheetmetalEntity = qUnion(getSMDefinitionEntities(context, entity));
     var modelParameters = getModelParameters(context, qOwnerBody(sheetmetalEntity));
     return modelParameters["k-factor"];
-}
-
-/**
- * Creates a new edge bend attribute from an existing joint attribute.
- * Inputs:
- *   context - Evaluation context
- *   id - Operation ID
- *   jointEdge - Query for the joint edge
- *   existingAttribute - Existing joint attribute to modify
- *   radius - Bend radius
- *   useDefaultRadius - Whether using default radius
- *   kFactor - K-factor for bend calculation
- *   useDefaultKFactor - Whether using default K-factor
- * Outputs: New bend attribute
- */
-function createNewEdgeBendAttribute(context is Context, id is Id, jointEdge is Query,
-    existingAttribute is SMAttribute,
-    radius, useDefaultRadius is boolean,
-    kFactor, useDefaultKFactor is boolean) returns SMAttribute
-precondition
-{
-    isLength(radius);
-}
-{
-    var bendAttribute;
-    if (existingAttribute.jointType.value != SMJointType.BEND)
-    {
-        // Creating a new bend from a non-bend joint
-        bendAttribute = makeSMJointAttribute(toAttributeId(id));
-        bendAttribute.jointType = {
-                "value" : SMJointType.BEND,
-                "canBeEdited" : false,
-                "controllingFeatureId" : toAttributeId(id),
-                "parameterIdInFeature" : "stitchJointType"
-            };
-    }
-    else
-    {
-        // Modifying an existing bend
-        bendAttribute = existingAttribute;
-    }
-
-    // Set radius
-    bendAttribute.radius = {
-            "value" : radius,
-            "canBeEdited" : true,
-            "isDefault" : useDefaultRadius,
-            "controllingFeatureId" : toAttributeId(id),
-            "parameterIdInFeature" : "radius"
-        };
-
-    // Set K-factor
-    bendAttribute.kFactor = {
-            "value" : kFactor,
-            "canBeEdited" : true,
-            "isDefault" : useDefaultKFactor,
-            "controllingFeatureId" : toAttributeId(id),
-            "parameterIdInFeature" : "kFactor"
-        };
-
-    return bendAttribute;
-}
-
-/**
- * Creates a new rip attribute from an existing joint attribute.
- * Inputs:
- *   id - Operation ID
- *   existingAttribute - Existing joint attribute to modify
- *   jointStyle - Rip joint style (EDGE, BUTT, BUTT2)
- * Outputs: New rip attribute
- */
-function createNewRipAttribute(id is Id, existingAttribute is SMAttribute, jointStyle is SMJointStyle) returns SMAttribute
-{
-    var ripAttribute;
-    if (existingAttribute.jointType.value != SMJointType.RIP)
-    {
-        // Creating a new rip from a non-rip joint
-        ripAttribute = makeSMJointAttribute(toAttributeId(id));
-        ripAttribute.jointType = {
-                "value" : SMJointType.RIP,
-                "canBeEdited" : false,
-                "controllingFeatureId" : toAttributeId(id),
-                "parameterIdInFeature" : "entity"
-            };
-    }
-    else
-    {
-        // Modifying an existing rip
-        ripAttribute = existingAttribute;
-    }
-
-    // Set joint style
-    ripAttribute.jointStyle = {
-            "value" : jointStyle,
-            "canBeEdited" : false,
-            "controllingFeatureId" : toAttributeId(id),
-            "parameterIdInFeature" : "entity"
-        };
-
-    return ripAttribute;
-}
-
-/**
- * Creates a new tangent attribute from an existing joint attribute.
- * Inputs:
- *   id - Operation ID
- *   existingAttribute - Existing joint attribute to modify
- * Outputs: New tangent attribute
- */
-function createNewTangentAttribute(id is Id, existingAttribute is SMAttribute) returns SMAttribute
-{
-    var tangentAttribute = makeSMJointAttribute(toAttributeId(id));
-    tangentAttribute.jointType = {
-            "value" : SMJointType.TANGENT,
-            "canBeEdited" : false,
-            "controllingFeatureId" : toAttributeId(id),
-            "parameterIdInFeature" : "entity"
-        };
-    return tangentAttribute;
 }
 
 /**
