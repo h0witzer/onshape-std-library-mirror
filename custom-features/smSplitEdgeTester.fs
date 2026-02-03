@@ -53,11 +53,8 @@ export const smSplitEdgeTester = defineSheetMetalFeature(function(context is Con
         println("=== INITIAL STATE ===");
         println("Joint type: " ~ existingAttribute.jointType.value);
         
-        // Store the original attribute properties for recreating
+        // Store the original attribute - we'll copy ALL its properties
         const originalJointType = existingAttribute.jointType;
-        const originalRadius = existingAttribute.radius;
-        const originalAngle = existingAttribute.angle;
-        const originalKFactor = existingAttribute.kFactor;
         
         // Get the edge and its geometry
         const selectedEdges = evaluateQuery(context, qEntityFilter(jointEntity, EntityType.EDGE));
@@ -131,21 +128,34 @@ export const smSplitEdgeTester = defineSheetMetalFeature(function(context is Con
         assignSMAssociationAttributes(context, splitEdgesQuery);
         
         // Step 4: Create new definition attributes for each segment
-        // Each segment gets its own BEND attribute with unique ID
+        // Each segment gets its own attribute (BEND or RIP) with unique ID
+        println("Creating new " ~ originalJointType.value ~ " attributes for each segment");
+        
         for (var i = 0; i < size(splitEdgesEval); i += 1)
         {
             const segmentEdge = qUnion([splitEdgesEval[i]]);
             
-            // Create a new bend attribute with unique ID for this segment
-            var newBendAttr = makeSMJointAttribute(toAttributeId(id + ("bend" ~ i)));
-            newBendAttr.jointType = originalJointType;
-            newBendAttr.radius = originalRadius;
-            newBendAttr.angle = originalAngle;
-            newBendAttr.kFactor = originalKFactor;
+            // Create a new joint attribute with unique ID for this segment
+            var newJointAttr = makeSMJointAttribute(toAttributeId(id + ("joint" ~ i)));
+            newJointAttr.jointType = originalJointType;
+            
+            // Copy properties based on joint type
+            if (originalJointType.value == SMJointType.BEND)
+            {
+                // For BEND: copy radius, angle, kFactor
+                newJointAttr.radius = existingAttribute.radius;
+                newJointAttr.angle = existingAttribute.angle;
+                newJointAttr.kFactor = existingAttribute.kFactor;
+            }
+            else if (originalJointType.value == SMJointType.RIP)
+            {
+                // For RIP: copy minimalClearance
+                newJointAttr.minimalClearance = existingAttribute.minimalClearance;
+            }
             
             setAttribute(context, {
                 "entities" : segmentEdge,
-                "attribute" : newBendAttr
+                "attribute" : newJointAttr
             });
         }
         
