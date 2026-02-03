@@ -114,6 +114,19 @@ export const sheetMetalStitchCutBend = defineSheetMetalFeature(function(context 
             throw regenError(ErrorStringEnum.SHEET_METAL_ACTIVE_JOIN_NEEDED, ["entity"]);
         }
 
+        // CRITICAL: Get default values BEFORE any splitting operations
+        // Once edges are split and attributes removed, we can't query the model anymore
+        var defaultRadius;
+        var defaultKFactor;
+        if (definition.useDefaultRadius)
+        {
+            defaultRadius = getDefaultSheetMetalRadius(context, definition.entity);
+        }
+        if (definition.useDefaultKFactor)
+        {
+            defaultKFactor = getDefaultSheetMetalKFactor(context, definition.entity);
+        }
+
         // Get the model body query for later use
         const modelBodyQuery = qOwnerBody(jointEntity);
 
@@ -289,13 +302,13 @@ export const sheetMetalStitchCutBend = defineSheetMetalFeature(function(context 
         if (bridgeSegmentCount > 0)
         {
             applyJointAttributesToSegments(context, id + "bridges", bridgeSegmentEdges, existingAttribute, 
-                SMJointType.BEND, definition, isFaceBend, true);
+                SMJointType.BEND, definition, isFaceBend, true, defaultRadius, defaultKFactor);
         }
 
         if (stitchCount > 0)
         {
             applyJointAttributesToSegments(context, id + "stitches", stitchSegmentEdges, existingAttribute, 
-                SMJointType.RIP, definition, isFaceBend, false);
+                SMJointType.RIP, definition, isFaceBend, false, undefined, undefined);
         }
         
         // Update sheet metal geometry with all modified edges
@@ -342,10 +355,12 @@ function findJointDefinitionEntity(context is Context, entity is Query, entityTy
  *   definition - Feature definition with parameters
  *   isFaceBend - Whether the original joint was a face bend
  *   isBridge - Whether these are bridge segments (true = bend) or stitch segments (false = rip)
+ *   defaultRadius - Pre-fetched default radius (optional, only for BEND)
+ *   defaultKFactor - Pre-fetched default k-factor (optional, only for BEND)
  */
 function applyJointAttributesToSegments(context is Context, id is Id, segmentEdges is Query, 
     existingAttribute is SMAttribute, targetJointType is SMJointType, definition is map, 
-    isFaceBend is boolean, isBridge is boolean)
+    isFaceBend is boolean, isBridge is boolean, defaultRadius, defaultKFactor)
 {
     // Get each individual edge segment
     const edges = evaluateQuery(context, segmentEdges);
@@ -369,9 +384,10 @@ function applyJointAttributesToSegments(context is Context, id is Id, segmentEdg
             var radius;
             var kFactor;
             
+            // Use pre-fetched defaults if available, otherwise get from definition
             if (definition.useDefaultRadius)
             {
-                radius = getDefaultSheetMetalRadius(context, definition.entity);
+                radius = defaultRadius;
             }
             else
             {
@@ -380,7 +396,7 @@ function applyJointAttributesToSegments(context is Context, id is Id, segmentEdg
             
             if (definition.useDefaultKFactor)
             {
-                kFactor = getDefaultSheetMetalKFactor(context, definition.entity);
+                kFactor = defaultKFactor;
             }
             else
             {
