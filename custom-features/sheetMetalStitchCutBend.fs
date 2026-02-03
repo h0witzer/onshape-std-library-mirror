@@ -115,6 +115,7 @@ export const sheetMetalStitchCutBend = defineSheetMetalFeature(function(context 
         }
 
         // Capture initial state of sheet metal body for attribute tracking
+        // This is needed for assignSMAttributesToNewOrSplitEntities to track which entities are new after splitting
         const modelBodyQuery = qOwnerBody(jointEntity);
         const initialData = getInitialEntitiesAndAttributes(context, modelBodyQuery);
 
@@ -245,6 +246,10 @@ export const sheetMetalStitchCutBend = defineSheetMetalFeature(function(context 
         // After splitting, identify which segments are bridges (bends) vs stitches (rips)
         const allEdgesAfterSplit = qEntityFilter(qUnion([orderedEdgeQuery, trackedEdges]), EntityType.EDGE);
 
+        // IMPORTANT: Handle split edge attribution BEFORE applying custom attributes
+        // This ensures split edges get proper association attributes for sheet metal tracking
+        const toUpdate = assignSMAttributesToNewOrSplitEntities(context, modelBodyQuery, initialData, id + "splitTracking");
+
         // Bridge segments are the ones that fall within the calculated domains (the bend connections)
         const bridgeSegmentEdges = identifySegmentsByEdgeMidpoints(context, allEdgesAfterSplit, path, totalLength, bridgeDomains);
 
@@ -275,12 +280,9 @@ export const sheetMetalStitchCutBend = defineSheetMetalFeature(function(context 
         }
 
         // Update sheet metal geometry with all modified edges
-        // Use assignSMAttributesToNewOrSplitEntities to properly handle split edge attribution
         const allModifiedEdges = qUnion([bridgeSegmentEdges, stitchSegmentEdges]);
-        const toUpdate = assignSMAttributesToNewOrSplitEntities(context, modelBodyQuery, initialData, id);
         updateSheetMetalGeometry(context, id, { 
-            "entities" : toUpdate.modifiedEntities,
-            "deletedAttributes" : toUpdate.deletedAttributes,
+            "entities" : allModifiedEdges,
             "associatedChanges" : allModifiedEdges
         });
     }, { 
