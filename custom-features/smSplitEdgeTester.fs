@@ -43,7 +43,7 @@ export const smSplitEdgeTester = defineSheetMetalFeature(function(context is Con
             throw regenError("Not a valid sheet metal joint edge");
         }
         
-        // Get existing attribute
+        // Get existing attribute to copy its properties
         var existingAttribute = getJointAttribute(context, jointEntity);
         if (existingAttribute == undefined)
         {
@@ -52,6 +52,12 @@ export const smSplitEdgeTester = defineSheetMetalFeature(function(context is Con
         
         println("=== INITIAL STATE ===");
         println("Joint type: " ~ existingAttribute.jointType.value);
+        
+        // Store the original attribute properties for recreating
+        const originalJointType = existingAttribute.jointType;
+        const originalRadius = existingAttribute.radius;
+        const originalAngle = existingAttribute.angle;
+        const originalKFactor = existingAttribute.kFactor;
         
         // Get the edge and its geometry
         const selectedEdges = evaluateQuery(context, qEntityFilter(jointEntity, EntityType.EDGE));
@@ -103,19 +109,45 @@ export const smSplitEdgeTester = defineSheetMetalFeature(function(context is Con
         }
         
         // CRITICAL FIX: Both split edges share the same association attribute!
-        // We need to give each segment its own unique association attribute
-        println("=== FIXING SHARED ASSOCIATION ATTRIBUTES ===");
+        // AND they share the same definition attribute!
+        // We need to give each segment its own unique attributes
+        println("=== FIXING SHARED ATTRIBUTES ===");
         
         const splitEdgesQuery = qUnion(splitEdgesEval);
         
-        // Remove the shared association attribute from all split edges
+        // Step 1: Remove the shared association attribute from all split edges
         removeAttributes(context, {
             "entities" : splitEdgesQuery,
             "attributePattern" : {} as SMAssociationAttribute
         });
         
-        // Assign new unique association attributes to each segment
+        // Step 2: Remove the shared definition attribute (BEND) from all split edges
+        removeAttributes(context, {
+            "entities" : splitEdgesQuery,
+            "attributePattern" : {} as SMAttribute
+        });
+        
+        // Step 3: Assign new unique association attributes to each segment
         assignSMAssociationAttributes(context, splitEdgesQuery);
+        
+        // Step 4: Create new definition attributes for each segment
+        // Each segment gets its own BEND attribute with unique ID
+        for (var i = 0; i < size(splitEdgesEval); i += 1)
+        {
+            const segmentEdge = qUnion([splitEdgesEval[i]]);
+            
+            // Create a new bend attribute with unique ID for this segment
+            var newBendAttr = makeSMJointAttribute(toAttributeId(id + ("bend" ~ i)));
+            newBendAttr.jointType = originalJointType;
+            newBendAttr.radius = originalRadius;
+            newBendAttr.angle = originalAngle;
+            newBendAttr.kFactor = originalKFactor;
+            
+            setAttribute(context, {
+                "entities" : segmentEdge,
+                "attribute" : newBendAttr
+            });
+        }
         
         // Verify they now have unique attributes
         println("=== ATTRIBUTES AFTER FIXING ===");
