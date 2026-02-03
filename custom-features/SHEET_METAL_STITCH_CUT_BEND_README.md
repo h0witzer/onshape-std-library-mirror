@@ -158,28 +158,35 @@ The feature now:
 - ✅ Bend tables show accurate geometry-specific angles
 - ✅ Modify Joint can independently change each segment
 - ✅ All properties correctly populated with full metadata
-- ✅ **Proper sheet metal attribute handling for automatic bend relief generation**
+- ⚠️ **Bend reliefs at bend/rip boundaries (under investigation)**
 
-## Bend Relief Generation
+## Current Implementation Status
 
-The feature uses the standard sheet metal attribute handling pattern to enable automatic bend relief generation:
+**What Works:**
+- ✅ Edge splitting into alternating bend/rip segments
+- ✅ Bend (bridge) segments with proper attributes (radius, angle, kFactor)
+- ✅ Rip (stitch) segments with proper attributes (jointType, angle, style)
+- ✅ Geometry generation for both bends and rips
+- ✅ Proper spacing and positioning
 
-**Pattern Implementation:**
-1. `getInitialEntitiesAndAttributes()` - Captures state before modifications
-2. `startTracking()` - Tracks changes to the model
-3. Edge splitting and attribution - Creates bend/rip alternating pattern
-4. `assignSMAttributesToNewOrSplitEntities()` - Handles complete attribute propagation
-5. `updateSheetMetalGeometry()` - Processes with full context (modified entities + deleted attributes)
+**Under Investigation:**
+- ⚠️ Bend reliefs at boundaries between bend and rip segments
 
-**Why This Works:**
-- The sheet metal system automatically generates bend reliefs at bend ends
-- Bend edges have proper attributes (radius, angle, kFactor) from the feature
-- Model has default bend relief parameters (style, scale, depth)
-- `assignSMAttributesToNewOrSplitEntities` provides complete change context
-- System identifies bend ends and applies model relief parameters automatically
+**Implementation Approach:**
+The feature directly passes attributed edges to `updateSheetMetalGeometry()`:
+```featurescript
+// Apply attributes to edge segments
+applyJointAttributesToSegments(...); // for bend segments
+applyJointAttributesToSegments(...); // for rip segments
 
-**Critical Requirement:**
-Without `assignSMAttributesToNewOrSplitEntities`, the sheet metal system lacks the complete context needed to identify all modified entities (including vertexes) and deleted attributes. This prevents automatic bend relief generation.
+// Update geometry with attributed edges
+updateSheetMetalGeometry(context, id, { 
+    "entities" : allEdgesAfterSplitQuery,
+    "associatedChanges" : allEdgesAfterSplitQuery
+});
+```
+
+This approach reliably generates the bend/rip alternating pattern. The sheet metal system processes the attributed edges and creates the appropriate geometry.
 
 ## Usage
 
