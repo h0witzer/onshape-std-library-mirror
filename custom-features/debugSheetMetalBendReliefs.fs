@@ -53,9 +53,9 @@ export const debugSheetMetalBendReliefs = defineFeature(function(context is Cont
         println("Selected sheet metal model: " ~ size(modelBodies) ~ " bodies");
         
         // Check what was actually selected
-        const selectionType = size(evaluateQuery(context, qEntityFilter(smSelection, EntityType.FACE))) > 0 ? "face" :
-                             size(evaluateQuery(context, qEntityFilter(smSelection, EntityType.EDGE))) > 0 ? "edge" :
-                             size(evaluateQuery(context, qEntityFilter(smSelection, EntityType.VERTEX))) > 0 ? "vertex" : "body";
+        const selectionType = (size(evaluateQuery(context, qEntityFilter(smSelection, EntityType.FACE))) > 0) ? "face" :
+                             (size(evaluateQuery(context, qEntityFilter(smSelection, EntityType.EDGE))) > 0) ? "edge" :
+                             (size(evaluateQuery(context, qEntityFilter(smSelection, EntityType.VERTEX))) > 0) ? "vertex" : "body";
         println("Selection type: " ~ selectionType);
         
         // Get master/definition entities from the BODY, not the selection
@@ -91,7 +91,6 @@ export const debugSheetMetalBendReliefs = defineFeature(function(context is Cont
         var bendEdges = [];
         var ripEdges = [];
         var tangentEdges = [];
-        var otherEdges = [];
         
         for (var edge in masterEdgesEval)
         {
