@@ -344,6 +344,108 @@ function findJointDefinitionEntity(context is Context, entity is Query, entityTy
 }
 
 /**
+ * Creates a new edge bend attribute with proper metadata.
+ * Inputs:
+ *   context - Evaluation context
+ *   id - Operation ID (unique per segment)
+ *   jointEdge - Query for the joint edge
+ *   existingAttribute - Existing joint attribute to reference
+ *   radius - Bend radius
+ *   useDefaultRadius - Whether using default radius
+ *   kFactor - K-factor for bend calculation
+ *   useDefaultKFactor - Whether using default K-factor
+ * Outputs: New bend attribute with full metadata
+ */
+function createNewEdgeBendAttribute(context is Context, id is Id, jointEdge is Query,
+    existingAttribute is SMAttribute,
+    radius, useDefaultRadius is boolean,
+    kFactor, useDefaultKFactor is boolean) returns SMAttribute
+precondition
+{
+    isLength(radius);
+}
+{
+    // Always create a new bend attribute with unique ID
+    var bendAttribute = makeSMJointAttribute(toAttributeId(id));
+    bendAttribute.jointType = {
+            "value" : SMJointType.BEND,
+            "canBeEdited" : false,
+            "controllingFeatureId" : toAttributeId(id),
+            "parameterIdInFeature" : "stitchJointType"
+        };
+    
+    // Set radius with metadata
+    bendAttribute.radius = {
+            "value" : radius,
+            "canBeEdited" : true,
+            "isDefault" : useDefaultRadius,
+            "controllingFeatureId" : toAttributeId(id),
+            "parameterIdInFeature" : "radius"
+        };
+    
+    // Compute angle for this specific segment (geometry-dependent)
+    const computedAngle = try silent(bendAngle(context, id + "angle", jointEdge, radius));
+    if (computedAngle == undefined || abs(computedAngle) < TOLERANCE.zeroAngle * radian)
+    {
+        bendAttribute.angle = undefined;
+    }
+    else
+    {
+        bendAttribute.angle = { "value" : computedAngle, "canBeEdited" : false };
+    }
+    
+    // Set K-factor with metadata
+    bendAttribute.kFactor = {
+            "value" : kFactor,
+            "canBeEdited" : true,
+            "isDefault" : useDefaultKFactor,
+            "controllingFeatureId" : toAttributeId(id),
+            "parameterIdInFeature" : "kFactor"
+        };
+    
+    return bendAttribute;
+}
+
+/**
+ * Creates a new rip attribute with proper metadata.
+ * Inputs:
+ *   id - Operation ID (unique per segment)
+ *   existingAttribute - Existing joint attribute to reference
+ *   jointStyle - Rip joint style (EDGE, BUTT, BUTT2)
+ * Outputs: New rip attribute with full metadata
+ */
+function createNewRipAttribute(id is Id, existingAttribute is SMAttribute, jointStyle is SMJointStyle) returns SMAttribute
+{
+    // Always create a new rip attribute with unique ID
+    var ripAttribute = makeSMJointAttribute(toAttributeId(id));
+    ripAttribute.jointType = {
+            "value" : SMJointType.RIP,
+            "canBeEdited" : false,
+            "controllingFeatureId" : toAttributeId(id),
+            "parameterIdInFeature" : "entity"
+        };
+    
+    // Set joint style with metadata
+    ripAttribute.jointStyle = {
+            "value" : jointStyle,
+            "canBeEdited" : false,
+            "controllingFeatureId" : toAttributeId(id),
+            "parameterIdInFeature" : "entity"
+        };
+    
+    // Copy angle from existing attribute
+    ripAttribute.angle = existingAttribute.angle;
+    
+    // Copy minimal clearance if available
+    if (existingAttribute.minimalClearance != undefined)
+    {
+        ripAttribute.minimalClearance = existingAttribute.minimalClearance;
+    }
+    
+    return ripAttribute;
+}
+
+/**
  * Applies joint attributes to a set of edge segments.
  * Creates appropriate bend or rip attributes with unique IDs and assigns them to the segments.
  * Inputs:
@@ -403,23 +505,10 @@ function applyJointAttributesToSegments(context is Context, id is Id, segmentEdg
                 kFactor = definition.kFactor;
             }
             
-            // Create new BEND attribute with unique ID
-            newAttribute = makeSMJointAttribute(toAttributeId(id + ("bend" ~ i)));
-            newAttribute.jointType = {value: SMJointType.BEND};
-            newAttribute.radius = radius;
-            
-            // Compute angle for this specific segment (geometry-dependent)
-            const computedAngle = try silent(bendAngle(context, id + ("bendAngle" ~ i), segmentEdge, radius));
-            if (computedAngle == undefined || abs(computedAngle) < TOLERANCE.zeroAngle * radian)
-            {
-                newAttribute.angle = undefined;
-            }
-            else
-            {
-                newAttribute.angle = { "value" : computedAngle, "canBeEdited" : false };
-            }
-            
-            newAttribute.kFactor = kFactor;
+            // Create new BEND attribute with unique ID and full metadata
+            newAttribute = createNewEdgeBendAttribute(context, id + ("bend" ~ i), edgeQuery,
+                existingAttribute, radius, definition.useDefaultRadius,
+                kFactor, definition.useDefaultKFactor);
         }
         else if (targetJointType == SMJointType.RIP)
         {
@@ -428,17 +517,8 @@ function applyJointAttributesToSegments(context is Context, id is Id, segmentEdg
                 throw regenError("Cannot create rip attributes on face bend segments", ["entity"]);
             }
             
-            // Create new RIP attribute with unique ID
-            newAttribute = makeSMJointAttribute(toAttributeId(id + ("rip" ~ i)));
-            newAttribute.jointType = {value: SMJointType.RIP};
-            newAttribute.jointStyle = {value: SMJointStyle.EDGE};  // Always use EDGE style
-            newAttribute.angle = existingAttribute.angle;  // Copy angle from original
-            
-            // Get minimal clearance from existing attribute or use default
-            if (existingAttribute.minimalClearance != undefined)
-            {
-                newAttribute.minimalClearance = existingAttribute.minimalClearance;
-            }
+            // Create new RIP attribute with unique ID and full metadata
+            newAttribute = createNewRipAttribute(id + ("rip" ~ i), existingAttribute, SMJointStyle.EDGE);
         }
         else
         {
