@@ -49,23 +49,24 @@ export const debugSheetMetalBendReliefs = defineFeature(function(context is Cont
         
         println("Selected sheet metal model: " ~ size(modelBodies) ~ " bodies");
         
-        // Get master/definition entities
-        const definitionEntities = qUnion(getSMDefinitionEntities(context, smModel));
+        // Get master/definition entities - need to query edges/faces from the solid body
+        // getSMDefinitionEntities returns arrays, we need to specify entity type
+        const definitionEdgesArray = getSMDefinitionEntities(context, smModel, EntityType.EDGE);
+        const definitionFacesArray = getSMDefinitionEntities(context, smModel, EntityType.FACE);
+        const definitionVerticesArray = getSMDefinitionEntities(context, smModel, EntityType.VERTEX);
         
-        // Get master body edges
-        const masterEdges = qEntityFilter(definitionEntities, EntityType.EDGE);
+        println("Master body edges: " ~ size(definitionEdgesArray));
+        println("Master body faces: " ~ size(definitionFacesArray));
+        println("Master body vertices: " ~ size(definitionVerticesArray));
+        
+        // Convert arrays to queries for further processing
+        const masterEdges = qUnion(definitionEdgesArray);
+        const masterFaces = qUnion(definitionFacesArray);
+        const masterVertices = qUnion(definitionVerticesArray);
+        
         const masterEdgesEval = evaluateQuery(context, masterEdges);
-        println("Master body edges: " ~ size(masterEdgesEval));
-        
-        // Get master body faces
-        const masterFaces = qEntityFilter(definitionEntities, EntityType.FACE);
         const masterFacesEval = evaluateQuery(context, masterFaces);
-        println("Master body faces: " ~ size(masterFacesEval));
-        
-        // Get master body vertices
-        const masterVertices = qEntityFilter(definitionEntities, EntityType.VERTEX);
         const masterVerticesEval = evaluateQuery(context, masterVertices);
-        println("Master body vertices: " ~ size(masterVerticesEval));
         
         // Visualize master body edges in BLUE
         if (definition.showMasterEdges)
