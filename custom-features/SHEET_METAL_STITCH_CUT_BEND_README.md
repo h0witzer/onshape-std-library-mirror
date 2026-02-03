@@ -166,10 +166,12 @@ The feature now automatically applies bend relief attributes to vertexes at the 
 
 - **Reads model parameters:** Extracts bend relief settings (style, scale, depth) from the sheet metal model
 - **Identifies boundary vertexes:** Uses `qCreatedBy()` to find vertexes created by split operations, then filters to those adjacent to both bend and rip edges
+- **Validates corner type:** Only applies bend relief to `BEND_END` corners (as required by sheet metal system)
+- **Uses primary vertex:** Extracts and uses `cornerInfo.primaryVertex` for attribute application (critical for proper association)
 - **Applies corner attributes:** Creates or updates corner attributes with the model's bend relief settings
 - **Maintains consistency:** Uses the same relief parameters defined in the sheet metal model
 
-**Implementation Note:** The feature uses `qCreatedBy(splitOperationId, EntityType.VERTEX)` to directly query vertexes created by the `opSplitEdges` operations, rather than using the deprecated `qVertexAdjacent` function. This is more efficient and accurate since these vertexes are precisely what we need to attribute.
+**Implementation Note:** The feature uses `qCreatedBy(splitOperationId, EntityType.VERTEX)` to directly query vertexes created by the `opSplitEdges` operations. It then validates that each vertex is a `BEND_END` type corner using `evCornerType()`, and uses the `primaryVertex` from the corner info for attribute application. This follows the pattern established in `sheetMetalBendRelief.fs`.
 
 This ensures that the stitch cut bend feature properly integrates with the sheet metal model's relief settings without requiring user input for conflicting parameters.
 
