@@ -132,11 +132,6 @@ export const sheetMetalStitchCutBend = defineSheetMetalFeature(function(context 
         // Get the model body query for later use
         const modelBodyQuery = qOwnerBody(jointEntity);
         
-        // Initialize tracking for sheet metal model changes
-        // This is critical for proper attribute handling
-        const initialData = getInitialEntitiesAndAttributes(context, modelBodyQuery);
-        const trackingModel = startTracking(context, modelBodyQuery);
-        
         // Get full model attribute for bend relief parameters
         const modelAttribute = getModelAttribute(context, modelBodyQuery);
 
@@ -321,25 +316,15 @@ export const sheetMetalStitchCutBend = defineSheetMetalFeature(function(context 
                 SMJointType.RIP, definition, isFaceBend, false, undefined, undefined);
         }
         
-        // Step 5: Prepare for geometry update with proper attribute handling
-        // Use assignSMAttributesToNewOrSplitEntities to properly handle split edges
-        println("\n====== STEP 5: Prepare Geometry Update ======");
-        println("Bridge segment count: " ~ bridgeSegmentCount);
-        println("Stitch count: " ~ stitchCount);
-        println("Calling assignSMAttributesToNewOrSplitEntities to handle split edge attributes...");
-        
-        const toUpdate = assignSMAttributesToNewOrSplitEntities(context, qUnion([trackingModel, modelBodyQuery]), 
-            initialData, id);
-        
-        println("Modified entities count: " ~ size(evaluateQuery(context, toUpdate.modifiedEntities)));
-        
-        // Update sheet metal geometry with properly attributed entities
-        // This should trigger automatic bend relief generation at bend ends
+        // Update sheet metal geometry with all modified edges
+        // Pass the edges directly - they already have the proper attributes assigned
         println("\n====== Calling updateSheetMetalGeometry ======");
+        println("Entities to update: allEdgesAfterSplitQuery");
+        println("Edge count: " ~ size(evaluateQuery(context, allEdgesAfterSplitQuery)));
+        
         updateSheetMetalGeometry(context, id, { 
-            "entities" : toUpdate.modifiedEntities,
-            "associatedChanges" : toUpdate.modifiedEntities,
-            "deletedAttributes" : toUpdate.deletedAttributes
+            "entities" : allEdgesAfterSplitQuery,
+            "associatedChanges" : allEdgesAfterSplitQuery
         });
         println("====== updateSheetMetalGeometry complete ======\n");
     }, { 
