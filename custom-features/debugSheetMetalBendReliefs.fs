@@ -68,24 +68,34 @@ export const debugSheetMetalBendReliefs = defineFeature(function(context is Cont
         }
         println("Selection type: " ~ selectionType);
         
-        // Get master/definition entities from the BODY, not the selection
-        // getSMDefinitionEntities returns arrays, we need to specify entity type
-        const definitionEdgesArray = getSMDefinitionEntities(context, smModelBody, EntityType.EDGE);
-        const definitionFacesArray = getSMDefinitionEntities(context, smModelBody, EntityType.FACE);
-        const definitionVerticesArray = getSMDefinitionEntities(context, smModelBody, EntityType.VERTEX);
+        // Get master/definition entities using the same approach as stitch cut bend
+        // getSMDefinitionEntities with 2 parameters returns an array
+        // We pass the selection (not owner body) to get the definition entities
+        const definitionEntitiesArray = getSMDefinitionEntities(context, smSelection);
         
-        println("Master body edges: " ~ size(definitionEdgesArray));
-        println("Master body faces: " ~ size(definitionFacesArray));
-        println("Master body vertices: " ~ size(definitionVerticesArray));
+        if (size(definitionEntitiesArray) == 0)
+        {
+            println("WARNING: No definition entities found. Trying with owner body...");
+            const definitionEntitiesArray2 = getSMDefinitionEntities(context, smModelBody);
+            if (size(definitionEntitiesArray2) > 0)
+            {
+                println("Found " ~ size(definitionEntitiesArray2) ~ " entities via owner body");
+            }
+        }
         
-        // Convert arrays to queries for further processing
-        const masterEdges = qUnion(definitionEdgesArray);
-        const masterFaces = qUnion(definitionFacesArray);
-        const masterVertices = qUnion(definitionVerticesArray);
+        // Convert array to query and filter by entity type
+        const definitionEntities = qUnion(definitionEntitiesArray);
+        const masterEdges = qEntityFilter(definitionEntities, EntityType.EDGE);
+        const masterFaces = qEntityFilter(definitionEntities, EntityType.FACE);
+        const masterVertices = qEntityFilter(definitionEntities, EntityType.VERTEX);
         
         const masterEdgesEval = evaluateQuery(context, masterEdges);
         const masterFacesEval = evaluateQuery(context, masterFaces);
         const masterVerticesEval = evaluateQuery(context, masterVertices);
+        
+        println("Master body edges: " ~ size(masterEdgesEval));
+        println("Master body faces: " ~ size(masterFacesEval));
+        println("Master body vertices: " ~ size(masterVerticesEval));
         
         // Visualize master body edges in BLUE
         if (definition.showMasterEdges)
