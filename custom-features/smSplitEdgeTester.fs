@@ -75,15 +75,17 @@ export const smSplitEdgeTester = defineSheetMetalFeature(function(context is Con
         // STEP 2: Split the edge at midpoint
         const splitParam = 0.5;  // Split at middle
         
+        // Track edges BEFORE splitting (mixInTracking pattern)
+        const trackedEdges = qUnion([edgeQuery, startTracking(context, edgeQuery)]);
+        
         println("=== SPLITTING EDGE AT MIDPOINT ===");
         opSplitEdges(context, id + "split", {
             "edges" : edgeQuery,
             "parameters" : [[splitParam]]  // Array of arrays of numbers
         });
         
-        // Track the edges through the split
-        const trackedEdges = startTracking(context, edgeQuery);
-        const edgesAfterSplit = qEntityFilter(qUnion([edgeQuery, trackedEdges]), EntityType.EDGE);
+        // Query for edges after split using the tracked query
+        const edgesAfterSplit = qEntityFilter(trackedEdges, EntityType.EDGE);
         const splitEdgesEval = evaluateQuery(context, edgesAfterSplit);
         
         println("Edges after split: " ~ size(splitEdgesEval));
