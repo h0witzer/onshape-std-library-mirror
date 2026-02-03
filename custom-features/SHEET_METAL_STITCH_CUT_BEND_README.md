@@ -184,6 +184,28 @@ This ensures that the stitch cut bend feature properly integrates with the sheet
 5. Feature splits edge into alternating bend/rip segments
 6. **Bend reliefs are automatically applied using model settings**
 
+## Debugging
+
+The feature includes comprehensive debugging output to diagnose bend relief attribution issues:
+
+**Console Output Includes:**
+- Vertex counts at each stage (created, bend-adjacent, rip-adjacent, boundary)
+- Model bend relief parameters (style, scale, depth)
+- Per-vertex processing details (corner type, whether BEND_END, success/failure)
+- Summary statistics (applied, skipped, errors)
+
+**Visual Debug Entities:**
+- GREEN points: Vertexes being processed
+- BLUE points: Primary vertexes receiving attributes
+
+Check the console output to understand:
+- Whether boundary vertexes are found
+- What corner types they have (should be BEND_END)
+- Whether attributes are successfully applied
+- Any errors during attribution
+
+See the full debugging guide in the commit message for detailed diagnostic scenarios.
+
 ## Files
 
 - `sheetMetalStitchCutBend.fs` - Production feature implementation
