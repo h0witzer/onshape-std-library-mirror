@@ -114,6 +114,10 @@ export const sheetMetalStitchCutBend = defineSheetMetalFeature(function(context 
             throw regenError(ErrorStringEnum.SHEET_METAL_ACTIVE_JOIN_NEEDED, ["entity"]);
         }
 
+        // Capture initial state of sheet metal body for attribute tracking
+        const modelBodyQuery = qOwnerBody(jointEntity);
+        const initialData = getInitialEntitiesAndAttributes(context, modelBodyQuery);
+
         // Calculate edge length and validate using the joint definition entity
         const selectedEdgesQuery = qEntityFilter(jointEntity, EntityType.EDGE);
         const selectedEdges = evaluateQuery(context, selectedEdgesQuery);
@@ -271,9 +275,12 @@ export const sheetMetalStitchCutBend = defineSheetMetalFeature(function(context 
         }
 
         // Update sheet metal geometry with all modified edges
+        // Use assignSMAttributesToNewOrSplitEntities to properly handle split edge attribution
         const allModifiedEdges = qUnion([bridgeSegmentEdges, stitchSegmentEdges]);
+        const toUpdate = assignSMAttributesToNewOrSplitEntities(context, modelBodyQuery, initialData, id);
         updateSheetMetalGeometry(context, id, { 
-            "entities" : allModifiedEdges,
+            "entities" : toUpdate.modifiedEntities,
+            "deletedAttributes" : toUpdate.deletedAttributes,
             "associatedChanges" : allModifiedEdges
         });
     }, { 
