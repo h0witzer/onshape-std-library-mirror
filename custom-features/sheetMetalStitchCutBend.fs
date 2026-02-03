@@ -7,7 +7,6 @@ FeatureScript 2856;
 // Imports used in interface - enums must be exported for use in preconditions
 export import(path : "onshape/std/smjointtype.gen.fs", version : "2856.0");
 export import(path : "onshape/std/smjointstyle.gen.fs", version : "2856.0");
-export import(path : "onshape/std/smreliefstyle.gen.fs", version : "2856.0");
 
 // Imports used internally
 import(path : "onshape/std/common.fs", version : "2856.0");
@@ -25,7 +24,6 @@ import(path : "onshape/std/modifyFillet.fs", version : "2856.0");
 import(path : "onshape/std/string.fs", version : "2856.0");
 import(path : "onshape/std/path.fs", version : "2856.0");
 import(path : "onshape/std/geomOperations.fs", version : "2856.0");
-
 
 // Import spacing utilities for bridge/stitch spacing logic
 export import(path : "c51f6558b7346f455a634ff5/89645624be30e0ee0e2ad98d/8ce820287d75ed2e92412d90", version : "5d62715b8aae99049ee68c1a"); // spacingUtils.fs
@@ -116,20 +114,17 @@ export const sheetMetalStitchCutBend = defineSheetMetalFeature(function(context 
             throw regenError(ErrorStringEnum.SHEET_METAL_ACTIVE_JOIN_NEEDED, ["entity"]);
         }
 
-        // CRITICAL: Get model parameters BEFORE any splitting operations
+        // CRITICAL: Get default values BEFORE any splitting operations
         // Once edges are split and attributes removed, we can't query the model anymore
-        const modelParams = getModelParameters(context, definition.entity);
-        
-        // Extract bend parameters
         var defaultRadius;
         var defaultKFactor;
         if (definition.useDefaultRadius)
         {
-            defaultRadius = modelParams.defaultBendRadius;
+            defaultRadius = getDefaultSheetMetalRadius(context, definition.entity);
         }
         if (definition.useDefaultKFactor)
         {
-            defaultKFactor = modelParams.kFactor;
+            defaultKFactor = getDefaultSheetMetalKFactor(context, definition.entity);
         }
 
         // Get the model body query for later use
@@ -316,14 +311,14 @@ export const sheetMetalStitchCutBend = defineSheetMetalFeature(function(context 
                 SMJointType.RIP, definition, isFaceBend, false, undefined, undefined);
         }
         
-        // Step 5: Update sheet metal geometry with all modified edges
+        // Update sheet metal geometry with all modified edges
         updateSheetMetalGeometry(context, id, { 
             "entities" : allEdgesAfterSplitQuery,
             "associatedChanges" : allEdgesAfterSplitQuery
         });
     }, { 
         useDefaultRadius : true, 
-        useDefaultKFactor : true
+        useDefaultKFactor : true 
     });
 
 /**
@@ -450,17 +445,6 @@ function createNewRipAttribute(id is Id, existingAttribute is SMAttribute, joint
     return ripAttribute;
 }
 
-/**
- * Creates a corner relief attribute for transitions between bend and rip segments.
- * Uses the model's bend relief settings.
- * Inputs:
- *   id - Unique ID for this corner attribute
- *   cornerStyle - Relief style from model (OBROUND, RECTANGLE, etc.)
- *   bendReliefScale - Width scale from model
- *   bendReliefDepthScale - Depth scale from model
- *   extendBendRelief - Extend relief flag from model
- * Outputs: Corner attribute with bend relief settings
- */
 /**
  * Applies joint attributes to a set of edge segments.
  * Creates appropriate bend or rip attributes with unique IDs and assigns them to the segments.
