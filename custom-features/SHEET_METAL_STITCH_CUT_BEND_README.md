@@ -158,22 +158,28 @@ The feature now:
 - ✅ Bend tables show accurate geometry-specific angles
 - ✅ Modify Joint can independently change each segment
 - ✅ All properties correctly populated with full metadata
-- ✅ **Bend relief attributes applied to vertexes at bend/rip boundaries**
+- ✅ **Proper sheet metal attribute handling for automatic bend relief generation**
 
-## Recent Enhancement: Automatic Bend Relief Application
+## Bend Relief Generation
 
-The feature now automatically applies bend relief attributes to vertexes at the boundaries between bend and rip segments. This enhancement:
+The feature uses the standard sheet metal attribute handling pattern to enable automatic bend relief generation:
 
-- **Reads model parameters:** Extracts bend relief settings (style, scale, depth) from the sheet metal model
-- **Identifies boundary vertexes:** Uses `qCreatedBy()` to find vertexes created by split operations, then filters to those adjacent to both bend and rip edges
-- **Validates corner type:** Only applies bend relief to `BEND_END` corners (as required by sheet metal system)
-- **Uses primary vertex:** Extracts and uses `cornerInfo.primaryVertex` for attribute application (critical for proper association)
-- **Applies corner attributes:** Creates or updates corner attributes with the model's bend relief settings
-- **Maintains consistency:** Uses the same relief parameters defined in the sheet metal model
+**Pattern Implementation:**
+1. `getInitialEntitiesAndAttributes()` - Captures state before modifications
+2. `startTracking()` - Tracks changes to the model
+3. Edge splitting and attribution - Creates bend/rip alternating pattern
+4. `assignSMAttributesToNewOrSplitEntities()` - Handles complete attribute propagation
+5. `updateSheetMetalGeometry()` - Processes with full context (modified entities + deleted attributes)
 
-**Implementation Note:** The feature uses `qCreatedBy(splitOperationId, EntityType.VERTEX)` to directly query vertexes created by the `opSplitEdges` operations. It then validates that each vertex is a `BEND_END` type corner using `evCornerType()`, and uses the `primaryVertex` from the corner info for attribute application. This follows the pattern established in `sheetMetalBendRelief.fs`.
+**Why This Works:**
+- The sheet metal system automatically generates bend reliefs at bend ends
+- Bend edges have proper attributes (radius, angle, kFactor) from the feature
+- Model has default bend relief parameters (style, scale, depth)
+- `assignSMAttributesToNewOrSplitEntities` provides complete change context
+- System identifies bend ends and applies model relief parameters automatically
 
-This ensures that the stitch cut bend feature properly integrates with the sheet metal model's relief settings without requiring user input for conflicting parameters.
+**Critical Requirement:**
+Without `assignSMAttributesToNewOrSplitEntities`, the sheet metal system lacks the complete context needed to identify all modified entities (including vertexes) and deleted attributes. This prevents automatic bend relief generation.
 
 ## Usage
 
