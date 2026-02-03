@@ -18,7 +18,7 @@ If both segments share the **same definition attribute object** (same attribute 
 3. **Spurious geometry** - Bend lines appear at origin in flat pattern view
 4. **Failed disambiguation** - Sheet metal system can't properly track separate segments
 
-## The Solution
+## Complete Solution
 
 After splitting, you MUST:
 
@@ -43,31 +43,56 @@ removeAttributes(context, {
 assignSMAssociationAttributes(context, splitEdgesQuery);
 ```
 
-### Step 4: Create Unique Definition Attributes
+### Step 4: Create Unique Definition Attributes (Copy ALL Properties!)
 ```featurescript
 // Store original properties first
 const originalJointType = existingAttribute.jointType;
-const originalRadius = existingAttribute.radius;
-const originalAngle = existingAttribute.angle;
-const originalKFactor = existingAttribute.kFactor;
 
 // Create new attribute for each segment with unique ID
 for (var i = 0; i < size(splitEdgesEval); i += 1)
 {
     const segmentEdge = qUnion([splitEdgesEval[i]]);
     
-    var newBendAttr = makeSMJointAttribute(toAttributeId(id + ("bend" ~ i)));
-    newBendAttr.jointType = originalJointType;
-    newBendAttr.radius = originalRadius;
-    newBendAttr.angle = originalAngle;
-    newBendAttr.kFactor = originalKFactor;
+    var newJointAttr = makeSMJointAttribute(toAttributeId(id + ("joint" ~ i)));
+    newJointAttr.jointType = originalJointType;
+    
+    if (originalJointType.value == SMJointType.BEND)
+    {
+        // Copy ALL BEND properties
+        newJointAttr.radius = existingAttribute.radius;
+        newJointAttr.angle = existingAttribute.angle;
+        newJointAttr.kFactor = existingAttribute.kFactor;
+    }
+    else if (originalJointType.value == SMJointType.RIP)
+    {
+        // Copy ALL RIP properties
+        newJointAttr.jointStyle = existingAttribute.jointStyle;
+        newJointAttr.angle = existingAttribute.angle;
+        newJointAttr.minimalClearance = existingAttribute.minimalClearance;
+    }
     
     setAttribute(context, {
         "entities" : segmentEdge,
-        "attribute" : newBendAttr
+        "attribute" : newJointAttr
     });
 }
 ```
+
+## Joint Type Properties Reference
+
+### BEND Properties:
+- `jointType` = SMJointType.BEND
+- `radius` - Bend radius
+- `angle` - Bend angle
+- `kFactor` - K-factor for bend calculation
+
+### RIP Properties:
+- `jointType` = SMJointType.RIP
+- `jointStyle` - SMJointStyle.EDGE, SMJointStyle.FACE, etc.
+- `angle` - Rip angle
+- `minimalClearance` - Gap clearance
+
+**Important:** Both have an `angle` property! Make sure to copy ALL properties for each type.
 
 ## Why Both Are Needed
 
