@@ -407,7 +407,18 @@ function applyJointAttributesToSegments(context is Context, id is Id, segmentEdg
             newAttribute = makeSMJointAttribute(toAttributeId(id + ("bend" ~ i)));
             newAttribute.jointType = {value: SMJointType.BEND};
             newAttribute.radius = radius;
-            newAttribute.angle = existingAttribute.angle;  // Copy angle from original
+            
+            // Compute angle for this specific segment (geometry-dependent)
+            const computedAngle = try silent(bendAngle(context, id + ("bendAngle" ~ i), segmentEdge, radius));
+            if (computedAngle == undefined || abs(computedAngle) < TOLERANCE.zeroAngle * radian)
+            {
+                newAttribute.angle = undefined;
+            }
+            else
+            {
+                newAttribute.angle = { "value" : computedAngle, "canBeEdited" : false };
+            }
+            
             newAttribute.kFactor = kFactor;
         }
         else if (targetJointType == SMJointType.RIP)
