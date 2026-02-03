@@ -114,6 +114,11 @@ export const sheetMetalStitchCutBend = defineSheetMetalFeature(function(context 
             throw regenError(ErrorStringEnum.SHEET_METAL_ACTIVE_JOIN_NEEDED, ["entity"]);
         }
 
+        // Capture initial state before splitting edges
+        // This allows assignSMAttributesToNewOrSplitEntities to detect which entities are new
+        const modelBodyQuery = qOwnerBody(jointEntity);
+        const initialData = getInitialEntitiesAndAttributes(context, modelBodyQuery);
+
         // Calculate edge length and validate using the joint definition entity
         const selectedEdgesQuery = qEntityFilter(jointEntity, EntityType.EDGE);
         const selectedEdges = evaluateQuery(context, selectedEdgesQuery);
@@ -241,6 +246,12 @@ export const sheetMetalStitchCutBend = defineSheetMetalFeature(function(context 
         // After splitting, identify which segments are bridges (bends) vs stitches (rips)
         const allEdgesAfterSplit = qEntityFilter(qUnion([orderedEdgeQuery, trackedEdges]), EntityType.EDGE);
 
+        // CRITICAL: Give each split segment its own unique association attribute
+        // Split edges inherit the same association from the original edge
+        // assignSMAttributesToNewOrSplitEntities detects this and gives each a unique association
+        // This makes each mini edge independent (the core principle of this feature)
+        const toUpdate = assignSMAttributesToNewOrSplitEntities(context, modelBodyQuery, initialData, id + "splitAttribution");
+
         // Bridge segments are the ones that fall within the calculated domains (the bend connections)
         const bridgeSegmentEdges = identifySegmentsByEdgeMidpoints(context, allEdgesAfterSplit, path, totalLength, bridgeDomains);
 
@@ -256,9 +267,8 @@ export const sheetMetalStitchCutBend = defineSheetMetalFeature(function(context 
             throw regenError("No edge segments found after splitting", ["entity"]);
         }
 
-        // Apply definition attributes to segments (following Modify Joint pattern)
-        // Split edges inherit the original edge's association attribute - leave it intact!
-        // Only modify the definition attributes (joint type: bend vs rip)
+        // Now apply definition attributes (bend vs rip) to each independent mini edge
+        // Each segment already has its own unique association attribute from above
         if (bridgeSegmentCount > 0)
         {
             applyJointAttributesToSegments(context, id + "bridges", bridgeSegmentEdges, existingAttribute, 
@@ -272,12 +282,10 @@ export const sheetMetalStitchCutBend = defineSheetMetalFeature(function(context 
         }
 
         // Update sheet metal geometry with all modified edges
-        // The split edges share the same association attribute (inherited from original edge)
-        // This is correct - they're all part of the same logical joint chain
-        const allModifiedEdges = qUnion([bridgeSegmentEdges, stitchSegmentEdges]);
         updateSheetMetalGeometry(context, id, { 
-            "entities" : allModifiedEdges,
-            "associatedChanges" : allModifiedEdges
+            "entities" : toUpdate.modifiedEntities,
+            "deletedAttributes" : toUpdate.deletedAttributes,
+            "associatedChanges" : qUnion([bridgeSegmentEdges, stitchSegmentEdges])
         });
     }, { 
         useDefaultRadius : true, 
