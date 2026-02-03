@@ -38,9 +38,12 @@ export const debugSheetMetalBendReliefs = defineFeature(function(context is Cont
     {
         println("\n========== DEBUG SHEET METAL BEND RELIEFS ==========");
         
-        // Get the sheet metal model
-        const smModel = definition.sheetMetalPart;
-        const modelBodies = evaluateQuery(context, smModel);
+        // Get the sheet metal model - could be a body, face, or edge selection
+        const smSelection = definition.sheetMetalPart;
+        
+        // Get the owner body to ensure we analyze the whole model
+        const smModelBody = qOwnerBody(smSelection);
+        const modelBodies = evaluateQuery(context, smModelBody);
         
         if (size(modelBodies) == 0)
         {
@@ -49,11 +52,17 @@ export const debugSheetMetalBendReliefs = defineFeature(function(context is Cont
         
         println("Selected sheet metal model: " ~ size(modelBodies) ~ " bodies");
         
-        // Get master/definition entities - need to query edges/faces from the solid body
+        // Check what was actually selected
+        const selectionType = size(evaluateQuery(context, qEntityFilter(smSelection, EntityType.FACE))) > 0 ? "face" :
+                             size(evaluateQuery(context, qEntityFilter(smSelection, EntityType.EDGE))) > 0 ? "edge" :
+                             size(evaluateQuery(context, qEntityFilter(smSelection, EntityType.VERTEX))) > 0 ? "vertex" : "body";
+        println("Selection type: " ~ selectionType);
+        
+        // Get master/definition entities from the BODY, not the selection
         // getSMDefinitionEntities returns arrays, we need to specify entity type
-        const definitionEdgesArray = getSMDefinitionEntities(context, smModel, EntityType.EDGE);
-        const definitionFacesArray = getSMDefinitionEntities(context, smModel, EntityType.FACE);
-        const definitionVerticesArray = getSMDefinitionEntities(context, smModel, EntityType.VERTEX);
+        const definitionEdgesArray = getSMDefinitionEntities(context, smModelBody, EntityType.EDGE);
+        const definitionFacesArray = getSMDefinitionEntities(context, smModelBody, EntityType.FACE);
+        const definitionVerticesArray = getSMDefinitionEntities(context, smModelBody, EntityType.VERTEX);
         
         println("Master body edges: " ~ size(definitionEdgesArray));
         println("Master body faces: " ~ size(definitionFacesArray));
@@ -132,8 +141,18 @@ export const debugSheetMetalBendReliefs = defineFeature(function(context is Cont
                 
                 if (cornerInfo != undefined && cornerInfo.cornerType != SMCornerType.NOT_A_CORNER)
                 {
-                    // Get corner attribute
+                    // Get corner attribute - try multiple approaches
                     const cornerAttr = try silent(getCornerAttribute(context, vertex));
+                    const cornerAttrPrimary = cornerInfo.primaryVertex != undefined ? 
+                        try silent(getCornerAttribute(context, cornerInfo.primaryVertex)) : undefined;
+                    
+                    // Check if either the vertex or primaryVertex has corner attributes
+                    const hasCornerAttr = (cornerAttr != undefined && cornerAttr.cornerStyle != undefined) ||
+                                         (cornerAttrPrimary != undefined && cornerAttrPrimary.cornerStyle != undefined);
+                    
+                    // Use whichever attribute exists
+                    const activeCornerAttr = (cornerAttr != undefined && cornerAttr.cornerStyle != undefined) ? 
+                        cornerAttr : cornerAttrPrimary;
                     
                     // Categorize by corner type
                     if (cornerInfo.cornerType == SMCornerType.BEND_END)
@@ -141,27 +160,47 @@ export const debugSheetMetalBendReliefs = defineFeature(function(context is Cont
                         bendEndCorners += 1;
                         
                         // Check for bend relief
-                        if (cornerAttr != undefined && cornerAttr.cornerStyle != undefined)
+                        if (hasCornerAttr)
                         {
                             cornersWithReliefs += 1;
                             debug(context, vertex, DebugColor.RED);
+                            if (cornerInfo.primaryVertex != undefined && cornerInfo.primaryVertex != vertex)
+                            {
+                                debug(context, cornerInfo.primaryVertex, DebugColor.RED);
+                            }
                             
                             if (definition.showBendReliefDetails)
                             {
                                 println("\n  BEND_END corner with relief:");
-                                println("    Relief style: " ~ cornerAttr.cornerStyle.value);
-                                if (cornerAttr.bendReliefScale != undefined)
-                                    println("    Relief scale: " ~ cornerAttr.bendReliefScale.value);
-                                if (cornerAttr.bendReliefDepthScale != undefined)
-                                    println("    Relief depth scale: " ~ cornerAttr.bendReliefDepthScale.value);
-                                if (cornerAttr.bendReliefDepth != undefined)
-                                    println("    Relief depth: " ~ cornerAttr.bendReliefDepth.value);
+                                println("    Vertex has attr: " ~ (cornerAttr != undefined && cornerAttr.cornerStyle != undefined));
+                                println("    Primary vertex has attr: " ~ (cornerAttrPrimary != undefined && cornerAttrPrimary.cornerStyle != undefined));
+                                if (activeCornerAttr != undefined)
+                                {
+                                    println("    Relief style: " ~ activeCornerAttr.cornerStyle.value);
+                                    if (activeCornerAttr.bendReliefScale != undefined)
+                                        println("    Relief scale: " ~ activeCornerAttr.bendReliefScale.value);
+                                    if (activeCornerAttr.bendReliefDepthScale != undefined)
+                                        println("    Relief depth scale: " ~ activeCornerAttr.bendReliefDepthScale.value);
+                                    if (activeCornerAttr.bendReliefDepth != undefined)
+                                        println("    Relief depth: " ~ activeCornerAttr.bendReliefDepth.value);
+                                }
                             }
                         }
                         else
                         {
                             // BEND_END without relief
                             debug(context, vertex, DebugColor.ORANGE);
+                            if (cornerInfo.primaryVertex != undefined && cornerInfo.primaryVertex != vertex)
+                            {
+                                debug(context, cornerInfo.primaryVertex, DebugColor.ORANGE);
+                            }
+                            
+                            if (definition.showBendReliefDetails)
+                            {
+                                println("\n  BEND_END corner WITHOUT relief:");
+                                println("    Vertex has attr: " ~ (cornerAttr != undefined));
+                                println("    Primary vertex has attr: " ~ (cornerAttrPrimary != undefined));
+                            }
                         }
                     }
                     else if (cornerInfo.cornerType == SMCornerType.OPEN_CORNER)
