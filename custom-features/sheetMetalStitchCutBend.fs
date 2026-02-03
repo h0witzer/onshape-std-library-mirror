@@ -343,21 +343,27 @@ export const sheetMetalStitchCutBend = defineSheetMetalFeature(function(context 
         // The allEdgesAfterSplit query contains tracking references to old entity IDs
         // We need to evaluate it and create a new query with the actual current entities
         const splitEdgesEvaluated = evaluateQuery(context, allEdgesAfterSplit);
-        const splitEdgesQuery = qUnion(splitEdgesEvaluated);
+        
+        // Create query explicitly filtered by model body ownership
+        // This ensures updateSheetMetalGeometry recognizes them as belonging to the correct body
+        const splitEdgesFromModelBody = qIntersection([
+            qOwnedByBody(modelBodyQuery),
+            qUnion(splitEdgesEvaluated)
+        ]);
         
         println("=== DEBUG: Before updateSheetMetalGeometry ===");
         println("Number of split edges: " ~ size(splitEdgesEvaluated));
-        println("Entities to update: " ~ splitEdgesQuery);
-        println("Associated changes: " ~ splitEdgesQuery);
+        println("Entities to update: " ~ splitEdgesFromModelBody);
+        println("Associated changes: " ~ splitEdgesFromModelBody);
         println("Deleted attributes count: " ~ size(toUpdate.deletedAttributes));
 
         // Update sheet metal geometry with all modified edges
-        // Use fresh query created from evaluated entities, not tracking query
+        // Use query explicitly filtered by model body ownership
         // All split edges have been modified with bend or rip attributes
         updateSheetMetalGeometry(context, id, { 
-            "entities" : splitEdgesQuery,  // Fresh query with actual split edge transient IDs
+            "entities" : splitEdgesFromModelBody,  // Explicitly from model body
             "deletedAttributes" : toUpdate.deletedAttributes,
-            "associatedChanges" : splitEdgesQuery
+            "associatedChanges" : splitEdgesFromModelBody
         });
         
         println("=== DEBUG: After updateSheetMetalGeometry - COMPLETE ===");
