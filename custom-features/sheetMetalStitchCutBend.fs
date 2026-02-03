@@ -256,35 +256,25 @@ export const sheetMetalStitchCutBend = defineSheetMetalFeature(function(context 
             throw regenError("No edge segments found after splitting", ["entity"]);
         }
 
-        // Create attributes for bridge segments (the bend connections)
-        // Do this BEFORE removing association attributes so we can read model parameters
+        // Apply definition attributes to segments (following Modify Joint pattern)
+        // Split edges inherit the original edge's association attribute - leave it intact!
+        // Only modify the definition attributes (joint type: bend vs rip)
         if (bridgeSegmentCount > 0)
         {
             applyJointAttributesToSegments(context, id + "bridges", bridgeSegmentEdges, existingAttribute, 
                 SMJointType.BEND, definition, isFaceBend, true);
         }
 
-        // Create attributes for stitch segments (the rip/cut segments)
         if (stitchCount > 0)
         {
             applyJointAttributesToSegments(context, id + "stitches", stitchSegmentEdges, existingAttribute, 
                 SMJointType.RIP, definition, isFaceBend, false);
         }
 
-        // NOW remove inherited association attributes
-        // Split edges inherit the original edge's association attribute, which all segments share
-        // Remove these inherited association attributes so each segment can get a unique one
-        const allModifiedEdges = qUnion([bridgeSegmentEdges, stitchSegmentEdges]);
-        removeAttributes(context, { 
-            "entities" : allModifiedEdges, 
-            "attributePattern" : {} as SMAssociationAttribute 
-        });
-
-        // Assign new unique association attributes to all split edges
-        // Each split segment needs its own association attribute for proper sheet metal tracking
-        assignSMAssociationAttributes(context, allModifiedEdges);
-
         // Update sheet metal geometry with all modified edges
+        // The split edges share the same association attribute (inherited from original edge)
+        // This is correct - they're all part of the same logical joint chain
+        const allModifiedEdges = qUnion([bridgeSegmentEdges, stitchSegmentEdges]);
         updateSheetMetalGeometry(context, id, { 
             "entities" : allModifiedEdges,
             "associatedChanges" : allModifiedEdges
