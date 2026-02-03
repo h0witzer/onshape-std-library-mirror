@@ -25,7 +25,7 @@ import(path : "onshape/std/modifyFillet.fs", version : "2856.0");
 import(path : "onshape/std/string.fs", version : "2856.0");
 import(path : "onshape/std/path.fs", version : "2856.0");
 import(path : "onshape/std/geomOperations.fs", version : "2856.0");
-import(path : "onshape/std/sheetMetalStart.fs", version : "2856.0");
+
 
 // Import spacing utilities for bridge/stitch spacing logic
 export import(path : "c51f6558b7346f455a634ff5/89645624be30e0ee0e2ad98d/8ce820287d75ed2e92412d90", version : "5d62715b8aae99049ee68c1a"); // spacingUtils.fs
@@ -79,11 +79,8 @@ export const sheetMetalStitchCutBend = defineSheetMetalFeature(function(context 
 
         // Use centralized spacing predicate from spacingUtils
         curvePatternSpacingPredicate(definition);
-
-        // Bend relief parameters for corners between bends and rips
     }
     {
-        // Extract model's bend relief settings to use automatically
         // Validate sheet metal context
         checkNotInFeaturePattern(context, definition.entity, ErrorStringEnum.SHEET_METAL_NO_FEATURE_PATTERN);
 
@@ -134,12 +131,6 @@ export const sheetMetalStitchCutBend = defineSheetMetalFeature(function(context 
         {
             defaultKFactor = modelParams.kFactor;
         }
-        
-        // Extract bend relief parameters from model
-        const modelCornerStyle = modelParams.defaultBendReliefStyle;
-        const modelBendReliefScale = modelParams.defaultBendReliefScale;
-        const modelBendReliefDepthScale = modelParams.bendReliefDepthScale;
-        const modelExtendBendRelief = modelParams.extendBendRelief;
 
         // Get the model body query for later use
         const modelBodyQuery = qOwnerBody(jointEntity);
@@ -325,76 +316,11 @@ export const sheetMetalStitchCutBend = defineSheetMetalFeature(function(context 
                 SMJointType.RIP, definition, isFaceBend, false, undefined, undefined);
         }
         
-        // Step 5: Apply bend relief attributes at corners between bends and rips (using model defaults)
-        if (bridgeSegmentCount > 0 && stitchCount > 0)
-        {
-            // Find corner vertices at transitions between bridge (bend) and stitch (rip) segments
-            const bridgeVertices = qAdjacent(bridgeSegmentEdges, AdjacencyType.VERTEX, EntityType.VERTEX);
-            const stitchVertices = qAdjacent(stitchSegmentEdges, AdjacencyType.VERTEX, EntityType.VERTEX);
-            const cornerVertices = qIntersection([bridgeVertices, stitchVertices]);
-            
-            const cornerVerticesArray = evaluateQuery(context, cornerVertices);
-            
-            println("=== BEND RELIEF DEBUG ===");
-            println("Model corner style: " ~ modelCornerStyle);
-            println("Model bend relief scale: " ~ modelBendReliefScale);
-            println("Model bend relief depth scale: " ~ modelBendReliefDepthScale);
-            println("Model extend bend relief: " ~ modelExtendBendRelief);
-            println("Number of corner vertices: " ~ size(cornerVerticesArray));
-            
-            if (size(cornerVerticesArray) > 0)
-            {
-                // Create and apply corner relief attributes using model settings
-                for (var i = 0; i < size(cornerVerticesArray); i += 1)
-                {
-                    const cornerVertex = qUnion([cornerVerticesArray[i]]);
-                    const cornerAttribute = createCornerReliefAttribute(
-                        id + ("corner" ~ i), 
-                        modelCornerStyle,
-                        modelBendReliefScale,
-                        modelBendReliefDepthScale,
-                        modelExtendBendRelief
-                    );
-                    setAttribute(context, { "entities" : cornerVertex, "attribute" : cornerAttribute });
-                    
-                    println("Corner " ~ i ~ ": " ~ cornerVertex);
-                    if (cornerAttribute.cornerStyle != undefined)
-                        println("  Attribute cornerStyle: " ~ cornerAttribute.cornerStyle);
-                    if (cornerAttribute.bendReliefScale != undefined)
-                        println("  Attribute bendReliefScale: " ~ cornerAttribute.bendReliefScale);
-                    if (cornerAttribute.bendReliefDepthScale != undefined)
-                        println("  Attribute bendReliefDepthScale: " ~ cornerAttribute.bendReliefDepthScale);
-                    if (cornerAttribute.extendBendRelief != undefined)
-                        println("  Attribute extendBendRelief: " ~ cornerAttribute.extendBendRelief);
-                }
-                
-                println("Entities for geometry update: " ~ qUnion([allEdgesAfterSplitQuery, cornerVertices]));
-                
-                // Include corners in the update
-                updateSheetMetalGeometry(context, id, { 
-                    "entities" : qUnion([allEdgesAfterSplitQuery, cornerVertices]),
-                    "associatedChanges" : qUnion([allEdgesAfterSplitQuery, cornerVertices])
-                });
-            }
-            else
-            {
-                println("No corners found, just updating edges");
-                // No corners found, just update edges
-                updateSheetMetalGeometry(context, id, { 
-                    "entities" : allEdgesAfterSplitQuery,
-                    "associatedChanges" : allEdgesAfterSplitQuery
-                });
-            }
-        }
-        else
-        {
-            println("No corners needed (no bridge/stitch transitions), updating edges only");
-            // Update sheet metal geometry with all modified edges (no corner relief)
-            updateSheetMetalGeometry(context, id, { 
-                "entities" : allEdgesAfterSplitQuery,
-                "associatedChanges" : allEdgesAfterSplitQuery
-            });
-        }
+        // Step 5: Update sheet metal geometry with all modified edges
+        updateSheetMetalGeometry(context, id, { 
+            "entities" : allEdgesAfterSplitQuery,
+            "associatedChanges" : allEdgesAfterSplitQuery
+        });
     }, { 
         useDefaultRadius : true, 
         useDefaultKFactor : true
@@ -535,51 +461,6 @@ function createNewRipAttribute(id is Id, existingAttribute is SMAttribute, joint
  *   extendBendRelief - Extend relief flag from model
  * Outputs: Corner attribute with bend relief settings
  */
-function createCornerReliefAttribute(id is Id, cornerStyle, bendReliefScale, bendReliefDepthScale, extendBendRelief) returns SMAttribute
-{
-    var cornerAttribute = makeSMCornerAttribute(toAttributeId(id));
-    
-    // Set corner style from model
-    if (cornerStyle != undefined)
-    {
-        cornerAttribute.cornerStyle = {
-                "value" : cornerStyle.value,
-                "canBeEdited" : false
-            };
-    }
-    
-    // Set scale parameters for RECTANGLE and OBROUND styles
-    if (cornerStyle != undefined && 
-        (cornerStyle.value == SMReliefStyle.RECTANGLE || cornerStyle.value == SMReliefStyle.OBROUND))
-    {
-        if (bendReliefDepthScale != undefined)
-        {
-            cornerAttribute.bendReliefDepthScale = {
-                    "value" : bendReliefDepthScale.value,
-                    "canBeEdited" : false
-                };
-        }
-        if (bendReliefScale != undefined)
-        {
-            cornerAttribute.bendReliefScale = {
-                    "value" : bendReliefScale.value,
-                    "canBeEdited" : false
-                };
-        }
-    }
-    
-    // Set extend bend relief flag from model (not applicable for TEAR style)
-    if (cornerStyle != undefined && cornerStyle.value != SMReliefStyle.TEAR && extendBendRelief != undefined)
-    {
-        cornerAttribute.extendBendRelief = {
-                "value" : extendBendRelief.value,
-                "canBeEdited" : false
-            };
-    }
-    
-    return cornerAttribute;
-}
-
 /**
  * Applies joint attributes to a set of edge segments.
  * Creates appropriate bend or rip attributes with unique IDs and assigns them to the segments.
