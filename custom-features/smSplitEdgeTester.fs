@@ -149,7 +149,9 @@ export const smSplitEdgeTester = defineSheetMetalFeature(function(context is Con
             }
             else if (originalJointType.value == SMJointType.RIP)
             {
-                // For RIP: copy minimalClearance
+                // For RIP: copy jointStyle, angle, minimalClearance
+                newJointAttr.jointStyle = existingAttribute.jointStyle;
+                newJointAttr.angle = existingAttribute.angle;
                 newJointAttr.minimalClearance = existingAttribute.minimalClearance;
             }
             
