@@ -35,58 +35,59 @@ export const queryPattern = defineFeature(function(context is Context, id is Id,
         var successCount = 0;
         var failureCount = 0;
 
-        forEachEntity(context, id + "featurePattern", targetQueries, function(targetQuery is Query, id is Id)
+        // Manually iterate to allow tracking of successes and failures
+        const evaluatedQueries = evaluateQuery(context, targetQueries);
+        for (var i = 0; i < size(evaluatedQueries); i += 1)
+        {
+            const targetQuery = evaluatedQueries[i];
+            const entityId = id + "featurePattern" + unstableIdComponent(i);
+
+            setQueryVariable(context, definition.seedQueryVariableName, targetQuery);
+
+            // Inline implementation of callSubfeatureAndProcessStatus pattern
+            // Cannot use callSubfeatureAndProcessStatus directly because applyPattern requires
+            // a 4th parameter (transform) that doesn't fit the standard 3-parameter signature
+            const patternId = entityId + "pattern";
+            var hadError = false;
+            try
             {
+                applyPattern(context, patternId, {
+                            "patternType" : PatternType.FEATURE,
+                            "instanceFunction" : definition.featuresToLoop,
+                            "fullFeaturePattern" : true,
+                            "transforms" : [identityTransform()],
+                            "instanceNames" : ["instanceName"],
+                            "sketchPatternInfo" : "Some sketch pattern info" //hidden parameter of new feature pattern
+                        }, identityTransform());
+            }
+            catch (e)
+            {
+                hadError = true;
+            }
 
-                setQueryVariable(context, definition.seedQueryVariableName, targetQuery);
+            // Process any subfeature status and propagate errors to the top-level feature
+            // Include the target query as an additional error entity for highlighting
+            processSubfeatureStatus(context, id, {
+                        "subfeatureId" : patternId,
+                        "propagateErrorDisplay" : true,
+                        "additionalErrorEntities" : targetQuery
+                    });
 
-                // Inline implementation of callSubfeatureAndProcessStatus pattern
-                // Cannot use callSubfeatureAndProcessStatus directly because applyPattern requires
-                // a 4th parameter (transform) that doesn't fit the standard 3-parameter signature
-                const patternId = id + "pattern";
-                var thrownError;
-                var hadError = false;
-                try
-                {
-                    applyPattern(context, patternId, {
-                                "patternType" : PatternType.FEATURE,
-                                "instanceFunction" : definition.featuresToLoop,
-                                "fullFeaturePattern" : true,
-                                "transforms" : [identityTransform()],
-                                "instanceNames" : ["instanceName"],
-                                "sketchPatternInfo" : "Some sketch pattern info" //hidden parameter of new feature pattern
-                            }, identityTransform());
-                }
-                catch (e)
-                {
-                    thrownError = e;
-                    hadError = true;
-                }
-
-                // Process any subfeature status and propagate errors to the top-level feature
-                // Include the target query as an additional error entity for highlighting
-                processSubfeatureStatus(context, id, {
-                            "subfeatureId" : patternId,
-                            "propagateErrorDisplay" : true,
-                            "additionalErrorEntities" : targetQuery
-                        });
-
-                // Check if an error occurred for this entity
-                const featureError = getFeatureError(context, id);
-                if (featureError != undefined || hadError)
-                {
-                    failedEntities = append(failedEntities, targetQuery);
-                    failureCount += 1;
-                    
-                    // Clear the error so we can continue processing other entities
-                    clearFeatureStatus(context, id, {});
-                }
-                else
-                {
-                    successCount += 1;
-                }
-
-            });
+            // Check if an error occurred for this entity
+            const featureError = getFeatureError(context, id);
+            if (featureError != undefined || hadError)
+            {
+                failedEntities = append(failedEntities, targetQuery);
+                failureCount += 1;
+                
+                // Clear the error so we can continue processing other entities
+                clearFeatureStatus(context, id, {});
+            }
+            else
+            {
+                successCount += 1;
+            }
+        }
 
         // Report overall status after processing all entities
         if (failureCount > 0)
