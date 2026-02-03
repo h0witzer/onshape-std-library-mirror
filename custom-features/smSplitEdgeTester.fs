@@ -133,16 +133,16 @@ export const smSplitEdgeTester = defineSheetMetalFeature(function(context is Con
         // STEP 4: Update sheet metal geometry
         println("=== CALLING updateSheetMetalGeometry ===");
         
-        // Create fresh query with body ownership
-        const splitEdgesFromModelBody = qIntersection([
-            qOwnedByBody(modelBodyQuery),
-            qUnion(splitEdgesEval)
-        ]);
+        // Create fresh query with body ownership - simplest approach
+        const splitEdgesQuery = qUnion(splitEdgesEval);
+        
+        println("Split edges query: " ~ splitEdgesQuery);
+        println("Number of edges in query: " ~ size(evaluateQuery(context, splitEdgesQuery)));
         
         updateSheetMetalGeometry(context, id, {
-            "entities" : splitEdgesFromModelBody,
+            "entities" : splitEdgesQuery,
             "deletedAttributes" : toUpdate.deletedAttributes,
-            "associatedChanges" : splitEdgesFromModelBody
+            "associatedChanges" : splitEdgesQuery
         });
         
         println("=== COMPLETE ===");
