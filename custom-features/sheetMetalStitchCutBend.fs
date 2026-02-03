@@ -320,15 +320,16 @@ export const sheetMetalStitchCutBend = defineSheetMetalFeature(function(context 
         // These vertexes are at the boundaries where bridges (bends) meet stitches (rips)
         if (bridgeSegmentCount > 0 && stitchCount > 0)
         {
-            applyBendReliefAttributesToVertexes(context, id + "bendReliefs", bridgeSegmentEdges, 
-                stitchSegmentEdges, modelAttribute);
+            applyBendReliefAttributesToVertexes(context, id + "bendReliefs", splitOperationId, 
+                bridgeSegmentEdges, stitchSegmentEdges, modelAttribute);
         }
         
         // Update sheet metal geometry with all modified edges and vertexes
-        const vertexesAtBoundaries = qVertexAdjacent(allEdgesAfterSplitQuery, EntityType.EDGE);
+        // Vertexes are created by the split operations
+        const vertexesCreatedBySplit = qCreatedBy(splitOperationId, EntityType.VERTEX);
         updateSheetMetalGeometry(context, id, { 
-            "entities" : qUnion([allEdgesAfterSplitQuery, vertexesAtBoundaries]),
-            "associatedChanges" : qUnion([allEdgesAfterSplitQuery, vertexesAtBoundaries])
+            "entities" : qUnion([allEdgesAfterSplitQuery, vertexesCreatedBySplit]),
+            "associatedChanges" : qUnion([allEdgesAfterSplitQuery, vertexesCreatedBySplit])
         });
     }, { 
         useDefaultRadius : true, 
@@ -609,18 +610,22 @@ function getModelAttribute(context is Context, modelBody is Query) returns SMAtt
  * Inputs:
  *   context - Evaluation context
  *   id - Operation ID for this attribute assignment
+ *   splitOperationId - ID of the split operations that created the vertexes
  *   bendEdges - Query for edges with bend attributes
  *   ripEdges - Query for edges with rip attributes
  *   modelAttribute - The model SMAttribute containing bend relief parameters
  */
-function applyBendReliefAttributesToVertexes(context is Context, id is Id, bendEdges is Query, 
-    ripEdges is Query, modelAttribute is SMAttribute)
+function applyBendReliefAttributesToVertexes(context is Context, id is Id, splitOperationId is Id,
+    bendEdges is Query, ripEdges is Query, modelAttribute is SMAttribute)
 {
-    // Find vertexes that are adjacent to both bend and rip edges
-    // These are the vertexes at the boundaries between bridges and stitches
-    const bendVertexes = qVertexAdjacent(bendEdges, EntityType.EDGE);
-    const ripVertexes = qVertexAdjacent(ripEdges, EntityType.EDGE);
-    const boundaryVertexes = qIntersection([bendVertexes, ripVertexes]);
+    // Find vertexes created by the split operations
+    // These are at the boundaries between bridges and stitches
+    const createdVertexes = qCreatedBy(splitOperationId, EntityType.VERTEX);
+    
+    // Find vertexes that are at boundaries - adjacent to both bend and rip edges
+    const bendAdjacentVertexes = qAdjacent(bendEdges, AdjacencyType.VERTEX, EntityType.VERTEX);
+    const ripAdjacentVertexes = qAdjacent(ripEdges, AdjacencyType.VERTEX, EntityType.VERTEX);
+    const boundaryVertexes = qIntersection([createdVertexes, bendAdjacentVertexes, ripAdjacentVertexes]);
     
     const vertexes = evaluateQuery(context, boundaryVertexes);
     
@@ -725,7 +730,7 @@ function applyBendReliefAttributesToVertexes(context is Context, id is Id, bendE
                 setAttribute(context, { "entities" : vertex, "attribute" : cornerAttribute });
             }
         }
-        catch (error)
+        catch
         {
             // Skip vertexes that cause errors (e.g., not appropriate for corner attributes)
             // Note: Vertex at index i failed to receive bend relief attribute
