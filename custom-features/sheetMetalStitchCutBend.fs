@@ -407,15 +407,6 @@ precondition
             "parameterIdInFeature" : "stitchJointType"
         };
     
-    // Set radius with metadata
-    bendAttribute.radius = {
-            "value" : radius,
-            "canBeEdited" : true,
-            "isDefault" : useDefaultRadius,
-            "controllingFeatureId" : toAttributeId(id),
-            "parameterIdInFeature" : "radius"
-        };
-    
     // Compute angle for this specific segment (geometry-dependent)
     const computedAngle = try silent(bendAngle(context, id + "angle", jointEdge, radius));
     if (computedAngle == undefined || abs(computedAngle) < TOLERANCE.zeroAngle * radian)
@@ -427,14 +418,32 @@ precondition
         bendAttribute.angle = { "value" : computedAngle, "canBeEdited" : false };
     }
     
-    // Set K-factor with metadata
-    bendAttribute.kFactor = {
+    // Set radius with basic metadata
+    bendAttribute.radius = {
+            "value" : radius,
+            "canBeEdited" : true,
+            "isDefault" : useDefaultRadius
+        };
+    
+    // Set k-factor with basic metadata (note: attribute field is 'k-factor' with hyphen)
+    bendAttribute['k-factor'] = {
             "value" : kFactor,
             "canBeEdited" : true,
-            "isDefault" : useDefaultKFactor,
-            "controllingFeatureId" : toAttributeId(id),
-            "parameterIdInFeature" : "kFactor"
+            "isDefault" : useDefaultKFactor
         };
+    
+    // If EITHER radius or k-factor are overridden (not default), set controlling metadata for BOTH
+    // This ensures changes via sheet metal table modify this feature rather than creating separate ones
+    if (!useDefaultRadius || !useDefaultKFactor)
+    {
+        const attributeId = toAttributeId(id);
+        bendAttribute.radius.controllingFeatureId = attributeId;
+        bendAttribute.radius.parameterIdInFeature = "radius";
+        bendAttribute.radius.defaultIdInFeature = "useDefaultRadius";
+        bendAttribute['k-factor'].controllingFeatureId = attributeId;
+        bendAttribute['k-factor'].parameterIdInFeature = "kFactor";
+        bendAttribute['k-factor'].defaultIdInFeature = "useDefaultKFactor";
+    }
     
     return bendAttribute;
 }
