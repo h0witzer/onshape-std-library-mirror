@@ -342,8 +342,9 @@ export const sheetMetalStitchCutBend = defineSheetMetalFeature(function(context 
                     var cornerAttr = makeSMCornerAttribute(toAttributeId(id + ("bendRelief" ~ appliedCount)));
                     
                     // Set bend relief style and parameters
+                    // Convert SMBendReliefStyle to SMReliefStyle for corner attributes
                     cornerAttr.cornerStyle = {
-                        "value" : modelAttribute.bendReliefStyle,
+                        "value" : convertBendReliefStyleToReliefStyle(modelAttribute.bendReliefStyle),
                         "canBeEdited" : false
                     };
                     
@@ -390,6 +391,41 @@ export const sheetMetalStitchCutBend = defineSheetMetalFeature(function(context 
         useDefaultRadius : true, 
         useDefaultKFactor : true 
     });
+
+/**
+ * Converts SMBendReliefStyle to SMReliefStyle for corner attributes.
+ * Pattern from sheetMetalBendRelief.fs lines 128-153.
+ * Inputs:
+ *   bendReliefStyle - SMBendReliefStyle enum value
+ * Outputs: Corresponding SMReliefStyle enum value
+ */
+function convertBendReliefStyleToReliefStyle(bendReliefStyle) returns SMReliefStyle
+{
+    if (bendReliefStyle == SMBendReliefStyle.OBROUND)
+    {
+        return SMReliefStyle.OBROUND;
+    }
+    else if (bendReliefStyle == SMBendReliefStyle.RECTANGLE)
+    {
+        return SMReliefStyle.RECTANGLE;
+    }
+    else if (bendReliefStyle == SMBendReliefStyle.TEAR)
+    {
+        return SMReliefStyle.TEAR;
+    }
+    else if (bendReliefStyle == SMBendReliefStyle.SIZED_OBROUND)
+    {
+        return SMReliefStyle.SIZED_OBROUND;
+    }
+    else if (bendReliefStyle == SMBendReliefStyle.SIZED_RECTANGLE)
+    {
+        return SMReliefStyle.SIZED_RECTANGLE;
+    }
+    else
+    {
+        return SMReliefStyle.OBROUND; // default
+    }
+}
 
 /**
  * Finds the joint definition entity (edge or face) from a user selection.
