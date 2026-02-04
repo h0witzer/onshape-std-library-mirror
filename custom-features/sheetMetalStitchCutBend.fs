@@ -329,65 +329,42 @@ export const sheetMetalStitchCutBend = defineSheetMetalFeature(function(context 
             println("Vertices created by split: " ~ size(createdVerticesEval));
             
             // Apply bend relief attributes to each vertex
+            // Note: These vertices are brand new from the split operation, so they don't have
+            // existing attributes and haven't been assigned corner types yet. We apply bend relief
+            // attributes to all of them, and the sheet metal system will handle them appropriately
+            // during updateSheetMetalGeometry.
             var appliedCount = 0;
             for (var vertex in createdVerticesEval)
             {
                 try
                 {
-                    // Get corner information
-                    const cornerInfo = evCornerType(context, { "vertex" : vertex });
+                    // Create corner attribute with bend relief parameters from model
+                    var cornerAttr = makeSMCornerAttribute(toAttributeId(id + ("bendRelief" ~ appliedCount)));
                     
-                    if (cornerInfo.cornerType == SMCornerType.BEND_END)
+                    // Set bend relief style and parameters
+                    cornerAttr.cornerStyle = {
+                        "value" : modelAttribute.bendReliefStyle,
+                        "canBeEdited" : false
+                    };
+                    
+                    if (modelAttribute.bendReliefScale != undefined)
                     {
-                        // Use primaryVertex if it exists, otherwise use the vertex itself
-                        const targetVertex = (cornerInfo.primaryVertex != undefined) ? cornerInfo.primaryVertex : vertex;
-                        
-                        // Check if there's already a corner attribute
-                        const existingAttribute = getCornerAttribute(context, targetVertex);
-                        
-                        // Create corner attribute with bend relief parameters from model
-                        var cornerAttr;
-                        if (existingAttribute != undefined)
-                        {
-                            cornerAttr = existingAttribute;
-                        }
-                        else
-                        {
-                            cornerAttr = makeSMCornerAttribute(toAttributeId(id + ("bendRelief" ~ appliedCount)));
-                        }
-                        
-                        // Set bend relief style and parameters
-                        cornerAttr.cornerStyle = {
-                            "value" : modelAttribute.bendReliefStyle,
+                        cornerAttr.bendReliefScale = {
+                            "value" : modelAttribute.bendReliefScale,
                             "canBeEdited" : false
                         };
-                        
-                        if (modelAttribute.bendReliefScale != undefined)
-                        {
-                            cornerAttr.bendReliefScale = {
-                                "value" : modelAttribute.bendReliefScale,
-                                "canBeEdited" : false
-                            };
-                        }
-                        if (modelAttribute.bendReliefDepthScale != undefined)
-                        {
-                            cornerAttr.bendReliefDepthScale = {
-                                "value" : modelAttribute.bendReliefDepthScale,
-                                "canBeEdited" : false
-                            };
-                        }
-                        
-                        // Apply the attribute to the target vertex
-                        if (existingAttribute != undefined)
-                        {
-                            replaceSMAttribute(context, existingAttribute, cornerAttr);
-                        }
-                        else
-                        {
-                            setAttribute(context, { "entities" : targetVertex, "attribute" : cornerAttr });
-                        }
-                        appliedCount += 1;
                     }
+                    if (modelAttribute.bendReliefDepthScale != undefined)
+                    {
+                        cornerAttr.bendReliefDepthScale = {
+                            "value" : modelAttribute.bendReliefDepthScale,
+                            "canBeEdited" : false
+                        };
+                    }
+                    
+                    // Apply the attribute to the vertex
+                    setAttribute(context, { "entities" : vertex, "attribute" : cornerAttr });
+                    appliedCount += 1;
                 }
                 catch
                 {
