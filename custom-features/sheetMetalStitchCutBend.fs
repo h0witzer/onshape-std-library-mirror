@@ -49,10 +49,9 @@ annotation { "Feature Type Name" : "Stitch cut bend",
 export const sheetMetalStitchCutBend = defineSheetMetalFeature(function(context is Context, id is Id, definition is map)
     precondition
     {
-        // Joint edge selection - matches Modify Joint filter pattern
-        annotation { "Name" : "Joint edge",
-                    "Filter" : (SheetMetalDefinitionEntityType.FACE || SheetMetalDefinitionEntityType.EDGE) && AllowFlattenedGeometry.YES && ModifiableEntityOnly.YES,
-                    "MaxNumberOfPicks" : 1 }
+        // Joint edge selection - allows multiple edges for batch processing
+        annotation { "Name" : "Joint edges",
+                    "Filter" : (SheetMetalDefinitionEntityType.FACE || SheetMetalDefinitionEntityType.EDGE) && AllowFlattenedGeometry.YES && ModifiableEntityOnly.YES }
         definition.entity is Query;
 
         // Bend parameters for bridge segments
@@ -87,31 +86,22 @@ export const sheetMetalStitchCutBend = defineSheetMetalFeature(function(context 
             throw regenError(ErrorStringEnum.SHEET_METAL_ACTIVE_JOIN_NEEDED, ["entity"]);
         }
 
-        // Find the joint definition entity
-        var jointEntity = findJointDefinitionEntity(context, definition.entity, EntityType.EDGE);
-        var isFaceBend = false;
-        if (jointEntity == undefined)
-        {
-            // Not an edge, is it a face?
-            jointEntity = findJointDefinitionEntity(context, definition.entity, EntityType.FACE);
-            isFaceBend = true;
-        }
-        if (jointEntity == undefined)
+        // Find all joint definition entities (edges)
+        var jointEdgeEntities = findAllJointDefinitionEntities(context, definition.entity, EntityType.EDGE);
+        var jointFaceEntities = findAllJointDefinitionEntities(context, definition.entity, EntityType.FACE);
+        
+        // Combine both edge and face entities
+        var allJointEntities = concatenate(jointEdgeEntities, jointFaceEntities);
+        
+        if (size(allJointEntities) == 0)
         {
             throw regenError(ErrorStringEnum.SHEET_METAL_ACTIVE_JOIN_NEEDED, ["entity"]);
         }
-
+        
         // Face bends cannot be converted to stitch cut bends
-        if (isFaceBend)
+        if (size(jointFaceEntities) > 0)
         {
-            throw regenError("Cannot create stitch cut bend on a face bend. Select an edge joint instead.", ["entity"]);
-        }
-
-        // Get existing attribute to understand current joint state
-        var existingAttribute = getJointAttribute(context, jointEntity);
-        if (existingAttribute == undefined)
-        {
-            throw regenError(ErrorStringEnum.SHEET_METAL_ACTIVE_JOIN_NEEDED, ["entity"]);
+            throw regenError("Cannot create stitch cut bend on face bends. Select edge joints only.", ["entity"]);
         }
 
         // CRITICAL: Get default values BEFORE any splitting operations
@@ -127,199 +117,260 @@ export const sheetMetalStitchCutBend = defineSheetMetalFeature(function(context 
             defaultKFactor = getDefaultSheetMetalKFactor(context, definition.entity);
         }
 
-        // Get the model body query for later use
-        const modelBodyQuery = qOwnerBody(jointEntity);
-
-        // Calculate edge length and validate using the joint definition entity
-        const selectedEdgesQuery = qEntityFilter(jointEntity, EntityType.EDGE);
-        const selectedEdges = evaluateQuery(context, selectedEdgesQuery);
-        if (size(selectedEdges) == 0)
-        {
-            throw regenError("Select at least one sheet metal edge", ["entity"]);
-        }
-
-        const orderedEdgeQuery = qUnion(selectedEdges);
-        const path = try silent(constructPath(context, orderedEdgeQuery));
-        if (path == undefined)
-        {
-            throw regenError("Unable to order the selected edges into a continuous chain", ["entity"], jointEntity);
-        }
-
-        const totalLength = evLength(context, {
-                    "entities" : jointEntity
-                });
-
-        if (totalLength <= EDGE_LENGTH_TOLERANCE)
-        {
-            throw regenError("Selected edge must have a measurable length", ["entity"]);
-        }
-
-        // Set edges for spacing calculation (spacing utilities expect definition.edges)
-        definition.edges = jointEntity;
-
-        // Use centralized spacing calculation from spacingUtils
-        definition = computeCurvePatternSpacing(context, id, definition);
-
-        var bridgeCount = definition.instanceCount;
-
-        // Calculate domains for bridges (bend segments - the connections)
-        // These domains represent where the bend segments will be positioned
-        var bridgeDomains = []; // Array of {start, end} maps representing bridge positions as normalized parameters
-
-        // Get offsets based on mode
-        var startOffset = 0 * meter;
-        var endOffset = 0 * meter;
+        // Collect all processed edges for final update
+        var allProcessedEdges = [];
         
-        if (definition.useOffsets == true)
+        // Process each joint entity independently
+        var entityIndex = 0;
+        for (var jointEntity in jointEdgeEntities)
         {
-            if (!definition.twoOffsets)
-            {
-                // Equal offsets mode: same offset on both ends
-                startOffset = definition.offset;
-                endOffset = definition.offset;
-            }
-            else
-            {
-                // Two offsets mode: different offsets on each end
-                // oppositeDirection controls which offset goes to which end
-                if (!definition.oppositeDirection)
-                {
-                    startOffset = definition.offset1;
-                    endOffset = definition.offset2;
-                }
-                else
-                {
-                    // Flipped: swap which offset goes where
-                    startOffset = definition.offset2;
-                    endOffset = definition.offset1;
-                }
-            }
-        }
-
-        // Calculate bridge positions using spacing type
-        // Bridges are the bend segments (connections), stitches between are rips (cuts)
-        if (definition.spacingType == CurvePatternSpacingType.EQUAL)
-        {
-            bridgeDomains = calculateEqualSpacedDomains(totalLength, definition.bridgeWidth, bridgeCount, startOffset, endOffset, definition.endMode);
-        }
-        else if (definition.spacingType == CurvePatternSpacingType.DISTANCE)
-        {
-            bridgeDomains = calculateDistanceSpacedDomains(totalLength, definition.bridgeWidth, definition.distance, bridgeCount, startOffset, endOffset);
-        }
-        else if (definition.spacingType == CurvePatternSpacingType.BESTFIT)
-        {
-            // For BESTFIT, instanceCount is computed by computeCurvePatternSpacing
-            bridgeDomains = calculateEqualSpacedDomains(totalLength, definition.bridgeWidth, bridgeCount, startOffset, endOffset, definition.endMode);
-        }
-
-        if (bridgeCount == 0 || size(bridgeDomains) == 0)
-        {
-            throw regenError("No bridges can fit with the specified parameters", ["bridgeWidth", "instanceCount"]);
-        }
-
-        // Validate that bridge domains do not overlap
-        if (!validateDomainsNoOverlap(bridgeDomains, FRACTION_TOLERANCE))
-        {
-            throw regenError("Resultant bridges would overlap. Adjust spacing parameters to avoid overlapping bridges.", ["bridgeWidth", "instanceCount"]);
-        }
-
-        // Use mixInTracking pattern: union the original query with a tracking query
-        const trackedEdges = qUnion([orderedEdgeQuery, startTracking(context, orderedEdgeQuery)]);
-
-        // Split the edges at bridge boundaries (domains represent bridges, so we need both start and end points)
-        const splitParameters = calculateSplitParametersFromDomains(bridgeDomains);
-        const splitInstructions = calculateEdgeSplitInstructionsFromParameters(context, path, splitParameters);
-
-        if (size(splitInstructions) == 0)
-        {
-            throw regenError("Unable to calculate edge split locations", ["entity"]);
-        }
-
-        // Perform all split operations
-        const splitOperationId = id + "splitAllEdges";
-        var splitOperationIndex = 0;
-        for (var instruction in splitInstructions)
-        {
-            try
-            {
-                opSplitEdges(context, splitOperationId + ("split" ~ toString(splitOperationIndex)), {
-                            "edges" : instruction.edge,
-                            "parameters" : [instruction.parameters]
-                        });
-            }
-            catch
-            {
-                throw regenError("Failed to split the sheet metal edge at the requested locations", ["entity"], instruction.edge);
-            }
-            splitOperationIndex += 1;
-        }
-
-        // After splitting, identify which segments are bridges (bends) vs stitches (rips)
-        const allEdgesAfterSplit = qEntityFilter(qUnion([orderedEdgeQuery, trackedEdges]), EntityType.EDGE);
-        const allEdgesAfterSplitEval = evaluateQuery(context, allEdgesAfterSplit);
-        
-        if (size(allEdgesAfterSplitEval) == 0)
-        {
-            throw regenError("No edges found after splitting", ["entity"]);
-        }
-
-        // CRITICAL FIX: Split edges inherit BOTH association and definition attributes from parent
-        // Both must be removed and reassigned uniquely for independent segments
-        const allEdgesAfterSplitQuery = qUnion(allEdgesAfterSplitEval);
-        
-        // Step 1: Remove shared association attribute
-        removeAttributes(context, {
-            "entities" : allEdgesAfterSplitQuery,
-            "attributePattern" : {} as SMAssociationAttribute
-        });
-        
-        // Step 2: Remove shared definition attribute
-        removeAttributes(context, {
-            "entities" : allEdgesAfterSplitQuery,
-            "attributePattern" : {} as SMAttribute
-        });
-        
-        // Step 3: Assign unique association attributes to each segment
-        assignSMAssociationAttributes(context, allEdgesAfterSplitQuery);
-
-        // Bridge segments are the ones that fall within the calculated domains (the bend connections)
-        const bridgeSegmentEdges = identifySegmentsByEdgeMidpoints(context, allEdgesAfterSplit, path, totalLength, bridgeDomains);
-
-        // Stitch segments are everything else (the rip cuts between bridges)
-        const stitchSegmentEdges = qSubtraction(allEdgesAfterSplit, bridgeSegmentEdges);
-
-        // Validate we have both types of segments
-        const bridgeSegmentCount = size(evaluateQuery(context, bridgeSegmentEdges));
-        const stitchCount = size(evaluateQuery(context, stitchSegmentEdges));
-
-        if (bridgeSegmentCount == 0 && stitchCount == 0)
-        {
-            throw regenError("No edge segments found after splitting", ["entity"]);
-        }
-
-        // Step 4: Apply unique definition attributes (alternating BEND/RIP) to each segment
-        // Each segment now has its own unique association attribute from Step 3
-        if (bridgeSegmentCount > 0)
-        {
-            applyJointAttributesToSegments(context, id + "bridges", bridgeSegmentEdges, existingAttribute, 
-                SMJointType.BEND, definition, isFaceBend, true, defaultRadius, defaultKFactor);
-        }
-
-        if (stitchCount > 0)
-        {
-            applyJointAttributesToSegments(context, id + "stitches", stitchSegmentEdges, existingAttribute, 
-                SMJointType.RIP, definition, isFaceBend, false, undefined, undefined);
+            const processedEdges = processJointEntity(context, id + ("entity" ~ entityIndex), 
+                jointEntity, definition, defaultRadius, defaultKFactor);
+            allProcessedEdges = append(allProcessedEdges, processedEdges);
+            entityIndex += 1;
         }
         
-        // Update sheet metal geometry with all modified edges
-        updateSheetMetalGeometry(context, id, { 
-            "entities" : allEdgesAfterSplitQuery,
-            "associatedChanges" : allEdgesAfterSplitQuery
-        });
+        // Update sheet metal geometry with all modified edges from all entities
+        if (size(allProcessedEdges) > 0)
+        {
+            const allProcessedEdgesQuery = qUnion(allProcessedEdges);
+            updateSheetMetalGeometry(context, id, { 
+                "entities" : allProcessedEdgesQuery,
+                "associatedChanges" : allProcessedEdgesQuery
+            });
+        }
     }, { 
         useDefaultRadius : true, 
         useDefaultKFactor : true 
     });
+
+/**
+ * Processes a single joint entity, splitting it into stitch cut bend segments.
+ * Inputs:
+ *   context - Evaluation context
+ *   id - Operation ID for this specific joint entity
+ *   jointEntity - Query for a single joint definition entity (edge)
+ *   definition - Feature definition with parameters
+ *   defaultRadius - Default bend radius for the model
+ *   defaultKFactor - Default K-factor for the model
+ * Outputs: Query for all processed edges from this joint entity
+ */
+function processJointEntity(context is Context, id is Id, jointEntity is Query, 
+    definition is map, defaultRadius, defaultKFactor) returns Query
+{
+    // Get existing attribute to understand current joint state
+    var existingAttribute = getJointAttribute(context, jointEntity);
+    if (existingAttribute == undefined)
+    {
+        throw regenError(ErrorStringEnum.SHEET_METAL_ACTIVE_JOIN_NEEDED, ["entity"]);
+    }
+
+    // Calculate edge length and validate using the joint definition entity
+    const selectedEdgesQuery = qEntityFilter(jointEntity, EntityType.EDGE);
+    const selectedEdges = evaluateQuery(context, selectedEdgesQuery);
+    if (size(selectedEdges) == 0)
+    {
+        throw regenError("Select at least one sheet metal edge", ["entity"]);
+    }
+
+    const orderedEdgeQuery = qUnion(selectedEdges);
+    const path = try silent(constructPath(context, orderedEdgeQuery));
+    if (path == undefined)
+    {
+        throw regenError("Unable to order the selected edges into a continuous chain", ["entity"], jointEntity);
+    }
+
+    const totalLength = evLength(context, {
+                "entities" : jointEntity
+            });
+
+    if (totalLength <= EDGE_LENGTH_TOLERANCE)
+    {
+        throw regenError("Selected edge must have a measurable length", ["entity"]);
+    }
+
+    // Set edges for spacing calculation (spacing utilities expect definition.edges)
+    var localDefinition = definition;
+    localDefinition.edges = jointEntity;
+
+    // Use centralized spacing calculation from spacingUtils
+    localDefinition = computeCurvePatternSpacing(context, id, localDefinition);
+
+    var bridgeCount = localDefinition.instanceCount;
+
+    // Calculate domains for bridges (bend segments - the connections)
+    // These domains represent where the bend segments will be positioned
+    var bridgeDomains = []; // Array of {start, end} maps representing bridge positions as normalized parameters
+
+    // Get offsets based on mode
+    var startOffset = 0 * meter;
+    var endOffset = 0 * meter;
+    
+    if (localDefinition.useOffsets == true)
+    {
+        if (!localDefinition.twoOffsets)
+        {
+            // Equal offsets mode: same offset on both ends
+            startOffset = localDefinition.offset;
+            endOffset = localDefinition.offset;
+        }
+        else
+        {
+            // Two offsets mode: different offsets on each end
+            // oppositeDirection controls which offset goes to which end
+            if (!localDefinition.oppositeDirection)
+            {
+                startOffset = localDefinition.offset1;
+                endOffset = localDefinition.offset2;
+            }
+            else
+            {
+                // Flipped: swap which offset goes where
+                startOffset = localDefinition.offset2;
+                endOffset = localDefinition.offset1;
+            }
+        }
+    }
+
+    // Calculate bridge positions using spacing type
+    // Bridges are the bend segments (connections), stitches between are rips (cuts)
+    if (localDefinition.spacingType == CurvePatternSpacingType.EQUAL)
+    {
+        bridgeDomains = calculateEqualSpacedDomains(totalLength, localDefinition.bridgeWidth, bridgeCount, startOffset, endOffset, localDefinition.endMode);
+    }
+    else if (localDefinition.spacingType == CurvePatternSpacingType.DISTANCE)
+    {
+        bridgeDomains = calculateDistanceSpacedDomains(totalLength, localDefinition.bridgeWidth, localDefinition.distance, bridgeCount, startOffset, endOffset);
+    }
+    else if (localDefinition.spacingType == CurvePatternSpacingType.BESTFIT)
+    {
+        // For BESTFIT, instanceCount is computed by computeCurvePatternSpacing
+        bridgeDomains = calculateEqualSpacedDomains(totalLength, localDefinition.bridgeWidth, bridgeCount, startOffset, endOffset, localDefinition.endMode);
+    }
+
+    if (bridgeCount == 0 || size(bridgeDomains) == 0)
+    {
+        throw regenError("No bridges can fit with the specified parameters", ["bridgeWidth", "instanceCount"]);
+    }
+
+    // Validate that bridge domains do not overlap
+    if (!validateDomainsNoOverlap(bridgeDomains, FRACTION_TOLERANCE))
+    {
+        throw regenError("Resultant bridges would overlap. Adjust spacing parameters to avoid overlapping bridges.", ["bridgeWidth", "instanceCount"]);
+    }
+
+    // Use mixInTracking pattern: union the original query with a tracking query
+    const trackedEdges = qUnion([orderedEdgeQuery, startTracking(context, orderedEdgeQuery)]);
+
+    // Split the edges at bridge boundaries (domains represent bridges, so we need both start and end points)
+    const splitParameters = calculateSplitParametersFromDomains(bridgeDomains);
+    const splitInstructions = calculateEdgeSplitInstructionsFromParameters(context, path, splitParameters);
+
+    if (size(splitInstructions) == 0)
+    {
+        throw regenError("Unable to calculate edge split locations", ["entity"]);
+    }
+
+    // Perform all split operations
+    const splitOperationId = id + "splitAllEdges";
+    var splitOperationIndex = 0;
+    for (var instruction in splitInstructions)
+    {
+        try
+        {
+            opSplitEdges(context, splitOperationId + ("split" ~ toString(splitOperationIndex)), {
+                        "edges" : instruction.edge,
+                        "parameters" : [instruction.parameters]
+                    });
+        }
+        catch
+        {
+            throw regenError("Failed to split the sheet metal edge at the requested locations", ["entity"], instruction.edge);
+        }
+        splitOperationIndex += 1;
+    }
+
+    // After splitting, identify which segments are bridges (bends) vs stitches (rips)
+    const allEdgesAfterSplit = qEntityFilter(qUnion([orderedEdgeQuery, trackedEdges]), EntityType.EDGE);
+    const allEdgesAfterSplitEval = evaluateQuery(context, allEdgesAfterSplit);
+    
+    if (size(allEdgesAfterSplitEval) == 0)
+    {
+        throw regenError("No edges found after splitting", ["entity"]);
+    }
+
+    // CRITICAL FIX: Split edges inherit BOTH association and definition attributes from parent
+    // Both must be removed and reassigned uniquely for independent segments
+    const allEdgesAfterSplitQuery = qUnion(allEdgesAfterSplitEval);
+    
+    // Step 1: Remove shared association attribute
+    removeAttributes(context, {
+        "entities" : allEdgesAfterSplitQuery,
+        "attributePattern" : {} as SMAssociationAttribute
+    });
+    
+    // Step 2: Remove shared definition attribute
+    removeAttributes(context, {
+        "entities" : allEdgesAfterSplitQuery,
+        "attributePattern" : {} as SMAttribute
+    });
+    
+    // Step 3: Assign unique association attributes to each segment
+    assignSMAssociationAttributes(context, allEdgesAfterSplitQuery);
+
+    // Bridge segments are the ones that fall within the calculated domains (the bend connections)
+    const bridgeSegmentEdges = identifySegmentsByEdgeMidpoints(context, allEdgesAfterSplit, path, totalLength, bridgeDomains);
+
+    // Stitch segments are everything else (the rip cuts between bridges)
+    const stitchSegmentEdges = qSubtraction(allEdgesAfterSplit, bridgeSegmentEdges);
+
+    // Validate we have both types of segments
+    const bridgeSegmentCount = size(evaluateQuery(context, bridgeSegmentEdges));
+    const stitchCount = size(evaluateQuery(context, stitchSegmentEdges));
+
+    if (bridgeSegmentCount == 0 && stitchCount == 0)
+    {
+        throw regenError("No edge segments found after splitting", ["entity"]);
+    }
+
+    // Step 4: Apply unique definition attributes (alternating BEND/RIP) to each segment
+    // Each segment now has its own unique association attribute from Step 3
+    if (bridgeSegmentCount > 0)
+    {
+        applyJointAttributesToSegments(context, id + "bridges", bridgeSegmentEdges, existingAttribute, 
+            SMJointType.BEND, localDefinition, false, true, defaultRadius, defaultKFactor);
+    }
+
+    if (stitchCount > 0)
+    {
+        applyJointAttributesToSegments(context, id + "stitches", stitchSegmentEdges, existingAttribute, 
+            SMJointType.RIP, localDefinition, false, false, undefined, undefined);
+    }
+    
+    return allEdgesAfterSplitQuery;
+}
+
+/**
+ * Finds all joint definition entities (edges or faces) from a user selection.
+ * Inputs:
+ *   context - Evaluation context
+ *   entity - User-selected query
+ *   entityType - Type to filter for (EDGE or FACE)
+ * Outputs: Array of individual entity queries, one per joint definition entity
+ */
+function findAllJointDefinitionEntities(context is Context, entity is Query, entityType is EntityType) returns array
+{
+    const entityQ = qUnion(getSMDefinitionEntities(context, entity));
+    const sheetEntities = qEntityFilter(entityQ, entityType);
+    const evaluatedEntities = evaluateQuery(context, sheetEntities);
+    
+    var result = [];
+    for (var singleEntity in evaluatedEntities)
+    {
+        result = append(result, qUnion([singleEntity]));
+    }
+    return result;
+}
 
 /**
  * Finds the joint definition entity (edge or face) from a user selection.
