@@ -49,7 +49,7 @@ annotation { "Feature Type Name" : "Stitch cut bend",
 export const sheetMetalStitchCutBend = defineSheetMetalFeature(function(context is Context, id is Id, definition is map)
     precondition
     {
-        // Joint edge selection - allows multiple edges for batch processing
+        // Joint edge selection - allows multiple edges for multi-edge processing
         annotation { "Name" : "Joint edges",
                     "Filter" : (SheetMetalDefinitionEntityType.FACE || SheetMetalDefinitionEntityType.EDGE) && AllowFlattenedGeometry.YES && ModifiableEntityOnly.YES }
         definition.entity is Query;
@@ -190,7 +190,8 @@ function processJointEntity(context is Context, id is Id, jointEntity is Query,
     }
 
     // Set edges for spacing calculation (spacing utilities expect definition.edges)
-    // Use mergeMaps to create a modified copy without mutating the original definition
+    // Use mergeMaps to prevent unintended side effects when processing multiple entities
+    // by ensuring each entity gets its own definition map with the correct edges set
     var localDefinition = mergeMaps(definition, { "edges" : jointEntity });
 
     // Use centralized spacing calculation from spacingUtils
@@ -336,7 +337,7 @@ function processJointEntity(context is Context, id is Id, jointEntity is Query,
 
     // Step 4: Apply unique definition attributes (alternating BEND/RIP) to each segment
     // Each segment now has its own unique association attribute from Step 3
-    // Note: isFaceBend is false because face bends are rejected in the main function validation
+    // Note: isFaceBend is false because face bends are rejected at lines 102-105 in the main function validation
     if (bridgeSegmentCount > 0)
     {
         applyJointAttributesToSegments(context, id + "bridges", bridgeSegmentEdges, existingAttribute, 
