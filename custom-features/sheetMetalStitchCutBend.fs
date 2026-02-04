@@ -316,6 +316,59 @@ export const sheetMetalStitchCutBend = defineSheetMetalFeature(function(context 
                 SMJointType.RIP, definition, isFaceBend, false, undefined, undefined);
         }
         
+        // Apply bend relief attributes to vertices at bend/rip boundaries
+        if (bridgeSegmentCount > 0 && stitchCount > 0 && modelAttribute != undefined)
+        {
+            println("\n====== STEP 5: Apply Bend Relief Attributes ======");
+            println("Bridge segment count: " ~ bridgeSegmentCount);
+            println("Stitch count: " ~ stitchCount);
+            
+            // Find all vertices created by the split operations
+            const createdVertices = qCreatedBy(id + "splitAllEdges", EntityType.VERTEX);
+            const createdVerticesEval = evaluateQuery(context, createdVertices);
+            println("Vertices created by split: " ~ size(createdVerticesEval));
+            
+            // Apply bend relief attributes to each vertex
+            var appliedCount = 0;
+            for (var vertex in createdVerticesEval)
+            {
+                try
+                {
+                    // Get corner information
+                    const cornerInfo = evCornerType(context, { "vertex" : vertex });
+                    
+                    if (cornerInfo.cornerType == SMCornerType.BEND_END)
+                    {
+                        // Use primaryVertex if it exists, otherwise use the vertex itself
+                        const targetVertex = (cornerInfo.primaryVertex != undefined) ? cornerInfo.primaryVertex : vertex;
+                        
+                        // Create corner attribute with bend relief parameters from model
+                        var cornerAttr = makeCornerAttribute(modelAttribute.frontThickness);
+                        cornerAttr.cornerStyle = modelAttribute.bendReliefStyle;
+                        
+                        if (modelAttribute.bendReliefScale != undefined)
+                        {
+                            cornerAttr.bendReliefScale = modelAttribute.bendReliefScale;
+                        }
+                        if (modelAttribute.bendReliefDepthScale != undefined)
+                        {
+                            cornerAttr.bendReliefDepthScale = modelAttribute.bendReliefDepthScale;
+                        }
+                        
+                        // Apply the attribute to the target vertex
+                        setCornerAttribute(context, targetVertex, cornerAttr);
+                        appliedCount += 1;
+                    }
+                }
+                catch
+                {
+                    // Continue if this vertex can't be attributed
+                }
+            }
+            
+            println("Applied bend relief attributes to " ~ appliedCount ~ " vertices");
+        }
+        
         // Update sheet metal geometry with all modified edges
         // Pass the edges directly - they already have the proper attributes assigned
         println("\n====== Calling updateSheetMetalGeometry ======");
