@@ -91,7 +91,7 @@ export const sheetMetalStitchCutBend = defineSheetMetalFeature(function(context 
         var jointFaceEntities = findAllJointDefinitionEntities(context, definition.entity, EntityType.FACE);
         
         // Combine both edge and face entities
-        var allJointEntities = concatenate(jointEdgeEntities, jointFaceEntities);
+        var allJointEntities = concatenateArrays(jointEdgeEntities, jointFaceEntities);
         
         if (size(allJointEntities) == 0)
         {
@@ -373,28 +373,6 @@ function findAllJointDefinitionEntities(context is Context, entity is Query, ent
         result = append(result, qUnion([singleEntity]));
     }
     return result;
-}
-
-/**
- * Finds the joint definition entity (edge or face) from a user selection.
- * Inputs:
- *   context - Evaluation context
- *   entity - User-selected query
- *   entityType - Type to filter for (EDGE or FACE)
- * Outputs: Query for the single definition entity, or undefined if not found
- */
-function findJointDefinitionEntity(context is Context, entity is Query, entityType is EntityType)
-{
-    const entityQ = qUnion(getSMDefinitionEntities(context, entity));
-    var sheetEntities = qEntityFilter(entityQ, entityType);
-    if (size(evaluateQuery(context, sheetEntities)) != 1)
-    {
-        return undefined;
-    }
-    else
-    {
-        return sheetEntities;
-    }
 }
 
 /**
