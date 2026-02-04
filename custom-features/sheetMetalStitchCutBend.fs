@@ -190,10 +190,11 @@ function processJointEntity(context is Context, id is Id, jointEntity is Query,
     }
 
     // Set edges for spacing calculation (spacing utilities expect definition.edges)
-    var localDefinition = definition;
-    localDefinition.edges = jointEntity;
+    // Use mergeMaps to create a modified copy without mutating the original definition
+    var localDefinition = mergeMaps(definition, { "edges" : jointEntity });
 
     // Use centralized spacing calculation from spacingUtils
+    // Note: This returns a map with computed spacing values
     localDefinition = computeCurvePatternSpacing(context, id, localDefinition);
 
     var bridgeCount = localDefinition.instanceCount;
@@ -335,6 +336,7 @@ function processJointEntity(context is Context, id is Id, jointEntity is Query,
 
     // Step 4: Apply unique definition attributes (alternating BEND/RIP) to each segment
     // Each segment now has its own unique association attribute from Step 3
+    // Note: isFaceBend is false because face bends are rejected in the main function validation
     if (bridgeSegmentCount > 0)
     {
         applyJointAttributesToSegments(context, id + "bridges", bridgeSegmentEdges, existingAttribute, 

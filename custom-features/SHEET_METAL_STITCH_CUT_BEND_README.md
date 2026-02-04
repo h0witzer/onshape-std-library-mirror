@@ -161,11 +161,19 @@ The feature now:
 
 ## Usage
 
-1. Select a joint edge (bend or rip) in an active sheet metal model
+1. Select one or more joint edges (bend or rip) in an active sheet metal model
 2. Set bridge width (width of each bend segment/connection)
 3. Configure spacing (equal, linear, custom)
 4. Optionally override bend radius and k-factor (defaults to model settings)
-5. Feature splits edge into alternating bend/rip segments
+5. Feature splits each selected edge into alternating bend/rip segments
+
+### Multi-Edge Support
+
+The feature now supports selecting and processing multiple edges at once, with the same settings applied to all selected edges. For example, to create stitch bends connecting all 6 faces of a cube:
+- Select all 6 joint edges
+- Configure bridge width and spacing parameters once
+- All edges are processed independently with unique IDs
+- Single sheet metal update call at the end improves performance
 
 ## Files
 
@@ -176,6 +184,8 @@ The feature now:
 ## Technical Reference
 
 **Key Functions:**
+- `processJointEntity()` - Process a single joint entity with stitch cut bends
+- `findAllJointDefinitionEntities()` - Get all selected joint entities
 - `getModelParameters()` - Get model configuration
 - `opSplitEdges()` - Split edges at parameters
 - `removeAttributes()` - Clear shared attributes
