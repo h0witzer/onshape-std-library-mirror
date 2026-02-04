@@ -338,16 +338,17 @@ function processJointEntity(context is Context, id is Id, jointEntity is Query,
     // Step 4: Apply unique definition attributes (alternating BEND/RIP) to each segment
     // Each segment now has its own unique association attribute from Step 3
     // Note: isFaceBend is false because face bends are rejected at lines 102-105 in the main function validation
+    // Note: Use original definition (not localDefinition) to preserve bend parameters (radius, kFactor, etc.)
     if (bridgeSegmentCount > 0)
     {
         applyJointAttributesToSegments(context, id + "bridges", bridgeSegmentEdges, existingAttribute, 
-            SMJointType.BEND, localDefinition, false, true, defaultRadius, defaultKFactor);
+            SMJointType.BEND, definition, false, true, defaultRadius, defaultKFactor);
     }
 
     if (stitchCount > 0)
     {
         applyJointAttributesToSegments(context, id + "stitches", stitchSegmentEdges, existingAttribute, 
-            SMJointType.RIP, localDefinition, false, false, undefined, undefined);
+            SMJointType.RIP, definition, false, false, undefined, undefined);
     }
     
     return allEdgesAfterSplitQuery;
