@@ -9,6 +9,7 @@ export import(path : "onshape/std/smjointtype.gen.fs", version : "2856.0");
 export import(path : "onshape/std/smjointstyle.gen.fs", version : "2856.0");
 export import(path : "onshape/std/smcornertype.gen.fs", version : "2856.0");
 export import(path : "onshape/std/smreliefstyle.gen.fs", version : "2856.0");
+export import(path : "onshape/std/smbendreliefstyle.gen.fs", version : "2856.0");
 
 // Imports used internally
 import(path : "onshape/std/common.fs", version : "2856.0");
