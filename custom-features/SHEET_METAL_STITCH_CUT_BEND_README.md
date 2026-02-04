@@ -184,8 +184,6 @@ The feature now supports selecting and processing multiple edges at once, with t
 - `sheetMetalStitchCutBend.fs` - Production feature implementation
 - `smSplitEdgeTester.fs` - Minimal validation tester (split 1 edge → 2 segments)
 - `SHEET_METAL_STITCH_CUT_BEND_README.md` - This complete documentation
-- `MULTI_EDGE_STITCH_CUT_BEND_UPDATE.md` - Multi-edge selection implementation guide
-- `K_FACTOR_OVERRIDE_FIX.md` - K factor override bug fix documentation
 
 ## Technical Reference
 
