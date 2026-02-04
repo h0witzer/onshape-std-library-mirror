@@ -158,6 +158,8 @@ The feature now:
 - ✅ Bend tables show accurate geometry-specific angles
 - ✅ Modify Joint can independently change each segment
 - ✅ All properties correctly populated with full metadata
+- ✅ Manual bend radius override works correctly
+- ✅ Manual K factor override works correctly
 
 ## Usage
 
@@ -165,6 +167,8 @@ The feature now:
 2. Set bridge width (width of each bend segment/connection)
 3. Configure spacing (equal, linear, custom)
 4. Optionally override bend radius and k-factor (defaults to model settings)
+   - Uncheck "Use model bend radius" to specify custom radius
+   - Uncheck "Use model K Factor" to specify custom K factor
 5. Feature splits each selected edge into alternating bend/rip segments
 
 ### Multi-Edge Support
@@ -180,6 +184,8 @@ The feature now supports selecting and processing multiple edges at once, with t
 - `sheetMetalStitchCutBend.fs` - Production feature implementation
 - `smSplitEdgeTester.fs` - Minimal validation tester (split 1 edge → 2 segments)
 - `SHEET_METAL_STITCH_CUT_BEND_README.md` - This complete documentation
+- `MULTI_EDGE_STITCH_CUT_BEND_UPDATE.md` - Multi-edge selection implementation guide
+- `K_FACTOR_OVERRIDE_FIX.md` - K factor override bug fix documentation
 
 ## Technical Reference
 
