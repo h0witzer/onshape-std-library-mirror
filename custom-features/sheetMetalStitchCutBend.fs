@@ -545,11 +545,10 @@ function processJointEntity(context is Context, id is Id, jointEntity is Query,
     }
     
     // Relief segments should have NO bend or rip attributes - leave them as free edges
-    // Instead, apply corner attributes to the vertices between relief and bend segments
-    if (bendReliefSegmentCount > 0)
-    {
-        applyCornerAttributesToBendReliefVertices(context, id + "cornerAttrs", bendToReliefSplitIds, bendReliefParams);
-    }
+    // The sheet metal system will automatically apply bend relief based on model defaults
+    // when it detects bend edges adjacent to free edges
+    // NOTE: Corner attributes are NOT applied to avoid self-intersection issues
+    // The model-level bend relief settings (from getBendReliefParameters) will be used automatically
 
     if (stitchCount > 0)
     {
