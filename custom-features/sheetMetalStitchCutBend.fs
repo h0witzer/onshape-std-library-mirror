@@ -832,14 +832,22 @@ function shouldCreateBendReliefSubsegments(bendReliefParams) returns boolean
 function calculateBendReliefSubsegmentSize(context is Context, entity is Query, bendReliefParams) returns ValueWithUnits
 {
     // Get the sheet metal thickness to calculate relief size
-    var sheetmetalEntity = qUnion(getSMDefinitionEntities(context, entity));
-    var modelParameters = getModelParameters(context, qOwnerBody(sheetmetalEntity));
+    var sheetMetalEntity = qUnion(getSMDefinitionEntities(context, entity));
+    var modelParameters = getModelParameters(context, qOwnerBody(sheetMetalEntity));
     
-    // Use front thickness (or back if front is zero)
+    // Use front thickness (or back if front is zero/undefined)
     var thickness = modelParameters.frontThickness;
-    if (thickness == 0 * meter)
+    if (thickness == undefined || abs(thickness) < EDGE_LENGTH_TOLERANCE)
     {
         thickness = modelParameters.backThickness;
+    }
+    
+    // If both are zero or undefined, use a default based on model's default bend radius
+    if (thickness == undefined || abs(thickness) < EDGE_LENGTH_TOLERANCE)
+    {
+        // Fallback to a reasonable default based on bend radius if thickness is not available
+        const defaultRadius = modelParameters.defaultBendRadius;
+        thickness = defaultRadius * 0.1; // Typical sheet metal thickness is ~10% of bend radius
     }
     
     // Calculate based on bend relief depth scale
