@@ -83,6 +83,10 @@ export const sheetMetalStitchCutBend = defineSheetMetalFeature(function(context 
         // Debug visualization
         annotation { "Name" : "Show debug entities", "Default" : true }
         definition.showDebug is boolean;
+        
+        // Relief edge retraction distance
+        annotation { "Name" : "Relief edge retraction distance", "Default" : 0.1 * inch }
+        isLength(definition.reliefEdgeRetraction, LENGTH_BOUNDS);
     }
     {
         // Validate sheet metal context
@@ -166,7 +170,7 @@ export const sheetMetalStitchCutBend = defineSheetMetalFeature(function(context 
         for (var jointEntity in jointEdgeEntities)
         {
             const processedEdges = processJointEntity(context, id + ("entity" ~ entityIndex), 
-                jointEntity, definition, defaultRadius, defaultKFactor, bendReliefParams, sheetMetalThickness);
+                jointEntity, definition, defaultRadius, defaultKFactor, bendReliefParams, sheetMetalThickness, definition.reliefEdgeRetraction);
             allProcessedEdges = append(allProcessedEdges, processedEdges);
             entityIndex += 1;
         }
@@ -199,7 +203,7 @@ export const sheetMetalStitchCutBend = defineSheetMetalFeature(function(context 
  * Outputs: Query for all processed edges from this joint entity
  */
 function processJointEntity(context is Context, id is Id, jointEntity is Query, 
-    definition is map, defaultRadius, defaultKFactor, bendReliefParams, sheetMetalThickness) returns Query
+    definition is map, defaultRadius, defaultKFactor, bendReliefParams, sheetMetalThickness, reliefEdgeRetraction) returns Query
 {
     // Debug: Show the original master edges being processed
     if (definition.showDebug)
@@ -550,7 +554,7 @@ function processJointEntity(context is Context, id is Id, jointEntity is Query,
     // Uses Move Face edge extension mechanism: clear SM attributes, then extend sheet body edges
     if (bendReliefSegmentCount > 0)
     {
-        extendSheetBodyForReliefRegions(context, id + "reliefExtension", bendReliefSegmentEdges, bendSegmentEdges, sheetMetalThickness);
+        extendSheetBodyForReliefRegions(context, id + "reliefExtension", bendReliefSegmentEdges, bendSegmentEdges, reliefEdgeRetraction);
     }
     
     return allEdgesAfterSplitQuery;
@@ -894,25 +898,20 @@ function shouldCreateBendReliefSubsegments(bendReliefParams) returns boolean
 }
 
 /**
- * Separates master definition surfaces in relief regions by moving faces apart.
- * Similar to using Move Face to break a rip joint - pulls one surface away from shared edge,
- * creating physical clearance and breaking associations.
- * This creates space for bend relief geometry without topology conflicts.
- * Inputs:
- *   context - Evaluation context
- *   id - Feature ID for this operation
- *   reliefEdges - Query for relief segment edges
- *   thickness - Sheet metal thickness for offset calculation
- */
-/**
  * Extends sheet body in relief regions to create clearance for bend relief.
  * Uses the Move Face edge extension mechanism:
  * 1. Clear SM attributes from edges to break associations
  * 2. Create construction geometry as extension targets
  * 3. Call opExtendSheetBody with edgeLimitOptions to extend/retract SM definition edges
  * This is how Move Face separates surfaces when breaking a rip joint.
+ * Inputs:
+ *   context - Evaluation context
+ *   id - Feature ID for this operation
+ *   reliefEdges - Query for relief segment edges
+ *   bendEdges - Query for bend segment edges
+ *   retractionDistance - Distance to retract edges by
  */
-function extendSheetBodyForReliefRegions(context is Context, id is Id, reliefEdges is Query, bendEdges is Query, thickness)
+function extendSheetBodyForReliefRegions(context is Context, id is Id, reliefEdges is Query, bendEdges is Query, retractionDistance)
 {
     // Get sheet metal edges adjacent to relief segments
     // These are the edges at the boundary between relief and bend/rip segments
@@ -925,27 +924,85 @@ function extendSheetBodyForReliefRegions(context is Context, id is Id, reliefEdg
     if (size(smEdgeList) == 0)
         return;
     
-    // For each SM edge, clear attributes to break associations (like Move Face does for rips)
+    // Build edge limit options array (like Move Face does)
+    var edgeLimitOptions = [];
+    
     for (var smEdge in smEdgeList)
     {
         try
         {
+            // Step 1: Clear SM attributes to break associations (like Move Face line 613)
             clearSmAttributes(context, smEdge);
+            
+            // Step 2: Find adjacent faces to determine which to extend
+            const adjacentFaces = evaluateQuery(context, qAdjacent(smEdge, AdjacencyType.EDGE, EntityType.FACE));
+            
+            if (size(adjacentFaces) == 0)
+                continue;
+            
+            // Get the first face as the one to extend
+            const faceToExtend = adjacentFaces[0];
+            
+            // Step 3: Create construction plane as target for extension
+            // Get edge midpoint and tangent
+            const edgeTangentLine = evEdgeTangentLine(context, {
+                "edge" : smEdge,
+                "parameter" : 0.5
+            });
+            
+            // Get face normal at edge
+            const facePlane = evFaceTangentPlane(context, {
+                "face" : faceToExtend,
+                "parameter" : vector(0.5, 0.5)
+            });
+            
+            // Calculate retraction direction (opposite of face normal)
+            const retractionDirection = -facePlane.normal;
+            
+            // Create target point at retracted position
+            const targetPoint = edgeTangentLine.origin + retractionDirection * retractionDistance;
+            
+            // Create construction plane at target position
+            const planeId = id + ("plane" ~ size(edgeLimitOptions));
+            opPlane(context, planeId, {
+                "plane" : plane(targetPoint, retractionDirection)
+            });
+            const limitEntity = qCreatedBy(planeId, EntityType.FACE);
+            
+            // Step 4: Build edge limit option
+            edgeLimitOptions = append(edgeLimitOptions, {
+                "edge" : smEdge,
+                "faceToExtend" : faceToExtend,
+                "limitEntity" : limitEntity,
+                "helpPoint" : targetPoint
+            });
         }
-        catch
+        catch (error)
         {
-            // If clearing fails, continue - some edges may not have clearable attributes
+            // If any step fails for this edge, skip it and continue
+            // Some edges may not be extensible
         }
     }
     
-    // TODO: Create construction geometry as targets and build edgeLimitOptions
-    // This requires:
-    // 1. Construction planes at relief positions
-    // 2. edgeLimitOptions array with edge/faceToExtend/limitEntity/helpPoint
-    // 3. Call to sheetMetalExtendSheetBodyCall with those options
-    //
-    // For now, just clearing attributes may be enough to break associations
+    // Step 5: Call opExtendSheetBody with edge limit options (like Move Face)
+    if (size(edgeLimitOptions) > 0)
+    {
+        try
+        {
+            sheetMetalExtendSheetBodyCall(context, id, {
+                "entities" : qUnion(smEdgeList),
+                "extendMethod" : ExtendSheetBoundingType.EXTEND_TO_SURFACE,
+                "edgeLimitOptions" : edgeLimitOptions
+            });
+        }
+        catch (error)
+        {
+            // If extension fails, the cleared attributes still broke associations
+            // which may be enough
+        }
+    }
 }
+
 
 /**
  * Calculates the size of bend relief subsegments based on sheet metal thickness and relief parameters.
