@@ -116,6 +116,7 @@ export const sheetMetalStitchCutBend = defineSheetMetalFeature(function(context 
         var defaultRadius;
         var defaultKFactor;
         var bendReliefParams;
+        var sheetMetalThickness;
         
         if (definition.useDefaultRadius)
         {
@@ -127,8 +128,35 @@ export const sheetMetalStitchCutBend = defineSheetMetalFeature(function(context 
         }
         
         // Extract bend relief parameters from the model definition
-        // These will be used to apply corner attributes to bend end vertices if needed
+        // These will be used to create subsegments if needed
         bendReliefParams = getBendReliefParameters(context, definition.entity);
+        
+        // Extract sheet metal thickness for bend relief sizing
+        if (bendReliefParams != undefined)
+        {
+            try
+            {
+                var sheetMetalEntity = qUnion(getSMDefinitionEntities(context, definition.entity));
+                var modelParameters = getModelParameters(context, qOwnerBody(sheetMetalEntity));
+                sheetMetalThickness = modelParameters.frontThickness;
+                if (sheetMetalThickness == undefined || abs(sheetMetalThickness) < EDGE_LENGTH_TOLERANCE)
+                {
+                    sheetMetalThickness = modelParameters.backThickness;
+                }
+                // If still not available, use a fallback
+                if (sheetMetalThickness == undefined || abs(sheetMetalThickness) < EDGE_LENGTH_TOLERANCE)
+                {
+                    const defaultRad = definition.useDefaultRadius ? defaultRadius : definition.radius;
+                    sheetMetalThickness = defaultRad * 0.1;
+                }
+            }
+            catch
+            {
+                // If we can't get thickness, use a fallback based on bend radius
+                const defaultRad = definition.useDefaultRadius ? defaultRadius : definition.radius;
+                sheetMetalThickness = defaultRad * 0.1;
+            }
+        }
 
         // Collect all processed edges for final update
         var allProcessedEdges = [];
@@ -138,7 +166,7 @@ export const sheetMetalStitchCutBend = defineSheetMetalFeature(function(context 
         for (var jointEntity in jointEdgeEntities)
         {
             const processedEdges = processJointEntity(context, id + ("entity" ~ entityIndex), 
-                jointEntity, definition, defaultRadius, defaultKFactor, bendReliefParams);
+                jointEntity, definition, defaultRadius, defaultKFactor, bendReliefParams, sheetMetalThickness);
             allProcessedEdges = append(allProcessedEdges, processedEdges);
             entityIndex += 1;
         }
@@ -167,10 +195,11 @@ export const sheetMetalStitchCutBend = defineSheetMetalFeature(function(context 
  *   defaultRadius - Default bend radius for the model
  *   defaultKFactor - Default K-factor for the model
  *   bendReliefParams - Bend relief parameters from the model (optional)
+ *   sheetMetalThickness - Sheet metal thickness (optional, for bend relief sizing)
  * Outputs: Query for all processed edges from this joint entity
  */
 function processJointEntity(context is Context, id is Id, jointEntity is Query, 
-    definition is map, defaultRadius, defaultKFactor, bendReliefParams) returns Query
+    definition is map, defaultRadius, defaultKFactor, bendReliefParams, sheetMetalThickness) returns Query
 {
     // Debug: Show the original master edges being processed
     if (definition.showDebug)
@@ -287,20 +316,74 @@ function processJointEntity(context is Context, id is Id, jointEntity is Query,
         throw regenError("Resultant bridges would overlap. Adjust spacing parameters to avoid overlapping bridges.", ["bridgeWidth", "instanceCount"]);
     }
 
-    // Determine if we need to apply bend relief corner attributes
-    const applyBendReliefAttributes = shouldApplyBendReliefAttributes(bendReliefParams);
+    // Determine if we need to create bend relief subsegments
+    const createBendReliefSubsegments = shouldCreateBendReliefSubsegments(bendReliefParams);
     
-    // Use bridge domains directly - do NOT create separate relief segments
-    // Instead, we'll apply corner attributes to the vertices at bend ends
+    // If bend relief subsegments are needed, calculate their size and add them to the split parameters
+    var bendReliefSubsegmentSize = 0 * meter;
+    if (createBendReliefSubsegments)
+    {
+        bendReliefSubsegmentSize = calculateBendReliefSubsegmentSize(sheetMetalThickness, bendReliefParams);
+    }
+    
+    // Create modified bridge domains that include bend relief subsegments
+    // The subsegments should extend OUTSIDE the bridge boundaries into adjacent rip regions
     var allDomains = [];
     for (var bridgeDomain in bridgeDomains)
     {
-        // Just use the original bridge domain
-        allDomains = append(allDomains, {
-            "start" : bridgeDomain.start,
-            "end" : bridgeDomain.end,
-            "segmentType" : "bend"
-        });
+        if (createBendReliefSubsegments && bendReliefSubsegmentSize > EDGE_LENGTH_TOLERANCE)
+        {
+            // Convert subsegment size to normalized parameter
+            const subsegmentParam = bendReliefSubsegmentSize / totalLength;
+            
+            // Create relief subsegment BEFORE bridge start (extending into rip region)
+            const startReliefStart = bridgeDomain.start - subsegmentParam;
+            const startReliefEnd = bridgeDomain.start;
+            
+            // Create relief subsegment AFTER bridge end (extending into rip region)
+            const endReliefStart = bridgeDomain.end;
+            const endReliefEnd = bridgeDomain.end + subsegmentParam;
+            
+            // Validate relief segments are within bounds [0, 1]
+            const startReliefValid = startReliefStart >= -FRACTION_TOLERANCE && startReliefEnd <= 1 + FRACTION_TOLERANCE;
+            const endReliefValid = endReliefStart >= -FRACTION_TOLERANCE && endReliefEnd <= 1 + FRACTION_TOLERANCE;
+            
+            // Add start relief subsegment if it's within bounds
+            if (startReliefValid && startReliefStart >= 0)
+            {
+                allDomains = append(allDomains, {
+                    "start" : max(0, startReliefStart),
+                    "end" : startReliefEnd,
+                    "segmentType" : "bendRelief"
+                });
+            }
+            
+            // Add the main bridge domain (unchanged)
+            allDomains = append(allDomains, {
+                "start" : bridgeDomain.start,
+                "end" : bridgeDomain.end,
+                "segmentType" : "bend"
+            });
+            
+            // Add end relief subsegment if it's within bounds
+            if (endReliefValid && endReliefEnd <= 1)
+            {
+                allDomains = append(allDomains, {
+                    "start" : endReliefStart,
+                    "end" : min(1, endReliefEnd),
+                    "segmentType" : "bendRelief"
+                });
+            }
+        }
+        else
+        {
+            // No bend relief subsegments needed, just use the original bridge
+            allDomains = append(allDomains, {
+                "start" : bridgeDomain.start,
+                "end" : bridgeDomain.end,
+                "segmentType" : "bend"
+            });
+        }
     }
 
     // Use mixInTracking pattern: union the original query with a tracking query
@@ -365,17 +448,57 @@ function processJointEntity(context is Context, id is Id, jointEntity is Query,
     // Step 3: Assign unique association attributes to each segment
     assignSMAssociationAttributes(context, allEdgesAfterSplitQuery);
 
-    // Identify bend segments (bridge segments - all domains are "bend" type now)
-    const bendSegmentEdges = identifySegmentsByEdgeMidpoints(context, allEdgesAfterSplit, path, totalLength, allDomains);
+    // Identify segments by their domain type
+    // Separate bend, bendRelief, and stitch (rip) segments
+    var bendSegmentEdges = qNothing();
+    var bendReliefSegmentEdges = qNothing();
+    
+    if (createBendReliefSubsegments)
+    {
+        // When bend relief subsegments exist, identify them separately
+        // Filter allDomains to get only bend and bendRelief domains
+        var bendDomains = [];
+        var reliefDomains = [];
+        
+        for (var domain in allDomains)
+        {
+            if (domain.segmentType == "bend")
+            {
+                bendDomains = append(bendDomains, domain);
+            }
+            else if (domain.segmentType == "bendRelief")
+            {
+                reliefDomains = append(reliefDomains, domain);
+            }
+        }
+        
+        // Identify bend segments (main bridge segments without relief subsegments)
+        if (size(bendDomains) > 0)
+        {
+            bendSegmentEdges = identifySegmentsByEdgeMidpoints(context, allEdgesAfterSplit, path, totalLength, bendDomains);
+        }
+        
+        // Identify bend relief subsegments
+        if (size(reliefDomains) > 0)
+        {
+            bendReliefSegmentEdges = identifySegmentsByEdgeMidpoints(context, allEdgesAfterSplit, path, totalLength, reliefDomains);
+        }
+    }
+    else
+    {
+        // No bend relief subsegments, so bridge segments are just the original bridges
+        bendSegmentEdges = identifySegmentsByEdgeMidpoints(context, allEdgesAfterSplit, path, totalLength, bridgeDomains);
+    }
 
-    // Stitch segments are everything that's not a bend (the rip cuts between bridges)
-    const stitchSegmentEdges = qSubtraction(allEdgesAfterSplit, bendSegmentEdges);
+    // Stitch segments are everything that's not a bend or bend relief (the rip cuts between bridges)
+    const stitchSegmentEdges = qSubtraction(qSubtraction(allEdgesAfterSplit, bendSegmentEdges), bendReliefSegmentEdges);
 
     // Validate we have segments
     const bendSegmentCount = size(evaluateQuery(context, bendSegmentEdges));
+    const bendReliefSegmentCount = size(evaluateQuery(context, bendReliefSegmentEdges));
     const stitchCount = size(evaluateQuery(context, stitchSegmentEdges));
 
-    if (bendSegmentCount == 0 && stitchCount == 0)
+    if (bendSegmentCount == 0 && bendReliefSegmentCount == 0 && stitchCount == 0)
     {
         throw regenError("No edge segments found after splitting", ["entity"]);
     }
@@ -387,6 +510,11 @@ function processJointEntity(context is Context, id is Id, jointEntity is Query,
         if (bendSegmentCount > 0)
         {
             debug(context, bendSegmentEdges, DebugColor.GREEN);
+        }
+        // Show relief segments in red
+        if (bendReliefSegmentCount > 0)
+        {
+            debug(context, bendReliefSegmentEdges, DebugColor.RED);
         }
         // Show stitch (rip) segments in yellow
         if (stitchCount > 0)
@@ -407,17 +535,15 @@ function processJointEntity(context is Context, id is Id, jointEntity is Query,
             SMJointType.BEND, definition, false, true, defaultRadius, defaultKFactor);
     }
     
+    // Relief segments should have NO joint attributes - leave them as free edges
+    // The sheet metal system will apply bend relief when it detects bend edges adjacent to free edges
+    // This is the ONLY way sheet metal engine supports bend relief for stitch bends
+    
     // Apply RIP attributes to stitch segments
     if (stitchCount > 0)
     {
         applyJointAttributesToSegments(context, id + "stitches", stitchSegmentEdges, existingAttribute, 
             SMJointType.RIP, definition, false, false, undefined, undefined);
-    }
-    
-    // Apply corner attributes to bend end vertices if bend relief is needed
-    if (applyBendReliefAttributes && bendSegmentCount > 0)
-    {
-        applyBendReliefCornerAttributes(context, id + "bendRelief", bendSegmentEdges, bendReliefParams);
     }
     
     return allEdgesAfterSplitQuery;
@@ -739,109 +865,61 @@ function getBendReliefParameters(context is Context, entity is Query)
 }
 
 /**
- * Checks if bend relief corner attributes should be applied based on the model's bend relief style.
- * Corner attributes are applied to bend end vertices for non-TEAR styles.
- * NOTE: We do NOT create separate relief segments - instead we apply corner attributes to
- * the vertices at the ends of bend segments and let the sheet metal system create the relief.
+ * Checks if bend relief subsegments should be created based on the model's bend relief style.
+ * Subsegments are needed for non-TEAR styles to allow bend relief geometry to be created.
+ * NOTE: Sheet metal engine REQUIRES bend edges to be adjacent to free edges (null regions) for relief.
+ * Corner attributes on vertices between bend/rip edges do NOT work.
  * Inputs:
  *   bendReliefParams - Map containing bend relief parameters from getBendReliefParameters
- * Outputs: Boolean indicating whether to apply bend relief corner attributes
+ * Outputs: Boolean indicating whether to create bend relief subsegments
  */
-function shouldApplyBendReliefAttributes(bendReliefParams) returns boolean
+function shouldCreateBendReliefSubsegments(bendReliefParams) returns boolean
 {
     if (bendReliefParams == undefined || bendReliefParams.style == undefined)
     {
         return false;
     }
     
-    // Apply corner attributes for RECTANGLE and OBROUND styles
-    // TEAR style doesn't need explicit attributes
+    // Create subsegments for RECTANGLE and OBROUND styles
+    // TEAR style doesn't need subsegments as it doesn't create additional geometry
     return (bendReliefParams.style == SMReliefStyle.RECTANGLE || 
             bendReliefParams.style == SMReliefStyle.OBROUND);
 }
 
 /**
- * Applies corner (bend relief) attributes to the vertices at the ends of bend segment edges.
- * This allows the sheet metal system to create bend relief geometry at those corners.
+ * Calculates the size of bend relief subsegments based on sheet metal thickness and relief parameters.
+ * The subsegment should be large enough to accommodate the bend relief geometry.
+ * According to sheet metal standards, bend relief size is based on material thickness, not bend radius.
  * Inputs:
- *   context - Evaluation context
- *   id - Operation ID for attribute creation
- *   bendSegmentEdges - Query for bend segment edges
- *   bendReliefParams - Map containing bend relief parameters from the model
+ *   thickness - Sheet metal thickness
+ *   bendReliefParams - Map containing bend relief parameters
+ * Outputs: Length value for the subsegment size
  */
-function applyBendReliefCornerAttributes(context is Context, id is Id, 
-    bendSegmentEdges is Query, bendReliefParams)
+function calculateBendReliefSubsegmentSize(thickness, bendReliefParams) returns ValueWithUnits
+precondition
 {
-    // Only apply if we have valid bend relief parameters
-    if (bendReliefParams == undefined || bendReliefParams.style == undefined)
+    thickness == undefined || isLength(thickness);
+}
+{
+    // If thickness is not provided, return a minimal size
+    if (thickness == undefined)
     {
-        return;
+        return 0 * meter;
     }
     
-    // Get all vertices adjacent to bend segments
-    const bendEndVertices = qAdjacent(bendSegmentEdges, AdjacencyType.VERTEX, EntityType.VERTEX);
-    const bendEndVertexList = evaluateQuery(context, bendEndVertices);
-    
-    if (size(bendEndVertexList) == 0)
+    // Calculate based on bend relief depth scale
+    // Bend relief depth is typically thickness * depthScale (not radius!)
+    var depthScale = DEFAULT_BEND_RELIEF_DEPTH_SCALE;
+    if (bendReliefParams != undefined && bendReliefParams.depthScale != undefined)
     {
-        return;
+        depthScale = bendReliefParams.depthScale;
     }
     
-    // Create corner attributes for each bend end vertex
-    var vertexIndex = 0;
-    for (var vertex in bendEndVertexList)
-    {
-        const vertexQuery = qUnion([vertex]);
-        
-        // Check if vertex already has a corner attribute
-        const existingAttr = getCornerAttribute(context, vertexQuery);
-        if (existingAttr != undefined)
-        {
-            // Vertex already has corner attribute, skip it
-            vertexIndex += 1;
-            continue;
-        }
-        
-        // Create new corner attribute with bend relief settings
-        var cornerAttribute = makeSMCornerAttribute(toAttributeId(id + ("cornerAttr" ~ vertexIndex)));
-        
-        cornerAttribute.cornerStyle = {
-            "value" : bendReliefParams.style,
-            "canBeEdited" : false
-        };
-        
-        // Add scale parameters if available
-        if (bendReliefParams.depthScale != undefined)
-        {
-            cornerAttribute.bendReliefDepthScale = {
-                "value" : bendReliefParams.depthScale,
-                "canBeEdited" : false
-            };
-        }
-        
-        if (bendReliefParams.widthScale != undefined)
-        {
-            cornerAttribute.bendReliefScale = {
-                "value" : bendReliefParams.widthScale,
-                "canBeEdited" : false
-            };
-        }
-        
-        // Apply the corner attribute to this vertex
-        try
-        {
-            setAttribute(context, {
-                "entities" : vertexQuery,
-                "attribute" : cornerAttribute
-            });
-        }
-        catch
-        {
-            // If we can't set the attribute, continue with other vertices
-        }
-        
-        vertexIndex += 1;
-    }
+    // The bend relief depth is thickness * depthScale
+    // Use the size directly without safety margin to avoid self-intersecting geometry
+    const subsegmentSize = thickness * depthScale;
+    
+    return subsegmentSize;
 }
 
 /**
