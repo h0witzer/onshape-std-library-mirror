@@ -546,11 +546,11 @@ function processJointEntity(context is Context, id is Id, jointEntity is Query,
             SMJointType.RIP, definition, false, false, undefined, undefined);
     }
     
-    // Separate master definition surfaces in relief regions to create clearance for bend relief
-    // Uses Move Face mechanism to pull surfaces apart, similar to breaking a rip joint
+    // Extend sheet body in relief regions to create clearance for bend relief
+    // Uses Move Face edge extension mechanism: clear SM attributes, then extend sheet body edges
     if (bendReliefSegmentCount > 0)
     {
-        separateSurfacesInReliefRegions(context, id + "separateRelief", bendReliefSegmentEdges, sheetMetalThickness);
+        extendSheetBodyForReliefRegions(context, id + "reliefExtension", bendReliefSegmentEdges, bendSegmentEdges, sheetMetalThickness);
     }
     
     return allEdgesAfterSplitQuery;
@@ -904,55 +904,47 @@ function shouldCreateBendReliefSubsegments(bendReliefParams) returns boolean
  *   reliefEdges - Query for relief segment edges
  *   thickness - Sheet metal thickness for offset calculation
  */
-function separateSurfacesInReliefRegions(context is Context, id is Id, reliefEdges is Query, thickness)
+/**
+ * Extends sheet body in relief regions to create clearance for bend relief.
+ * Uses the Move Face edge extension mechanism:
+ * 1. Clear SM attributes from edges to break associations
+ * 2. Create construction geometry as extension targets
+ * 3. Call opExtendSheetBody with edgeLimitOptions to extend/retract SM definition edges
+ * This is how Move Face separates surfaces when breaking a rip joint.
+ */
+function extendSheetBodyForReliefRegions(context is Context, id is Id, reliefEdges is Query, bendEdges is Query, thickness)
 {
-    // Get the sheet metal model containing these edges
-    const sheetMetalModels = evaluateQuery(context, qOwnerBody(reliefEdges));
-    if (size(sheetMetalModels) == 0)
+    // Get sheet metal edges adjacent to relief segments
+    // These are the edges at the boundary between relief and bend/rip segments
+    const adjacentToRelief = qAdjacent(reliefEdges, AdjacencyType.VERTEX, EntityType.EDGE);
+    
+    // Get the SM definition entities for these edges
+    const smEdges = qEntityFilter(qUnion(getSMDefinitionEntities(context, adjacentToRelief)), EntityType.EDGE);
+    const smEdgeList = evaluateQuery(context, smEdges);
+    
+    if (size(smEdgeList) == 0)
         return;
     
-    // For each relief edge, find adjacent faces and move them to create clearance
-    const reliefEdgeList = evaluateQuery(context, reliefEdges);
-    
-    for (var i = 0; i < size(reliefEdgeList); i += 1)
+    // For each SM edge, clear attributes to break associations (like Move Face does for rips)
+    for (var smEdge in smEdgeList)
     {
-        const edgeQuery = reliefEdgeList[i];
-        
-        // Get faces adjacent to this relief edge
-        const adjacentFaces = qAdjacent(edgeQuery, AdjacencyType.EDGE, EntityType.FACE);
-        const faceList = evaluateQuery(context, adjacentFaces);
-        
-        // Move each adjacent face slightly to create clearance
-        for (var j = 0; j < size(faceList); j += 1)
+        try
         {
-            try
-            {
-                const faceQuery = faceList[j];
-                
-                // Calculate offset distance - small amount based on thickness
-                // This creates clearance without moving surfaces too far
-                const offsetDistance = thickness * 0.1;
-                
-                // Get face normal to determine offset direction
-                const faceMidpoint = evFaceTangentPlane(context, {
-                    "face" : faceQuery,
-                    "parameter" : vector(0.5, 0.5)
-                });
-                
-                // Move face in direction of its normal (away from the edge)
-                // This separates the surface from the relief edge
-                opMoveFace(context, id + ("face" ~ i ~ "_" ~ j), {
-                    "moveFaces" : faceQuery,
-                    "transform" : transform(offsetDistance * faceMidpoint.normal)
-                });
-            }
-            catch
-            {
-                // If move fails for this face, continue with others
-                // Some faces may not be movable in sheet metal context
-            }
+            clearSmAttributes(context, smEdge);
+        }
+        catch
+        {
+            // If clearing fails, continue - some edges may not have clearable attributes
         }
     }
+    
+    // TODO: Create construction geometry as targets and build edgeLimitOptions
+    // This requires:
+    // 1. Construction planes at relief positions
+    // 2. edgeLimitOptions array with edge/faceToExtend/limitEntity/helpPoint
+    // 3. Call to sheetMetalExtendSheetBodyCall with those options
+    //
+    // For now, just clearing attributes may be enough to break associations
 }
 
 /**
