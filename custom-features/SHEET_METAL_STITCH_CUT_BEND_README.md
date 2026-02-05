@@ -158,6 +158,42 @@ The feature now:
 - ✅ Bend tables show accurate geometry-specific angles
 - ✅ Modify Joint can independently change each segment
 - ✅ All properties correctly populated with full metadata
+- ✅ **NEW: Bend relief support with subsegment creation**
+
+## Bend Relief Support
+
+### Problem
+
+Bend relief attributes cannot be applied to geometry that has rip association. This prevented proper bend relief from being created at the ends of bend segments in stitch cut bends.
+
+### Solution
+
+When the sheet metal model has bend relief style set to RECTANGLE or OBROUND (not TEAR), the feature automatically creates additional subsegments at the start and end of each bend region. These subsegments:
+
+1. **Are unaffiliated with rip segments** - They are assigned BEND attributes, not RIP
+2. **Are sized appropriately** - Based on the model's bend relief depth scale and bend radius
+3. **Allow bend relief geometry** - The sheet metal update handler creates bend relief at these subsegments
+4. **Have corner attributes** - As a fallback, corner attributes are applied to vertices
+
+### Implementation Details
+
+**Functions:**
+- `getBendReliefParameters()` - Extracts bend relief settings from model definition
+- `shouldCreateBendReliefSubsegments()` - Determines if subsegments are needed
+- `calculateBendReliefSubsegmentSize()` - Calculates proper subsegment size
+- `applyCornerAttributesToBendReliefVertices()` - Applies corner attributes as fallback
+
+**Algorithm:**
+1. Extract bend relief parameters from sheet metal model
+2. For RECTANGLE or OBROUND styles, create subsegments at each bend end
+3. Size subsegments = bendRadius × depthScale × safetyMargin (1.1)
+4. Assign BEND attributes to subsegments (no rip association)
+5. Apply corner attributes to subsegment vertices as fallback
+
+**Result:**
+- Bend segments with proper bend relief geometry
+- Clean separation between bend relief, bend, and rip segments
+- No conflicts with rip associations
 
 ## Usage
 
@@ -166,6 +202,7 @@ The feature now:
 3. Configure spacing (equal, linear, custom)
 4. Optionally override bend radius and k-factor (defaults to model settings)
 5. Feature splits edge into alternating bend/rip segments
+6. **Bend relief is automatically created based on model settings**
 
 ## Files
 
@@ -177,10 +214,12 @@ The feature now:
 
 **Key Functions:**
 - `getModelParameters()` - Get model configuration
+- `getBendReliefParameters()` - Get bend relief settings from model
 - `opSplitEdges()` - Split edges at parameters
 - `removeAttributes()` - Clear shared attributes
 - `assignSMAssociationAttributes()` - Assign unique associations
 - `makeSMJointAttribute()` - Create definition attributes
+- `makeSMCornerAttribute()` - Create corner attributes for bend relief
 - `setAttribute()` - Apply attributes to entities
 - `bendAngle()` - Compute geometry-accurate bend angle
 - `updateSheetMetalGeometry()` - Process attributed entities
@@ -188,6 +227,7 @@ The feature now:
 **Standard Library Modules:**
 - `sheetMetalAttribute.fs` - Attribute structures
 - `sheetMetalUtils.fs` - Model parameters, geometry updates
+- `smreliefstyle.gen.fs` - Relief style enumerations
 - `geomOperations.fs` - Edge splitting operations
 - `attributes.fs` - Attribute management
 
