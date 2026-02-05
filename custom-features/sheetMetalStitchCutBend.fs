@@ -927,10 +927,12 @@ function extendSheetBodyForReliefRegions(context is Context, id is Id, reliefEdg
     // Build edge limit options array (like Move Face does)
     var edgeLimitOptions = [];
     
-    for (var smEdge in smEdgeList)
+    for (var i = 0; i < size(smEdgeList); i += 1)
     {
         try
         {
+            const smEdge = smEdgeList[i];
+            
             // Step 1: Clear SM attributes to break associations (like Move Face line 613)
             clearSmAttributes(context, smEdge);
             
@@ -943,48 +945,51 @@ function extendSheetBodyForReliefRegions(context is Context, id is Id, reliefEdg
             // Get the first face as the one to extend
             const faceToExtend = adjacentFaces[0];
             
-            // Step 3: Create construction plane as target for extension
-            // Get edge midpoint and tangent
-            const edgeTangentLine = evEdgeTangentLine(context, {
-                "edge" : smEdge,
-                "parameter" : 0.5
+            // Step 3: Extract face as surface tool body (like Move Face line 571)
+            const extractId = id + ("extract" ~ i);
+            opExtractSurface(context, extractId, {
+                "faces" : faceToExtend
             });
+            const extractedSurface = qCreatedBy(extractId, EntityType.FACE);
             
-            // Get face normal at edge
+            // Step 4: Offset the extracted surface to create limitEntity (like Move Face line 575)
+            // Get face normal to determine offset direction
             const facePlane = evFaceTangentPlane(context, {
                 "face" : faceToExtend,
                 "parameter" : vector(0.5, 0.5)
             });
             
-            // Calculate retraction direction (opposite of face normal)
-            const retractionDirection = -facePlane.normal;
+            // Calculate offset direction (inward, opposite of face normal for retraction)
+            const offsetDirection = -facePlane.normal;
             
-            // Create target point at retracted position
-            const targetPoint = edgeTangentLine.origin + retractionDirection * retractionDistance;
-            
-            // Create construction plane at target position
-            const planeId = id + ("plane" ~ size(edgeLimitOptions));
-            opPlane(context, planeId, {
-                "plane" : plane(targetPoint, retractionDirection)
+            // Offset the extracted surface
+            const offsetId = id + ("offset" ~ i);
+            opOffsetFace(context, offsetId, {
+                "moveFaces" : extractedSurface,
+                "offsetDistance" : retractionDistance,
+                "direction" : offsetDirection
             });
-            const limitEntity = qCreatedBy(planeId, EntityType.FACE);
+            const limitEntity = qCreatedBy(offsetId, EntityType.FACE);
             
-            // Step 4: Build edge limit option
+            // Step 5: Calculate helpPoint (center of offset face, like Move Face line 587)
+            const helpPoint = facePlane.origin + offsetDirection * retractionDistance;
+            
+            // Step 6: Build edge limit option
             edgeLimitOptions = append(edgeLimitOptions, {
                 "edge" : smEdge,
                 "faceToExtend" : faceToExtend,
                 "limitEntity" : limitEntity,
-                "helpPoint" : targetPoint
+                "helpPoint" : helpPoint
             });
         }
-        catch (error)
+        catch
         {
             // If any step fails for this edge, skip it and continue
             // Some edges may not be extensible
         }
     }
     
-    // Step 5: Call opExtendSheetBody with edge limit options (like Move Face)
+    // Step 7: Call opExtendSheetBody with edge limit options (like Move Face line 1101-1106)
     if (size(edgeLimitOptions) > 0)
     {
         try
@@ -992,10 +997,11 @@ function extendSheetBodyForReliefRegions(context is Context, id is Id, reliefEdg
             sheetMetalExtendSheetBodyCall(context, id, {
                 "entities" : qUnion(smEdgeList),
                 "extendMethod" : ExtendSheetBoundingType.EXTEND_TO_SURFACE,
-                "edgeLimitOptions" : edgeLimitOptions
+                "edgeLimitOptions" : edgeLimitOptions,
+                "fence" : true  // Critical parameter from Move Face
             });
         }
-        catch (error)
+        catch
         {
             // If extension fails, the cleared attributes still broke associations
             // which may be enough
