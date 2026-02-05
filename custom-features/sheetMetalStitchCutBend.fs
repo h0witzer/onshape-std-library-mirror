@@ -476,6 +476,10 @@ function processJointEntity(context is Context, id is Id, jointEntity is Query,
     {
         applyJointAttributesToSegments(context, id + "bendReliefs", bendReliefSegmentEdges, existingAttribute, 
             SMJointType.BEND, definition, false, true, defaultRadius, defaultKFactor);
+        
+        // As a fallback mechanism, also apply corner attributes to the vertices
+        // of bend relief subsegments to ensure bend relief geometry is created
+        applyCornerAttributesToBendReliefVertices(context, id + "cornerAttrs", bendReliefSegmentEdges, bendReliefParams);
     }
 
     if (stitchCount > 0)
@@ -848,6 +852,91 @@ precondition
     const subsegmentSize = bendRadius * depthScale * 1.1;
     
     return subsegmentSize;
+}
+
+/**
+ * Applies corner (bend relief) attributes to vertices of bend relief subsegments if needed.
+ * This is a fallback mechanism in case the unaffiliated subsegments don't automatically
+ * receive bend relief geometry from the sheet metal update handler.
+ * Inputs:
+ *   context - Evaluation context
+ *   id - Operation ID for attribute creation
+ *   bendReliefSegmentEdges - Query for bend relief subsegment edges
+ *   bendReliefParams - Map containing bend relief parameters from the model
+ */
+function applyCornerAttributesToBendReliefVertices(context is Context, id is Id, 
+    bendReliefSegmentEdges is Query, bendReliefParams)
+{
+    // Only apply if we have valid bend relief parameters
+    if (bendReliefParams == undefined || bendReliefParams.style == undefined)
+    {
+        return;
+    }
+    
+    // Get all vertices from the bend relief subsegment edges
+    const vertices = qAdjacent(bendReliefSegmentEdges, AdjacencyType.VERTEX, EntityType.VERTEX);
+    const vertexList = evaluateQuery(context, vertices);
+    
+    if (size(vertexList) == 0)
+    {
+        return;
+    }
+    
+    // Create corner attributes for each vertex
+    var vertexIndex = 0;
+    for (var vertex in vertexList)
+    {
+        const vertexQuery = qUnion([vertex]);
+        
+        // Check if vertex already has a corner attribute
+        const existingAttr = getCornerAttribute(context, vertexQuery);
+        if (existingAttr != undefined)
+        {
+            // Vertex already has corner attribute, skip it
+            vertexIndex += 1;
+            continue;
+        }
+        
+        // Create new corner attribute with bend relief settings
+        var cornerAttribute = makeSMCornerAttribute(toAttributeId(id + ("cornerAttr" ~ vertexIndex)));
+        
+        cornerAttribute.cornerStyle = {
+            "value" : bendReliefParams.style,
+            "canBeEdited" : false
+        };
+        
+        // Add scale parameters if available
+        if (bendReliefParams.depthScale != undefined)
+        {
+            cornerAttribute.bendReliefDepthScale = {
+                "value" : bendReliefParams.depthScale,
+                "canBeEdited" : false
+            };
+        }
+        
+        if (bendReliefParams.widthScale != undefined)
+        {
+            cornerAttribute.bendReliefScale = {
+                "value" : bendReliefParams.widthScale,
+                "canBeEdited" : false
+            };
+        }
+        
+        // Apply the corner attribute to this vertex
+        try
+        {
+            setAttribute(context, {
+                "entities" : vertexQuery,
+                "attribute" : cornerAttribute
+            });
+        }
+        catch
+        {
+            // If we can't set the attribute, continue with other vertices
+        }
+        
+        vertexIndex += 1;
+    }
 }
 
 /**
