@@ -32,6 +32,8 @@ export import(path : "c51f6558b7346f455a634ff5/cf14633de6fca78124306ce9/8ce82028
 const EDGE_LENGTH_TOLERANCE = 1e-9 * meter;
 const EDGE_PARAMETER_TOLERANCE = 1e-6;
 const FRACTION_TOLERANCE = 1e-9;
+const DEFAULT_BEND_RELIEF_DEPTH_SCALE = 1.5; // Default depth scale when not specified in model
+const BEND_RELIEF_SAFETY_MARGIN = 1.1; // Safety margin multiplier for subsegment sizing
 
 export const BRIDGE_WIDTH_BOUNDS =
 {
@@ -270,15 +272,15 @@ function processJointEntity(context is Context, id is Id, jointEntity is Query,
     }
 
     // Determine if we need to create bend relief subsegments
-    // Get the actual bend radius that will be used
-    var actualBendRadius = definition.useDefaultRadius ? defaultRadius : definition.radius;
+    // Get the effective bend radius that will be used
+    var effectiveBendRadius = definition.useDefaultRadius ? defaultRadius : definition.radius;
     const createBendReliefSubsegments = shouldCreateBendReliefSubsegments(bendReliefParams);
     
     // If bend relief subsegments are needed, calculate their size and add them to the split parameters
     var bendReliefSubsegmentSize = 0 * meter;
     if (createBendReliefSubsegments)
     {
-        bendReliefSubsegmentSize = calculateBendReliefSubsegmentSize(context, actualBendRadius, bendReliefParams);
+        bendReliefSubsegmentSize = calculateBendReliefSubsegmentSize(context, effectiveBendRadius, bendReliefParams);
     }
     
     // Create modified bridge domains that include bend relief subsegments
@@ -841,15 +843,15 @@ precondition
 {
     // Calculate based on bend relief depth scale
     // The subsegment needs to be at least as large as the bend relief depth
-    var depthScale = 1.5; // Default value
+    var depthScale = DEFAULT_BEND_RELIEF_DEPTH_SCALE;
     if (bendReliefParams != undefined && bendReliefParams.depthScale != undefined)
     {
         depthScale = bendReliefParams.depthScale;
     }
     
     // The bend relief depth is typically radius * depthScale
-    // Add a small safety margin to ensure the subsegment is large enough
-    const subsegmentSize = bendRadius * depthScale * 1.1;
+    // Add a safety margin to ensure the subsegment is large enough
+    const subsegmentSize = bendRadius * depthScale * BEND_RELIEF_SAFETY_MARGIN;
     
     return subsegmentSize;
 }
