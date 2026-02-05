@@ -170,10 +170,10 @@ Bend relief attributes cannot be applied to geometry that has rip association. T
 
 When the sheet metal model has bend relief style set to RECTANGLE or OBROUND (not TEAR), the feature automatically creates additional subsegments at the start and end of each bend region. These subsegments:
 
-1. **Have NO attributes** - Relief segments are left unattributed, acting as free edges at sheet ends
-2. **Are sized based on material thickness** - Uses `thickness × depthScale × safetyMargin`, not bend radius
-3. **Allow bend relief geometry** - The sheet metal update handler creates bend relief at junction vertices
-4. **Have corner attributes at junctions** - Corner attributes applied to vertices between relief and bend segments
+1. **Have NO attributes** - Relief segments are left unattributed, acting as free edges
+2. **Are sized based on material thickness** - Uses `thickness × depthScale` (no safety margin)
+3. **Positioned outside bridge domains** - Extend into adjacent rip regions, not inside bends
+4. **Allow automatic bend relief** - Sheet metal system applies relief based on model defaults
 
 ### Implementation Details
 
@@ -181,33 +181,31 @@ When the sheet metal model has bend relief style set to RECTANGLE or OBROUND (no
 - `getBendReliefParameters()` - Extracts bend relief settings from model definition
 - `shouldCreateBendReliefSubsegments()` - Determines if subsegments are needed
 - `calculateBendReliefSubsegmentSize()` - Calculates proper subsegment size based on thickness
-- `calculateSplitParametersFromDomains()` - Tracks which splits create bend-to-relief junctions
-- `applyCornerAttributesToBendReliefVertices()` - Uses `qCreatedBy` to apply corner attributes to junction vertices
 
 **Algorithm:**
 1. Extract bend relief parameters and thickness from sheet metal model
-2. For RECTANGLE or OBROUND styles, create subsegments at each bend end
+2. For RECTANGLE or OBROUND styles, create subsegments outside each bend domain
 3. Size subsegments = `thickness × depthScale` (directly from model, no safety margin)
-4. Track which domain boundaries are bend-to-relief junctions during domain processing
-5. During edge splitting, store operation IDs for bend-to-relief splits
-6. Leave relief segments **unattributed** (no bend or rip attributes)
-7. Use `qCreatedBy` to get vertices from bend-to-relief split operations
-8. Apply corner attributes only to those specific vertices
+4. Position relief segments BEFORE bridge start and AFTER bridge end (in rip regions)
+5. Leave relief segments **completely unattributed** (no joint or corner attributes)
+6. Sheet metal system automatically applies bend relief when it detects bend edges adjacent to free edges
 
 **Result:**
-- Relief segments act as free edges
-- Subsegments sized exactly to accommodate bend relief geometry without excess
-- Corner attributes at bend-to-relief junctions trigger bend relief geometry creation
-- No adjacency checks needed - vertices identified by split operation
-- Correctly handles edge pattern: `bend-relief-bend-relief-rip-relief-bend...`
-- Skips relief-to-rip junctions and end vertices without relief
-- No self-intersecting geometry from oversized relief segments
+- Relief segments act as free edges in rip regions
+- Bridge domains preserve full specified width
+- Subsegments sized exactly for bend relief without excess
+- **No explicit corner attributes** - Sheet metal system handles automatically
+- No self-intersecting geometry
+- Bend relief applied from model-level defaults
 
 **Design Pattern:**
 ```
 [Relief-Free][Bend-Attributed][Relief-Free][Rip-Attributed][Relief-Free]
       ↑             ↑              ↑              ↑              ↑
-      |       Corner attr          |           No attr          |
+   No attr      BEND attr       No attr        RIP attr      No attr
+   
+Bend relief applied automatically where BEND edges meet free edges
+```
    (from split)    here       (from split)                (from split)
    
 Only bend→relief splits create attributed vertices
