@@ -25,6 +25,7 @@ import(path : "onshape/std/modifyFillet.fs", version : "2856.0");
 import(path : "onshape/std/string.fs", version : "2856.0");
 import(path : "onshape/std/path.fs", version : "2856.0");
 import(path : "onshape/std/geomOperations.fs", version : "2856.0");
+import(path : "onshape/std/debug.fs", version : "2856.0");
 
 // Import spacing utilities for bridge/stitch spacing logic
 export import(path : "c51f6558b7346f455a634ff5/cf14633de6fca78124306ce9/8ce820287d75ed2e92412d90", version : "cf26b6d26aa41f8853237904"); // spacingUtils.fs
@@ -78,6 +79,10 @@ export const sheetMetalStitchCutBend = defineSheetMetalFeature(function(context 
 
         // Use centralized spacing predicate from spacingUtils
         curvePatternSpacingPredicate(definition);
+        
+        // Debug visualization
+        annotation { "Name" : "Show debug entities", "Default" : false, "UIHint" : UIHint.ALWAYS_HIDDEN }
+        definition.showDebug is boolean;
     }
     {
         // Validate sheet metal context
@@ -372,6 +377,12 @@ function processJointEntity(context is Context, id is Id, jointEntity is Query,
         }
     }
 
+    // Debug visualization of domains
+    if (definition.showDebug)
+    {
+        visualizeDomains(context, path, totalLength, bridgeDomains, allDomains);
+    }
+
     // Use mixInTracking pattern: union the original query with a tracking query
     const trackedEdges = qUnion([orderedEdgeQuery, startTracking(context, orderedEdgeQuery)]);
 
@@ -496,6 +507,26 @@ function processJointEntity(context is Context, id is Id, jointEntity is Query,
     if (bendSegmentCount == 0 && bendReliefSegmentCount == 0 && stitchCount == 0)
     {
         throw regenError("No edge segments found after splitting", ["entity"]);
+    }
+
+    // Debug visualization of classified segments
+    if (definition.showDebug)
+    {
+        // Show bend segments in green
+        if (bendSegmentCount > 0)
+        {
+            debug(context, bendSegmentEdges, DebugColor.GREEN);
+        }
+        // Show relief segments in red
+        if (bendReliefSegmentCount > 0)
+        {
+            debug(context, bendReliefSegmentEdges, DebugColor.RED);
+        }
+        // Show stitch (rip) segments in yellow
+        if (stitchCount > 0)
+        {
+            debug(context, stitchSegmentEdges, DebugColor.YELLOW);
+        }
     }
 
     // Step 4: Apply unique definition attributes to each segment
@@ -1298,6 +1329,137 @@ function identifySegmentsByEdgeMidpoints(context is Context, allSplitEdges is Qu
     }
 
     return qUnion(domainEdgeQueries);
+}
+
+/**
+ * Visualizes domains as debug entities on the edge path.
+ * Shows original bridge domains, bend relief segments, and bend segments with different colors.
+ * Inputs:
+ *   context - Evaluation context
+ *   path - Ordered path of edges
+ *   totalLength - Total length of the edge chain
+ *   bridgeDomains - Original bridge domains
+ *   allDomains - All domains including bend relief subsegments
+ */
+function visualizeDomains(context is Context, path is Path, totalLength is ValueWithUnits, 
+    bridgeDomains is array, allDomains is array)
+{
+    // Visualize original bridge domains in blue
+    for (var domain in bridgeDomains)
+    {
+        const startPos = evEdgeTangentLine(context, {
+            "edge" : path.edges[0],
+            "parameter" : 0
+        }).origin;
+        
+        const startParam = domain.start;
+        const endParam = domain.end;
+        
+        // Calculate positions along the path
+        var accumulatedLength = 0 * meter;
+        var startPoint = undefined;
+        var endPoint = undefined;
+        
+        for (var edge in path.edges)
+        {
+            const edgeLength = evLength(context, { "entities" : edge });
+            const edgeStartParam = accumulatedLength / totalLength;
+            const edgeEndParam = (accumulatedLength + edgeLength) / totalLength;
+            
+            // Check if start is on this edge
+            if (startPoint == undefined && startParam >= edgeStartParam - FRACTION_TOLERANCE && startParam <= edgeEndParam + FRACTION_TOLERANCE)
+            {
+                const localParam = (startParam - edgeStartParam) / (edgeEndParam - edgeStartParam);
+                const edgeData = evEdgeTangentLine(context, {
+                    "edge" : edge,
+                    "parameter" : localParam
+                });
+                startPoint = edgeData.origin;
+            }
+            
+            // Check if end is on this edge
+            if (endPoint == undefined && endParam >= edgeStartParam - FRACTION_TOLERANCE && endParam <= edgeEndParam + FRACTION_TOLERANCE)
+            {
+                const localParam = (endParam - edgeStartParam) / (edgeEndParam - edgeStartParam);
+                const edgeData = evEdgeTangentLine(context, {
+                    "edge" : edge,
+                    "parameter" : localParam
+                });
+                endPoint = edgeData.origin;
+            }
+            
+            accumulatedLength += edgeLength;
+        }
+        
+        if (startPoint != undefined && endPoint != undefined)
+        {
+            // Draw arrow from start to end to show domain extent
+            debug(context, line(startPoint, normalize(endPoint - startPoint)), DebugColor.BLUE);
+        }
+    }
+    
+    // Visualize all domains (including relief) with different colors
+    for (var domain in allDomains)
+    {
+        const startParam = domain.start;
+        const endParam = domain.end;
+        const segmentType = domain.segmentType;
+        
+        // Calculate positions along the path
+        var accumulatedLength = 0 * meter;
+        var startPoint = undefined;
+        var endPoint = undefined;
+        
+        for (var edge in path.edges)
+        {
+            const edgeLength = evLength(context, { "entities" : edge });
+            const edgeStartParam = accumulatedLength / totalLength;
+            const edgeEndParam = (accumulatedLength + edgeLength) / totalLength;
+            
+            // Check if start is on this edge
+            if (startPoint == undefined && startParam >= edgeStartParam - FRACTION_TOLERANCE && startParam <= edgeEndParam + FRACTION_TOLERANCE)
+            {
+                const localParam = (startParam - edgeStartParam) / (edgeEndParam - edgeStartParam);
+                const edgeData = evEdgeTangentLine(context, {
+                    "edge" : edge,
+                    "parameter" : localParam
+                });
+                startPoint = edgeData.origin;
+            }
+            
+            // Check if end is on this edge
+            if (endPoint == undefined && endParam >= edgeStartParam - FRACTION_TOLERANCE && endParam <= edgeEndParam + FRACTION_TOLERANCE)
+            {
+                const localParam = (endParam - edgeStartParam) / (edgeEndParam - edgeStartParam);
+                const edgeData = evEdgeTangentLine(context, {
+                    "edge" : edge,
+                    "parameter" : localParam
+                });
+                endPoint = edgeData.origin;
+            }
+            
+            accumulatedLength += edgeLength;
+        }
+        
+        if (startPoint != undefined && endPoint != undefined)
+        {
+            // Choose color based on segment type
+            var color = DebugColor.GREEN; // Default for bend
+            if (segmentType == "bendRelief")
+            {
+                color = DebugColor.RED; // Relief segments in red
+            }
+            
+            // Draw arrow to show domain extent and direction
+            const direction = normalize(endPoint - startPoint);
+            const midpoint = (startPoint + endPoint) / 2;
+            debug(context, line(midpoint, direction), color);
+            
+            // Add small marker at start and end
+            debug(context, startPoint, color);
+            debug(context, endPoint, color);
+        }
+    }
 }
 
 /**
