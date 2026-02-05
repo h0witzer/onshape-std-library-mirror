@@ -315,7 +315,7 @@ function processJointEntity(context is Context, id is Id, jointEntity is Query,
     }
     
     // Create modified bridge domains that include bend relief subsegments
-    // The subsegments are created at each end of each bridge domain
+    // The subsegments should extend OUTSIDE the bridge boundaries into adjacent rip regions
     var allDomains = [];
     for (var bridgeDomain in bridgeDomains)
     {
@@ -324,45 +324,42 @@ function processJointEntity(context is Context, id is Id, jointEntity is Query,
             // Convert subsegment size to normalized parameter
             const subsegmentParam = bendReliefSubsegmentSize / totalLength;
             
-            // Create relief subsegment at start of bridge
-            const startReliefStart = bridgeDomain.start;
-            const startReliefEnd = bridgeDomain.start + subsegmentParam;
+            // Create relief subsegment BEFORE bridge start (extending into rip region)
+            const startReliefStart = bridgeDomain.start - subsegmentParam;
+            const startReliefEnd = bridgeDomain.start;
             
-            // Create relief subsegment at end of bridge  
-            const endReliefStart = bridgeDomain.end - subsegmentParam;
-            const endReliefEnd = bridgeDomain.end;
+            // Create relief subsegment AFTER bridge end (extending into rip region)
+            const endReliefStart = bridgeDomain.end;
+            const endReliefEnd = bridgeDomain.end + subsegmentParam;
             
-            // Only add subsegments if they don't make the bridge negative or too small
-            if (startReliefEnd < endReliefStart)
+            // Validate relief segments are within bounds [0, 1]
+            const startReliefValid = startReliefStart >= -FRACTION_TOLERANCE && startReliefEnd <= 1 + FRACTION_TOLERANCE;
+            const endReliefValid = endReliefStart >= -FRACTION_TOLERANCE && endReliefEnd <= 1 + FRACTION_TOLERANCE;
+            
+            // Add start relief subsegment if it's within bounds
+            if (startReliefValid && startReliefStart >= 0)
             {
-                // Add start relief subsegment
                 allDomains = append(allDomains, {
-                    "start" : startReliefStart,
+                    "start" : max(0, startReliefStart),
                     "end" : startReliefEnd,
                     "segmentType" : "bendRelief"
                 });
-                
-                // Add the main bridge domain (now smaller)
-                allDomains = append(allDomains, {
-                    "start" : startReliefEnd,
-                    "end" : endReliefStart,
-                    "segmentType" : "bend"
-                });
-                
-                // Add end relief subsegment
+            }
+            
+            // Add the main bridge domain (unchanged)
+            allDomains = append(allDomains, {
+                "start" : bridgeDomain.start,
+                "end" : bridgeDomain.end,
+                "segmentType" : "bend"
+            });
+            
+            // Add end relief subsegment if it's within bounds
+            if (endReliefValid && endReliefEnd <= 1)
+            {
                 allDomains = append(allDomains, {
                     "start" : endReliefStart,
-                    "end" : endReliefEnd,
+                    "end" : min(1, endReliefEnd),
                     "segmentType" : "bendRelief"
-                });
-            }
-            else
-            {
-                // Bridge is too small for subsegments, just use the original bridge
-                allDomains = append(allDomains, {
-                    "start" : bridgeDomain.start,
-                    "end" : bridgeDomain.end,
-                    "segmentType" : "bend"
                 });
             }
         }
