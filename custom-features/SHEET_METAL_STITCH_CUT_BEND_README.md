@@ -170,30 +170,39 @@ Bend relief attributes cannot be applied to geometry that has rip association. T
 
 When the sheet metal model has bend relief style set to RECTANGLE or OBROUND (not TEAR), the feature automatically creates additional subsegments at the start and end of each bend region. These subsegments:
 
-1. **Are unaffiliated with rip segments** - They are assigned BEND attributes, not RIP
-2. **Are sized appropriately** - Based on the model's bend relief depth scale and bend radius
-3. **Allow bend relief geometry** - The sheet metal update handler creates bend relief at these subsegments
-4. **Have corner attributes** - As a fallback, corner attributes are applied to vertices
+1. **Have NO attributes** - Relief segments are left unattributed, acting as free edges at sheet ends
+2. **Are sized based on material thickness** - Uses `thickness × depthScale × safetyMargin`, not bend radius
+3. **Allow bend relief geometry** - The sheet metal update handler creates bend relief at junction vertices
+4. **Have corner attributes at junctions** - Corner attributes applied to vertices between relief and bend segments
 
 ### Implementation Details
 
 **Functions:**
 - `getBendReliefParameters()` - Extracts bend relief settings from model definition
 - `shouldCreateBendReliefSubsegments()` - Determines if subsegments are needed
-- `calculateBendReliefSubsegmentSize()` - Calculates proper subsegment size
-- `applyCornerAttributesToBendReliefVertices()` - Applies corner attributes as fallback
+- `calculateBendReliefSubsegmentSize()` - Calculates proper subsegment size based on thickness
+- `applyCornerAttributesToBendReliefVertices()` - Applies corner attributes to junction vertices
 
 **Algorithm:**
 1. Extract bend relief parameters from sheet metal model
 2. For RECTANGLE or OBROUND styles, create subsegments at each bend end
-3. Size subsegments = bendRadius × depthScale × safetyMargin (1.1)
-4. Assign BEND attributes to subsegments (no rip association)
-5. Apply corner attributes to subsegment vertices as fallback
+3. Size subsegments = `thickness × depthScale × safetyMargin (1.1)`
+4. Leave relief segments **unattributed** (no bend or rip attributes)
+5. Apply corner attributes to vertices **between** relief and bend segments
 
 **Result:**
-- Bend segments with proper bend relief geometry
+- Relief segments act as free edges
+- Corner attributes at junctions trigger bend relief geometry creation
 - Clean separation between bend relief, bend, and rip segments
 - No conflicts with rip associations
+
+**Design Pattern:**
+```
+[Relief-Free][Bend-Attributed][Relief-Free]
+     ↑              ↑              ↑
+     |         Corner attr         |
+   No attr    applied here      No attr
+```
 
 ## Usage
 
