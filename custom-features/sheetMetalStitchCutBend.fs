@@ -10,6 +10,7 @@ export import(path : "onshape/std/smjointstyle.gen.fs", version : "2856.0");
 
 // Imports used internally
 import(path : "onshape/std/common.fs", version : "2856.0");
+import(path : "onshape/std/smreliefstyle.gen.fs", version : "2856.0");
 import(path : "onshape/std/query.fs", version : "2856.0");
 import(path : "onshape/std/evaluate.fs", version : "2856.0");
 import(path : "onshape/std/valueBounds.fs", version : "2856.0");
@@ -108,6 +109,8 @@ export const sheetMetalStitchCutBend = defineSheetMetalFeature(function(context 
         // Once edges are split and attributes removed, we can't query the model anymore
         var defaultRadius;
         var defaultKFactor;
+        var bendReliefParams;
+        
         if (definition.useDefaultRadius)
         {
             defaultRadius = getDefaultSheetMetalRadius(context, definition.entity);
@@ -116,6 +119,10 @@ export const sheetMetalStitchCutBend = defineSheetMetalFeature(function(context 
         {
             defaultKFactor = getDefaultSheetMetalKFactor(context, definition.entity);
         }
+        
+        // Extract bend relief parameters from the model definition
+        // These will be used to create subsegments if needed
+        bendReliefParams = getBendReliefParameters(context, definition.entity);
 
         // Collect all processed edges for final update
         var allProcessedEdges = [];
@@ -125,7 +132,7 @@ export const sheetMetalStitchCutBend = defineSheetMetalFeature(function(context 
         for (var jointEntity in jointEdgeEntities)
         {
             const processedEdges = processJointEntity(context, id + ("entity" ~ entityIndex), 
-                jointEntity, definition, defaultRadius, defaultKFactor);
+                jointEntity, definition, defaultRadius, defaultKFactor, bendReliefParams);
             allProcessedEdges = append(allProcessedEdges, processedEdges);
             entityIndex += 1;
         }
@@ -153,10 +160,11 @@ export const sheetMetalStitchCutBend = defineSheetMetalFeature(function(context 
  *   definition - Feature definition with parameters
  *   defaultRadius - Default bend radius for the model
  *   defaultKFactor - Default K-factor for the model
+ *   bendReliefParams - Bend relief parameters from the model (optional)
  * Outputs: Query for all processed edges from this joint entity
  */
 function processJointEntity(context is Context, id is Id, jointEntity is Query, 
-    definition is map, defaultRadius, defaultKFactor) returns Query
+    definition is map, defaultRadius, defaultKFactor, bendReliefParams) returns Query
 {
     // Get existing attribute to understand current joint state
     var existingAttribute = getJointAttribute(context, jointEntity);
@@ -261,11 +269,86 @@ function processJointEntity(context is Context, id is Id, jointEntity is Query,
         throw regenError("Resultant bridges would overlap. Adjust spacing parameters to avoid overlapping bridges.", ["bridgeWidth", "instanceCount"]);
     }
 
+    // Determine if we need to create bend relief subsegments
+    // Get the actual bend radius that will be used
+    var actualBendRadius = definition.useDefaultRadius ? defaultRadius : definition.radius;
+    const createBendReliefSubsegments = shouldCreateBendReliefSubsegments(bendReliefParams);
+    
+    // If bend relief subsegments are needed, calculate their size and add them to the split parameters
+    var bendReliefSubsegmentSize = 0 * meter;
+    if (createBendReliefSubsegments)
+    {
+        bendReliefSubsegmentSize = calculateBendReliefSubsegmentSize(context, actualBendRadius, bendReliefParams);
+    }
+    
+    // Create modified bridge domains that include bend relief subsegments
+    // The subsegments are created at each end of each bridge domain
+    var allDomains = [];
+    for (var bridgeDomain in bridgeDomains)
+    {
+        if (createBendReliefSubsegments && bendReliefSubsegmentSize > EDGE_LENGTH_TOLERANCE)
+        {
+            // Convert subsegment size to normalized parameter
+            const subsegmentParam = bendReliefSubsegmentSize / totalLength;
+            
+            // Create relief subsegment at start of bridge
+            const startReliefStart = bridgeDomain.start;
+            const startReliefEnd = bridgeDomain.start + subsegmentParam;
+            
+            // Create relief subsegment at end of bridge  
+            const endReliefStart = bridgeDomain.end - subsegmentParam;
+            const endReliefEnd = bridgeDomain.end;
+            
+            // Only add subsegments if they don't make the bridge negative or too small
+            if (startReliefEnd < endReliefStart)
+            {
+                // Add start relief subsegment
+                allDomains = append(allDomains, {
+                    "start" : startReliefStart,
+                    "end" : startReliefEnd,
+                    "type" : "bendRelief"
+                });
+                
+                // Add the main bridge domain (now smaller)
+                allDomains = append(allDomains, {
+                    "start" : startReliefEnd,
+                    "end" : endReliefStart,
+                    "type" : "bend"
+                });
+                
+                // Add end relief subsegment
+                allDomains = append(allDomains, {
+                    "start" : endReliefStart,
+                    "end" : endReliefEnd,
+                    "type" : "bendRelief"
+                });
+            }
+            else
+            {
+                // Bridge is too small for subsegments, just use the original bridge
+                allDomains = append(allDomains, {
+                    "start" : bridgeDomain.start,
+                    "end" : bridgeDomain.end,
+                    "type" : "bend"
+                });
+            }
+        }
+        else
+        {
+            // No bend relief subsegments needed, just use the original bridge
+            allDomains = append(allDomains, {
+                "start" : bridgeDomain.start,
+                "end" : bridgeDomain.end,
+                "type" : "bend"
+            });
+        }
+    }
+
     // Use mixInTracking pattern: union the original query with a tracking query
     const trackedEdges = qUnion([orderedEdgeQuery, startTracking(context, orderedEdgeQuery)]);
 
-    // Split the edges at bridge boundaries (domains represent bridges, so we need both start and end points)
-    const splitParameters = calculateSplitParametersFromDomains(bridgeDomains);
+    // Split the edges at all domain boundaries (bridges and bend relief subsegments)
+    const splitParameters = calculateSplitParametersFromDomains(allDomains);
     const splitInstructions = calculateEdgeSplitInstructionsFromParameters(context, path, splitParameters);
 
     if (size(splitInstructions) == 0)
@@ -320,28 +403,78 @@ function processJointEntity(context is Context, id is Id, jointEntity is Query,
     // Step 3: Assign unique association attributes to each segment
     assignSMAssociationAttributes(context, allEdgesAfterSplitQuery);
 
-    // Bridge segments are the ones that fall within the calculated domains (the bend connections)
-    const bridgeSegmentEdges = identifySegmentsByEdgeMidpoints(context, allEdgesAfterSplit, path, totalLength, bridgeDomains);
+    // Identify segments by their domain type
+    // Separate bend, bendRelief, and stitch (rip) segments
+    var bendSegmentEdges = qNothing();
+    var bendReliefSegmentEdges = qNothing();
+    
+    if (createBendReliefSubsegments)
+    {
+        // When bend relief subsegments exist, identify them separately
+        // Filter allDomains to get only bend and bendRelief domains
+        var bendDomains = [];
+        var reliefDomains = [];
+        
+        for (var domain in allDomains)
+        {
+            if (domain.type == "bend")
+            {
+                bendDomains = append(bendDomains, domain);
+            }
+            else if (domain.type == "bendRelief")
+            {
+                reliefDomains = append(reliefDomains, domain);
+            }
+        }
+        
+        // Identify bend segments (main bridge segments without relief subsegments)
+        if (size(bendDomains) > 0)
+        {
+            bendSegmentEdges = identifySegmentsByEdgeMidpoints(context, allEdgesAfterSplit, path, totalLength, bendDomains);
+        }
+        
+        // Identify bend relief subsegments
+        if (size(reliefDomains) > 0)
+        {
+            bendReliefSegmentEdges = identifySegmentsByEdgeMidpoints(context, allEdgesAfterSplit, path, totalLength, reliefDomains);
+        }
+    }
+    else
+    {
+        // No bend relief subsegments, so bridge segments are just the original bridges
+        bendSegmentEdges = identifySegmentsByEdgeMidpoints(context, allEdgesAfterSplit, path, totalLength, bridgeDomains);
+    }
 
-    // Stitch segments are everything else (the rip cuts between bridges)
-    const stitchSegmentEdges = qSubtraction(allEdgesAfterSplit, bridgeSegmentEdges);
+    // Stitch segments are everything that's not a bend or bend relief (the rip cuts between bridges)
+    const stitchSegmentEdges = qSubtraction(qSubtraction(allEdgesAfterSplit, bendSegmentEdges), bendReliefSegmentEdges);
 
-    // Validate we have both types of segments
-    const bridgeSegmentCount = size(evaluateQuery(context, bridgeSegmentEdges));
+    // Validate we have segments
+    const bendSegmentCount = size(evaluateQuery(context, bendSegmentEdges));
+    const bendReliefSegmentCount = size(evaluateQuery(context, bendReliefSegmentEdges));
     const stitchCount = size(evaluateQuery(context, stitchSegmentEdges));
 
-    if (bridgeSegmentCount == 0 && stitchCount == 0)
+    if (bendSegmentCount == 0 && bendReliefSegmentCount == 0 && stitchCount == 0)
     {
         throw regenError("No edge segments found after splitting", ["entity"]);
     }
 
-    // Step 4: Apply unique definition attributes (alternating BEND/RIP) to each segment
+    // Step 4: Apply unique definition attributes to each segment
     // Each segment now has its own unique association attribute from Step 3
     // Note: isFaceBend is false because face bends are rejected at lines 102-105 in the main function validation
     // Note: Use original definition (not localDefinition) to preserve bend parameters (radius, kFactor, etc.)
-    if (bridgeSegmentCount > 0)
+    
+    // Apply BEND attributes to main bend segments
+    if (bendSegmentCount > 0)
     {
-        applyJointAttributesToSegments(context, id + "bridges", bridgeSegmentEdges, existingAttribute, 
+        applyJointAttributesToSegments(context, id + "bends", bendSegmentEdges, existingAttribute, 
+            SMJointType.BEND, definition, false, true, defaultRadius, defaultKFactor);
+    }
+    
+    // Apply BEND attributes to bend relief subsegments as well
+    // These segments will not have rip associations, allowing bend relief to be applied
+    if (bendReliefSegmentCount > 0)
+    {
+        applyJointAttributesToSegments(context, id + "bendReliefs", bendReliefSegmentEdges, existingAttribute, 
             SMJointType.BEND, definition, false, true, defaultRadius, defaultKFactor);
     }
 
@@ -606,6 +739,115 @@ function getDefaultSheetMetalKFactor(context is Context, entity is Query)
     var sheetmetalEntity = qUnion(getSMDefinitionEntities(context, entity));
     var modelParameters = getModelParameters(context, qOwnerBody(sheetmetalEntity));
     return modelParameters["k-factor"];
+}
+
+/**
+ * Gets the bend relief parameters from the sheet metal model definition.
+ * Inputs:
+ *   context - Evaluation context
+ *   entity - Query for a sheet metal entity
+ * Outputs: Map containing bend relief parameters (style, depthScale, widthScale) or undefined if not found
+ */
+function getBendReliefParameters(context is Context, entity is Query)
+{
+    try
+    {
+        var sheetmetalEntity = qUnion(getSMDefinitionEntities(context, entity));
+        var modelBody = qOwnerBody(sheetmetalEntity);
+        
+        // Get the model attribute directly to access bend relief parameters
+        var modelAttributes = getAttributes(context, {
+            "entities" : modelBody,
+            "attributePattern" : asSMAttribute({ "objectType" : SMObjectType.MODEL })
+        });
+        
+        if (size(modelAttributes) == 0)
+        {
+            return undefined;
+        }
+        
+        var modelAttr = modelAttributes[0];
+        
+        // Extract bend relief parameters if they exist
+        var bendReliefStyle = undefined;
+        var bendReliefDepthScale = undefined;
+        var bendReliefWidthScale = undefined;
+        
+        if (modelAttr.defaultBendReliefStyle != undefined)
+        {
+            bendReliefStyle = modelAttr.defaultBendReliefStyle;
+        }
+        
+        if (modelAttr.defaultBendReliefDepthScale != undefined)
+        {
+            bendReliefDepthScale = modelAttr.defaultBendReliefDepthScale;
+        }
+        
+        if (modelAttr.defaultBendReliefScale != undefined)
+        {
+            bendReliefWidthScale = modelAttr.defaultBendReliefScale;
+        }
+        
+        return {
+            "style" : bendReliefStyle,
+            "depthScale" : bendReliefDepthScale,
+            "widthScale" : bendReliefWidthScale
+        };
+    }
+    catch
+    {
+        return undefined;
+    }
+}
+
+/**
+ * Checks if bend relief subsegments should be created based on the model's bend relief style.
+ * Subsegments are needed for non-TEAR styles to allow bend relief geometry to be created.
+ * Inputs:
+ *   bendReliefParams - Map containing bend relief parameters from getBendReliefParameters
+ * Outputs: Boolean indicating whether to create bend relief subsegments
+ */
+function shouldCreateBendReliefSubsegments(bendReliefParams) returns boolean
+{
+    if (bendReliefParams == undefined || bendReliefParams.style == undefined)
+    {
+        return false;
+    }
+    
+    // Only create subsegments for RECTANGLE and OBROUND styles
+    // TEAR style doesn't need subsegments as it doesn't create additional geometry
+    return (bendReliefParams.style == SMReliefStyle.RECTANGLE || 
+            bendReliefParams.style == SMReliefStyle.OBROUND);
+}
+
+/**
+ * Calculates the size of bend relief subsegments based on model parameters.
+ * The subsegment should be large enough to accommodate the bend relief geometry.
+ * Inputs:
+ *   context - Evaluation context
+ *   bendRadius - The bend radius
+ *   bendReliefParams - Map containing bend relief parameters
+ * Outputs: Length value for the subsegment size
+ */
+function calculateBendReliefSubsegmentSize(context is Context, bendRadius, bendReliefParams) returns ValueWithUnits
+precondition
+{
+    isLength(bendRadius);
+}
+{
+    // Calculate based on bend relief depth scale
+    // The subsegment needs to be at least as large as the bend relief depth
+    var depthScale = 1.5; // Default value
+    if (bendReliefParams != undefined && bendReliefParams.depthScale != undefined)
+    {
+        depthScale = bendReliefParams.depthScale;
+    }
+    
+    // The bend relief depth is typically radius * depthScale
+    // Add a small safety margin to ensure the subsegment is large enough
+    const subsegmentSize = bendRadius * depthScale * 1.1;
+    
+    return subsegmentSize;
 }
 
 /**
