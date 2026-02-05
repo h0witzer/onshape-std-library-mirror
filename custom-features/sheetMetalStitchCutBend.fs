@@ -34,7 +34,6 @@ const EDGE_LENGTH_TOLERANCE = 1e-9 * meter;
 const EDGE_PARAMETER_TOLERANCE = 1e-6;
 const FRACTION_TOLERANCE = 1e-9;
 const DEFAULT_BEND_RELIEF_DEPTH_SCALE = 1.5; // Default depth scale when not specified in model
-const RELIEF_RETRACTION_FACTOR = 0.95; // Retract relief segments to 95% of calculated size to avoid touching bend edges
 
 export const BRIDGE_WIDTH_BOUNDS =
 {
@@ -329,8 +328,6 @@ function processJointEntity(context is Context, id is Id, jointEntity is Query,
     
     // Create modified bridge domains that include bend relief subsegments
     // The subsegments should extend OUTSIDE the bridge boundaries into adjacent rip regions
-    // IMPORTANT: Relief segments are slightly retracted from bend boundaries to avoid
-    // topology conflicts where free edges touch attributed edges on definition surfaces
     var allDomains = [];
     for (var bridgeDomain in bridgeDomains)
     {
@@ -339,29 +336,20 @@ function processJointEntity(context is Context, id is Id, jointEntity is Query,
             // Convert subsegment size to normalized parameter
             const subsegmentParam = bendReliefSubsegmentSize / totalLength;
             
-            // Apply retraction factor to create a small gap between relief and bend segments
-            // This prevents topology conflicts where free edges meet attributed edges
-            const retractedSubsegmentParam = subsegmentParam * RELIEF_RETRACTION_FACTOR;
-            
-            // Calculate gap size (the retracted amount)
-            const gapParam = subsegmentParam - retractedSubsegmentParam;
-            
             // Create relief subsegment BEFORE bridge start (extending into rip region)
-            // Leave small gap between relief end and bridge start
             const startReliefStart = bridgeDomain.start - subsegmentParam;
-            const startReliefEnd = bridgeDomain.start - gapParam;
+            const startReliefEnd = bridgeDomain.start;
             
             // Create relief subsegment AFTER bridge end (extending into rip region)
-            // Leave small gap between bridge end and relief start
-            const endReliefStart = bridgeDomain.end + gapParam;
+            const endReliefStart = bridgeDomain.end;
             const endReliefEnd = bridgeDomain.end + subsegmentParam;
             
             // Validate relief segments are within bounds [0, 1]
             const startReliefValid = startReliefStart >= -FRACTION_TOLERANCE && startReliefEnd <= 1 + FRACTION_TOLERANCE;
             const endReliefValid = endReliefStart >= -FRACTION_TOLERANCE && endReliefEnd <= 1 + FRACTION_TOLERANCE;
             
-            // Add start relief subsegment if it's within bounds and has positive size
-            if (startReliefValid && startReliefStart >= 0 && (startReliefEnd - startReliefStart) > FRACTION_TOLERANCE)
+            // Add start relief subsegment if it's within bounds
+            if (startReliefValid && startReliefStart >= 0)
             {
                 allDomains = append(allDomains, {
                     "start" : max(0, startReliefStart),
@@ -377,8 +365,8 @@ function processJointEntity(context is Context, id is Id, jointEntity is Query,
                 "segmentType" : "bend"
             });
             
-            // Add end relief subsegment if it's within bounds and has positive size
-            if (endReliefValid && endReliefEnd <= 1 && (endReliefEnd - endReliefStart) > FRACTION_TOLERANCE)
+            // Add end relief subsegment if it's within bounds
+            if (endReliefValid && endReliefEnd <= 1)
             {
                 allDomains = append(allDomains, {
                     "start" : endReliefStart,
