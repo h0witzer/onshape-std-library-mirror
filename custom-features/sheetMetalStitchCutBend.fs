@@ -33,7 +33,6 @@ const EDGE_LENGTH_TOLERANCE = 1e-9 * meter;
 const EDGE_PARAMETER_TOLERANCE = 1e-6;
 const FRACTION_TOLERANCE = 1e-9;
 const DEFAULT_BEND_RELIEF_DEPTH_SCALE = 1.5; // Default depth scale when not specified in model
-const BEND_RELIEF_SAFETY_MARGIN = 1.1; // Safety margin multiplier for subsegment sizing
 
 export const BRIDGE_WIDTH_BOUNDS =
 {
@@ -820,12 +819,14 @@ function getBendReliefParameters(context is Context, entity is Query)
         
         if (modelAttr.defaultBendReliefDepthScale != undefined)
         {
-            bendReliefDepthScale = modelAttr.defaultBendReliefDepthScale;
+            // Extract the value field from the map structure
+            bendReliefDepthScale = modelAttr.defaultBendReliefDepthScale.value;
         }
         
         if (modelAttr.defaultBendReliefScale != undefined)
         {
-            bendReliefWidthScale = modelAttr.defaultBendReliefScale;
+            // Extract the value field from the map structure
+            bendReliefWidthScale = modelAttr.defaultBendReliefScale.value;
         }
         
         return {
@@ -890,8 +891,8 @@ precondition
     }
     
     // The bend relief depth is thickness * depthScale
-    // Add a safety margin to ensure the subsegment is large enough
-    const subsegmentSize = thickness * depthScale * BEND_RELIEF_SAFETY_MARGIN;
+    // Use the size directly without safety margin to avoid self-intersecting geometry
+    const subsegmentSize = thickness * depthScale;
     
     return subsegmentSize;
 }
