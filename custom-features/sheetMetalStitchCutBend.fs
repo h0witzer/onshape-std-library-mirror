@@ -116,7 +116,6 @@ export const sheetMetalStitchCutBend = defineSheetMetalFeature(function(context 
         var defaultRadius;
         var defaultKFactor;
         var bendReliefParams;
-        var sheetMetalThickness;
         
         if (definition.useDefaultRadius)
         {
@@ -128,35 +127,8 @@ export const sheetMetalStitchCutBend = defineSheetMetalFeature(function(context 
         }
         
         // Extract bend relief parameters from the model definition
-        // These will be used to create subsegments if needed
+        // These will be used to apply corner attributes to bend end vertices if needed
         bendReliefParams = getBendReliefParameters(context, definition.entity);
-        
-        // Extract sheet metal thickness for bend relief sizing
-        if (bendReliefParams != undefined)
-        {
-            try
-            {
-                var sheetMetalEntity = qUnion(getSMDefinitionEntities(context, definition.entity));
-                var modelParameters = getModelParameters(context, qOwnerBody(sheetMetalEntity));
-                sheetMetalThickness = modelParameters.frontThickness;
-                if (sheetMetalThickness == undefined || abs(sheetMetalThickness) < EDGE_LENGTH_TOLERANCE)
-                {
-                    sheetMetalThickness = modelParameters.backThickness;
-                }
-                // If still not available, use a fallback
-                if (sheetMetalThickness == undefined || abs(sheetMetalThickness) < EDGE_LENGTH_TOLERANCE)
-                {
-                    const defaultRad = definition.useDefaultRadius ? defaultRadius : definition.radius;
-                    sheetMetalThickness = defaultRad * 0.1;
-                }
-            }
-            catch
-            {
-                // If we can't get thickness, use a fallback based on bend radius
-                const defaultRad = definition.useDefaultRadius ? defaultRadius : definition.radius;
-                sheetMetalThickness = defaultRad * 0.1;
-            }
-        }
 
         // Collect all processed edges for final update
         var allProcessedEdges = [];
@@ -166,7 +138,7 @@ export const sheetMetalStitchCutBend = defineSheetMetalFeature(function(context 
         for (var jointEntity in jointEdgeEntities)
         {
             const processedEdges = processJointEntity(context, id + ("entity" ~ entityIndex), 
-                jointEntity, definition, defaultRadius, defaultKFactor, bendReliefParams, sheetMetalThickness);
+                jointEntity, definition, defaultRadius, defaultKFactor, bendReliefParams);
             allProcessedEdges = append(allProcessedEdges, processedEdges);
             entityIndex += 1;
         }
@@ -195,11 +167,10 @@ export const sheetMetalStitchCutBend = defineSheetMetalFeature(function(context 
  *   defaultRadius - Default bend radius for the model
  *   defaultKFactor - Default K-factor for the model
  *   bendReliefParams - Bend relief parameters from the model (optional)
- *   sheetMetalThickness - Sheet metal thickness (optional, for bend relief sizing)
  * Outputs: Query for all processed edges from this joint entity
  */
 function processJointEntity(context is Context, id is Id, jointEntity is Query, 
-    definition is map, defaultRadius, defaultKFactor, bendReliefParams, sheetMetalThickness) returns Query
+    definition is map, defaultRadius, defaultKFactor, bendReliefParams) returns Query
 {
     // Debug: Show the original master edges being processed
     if (definition.showDebug)
@@ -787,42 +758,6 @@ function shouldApplyBendReliefAttributes(bendReliefParams) returns boolean
     // TEAR style doesn't need explicit attributes
     return (bendReliefParams.style == SMReliefStyle.RECTANGLE || 
             bendReliefParams.style == SMReliefStyle.OBROUND);
-}
-
-/**
- * Calculates the size of bend relief subsegments based on sheet metal thickness and relief parameters.
- * The subsegment should be large enough to accommodate the bend relief geometry.
- * According to sheet metal standards, bend relief size is based on material thickness, not bend radius.
- * Inputs:
- *   thickness - Sheet metal thickness
- *   bendReliefParams - Map containing bend relief parameters
- * Outputs: Length value for the subsegment size
- */
-function calculateBendReliefSubsegmentSize(thickness, bendReliefParams) returns ValueWithUnits
-precondition
-{
-    thickness == undefined || isLength(thickness);
-}
-{
-    // If thickness is not provided, return a minimal size
-    if (thickness == undefined)
-    {
-        return 0 * meter;
-    }
-    
-    // Calculate based on bend relief depth scale
-    // Bend relief depth is typically thickness * depthScale (not radius!)
-    var depthScale = DEFAULT_BEND_RELIEF_DEPTH_SCALE;
-    if (bendReliefParams != undefined && bendReliefParams.depthScale != undefined)
-    {
-        depthScale = bendReliefParams.depthScale;
-    }
-    
-    // The bend relief depth is thickness * depthScale
-    // Use the size directly without safety margin to avoid self-intersecting geometry
-    const subsegmentSize = thickness * depthScale;
-    
-    return subsegmentSize;
 }
 
 /**
