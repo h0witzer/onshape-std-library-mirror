@@ -181,27 +181,34 @@ When the sheet metal model has bend relief style set to RECTANGLE or OBROUND (no
 - `getBendReliefParameters()` - Extracts bend relief settings from model definition
 - `shouldCreateBendReliefSubsegments()` - Determines if subsegments are needed
 - `calculateBendReliefSubsegmentSize()` - Calculates proper subsegment size based on thickness
-- `applyCornerAttributesToBendReliefVertices()` - Applies corner attributes to junction vertices
+- `calculateSplitParametersFromDomains()` - Tracks which splits create bend-to-relief junctions
+- `applyCornerAttributesToBendReliefVertices()` - Uses `qCreatedBy` to apply corner attributes to junction vertices
 
 **Algorithm:**
-1. Extract bend relief parameters from sheet metal model
+1. Extract bend relief parameters and thickness from sheet metal model
 2. For RECTANGLE or OBROUND styles, create subsegments at each bend end
 3. Size subsegments = `thickness × depthScale × safetyMargin (1.1)`
-4. Leave relief segments **unattributed** (no bend or rip attributes)
-5. Apply corner attributes to vertices **between** relief and bend segments
+4. Track which domain boundaries are bend-to-relief junctions during domain processing
+5. During edge splitting, store operation IDs for bend-to-relief splits
+6. Leave relief segments **unattributed** (no bend or rip attributes)
+7. Use `qCreatedBy` to get vertices from bend-to-relief split operations
+8. Apply corner attributes only to those specific vertices
 
 **Result:**
 - Relief segments act as free edges
-- Corner attributes at junctions trigger bend relief geometry creation
-- Clean separation between bend relief, bend, and rip segments
-- No conflicts with rip associations
+- Corner attributes at bend-to-relief junctions trigger bend relief geometry creation
+- No adjacency checks needed - vertices identified by split operation
+- Correctly handles edge pattern: `bend-relief-bend-relief-rip-relief-bend...`
+- Skips relief-to-rip junctions and end vertices without relief
 
 **Design Pattern:**
 ```
-[Relief-Free][Bend-Attributed][Relief-Free]
-     ↑              ↑              ↑
-     |         Corner attr         |
-   No attr    applied here      No attr
+[Relief-Free][Bend-Attributed][Relief-Free][Rip-Attributed][Relief-Free]
+      ↑             ↑              ↑              ↑              ↑
+      |       Corner attr          |           No attr          |
+   (from split)    here       (from split)                (from split)
+   
+Only bend→relief splits create attributed vertices
 ```
 
 ## Usage
