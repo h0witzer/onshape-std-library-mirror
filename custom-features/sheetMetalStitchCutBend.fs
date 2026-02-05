@@ -112,6 +112,7 @@ export const sheetMetalStitchCutBend = defineSheetMetalFeature(function(context 
         var defaultRadius;
         var defaultKFactor;
         var bendReliefParams;
+        var sheetMetalThickness;
         
         if (definition.useDefaultRadius)
         {
@@ -125,6 +126,33 @@ export const sheetMetalStitchCutBend = defineSheetMetalFeature(function(context 
         // Extract bend relief parameters from the model definition
         // These will be used to create subsegments if needed
         bendReliefParams = getBendReliefParameters(context, definition.entity);
+        
+        // Extract sheet metal thickness for bend relief sizing
+        if (bendReliefParams != undefined)
+        {
+            try
+            {
+                var sheetMetalEntity = qUnion(getSMDefinitionEntities(context, definition.entity));
+                var modelParameters = getModelParameters(context, qOwnerBody(sheetMetalEntity));
+                sheetMetalThickness = modelParameters.frontThickness;
+                if (sheetMetalThickness == undefined || abs(sheetMetalThickness) < EDGE_LENGTH_TOLERANCE)
+                {
+                    sheetMetalThickness = modelParameters.backThickness;
+                }
+                // If still not available, use a fallback
+                if (sheetMetalThickness == undefined || abs(sheetMetalThickness) < EDGE_LENGTH_TOLERANCE)
+                {
+                    const defaultRad = definition.useDefaultRadius ? defaultRadius : definition.radius;
+                    sheetMetalThickness = defaultRad * 0.1;
+                }
+            }
+            catch
+            {
+                // If we can't get thickness, use a fallback based on bend radius
+                const defaultRad = definition.useDefaultRadius ? defaultRadius : definition.radius;
+                sheetMetalThickness = defaultRad * 0.1;
+            }
+        }
 
         // Collect all processed edges for final update
         var allProcessedEdges = [];
@@ -134,7 +162,7 @@ export const sheetMetalStitchCutBend = defineSheetMetalFeature(function(context 
         for (var jointEntity in jointEdgeEntities)
         {
             const processedEdges = processJointEntity(context, id + ("entity" ~ entityIndex), 
-                jointEntity, definition, defaultRadius, defaultKFactor, bendReliefParams);
+                jointEntity, definition, defaultRadius, defaultKFactor, bendReliefParams, sheetMetalThickness);
             allProcessedEdges = append(allProcessedEdges, processedEdges);
             entityIndex += 1;
         }
@@ -163,10 +191,11 @@ export const sheetMetalStitchCutBend = defineSheetMetalFeature(function(context 
  *   defaultRadius - Default bend radius for the model
  *   defaultKFactor - Default K-factor for the model
  *   bendReliefParams - Bend relief parameters from the model (optional)
+ *   sheetMetalThickness - Sheet metal thickness (optional, for bend relief sizing)
  * Outputs: Query for all processed edges from this joint entity
  */
 function processJointEntity(context is Context, id is Id, jointEntity is Query, 
-    definition is map, defaultRadius, defaultKFactor, bendReliefParams) returns Query
+    definition is map, defaultRadius, defaultKFactor, bendReliefParams, sheetMetalThickness) returns Query
 {
     // Get existing attribute to understand current joint state
     var existingAttribute = getJointAttribute(context, jointEntity);
@@ -278,7 +307,7 @@ function processJointEntity(context is Context, id is Id, jointEntity is Query,
     var bendReliefSubsegmentSize = 0 * meter;
     if (createBendReliefSubsegments)
     {
-        bendReliefSubsegmentSize = calculateBendReliefSubsegmentSize(context, jointEntity, bendReliefParams);
+        bendReliefSubsegmentSize = calculateBendReliefSubsegmentSize(sheetMetalThickness, bendReliefParams);
     }
     
     // Create modified bridge domains that include bend relief subsegments
@@ -348,7 +377,9 @@ function processJointEntity(context is Context, id is Id, jointEntity is Query,
     const trackedEdges = qUnion([orderedEdgeQuery, startTracking(context, orderedEdgeQuery)]);
 
     // Split the edges at all domain boundaries (bridges and bend relief subsegments)
-    const splitParameters = calculateSplitParametersFromDomains(allDomains);
+    const splitInfo = calculateSplitParametersFromDomains(allDomains);
+    const splitParameters = splitInfo.splitParameters;
+    const bendToReliefFlags = splitInfo.bendToReliefFlags;
     const splitInstructions = calculateEdgeSplitInstructionsFromParameters(context, path, splitParameters);
 
     if (size(splitInstructions) == 0)
@@ -356,17 +387,27 @@ function processJointEntity(context is Context, id is Id, jointEntity is Query,
         throw regenError("Unable to calculate edge split locations", ["entity"]);
     }
 
-    // Perform all split operations
+    // Perform all split operations and track which ones create bend-to-relief junctions
     const splitOperationId = id + "splitAllEdges";
     var splitOperationIndex = 0;
+    var bendToReliefSplitIds = []; // Track IDs of splits that create bend-to-relief vertices
+    
     for (var instruction in splitInstructions)
     {
+        const currentSplitId = splitOperationId + ("split" ~ toString(splitOperationIndex));
+        
         try
         {
-            opSplitEdges(context, splitOperationId + ("split" ~ toString(splitOperationIndex)), {
+            opSplitEdges(context, currentSplitId, {
                         "edges" : instruction.edge,
                         "parameters" : [instruction.parameters]
                     });
+            
+            // If this split corresponds to a bend-to-relief junction, track its ID
+            if (splitOperationIndex < size(bendToReliefFlags) && bendToReliefFlags[splitOperationIndex])
+            {
+                bendToReliefSplitIds = append(bendToReliefSplitIds, currentSplitId);
+            }
         }
         catch
         {
@@ -474,7 +515,7 @@ function processJointEntity(context is Context, id is Id, jointEntity is Query,
     // Instead, apply corner attributes to the vertices between relief and bend segments
     if (bendReliefSegmentCount > 0)
     {
-        applyCornerAttributesToBendReliefVertices(context, id + "cornerAttrs", bendSegmentEdges, bendReliefSegmentEdges, bendReliefParams);
+        applyCornerAttributesToBendReliefVertices(context, id + "cornerAttrs", bendToReliefSplitIds, bendReliefParams);
     }
 
     if (stitchCount > 0)
@@ -824,30 +865,20 @@ function shouldCreateBendReliefSubsegments(bendReliefParams) returns boolean
  * The subsegment should be large enough to accommodate the bend relief geometry.
  * According to sheet metal standards, bend relief size is based on material thickness, not bend radius.
  * Inputs:
- *   context - Evaluation context
- *   entity - Query for a sheet metal entity (to get thickness)
+ *   thickness - Sheet metal thickness
  *   bendReliefParams - Map containing bend relief parameters
  * Outputs: Length value for the subsegment size
  */
-function calculateBendReliefSubsegmentSize(context is Context, entity is Query, bendReliefParams) returns ValueWithUnits
+function calculateBendReliefSubsegmentSize(thickness, bendReliefParams) returns ValueWithUnits
+precondition
 {
-    // Get the sheet metal thickness to calculate relief size
-    var sheetMetalEntity = qUnion(getSMDefinitionEntities(context, entity));
-    var modelParameters = getModelParameters(context, qOwnerBody(sheetMetalEntity));
-    
-    // Use front thickness (or back if front is zero/undefined)
-    var thickness = modelParameters.frontThickness;
-    if (thickness == undefined || abs(thickness) < EDGE_LENGTH_TOLERANCE)
+    thickness == undefined || isLength(thickness);
+}
+{
+    // If thickness is not provided, return a minimal size
+    if (thickness == undefined)
     {
-        thickness = modelParameters.backThickness;
-    }
-    
-    // If both are zero or undefined, use a default based on model's default bend radius
-    if (thickness == undefined || abs(thickness) < EDGE_LENGTH_TOLERANCE)
-    {
-        // Fallback to a reasonable default based on bend radius if thickness is not available
-        const defaultRadius = modelParameters.defaultBendRadius;
-        thickness = defaultRadius * 0.1; // Typical sheet metal thickness is ~10% of bend radius
+        return 0 * meter;
     }
     
     // Calculate based on bend relief depth scale
@@ -866,18 +897,18 @@ function calculateBendReliefSubsegmentSize(context is Context, entity is Query, 
 }
 
 /**
- * Applies corner (bend relief) attributes to vertices between bend and relief segments.
- * The relief segments are left unattributed (as free edges), and corner attributes are applied
+ * Applies corner (bend relief) attributes to vertices created by bend-to-relief split operations.
+ * Uses qCreatedBy to identify vertices created by specific split operations, avoiding adjacency checks.
+ * Relief segments are left unattributed (as free edges), and corner attributes are applied
  * to the vertices at the junction between bend segments and relief segments.
  * Inputs:
  *   context - Evaluation context
  *   id - Operation ID for attribute creation
- *   bendSegmentEdges - Query for bend segment edges
- *   bendReliefSegmentEdges - Query for bend relief subsegment edges
+ *   bendToReliefSplitIds - Array of split operation IDs that created bend-to-relief junctions
  *   bendReliefParams - Map containing bend relief parameters from the model
  */
 function applyCornerAttributesToBendReliefVertices(context is Context, id is Id, 
-    bendSegmentEdges is Query, bendReliefSegmentEdges is Query, bendReliefParams)
+    bendToReliefSplitIds is array, bendReliefParams)
 {
     // Only apply if we have valid bend relief parameters
     if (bendReliefParams == undefined || bendReliefParams.style == undefined)
@@ -885,13 +916,20 @@ function applyCornerAttributesToBendReliefVertices(context is Context, id is Id,
         return;
     }
     
-    // Get vertices that are shared between bend segments and relief segments
-    // These are the vertices where bend relief should be applied
-    const bendVertices = qAdjacent(bendSegmentEdges, AdjacencyType.VERTEX, EntityType.VERTEX);
-    const reliefVertices = qAdjacent(bendReliefSegmentEdges, AdjacencyType.VERTEX, EntityType.VERTEX);
+    // If no bend-to-relief splits were created, nothing to do
+    if (size(bendToReliefSplitIds) == 0)
+    {
+        return;
+    }
     
-    // The vertices we want are at the intersection - where bend meets relief
-    const junctionVertices = qIntersection([bendVertices, reliefVertices]);
+    // Get vertices created by the bend-to-relief split operations using qCreatedBy
+    var junctionVertices = qNothing();
+    for (var splitId in bendToReliefSplitIds)
+    {
+        const verticesFromSplit = qCreatedBy(splitId, EntityType.VERTEX);
+        junctionVertices = qUnion([junctionVertices, verticesFromSplit]);
+    }
+    
     const junctionVertexList = evaluateQuery(context, junctionVertices);
     
     if (size(junctionVertexList) == 0)
@@ -960,38 +998,78 @@ function applyCornerAttributesToBendReliefVertices(context is Context, id is Id,
  * Converts domain definitions (start/end normalized parameters) into split parameters.
  * Each domain represents a bridge (bend segment), so we need to split at both the start and end of each domain.
  * Inputs:
- *   domains - Array of {start, end} maps with normalized parameters (0 to 1)
- * Outputs: Sorted array of unique split parameters
+ *   domains - Array of {start, end, segmentType} maps with normalized parameters (0 to 1)
+ * Outputs: Map with splitParameters array and bendToReliefSplits array marking which splits are bend-to-relief junctions
  */
-function calculateSplitParametersFromDomains(domains is array) returns array
+function calculateSplitParametersFromDomains(domains is array) returns map
 {
     var splitParameters = [];
+    var splitMetadata = []; // Track what type of junction each split creates
     
-    for (var domain in domains)
+    for (var domainIndex = 0; domainIndex < size(domains); domainIndex += 1)
     {
-        // Add both start and end of each domain (bridge) as split points
-        splitParameters = append(splitParameters, domain.start);
-        splitParameters = append(splitParameters, domain.end);
+        const domain = domains[domainIndex];
+        const prevDomain = (domainIndex > 0) ? domains[domainIndex - 1] : undefined;
+        const nextDomain = (domainIndex < size(domains) - 1) ? domains[domainIndex + 1] : undefined;
+        
+        // Check start of this domain
+        if (domainIndex > 0)
+        {
+            // This is a junction between prevDomain and current domain
+            const isBendToRelief = (prevDomain.segmentType == "bend" && domain.segmentType == "bendRelief") ||
+                                   (prevDomain.segmentType == "bendRelief" && domain.segmentType == "bend");
+            splitParameters = append(splitParameters, domain.start);
+            splitMetadata = append(splitMetadata, {
+                "parameter" : domain.start,
+                "isBendToRelief" : isBendToRelief
+            });
+        }
+        
+        // Check end of this domain (only if not adjacent to next domain's start)
+        if (domainIndex < size(domains) - 1 && abs(domain.end - domains[domainIndex + 1].start) > FRACTION_TOLERANCE)
+        {
+            const isBendToRelief = (domain.segmentType == "bend" && nextDomain.segmentType == "bendRelief") ||
+                                   (domain.segmentType == "bendRelief" && nextDomain.segmentType == "bend");
+            splitParameters = append(splitParameters, domain.end);
+            splitMetadata = append(splitMetadata, {
+                "parameter" : domain.end,
+                "isBendToRelief" : isBendToRelief
+            });
+        }
     }
     
-    // Sort and deduplicate
-    splitParameters = sort(splitParameters, function(a, b) { return a - b; });
-    
-    // Remove duplicates and edge parameters
-    var uniqueParameters = [];
-    for (var param in splitParameters)
+    // Sort both arrays together based on parameter values
+    var sortedData = [];
+    for (var i = 0; i < size(splitParameters); i += 1)
     {
-        if (param <= FRACTION_TOLERANCE || param >= 1 - FRACTION_TOLERANCE)
+        sortedData = append(sortedData, {
+            "parameter" : splitParameters[i],
+            "isBendToRelief" : splitMetadata[i].isBendToRelief
+        });
+    }
+    sortedData = sort(sortedData, function(a, b) { return a.parameter - b.parameter; });
+    
+    // Remove duplicates and edge parameters, keeping track of bend-to-relief flags
+    var uniqueParameters = [];
+    var bendToReliefFlags = [];
+    
+    for (var data in sortedData)
+    {
+        if (data.parameter <= FRACTION_TOLERANCE || data.parameter >= 1 - FRACTION_TOLERANCE)
         {
             continue; // Skip parameters at or near endpoints
         }
-        if (size(uniqueParameters) == 0 || abs(param - uniqueParameters[size(uniqueParameters) - 1]) > FRACTION_TOLERANCE)
+        if (size(uniqueParameters) == 0 || abs(data.parameter - uniqueParameters[size(uniqueParameters) - 1]) > FRACTION_TOLERANCE)
         {
-            uniqueParameters = append(uniqueParameters, param);
+            uniqueParameters = append(uniqueParameters, data.parameter);
+            bendToReliefFlags = append(bendToReliefFlags, data.isBendToRelief);
         }
     }
     
-    return uniqueParameters;
+    return {
+        "splitParameters" : uniqueParameters,
+        "bendToReliefFlags" : bendToReliefFlags
+    };
 }
 
 /**
