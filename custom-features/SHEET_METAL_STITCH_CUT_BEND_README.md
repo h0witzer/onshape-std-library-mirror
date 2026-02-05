@@ -187,7 +187,7 @@ When the sheet metal model has bend relief style set to RECTANGLE or OBROUND (no
 **Algorithm:**
 1. Extract bend relief parameters and thickness from sheet metal model
 2. For RECTANGLE or OBROUND styles, create subsegments at each bend end
-3. Size subsegments = `thickness × depthScale × safetyMargin (1.1)`
+3. Size subsegments = `thickness × depthScale` (directly from model, no safety margin)
 4. Track which domain boundaries are bend-to-relief junctions during domain processing
 5. During edge splitting, store operation IDs for bend-to-relief splits
 6. Leave relief segments **unattributed** (no bend or rip attributes)
@@ -196,10 +196,12 @@ When the sheet metal model has bend relief style set to RECTANGLE or OBROUND (no
 
 **Result:**
 - Relief segments act as free edges
+- Subsegments sized exactly to accommodate bend relief geometry without excess
 - Corner attributes at bend-to-relief junctions trigger bend relief geometry creation
 - No adjacency checks needed - vertices identified by split operation
 - Correctly handles edge pattern: `bend-relief-bend-relief-rip-relief-bend...`
 - Skips relief-to-rip junctions and end vertices without relief
+- No self-intersecting geometry from oversized relief segments
 
 **Design Pattern:**
 ```
