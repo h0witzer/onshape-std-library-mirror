@@ -1013,10 +1013,22 @@ function calculateSplitParametersFromDomains(domains is array) returns map
         const prevDomain = (domainIndex > 0) ? domains[domainIndex - 1] : undefined;
         const nextDomain = (domainIndex < size(domains) - 1) ? domains[domainIndex + 1] : undefined;
         
-        // Check start of this domain
-        if (domainIndex > 0)
+        // Add start of this domain as a split point
+        // For first domain, always add. For others, check if not adjacent to previous domain
+        if (domainIndex == 0 || (prevDomain != undefined && abs(prevDomain.end - domain.start) > FRACTION_TOLERANCE))
         {
-            // This is a junction between prevDomain and current domain
+            const isBendToRelief = (prevDomain != undefined) && 
+                                   ((prevDomain.segmentType == "bend" && domain.segmentType == "bendRelief") ||
+                                    (prevDomain.segmentType == "bendRelief" && domain.segmentType == "bend"));
+            splitParameters = append(splitParameters, domain.start);
+            splitMetadata = append(splitMetadata, {
+                "parameter" : domain.start,
+                "isBendToRelief" : isBendToRelief
+            });
+        }
+        else if (prevDomain != undefined)
+        {
+            // Domains are adjacent, add a single split at the junction
             const isBendToRelief = (prevDomain.segmentType == "bend" && domain.segmentType == "bendRelief") ||
                                    (prevDomain.segmentType == "bendRelief" && domain.segmentType == "bend");
             splitParameters = append(splitParameters, domain.start);
@@ -1026,11 +1038,13 @@ function calculateSplitParametersFromDomains(domains is array) returns map
             });
         }
         
-        // Check end of this domain (only if not adjacent to next domain's start)
-        if (domainIndex < size(domains) - 1 && abs(domain.end - domains[domainIndex + 1].start) > FRACTION_TOLERANCE)
+        // Add end of this domain as a split point
+        // For last domain, always add. For others, only if there's a gap to next domain
+        if (domainIndex == size(domains) - 1 || (nextDomain != undefined && abs(domain.end - nextDomain.start) > FRACTION_TOLERANCE))
         {
-            const isBendToRelief = (domain.segmentType == "bend" && nextDomain.segmentType == "bendRelief") ||
-                                   (domain.segmentType == "bendRelief" && nextDomain.segmentType == "bend");
+            const isBendToRelief = (nextDomain != undefined) && 
+                                   ((domain.segmentType == "bend" && nextDomain.segmentType == "bendRelief") ||
+                                    (domain.segmentType == "bendRelief" && nextDomain.segmentType == "bend"));
             splitParameters = append(splitParameters, domain.end);
             splitMetadata = append(splitMetadata, {
                 "parameter" : domain.end,
