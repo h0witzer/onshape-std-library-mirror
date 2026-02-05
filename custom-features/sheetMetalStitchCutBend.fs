@@ -316,83 +316,27 @@ function processJointEntity(context is Context, id is Id, jointEntity is Query,
         throw regenError("Resultant bridges would overlap. Adjust spacing parameters to avoid overlapping bridges.", ["bridgeWidth", "instanceCount"]);
     }
 
-    // Determine if we need to create bend relief subsegments
-    const createBendReliefSubsegments = shouldCreateBendReliefSubsegments(bendReliefParams);
+    // Determine if we need to apply bend relief corner attributes
+    const applyBendReliefAttributes = shouldApplyBendReliefAttributes(bendReliefParams);
     
-    // If bend relief subsegments are needed, calculate their size and add them to the split parameters
-    var bendReliefSubsegmentSize = 0 * meter;
-    if (createBendReliefSubsegments)
-    {
-        bendReliefSubsegmentSize = calculateBendReliefSubsegmentSize(sheetMetalThickness, bendReliefParams);
-    }
-    
-    // Create modified bridge domains that include bend relief subsegments
-    // The subsegments should extend OUTSIDE the bridge boundaries into adjacent rip regions
+    // Use bridge domains directly - do NOT create separate relief segments
+    // Instead, we'll apply corner attributes to the vertices at bend ends
     var allDomains = [];
     for (var bridgeDomain in bridgeDomains)
     {
-        if (createBendReliefSubsegments && bendReliefSubsegmentSize > EDGE_LENGTH_TOLERANCE)
-        {
-            // Convert subsegment size to normalized parameter
-            const subsegmentParam = bendReliefSubsegmentSize / totalLength;
-            
-            // Create relief subsegment BEFORE bridge start (extending into rip region)
-            const startReliefStart = bridgeDomain.start - subsegmentParam;
-            const startReliefEnd = bridgeDomain.start;
-            
-            // Create relief subsegment AFTER bridge end (extending into rip region)
-            const endReliefStart = bridgeDomain.end;
-            const endReliefEnd = bridgeDomain.end + subsegmentParam;
-            
-            // Validate relief segments are within bounds [0, 1]
-            const startReliefValid = startReliefStart >= -FRACTION_TOLERANCE && startReliefEnd <= 1 + FRACTION_TOLERANCE;
-            const endReliefValid = endReliefStart >= -FRACTION_TOLERANCE && endReliefEnd <= 1 + FRACTION_TOLERANCE;
-            
-            // Add start relief subsegment if it's within bounds
-            if (startReliefValid && startReliefStart >= 0)
-            {
-                allDomains = append(allDomains, {
-                    "start" : max(0, startReliefStart),
-                    "end" : startReliefEnd,
-                    "segmentType" : "bendRelief"
-                });
-            }
-            
-            // Add the main bridge domain (unchanged)
-            allDomains = append(allDomains, {
-                "start" : bridgeDomain.start,
-                "end" : bridgeDomain.end,
-                "segmentType" : "bend"
-            });
-            
-            // Add end relief subsegment if it's within bounds
-            if (endReliefValid && endReliefEnd <= 1)
-            {
-                allDomains = append(allDomains, {
-                    "start" : endReliefStart,
-                    "end" : min(1, endReliefEnd),
-                    "segmentType" : "bendRelief"
-                });
-            }
-        }
-        else
-        {
-            // No bend relief subsegments needed, just use the original bridge
-            allDomains = append(allDomains, {
-                "start" : bridgeDomain.start,
-                "end" : bridgeDomain.end,
-                "segmentType" : "bend"
-            });
-        }
+        // Just use the original bridge domain
+        allDomains = append(allDomains, {
+            "start" : bridgeDomain.start,
+            "end" : bridgeDomain.end,
+            "segmentType" : "bend"
+        });
     }
 
     // Use mixInTracking pattern: union the original query with a tracking query
     const trackedEdges = qUnion([orderedEdgeQuery, startTracking(context, orderedEdgeQuery)]);
 
-    // Split the edges at all domain boundaries (bridges and bend relief subsegments)
-    const splitInfo = calculateSplitParametersFromDomains(allDomains);
-    const splitParameters = splitInfo.splitParameters;
-    const bendToReliefFlags = splitInfo.bendToReliefFlags;
+    // Split the edges at all domain boundaries
+    const splitParameters = calculateSplitParametersFromDomains(allDomains);
     const splitInstructions = calculateEdgeSplitInstructionsFromParameters(context, path, splitParameters);
 
     if (size(splitInstructions) == 0)
@@ -400,10 +344,9 @@ function processJointEntity(context is Context, id is Id, jointEntity is Query,
         throw regenError("Unable to calculate edge split locations", ["entity"]);
     }
 
-    // Perform all split operations and track which ones create bend-to-relief junctions
+    // Perform all split operations
     const splitOperationId = id + "splitAllEdges";
     var splitOperationIndex = 0;
-    var bendToReliefSplitIds = []; // Track IDs of splits that create bend-to-relief vertices
     
     for (var instruction in splitInstructions)
     {
@@ -415,12 +358,6 @@ function processJointEntity(context is Context, id is Id, jointEntity is Query,
                         "edges" : instruction.edge,
                         "parameters" : [instruction.parameters]
                     });
-            
-            // If this split corresponds to a bend-to-relief junction, track its ID
-            if (splitOperationIndex < size(bendToReliefFlags) && bendToReliefFlags[splitOperationIndex])
-            {
-                bendToReliefSplitIds = append(bendToReliefSplitIds, currentSplitId);
-            }
         }
         catch
         {
@@ -457,57 +394,17 @@ function processJointEntity(context is Context, id is Id, jointEntity is Query,
     // Step 3: Assign unique association attributes to each segment
     assignSMAssociationAttributes(context, allEdgesAfterSplitQuery);
 
-    // Identify segments by their domain type
-    // Separate bend, bendRelief, and stitch (rip) segments
-    var bendSegmentEdges = qNothing();
-    var bendReliefSegmentEdges = qNothing();
-    
-    if (createBendReliefSubsegments)
-    {
-        // When bend relief subsegments exist, identify them separately
-        // Filter allDomains to get only bend and bendRelief domains
-        var bendDomains = [];
-        var reliefDomains = [];
-        
-        for (var domain in allDomains)
-        {
-            if (domain.segmentType == "bend")
-            {
-                bendDomains = append(bendDomains, domain);
-            }
-            else if (domain.segmentType == "bendRelief")
-            {
-                reliefDomains = append(reliefDomains, domain);
-            }
-        }
-        
-        // Identify bend segments (main bridge segments without relief subsegments)
-        if (size(bendDomains) > 0)
-        {
-            bendSegmentEdges = identifySegmentsByEdgeMidpoints(context, allEdgesAfterSplit, path, totalLength, bendDomains);
-        }
-        
-        // Identify bend relief subsegments
-        if (size(reliefDomains) > 0)
-        {
-            bendReliefSegmentEdges = identifySegmentsByEdgeMidpoints(context, allEdgesAfterSplit, path, totalLength, reliefDomains);
-        }
-    }
-    else
-    {
-        // No bend relief subsegments, so bridge segments are just the original bridges
-        bendSegmentEdges = identifySegmentsByEdgeMidpoints(context, allEdgesAfterSplit, path, totalLength, bridgeDomains);
-    }
+    // Identify bend segments (bridge segments - all domains are "bend" type now)
+    const bendSegmentEdges = identifySegmentsByEdgeMidpoints(context, allEdgesAfterSplit, path, totalLength, allDomains);
 
-    // Stitch segments are everything that's not a bend or bend relief (the rip cuts between bridges)
-    const stitchSegmentEdges = qSubtraction(qSubtraction(allEdgesAfterSplit, bendSegmentEdges), bendReliefSegmentEdges);
+    // Stitch segments are everything that's not a bend (the rip cuts between bridges)
+    const stitchSegmentEdges = qSubtraction(allEdgesAfterSplit, bendSegmentEdges);
 
     // Validate we have segments
     const bendSegmentCount = size(evaluateQuery(context, bendSegmentEdges));
-    const bendReliefSegmentCount = size(evaluateQuery(context, bendReliefSegmentEdges));
     const stitchCount = size(evaluateQuery(context, stitchSegmentEdges));
 
-    if (bendSegmentCount == 0 && bendReliefSegmentCount == 0 && stitchCount == 0)
+    if (bendSegmentCount == 0 && stitchCount == 0)
     {
         throw regenError("No edge segments found after splitting", ["entity"]);
     }
@@ -519,11 +416,6 @@ function processJointEntity(context is Context, id is Id, jointEntity is Query,
         if (bendSegmentCount > 0)
         {
             debug(context, bendSegmentEdges, DebugColor.GREEN);
-        }
-        // Show relief segments in red
-        if (bendReliefSegmentCount > 0)
-        {
-            debug(context, bendReliefSegmentEdges, DebugColor.RED);
         }
         // Show stitch (rip) segments in yellow
         if (stitchCount > 0)
@@ -544,16 +436,17 @@ function processJointEntity(context is Context, id is Id, jointEntity is Query,
             SMJointType.BEND, definition, false, true, defaultRadius, defaultKFactor);
     }
     
-    // Relief segments should have NO bend or rip attributes - leave them as free edges
-    // The sheet metal system will automatically apply bend relief based on model defaults
-    // when it detects bend edges adjacent to free edges
-    // NOTE: Corner attributes are NOT applied to avoid self-intersection issues
-    // The model-level bend relief settings (from getBendReliefParameters) will be used automatically
-
+    // Apply RIP attributes to stitch segments
     if (stitchCount > 0)
     {
         applyJointAttributesToSegments(context, id + "stitches", stitchSegmentEdges, existingAttribute, 
             SMJointType.RIP, definition, false, false, undefined, undefined);
+    }
+    
+    // Apply corner attributes to bend end vertices if bend relief is needed
+    if (applyBendReliefAttributes && bendSegmentCount > 0)
+    {
+        applyBendReliefCornerAttributes(context, id + "bendRelief", bendSegmentEdges, bendReliefParams);
     }
     
     return allEdgesAfterSplitQuery;
@@ -875,21 +768,23 @@ function getBendReliefParameters(context is Context, entity is Query)
 }
 
 /**
- * Checks if bend relief subsegments should be created based on the model's bend relief style.
- * Subsegments are needed for non-TEAR styles to allow bend relief geometry to be created.
+ * Checks if bend relief corner attributes should be applied based on the model's bend relief style.
+ * Corner attributes are applied to bend end vertices for non-TEAR styles.
+ * NOTE: We do NOT create separate relief segments - instead we apply corner attributes to
+ * the vertices at the ends of bend segments and let the sheet metal system create the relief.
  * Inputs:
  *   bendReliefParams - Map containing bend relief parameters from getBendReliefParameters
- * Outputs: Boolean indicating whether to create bend relief subsegments
+ * Outputs: Boolean indicating whether to apply bend relief corner attributes
  */
-function shouldCreateBendReliefSubsegments(bendReliefParams) returns boolean
+function shouldApplyBendReliefAttributes(bendReliefParams) returns boolean
 {
     if (bendReliefParams == undefined || bendReliefParams.style == undefined)
     {
         return false;
     }
     
-    // Only create subsegments for RECTANGLE and OBROUND styles
-    // TEAR style doesn't need subsegments as it doesn't create additional geometry
+    // Apply corner attributes for RECTANGLE and OBROUND styles
+    // TEAR style doesn't need explicit attributes
     return (bendReliefParams.style == SMReliefStyle.RECTANGLE || 
             bendReliefParams.style == SMReliefStyle.OBROUND);
 }
@@ -931,18 +826,16 @@ precondition
 }
 
 /**
- * Applies corner (bend relief) attributes to vertices created by bend-to-relief split operations.
- * Uses qCreatedBy to identify vertices created by specific split operations, avoiding adjacency checks.
- * Relief segments are left unattributed (as free edges), and corner attributes are applied
- * to the vertices at the junction between bend segments and relief segments.
+ * Applies corner (bend relief) attributes to the vertices at the ends of bend segment edges.
+ * This allows the sheet metal system to create bend relief geometry at those corners.
  * Inputs:
  *   context - Evaluation context
  *   id - Operation ID for attribute creation
- *   bendToReliefSplitIds - Array of split operation IDs that created bend-to-relief junctions
+ *   bendSegmentEdges - Query for bend segment edges
  *   bendReliefParams - Map containing bend relief parameters from the model
  */
-function applyCornerAttributesToBendReliefVertices(context is Context, id is Id, 
-    bendToReliefSplitIds is array, bendReliefParams)
+function applyBendReliefCornerAttributes(context is Context, id is Id, 
+    bendSegmentEdges is Query, bendReliefParams)
 {
     // Only apply if we have valid bend relief parameters
     if (bendReliefParams == undefined || bendReliefParams.style == undefined)
@@ -950,30 +843,18 @@ function applyCornerAttributesToBendReliefVertices(context is Context, id is Id,
         return;
     }
     
-    // If no bend-to-relief splits were created, nothing to do
-    if (size(bendToReliefSplitIds) == 0)
+    // Get all vertices adjacent to bend segments
+    const bendEndVertices = qAdjacent(bendSegmentEdges, AdjacencyType.VERTEX, EntityType.VERTEX);
+    const bendEndVertexList = evaluateQuery(context, bendEndVertices);
+    
+    if (size(bendEndVertexList) == 0)
     {
         return;
     }
     
-    // Get vertices created by the bend-to-relief split operations using qCreatedBy
-    var junctionVertices = qNothing();
-    for (var splitId in bendToReliefSplitIds)
-    {
-        const verticesFromSplit = qCreatedBy(splitId, EntityType.VERTEX);
-        junctionVertices = qUnion([junctionVertices, verticesFromSplit]);
-    }
-    
-    const junctionVertexList = evaluateQuery(context, junctionVertices);
-    
-    if (size(junctionVertexList) == 0)
-    {
-        return;
-    }
-    
-    // Create corner attributes for each junction vertex
+    // Create corner attributes for each bend end vertex
     var vertexIndex = 0;
-    for (var vertex in junctionVertexList)
+    for (var vertex in bendEndVertexList)
     {
         const vertexQuery = qUnion([vertex]);
         
@@ -1033,12 +914,11 @@ function applyCornerAttributesToBendReliefVertices(context is Context, id is Id,
  * Each domain represents a bridge (bend segment), so we need to split at both the start and end of each domain.
  * Inputs:
  *   domains - Array of {start, end, segmentType} maps with normalized parameters (0 to 1)
- * Outputs: Map with splitParameters array and bendToReliefSplits array marking which splits are bend-to-relief junctions
+ * Outputs: Array of split parameters
  */
-function calculateSplitParametersFromDomains(domains is array) returns map
+function calculateSplitParametersFromDomains(domains is array) returns array
 {
     var splitParameters = [];
-    var splitMetadata = []; // Track what type of junction each split creates
     
     for (var domainIndex = 0; domainIndex < size(domains); domainIndex += 1)
     {
@@ -1050,74 +930,41 @@ function calculateSplitParametersFromDomains(domains is array) returns map
         // For first domain, always add. For others, check if not adjacent to previous domain
         if (domainIndex == 0 || (prevDomain != undefined && abs(prevDomain.end - domain.start) > FRACTION_TOLERANCE))
         {
-            const isBendToRelief = (prevDomain != undefined) && 
-                                   ((prevDomain.segmentType == "bend" && domain.segmentType == "bendRelief") ||
-                                    (prevDomain.segmentType == "bendRelief" && domain.segmentType == "bend"));
             splitParameters = append(splitParameters, domain.start);
-            splitMetadata = append(splitMetadata, {
-                "parameter" : domain.start,
-                "isBendToRelief" : isBendToRelief
-            });
         }
         else if (prevDomain != undefined)
         {
             // Domains are adjacent, add a single split at the junction
-            const isBendToRelief = (prevDomain.segmentType == "bend" && domain.segmentType == "bendRelief") ||
-                                   (prevDomain.segmentType == "bendRelief" && domain.segmentType == "bend");
             splitParameters = append(splitParameters, domain.start);
-            splitMetadata = append(splitMetadata, {
-                "parameter" : domain.start,
-                "isBendToRelief" : isBendToRelief
-            });
         }
         
         // Add end of this domain as a split point
         // For last domain, always add. For others, only if there's a gap to next domain
         if (domainIndex == size(domains) - 1 || (nextDomain != undefined && abs(domain.end - nextDomain.start) > FRACTION_TOLERANCE))
         {
-            const isBendToRelief = (nextDomain != undefined) && 
-                                   ((domain.segmentType == "bend" && nextDomain.segmentType == "bendRelief") ||
-                                    (domain.segmentType == "bendRelief" && nextDomain.segmentType == "bend"));
             splitParameters = append(splitParameters, domain.end);
-            splitMetadata = append(splitMetadata, {
-                "parameter" : domain.end,
-                "isBendToRelief" : isBendToRelief
-            });
         }
     }
     
-    // Sort both arrays together based on parameter values
-    var sortedData = [];
-    for (var i = 0; i < size(splitParameters); i += 1)
-    {
-        sortedData = append(sortedData, {
-            "parameter" : splitParameters[i],
-            "isBendToRelief" : splitMetadata[i].isBendToRelief
-        });
-    }
-    sortedData = sort(sortedData, function(a, b) { return a.parameter - b.parameter; });
+    // Sort and remove duplicates
+    splitParameters = sort(splitParameters, function(a, b) { return a - b; });
     
-    // Remove duplicates and edge parameters, keeping track of bend-to-relief flags
     var uniqueParameters = [];
-    var bendToReliefFlags = [];
-    
-    for (var data in sortedData)
+    for (var param in splitParameters)
     {
-        if (data.parameter <= FRACTION_TOLERANCE || data.parameter >= 1 - FRACTION_TOLERANCE)
+        // Skip parameters at or near endpoints
+        if (param <= FRACTION_TOLERANCE || param >= 1 - FRACTION_TOLERANCE)
         {
-            continue; // Skip parameters at or near endpoints
+            continue;
         }
-        if (size(uniqueParameters) == 0 || abs(data.parameter - uniqueParameters[size(uniqueParameters) - 1]) > FRACTION_TOLERANCE)
+        // Skip duplicates
+        if (size(uniqueParameters) == 0 || abs(param - uniqueParameters[size(uniqueParameters) - 1]) > FRACTION_TOLERANCE)
         {
-            uniqueParameters = append(uniqueParameters, data.parameter);
-            bendToReliefFlags = append(bendToReliefFlags, data.isBendToRelief);
+            uniqueParameters = append(uniqueParameters, param);
         }
     }
     
-    return {
-        "splitParameters" : uniqueParameters,
-        "bendToReliefFlags" : bendToReliefFlags
-    };
+    return uniqueParameters;
 }
 
 /**
