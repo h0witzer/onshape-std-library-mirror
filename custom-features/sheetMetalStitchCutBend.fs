@@ -81,7 +81,7 @@ export const sheetMetalStitchCutBend = defineSheetMetalFeature(function(context 
         curvePatternSpacingPredicate(definition);
         
         // Debug visualization
-        annotation { "Name" : "Show debug entities", "Default" : false, "UIHint" : UIHint.ALWAYS_HIDDEN }
+        annotation { "Name" : "Show debug entities", "Default" : true }
         definition.showDebug is boolean;
     }
     {
@@ -201,6 +201,12 @@ export const sheetMetalStitchCutBend = defineSheetMetalFeature(function(context 
 function processJointEntity(context is Context, id is Id, jointEntity is Query, 
     definition is map, defaultRadius, defaultKFactor, bendReliefParams, sheetMetalThickness) returns Query
 {
+    // Debug: Show the original master edges being processed
+    if (definition.showDebug)
+    {
+        debug(context, jointEntity, DebugColor.MAGENTA);
+    }
+    
     // Get existing attribute to understand current joint state
     var existingAttribute = getJointAttribute(context, jointEntity);
     if (existingAttribute == undefined)
@@ -221,6 +227,12 @@ function processJointEntity(context is Context, id is Id, jointEntity is Query,
     if (path == undefined)
     {
         throw regenError("Unable to order the selected edges into a continuous chain", ["entity"], jointEntity);
+    }
+
+    // Debug: Show the ordered path edges
+    if (definition.showDebug)
+    {
+        debug(context, qUnion(path.edges), DebugColor.CYAN);
     }
 
     const totalLength = evLength(context, {
