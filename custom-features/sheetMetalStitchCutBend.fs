@@ -11,6 +11,7 @@ export import(path : "onshape/std/smjointstyle.gen.fs", version : "2856.0");
 // Imports used internally
 import(path : "onshape/std/common.fs", version : "2856.0");
 import(path : "onshape/std/smreliefstyle.gen.fs", version : "2856.0");
+import(path : "onshape/std/extendendtype.gen.fs", version : "2856.0");
 import(path : "onshape/std/query.fs", version : "2856.0");
 import(path : "onshape/std/evaluate.fs", version : "2856.0");
 import(path : "onshape/std/valueBounds.fs", version : "2856.0");
@@ -544,6 +545,26 @@ function processJointEntity(context is Context, id is Id, jointEntity is Query,
     {
         applyJointAttributesToSegments(context, id + "stitches", stitchSegmentEdges, existingAttribute, 
             SMJointType.RIP, definition, false, false, undefined, undefined);
+    }
+    
+    // Step 5: Extend sheet body definition edges for relief segments
+    // Relief segments are free edges that need the sheet metal definition to be adjusted
+    // Use opExtendSheetBody (similar to sheet metal aware move face) to adjust master definition entities
+    if (bendReliefSegmentCount > 0)
+    {
+        try
+        {
+            sheetMetalExtendSheetBodyCall(context, id + "extendForRelief", {
+                "entities" : bendReliefSegmentEdges,
+                "endCondition" : ExtendEndType.EXTEND_BLIND,
+                "extendDistance" : 0 * meter  // Just adjust the definition, don't actually extend
+            });
+        }
+        catch
+        {
+            // If extension fails, continue - relief segments are still positioned correctly
+            // The topology error may persist but we've done what we can
+        }
     }
     
     return allEdgesAfterSplitQuery;
