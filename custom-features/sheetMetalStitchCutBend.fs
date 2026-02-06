@@ -84,9 +84,9 @@ export const sheetMetalStitchCutBend = defineSheetMetalFeature(function(context 
         annotation { "Name" : "Show debug entities", "Default" : true }
         definition.showDebug is boolean;
         
-        // Relief edge retraction distance
-        annotation { "Name" : "Relief edge retraction distance", "Default" : 0.1 * inch }
-        isLength(definition.reliefEdgeRetraction, LENGTH_BOUNDS);
+        // Relief clearance radius (for cylinder sweep subtraction)
+        annotation { "Name" : "Relief clearance radius", "Default" : 0.1 * inch }
+        isLength(definition.reliefClearanceRadius, LENGTH_BOUNDS);
     }
     {
         // Validate sheet metal context
@@ -170,7 +170,7 @@ export const sheetMetalStitchCutBend = defineSheetMetalFeature(function(context 
         for (var jointEntity in jointEdgeEntities)
         {
             const processedEdges = processJointEntity(context, id + ("entity" ~ entityIndex), 
-                jointEntity, definition, defaultRadius, defaultKFactor, bendReliefParams, sheetMetalThickness, definition.reliefEdgeRetraction);
+                jointEntity, definition, defaultRadius, defaultKFactor, bendReliefParams, sheetMetalThickness, definition.reliefClearanceRadius);
             allProcessedEdges = append(allProcessedEdges, processedEdges);
             entityIndex += 1;
         }
@@ -203,7 +203,7 @@ export const sheetMetalStitchCutBend = defineSheetMetalFeature(function(context 
  * Outputs: Query for all processed edges from this joint entity
  */
 function processJointEntity(context is Context, id is Id, jointEntity is Query, 
-    definition is map, defaultRadius, defaultKFactor, bendReliefParams, sheetMetalThickness, reliefEdgeRetraction) returns Query
+    definition is map, defaultRadius, defaultKFactor, bendReliefParams, sheetMetalThickness, reliefClearanceRadius) returns Query
 {
     // Debug: Show the original master edges being processed
     if (definition.showDebug)
@@ -550,13 +550,13 @@ function processJointEntity(context is Context, id is Id, jointEntity is Query,
             SMJointType.RIP, definition, false, false, undefined, undefined);
     }
     
-    // Extend sheet body in relief regions to create clearance for bend relief
-    // Uses Move Face edge extension mechanism: clear SM attributes, then extend sheet body edges
+    // Subtract cylinders from sheet metal definition in relief regions
+    // Follows Sheet Metal Tab pattern: sweep cylinders, boolean subtract before SM update
     if (bendReliefSegmentCount > 0)
     {
-        println("Relief segments created: " ~ bendReliefSegmentCount);
-        println("Calling extendSheetBodyForReliefRegions...");
-        extendSheetBodyForReliefRegions(context, id + "reliefExtension", bendReliefSegmentEdges, bendSegmentEdges, reliefEdgeRetraction, jointEntity);
+        subtractReliefCylindersFromDefinition(context, id + "reliefSubtract", 
+                                              bendReliefSegmentEdges, jointEntity, 
+                                              reliefClearanceRadius);
     }
     
     return allEdgesAfterSplitQuery;
@@ -902,129 +902,85 @@ function shouldCreateBendReliefSubsegments(bendReliefParams) returns boolean
 /**
  * Extends sheet body in relief regions to create clearance for bend relief.
  * Uses the Move Face edge extension mechanism:
- * 1. Clear SM attributes from edges to break associations
- * 2. Create construction geometry as extension targets
- * 3. Call opExtendSheetBody with edgeLimitOptions to extend/retract SM definition edges
- * This is how Move Face separates surfaces when breaking a rip joint.
+/**
+ * Subtracts cylinder solids from sheet metal definition surfaces in relief regions.
+ * Follows Sheet Metal Tab pattern: creates cylinder tools via sweep, then boolean subtracts.
+ * This creates clearance for bend relief geometry before sheet metal update.
  * Inputs:
  *   context - Evaluation context
  *   id - Feature ID for this operation
  *   reliefEdges - Query for relief segment edges
- *   bendEdges - Query for bend segment edges
- *   retractionDistance - Distance to retract edges by
  *   jointEntity - Query for the original joint entity edge
+ *   radius - Radius of cylinders to sweep (controls clearance size)
  */
-function extendSheetBodyForReliefRegions(context is Context, id is Id, reliefEdges is Query, bendEdges is Query, retractionDistance, jointEntity is Query)
+function subtractReliefCylindersFromDefinition(context is Context, id is Id, reliefEdges is Query, jointEntity is Query, radius)
 {
-    // Get faces adjacent to the entire joint entity edge
-    // Relief segments are new edge segments on the joint, but SM definition edges are on the faces
-    const facesAdjacentToJoint = qAdjacent(jointEntity, AdjacencyType.EDGE, EntityType.FACE);
+    const reliefEdgeList = evaluateQuery(context, reliefEdges);
     
-    // Get the SM definition entities from those faces
-    const smDefinitionEntities = getSMDefinitionEntities(context, facesAdjacentToJoint);
-    const smEdges = qEntityFilter(qUnion(smDefinitionEntities), EntityType.EDGE);
-    const smEdgeList = evaluateQuery(context, smEdges);
-    
-    println("Relief edges query resolves to: " ~ size(evaluateQuery(context, reliefEdges)) ~ " edges");
-    println("Found " ~ size(smEdgeList) ~ " SM edges on faces adjacent to joint");
-    
-    if (size(smEdgeList) == 0)
+    if (size(reliefEdgeList) == 0)
         return;
     
-    // Build edge limit options array (like Move Face does)
-    var edgeLimitOptions = [];
+    // Get SM definition bodies that we'll subtract from
+    const facesAdjacentToJoint = qAdjacent(jointEntity, AdjacencyType.EDGE, EntityType.FACE);
+    const smDefinitionEntities = getSMDefinitionEntities(context, facesAdjacentToJoint);
+    const definitionBodies = qOwnerBody(qUnion(smDefinitionEntities));
     
-    for (var i = 0; i < size(smEdgeList); i += 1)
+    // Create and subtract a cylinder for each relief edge
+    for (var i = 0; i < size(reliefEdgeList); i += 1)
     {
         try
         {
-            const smEdge = smEdgeList[i];
+            const reliefEdge = reliefEdgeList[i];
             
-            println("Processing SM edge " ~ (i + 1) ~ " of " ~ size(smEdgeList));
-            
-            // Step 1: Clear SM attributes to break associations (like Move Face line 613)
-            clearSmAttributes(context, smEdge);
-            println("  Cleared SM attributes from edge");
-            
-            // Step 2: Find adjacent faces to determine which to extend
-            const adjacentFaces = evaluateQuery(context, qAdjacent(smEdge, AdjacencyType.EDGE, EntityType.FACE));
-            println("  Found " ~ size(adjacentFaces) ~ " adjacent faces");
-            
-            if (size(adjacentFaces) == 0)
-                continue;
-            
-            // Get the first face as the one to extend
-            const faceToExtend = adjacentFaces[0];
-            
-            // Step 3: Extract face as surface tool body (like Move Face line 571)
-            const extractId = id + ("extract" ~ i);
-            opExtractSurface(context, extractId, {
-                "faces" : faceToExtend
-            });
-            const extractedSurface = qCreatedBy(extractId, EntityType.FACE);
-            
-            // Step 4: Offset the extracted surface to create limitEntity (like Move Face line 575)
-            // Get face normal to determine offset direction
-            const facePlane = evFaceTangentPlane(context, {
-                "face" : faceToExtend,
-                "parameter" : vector(0.5, 0.5)
+            // Get edge tangent line for sweep path
+            const edgeTangentLine = evEdgeTangentLine(context, {
+                "edge" : reliefEdge,
+                "parameter" : 0.0  // Start of edge
             });
             
-            // Calculate offset direction (inward, opposite of face normal for retraction)
-            const offsetDirection = -facePlane.normal;
-            
-            // Offset the extracted surface
-            const offsetId = id + ("offset" ~ i);
-            opOffsetFace(context, offsetId, {
-                "moveFaces" : extractedSurface,
-                "offsetDistance" : retractionDistance,
-                "direction" : offsetDirection
-            });
-            const limitEntity = qCreatedBy(offsetId, EntityType.FACE);
-            
-            // Step 5: Calculate helpPoint (center of offset face, like Move Face line 587)
-            const helpPoint = facePlane.origin + offsetDirection * retractionDistance;
-            
-            // Step 6: Build edge limit option
-            edgeLimitOptions = append(edgeLimitOptions, {
-                "edge" : smEdge,
-                "faceToExtend" : faceToExtend,
-                "limitEntity" : limitEntity,
-                "helpPoint" : helpPoint
+            // Create sketch plane perpendicular to edge at start point
+            const planeId = id + ("plane" ~ i);
+            opPlane(context, planeId, {
+                "plane" : plane(edgeTangentLine.origin, edgeTangentLine.direction)
             });
             
-            println("  Created edgeLimitOption for edge " ~ (i + 1));
+            // Create circle sketch
+            const sketchId = id + ("sketch" ~ i);
+            var sketch = newSketchOnPlane(context, sketchId, {
+                "sketchPlane" : qCreatedBy(planeId, EntityType.FACE)
+            });
+            
+            skCircle(sketch, "circle", {
+                "center" : vector(0, 0) * meter,
+                "radius" : radius
+            });
+            skSolve(sketch);
+            
+            // Sweep circle along relief edge to create cylinder
+            const sweepId = id + ("sweep" ~ i);
+            opSweep(context, sweepId, {
+                "profiles" : qSketchRegion(sketchId),
+                "path" : reliefEdge
+            });
+            
+            // Boolean subtract cylinder from SM definition bodies
+            // Following Sheet Metal Tab pattern (sheetMetalTab.fs line 412)
+            const booleanId = id + ("boolean" ~ i);
+            opBoolean(context, booleanId, {
+                "tools" : qCreatedBy(sweepId, EntityType.BODY),
+                "targets" : definitionBodies,
+                "operationType" : BooleanOperationType.SUBTRACTION,
+                "allowSheets" : true
+            });
         }
         catch (error)
         {
-            // If any step fails for this edge, skip it and continue
-            // Some edges may not be extensible
-            println("  ERROR processing edge " ~ (i + 1) ~ ": " ~ error);
-        }
-    }
-    
-    // Step 7: Call opExtendSheetBody with edge limit options (like Move Face line 1101-1106)
-    if (size(edgeLimitOptions) > 0)
-    {
-        try
-        {
-            println("Calling opExtendSheetBody with " ~ size(edgeLimitOptions) ~ " edge limit options");
-            sheetMetalExtendSheetBodyCall(context, id, {
-                "entities" : qUnion(smEdgeList),
-                "extendMethod" : ExtendSheetBoundingType.EXTEND_TO_SURFACE,
-                "edgeLimitOptions" : edgeLimitOptions,
-                "fence" : true  // Critical parameter from Move Face
-            });
-            println("Sheet body extension completed successfully");
-        }
-        catch (error)
-        {
-            // If extension fails, the cleared attributes still broke associations
-            // which may be enough
-            println("ERROR in opExtendSheetBody: " ~ error);
+            // If any cylinder fails, continue with others
+            // Some relief edges may not be suitable for sweep
         }
     }
 }
+
 
 
 /**
