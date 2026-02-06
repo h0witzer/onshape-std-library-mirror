@@ -20,6 +20,9 @@ import(path : "onshape/std/surfaceGeometry.fs", version : "2815.0");
 import(path : "onshape/std/units.fs", version : "2815.0");
 import(path : "onshape/std/vector.fs", version : "2815.0");
 
+// Custom attribute name for storing mate connector coordinate systems
+export const AMALGAM_MATE_CONNECTOR_CSYSTEMS = "amalgamMateConnectorCSystems";
+
 /**
  * Defines the kind of entity being tagged in the feature.
  * @value FRAME : Tag a frame profile with metadata. The metadata will be displayed in the cut list for frames derived from the
@@ -99,8 +102,8 @@ export const tag = defineFeature(function(context is Context, id is Id, definiti
             annotation { "Name" : "Sketch for flat view" , "UIHint" : UIHint.ALWAYS_HIDDEN}
             definition.flatFormSketch is FeatureList;
 
-            annotation { "Name" : "Amalgam tool origin mate connector", "Description" : "If none selected, this feature will create one at Origin",
-                        "Filter" : BodyType.MATE_CONNECTOR, "MaxNumberOfPicks" : 1 }
+            annotation { "Name" : "Amalgam tool origin mate connector(s)", "Description" : "If none selected, this feature will create one at Origin",
+                        "Filter" : BodyType.MATE_CONNECTOR }
             definition.cSysMateConnector is Query;
         }
     }
@@ -223,6 +226,41 @@ function doTagForm(context is Context, topLevelId is Id, definition is map)
         cSysMateConnector = qCreatedBy(originMateConnectorId, EntityType.BODY)->qBodyType(BodyType.MATE_CONNECTOR);
     }
     setFormAttribute(context, qOwnerBody(cSysMateConnector), FORM_BODY_CSYS_MATE_CONNECTOR);
+    
+    // Store mate connector coordinate systems as a custom attribute for performance optimization
+    // This allows Amalgamate to read pre-computed transforms without instantiation
+    var mateConnectorCSystems = [];
+    const mateConnectorQueries = evaluateQuery(context, cSysMateConnector);
+    for (var mc in mateConnectorQueries)
+    {
+        const mcCSys = evMateConnector(context, { "mateConnector" : mc });
+        mateConnectorCSystems = append(mateConnectorCSystems, mcCSys);
+    }
+    
+    // Store the coordinate systems array as an attribute on one of the tagged bodies
+    // We'll store it on the positive part if available, otherwise negative, otherwise new
+    var targetBody = undefined;
+    if (positivePartSelected)
+    {
+        targetBody = qNthElement(definition.positivePart, 0);
+    }
+    else if (negativePartSelected)
+    {
+        targetBody = qNthElement(definition.negativePart, 0);
+    }
+    else if (newPartSelected)
+    {
+        targetBody = qNthElement(definition.newPart, 0);
+    }
+    
+    if (targetBody != undefined)
+    {
+        setAttribute(context, {
+            "entities" : targetBody,
+            "name" : AMALGAM_MATE_CONNECTOR_CSYSTEMS,
+            "attribute" : mateConnectorCSystems
+        });
+    }
 }
 
 

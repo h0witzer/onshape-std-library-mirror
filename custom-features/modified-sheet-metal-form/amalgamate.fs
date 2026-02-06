@@ -4,6 +4,7 @@ FeatureScript 2815;
 // See the LICENSE tab for the license text.
 // Copyright (c) 2013-Present PTC Inc.
 
+import(path : "onshape/std/attributes.fs", version : "2815.0");
 import(path : "onshape/std/common.fs", version : "2815.0");
 import(path : "onshape/std/coordSystem.fs", version : "2815.0");
 import(path : "onshape/std/evaluate.fs", version : "2815.0");
@@ -12,15 +13,27 @@ standardFormed::import(path : "onshape/std/formedUtils.fs", version : "2815.0");
 modifiedFormed::import(path : "5418313fd7f629d9c7f1ac10", version : "b97acafda22e3375bf349519"); //modifiedFormedUtils.fs
 import(path : "onshape/std/instantiator.fs", version : "2815.0");
 import(path : "onshape/std/vector.fs", version : "2815.0");
+export import(path : "onshape/std/manipulator.fs", version : "2815.0");
+amalgamTag::import(path : "65dcc2bb2c4ff1c239467eca", version : "0e0105bab7e55e86e5fc21bb"); //amalgamTag.fs
+
+const AMALGAMATE_MANIPULATOR = "amalgamateManipulator";
+
+const AMALGAMATE_INDEX_BOUNDS =
+{
+    (unitless) : [0, 0, 1e5]
+} as IntegerBoundSpec;
 
 /**
  * Abuses the Sheet Metal Formed functionality to tag part studios as new, additive, and subtractive bodies for non-sheet metal parts
  * This feature mirrors the Sheet Metal Form tool but performs traditional boolean operations so it can be used outside sheet metal.
  */
-annotation { "Feature Type Name" : "Amalgamate" }
+annotation { "Feature Type Name" : "Amalgamate",
+        "Manipulator Change Function" : "amalgamateManipulatorChange" }
 export const amalgamate = defineFeature(function(context is Context, id is Id, definition is map)
     precondition
     {
+        annotation { "Name" : "Location Index", "UIHint" : UIHint.ALWAYS_HIDDEN }
+        isInteger(definition.locationIndex, AMALGAMATE_INDEX_BOUNDS);
         annotation {
                     "Library Definition" : "65dcc2bb2c4ff1c239467eca",
                     "Name" : "Amalgam Tool Part Studio",
@@ -58,8 +71,11 @@ export const amalgamate = defineFeature(function(context is Context, id is Id, d
             throw regenError(ErrorStringEnum.FORMED_SELECT_LOCATION, ["locations"]);
         }
 
+        // Get mate connector transform by sampling the tool
+        const mateConnectorData = getMateConnectorTransform(context, id, definition);
+        
         const instantiator = newInstantiator(id, {});
-        const allFormedBodies = addFormInstances(context, id, definition, instantiator);
+        const allFormedBodies = addFormInstancesWithTransform(context, id, definition, instantiator, mateConnectorData.transform);
 
         try
         {
@@ -72,8 +88,15 @@ export const amalgamate = defineFeature(function(context is Context, id is Id, d
         }
 
         performFormBooleans(context, id, subtractionSolids, unionSolids, allFormedBodies, definition.createNewBodies);
+        
+        // Add manipulator for location selection
+        if (mateConnectorData.hasMultiple)
+        {
+            addFormToolManipulator(context, id, definition, mateConnectorData.points);
+        }
     },
     {
+            "locationIndex" : 0,
             "flipDirection" : false,
             "subtractionTargets" : qAllModifiableSolidBodies(),
             "unionTargets" : qAllModifiableSolidBodies(),
@@ -82,10 +105,125 @@ export const amalgamate = defineFeature(function(context is Context, id is Id, d
         });
 
 /**
- * Create an instance of the form Part Studio at each requested location.
+ * Get the mate connector transform by reading pre-stored coordinate systems from Amalgam Tag attributes.
+ * This eliminates the need for double instantiation, significantly improving performance.
+ * @returns map with "transform", "points", and "hasMultiple" fields
+ */
+function getMateConnectorTransform(context is Context, id is Id, definition is map) returns map
+{
+    // Try to read pre-stored mate connector coordinate systems from the tool's attributes
+    // This is much faster than instantiating the tool
+    var mateConnectorCSystems = undefined;
+    
+    try
+    {
+        // Query all bodies with form attributes from the part studio
+        const partStudioBodies = evaluateQuery(context, definition.formPartStudio.partQuery);
+        
+        // Look for the attribute on any of the bodies
+        for (var body in partStudioBodies)
+        {
+            const attr = getAttribute(context, {
+                "entities" : qUnion([body]),
+                "name" : amalgamTag::AMALGAM_MATE_CONNECTOR_CSYSTEMS
+            });
+            
+            if (attr != undefined)
+            {
+                mateConnectorCSystems = attr;
+                break;
+            }
+        }
+    }
+    
+    // Fallback: if no pre-stored data found, instantiate to get mate connectors (old approach)
+    if (mateConnectorCSystems == undefined)
+    {
+        var importQuery;
+        try
+        {
+            const instantiator = newInstantiator(id + "import");
+            var partStudioData = definition.formPartStudio;
+            
+            // Add mate connectors to the part query (same as instantiatePointDerivePartStudio)
+            partStudioData.partQuery = qUnion([
+                        partStudioData.partQuery,
+                        qMateConnectorsOfParts(partStudioData.partQuery)
+                    ]);
+            
+            importQuery = addInstance(instantiator, partStudioData);
+            instantiate(context, instantiator);
+        }
+        catch
+        {
+            return { "transform" : identityTransform(), "points" : [], "hasMultiple" : false };
+        }
+        
+        // Query mate connectors
+        const mateConnectors = importQuery->qMateConnectorsOfParts();
+        
+        // Convert to coordinate systems array (same as computeCSysArray)
+        mateConnectorCSystems = [];
+        if (!isQueryEmpty(context, mateConnectors))
+        {
+            mateConnectorCSystems = mapArray(evaluateQuery(context, mateConnectors), function(mateConnector)
+                {
+                    return evMateConnector(context, { "mateConnector" : mateConnector });
+                });
+        }
+        
+        // Clean up imported bodies
+        opDeleteBodies(context, id + "deleteImport", { "entities" : importQuery });
+    }
+    
+    if (size(mateConnectorCSystems) == 0)
+    {
+        return { "transform" : identityTransform(), "points" : [], "hasMultiple" : false };
+    }
+    
+    // Compute transform from selected mate connector (same as Point Derive)
+    const clampedIndex = clamp(definition.locationIndex, 0, size(mateConnectorCSystems) - 1);
+    const selectedMateConnectorCSys = mateConnectorCSystems[clampedIndex];
+    
+    // fromWorld() creates a transform that moves FROM the mate connector's coordinate system TO world origin
+    // This preserves the full rotational information of the mate connector
+    const pointTransform = fromWorld(selectedMateConnectorCSys);
+    
+    // Compute manipulator points at first location (same pattern as Point Derive)
+    const locationQueries = evaluateQuery(context, definition.locations);
+    if (size(locationQueries) > 0)
+    {
+        const firstLocation = locationQueries[0];
+        var firstLocationCSys = evaluateCSys(context, firstLocation);
+        if (definition.flipDirection)
+        {
+            firstLocationCSys.zAxis = -firstLocationCSys.zAxis;
+        }
+        
+        var manipulatorPoints = [];
+        for (var mcCSys in mateConnectorCSystems)
+        {
+            // Transform mate connector origins to first location for manipulator display
+            // This is exactly how Point Derive computes manipulator points
+            const transformedPoint = toWorld(firstLocationCSys) * pointTransform * mcCSys.origin;
+            manipulatorPoints = append(manipulatorPoints, transformedPoint);
+        }
+        
+        return { 
+            "transform" : pointTransform, 
+            "points" : manipulatorPoints,
+            "hasMultiple" : size(mateConnectorCSystems) > 1
+        };
+    }
+    
+    return { "transform" : pointTransform, "points" : [], "hasMultiple" : size(mateConnectorCSystems) > 1 };
+}
+
+/**
+ * Create an instance of the form Part Studio at each requested location with mate connector transform.
  * @returns Query containing all formed tool bodies that were instantiated.
  */
-function addFormInstances(context is Context, id is Id, definition is map, instantiator is Instantiator) returns Query
+function addFormInstancesWithTransform(context is Context, id is Id, definition is map, instantiator is Instantiator, mateConnectorTransform is Transform) returns Query
 {
     var allFormedBodies = qNothing();
     const configurationOverride = { "thickness" : definition.thickness };
@@ -99,7 +237,7 @@ function addFormInstances(context is Context, id is Id, definition is map, insta
         }
 
         const formedBodies = addInstance(instantiator, definition.formPartStudio, {
-                    "transform" : toWorld(cSys),
+                    "transform" : toWorld(cSys) * mateConnectorTransform,
                     "identity" : location,
                     "configurationOverride" : configurationOverride,
                     "mateConnector" : qBodiesWithAnyFormAttribute(modifiedFormed::FORM_BODY_CSYS_MATE_CONNECTOR)
@@ -201,4 +339,40 @@ function qBodiesWithAnyFormAttributes(queryToFilter is Query, attributes is arra
 {
     return qUnion([modifiedFormed::qBodiesWithFormAttributes(queryToFilter, attributes),
                 standardFormed::qBodiesWithFormAttributes(queryToFilter, attributes)]);
+}
+
+/**
+ * Adds a manipulator to visualize mate connector selection points (only for first location).
+ */
+function addFormToolManipulator(context is Context, id is Id, definition is map, manipulatorPoints is array)
+{
+    if (size(manipulatorPoints) <= 1)
+    {
+        return; // No need for manipulator if only one mate connector
+    }
+    
+    const clampedIndex = clamp(definition.locationIndex, 0, size(manipulatorPoints) - 1);
+    
+    const mateConnectorManipulator = pointsManipulator({
+        "points" : manipulatorPoints,
+        "index" : clampedIndex
+    });
+    
+    addManipulators(context, id, {
+        (AMALGAMATE_MANIPULATOR) : mateConnectorManipulator
+    });
+}
+
+/**
+ * The manipulator change function for the Amalgamate feature.
+ * Updates the locationIndex when a different location point is selected.
+ */
+export function amalgamateManipulatorChange(context is Context, definition is map, newManipulators is map) returns map
+{
+    if (newManipulators[AMALGAMATE_MANIPULATOR] is Manipulator)
+    {
+        definition.locationIndex = newManipulators[AMALGAMATE_MANIPULATOR].index;
+    }
+    
+    return definition;
 }
