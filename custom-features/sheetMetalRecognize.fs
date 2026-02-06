@@ -19,6 +19,7 @@ import(path : "onshape/std/geomOperations.fs", version : "2599.0");
 import(path : "onshape/std/manipulator.fs", version : "2599.0");
 import(path : "onshape/std/math.fs", version : "2599.0");
 import(path : "onshape/std/modifyFillet.fs", version : "2599.0");
+import(path : "onshape/std/properties.fs", version : "2599.0");
 import(path : "onshape/std/sheetMetalAttribute.fs", version : "2599.0");
 import(path : "onshape/std/sheetMetalUtils.fs", version : "2599.0");
 import(path : "onshape/std/sketch.fs", version : "2599.0");
@@ -473,9 +474,26 @@ function sheetMetalRecognize(context is Context, id is Id, definition is map)
             throw regenError(ErrorStringEnum.SHEET_METAL_CANNOT_RECOGNIZE_PARTS, ["bodies"], qUnion(badParts));
     }
 
+    // Map each input body to its corresponding offset group for name preservation
+    var evaluatedInputBodies = evaluateQuery(context, definition.bodies);
+    var bodyToGroupIndex = {};
+    for (var i = 0; i < size(evaluatedInputBodies); i += 1)
+    {
+        for (var j = 0; j < size(offsetGroups); j += 1)
+        {
+            if (size(evaluateQuery(context, qSubtraction(qOwnerBody(offsetGroups[j].side0[0]), evaluatedInputBodies[i]))) == 0)
+            {
+                bodyToGroupIndex[i] = j;
+                break;
+            }
+        }
+    }
+
     var objectCount = 0;
     var groupCount = 0;
     var smFacesAndEdgesQ = qNothing();
+    var surfaceIdToBodyIndex = {};
+    
     for (var group in offsetGroups)
     {
         var surfaceId = id + ("surface_" ~ groupCount);
@@ -503,6 +521,16 @@ function sheetMetalRecognize(context is Context, id is Id, definition is map)
                     "defaultBendReliefScale" : definition.defaultBendReliefScale
                 });
 
+        // Store mapping from surface ID to original body index for name preservation
+        for (var bodyIdx = 0; bodyIdx < size(evaluatedInputBodies); bodyIdx += 1)
+        {
+            if (bodyToGroupIndex[bodyIdx] != undefined && bodyToGroupIndex[bodyIdx] == groupCount)
+            {
+                surfaceIdToBodyIndex[surfaceId] = bodyIdx;
+                break;
+            }
+        }
+
         groupCount += 1;
         smFacesAndEdgesQ = qUnion([smFacesAndEdgesQ, qCreatedBy(surfaceId, EntityType.FACE), qCreatedBy(surfaceId, EntityType.EDGE)]);
         objectCount = annotateSmSurfaceBodies(context, id, surfaceData, objectCount);
@@ -526,6 +554,41 @@ function sheetMetalRecognize(context is Context, id is Id, definition is map)
     }
 
     finalizeSheetMetalGeometry(context, id, smFacesAndEdgesQ);
+
+    // Apply names from input bodies to generated sheet metal bodies
+    if (definition.inputBodyNames != undefined && size(definition.inputBodyNames) > 0)
+    {
+        var finalBodies = evaluateQuery(context, qCreatedBy(id, EntityType.BODY));
+        for (var finalBody in finalBodies)
+        {
+            // Find which surface ID created this body by checking face ownership
+            var bodyFaces = evaluateQuery(context, qOwnedByBody(finalBody, EntityType.FACE));
+            if (size(bodyFaces) > 0)
+            {
+                // Check each surface ID to see if it created faces in this body
+                for (var surfaceIdKey in surfaceIdToBodyIndex)
+                {
+                    var facesFromSurface = evaluateQuery(context, qIntersection([
+                        qCreatedBy(surfaceIdKey, EntityType.FACE),
+                        qOwnedByBody(finalBody, EntityType.FACE)
+                    ]));
+                    if (size(facesFromSurface) > 0)
+                    {
+                        var bodyIndex = surfaceIdToBodyIndex[surfaceIdKey];
+                        if (bodyIndex < size(definition.inputBodyNames) && definition.inputBodyNames[bodyIndex] != undefined)
+                        {
+                            setProperty(context, {
+                                "entities" : finalBody,
+                                "propertyType" : PropertyType.NAME,
+                                "value" : definition.inputBodyNames[bodyIndex]
+                            });
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+    }
 }
 
 
@@ -678,6 +741,18 @@ export function sheetMetalStartEditLogic(context is Context, id is Id, oldDefini
         }
         // Clear out the pre-selection data: this is especially important if the query is to imported data
         definition.initEntities = qNothing();
+    }
+
+    // Capture names from input bodies to preserve them after recognition
+    if (definition.bodies != undefined)
+    {
+        var inputBodyNames = [];
+        for (var body in evaluateQuery(context, definition.bodies))
+        {
+            var bodyName = getProperty(context, { "entity" : body, "propertyType" : PropertyType.NAME });
+            inputBodyNames = append(inputBodyNames, bodyName);
+        }
+        definition.inputBodyNames = inputBodyNames;
     }
 
     // Extrude flips
