@@ -14,8 +14,18 @@ import(path : "onshape/std/instantiator.fs", version : "2815.0");
 import(path : "onshape/std/vector.fs", version : "2815.0");
 
 /**
+ * Variable name used to store and retrieve the custom feature name for Amalgamate.
+ * This constant must match the corresponding constant in amalgamTag.fs.
+ */
+const AMALGAM_FEATURE_NAME_VAR = "amalgamFeatureName";
+
+/**
  * Abuses the Sheet Metal Formed functionality to tag part studios as new, additive, and subtractive bodies for non-sheet metal parts
  * This feature mirrors the Sheet Metal Form tool but performs traditional boolean operations so it can be used outside sheet metal.
+ * 
+ * Feature Name Template: The template "Amalgamate#featureName" references the computed parameter 'featureName'.
+ * Onshape will substitute #featureName with the actual value at runtime, displaying as "Amalgamate - [custom name]"
+ * or just "Amalgamate" if featureName is empty.
  */
 annotation { "Feature Type Name" : "Amalgamate", "Feature Name Template" : "Amalgamate#featureName" }
 export const amalgamate = defineFeature(function(context is Context, id is Id, definition is map)
@@ -82,7 +92,7 @@ export const amalgamate = defineFeature(function(context is Context, id is Id, d
         var featureName = "";
         try silent
         {
-            const retrievedName = getVariable(context, "amalgamFeatureName");
+            const retrievedName = getVariable(context, AMALGAM_FEATURE_NAME_VAR);
             if (retrievedName != undefined && retrievedName is string)
             {
                 featureName = " - " ~ retrievedName;

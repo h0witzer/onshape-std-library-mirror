@@ -21,6 +21,12 @@ import(path : "onshape/std/units.fs", version : "2815.0");
 import(path : "onshape/std/vector.fs", version : "2815.0");
 
 /**
+ * Variable name used to store and retrieve the custom feature name for Amalgamate.
+ * This constant must match the corresponding constant in amalgamate.fs.
+ */
+const AMALGAM_FEATURE_NAME_VAR = "amalgamFeatureName";
+
+/**
  * Defines the kind of entity being tagged in the feature.
  * @value FRAME : Tag a frame profile with metadata. The metadata will be displayed in the cut list for frames derived from the
  * tagged profile.
@@ -231,7 +237,7 @@ function doTagForm(context is Context, topLevelId is Id, definition is map)
     // Store the feature name as a variable if specified
     if (definition.featureName != "")
     {
-        setVariable(context, "amalgamFeatureName", definition.featureName);
+        setVariable(context, AMALGAM_FEATURE_NAME_VAR, definition.featureName);
     }
 }
 
