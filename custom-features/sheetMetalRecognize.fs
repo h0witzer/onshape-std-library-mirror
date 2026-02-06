@@ -571,15 +571,15 @@ function sheetMetalRecognize(context is Context, id is Id, definition is map)
     // Iterate through surface IDs and find their corresponding final bodies for better performance
     if (definition.inputBodyNames != undefined && size(definition.inputBodyNames) > 0)
     {
-        for (var entry in surfaceIdToBodyIndex)
+        for (var idMapping in surfaceIdToBodyIndex)
         {
-            var surfaceIdKey = entry.key;
-            var bodyIndex = entry.value;
+            var surfaceId = idMapping.key;
+            var bodyIndex = idMapping.value;
             
             if (bodyIndex < size(definition.inputBodyNames) && definition.inputBodyNames[bodyIndex] != undefined)
             {
                 // Find the final body that contains faces created by this surface ID
-                var createdFaces = evaluateQuery(context, qCreatedBy(surfaceIdKey, EntityType.FACE));
+                var createdFaces = evaluateQuery(context, qCreatedBy(surfaceId, EntityType.FACE));
                 if (size(createdFaces) > 0)
                 {
                     var owningBody = qOwnerBody(createdFaces[0]);
