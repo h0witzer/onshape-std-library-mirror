@@ -218,9 +218,10 @@ function processJointEntity(context is Context, id is Id, jointEntity is Query,
         throw regenError(ErrorStringEnum.SHEET_METAL_ACTIVE_JOIN_NEEDED, ["entity"]);
     }
 
-    // IMPORTANT: Capture SM definition faces BEFORE splitting edges
+    // IMPORTANT: Capture SM definition sheet body and faces BEFORE splitting edges
     // Once we split and remove attributes, the associations are broken
     // and we can't retrieve the definition entities anymore
+    var smDefinitionSheetBody = undefined;
     var smDefinitionFaces = [];
     if (bendReliefParams != undefined && bendReliefParams.style != undefined)
     {
@@ -228,12 +229,15 @@ function processJointEntity(context is Context, id is Id, jointEntity is Query,
         
         if (definition.showDebug)
         {
-            println("=== Capturing SM definition faces BEFORE edge splitting ===");
+            println("=== Capturing SM definition sheet body BEFORE edge splitting ===");
             debug(context, ownerBodyEarly, DebugColor.YELLOW);
         }
         
+        // Store the sheet body itself for boolean operations
+        smDefinitionSheetBody = ownerBodyEarly;
+        
         // The owner body is already the sheet body (definition body)
-        // Get its faces directly instead of using getSMDefinitionEntities
+        // Get its faces for visualization
         const sheetBodyFaces = qOwnedByBody(ownerBodyEarly, EntityType.FACE);
         const sheetBodyFacesEval = evaluateQuery(context, sheetBodyFaces);
         
@@ -246,12 +250,12 @@ function processJointEntity(context is Context, id is Id, jointEntity is Query,
             }
         }
         
-        // Store the faces for later use
+        // Store the faces for visualization
         smDefinitionFaces = sheetBodyFacesEval;
         
         if (definition.showDebug)
         {
-            println("SM definition faces stored for boolean subtraction: " ~ size(smDefinitionFaces));
+            println("SM definition sheet body and faces stored for boolean subtraction");
         }
     }
 
@@ -591,17 +595,17 @@ function processJointEntity(context is Context, id is Id, jointEntity is Query,
     // Follows Sheet Metal Tab pattern: sweep cylinders, boolean subtract before SM update
     if (bendReliefSegmentCount > 0)
     {
-        // Use the SM definition faces captured earlier (before edge splitting)
-        // Don't try to get them here - the associations are broken after splitting
+        // Use the SM definition sheet body captured earlier (before edge splitting)
+        // Don't try to get it here - the associations are broken after splitting
         
         if (definition.showDebug)
         {
-            println("=== Using captured SM definition faces for cylinder subtraction ===");
+            println("=== Using captured SM definition sheet body for cylinder subtraction ===");
             println("Captured SM definition faces available: " ~ size(smDefinitionFaces));
         }
         
         subtractReliefCylindersFromDefinition(context, id + "reliefSubtract", 
-                                              bendReliefSegmentEdges, smDefinitionFaces, 
+                                              bendReliefSegmentEdges, smDefinitionSheetBody, smDefinitionFaces, 
                                               reliefClearanceRadius, definition.showDebug);
     }
     
@@ -953,11 +957,12 @@ function shouldCreateBendReliefSubsegments(bendReliefParams) returns boolean
  *   context - Evaluation context
  *   id - Feature ID for this operation
  *   reliefEdges - Query for relief segment edges
- *   masterDefinitionFaces - Array of master definition face entities
+ *   masterDefinitionSheetBody - Query for the sheet body to subtract from
+ *   masterDefinitionFaces - Array of master definition face entities (for visualization)
  *   radius - Radius of cylinders to sweep (controls clearance size)
  *   showDebug - Whether to show debug visualization and diagnostics
  */
-function subtractReliefCylindersFromDefinition(context is Context, id is Id, reliefEdges is Query, masterDefinitionFaces is array, radius, showDebug is boolean)
+function subtractReliefCylindersFromDefinition(context is Context, id is Id, reliefEdges is Query, masterDefinitionSheetBody is Query, masterDefinitionFaces is array, radius, showDebug is boolean)
 {
     const reliefEdgeList = evaluateQuery(context, reliefEdges);
     
@@ -1036,17 +1041,17 @@ function subtractReliefCylindersFromDefinition(context is Context, id is Id, rel
                 println("Cylinder " ~ (i + 1) ~ " created and highlighted in RED");
             }
             
-            // Boolean subtract cylinder from SM definition faces
-            // Following Sheet Metal Tab pattern - subtract from all target faces in one operation
-            // Using qUnion to combine all definition face queries into a single target
-            if (size(masterDefinitionFaces) > 0)
+            // Boolean subtract cylinder from SM definition sheet body
+            // Following Sheet Metal Tab pattern - subtract from the sheet body
+            // The target must be a body query, not face queries
+            if (masterDefinitionSheetBody != undefined)
             {
                 if (showDebug)
                     println("Attempting boolean subtraction for cylinder " ~ (i + 1));
                     
                 opBoolean(context, id + ("bool" ~ i), {
                     "tools" : qCreatedBy(sweepId, EntityType.BODY),
-                    "targets" : qUnion(masterDefinitionFaces),
+                    "targets" : masterDefinitionSheetBody,
                     "operationType" : BooleanOperationType.SUBTRACTION,
                     "allowSheets" : true
                 });
@@ -1056,7 +1061,7 @@ function subtractReliefCylindersFromDefinition(context is Context, id is Id, rel
             }
             else if (showDebug)
             {
-                println("WARNING: Skipping boolean for cylinder " ~ (i + 1) ~ " - no master definition faces");
+                println("WARNING: Skipping boolean for cylinder " ~ (i + 1) ~ " - no master definition sheet body");
             }
         }
         catch (error)
