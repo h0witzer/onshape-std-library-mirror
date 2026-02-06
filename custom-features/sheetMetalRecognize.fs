@@ -566,15 +566,16 @@ function sheetMetalRecognize(context is Context, id is Id, definition is map)
             if (size(bodyFaces) > 0)
             {
                 // Check each surface ID to see if it created faces in this body
-                for (var surfaceIdKey in surfaceIdToBodyIndex)
+                for (var surfaceIdKeyPair in surfaceIdToBodyIndex)
                 {
+                    var surfaceIdKey = surfaceIdKeyPair.key;
                     var facesFromSurface = evaluateQuery(context, qIntersection([
                         qCreatedBy(surfaceIdKey, EntityType.FACE),
                         qOwnedByBody(finalBody, EntityType.FACE)
                     ]));
                     if (size(facesFromSurface) > 0)
                     {
-                        var bodyIndex = surfaceIdToBodyIndex[surfaceIdKey];
+                        var bodyIndex = surfaceIdKeyPair.value;
                         if (bodyIndex < size(definition.inputBodyNames) && definition.inputBodyNames[bodyIndex] != undefined)
                         {
                             setProperty(context, {
