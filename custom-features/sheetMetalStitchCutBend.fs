@@ -910,9 +910,6 @@ function shouldCreateBendReliefSubsegments(bendReliefParams) returns boolean
 }
 
 /**
- * Extends sheet body in relief regions to create clearance for bend relief.
- * Uses the Move Face edge extension mechanism:
-/**
  * Subtracts cylinder solids from sheet metal definition surfaces in relief regions.
  * Follows Sheet Metal Tab pattern: creates cylinder tools via sweep, then boolean subtracts.
  * This creates clearance for bend relief geometry before sheet metal update.
@@ -970,12 +967,15 @@ function subtractReliefCylindersFromDefinition(context is Context, id is Id, rel
             // Using qUnion to combine all definition face queries into a single target
             if (size(masterDefinitionFaces) > 0)
             {
-                opBoolean(context, id + ("bool" ~ i), {
-                    "tools" : qCreatedBy(sweepId, EntityType.BODY),
-                    "targets" : qUnion(masterDefinitionFaces),
-                    "operationType" : BooleanOperationType.SUBTRACTION,
-                    "allowSheets" : true
-                });
+                try
+                {
+                    opBoolean(context, id + ("bool" ~ i), {
+                        "tools" : qCreatedBy(sweepId, EntityType.BODY),
+                        "targets" : qUnion(masterDefinitionFaces),
+                        "operationType" : BooleanOperationType.SUBTRACTION,
+                        "allowSheets" : true
+                    });
+                }
             }
         }
         catch (error)
