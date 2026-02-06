@@ -965,22 +965,17 @@ function subtractReliefCylindersFromDefinition(context is Context, id is Id, rel
                 "path" : reliefEdge
             });
             
-            // Boolean subtract cylinder from each SM definition face
-            // Following Sheet Metal Tab pattern (sheetMetalTab.fs lines 404-418)
-            var faceIndex = 0;
-            debug(context, masterDefinitionFaces, DebugColor.GREEN);
-            for (var face in masterDefinitionFaces)
+            // Boolean subtract cylinder from SM definition faces
+            // Following Sheet Metal Tab pattern - subtract from all target faces in one operation
+            // Using qUnion to combine all definition face queries into a single target
+            if (size(masterDefinitionFaces) > 0)
             {
-                try 
-                {
-                    opBoolean(context, id + ("bool" ~ i ~ "_" ~ faceIndex), {
-                        "tools" : qCreatedBy(sweepId, EntityType.BODY),
-                        "targets" : face,
-                        "operationType" : BooleanOperationType.SUBTRACTION,
-                        "allowSheets" : true
-                    });
-                }
-                faceIndex += 1;
+                opBoolean(context, id + ("bool" ~ i), {
+                    "tools" : qCreatedBy(sweepId, EntityType.BODY),
+                    "targets" : qUnion(masterDefinitionFaces),
+                    "operationType" : BooleanOperationType.SUBTRACTION,
+                    "allowSheets" : true
+                });
             }
         }
         catch (error)
