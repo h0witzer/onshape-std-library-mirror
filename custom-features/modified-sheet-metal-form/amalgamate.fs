@@ -17,7 +17,7 @@ import(path : "onshape/std/vector.fs", version : "2815.0");
  * Abuses the Sheet Metal Formed functionality to tag part studios as new, additive, and subtractive bodies for non-sheet metal parts
  * This feature mirrors the Sheet Metal Form tool but performs traditional boolean operations so it can be used outside sheet metal.
  */
-annotation { "Feature Type Name" : "Amalgamate" }
+annotation { "Feature Type Name" : "Amalgamate", "Feature Name Template" : "Amalgamate#featureName" }
 export const amalgamate = defineFeature(function(context is Context, id is Id, definition is map)
     precondition
     {
@@ -48,6 +48,9 @@ export const amalgamate = defineFeature(function(context is Context, id is Id, d
         annotation { "Name" : "Form thickness (only needed for sheet metal tagged form tools)", "Default" : millimeter }
         isLength(definition.thickness, LENGTH_BOUNDS);
 
+        annotation { "Name" : "Feature name", "UIHint" : UIHint.ALWAYS_HIDDEN }
+        definition.featureName is string;
+
     }
     {
         const subtractionSolids = definition.subtractionTargets;//->qBodyType(BodyType.SOLID);
@@ -72,13 +75,26 @@ export const amalgamate = defineFeature(function(context is Context, id is Id, d
         }
 
         performFormBooleans(context, id, subtractionSolids, unionSolids, allFormedBodies, definition.createNewBodies);
+
+        // Retrieve the feature name from the derived part studio variable
+        var featureName = "";
+        try silent
+        {
+            const retrievedName = getVariable(context, "amalgamFeatureName");
+            if (retrievedName != undefined && retrievedName is string)
+            {
+                featureName = " - " ~ retrievedName;
+            }
+        }
+        setFeatureComputedParameter(context, id, { "name" : "featureName", "value" : featureName });
     },
     {
             "flipDirection" : false,
             "subtractionTargets" : qAllModifiableSolidBodies(),
             "unionTargets" : qAllModifiableSolidBodies(),
             "thickness" : 1 * millimeter,
-            "createNewBodies" : true
+            "createNewBodies" : true,
+            "featureName" : ""
         });
 
 /**

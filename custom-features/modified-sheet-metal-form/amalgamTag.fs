@@ -102,6 +102,9 @@ export const tag = defineFeature(function(context is Context, id is Id, definiti
             annotation { "Name" : "Amalgam tool origin mate connector", "Description" : "If none selected, this feature will create one at Origin",
                         "Filter" : BodyType.MATE_CONNECTOR, "MaxNumberOfPicks" : 1 }
             definition.cSysMateConnector is Query;
+
+            annotation { "Name" : "Feature name for Amalgamate (optional)" }
+            definition.featureName is string;
         }
     }
     {
@@ -123,7 +126,8 @@ export const tag = defineFeature(function(context is Context, id is Id, definiti
             positivePart : qNothing(),
             negativePart : qNothing(),
             newPart : qNothing(),
-            cSysMateConnector : qNothing()
+            cSysMateConnector : qNothing(),
+            featureName : ""
         });
 
 function doTagForm(context is Context, topLevelId is Id, definition is map)
@@ -223,6 +227,12 @@ function doTagForm(context is Context, topLevelId is Id, definition is map)
         cSysMateConnector = qCreatedBy(originMateConnectorId, EntityType.BODY)->qBodyType(BodyType.MATE_CONNECTOR);
     }
     setFormAttribute(context, qOwnerBody(cSysMateConnector), FORM_BODY_CSYS_MATE_CONNECTOR);
+
+    // Store the feature name as a variable if specified
+    if (definition.featureName != "")
+    {
+        setVariable(context, "amalgamFeatureName", definition.featureName);
+    }
 }
 
 
