@@ -938,16 +938,10 @@ function subtractReliefCylindersFromDefinition(context is Context, id is Id, rel
                 "parameter" : 0.0  // Start of edge
             });
             
-            // Create sketch plane perpendicular to edge at start point
-            const planeId = id + ("plane" ~ i);
-            opPlane(context, planeId, {
-                "plane" : plane(edgeTangentLine.origin, edgeTangentLine.direction)
-            });
-            
-            // Create circle sketch
+            // Create circle sketch on plane perpendicular to edge at start point
             const sketchId = id + ("sketch" ~ i);
             var sketch = newSketchOnPlane(context, sketchId, {
-                "sketchPlane" : qCreatedBy(planeId, EntityType.FACE)
+                "sketchPlane" : plane(edgeTangentLine.origin, edgeTangentLine.direction)
             });
             
             skCircle(sketch, "circle", {
