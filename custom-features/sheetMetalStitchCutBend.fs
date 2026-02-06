@@ -967,15 +967,12 @@ function subtractReliefCylindersFromDefinition(context is Context, id is Id, rel
             // Using qUnion to combine all definition face queries into a single target
             if (size(masterDefinitionFaces) > 0)
             {
-                try
-                {
-                    opBoolean(context, id + ("bool" ~ i), {
-                        "tools" : qCreatedBy(sweepId, EntityType.BODY),
-                        "targets" : qUnion(masterDefinitionFaces),
-                        "operationType" : BooleanOperationType.SUBTRACTION,
-                        "allowSheets" : true
-                    });
-                }
+                opBoolean(context, id + ("bool" ~ i), {
+                    "tools" : qCreatedBy(sweepId, EntityType.BODY),
+                    "targets" : qUnion(masterDefinitionFaces),
+                    "operationType" : BooleanOperationType.SUBTRACTION,
+                    "allowSheets" : true
+                });
             }
         }
         catch (error)
