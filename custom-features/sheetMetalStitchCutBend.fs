@@ -221,6 +221,7 @@ function processJointEntity(context is Context, id is Id, jointEntity is Query,
     // IMPORTANT: Capture SM definition sheet body and faces BEFORE splitting edges
     // Once we split and remove attributes, the associations are broken
     // and we can't retrieve the definition entities anymore
+    // Use startTracking to maintain a valid query through modifications
     var smDefinitionSheetBody = undefined;
     var smDefinitionFaces = [];
     if (bendReliefParams != undefined && bendReliefParams.style != undefined)
@@ -233,8 +234,11 @@ function processJointEntity(context is Context, id is Id, jointEntity is Query,
             debug(context, ownerBodyEarly, DebugColor.YELLOW);
         }
         
-        // Store the sheet body itself for boolean operations
-        smDefinitionSheetBody = ownerBodyEarly;
+        // CRITICAL: Use startTracking to maintain a valid query to the sheet body
+        // After edge splitting and attribute removal, the original query would become invalid
+        // startTracking creates a query that follows the body through modifications
+        const trackedSheetBody = startTracking(context, ownerBodyEarly);
+        smDefinitionSheetBody = qUnion([trackedSheetBody, ownerBodyEarly]);
         
         // The owner body is already the sheet body (definition body)
         // Get its faces for visualization
@@ -244,6 +248,7 @@ function processJointEntity(context is Context, id is Id, jointEntity is Query,
         if (definition.showDebug)
         {
             println("Sheet body faces found (early): " ~ size(sheetBodyFacesEval));
+            println("Sheet body tracked for boolean operations");
             if (size(sheetBodyFacesEval) > 0)
             {
                 debug(context, sheetBodyFaces, DebugColor.CYAN);
@@ -255,7 +260,7 @@ function processJointEntity(context is Context, id is Id, jointEntity is Query,
         
         if (definition.showDebug)
         {
-            println("SM definition sheet body and faces stored for boolean subtraction");
+            println("SM definition sheet body tracked and faces stored for boolean subtraction");
         }
     }
 
