@@ -63,7 +63,9 @@ export const amalgamate = defineFeature(function(context is Context, id is Id, d
         annotation { "Name" : "Form thickness (only needed for sheet metal tagged form tools)", "Default" : millimeter }
         isLength(definition.thickness, LENGTH_BOUNDS);
 
-        annotation { "Name" : "Feature name", "UIHint" : UIHint.ALWAYS_HIDDEN }
+        // Hidden computed parameter used for Feature Name Template. Not a user input.
+        // This field is populated at runtime from the variable stored by Amalgam Tag.
+        annotation { "Name" : "Feature name (computed)", "UIHint" : UIHint.ALWAYS_HIDDEN }
         definition.featureName is string;
 
     }
