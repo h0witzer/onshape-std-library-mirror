@@ -20,6 +20,11 @@ import(path : "onshape/std/vector.fs", version : "2815.0");
 const AMALGAM_FEATURE_NAME_VAR = "amalgamFeatureName";
 
 /**
+ * Separator used between "Amalgamate" and the custom feature name in the feature tree display.
+ */
+const FEATURE_NAME_SEPARATOR = " - ";
+
+/**
  * Abuses the Sheet Metal Formed functionality to tag part studios as new, additive, and subtractive bodies for non-sheet metal parts
  * This feature mirrors the Sheet Metal Form tool but performs traditional boolean operations so it can be used outside sheet metal.
  * 
@@ -93,9 +98,10 @@ export const amalgamate = defineFeature(function(context is Context, id is Id, d
         try silent
         {
             const retrievedName = getVariable(context, AMALGAM_FEATURE_NAME_VAR);
+            // Type check is necessary because getVariable returns 'any' type, not a guaranteed string
             if (retrievedName != undefined && retrievedName is string)
             {
-                featureName = " - " ~ retrievedName;
+                featureName = FEATURE_NAME_SEPARATOR ~ retrievedName;
             }
         }
         setFeatureComputedParameter(context, id, { "name" : "featureName", "value" : featureName });
