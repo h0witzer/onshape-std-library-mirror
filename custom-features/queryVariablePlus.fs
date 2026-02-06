@@ -733,21 +733,26 @@ export const queryVariable = defineFeature(function(context is Context, id is Id
 
         initialQueryPredicate(definition);
 
-        annotation { "Name" : "Add additional queries" }
-        definition.addAdditionalQueries is boolean;
-
-        annotation { "Group Name" : "Additional queries", "Driving Parameter" : "addAdditionalQueries", "Collapsed By Default" : false }
+        // Hide additional queries option when loading from derive feature
+        // because there's no way to guarantee which variables should get which entities
+        if (definition.selectionType != SelectionType.LOAD_FROM_DERIVE)
         {
-            if (definition.addAdditionalQueries)
-            {
-                annotation { "Name" : "Additional queries", "Item name" : "additional query", "Item label template" : "#booleanOperation of #addQlowercaseSelectionType" }
-                definition.additionalQueries is array;
-                for (var addQ in definition.additionalQueries)
-                {
-                    annotation { "Name" : "Boolean operation", "UIHint" : UIHint.HORIZONTAL_ENUM }
-                    addQ.booleanOperation is BooleanOperationType;
+            annotation { "Name" : "Add additional queries" }
+            definition.addAdditionalQueries is boolean;
 
-                    additionalQueryPredicate(addQ);
+            annotation { "Group Name" : "Additional queries", "Driving Parameter" : "addAdditionalQueries", "Collapsed By Default" : false }
+            {
+                if (definition.addAdditionalQueries)
+                {
+                    annotation { "Name" : "Additional queries", "Item name" : "additional query", "Item label template" : "#booleanOperation of #addQlowercaseSelectionType" }
+                    definition.additionalQueries is array;
+                    for (var addQ in definition.additionalQueries)
+                    {
+                        annotation { "Name" : "Boolean operation", "UIHint" : UIHint.HORIZONTAL_ENUM }
+                        addQ.booleanOperation is BooleanOperationType;
+
+                        additionalQueryPredicate(addQ);
+                    }
                 }
             }
         }
