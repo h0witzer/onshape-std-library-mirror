@@ -234,7 +234,9 @@ function doTagForm(context is Context, topLevelId is Id, definition is map)
     }
     setFormAttribute(context, qOwnerBody(cSysMateConnector), FORM_BODY_CSYS_MATE_CONNECTOR);
 
-    // Store the feature name as a variable if specified
+    // Store the feature name as a variable if specified.
+    // Only non-empty names are stored to avoid polluting the context with empty variables.
+    // The Amalgamate feature will handle the undefined case gracefully.
     if (definition.featureName != "")
     {
         setVariable(context, AMALGAM_FEATURE_NAME_VAR, definition.featureName);

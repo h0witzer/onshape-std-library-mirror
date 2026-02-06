@@ -92,17 +92,15 @@ export const amalgamate = defineFeature(function(context is Context, id is Id, d
         performFormBooleans(context, id, subtractionSolids, unionSolids, allFormedBodies, definition.createNewBodies);
 
         // Retrieve the feature name from the derived part studio variable.
-        // Uses try silent because the variable may not exist if no name was specified in the tag,
-        // which is a valid state that should default to showing just "Amalgamate".
+        // The variable is only set in amalgamTag.fs when a non-empty name is provided.
+        // Uses try silent following the standard pattern for optional variable retrieval (see hole.fs).
+        // If the variable doesn't exist (no name specified), retrievedName will be undefined.
         var featureName = "";
-        try silent
+        const retrievedName = try silent(getVariable(context, AMALGAM_FEATURE_NAME_VAR));
+        // Type check is necessary because getVariable returns 'any' type, not a guaranteed string
+        if (retrievedName != undefined && retrievedName is string)
         {
-            const retrievedName = getVariable(context, AMALGAM_FEATURE_NAME_VAR);
-            // Type check is necessary because getVariable returns 'any' type, not a guaranteed string
-            if (retrievedName != undefined && retrievedName is string)
-            {
-                featureName = FEATURE_NAME_SEPARATOR ~ retrievedName;
-            }
+            featureName = FEATURE_NAME_SEPARATOR ~ retrievedName;
         }
         setFeatureComputedParameter(context, id, { "name" : "featureName", "value" : featureName });
     },
