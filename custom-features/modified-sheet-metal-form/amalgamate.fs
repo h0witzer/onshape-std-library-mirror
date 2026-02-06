@@ -76,7 +76,9 @@ export const amalgamate = defineFeature(function(context is Context, id is Id, d
 
         performFormBooleans(context, id, subtractionSolids, unionSolids, allFormedBodies, definition.createNewBodies);
 
-        // Retrieve the feature name from the derived part studio variable
+        // Retrieve the feature name from the derived part studio variable.
+        // Uses try silent because the variable may not exist if no name was specified in the tag,
+        // which is a valid state that should default to showing just "Amalgamate".
         var featureName = "";
         try silent
         {
