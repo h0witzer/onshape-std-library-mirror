@@ -556,7 +556,7 @@ function processJointEntity(context is Context, id is Id, jointEntity is Query,
     {
         println("Relief segments created: " ~ bendReliefSegmentCount);
         println("Calling extendSheetBodyForReliefRegions...");
-        extendSheetBodyForReliefRegions(context, id + "reliefExtension", bendReliefSegmentEdges, bendSegmentEdges, reliefEdgeRetraction);
+        extendSheetBodyForReliefRegions(context, id + "reliefExtension", bendReliefSegmentEdges, bendSegmentEdges, reliefEdgeRetraction, jointEntity);
     }
     
     return allEdgesAfterSplitQuery;
@@ -912,19 +912,21 @@ function shouldCreateBendReliefSubsegments(bendReliefParams) returns boolean
  *   reliefEdges - Query for relief segment edges
  *   bendEdges - Query for bend segment edges
  *   retractionDistance - Distance to retract edges by
+ *   jointEntity - Query for the original joint entity edge
  */
-function extendSheetBodyForReliefRegions(context is Context, id is Id, reliefEdges is Query, bendEdges is Query, retractionDistance)
+function extendSheetBodyForReliefRegions(context is Context, id is Id, reliefEdges is Query, bendEdges is Query, retractionDistance, jointEntity is Query)
 {
-    // Get sheet metal edges adjacent to relief segments
-    // These are the edges at the boundary between relief and bend/rip segments
-    const adjacentToRelief = qAdjacent(reliefEdges, AdjacencyType.VERTEX, EntityType.EDGE);
+    // Get faces adjacent to the entire joint entity edge
+    // Relief segments are new edge segments on the joint, but SM definition edges are on the faces
+    const facesAdjacentToJoint = qAdjacent(jointEntity, AdjacencyType.EDGE, EntityType.FACE);
     
-    // Get the SM definition entities for these edges
-    const smEdges = qEntityFilter(qUnion(getSMDefinitionEntities(context, adjacentToRelief)), EntityType.EDGE);
+    // Get the SM definition entities from those faces
+    const smDefinitionEntities = getSMDefinitionEntities(context, facesAdjacentToJoint);
+    const smEdges = qEntityFilter(smDefinitionEntities, EntityType.EDGE);
     const smEdgeList = evaluateQuery(context, smEdges);
     
     println("Relief edges query resolves to: " ~ size(evaluateQuery(context, reliefEdges)) ~ " edges");
-    println("Found " ~ size(smEdgeList) ~ " SM edges adjacent to relief");
+    println("Found " ~ size(smEdgeList) ~ " SM edges on faces adjacent to joint");
     
     if (size(smEdgeList) == 0)
         return;
