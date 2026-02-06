@@ -566,7 +566,7 @@ function processJointEntity(context is Context, id is Id, jointEntity is Query,
         
         subtractReliefCylindersFromDefinition(context, id + "reliefSubtract", 
                                               bendReliefSegmentEdges, smDefinitionFaces, 
-                                              reliefClearanceRadius);
+                                              reliefClearanceRadius, definition.showDebug);
     }
     
     return allEdgesAfterSplitQuery;
@@ -919,13 +919,41 @@ function shouldCreateBendReliefSubsegments(bendReliefParams) returns boolean
  *   reliefEdges - Query for relief segment edges
  *   masterDefinitionFaces - Array of master definition face entities
  *   radius - Radius of cylinders to sweep (controls clearance size)
+ *   showDebug - Whether to show debug visualization and diagnostics
  */
-function subtractReliefCylindersFromDefinition(context is Context, id is Id, reliefEdges is Query, masterDefinitionFaces is array, radius)
+function subtractReliefCylindersFromDefinition(context is Context, id is Id, reliefEdges is Query, masterDefinitionFaces is array, radius, showDebug is boolean)
 {
     const reliefEdgeList = evaluateQuery(context, reliefEdges);
     
     if (size(reliefEdgeList) == 0)
+    {
+        if (showDebug)
+            println("subtractReliefCylindersFromDefinition: No relief edges to process");
         return;
+    }
+    
+    // Debug: Show what we're working with
+    if (showDebug)
+    {
+        println("=== Relief Cylinder Subtraction Debug ===");
+        println("Number of relief edges: " ~ size(reliefEdgeList));
+        println("Number of master definition faces: " ~ size(masterDefinitionFaces));
+        
+        // Highlight master definition faces in CYAN
+        if (size(masterDefinitionFaces) > 0)
+        {
+            debug(context, qUnion(masterDefinitionFaces), DebugColor.CYAN);
+            println("Master definition faces highlighted in CYAN");
+        }
+        else
+        {
+            println("WARNING: No master definition faces found!");
+        }
+        
+        // Highlight relief edges in GREEN
+        debug(context, reliefEdges, DebugColor.GREEN);
+        println("Relief edges highlighted in GREEN");
+    }
     
     // Use the master definition faces that were queried at the beginning before any modifications
     // masterDefinitionFaces is passed as a parameter
@@ -936,6 +964,9 @@ function subtractReliefCylindersFromDefinition(context is Context, id is Id, rel
         try 
         {
             const reliefEdge = reliefEdgeList[i];
+            
+            if (showDebug)
+                println("Processing relief edge " ~ (i + 1) ~ " of " ~ size(reliefEdgeList));
             
             // Get edge tangent line for sweep path
             const edgeTangentLine = evEdgeTangentLine(context, {
@@ -962,21 +993,40 @@ function subtractReliefCylindersFromDefinition(context is Context, id is Id, rel
                 "path" : reliefEdge
             });
             
+            if (showDebug)
+            {
+                // Highlight the created cylinder tool in RED
+                debug(context, qCreatedBy(sweepId, EntityType.BODY), DebugColor.RED);
+                println("Cylinder " ~ (i + 1) ~ " created and highlighted in RED");
+            }
+            
             // Boolean subtract cylinder from SM definition faces
             // Following Sheet Metal Tab pattern - subtract from all target faces in one operation
             // Using qUnion to combine all definition face queries into a single target
             if (size(masterDefinitionFaces) > 0)
             {
+                if (showDebug)
+                    println("Attempting boolean subtraction for cylinder " ~ (i + 1));
+                    
                 opBoolean(context, id + ("bool" ~ i), {
                     "tools" : qCreatedBy(sweepId, EntityType.BODY),
                     "targets" : qUnion(masterDefinitionFaces),
                     "operationType" : BooleanOperationType.SUBTRACTION,
                     "allowSheets" : true
                 });
+                
+                if (showDebug)
+                    println("Boolean subtraction completed for cylinder " ~ (i + 1));
+            }
+            else if (showDebug)
+            {
+                println("WARNING: Skipping boolean for cylinder " ~ (i + 1) ~ " - no master definition faces");
             }
         }
         catch (error)
         {
+            if (showDebug)
+                println("ERROR processing relief edge " ~ (i + 1) ~ ": " ~ toString(error));
             // If any cylinder fails, continue with others
             // Some relief edges may not be suitable for sweep
         }
