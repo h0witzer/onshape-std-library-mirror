@@ -554,14 +554,45 @@ function processJointEntity(context is Context, id is Id, jointEntity is Query,
     // Follows Sheet Metal Tab pattern: sweep cylinders, boolean subtract before SM update
     if (bendReliefSegmentCount > 0)
     {
-        // Get SM definition faces from the joint entity's owner body
-        // Following Sheet Metal Tab pattern (sheetMetalTab.fs line 504-506)
+        // Get SM definition entities from the joint entity's owner body
+        // Call getSMDefinitionEntities with 2 parameters to use the correct overload
+        // that works with sheet metal parts
         const ownerBody = qOwnerBody(jointEntity);
-        const ownerFaces = qOwnedByBody(ownerBody, EntityType.FACE);
-        var smDefinitionFaces = try (getSMDefinitionEntities(context, ownerFaces, EntityType.FACE));
-        if (smDefinitionFaces is undefined)
+        
+        if (definition.showDebug)
         {
-            smDefinitionFaces = [];
+            println("Getting SM definition entities for owner body");
+            debug(context, ownerBody, DebugColor.YELLOW);
+        }
+        
+        var smDefinitionEntities = try (getSMDefinitionEntities(context, ownerBody));
+        if (smDefinitionEntities is undefined)
+        {
+            smDefinitionEntities = [];
+        }
+        
+        if (definition.showDebug)
+        {
+            println("SM definition entities found: " ~ size(smDefinitionEntities));
+            if (size(smDefinitionEntities) > 0)
+            {
+                debug(context, qUnion(smDefinitionEntities), DebugColor.MAGENTA);
+            }
+        }
+        
+        // Filter to faces only
+        var smDefinitionFaces = [];
+        for (var entity in smDefinitionEntities)
+        {
+            if (entity.entityType == EntityType.FACE)
+            {
+                smDefinitionFaces = append(smDefinitionFaces, entity);
+            }
+        }
+        
+        if (definition.showDebug)
+        {
+            println("SM definition faces after filtering: " ~ size(smDefinitionFaces));
         }
         
         subtractReliefCylindersFromDefinition(context, id + "reliefSubtract", 
