@@ -920,15 +920,11 @@ function subtractReliefCylindersFromDefinition(context is Context, id is Id, rel
     if (size(reliefEdgeList) == 0)
         return;
     
-    // Get SM definition bodies that we'll subtract from
-    // First get the SM body that owns the joint entity
+    // Get SM definition faces (invisible, zero-thickness master surfaces) that we'll subtract from
+    // Following Sheet Metal Tab pattern (sheetMetalTab.fs line 500)
     const smBody = qOwnerBody(jointEntity);
-    
-    // Get definition entities from the SM body
-    const definitionEntities = getSMDefinitionEntities(context, smBody);
-    
-    // Convert to query
-    const definitionBodies = qUnion(definitionEntities);
+    const smBodyFaces = qOwnedByBody(smBody, EntityType.FACE);
+    const definitionFaces = getSMDefinitionEntities(context, smBodyFaces, EntityType.FACE);
     
     // Create and subtract a cylinder for each relief edge
     for (var i = 0; i < size(reliefEdgeList); i += 1)
@@ -962,15 +958,22 @@ function subtractReliefCylindersFromDefinition(context is Context, id is Id, rel
                 "path" : reliefEdge
             });
             
-            // Boolean subtract cylinder from SM definition bodies
-            // Following Sheet Metal Tab pattern (sheetMetalTab.fs line 412)
-            const booleanId = id + ("boolean" ~ i);
-            opBoolean(context, booleanId, {
-                "tools" : qCreatedBy(sweepId, EntityType.BODY),
-                "targets" : definitionBodies,
-                "operationType" : BooleanOperationType.SUBTRACTION,
-                "allowSheets" : true
-            });
+            // Boolean subtract cylinder from each SM definition face
+            // Following Sheet Metal Tab pattern (sheetMetalTab.fs lines 404-418)
+            var faceIndex = 0;
+            for (var face in definitionFaces)
+            {
+                try
+                {
+                    opBoolean(context, id + ("bool" ~ i ~ "_" ~ faceIndex), {
+                        "tools" : qCreatedBy(sweepId, EntityType.BODY),
+                        "targets" : face,
+                        "operationType" : BooleanOperationType.SUBTRACTION,
+                        "allowSheets" : true
+                    });
+                }
+                faceIndex += 1;
+            }
         }
         catch (error)
         {
