@@ -475,24 +475,26 @@ function sheetMetalRecognize(context is Context, id is Id, definition is map)
     }
 
     // Map each input body to its corresponding offset group for name preservation
-    // Build the mapping efficiently by caching owner body queries
+    // Build the mapping efficiently by pre-evaluating all owner bodies
     var evaluatedInputBodies = evaluateQuery(context, definition.bodies);
     var bodyToGroupIndex = {};
-    var groupOwnerBodies = [];
+    var evaluatedGroupOwnerBodies = [];
     
-    // Pre-compute owner bodies for each offset group
+    // Pre-evaluate owner bodies for each offset group
     for (var j = 0; j < size(offsetGroups); j += 1)
     {
-        var ownerBody = qOwnerBody(offsetGroups[j].side0[0]);
-        groupOwnerBodies = append(groupOwnerBodies, ownerBody);
+        var ownerBodyQuery = qOwnerBody(offsetGroups[j].side0[0]);
+        var evaluatedOwnerBodies = evaluateQuery(context, ownerBodyQuery);
+        evaluatedGroupOwnerBodies = append(evaluatedGroupOwnerBodies, evaluatedOwnerBodies);
     }
     
-    // Map each input body to its group by checking against pre-computed owner bodies
+    // Map each input body to its group by comparing evaluated bodies
     for (var i = 0; i < size(evaluatedInputBodies); i += 1)
     {
-        for (var j = 0; j < size(groupOwnerBodies); j += 1)
+        for (var j = 0; j < size(evaluatedGroupOwnerBodies); j += 1)
         {
-            if (size(evaluateQuery(context, qSubtraction(groupOwnerBodies[j], evaluatedInputBodies[i]))) == 0)
+            // Check if input body is in the owner bodies for this group
+            if (size(evaluatedGroupOwnerBodies[j]) > 0 && evaluatedInputBodies[i] == evaluatedGroupOwnerBodies[j][0])
             {
                 bodyToGroupIndex[i] = j;
                 break;
@@ -569,10 +571,10 @@ function sheetMetalRecognize(context is Context, id is Id, definition is map)
     // Iterate through surface IDs and find their corresponding final bodies for better performance
     if (definition.inputBodyNames != undefined && size(definition.inputBodyNames) > 0)
     {
-        for (var surfaceIdKeyPair in surfaceIdToBodyIndex)
+        for (var entry in surfaceIdToBodyIndex)
         {
-            var surfaceIdKey = surfaceIdKeyPair.key;
-            var bodyIndex = surfaceIdKeyPair.value;
+            var surfaceIdKey = entry.key;
+            var bodyIndex = entry.value;
             
             if (bodyIndex < size(definition.inputBodyNames) && definition.inputBodyNames[bodyIndex] != undefined)
             {
