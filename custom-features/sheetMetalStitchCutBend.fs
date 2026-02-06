@@ -183,7 +183,7 @@ export const sheetMetalStitchCutBend = defineSheetMetalFeature(function(context 
         for (var jointEntity in jointEdgeEntities)
         {
             const processedEdges = processJointEntity(context, id + ("entity" ~ entityIndex), 
-                jointEntity, definition, defaultRadius, defaultKFactor, bendReliefParams, masterDefinitionFaces, definition.reliefClearanceRadius);
+                jointEntity, definition, defaultRadius, defaultKFactor, bendReliefParams, masterDefinitionFaces, sheetMetalThickness, definition.reliefClearanceRadius);
             allProcessedEdges = append(allProcessedEdges, processedEdges);
             entityIndex += 1;
         }
@@ -216,7 +216,7 @@ export const sheetMetalStitchCutBend = defineSheetMetalFeature(function(context 
  * Outputs: Query for all processed edges from this joint entity
  */
 function processJointEntity(context is Context, id is Id, jointEntity is Query, 
-    definition is map, defaultRadius, defaultKFactor, bendReliefParams, masterDefinitionFaces is array, reliefClearanceRadius) returns Query
+    definition is map, defaultRadius, defaultKFactor, bendReliefParams, masterDefinitionFaces is array, sheetMetalThickness, reliefClearanceRadius) returns Query
 {
     // Debug: Show the original master edges being processed
     if (definition.showDebug)
@@ -335,6 +335,13 @@ function processJointEntity(context is Context, id is Id, jointEntity is Query,
 
     // Determine if we need to create bend relief subsegments
     const createBendReliefSubsegments = shouldCreateBendReliefSubsegments(bendReliefParams);
+    
+    // Calculate bend relief subsegment size
+    var bendReliefSubsegmentSize = 0 * meter;
+    if (createBendReliefSubsegments && bendReliefParams != undefined && sheetMetalThickness != undefined)
+    {
+        bendReliefSubsegmentSize = calculateBendReliefSubsegmentSize(sheetMetalThickness, bendReliefParams);
+    }
     
     // Create modified bridge domains that include bend relief subsegments
     // The subsegments should extend OUTSIDE the bridge boundaries into adjacent rip regions
