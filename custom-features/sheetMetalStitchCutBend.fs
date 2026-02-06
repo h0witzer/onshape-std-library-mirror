@@ -218,6 +218,50 @@ function processJointEntity(context is Context, id is Id, jointEntity is Query,
         throw regenError(ErrorStringEnum.SHEET_METAL_ACTIVE_JOIN_NEEDED, ["entity"]);
     }
 
+    // IMPORTANT: Capture SM definition faces BEFORE splitting edges
+    // Once we split and remove attributes, the associations are broken
+    // and we can't retrieve the definition entities anymore
+    var smDefinitionFaces = [];
+    if (bendReliefParams != undefined && bendReliefParams.style != undefined)
+    {
+        const ownerBodyEarly = qOwnerBody(jointEntity);
+        
+        if (definition.showDebug)
+        {
+            println("=== Capturing SM definition entities BEFORE edge splitting ===");
+            debug(context, ownerBodyEarly, DebugColor.YELLOW);
+        }
+        
+        var smDefinitionEntitiesEarly = try (getSMDefinitionEntities(context, ownerBodyEarly));
+        if (smDefinitionEntitiesEarly is undefined)
+        {
+            smDefinitionEntitiesEarly = [];
+        }
+        
+        if (definition.showDebug)
+        {
+            println("SM definition entities found (early): " ~ size(smDefinitionEntitiesEarly));
+            if (size(smDefinitionEntitiesEarly) > 0)
+            {
+                debug(context, qUnion(smDefinitionEntitiesEarly), DebugColor.MAGENTA);
+            }
+        }
+        
+        // Filter to faces only
+        for (var entity in smDefinitionEntitiesEarly)
+        {
+            if (entity.entityType == EntityType.FACE)
+            {
+                smDefinitionFaces = append(smDefinitionFaces, entity);
+            }
+        }
+        
+        if (definition.showDebug)
+        {
+            println("SM definition faces captured (early): " ~ size(smDefinitionFaces));
+        }
+    }
+
     // Calculate edge length and validate using the joint definition entity
     const selectedEdgesQuery = qEntityFilter(jointEntity, EntityType.EDGE);
     const selectedEdges = evaluateQuery(context, selectedEdgesQuery);
@@ -554,45 +598,13 @@ function processJointEntity(context is Context, id is Id, jointEntity is Query,
     // Follows Sheet Metal Tab pattern: sweep cylinders, boolean subtract before SM update
     if (bendReliefSegmentCount > 0)
     {
-        // Get SM definition entities from the joint entity's owner body
-        // Call getSMDefinitionEntities with 2 parameters to use the correct overload
-        // that works with sheet metal parts
-        const ownerBody = qOwnerBody(jointEntity);
+        // Use the SM definition faces captured earlier (before edge splitting)
+        // Don't try to get them here - the associations are broken after splitting
         
         if (definition.showDebug)
         {
-            println("Getting SM definition entities for owner body");
-            debug(context, ownerBody, DebugColor.YELLOW);
-        }
-        
-        var smDefinitionEntities = try (getSMDefinitionEntities(context, ownerBody));
-        if (smDefinitionEntities is undefined)
-        {
-            smDefinitionEntities = [];
-        }
-        
-        if (definition.showDebug)
-        {
-            println("SM definition entities found: " ~ size(smDefinitionEntities));
-            if (size(smDefinitionEntities) > 0)
-            {
-                debug(context, qUnion(smDefinitionEntities), DebugColor.MAGENTA);
-            }
-        }
-        
-        // Filter to faces only
-        var smDefinitionFaces = [];
-        for (var entity in smDefinitionEntities)
-        {
-            if (entity.entityType == EntityType.FACE)
-            {
-                smDefinitionFaces = append(smDefinitionFaces, entity);
-            }
-        }
-        
-        if (definition.showDebug)
-        {
-            println("SM definition faces after filtering: " ~ size(smDefinitionFaces));
+            println("=== Using captured SM definition faces for cylinder subtraction ===");
+            println("Captured SM definition faces available: " ~ size(smDefinitionFaces));
         }
         
         subtractReliefCylindersFromDefinition(context, id + "reliefSubtract", 
