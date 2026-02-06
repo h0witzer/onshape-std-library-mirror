@@ -442,7 +442,7 @@ export predicate initialQueryPredicate(definition is map)
     
     if (definition.selectionType == SelectionType.LOAD_FROM_DERIVE)
     {
-        annotation { "Name" : "Derive feature", "UIHint" : UIHint.ALLOW_FEATURE_SELECTION, "MaxNumberOfPicks" : 1 }
+        annotation { "Name" : "Derive feature", "UIHint" : UIHint.ALLOW_FEATURE_SELECTION }
         definition.deriveFeature is FeatureList;
     }
 }
@@ -657,7 +657,7 @@ export predicate additionalQueryPredicate(addQ is map)
     
     if (addQ.addQselectionType == SelectionType.LOAD_FROM_DERIVE)
     {
-        annotation { "Name" : "Derive feature", "UIHint" : UIHint.ALLOW_FEATURE_SELECTION, "MaxNumberOfPicks" : 1 }
+        annotation { "Name" : "Derive feature", "UIHint" : UIHint.ALLOW_FEATURE_SELECTION }
         addQ.addQderiveFeature is FeatureList;
     }
 }
@@ -1421,13 +1421,14 @@ function checkQueryVariableName(context is Context, name is string)
 }
 
 /**
- * Loads and reconstructs all query variables from a derive feature by scanning for queryVariableName attributes.
+ * Loads and reconstructs all query variables from one or more derive features by scanning for queryVariableName attributes.
  * This creates multiple query variables automatically based on the attribute values found.
+ * When multiple derive features are selected, entities from all derives are merged into their respective query variables.
  *
  * @param context {Context} : The context in which the query variables are created.
  * @param id {Id} : The feature ID.
  * @param definition {map} : Map containing:
- *      - deriveFeature {FeatureList} : The derive feature to scan for entities with QV attributes
+ *      - deriveFeature {FeatureList} : One or more derive features to scan for entities with QV attributes
  */
 function loadAllQueryVariablesFromDerive(context is Context, id is Id, definition is map)
 {
@@ -1436,62 +1437,61 @@ function loadAllQueryVariablesFromDerive(context is Context, id is Id, definitio
         throw regenError("No derive feature selected. Please select a derive feature to load query variables from.", ["deriveFeature"]);
     }
     
-    // Get the derive feature ID
-    var deriveFeatureId;
-    for (var featureId, _ in definition.deriveFeature)
-    {
-        deriveFeatureId = featureId;
-        break; // We only expect one derive feature based on MaxNumberOfPicks : 1
-    }
-    
-    if (deriveFeatureId == undefined)
-    {
-        throw regenError("Could not extract derive feature ID.", ["deriveFeature"]);
-    }
-    
-    // Query all entities created by the derive feature
-    const allDerivedEntities = qUnion([
-        qCreatedBy(deriveFeatureId, EntityType.BODY),
-        qCreatedBy(deriveFeatureId, EntityType.FACE),
-        qCreatedBy(deriveFeatureId, EntityType.EDGE),
-        qCreatedBy(deriveFeatureId, EntityType.VERTEX)
-    ]);
-    
-    // Get all entities that have the query variable attribute
-    const entitiesWithQVAttribute = qHasAttribute(allDerivedEntities, QUERY_VARIABLE_ATTRIBUTE_NAME);
-    
-    if (isQueryEmpty(context, entitiesWithQVAttribute))
-    {
-        throw regenError("No entities with saved query variable attributes found from the selected derive feature. Ensure the original query variables were created with 'Save for derived studios' enabled.", ["deriveFeature"]);
-    }
-    
-    // Build a map of query variable names to their entities
+    // Build a map of query variable names to their entities across all selected derive features
     var queryVariableMap = {};
+    var processedAnyDerive = false;
     
-    const entityArray = evaluateQuery(context, entitiesWithQVAttribute);
-    for (var entity in entityArray)
+    // Iterate through all selected derive features
+    for (var deriveFeatureId, _ in definition.deriveFeature)
     {
-        const qvNames = getAttribute(context, {
-            "entity" : entity,
-            "name" : QUERY_VARIABLE_ATTRIBUTE_NAME
-        });
+        // Query all entities created by this derive feature
+        const allDerivedEntities = qUnion([
+            qCreatedBy(deriveFeatureId, EntityType.BODY),
+            qCreatedBy(deriveFeatureId, EntityType.FACE),
+            qCreatedBy(deriveFeatureId, EntityType.EDGE),
+            qCreatedBy(deriveFeatureId, EntityType.VERTEX)
+        ]);
         
-        // Expect an array of QV names
-        if (qvNames != undefined && qvNames is array)
+        // Get all entities that have the query variable attribute
+        const entitiesWithQVAttribute = qHasAttribute(allDerivedEntities, QUERY_VARIABLE_ATTRIBUTE_NAME);
+        
+        // Skip this derive if it has no QV attributes (but continue processing others)
+        if (!isQueryEmpty(context, entitiesWithQVAttribute))
         {
-            // Add this entity to each QV name it belongs to
-            for (var qvName in qvNames)
+            processedAnyDerive = true;
+            
+            const entityArray = evaluateQuery(context, entitiesWithQVAttribute);
+            for (var entity in entityArray)
             {
-                if (qvName is string)
+                const qvNames = getAttribute(context, {
+                    "entity" : entity,
+                    "name" : QUERY_VARIABLE_ATTRIBUTE_NAME
+                });
+                
+                // Expect an array of QV names
+                if (qvNames != undefined && qvNames is array)
                 {
-                    if (queryVariableMap[qvName] == undefined)
+                    // Add this entity to each QV name it belongs to
+                    for (var qvName in qvNames)
                     {
-                        queryVariableMap[qvName] = [];
+                        if (qvName is string)
+                        {
+                            if (queryVariableMap[qvName] == undefined)
+                            {
+                                queryVariableMap[qvName] = [];
+                            }
+                            queryVariableMap[qvName] = append(queryVariableMap[qvName], entity);
+                        }
                     }
-                    queryVariableMap[qvName] = append(queryVariableMap[qvName], entity);
                 }
             }
         }
+    }
+    
+    // Check if we found any entities with QV attributes across all derives
+    if (!processedAnyDerive)
+    {
+        throw regenError("No entities with saved query variable attributes found from the selected derive feature(s). Ensure the original query variables were created with 'Save for derived studios' enabled.", ["deriveFeature"]);
     }
     
     // Create a query variable for each unique name found
@@ -1517,11 +1517,18 @@ function loadAllQueryVariablesFromDerive(context is Context, id is Id, definitio
     
     if (createdCount == 0)
     {
-        throw regenError("No valid query variables could be reconstructed from the derive feature.", ["deriveFeature"]);
+        throw regenError("No valid query variables could be reconstructed from the derive feature(s).", ["deriveFeature"]);
+    }
+    
+    // Count how many derive features were selected
+    var deriveFeatureCount = 0;
+    for (var _, __ in definition.deriveFeature)
+    {
+        deriveFeatureCount += 1;
     }
     
     // Report which query variables were loaded
-    var statusMessage = "Loaded " ~ createdCount ~ " query variable" ~ (createdCount > 1 ? "s" : "") ~ ": ";
+    var statusMessage = "Loaded " ~ createdCount ~ " query variable" ~ (createdCount > 1 ? "s" : "") ~ " from " ~ deriveFeatureCount ~ " derive feature" ~ (deriveFeatureCount > 1 ? "s" : "") ~ ": ";
     statusMessage = statusMessage ~ createdNames[0];
     for (var i = 1; i < size(createdNames); i += 1)
     {
