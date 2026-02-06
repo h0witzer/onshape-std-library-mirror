@@ -921,9 +921,14 @@ function subtractReliefCylindersFromDefinition(context is Context, id is Id, rel
         return;
     
     // Get SM definition bodies that we'll subtract from
-    const facesAdjacentToJoint = qAdjacent(jointEntity, AdjacencyType.EDGE, EntityType.FACE);
-    const smDefinitionEntities = getSMDefinitionEntities(context, facesAdjacentToJoint);
-    const definitionBodies = qOwnerBody(qUnion(smDefinitionEntities));
+    // First get the SM body that owns the joint entity
+    const smBody = qOwnerBody(jointEntity);
+    
+    // Get definition entities from the SM body
+    const definitionEntities = getSMDefinitionEntities(context, smBody);
+    
+    // Convert to query
+    const definitionBodies = qUnion(definitionEntities);
     
     // Create and subtract a cylinder for each relief edge
     for (var i = 0; i < size(reliefEdgeList); i += 1)
