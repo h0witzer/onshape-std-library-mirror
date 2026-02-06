@@ -162,6 +162,19 @@ export const sheetMetalStitchCutBend = defineSheetMetalFeature(function(context 
             }
         }
 
+        // Get master definition surfaces before any modifications
+        var masterDefinitionFaces = [];
+        try
+        {
+            const allBodies = qEverything(EntityType.BODY);
+            for (var body in evaluateQuery(context, allBodies))
+            {
+                const bodyFaces = qOwnedByBody(body, EntityType.FACE);
+                const defFaces = getSMDefinitionEntities(context, bodyFaces, EntityType.FACE);
+                masterDefinitionFaces = concatenate(masterDefinitionFaces, defFaces);
+            }
+        }
+
         // Collect all processed edges for final update
         var allProcessedEdges = [];
         
@@ -170,7 +183,7 @@ export const sheetMetalStitchCutBend = defineSheetMetalFeature(function(context 
         for (var jointEntity in jointEdgeEntities)
         {
             const processedEdges = processJointEntity(context, id + ("entity" ~ entityIndex), 
-                jointEntity, definition, defaultRadius, defaultKFactor, bendReliefParams, sheetMetalThickness, definition.reliefClearanceRadius);
+                jointEntity, definition, defaultRadius, defaultKFactor, bendReliefParams, masterDefinitionFaces, definition.reliefClearanceRadius);
             allProcessedEdges = append(allProcessedEdges, processedEdges);
             entityIndex += 1;
         }
@@ -203,7 +216,7 @@ export const sheetMetalStitchCutBend = defineSheetMetalFeature(function(context 
  * Outputs: Query for all processed edges from this joint entity
  */
 function processJointEntity(context is Context, id is Id, jointEntity is Query, 
-    definition is map, defaultRadius, defaultKFactor, bendReliefParams, sheetMetalThickness, reliefClearanceRadius) returns Query
+    definition is map, defaultRadius, defaultKFactor, bendReliefParams, masterDefinitionFaces is array, reliefClearanceRadius) returns Query
 {
     // Debug: Show the original master edges being processed
     if (definition.showDebug)
@@ -555,7 +568,7 @@ function processJointEntity(context is Context, id is Id, jointEntity is Query,
     if (bendReliefSegmentCount > 0)
     {
         subtractReliefCylindersFromDefinition(context, id + "reliefSubtract", 
-                                              bendReliefSegmentEdges, jointEntity, 
+                                              bendReliefSegmentEdges, masterDefinitionFaces, 
                                               reliefClearanceRadius);
     }
     
@@ -910,10 +923,10 @@ function shouldCreateBendReliefSubsegments(bendReliefParams) returns boolean
  *   context - Evaluation context
  *   id - Feature ID for this operation
  *   reliefEdges - Query for relief segment edges
- *   jointEntity - Query for the original joint entity edge
+ *   masterDefinitionFaces - Array of master definition face entities
  *   radius - Radius of cylinders to sweep (controls clearance size)
  */
-function subtractReliefCylindersFromDefinition(context is Context, id is Id, reliefEdges is Query, jointEntity is Query, radius)
+function subtractReliefCylindersFromDefinition(context is Context, id is Id, reliefEdges is Query, masterDefinitionFaces is array, radius)
 {
     const reliefEdgeList = evaluateQuery(context, reliefEdges);
     
@@ -961,7 +974,7 @@ function subtractReliefCylindersFromDefinition(context is Context, id is Id, rel
             // Boolean subtract cylinder from each SM definition face
             // Following Sheet Metal Tab pattern (sheetMetalTab.fs lines 404-418)
             var faceIndex = 0;
-            for (var face in definitionFaces)
+            for (var face in masterDefinitionFaces)
             {
                 try
                 {
