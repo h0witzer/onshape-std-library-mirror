@@ -554,6 +554,8 @@ function processJointEntity(context is Context, id is Id, jointEntity is Query,
     // Uses Move Face edge extension mechanism: clear SM attributes, then extend sheet body edges
     if (bendReliefSegmentCount > 0)
     {
+        println("Relief segments created: " ~ bendReliefSegmentCount);
+        println("Calling extendSheetBodyForReliefRegions...");
         extendSheetBodyForReliefRegions(context, id + "reliefExtension", bendReliefSegmentEdges, bendSegmentEdges, reliefEdgeRetraction);
     }
     
@@ -921,6 +923,9 @@ function extendSheetBodyForReliefRegions(context is Context, id is Id, reliefEdg
     const smEdges = qEntityFilter(qUnion(getSMDefinitionEntities(context, adjacentToRelief)), EntityType.EDGE);
     const smEdgeList = evaluateQuery(context, smEdges);
     
+    println("Relief edges query resolves to: " ~ size(evaluateQuery(context, reliefEdges)) ~ " edges");
+    println("Found " ~ size(smEdgeList) ~ " SM edges adjacent to relief");
+    
     if (size(smEdgeList) == 0)
         return;
     
@@ -933,11 +938,15 @@ function extendSheetBodyForReliefRegions(context is Context, id is Id, reliefEdg
         {
             const smEdge = smEdgeList[i];
             
+            println("Processing SM edge " ~ (i + 1) ~ " of " ~ size(smEdgeList));
+            
             // Step 1: Clear SM attributes to break associations (like Move Face line 613)
             clearSmAttributes(context, smEdge);
+            println("  Cleared SM attributes from edge");
             
             // Step 2: Find adjacent faces to determine which to extend
             const adjacentFaces = evaluateQuery(context, qAdjacent(smEdge, AdjacencyType.EDGE, EntityType.FACE));
+            println("  Found " ~ size(adjacentFaces) ~ " adjacent faces");
             
             if (size(adjacentFaces) == 0)
                 continue;
@@ -981,11 +990,14 @@ function extendSheetBodyForReliefRegions(context is Context, id is Id, reliefEdg
                 "limitEntity" : limitEntity,
                 "helpPoint" : helpPoint
             });
+            
+            println("  Created edgeLimitOption for edge " ~ (i + 1));
         }
-        catch
+        catch (error)
         {
             // If any step fails for this edge, skip it and continue
             // Some edges may not be extensible
+            println("  ERROR processing edge " ~ (i + 1) ~ ": " ~ error);
         }
     }
     
@@ -994,17 +1006,20 @@ function extendSheetBodyForReliefRegions(context is Context, id is Id, reliefEdg
     {
         try
         {
+            println("Calling opExtendSheetBody with " ~ size(edgeLimitOptions) ~ " edge limit options");
             sheetMetalExtendSheetBodyCall(context, id, {
                 "entities" : qUnion(smEdgeList),
                 "extendMethod" : ExtendSheetBoundingType.EXTEND_TO_SURFACE,
                 "edgeLimitOptions" : edgeLimitOptions,
                 "fence" : true  // Critical parameter from Move Face
             });
+            println("Sheet body extension completed successfully");
         }
-        catch
+        catch (error)
         {
             // If extension fails, the cleared attributes still broke associations
             // which may be enough
+            println("ERROR in opExtendSheetBody: " ~ error);
         }
     }
 }
