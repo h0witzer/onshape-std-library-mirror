@@ -228,37 +228,30 @@ function processJointEntity(context is Context, id is Id, jointEntity is Query,
         
         if (definition.showDebug)
         {
-            println("=== Capturing SM definition entities BEFORE edge splitting ===");
+            println("=== Capturing SM definition faces BEFORE edge splitting ===");
             debug(context, ownerBodyEarly, DebugColor.YELLOW);
         }
         
-        var smDefinitionEntitiesEarly = try (getSMDefinitionEntities(context, ownerBodyEarly));
-        if (smDefinitionEntitiesEarly is undefined)
-        {
-            smDefinitionEntitiesEarly = [];
-        }
+        // The owner body is already the sheet body (definition body)
+        // Get its faces directly instead of using getSMDefinitionEntities
+        const sheetBodyFaces = qOwnedByBody(ownerBodyEarly, EntityType.FACE);
+        const sheetBodyFacesEval = evaluateQuery(context, sheetBodyFaces);
         
         if (definition.showDebug)
         {
-            println("SM definition entities found (early): " ~ size(smDefinitionEntitiesEarly));
-            if (size(smDefinitionEntitiesEarly) > 0)
+            println("Sheet body faces found (early): " ~ size(sheetBodyFacesEval));
+            if (size(sheetBodyFacesEval) > 0)
             {
-                debug(context, qUnion(smDefinitionEntitiesEarly), DebugColor.MAGENTA);
+                debug(context, sheetBodyFaces, DebugColor.CYAN);
             }
         }
         
-        // Filter to faces only
-        for (var entity in smDefinitionEntitiesEarly)
-        {
-            if (entity.entityType == EntityType.FACE)
-            {
-                smDefinitionFaces = append(smDefinitionFaces, entity);
-            }
-        }
+        // Store the faces for later use
+        smDefinitionFaces = sheetBodyFacesEval;
         
         if (definition.showDebug)
         {
-            println("SM definition faces captured (early): " ~ size(smDefinitionFaces));
+            println("SM definition faces stored for boolean subtraction: " ~ size(smDefinitionFaces));
         }
     }
 
