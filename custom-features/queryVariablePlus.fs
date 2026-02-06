@@ -733,8 +733,7 @@ export const queryVariable = defineFeature(function(context is Context, id is Id
 
         initialQueryPredicate(definition);
 
-        annotation { "Name" : "Add additional queries", 
-                     "UIHint" : [UIHint.OPPOSITE_CONTROL, "selectionType", SelectionType.LOAD_FROM_DERIVE] }
+        annotation { "Name" : "Add additional queries" }
         definition.addAdditionalQueries is boolean;
 
         annotation { "Group Name" : "Additional queries", "Driving Parameter" : "addAdditionalQueries", "Collapsed By Default" : false }
