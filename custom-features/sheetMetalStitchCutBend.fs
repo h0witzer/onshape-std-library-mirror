@@ -336,13 +336,6 @@ function processJointEntity(context is Context, id is Id, jointEntity is Query,
     // Determine if we need to create bend relief subsegments
     const createBendReliefSubsegments = shouldCreateBendReliefSubsegments(bendReliefParams);
     
-    // If bend relief subsegments are needed, calculate their size and add them to the split parameters
-    var bendReliefSubsegmentSize = 0 * meter;
-    if (createBendReliefSubsegments)
-    {
-        bendReliefSubsegmentSize = calculateBendReliefSubsegmentSize(sheetMetalThickness, bendReliefParams);
-    }
-    
     // Create modified bridge domains that include bend relief subsegments
     // The subsegments should extend OUTSIDE the bridge boundaries into adjacent rip regions
     var allDomains = [];
@@ -933,16 +926,13 @@ function subtractReliefCylindersFromDefinition(context is Context, id is Id, rel
     if (size(reliefEdgeList) == 0)
         return;
     
-    // Get SM definition faces (invisible, zero-thickness master surfaces) that we'll subtract from
-    // Following Sheet Metal Tab pattern (sheetMetalTab.fs line 500)
-    const smBody = qOwnerBody(jointEntity);
-    const smBodyFaces = qOwnedByBody(smBody, EntityType.FACE);
-    const definitionFaces = getSMDefinitionEntities(context, smBodyFaces, EntityType.FACE);
+    // Use the master definition faces that were queried at the beginning before any modifications
+    // masterDefinitionFaces is passed as a parameter
     
     // Create and subtract a cylinder for each relief edge
     for (var i = 0; i < size(reliefEdgeList); i += 1)
     {
-        try
+        try silent
         {
             const reliefEdge = reliefEdgeList[i];
             
@@ -976,7 +966,7 @@ function subtractReliefCylindersFromDefinition(context is Context, id is Id, rel
             var faceIndex = 0;
             for (var face in masterDefinitionFaces)
             {
-                try
+                try silent
                 {
                     opBoolean(context, id + ("bool" ~ i ~ "_" ~ faceIndex), {
                         "tools" : qCreatedBy(sweepId, EntityType.BODY),
