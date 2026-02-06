@@ -922,7 +922,7 @@ function extendSheetBodyForReliefRegions(context is Context, id is Id, reliefEdg
     
     // Get the SM definition entities from those faces
     const smDefinitionEntities = getSMDefinitionEntities(context, facesAdjacentToJoint);
-    const smEdges = qEntityFilter(smDefinitionEntities, EntityType.EDGE);
+    const smEdges = qEntityFilter(qUnion(smDefinitionEntities), EntityType.EDGE);
     const smEdgeList = evaluateQuery(context, smEdges);
     
     println("Relief edges query resolves to: " ~ size(evaluateQuery(context, reliefEdges)) ~ " edges");
