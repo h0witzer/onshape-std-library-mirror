@@ -26,6 +26,7 @@ import(path : "onshape/std/string.fs", version : "2856.0");
 import(path : "onshape/std/path.fs", version : "2856.0");
 import(path : "onshape/std/geomOperations.fs", version : "2856.0");
 import(path : "onshape/std/debug.fs", version : "2856.0");
+import(path : "onshape/std/boolean.fs", version : "2856.0");
 
 // Import spacing utilities for bridge/stitch spacing logic
 export import(path : "c51f6558b7346f455a634ff5/cf14633de6fca78124306ce9/8ce820287d75ed2e92412d90", version : "cf26b6d26aa41f8853237904"); // spacingUtils.fs
@@ -216,6 +217,44 @@ function processJointEntity(context is Context, id is Id, jointEntity is Query,
     if (existingAttribute == undefined)
     {
         throw regenError(ErrorStringEnum.SHEET_METAL_ACTIVE_JOIN_NEEDED, ["entity"]);
+    }
+
+    // IMPORTANT: Capture SM definition faces BEFORE splitting edges
+    // Once we split and remove attributes, the associations are broken
+    // and we can't retrieve the definition entities anymore
+    var smDefinitionFaces = [];
+    if (bendReliefParams != undefined && bendReliefParams.style != undefined)
+    {
+        const ownerBodyEarly = qOwnerBody(jointEntity);
+        
+        if (definition.showDebug)
+        {
+            println("=== Capturing SM definition faces BEFORE edge splitting ===");
+            debug(context, ownerBodyEarly, DebugColor.YELLOW);
+        }
+        
+        // The owner body is already the sheet body (definition body)
+        // Get its faces and store them for later boolean operations
+        const sheetBodyFaces = qOwnedByBody(ownerBodyEarly, EntityType.FACE);
+        const sheetBodyFacesEval = evaluateQuery(context, sheetBodyFaces);
+        
+        if (definition.showDebug)
+        {
+            println("Sheet body faces found (early): " ~ size(sheetBodyFacesEval));
+            if (size(sheetBodyFacesEval) > 0)
+            {
+                debug(context, sheetBodyFaces, DebugColor.CYAN);
+            }
+        }
+        
+        // Store the face queries (as evaluated entities) for boolean operations
+        // We'll target individual faces with localizedInFaces: true
+        smDefinitionFaces = sheetBodyFacesEval;
+        
+        if (definition.showDebug)
+        {
+            println("SM definition faces stored for boolean subtraction: " ~ size(smDefinitionFaces));
+        }
     }
 
     // Calculate edge length and validate using the joint definition entity
@@ -554,19 +593,18 @@ function processJointEntity(context is Context, id is Id, jointEntity is Query,
     // Follows Sheet Metal Tab pattern: sweep cylinders, boolean subtract before SM update
     if (bendReliefSegmentCount > 0)
     {
-        // Get SM definition faces from the joint entity's owner body
-        // Following Sheet Metal Tab pattern (sheetMetalTab.fs line 504-506)
-        const ownerBody = qOwnerBody(jointEntity);
-        const ownerFaces = qOwnedByBody(ownerBody, EntityType.FACE);
-        var smDefinitionFaces = try (getSMDefinitionEntities(context, ownerFaces, EntityType.FACE));
-        if (smDefinitionFaces is undefined)
+        // Use the SM definition faces captured earlier (before edge splitting)
+        // Don't try to get them here - the associations are broken after splitting
+        
+        if (definition.showDebug)
         {
-            smDefinitionFaces = [];
+            println("=== Using captured SM definition faces for cylinder subtraction ===");
+            println("Captured SM definition faces available: " ~ size(smDefinitionFaces));
         }
         
         subtractReliefCylindersFromDefinition(context, id + "reliefSubtract", 
                                               bendReliefSegmentEdges, smDefinitionFaces, 
-                                              reliefClearanceRadius);
+                                              reliefClearanceRadius, definition.showDebug);
     }
     
     return allEdgesAfterSplitQuery;
@@ -910,25 +948,51 @@ function shouldCreateBendReliefSubsegments(bendReliefParams) returns boolean
 }
 
 /**
- * Extends sheet body in relief regions to create clearance for bend relief.
- * Uses the Move Face edge extension mechanism:
-/**
  * Subtracts cylinder solids from sheet metal definition surfaces in relief regions.
  * Follows Sheet Metal Tab pattern: creates cylinder tools via sweep, then boolean subtracts.
  * This creates clearance for bend relief geometry before sheet metal update.
+ * Uses face-based boolean operations with localizedInFaces for proper sheet metal handling.
  * Inputs:
  *   context - Evaluation context
  *   id - Feature ID for this operation
  *   reliefEdges - Query for relief segment edges
- *   masterDefinitionFaces - Array of master definition face entities
+ *   masterDefinitionFaces - Array of master definition face entities to subtract from
  *   radius - Radius of cylinders to sweep (controls clearance size)
+ *   showDebug - Whether to show debug visualization and diagnostics
  */
-function subtractReliefCylindersFromDefinition(context is Context, id is Id, reliefEdges is Query, masterDefinitionFaces is array, radius)
+function subtractReliefCylindersFromDefinition(context is Context, id is Id, reliefEdges is Query, masterDefinitionFaces is array, radius, showDebug is boolean)
 {
     const reliefEdgeList = evaluateQuery(context, reliefEdges);
     
     if (size(reliefEdgeList) == 0)
+    {
+        if (showDebug)
+            println("subtractReliefCylindersFromDefinition: No relief edges to process");
         return;
+    }
+    
+    // Debug: Show what we're working with
+    if (showDebug)
+    {
+        println("=== Relief Cylinder Subtraction Debug ===");
+        println("Number of relief edges: " ~ size(reliefEdgeList));
+        println("Number of master definition faces: " ~ size(masterDefinitionFaces));
+        
+        // Highlight master definition faces in CYAN
+        if (size(masterDefinitionFaces) > 0)
+        {
+            debug(context, qUnion(masterDefinitionFaces), DebugColor.CYAN);
+            println("Master definition faces highlighted in CYAN");
+        }
+        else
+        {
+            println("WARNING: No master definition faces found!");
+        }
+        
+        // Highlight relief edges in GREEN
+        debug(context, reliefEdges, DebugColor.GREEN);
+        println("Relief edges highlighted in GREEN");
+    }
     
     // Use the master definition faces that were queried at the beginning before any modifications
     // masterDefinitionFaces is passed as a parameter
@@ -939,6 +1003,9 @@ function subtractReliefCylindersFromDefinition(context is Context, id is Id, rel
         try 
         {
             const reliefEdge = reliefEdgeList[i];
+            
+            if (showDebug)
+                println("Processing relief edge " ~ (i + 1) ~ " of " ~ size(reliefEdgeList));
             
             // Get edge tangent line for sweep path
             const edgeTangentLine = evEdgeTangentLine(context, {
@@ -965,26 +1032,107 @@ function subtractReliefCylindersFromDefinition(context is Context, id is Id, rel
                 "path" : reliefEdge
             });
             
-            // Boolean subtract cylinder from each SM definition face
-            // Following Sheet Metal Tab pattern (sheetMetalTab.fs lines 404-418)
-            var faceIndex = 0;
-            debug(context, masterDefinitionFaces, DebugColor.GREEN);
-            for (var face in masterDefinitionFaces)
+            if (showDebug)
             {
-                try 
+                // Highlight the created cylinder tool in RED
+                debug(context, qCreatedBy(sweepId, EntityType.BODY), DebugColor.RED);
+                println("Cylinder " ~ (i + 1) ~ " created and highlighted in RED");
+            }
+            
+            // Boolean subtract cylinder from SM definition faces
+            // Following Sheet Metal Tab pattern EXACTLY (sheetMetalTab.fs lines 404-421)
+            // Use createBooleanToolsForFace to prepare tools for each face
+            if (size(masterDefinitionFaces) > 0)
+            {
+                if (showDebug)
                 {
-                    opBoolean(context, id + ("bool" ~ i ~ "_" ~ faceIndex), {
-                        "tools" : qCreatedBy(sweepId, EntityType.BODY),
-                        "targets" : face,
-                        "operationType" : BooleanOperationType.SUBTRACTION,
-                        "allowSheets" : true
-                    });
+                    println("Attempting boolean subtraction for cylinder " ~ (i + 1));
+                    println("Subtracting from " ~ size(masterDefinitionFaces) ~ " faces individually");
                 }
-                faceIndex += 1;
+                
+                // Process each face using Sheet Metal Tab pattern
+                var faceIndex = 0;
+                var successCount = 0;
+                var failCount = 0;
+                for (var face in masterDefinitionFaces)
+                {
+                    try
+                    {
+                        if (showDebug)
+                        {
+                            println("  Processing face " ~ faceIndex);
+                            debug(context, face, DebugColor.BLUE);
+                        }
+                        
+                        // Get model parameters from face owner body
+                        const ownerBody = qOwnerBody(face);
+                        if (showDebug)
+                        {
+                            println("    Owner body query:");
+                            debug(context, ownerBody, DebugColor.MAGENTA);
+                        }
+                        
+                        const targetModelParameters = try silent(getModelParameters(context, ownerBody));
+                        if (targetModelParameters is undefined)
+                        {
+                            failCount += 1;
+                            if (showDebug)
+                                println("  WARNING: Face " ~ faceIndex ~ " - could not get model parameters (owner body may not resolve)");
+                            faceIndex += 1;
+                            continue;
+                        }
+                        
+                        if (showDebug)
+                            println("    Got model parameters successfully");
+                        
+                        // Create boolean tool for this specific face
+                        // This adapts the cylinder geometry for sheet metal face operations
+                        const toolId = id + ("tool" ~ i ~ "_" ~ faceIndex);
+                        const tool = createBooleanToolsForFace(context, toolId, face, 
+                            qCreatedBy(sweepId, EntityType.BODY), targetModelParameters);
+                        
+                        if (tool != undefined)
+                        {
+                            if (showDebug)
+                                println("    Tool created successfully");
+                            // Perform boolean subtraction with the prepared tool
+                            opBoolean(context, id + ("bool" ~ i ~ "_" ~ faceIndex), {
+                                "tools" : qCreatedBy(toolId, EntityType.FACE),
+                                "targets" : face,
+                                "operationType" : BooleanOperationType.SUBTRACTION,
+                                "localizedInFaces" : true,
+                                "allowSheets" : true
+                            });
+                            successCount += 1;
+                        }
+                        else
+                        {
+                            failCount += 1;
+                            if (showDebug)
+                                println("  WARNING: Face " ~ faceIndex ~ " - createBooleanToolsForFace returned undefined");
+                        }
+                    }
+                    catch (faceError)
+                    {
+                        failCount += 1;
+                        if (showDebug)
+                            println("  ERROR: Face " ~ faceIndex ~ " exception: " ~ toString(faceError));
+                    }
+                    faceIndex += 1;
+                }
+                
+                if (showDebug)
+                    println("Boolean subtraction for cylinder " ~ (i + 1) ~ ": " ~ successCount ~ " succeeded, " ~ failCount ~ " failed");
+            }
+            else if (showDebug)
+            {
+                println("WARNING: Skipping boolean for cylinder " ~ (i + 1) ~ " - no master definition faces");
             }
         }
         catch (error)
         {
+            if (showDebug)
+                println("ERROR processing relief edge " ~ (i + 1) ~ ": " ~ toString(error));
             // If any cylinder fails, continue with others
             // Some relief edges may not be suitable for sweep
         }
