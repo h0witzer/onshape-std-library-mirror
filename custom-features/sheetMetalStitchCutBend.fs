@@ -607,6 +607,8 @@ function processJointEntity(context is Context, id is Id, jointEntity is Query,
         {
             println("=== Using captured SM definition sheet body for cylinder subtraction ===");
             println("Captured SM definition faces available: " ~ size(smDefinitionFaces));
+            // Check if the tracked query still resolves
+            debug(context, smDefinitionSheetBody, DebugColor.ORANGE);
         }
         
         subtractReliefCylindersFromDefinition(context, id + "reliefSubtract", 
@@ -1052,7 +1054,12 @@ function subtractReliefCylindersFromDefinition(context is Context, id is Id, rel
             if (masterDefinitionSheetBody != undefined)
             {
                 if (showDebug)
+                {
                     println("Attempting boolean subtraction for cylinder " ~ (i + 1));
+                    // Debug: check if target query resolves at this point
+                    println("Checking if target sheet body query resolves...");
+                    debug(context, masterDefinitionSheetBody, DebugColor.ORANGE);
+                }
                     
                 opBoolean(context, id + ("bool" ~ i), {
                     "tools" : qCreatedBy(sweepId, EntityType.BODY),
