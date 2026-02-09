@@ -920,7 +920,7 @@ function subtractReliefCylindersFromDefinition(context is Context, id is Id, rel
     var cylinderBodies = [];
     var sketchQueries = [];
     
-    // Create and subtract a cylinder for each relief edge
+    // PHASE 1: Create all cylinders first
     for (var i = 0; i < size(reliefEdgeList); i += 1)
     {
         try 
@@ -958,69 +958,112 @@ function subtractReliefCylindersFromDefinition(context is Context, id is Id, rel
             // Collect cylinder for cleanup
             const cylinderBody = qCreatedBy(sweepId, EntityType.BODY);
             cylinderBodies = append(cylinderBodies, cylinderBody);
-            
-            // Use collision detection to find which faces the cylinder actually intersects
-            // This avoids calling createBooleanToolsForFace for all faces unnecessarily
-            const collisions = try silent(evCollision(context, {
-                "tools" : cylinderBody,
-                "targets" : qOwnedByBody(sheetMetalBody[0], EntityType.FACE)
-            }));
-            
-            if (collisions != undefined && size(collisions) > 0)
-            {
-                // Only process faces that actually collide with the cylinder
-                var faceIndex = 0;
-                for (var collision in collisions)
-                {
-                    // Skip if collision type is NONE (no actual intersection)
-                    if (collision['type'] == ClashType.NONE)
-                    {
-                        continue;
-                    }
-                    
-                    try
-                    {
-                        const face = collision.target;
-                        
-                        // Get model parameters from face owner body
-                        const ownerBody = qOwnerBody(face);
-                        const targetModelParameters = try silent(getModelParameters(context, ownerBody));
-                        if (targetModelParameters is undefined)
-                        {
-                            faceIndex += 1;
-                            continue;
-                        }
-                        
-                        // Create boolean tool for this specific face
-                        // This adapts the cylinder geometry for sheet metal face operations
-                        const toolId = id + ("tool" ~ i ~ "_" ~ faceIndex);
-                        const tool = createBooleanToolsForFace(context, toolId, face, 
-                            cylinderBody, targetModelParameters);
-                        
-                        if (tool != undefined)
-                        {
-                            // Perform boolean subtraction with the prepared tool
-                            opBoolean(context, id + ("bool" ~ i ~ "_" ~ faceIndex), {
-                                "tools" : qCreatedBy(toolId, EntityType.FACE),
-                                "targets" : face,
-                                "operationType" : BooleanOperationType.SUBTRACTION,
-                                "localizedInFaces" : true,
-                                "allowSheets" : true
-                            });
-                        }
-                    }
-                    catch
-                    {
-                        // Continue with next face if this one fails
-                    }
-                    faceIndex += 1;
-                }
-            }
         }
         catch
         {
             // If any cylinder fails, continue with others
             // Some relief edges may not be suitable for sweep
+        }
+    }
+    
+    // If no cylinders were created successfully, return
+    if (size(cylinderBodies) == 0)
+    {
+        // Clean up any sketches that were created
+        if (size(sketchQueries) > 0)
+        {
+            try silent(opDeleteBodies(context, id + "deleteSketches", {
+                "entities" : qUnion(sketchQueries)
+            }));
+        }
+        return;
+    }
+    
+    // PHASE 2: Build mapping of face to intersecting cylinders
+    // This allows us to call createBooleanToolsForFace once per face with all relevant cylinders
+    const allCylinders = qUnion(cylinderBodies);
+    const allFaces = qOwnedByBody(sheetMetalBody[0], EntityType.FACE);
+    const allFacesList = evaluateQuery(context, allFaces);
+    
+    // Use collision detection to find which cylinders intersect which faces
+    const collisions = try silent(evCollision(context, {
+        "tools" : allCylinders,
+        "targets" : allFaces
+    }));
+    
+    if (collisions != undefined && size(collisions) > 0)
+    {
+        // Build map: face -> list of cylinders that intersect it
+        var faceToCylinders = {}; // Map from face transient ID to array of cylinder queries
+        
+        for (var collision in collisions)
+        {
+            // Skip if collision type is NONE (no actual intersection)
+            if (collision['type'] == ClashType.NONE)
+            {
+                continue;
+            }
+            
+            const face = collision.target;
+            const cylinder = collision.tool;
+            
+            // Get transient ID of face to use as map key
+            const faceId = toQuery(face);
+            const faceKey = toString(faceId);
+            
+            // Add cylinder to this face's list
+            if (faceToCylinders[faceKey] == undefined)
+            {
+                faceToCylinders[faceKey] = {
+                    "face" : face,
+                    "cylinders" : []
+                };
+            }
+            faceToCylinders[faceKey].cylinders = append(faceToCylinders[faceKey].cylinders, cylinder);
+        }
+        
+        // PHASE 3: Process each face once with all its intersecting cylinders
+        var faceIndex = 0;
+        for (var entry in faceToCylinders)
+        {
+            try
+            {
+                const faceData = faceToCylinders[entry];
+                const face = faceData.face;
+                const cylindersForFace = faceData.cylinders;
+                
+                // Get model parameters from face owner body
+                const ownerBody = qOwnerBody(face);
+                const targetModelParameters = try silent(getModelParameters(context, ownerBody));
+                if (targetModelParameters is undefined)
+                {
+                    faceIndex += 1;
+                    continue;
+                }
+                
+                // Create boolean tool for this face with ALL intersecting cylinders at once
+                // This is the key optimization: one call per face instead of one per cylinder
+                const toolId = id + ("tool_" ~ faceIndex);
+                const tool = createBooleanToolsForFace(context, toolId, face, 
+                    qUnion(cylindersForFace), targetModelParameters);
+                
+                if (tool != undefined)
+                {
+                    // Perform boolean subtraction with all tools for this face
+                    opBoolean(context, id + ("bool_" ~ faceIndex), {
+                        "tools" : qCreatedBy(toolId, EntityType.FACE),
+                        "targets" : face,
+                        "operationType" : BooleanOperationType.SUBTRACTION,
+                        "localizedInFaces" : true,
+                        "allowSheets" : true
+                    });
+                }
+            }
+            catch
+            {
+                // Continue with next face if this one fails
+            }
+            faceIndex += 1;
         }
     }
     
