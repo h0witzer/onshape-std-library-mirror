@@ -893,6 +893,12 @@ function shouldCreateBendReliefSubsegments(bendReliefParams) returns boolean
  * Follows Sheet Metal Tab pattern: creates cylinder tools via sweep, then boolean subtracts.
  * This creates clearance for bend relief geometry before sheet metal update.
  * Uses face-based boolean operations with localizedInFaces for proper sheet metal handling.
+ * 
+ * Performance Optimization:
+ * Uses a two-pass approach to minimize calls to createBooleanToolsForFace:
+ * - Pass 1: Create all cylinders and build a map of face → array of tools
+ * - Pass 2: Call createBooleanToolsForFace once per face with all its tools
+ * 
  * Inputs:
  *   context - Evaluation context
  *   id - Feature ID for this operation
@@ -920,7 +926,10 @@ function subtractReliefCylindersFromDefinition(context is Context, id is Id, rel
     var cylinderBodies = [];
     var sketchQueries = [];
     
-    // Create and subtract a cylinder for each relief edge
+    // PASS 1: Create all cylinder tools and collect collision data
+    // Build a map of face → array of cylinder bodies that collide with that face
+    var faceToToolsMap = {};
+    
     for (var i = 0; i < size(reliefEdgeList); i += 1)
     {
         try 
@@ -960,7 +969,6 @@ function subtractReliefCylindersFromDefinition(context is Context, id is Id, rel
             cylinderBodies = append(cylinderBodies, cylinderBody);
             
             // Use collision detection to find which faces the cylinder actually intersects
-            // This avoids calling createBooleanToolsForFace for all faces unnecessarily
             const collisions = try silent(evCollision(context, {
                 "tools" : cylinderBody,
                 "targets" : qOwnedByBody(sheetMetalBody[0], EntityType.FACE)
@@ -968,8 +976,7 @@ function subtractReliefCylindersFromDefinition(context is Context, id is Id, rel
             
             if (collisions != undefined && size(collisions) > 0)
             {
-                // Only process faces that actually collide with the cylinder
-                var faceIndex = 0;
+                // Group cylinder with all faces it collides with
                 for (var collision in collisions)
                 {
                     // Skip if collision type is NONE (no actual intersection)
@@ -978,42 +985,20 @@ function subtractReliefCylindersFromDefinition(context is Context, id is Id, rel
                         continue;
                     }
                     
-                    try
+                    const face = collision.target;
+                    const faceTransientId = transientQueriesToStrings(face);
+                    
+                    // Initialize array for this face if not exists
+                    if (faceToToolsMap[faceTransientId] == undefined)
                     {
-                        const face = collision.target;
-                        
-                        // Get model parameters from face owner body
-                        const ownerBody = qOwnerBody(face);
-                        const targetModelParameters = try silent(getModelParameters(context, ownerBody));
-                        if (targetModelParameters is undefined)
-                        {
-                            faceIndex += 1;
-                            continue;
-                        }
-                        
-                        // Create boolean tool for this specific face
-                        // This adapts the cylinder geometry for sheet metal face operations
-                        const toolId = id + ("tool" ~ i ~ "_" ~ faceIndex);
-                        const tool = createBooleanToolsForFace(context, toolId, face, 
-                            cylinderBody, targetModelParameters);
-                        
-                        if (tool != undefined)
-                        {
-                            // Perform boolean subtraction with the prepared tool
-                            opBoolean(context, id + ("bool" ~ i ~ "_" ~ faceIndex), {
-                                "tools" : qCreatedBy(toolId, EntityType.FACE),
-                                "targets" : face,
-                                "operationType" : BooleanOperationType.SUBTRACTION,
-                                "localizedInFaces" : true,
-                                "allowSheets" : true
-                            });
-                        }
+                        faceToToolsMap[faceTransientId] = {
+                            "face" : face,
+                            "tools" : []
+                        };
                     }
-                    catch
-                    {
-                        // Continue with next face if this one fails
-                    }
-                    faceIndex += 1;
+                    
+                    // Add cylinder to this face's tool list
+                    faceToToolsMap[faceTransientId].tools = append(faceToToolsMap[faceTransientId].tools, cylinderBody);
                 }
             }
         }
@@ -1022,6 +1007,56 @@ function subtractReliefCylindersFromDefinition(context is Context, id is Id, rel
             // If any cylinder fails, continue with others
             // Some relief edges may not be suitable for sweep
         }
+    }
+    
+    // PASS 2: For each face, call createBooleanToolsForFace once with all its tools
+    var faceIndex = 0;
+    for (var entry in faceToToolsMap)
+    {
+        const faceData = faceToToolsMap[entry.key];
+        const face = faceData.face;
+        const toolsList = faceData.tools;
+        
+        if (size(toolsList) == 0)
+        {
+            continue;
+        }
+        
+        try
+        {
+            // Get model parameters from face owner body
+            const ownerBody = qOwnerBody(face);
+            const targetModelParameters = try silent(getModelParameters(context, ownerBody));
+            if (targetModelParameters == undefined)
+            {
+                faceIndex += 1;
+                continue;
+            }
+            
+            // Create boolean tools for this face with ALL cylinders that interact with it
+            // This is the key optimization: one call per face instead of one call per cylinder-face pair
+            const toolId = id + ("tool" ~ faceIndex);
+            const allToolsForFace = qUnion(toolsList);
+            const tool = createBooleanToolsForFace(context, toolId, face, 
+                allToolsForFace, targetModelParameters);
+            
+            if (tool != undefined)
+            {
+                // Perform boolean subtraction with the prepared tool
+                opBoolean(context, id + ("bool" ~ faceIndex), {
+                    "tools" : qCreatedBy(toolId, EntityType.FACE),
+                    "targets" : face,
+                    "operationType" : BooleanOperationType.SUBTRACTION,
+                    "localizedInFaces" : true,
+                    "allowSheets" : true
+                });
+            }
+        }
+        catch
+        {
+            // Continue with next face if this one fails
+        }
+        faceIndex += 1;
     }
     
     // Clean up all sketches after sweep operations complete
