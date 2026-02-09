@@ -1007,9 +1007,8 @@ function subtractReliefCylindersFromDefinition(context is Context, id is Id, rel
             const face = collision.target;
             const cylinder = collision.tool;
             
-            // Get transient ID of face to use as map key
-            const faceId = toQuery(face);
-            const faceKey = toString(faceId);
+            // Use face query directly as map key via toString
+            const faceKey = toString(face);
             
             // Add cylinder to this face's list
             if (faceToCylinders[faceKey] == undefined)
