@@ -586,7 +586,7 @@ function processJointEntity(context is Context, id is Id, jointEntity is Query,
     
     // Subtract cylinders from sheet metal definition in relief regions
     // Follows Sheet Metal Tab pattern: sweep cylinders, boolean subtract before SM update
-    if (bendReliefSegmentCount > 0)
+    if (bendReliefSegmentCount > 0 && smDefinitionBodyTracking != undefined)
     {
         // Use the SM definition body tracking established earlier (before edge splitting)
         // The tracking query will persist through boolean operations
