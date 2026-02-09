@@ -909,8 +909,9 @@ function subtractReliefCylindersFromDefinition(context is Context, id is Id, rel
         return;
     }
     
-    // Track all cylinder bodies created for cleanup at the end
+    // Track all cylinder bodies and sketches created for cleanup at the end
     var cylinderBodies = [];
+    var sketchQueries = [];
     
     // Create and subtract a cylinder for each relief edge
     for (var i = 0; i < size(reliefEdgeList); i += 1)
@@ -937,6 +938,9 @@ function subtractReliefCylindersFromDefinition(context is Context, id is Id, rel
             });
             skSolve(sketch);
             
+            // Track sketch for cleanup
+            sketchQueries = append(sketchQueries, qCreatedBy(sketchId, EntityType.BODY));
+            
             // Sweep circle along relief edge to create cylinder
             const sweepId = id + ("sweep" ~ i);
             opSweep(context, sweepId, {
@@ -945,21 +949,32 @@ function subtractReliefCylindersFromDefinition(context is Context, id is Id, rel
             });
             
             // Track cylinder for cleanup
-            cylinderBodies = append(cylinderBodies, qCreatedBy(sweepId, EntityType.BODY));
+            const cylinderBody = qCreatedBy(sweepId, EntityType.BODY);
+            cylinderBodies = append(cylinderBodies, cylinderBody);
             
-            // Boolean subtract cylinder from SM definition faces
-            // Following Sheet Metal Tab pattern (sheetMetalTab.fs lines 397-423)
-            // Get current faces from the tracked body (re-evaluated after each boolean)
-            const currentDefinitionFaces = evaluateQuery(context, qOwnedByBody(trackedDefinitionBody, EntityType.FACE));
+            // Use collision detection to find which faces the cylinder actually intersects
+            // This avoids calling createBooleanToolsForFace for all faces unnecessarily
+            const collisions = try silent(evCollision(context, {
+                "tools" : cylinderBody,
+                "targets" : qOwnedByBody(trackedDefinitionBody, EntityType.FACE)
+            }));
             
-            if (size(currentDefinitionFaces) > 0)
+            if (collisions != undefined && size(collisions) > 0)
             {
-                // Process each face using Sheet Metal Tab pattern
+                // Only process faces that actually collide with the cylinder
                 var faceIndex = 0;
-                for (var face in currentDefinitionFaces)
+                for (var collision in collisions)
                 {
+                    // Skip if collision type is NONE (no actual intersection)
+                    if (collision.type == ClashType.NONE)
+                    {
+                        continue;
+                    }
+                    
                     try
                     {
+                        const face = collision.target;
+                        
                         // Get model parameters from face owner body
                         const ownerBody = qOwnerBody(face);
                         const targetModelParameters = try silent(getModelParameters(context, ownerBody));
@@ -973,7 +988,7 @@ function subtractReliefCylindersFromDefinition(context is Context, id is Id, rel
                         // This adapts the cylinder geometry for sheet metal face operations
                         const toolId = id + ("tool" ~ i ~ "_" ~ faceIndex);
                         const tool = createBooleanToolsForFace(context, toolId, face, 
-                            qCreatedBy(sweepId, EntityType.BODY), targetModelParameters);
+                            cylinderBody, targetModelParameters);
                         
                         if (tool != undefined)
                         {
@@ -1000,6 +1015,14 @@ function subtractReliefCylindersFromDefinition(context is Context, id is Id, rel
             // If any cylinder fails, continue with others
             // Some relief edges may not be suitable for sweep
         }
+    }
+    
+    // Clean up all sketches after sweep operations complete
+    if (size(sketchQueries) > 0)
+    {
+        try silent(opDeleteBodies(context, id + "deleteSketches", {
+            "entities" : qUnion(sketchQueries)
+        }));
     }
     
     // Clean up all cylinder bodies after boolean operations complete
