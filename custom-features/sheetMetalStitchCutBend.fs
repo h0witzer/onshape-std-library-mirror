@@ -979,96 +979,77 @@ function subtractReliefCylindersFromDefinition(context is Context, id is Id, rel
         return;
     }
     
-    // PHASE 2: Build mapping of face to intersecting cylinders
-    // This allows us to call createBooleanToolsForFace once per face with all relevant cylinders
-    const allCylinders = qUnion(cylinderBodies);
-    const allFaces = qOwnedByBody(sheetMetalBody[0], EntityType.FACE);
-    const allFacesList = evaluateQuery(context, allFaces);
-    
+    //PHASE 2: Boolean subtract cylinders from sheet metal definition
     // Use collision detection to find which cylinders intersect which faces
-    const collisions = try silent(evCollision(context, {
-        "tools" : allCylinders,
-        "targets" : allFaces
-    }));
+    // Following sheetMetalTabAndSlot pattern: one createBooleanToolsForFace call per tool-face pair
+    const allFaces = qOwnedByBody(sheetMetalBody[0], EntityType.FACE);
     
-    if (collisions != undefined && size(collisions) > 0)
+    var operationIndex = 0;
+    for (var i = 0; i < size(cylinderBodies); i += 1)
     {
-        // Build map: face -> list of cylinders that intersect it
-        var faceToCylinders = {}; // Map from face transient ID to {face, cylinders[]}
-        var facesOrdered = []; // Array to maintain order for iteration
-        
-        for (var collision in collisions)
+        try
         {
-            // Skip if collision type is NONE (no actual intersection)
-            if (collision['type'] == ClashType.NONE)
+            const cylinderBody = cylinderBodies[i];
+            
+            // Find which faces this cylinder intersects
+            const collisions = try silent(evCollision(context, {
+                "tools" : cylinderBody,
+                "targets" : allFaces
+            }));
+            
+            if (collisions != undefined && size(collisions) > 0)
             {
-                continue;
+                // For each intersecting face, create boolean tool and subtract
+                for (var collision in collisions)
+                {
+                    // Skip if collision type is NONE (no actual intersection)
+                    if (collision['type'] == ClashType.NONE)
+                    {
+                        continue;
+                    }
+                    
+                    try
+                    {
+                        const face = collision.target;
+                        
+                        // Get model parameters from face owner body
+                        const ownerBody = qOwnerBody(face);
+                        const targetModelParameters = try silent(getModelParameters(context, ownerBody));
+                        if (targetModelParameters is undefined)
+                        {
+                            continue;
+                        }
+                        
+                        // Create boolean tool for this specific cylinder-face pair
+                        // Following sheetMetalTabAndSlot pattern (one tool per call)
+                        const toolId = id + ("tool_" ~ operationIndex);
+                        const tool = createBooleanToolsForFace(context, toolId, face, 
+                            cylinderBody, targetModelParameters);
+                        
+                        if (tool != undefined)
+                        {
+                            // Perform boolean subtraction
+                            opBoolean(context, id + ("bool_" ~ operationIndex), {
+                                "tools" : qCreatedBy(toolId, EntityType.FACE),
+                                "targets" : face,
+                                "operationType" : BooleanOperationType.SUBTRACTION,
+                                "localizedInFaces" : true,
+                                "allowSheets" : true
+                            });
+                        }
+                        
+                        operationIndex += 1;
+                    }
+                    catch
+                    {
+                        // Continue with next face if this one fails
+                    }
+                }
             }
-            
-            const face = collision.target;
-            const cylinder = collision.tool;
-            
-            // Use face query directly as map key via toString
-            const faceKey = toString(face);
-            
-            // Add cylinder to this face's list
-            if (faceToCylinders[faceKey] == undefined)
-            {
-                faceToCylinders[faceKey] = {
-                    "face" : face,
-                    "cylinders" : []
-                };
-                // Track this face in our ordered array
-                facesOrdered = append(facesOrdered, face);
-            }
-            faceToCylinders[faceKey].cylinders = append(faceToCylinders[faceKey].cylinders, cylinder);
         }
-        
-        // PHASE 3: Process each face once with all its intersecting cylinders
-        // Use array iteration and map lookup pattern (from miterWarlock.fs)
-        for (var i = 0; i < size(facesOrdered); i += 1)
+        catch
         {
-            try
-            {
-                const face = facesOrdered[i];
-                const faceKey = toString(face);
-                const faceData = faceToCylinders[faceKey];
-                
-                if (faceData == undefined)
-                    continue;
-                
-                const cylindersForFace = faceData.cylinders;
-                
-                // Get model parameters from face owner body
-                const ownerBody = qOwnerBody(face);
-                const targetModelParameters = try silent(getModelParameters(context, ownerBody));
-                if (targetModelParameters is undefined)
-                {
-                    continue;
-                }
-                
-                // Create boolean tool for this face with ALL intersecting cylinders at once
-                // This is the key optimization: one call per face instead of one per cylinder
-                const toolId = id + ("tool_" ~ i);
-                const tool = createBooleanToolsForFace(context, toolId, face, 
-                    qUnion(cylindersForFace), targetModelParameters);
-                
-                if (tool != undefined)
-                {
-                    // Perform boolean subtraction with all tools for this face
-                    opBoolean(context, id + ("bool_" ~ i), {
-                        "tools" : qCreatedBy(toolId, EntityType.FACE),
-                        "targets" : face,
-                        "operationType" : BooleanOperationType.SUBTRACTION,
-                        "localizedInFaces" : true,
-                        "allowSheets" : true
-                    });
-                }
-            }
-            catch
-            {
-                // Continue with next face if this one fails
-            }
+            // Continue with next cylinder if this one fails
         }
     }
     
