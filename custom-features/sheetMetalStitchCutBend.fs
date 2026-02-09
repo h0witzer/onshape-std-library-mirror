@@ -916,7 +916,7 @@ function subtractReliefCylindersFromDefinition(context is Context, id is Id, rel
         return;
     }
     
-    // Track all cylinder bodies and sketches created for cleanup at the end
+    // Collect all cylinder bodies and sketches created for cleanup at the end
     var cylinderBodies = [];
     var sketchQueries = [];
     
@@ -945,7 +945,7 @@ function subtractReliefCylindersFromDefinition(context is Context, id is Id, rel
             });
             skSolve(sketch);
             
-            // Track sketch for cleanup
+            // Collect sketch for cleanup
             sketchQueries = append(sketchQueries, qCreatedBy(sketchId, EntityType.BODY));
             
             // Sweep circle along relief edge to create cylinder
@@ -955,7 +955,7 @@ function subtractReliefCylindersFromDefinition(context is Context, id is Id, rel
                 "path" : reliefEdge
             });
             
-            // Track cylinder for cleanup
+            // Collect cylinder for cleanup
             const cylinderBody = qCreatedBy(sweepId, EntityType.BODY);
             cylinderBodies = append(cylinderBodies, cylinderBody);
             
@@ -973,7 +973,7 @@ function subtractReliefCylindersFromDefinition(context is Context, id is Id, rel
                 for (var collision in collisions)
                 {
                     // Skip if collision type is NONE (no actual intersection)
-                    if (collision.type == ClashType.NONE)
+                    if (collision['type'] == ClashType.NONE)
                     {
                         continue;
                     }
