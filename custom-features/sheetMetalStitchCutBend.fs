@@ -986,19 +986,19 @@ function subtractReliefCylindersFromDefinition(context is Context, id is Id, rel
                     }
                     
                     const face = collision.target;
-                    const faceTransientId = transientQueriesToStrings(face);
+                    const faceKey = transientQueriesToStrings(face);
                     
                     // Initialize array for this face if not exists
-                    if (faceToToolsMap[faceTransientId] == undefined)
+                    if (faceToToolsMap[faceKey] == undefined)
                     {
-                        faceToToolsMap[faceTransientId] = {
+                        faceToToolsMap[faceKey] = {
                             "face" : face,
                             "tools" : []
                         };
                     }
                     
                     // Add cylinder to this face's tool list
-                    faceToToolsMap[faceTransientId].tools = append(faceToToolsMap[faceTransientId].tools, cylinderBody);
+                    faceToToolsMap[faceKey].tools = append(faceToToolsMap[faceKey].tools, cylinderBody);
                 }
             }
         }
@@ -1013,7 +1013,7 @@ function subtractReliefCylindersFromDefinition(context is Context, id is Id, rel
     var faceIndex = 0;
     for (var entry in faceToToolsMap)
     {
-        const faceData = faceToToolsMap[entry.key];
+        const faceData = entry.value;
         const face = faceData.face;
         const toolsList = faceData.tools;
         
