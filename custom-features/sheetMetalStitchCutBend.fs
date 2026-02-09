@@ -218,11 +218,9 @@ function processJointEntity(context is Context, id is Id, jointEntity is Query,
         throw regenError(ErrorStringEnum.SHEET_METAL_ACTIVE_JOIN_NEEDED, ["entity"]);
     }
 
-    // IMPORTANT: Capture SM definition sheet body and faces BEFORE splitting edges
+    // IMPORTANT: Capture SM definition faces BEFORE splitting edges
     // Once we split and remove attributes, the associations are broken
     // and we can't retrieve the definition entities anymore
-    // Use startTracking to maintain a valid query through modifications
-    var smDefinitionSheetBody = undefined;
     var smDefinitionFaces = [];
     if (bendReliefParams != undefined && bendReliefParams.style != undefined)
     {
@@ -230,37 +228,31 @@ function processJointEntity(context is Context, id is Id, jointEntity is Query,
         
         if (definition.showDebug)
         {
-            println("=== Capturing SM definition sheet body BEFORE edge splitting ===");
+            println("=== Capturing SM definition faces BEFORE edge splitting ===");
             debug(context, ownerBodyEarly, DebugColor.YELLOW);
         }
         
-        // CRITICAL: Use startTracking to maintain a valid query to the sheet body
-        // After edge splitting and attribute removal, the original query would become invalid
-        // startTracking creates a query that follows the body through modifications
-        const trackedSheetBody = startTracking(context, ownerBodyEarly);
-        smDefinitionSheetBody = qUnion([trackedSheetBody, ownerBodyEarly]);
-        
         // The owner body is already the sheet body (definition body)
-        // Get its faces for visualization
+        // Get its faces and store them for later boolean operations
         const sheetBodyFaces = qOwnedByBody(ownerBodyEarly, EntityType.FACE);
         const sheetBodyFacesEval = evaluateQuery(context, sheetBodyFaces);
         
         if (definition.showDebug)
         {
             println("Sheet body faces found (early): " ~ size(sheetBodyFacesEval));
-            println("Sheet body tracked for boolean operations");
             if (size(sheetBodyFacesEval) > 0)
             {
                 debug(context, sheetBodyFaces, DebugColor.CYAN);
             }
         }
         
-        // Store the faces for visualization
+        // Store the face queries (as evaluated entities) for boolean operations
+        // We'll target individual faces with localizedInFaces: true
         smDefinitionFaces = sheetBodyFacesEval;
         
         if (definition.showDebug)
         {
-            println("SM definition sheet body tracked and faces stored for boolean subtraction");
+            println("SM definition faces stored for boolean subtraction: " ~ size(smDefinitionFaces));
         }
     }
 
@@ -600,19 +592,17 @@ function processJointEntity(context is Context, id is Id, jointEntity is Query,
     // Follows Sheet Metal Tab pattern: sweep cylinders, boolean subtract before SM update
     if (bendReliefSegmentCount > 0)
     {
-        // Use the SM definition sheet body captured earlier (before edge splitting)
-        // Don't try to get it here - the associations are broken after splitting
+        // Use the SM definition faces captured earlier (before edge splitting)
+        // Don't try to get them here - the associations are broken after splitting
         
         if (definition.showDebug)
         {
-            println("=== Using captured SM definition sheet body for cylinder subtraction ===");
+            println("=== Using captured SM definition faces for cylinder subtraction ===");
             println("Captured SM definition faces available: " ~ size(smDefinitionFaces));
-            // Check if the tracked query still resolves
-            debug(context, smDefinitionSheetBody, DebugColor.ORANGE);
         }
         
         subtractReliefCylindersFromDefinition(context, id + "reliefSubtract", 
-                                              bendReliefSegmentEdges, smDefinitionSheetBody, smDefinitionFaces, 
+                                              bendReliefSegmentEdges, smDefinitionFaces, 
                                               reliefClearanceRadius, definition.showDebug);
     }
     
@@ -960,16 +950,16 @@ function shouldCreateBendReliefSubsegments(bendReliefParams) returns boolean
  * Subtracts cylinder solids from sheet metal definition surfaces in relief regions.
  * Follows Sheet Metal Tab pattern: creates cylinder tools via sweep, then boolean subtracts.
  * This creates clearance for bend relief geometry before sheet metal update.
+ * Uses face-based boolean operations with localizedInFaces for proper sheet metal handling.
  * Inputs:
  *   context - Evaluation context
  *   id - Feature ID for this operation
  *   reliefEdges - Query for relief segment edges
- *   masterDefinitionSheetBody - Query for the sheet body to subtract from
- *   masterDefinitionFaces - Array of master definition face entities (for visualization)
+ *   masterDefinitionFaces - Array of master definition face entities to subtract from
  *   radius - Radius of cylinders to sweep (controls clearance size)
  *   showDebug - Whether to show debug visualization and diagnostics
  */
-function subtractReliefCylindersFromDefinition(context is Context, id is Id, reliefEdges is Query, masterDefinitionSheetBody is Query, masterDefinitionFaces is array, radius, showDebug is boolean)
+function subtractReliefCylindersFromDefinition(context is Context, id is Id, reliefEdges is Query, masterDefinitionFaces is array, radius, showDebug is boolean)
 {
     const reliefEdgeList = evaluateQuery(context, reliefEdges);
     
@@ -1048,32 +1038,40 @@ function subtractReliefCylindersFromDefinition(context is Context, id is Id, rel
                 println("Cylinder " ~ (i + 1) ~ " created and highlighted in RED");
             }
             
-            // Boolean subtract cylinder from SM definition sheet body
-            // Following Sheet Metal Tab pattern - subtract from the sheet body
-            // The target must be a body query, not face queries
-            if (masterDefinitionSheetBody != undefined)
+            // Boolean subtract cylinder from SM definition sheet body faces
+            // Following Sheet Metal Tab pattern (line 412-418) - target individual faces
+            // with localizedInFaces for sheet metal boolean operations
+            if (size(masterDefinitionFaces) > 0)
             {
                 if (showDebug)
                 {
                     println("Attempting boolean subtraction for cylinder " ~ (i + 1));
-                    // Debug: check if target query resolves at this point
-                    println("Checking if target sheet body query resolves...");
-                    debug(context, masterDefinitionSheetBody, DebugColor.ORANGE);
+                    println("Subtracting from " ~ size(masterDefinitionFaces) ~ " faces individually");
                 }
-                    
-                opBoolean(context, id + ("bool" ~ i), {
-                    "tools" : qCreatedBy(sweepId, EntityType.BODY),
-                    "targets" : masterDefinitionSheetBody,
-                    "operationType" : BooleanOperationType.SUBTRACTION,
-                    "allowSheets" : true
-                });
+                
+                // Subtract from each face individually with localizedInFaces
+                var faceIndex = 0;
+                for (var face in masterDefinitionFaces)
+                {
+                    try
+                    {
+                        opBoolean(context, id + ("bool" ~ i ~ "_face" ~ faceIndex), {
+                            "tools" : qCreatedBy(sweepId, EntityType.BODY),
+                            "targets" : face,
+                            "operationType" : BooleanOperationType.SUBTRACTION,
+                            "localizedInFaces" : true,
+                            "allowSheets" : true
+                        });
+                    }
+                    faceIndex += 1;
+                }
                 
                 if (showDebug)
                     println("Boolean subtraction completed for cylinder " ~ (i + 1));
             }
             else if (showDebug)
             {
-                println("WARNING: Skipping boolean for cylinder " ~ (i + 1) ~ " - no master definition sheet body");
+                println("WARNING: Skipping boolean for cylinder " ~ (i + 1) ~ " - no master definition faces");
             }
         }
         catch (error)
