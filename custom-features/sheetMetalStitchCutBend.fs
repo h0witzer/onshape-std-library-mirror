@@ -994,7 +994,8 @@ function subtractReliefCylindersFromDefinition(context is Context, id is Id, rel
     if (collisions != undefined && size(collisions) > 0)
     {
         // Build map: face -> list of cylinders that intersect it
-        var faceToCylinders = {}; // Map from face transient ID to array of cylinder queries
+        var faceToCylinders = {}; // Map from face transient ID to {face, cylinders[]}
+        var facesOrdered = []; // Array to maintain order for iteration
         
         for (var collision in collisions)
         {
@@ -1017,17 +1018,25 @@ function subtractReliefCylindersFromDefinition(context is Context, id is Id, rel
                     "face" : face,
                     "cylinders" : []
                 };
+                // Track this face in our ordered array
+                facesOrdered = append(facesOrdered, face);
             }
             faceToCylinders[faceKey].cylinders = append(faceToCylinders[faceKey].cylinders, cylinder);
         }
         
         // PHASE 3: Process each face once with all its intersecting cylinders
-        var faceIndex = 0;
-        for (var faceData in faceToCylinders)
+        // Use array iteration and map lookup pattern (from miterWarlock.fs)
+        for (var i = 0; i < size(facesOrdered); i += 1)
         {
             try
             {
-                const face = faceData.face;
+                const face = facesOrdered[i];
+                const faceKey = toString(face);
+                const faceData = faceToCylinders[faceKey];
+                
+                if (faceData == undefined)
+                    continue;
+                
                 const cylindersForFace = faceData.cylinders;
                 
                 // Get model parameters from face owner body
@@ -1035,20 +1044,19 @@ function subtractReliefCylindersFromDefinition(context is Context, id is Id, rel
                 const targetModelParameters = try silent(getModelParameters(context, ownerBody));
                 if (targetModelParameters is undefined)
                 {
-                    faceIndex += 1;
                     continue;
                 }
                 
                 // Create boolean tool for this face with ALL intersecting cylinders at once
                 // This is the key optimization: one call per face instead of one per cylinder
-                const toolId = id + ("tool_" ~ faceIndex);
+                const toolId = id + ("tool_" ~ i);
                 const tool = createBooleanToolsForFace(context, toolId, face, 
                     qUnion(cylindersForFace), targetModelParameters);
                 
                 if (tool != undefined)
                 {
                     // Perform boolean subtraction with all tools for this face
-                    opBoolean(context, id + ("bool_" ~ faceIndex), {
+                    opBoolean(context, id + ("bool_" ~ i), {
                         "tools" : qCreatedBy(toolId, EntityType.FACE),
                         "targets" : face,
                         "operationType" : BooleanOperationType.SUBTRACTION,
@@ -1061,7 +1069,6 @@ function subtractReliefCylindersFromDefinition(context is Context, id is Id, rel
             {
                 // Continue with next face if this one fails
             }
-            faceIndex += 1;
         }
     }
     
