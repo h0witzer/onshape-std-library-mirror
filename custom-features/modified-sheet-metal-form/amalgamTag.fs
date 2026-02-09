@@ -21,10 +21,11 @@ import(path : "onshape/std/units.fs", version : "2815.0");
 import(path : "onshape/std/vector.fs", version : "2815.0");
 
 /**
- * Variable name used to store and retrieve the custom feature name for Amalgamate.
+ * Attribute name used to store and retrieve the custom feature name for Amalgamate.
  * This constant must match the corresponding constant in amalgamate.fs.
+ * Stored as an attribute (not variable) so it transfers during derive operations.
  */
-const AMALGAM_FEATURE_NAME_VAR = "amalgamFeatureName";
+const AMALGAM_FEATURE_NAME_ATTRIBUTE = "amalgamFeatureName";
 
 /**
  * Defines the kind of entity being tagged in the feature.
@@ -42,9 +43,12 @@ export enum TagPurpose
 
 /**
  * Tag an entity with metadata. The metadata will be used for formed and frame features.
+ * 
+ * Feature Name Template: The template "Amalgam Tag#featureNameDisplay" references the computed parameter 'featureNameDisplay'.
+ * Onshape will substitute #featureNameDisplay with the actual value at runtime.
  */
 
-annotation { "Feature Type Name" : "Amalgam Tag" }
+annotation { "Feature Type Name" : "Amalgam Tag", "Feature Name Template" : "Amalgam Tag#featureNameDisplay" }
 export const tag = defineFeature(function(context is Context, id is Id, definition is map)
     precondition
     {
@@ -112,6 +116,11 @@ export const tag = defineFeature(function(context is Context, id is Id, definiti
             annotation { "Name" : "Feature name for Amalgamate (optional)" }
             definition.featureName is string;
         }
+
+        // Hidden computed parameter used for Feature Name Template. Not a user input.
+        // This field is populated at runtime to display the custom name in the feature tree.
+        annotation { "Name" : "Feature name display (computed)", "UIHint" : UIHint.ALWAYS_HIDDEN }
+        definition.featureNameDisplay is string;
     }
     {
         if (definition.tagPurpose == TagPurpose.FRAME)
@@ -133,7 +142,8 @@ export const tag = defineFeature(function(context is Context, id is Id, definiti
             negativePart : qNothing(),
             newPart : qNothing(),
             cSysMateConnector : qNothing(),
-            featureName : ""
+            featureName : "",
+            featureNameDisplay : ""
         });
 
 function doTagForm(context is Context, topLevelId is Id, definition is map)
@@ -234,13 +244,22 @@ function doTagForm(context is Context, topLevelId is Id, definition is map)
     }
     setFormAttribute(context, qOwnerBody(cSysMateConnector), FORM_BODY_CSYS_MATE_CONNECTOR);
 
-    // Store the feature name as a variable if specified.
-    // Only non-empty names are stored to avoid polluting the context with empty variables.
-    // The Amalgamate feature will handle the undefined case gracefully.
+    // Store the feature name as an attribute on the mate connector body if specified.
+    // Attributes (unlike variables) persist during derive operations, allowing Amalgamate to retrieve them.
+    // Only non-empty names are stored to avoid cluttering attributes.
     if (definition.featureName != "")
     {
-        setVariable(context, AMALGAM_FEATURE_NAME_VAR, definition.featureName);
+        setAttribute(context, {
+            "entities" : qOwnerBody(cSysMateConnector),
+            "name" : AMALGAM_FEATURE_NAME_ATTRIBUTE,
+            "attribute" : definition.featureName
+        });
     }
+
+    // Set the computed parameter for the feature name display in the Amalgam Tag feature tree.
+    // Format with " - " prefix for visual clarity, or empty if no name specified.
+    const displayName = (definition.featureName != "") ? (" - " ~ definition.featureName) : "";
+    setFeatureComputedParameter(context, topLevelId, { "name" : "featureNameDisplay", "value" : displayName });
 }
 
 

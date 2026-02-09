@@ -14,10 +14,11 @@ import(path : "onshape/std/instantiator.fs", version : "2815.0");
 import(path : "onshape/std/vector.fs", version : "2815.0");
 
 /**
- * Variable name used to store and retrieve the custom feature name for Amalgamate.
+ * Attribute name used to store and retrieve the custom feature name for Amalgamate.
  * This constant must match the corresponding constant in amalgamTag.fs.
+ * Stored as an attribute (not variable) so it transfers during derive operations.
  */
-const AMALGAM_FEATURE_NAME_VAR = "amalgamFeatureName";
+const AMALGAM_FEATURE_NAME_ATTRIBUTE = "amalgamFeatureName";
 
 /**
  * Separator used between "Amalgamate" and the custom feature name in the feature tree display.
@@ -93,16 +94,31 @@ export const amalgamate = defineFeature(function(context is Context, id is Id, d
 
         performFormBooleans(context, id, subtractionSolids, unionSolids, allFormedBodies, definition.createNewBodies);
 
-        // Retrieve the feature name from the derived part studio variable.
-        // The variable is only set in amalgamTag.fs when a non-empty name is provided.
-        // Uses try silent following the standard pattern for optional variable retrieval (see hole.fs).
-        // If the variable doesn't exist (no name specified), retrievedName will be undefined.
+        // Retrieve the feature name from the derived part studio bodies.
+        // The name is stored as an attribute on the mate connector body in amalgamTag.fs.
+        // Attributes (unlike variables) persist during derive/instantiate operations.
         var featureName = "";
-        const retrievedName = try silent(getVariable(context, AMALGAM_FEATURE_NAME_VAR));
-        // Type check is necessary because getVariable returns 'any' type, not a guaranteed string
-        if (retrievedName != undefined && retrievedName is string)
+        try silent
         {
-            featureName = FEATURE_NAME_SEPARATOR ~ retrievedName;
+            // Query for mate connector bodies with the feature name attribute
+            const mateConnectorBodies = qBodiesWithAnyFormAttribute(allFormedBodies, modifiedFormed::FORM_BODY_CSYS_MATE_CONNECTOR);
+            
+            // Get the attribute from the bodies
+            const attributeResults = getAttributes(context, {
+                "entities" : mateConnectorBodies,
+                "name" : AMALGAM_FEATURE_NAME_ATTRIBUTE
+            });
+            
+            // If we found the attribute, use it
+            if (size(attributeResults) > 0 && attributeResults[0] != undefined)
+            {
+                const retrievedName = attributeResults[0];
+                // Type check is necessary because getAttribute can return any type
+                if (retrievedName is string && retrievedName != "")
+                {
+                    featureName = FEATURE_NAME_SEPARATOR ~ retrievedName;
+                }
+            }
         }
         setFeatureComputedParameter(context, id, { "name" : "featureName", "value" : featureName });
     },
