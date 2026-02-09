@@ -26,6 +26,7 @@ import(path : "onshape/std/string.fs", version : "2856.0");
 import(path : "onshape/std/path.fs", version : "2856.0");
 import(path : "onshape/std/geomOperations.fs", version : "2856.0");
 import(path : "onshape/std/debug.fs", version : "2856.0");
+import(path : "onshape/std/boolean.fs", version : "2856.0");
 
 // Import spacing utilities for bridge/stitch spacing logic
 export import(path : "c51f6558b7346f455a634ff5/cf14633de6fca78124306ce9/8ce820287d75ed2e92412d90", version : "cf26b6d26aa41f8853237904"); // spacingUtils.fs
@@ -1038,9 +1039,9 @@ function subtractReliefCylindersFromDefinition(context is Context, id is Id, rel
                 println("Cylinder " ~ (i + 1) ~ " created and highlighted in RED");
             }
             
-            // Boolean subtract cylinder from SM definition sheet body faces
-            // Following Sheet Metal Tab pattern (line 412-418) - target individual faces
-            // with localizedInFaces for sheet metal boolean operations
+            // Boolean subtract cylinder from SM definition faces
+            // Following Sheet Metal Tab pattern EXACTLY (sheetMetalTab.fs lines 404-421)
+            // Use createBooleanToolsForFace to prepare tools for each face
             if (size(masterDefinitionFaces) > 0)
             {
                 if (showDebug)
@@ -1049,7 +1050,7 @@ function subtractReliefCylindersFromDefinition(context is Context, id is Id, rel
                     println("Subtracting from " ~ size(masterDefinitionFaces) ~ " faces individually");
                 }
                 
-                // Subtract from each face individually with localizedInFaces
+                // Process each face using Sheet Metal Tab pattern
                 var faceIndex = 0;
                 var successCount = 0;
                 var failCount = 0;
@@ -1057,14 +1058,41 @@ function subtractReliefCylindersFromDefinition(context is Context, id is Id, rel
                 {
                     try
                     {
-                        opBoolean(context, id + ("bool" ~ i ~ "_face" ~ faceIndex), {
-                            "tools" : qCreatedBy(sweepId, EntityType.BODY),
-                            "targets" : face,
-                            "operationType" : BooleanOperationType.SUBTRACTION,
-                            "localizedInFaces" : true,
-                            "allowSheets" : true
-                        });
-                        successCount += 1;
+                        // Get model parameters from face owner body
+                        const targetModelParameters = try silent(getModelParameters(context, qOwnerBody(face)));
+                        if (targetModelParameters is undefined)
+                        {
+                            failCount += 1;
+                            if (showDebug)
+                                println("  WARNING: Face " ~ faceIndex ~ " - could not get model parameters");
+                            faceIndex += 1;
+                            continue;
+                        }
+                        
+                        // Create boolean tool for this specific face
+                        // This adapts the cylinder geometry for sheet metal face operations
+                        const toolId = id + ("tool" ~ i ~ "_" ~ faceIndex);
+                        const tool = createBooleanToolsForFace(context, toolId, face, 
+                            qCreatedBy(sweepId, EntityType.BODY), targetModelParameters);
+                        
+                        if (tool != undefined)
+                        {
+                            // Perform boolean subtraction with the prepared tool
+                            opBoolean(context, id + ("bool" ~ i ~ "_" ~ faceIndex), {
+                                "tools" : qCreatedBy(toolId, EntityType.FACE),
+                                "targets" : face,
+                                "operationType" : BooleanOperationType.SUBTRACTION,
+                                "localizedInFaces" : true,
+                                "allowSheets" : true
+                            });
+                            successCount += 1;
+                        }
+                        else
+                        {
+                            failCount += 1;
+                            if (showDebug)
+                                println("  WARNING: Face " ~ faceIndex ~ " - createBooleanToolsForFace returned undefined");
+                        }
                     }
                     catch (faceError)
                     {
