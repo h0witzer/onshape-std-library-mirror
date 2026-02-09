@@ -220,21 +220,36 @@ function processJointEntity(context is Context, id is Id, jointEntity is Query,
     }
 
     // IMPORTANT: Capture SM model body BEFORE splitting edges
-    // We use getOwnerSMModel instead of qOwnerBody to get a stable reference
-    // that survives edge splitting operations (follows Sheet Metal Tab pattern)
+    // Convert definition entity to part entity first, then get SM model
+    // Definition entities are SHEET bodies, but getOwnerSMModel needs SOLID (part) bodies
     var smDefinitionBodyTracking = undefined;
     if (bendReliefParams != undefined && bendReliefParams.style != undefined)
     {
-        // Get SM model bodies using attribute-based lookup (sheetMetalTab.fs line 72)
-        // This is more robust than qOwnerBody when edges will be split
-        const smModelBodies = getOwnerSMModel(context, jointEntity);
+        // Convert definition entity to corresponding part entity
+        // Definition entities are in the flat/model representation (SHEET body)
+        // Part entities are in the folded/3D representation (SOLID body)
+        const partEntity = getSMCorrespondingInPart(context, jointEntity, EntityType.EDGE);
         
         if (definition.showDebug)
         {
             println("=== Capturing SM model body BEFORE edge splitting ===");
+            debug(context, partEntity, DebugColor.BLUE);
+        }
+        
+        // Get SM model bodies using attribute-based lookup on the PART entity
+        // getOwnerSMModel filters for BodyType.SOLID, so we need part entities not definition entities
+        const smModelBodies = getOwnerSMModel(context, partEntity);
+        
+        if (definition.showDebug)
+        {
             if (size(smModelBodies) > 0)
             {
                 debug(context, qUnion(smModelBodies), DebugColor.YELLOW);
+                println("Found " ~ size(smModelBodies) ~ " SM model bodies");
+            }
+            else
+            {
+                println("WARNING: Could not find SM model body from part entity");
             }
         }
         
