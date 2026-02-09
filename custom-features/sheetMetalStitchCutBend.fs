@@ -1023,11 +1023,10 @@ function subtractReliefCylindersFromDefinition(context is Context, id is Id, rel
         
         // PHASE 3: Process each face once with all its intersecting cylinders
         var faceIndex = 0;
-        for (var entry in faceToCylinders)
+        for (var faceData in faceToCylinders)
         {
             try
             {
-                const faceData = faceToCylinders[entry];
                 const face = faceData.face;
                 const cylindersForFace = faceData.cylinders;
                 
