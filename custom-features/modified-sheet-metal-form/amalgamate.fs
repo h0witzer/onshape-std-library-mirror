@@ -14,11 +14,11 @@ import(path : "onshape/std/instantiator.fs", version : "2815.0");
 import(path : "onshape/std/vector.fs", version : "2815.0");
 
 /**
- * Attribute name used to store and retrieve the custom feature name for Amalgamate.
+ * Variable name used to store and retrieve the custom feature name for Amalgamate.
  * This constant must match the corresponding constant in amalgamTag.fs.
- * Stored as an attribute (not variable) so it transfers during derive operations.
+ * Variables can be retrieved from the source Part Studio context using buildFunction.
  */
-const AMALGAM_FEATURE_NAME_ATTRIBUTE = "amalgamFeatureName";
+const AMALGAM_FEATURE_NAME_VAR = "amalgamFeatureName";
 
 /**
  * Separator used between "Amalgamate" and the custom feature name in the feature tree display.
@@ -94,30 +94,30 @@ export const amalgamate = defineFeature(function(context is Context, id is Id, d
 
         performFormBooleans(context, id, subtractionSolids, unionSolids, allFormedBodies, definition.createNewBodies);
 
-        // Retrieve the feature name from the derived part studio bodies.
-        // The name is stored as an attribute on the mate connector body in amalgamTag.fs.
-        // Attributes (unlike variables) persist during derive/instantiate operations.
+        // Retrieve the feature name from the source Part Studio context.
+        // Call buildFunction to get the source context, then getVariable to retrieve the name.
+        // This works because variables are stored in the Part Studio context.
         var featureName = "";
         try silent
         {
-            // Query for mate connector bodies with the feature name attribute
-            const mateConnectorBodies = qBodiesWithAnyFormAttribute(allFormedBodies, modifiedFormed::FORM_BODY_CSYS_MATE_CONNECTOR);
-            
-            // Get the attribute from the bodies
-            const attributeResults = getAttributes(context, {
-                "entities" : mateConnectorBodies,
-                "name" : AMALGAM_FEATURE_NAME_ATTRIBUTE
-            });
-            
-            // If we found the attribute, use it
-            if (size(attributeResults) > 0 && attributeResults[0] != undefined)
+            // Build the source Part Studio context with its configuration
+            // Use the same configuration that was used for instantiation
+            var sourceConfig = {};
+            if (definition.formPartStudio.configuration != undefined)
             {
-                const retrievedName = attributeResults[0];
-                // Type check is necessary because getAttribute can return any type
-                if (retrievedName is string && retrievedName != "")
-                {
-                    featureName = FEATURE_NAME_SEPARATOR ~ retrievedName;
-                }
+                sourceConfig = definition.formPartStudio.configuration;
+            }
+            
+            // Call buildFunction to create the source Part Studio context
+            const sourceContext = definition.formPartStudio.buildFunction(sourceConfig);
+            
+            // Retrieve the variable from that context
+            const retrievedName = getVariable(sourceContext, AMALGAM_FEATURE_NAME_VAR);
+            
+            // Type check and format
+            if (retrievedName != undefined && retrievedName is string && retrievedName != "")
+            {
+                featureName = FEATURE_NAME_SEPARATOR ~ retrievedName;
             }
         }
         setFeatureComputedParameter(context, id, { "name" : "featureName", "value" : featureName });

@@ -21,11 +21,11 @@ import(path : "onshape/std/units.fs", version : "2815.0");
 import(path : "onshape/std/vector.fs", version : "2815.0");
 
 /**
- * Attribute name used to store and retrieve the custom feature name for Amalgamate.
+ * Variable name used to store and retrieve the custom feature name for Amalgamate.
  * This constant must match the corresponding constant in amalgamate.fs.
- * Stored as an attribute (not variable) so it transfers during derive operations.
+ * Variables can be retrieved from the source Part Studio context using buildFunction.
  */
-const AMALGAM_FEATURE_NAME_ATTRIBUTE = "amalgamFeatureName";
+const AMALGAM_FEATURE_NAME_VAR = "amalgamFeatureName";
 
 /**
  * Defines the kind of entity being tagged in the feature.
@@ -244,16 +244,12 @@ function doTagForm(context is Context, topLevelId is Id, definition is map)
     }
     setFormAttribute(context, qOwnerBody(cSysMateConnector), FORM_BODY_CSYS_MATE_CONNECTOR);
 
-    // Store the feature name as an attribute on the mate connector body if specified.
-    // Attributes (unlike variables) persist during derive operations, allowing Amalgamate to retrieve them.
-    // Only non-empty names are stored to avoid cluttering attributes.
+    // Store the feature name as a variable if specified.
+    // Variables in the Part Studio context can be retrieved by Amalgamate using buildFunction.
+    // Only non-empty names are stored to avoid cluttering the context.
     if (definition.featureName != "")
     {
-        setAttribute(context, {
-            "entities" : qOwnerBody(cSysMateConnector),
-            "name" : AMALGAM_FEATURE_NAME_ATTRIBUTE,
-            "attribute" : definition.featureName
-        });
+        setVariable(context, AMALGAM_FEATURE_NAME_VAR, definition.featureName);
     }
 
     // Set the computed parameter for the feature name display in the Amalgam Tag feature tree.
