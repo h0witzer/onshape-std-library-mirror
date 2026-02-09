@@ -219,36 +219,49 @@ function processJointEntity(context is Context, id is Id, jointEntity is Query,
         throw regenError(ErrorStringEnum.SHEET_METAL_ACTIVE_JOIN_NEEDED, ["entity"]);
     }
 
-    // IMPORTANT: Capture SM definition body BEFORE splitting edges
-    // Once we split and remove attributes, the associations are broken
-    // We track the owner body so it persists through boolean operations
+    // IMPORTANT: Capture SM model body BEFORE splitting edges
+    // We use getOwnerSMModel instead of qOwnerBody to get a stable reference
+    // that survives edge splitting operations (follows Sheet Metal Tab pattern)
     var smDefinitionBodyTracking = undefined;
     if (bendReliefParams != undefined && bendReliefParams.style != undefined)
     {
-        const ownerBodyEarly = qOwnerBody(jointEntity);
+        // Get SM model bodies using attribute-based lookup (sheetMetalTab.fs line 72)
+        // This is more robust than qOwnerBody when edges will be split
+        const smModelBodies = getOwnerSMModel(context, jointEntity);
         
         if (definition.showDebug)
         {
-            println("=== Capturing SM definition body BEFORE edge splitting ===");
-            debug(context, ownerBodyEarly, DebugColor.YELLOW);
+            println("=== Capturing SM model body BEFORE edge splitting ===");
+            if (size(smModelBodies) > 0)
+            {
+                debug(context, qUnion(smModelBodies), DebugColor.YELLOW);
+            }
         }
         
-        // Start tracking the owner body so we can query its faces after boolean operations
-        // This follows the Sheet Metal Tab pattern (sheetMetalTab.fs line 75)
-        smDefinitionBodyTracking = qUnion([startTracking(context, ownerBodyEarly), ownerBodyEarly]);
-        
-        // Get its faces for debug display
-        const sheetBodyFaces = qOwnedByBody(smDefinitionBodyTracking, EntityType.FACE);
-        const sheetBodyFacesEval = evaluateQuery(context, sheetBodyFaces);
-        
-        if (definition.showDebug)
+        if (size(smModelBodies) > 0)
         {
-            println("Sheet body faces found (early): " ~ size(sheetBodyFacesEval));
-            if (size(sheetBodyFacesEval) > 0)
+            // Start tracking the SM model body so we can query its faces after boolean operations
+            // This follows the Sheet Metal Tab pattern (sheetMetalTab.fs line 75)
+            const smModelBodyQuery = qUnion(smModelBodies);
+            smDefinitionBodyTracking = qUnion([startTracking(context, smModelBodyQuery), smModelBodyQuery]);
+            
+            // Get its faces for debug display
+            const sheetBodyFaces = qOwnedByBody(smDefinitionBodyTracking, EntityType.FACE);
+            const sheetBodyFacesEval = evaluateQuery(context, sheetBodyFaces);
+            
+            if (definition.showDebug)
             {
-                debug(context, sheetBodyFaces, DebugColor.CYAN);
+                println("Sheet body faces found (early): " ~ size(sheetBodyFacesEval));
+                if (size(sheetBodyFacesEval) > 0)
+                {
+                    debug(context, sheetBodyFaces, DebugColor.CYAN);
+                }
+                println("SM model body tracking established for boolean subtraction");
             }
-            println("SM definition body tracking established for boolean subtraction");
+        }
+        else if (definition.showDebug)
+        {
+            println("WARNING: Could not find SM model body for tracking");
         }
     }
 
