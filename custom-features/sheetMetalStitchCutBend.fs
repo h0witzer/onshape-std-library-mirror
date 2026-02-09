@@ -909,6 +909,13 @@ function subtractReliefCylindersFromDefinition(context is Context, id is Id, rel
         return;
     }
     
+    // Evaluate the tracked body once to get the current sheet metal body
+    const sheetMetalBody = evaluateQuery(context, trackedDefinitionBody);
+    if (size(sheetMetalBody) == 0)
+    {
+        return;
+    }
+    
     // Track all cylinder bodies and sketches created for cleanup at the end
     var cylinderBodies = [];
     var sketchQueries = [];
@@ -956,7 +963,7 @@ function subtractReliefCylindersFromDefinition(context is Context, id is Id, rel
             // This avoids calling createBooleanToolsForFace for all faces unnecessarily
             const collisions = try silent(evCollision(context, {
                 "tools" : cylinderBody,
-                "targets" : qOwnedByBody(trackedDefinitionBody, EntityType.FACE)
+                "targets" : qOwnedByBody(sheetMetalBody[0], EntityType.FACE)
             }));
             
             if (collisions != undefined && size(collisions) > 0)
