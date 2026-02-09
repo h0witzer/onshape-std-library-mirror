@@ -52,3 +52,4 @@ const cutFaces = qFacesParallelToDirection(flatFaces, zDirection);
 - Since there is no way to run Onshape in a localized environment here we will rely mostly on comparing code samples with existing functions in the standard library and against the reference docs to ensure consistency with the code base
 - Debugging will be done largely via reports delivered via console log
 - Leave comments for functional blocks of code to help track down errors
+- Do not declare or report success without my confirmation that a build passes all checks. You have no testing environment so confidently declaring success without feedback is unhelpful and reinforces bad practices
