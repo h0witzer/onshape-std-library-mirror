@@ -1051,6 +1051,8 @@ function subtractReliefCylindersFromDefinition(context is Context, id is Id, rel
                 
                 // Subtract from each face individually with localizedInFaces
                 var faceIndex = 0;
+                var successCount = 0;
+                var failCount = 0;
                 for (var face in masterDefinitionFaces)
                 {
                     try
@@ -1062,12 +1064,19 @@ function subtractReliefCylindersFromDefinition(context is Context, id is Id, rel
                             "localizedInFaces" : true,
                             "allowSheets" : true
                         });
+                        successCount += 1;
+                    }
+                    catch (faceError)
+                    {
+                        failCount += 1;
+                        if (showDebug)
+                            println("  ERROR: Face " ~ faceIndex ~ " boolean failed: " ~ toString(faceError));
                     }
                     faceIndex += 1;
                 }
                 
                 if (showDebug)
-                    println("Boolean subtraction completed for cylinder " ~ (i + 1));
+                    println("Boolean subtraction for cylinder " ~ (i + 1) ~ ": " ~ successCount ~ " succeeded, " ~ failCount ~ " failed");
             }
             else if (showDebug)
             {
