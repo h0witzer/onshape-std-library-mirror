@@ -1058,16 +1058,32 @@ function subtractReliefCylindersFromDefinition(context is Context, id is Id, rel
                 {
                     try
                     {
+                        if (showDebug)
+                        {
+                            println("  Processing face " ~ faceIndex);
+                            debug(context, face, DebugColor.BLUE);
+                        }
+                        
                         // Get model parameters from face owner body
-                        const targetModelParameters = try silent(getModelParameters(context, qOwnerBody(face)));
+                        const ownerBody = qOwnerBody(face);
+                        if (showDebug)
+                        {
+                            println("    Owner body query:");
+                            debug(context, ownerBody, DebugColor.PURPLE);
+                        }
+                        
+                        const targetModelParameters = try silent(getModelParameters(context, ownerBody));
                         if (targetModelParameters is undefined)
                         {
                             failCount += 1;
                             if (showDebug)
-                                println("  WARNING: Face " ~ faceIndex ~ " - could not get model parameters");
+                                println("  WARNING: Face " ~ faceIndex ~ " - could not get model parameters (owner body may not resolve)");
                             faceIndex += 1;
                             continue;
                         }
+                        
+                        if (showDebug)
+                            println("    Got model parameters successfully");
                         
                         // Create boolean tool for this specific face
                         // This adapts the cylinder geometry for sheet metal face operations
@@ -1077,6 +1093,8 @@ function subtractReliefCylindersFromDefinition(context is Context, id is Id, rel
                         
                         if (tool != undefined)
                         {
+                            if (showDebug)
+                                println("    Tool created successfully");
                             // Perform boolean subtraction with the prepared tool
                             opBoolean(context, id + ("bool" ~ i ~ "_" ~ faceIndex), {
                                 "tools" : qCreatedBy(toolId, EntityType.FACE),
@@ -1098,7 +1116,7 @@ function subtractReliefCylindersFromDefinition(context is Context, id is Id, rel
                     {
                         failCount += 1;
                         if (showDebug)
-                            println("  ERROR: Face " ~ faceIndex ~ " boolean failed: " ~ toString(faceError));
+                            println("  ERROR: Face " ~ faceIndex ~ " exception: " ~ toString(faceError));
                     }
                     faceIndex += 1;
                 }
