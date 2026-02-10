@@ -9,7 +9,7 @@ import(path : "onshape/std/coordSystem.fs", version : "2815.0");
 import(path : "onshape/std/evaluate.fs", version : "2815.0");
 import(path : "onshape/std/feature.fs", version : "2815.0");
 standardFormed::import(path : "onshape/std/formedUtils.fs", version : "2815.0");
-import(path : "onshape/std/mateconnectoraxistype.gen.fs", version : "2815.0");
+export import(path : "onshape/std/mateconnectoraxistype.gen.fs", version : "2815.0");
 modifiedFormed::import(path : "5418313fd7f629d9c7f1ac10", version : "b97acafda22e3375bf349519"); //modifiedFormedUtils.fs
 import(path : "onshape/std/instantiator.fs", version : "2815.0");
 import(path : "onshape/std/vector.fs", version : "2815.0");
