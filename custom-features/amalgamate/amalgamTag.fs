@@ -248,7 +248,9 @@ function doTagForm(context is Context, topLevelId is Id, definition is map)
     }
         if (newPartSelected)
     {
-        setFormAttribute(context, definition.newPart, FORM_BODY_NEW_PART);
+        // When a composite is selected, we need to tag the constituent bodies inside it, not just the composite container
+        // qFlattenedCompositeParts expands composites into their constituents while leaving non-composites unchanged
+        setFormAttribute(context, qFlattenedCompositeParts(definition.newPart), FORM_BODY_NEW_PART);
     }
     if (nSketchSelected != 0)
     {
