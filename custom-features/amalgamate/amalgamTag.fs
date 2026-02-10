@@ -198,10 +198,12 @@ function doTagForm(context is Context, topLevelId is Id, definition is map)
         // Allow both SOLID and COMPOSITE bodies for new parts
         if (isQueryEmpty(context, qBodyType(definition.newPart, [BodyType.SOLID, BodyType.COMPOSITE])))
         {
+            // Note: Using NEGATIVE_PART error constant as there's no NEW_PART equivalent in ErrorStringEnum
             throw regenError(ErrorStringEnum.FORMED_TAG_FORM_NEGATIVE_PART_NOT_SOLID, ["newPart"], definition.newPart);
         }
         else if (!isQueryEmpty(context, qConsumed(definition.newPart, Consumed.YES)))
         {
+            // Note: Using NEGATIVE_PART error constant as there's no NEW_PART equivalent in ErrorStringEnum
             throw regenError(ErrorStringEnum.FORMED_TAG_FORM_NEGATIVE_PART_CONSUMED, ["newPart"], definition.newPart);
         }
     }
