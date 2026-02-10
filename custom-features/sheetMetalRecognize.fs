@@ -276,7 +276,8 @@ export const sheetMetalStart = defineSheetMetalFeature(function(context is Conte
             "hasOffset" : false,
             "hasSecondDirectionOffset" : false,
             "offsetOppositeDirection" : false,
-            "secondDirectionOffsetOppositeDirection" : false
+            "secondDirectionOffsetOppositeDirection" : false,
+            "inputBodyNames" : [] // Array to store names from input bodies for preservation
         });
 
 function finalizeSheetMetalGeometry(context is Context, id is Id, entities is Query)
