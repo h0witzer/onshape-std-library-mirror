@@ -117,6 +117,9 @@ export const sheetMetalStart = defineSheetMetalFeature(function(context is Conte
                     ((EntityType.FACE || EntityType.EDGE) && SketchObject.YES && ConstructionObject.NO) }
         definition.initEntities is Query;
 
+        annotation { "Name" : "Input body names", "UIHint" : UIHint.ALWAYS_HIDDEN }
+        definition.inputBodyNames is array;
+
         // First the entities
         annotation { "Group Name" : "Selections", "Collapsed By Default" : false }
         {
