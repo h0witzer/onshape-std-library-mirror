@@ -741,6 +741,9 @@ export function sheetMetalStartManipulatorChange(context is Context, definition 
 export function sheetMetalStartEditLogic(context is Context, id is Id, oldDefinition is map, definition is map,
     specifiedParameters is map, hiddenBodies is Query) returns map
 {
+    println("EditLogic: CALLED - oldDefinition empty = " ~ (oldDefinition == {}));
+    println("EditLogic: definition.bodies = " ~ definition.bodies);
+    
     // Preselection processing
     if (oldDefinition == {})
     {
