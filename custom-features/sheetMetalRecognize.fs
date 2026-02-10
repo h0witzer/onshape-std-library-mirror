@@ -766,7 +766,19 @@ export function sheetMetalStartEditLogic(context is Context, id is Id, oldDefini
         definition.initEntities = qNothing();
     }
 
+    // Extrude flips
+    // If this is changed, make sure to reflect the change in extrude::extrudeEditLogic.
+    if (canSetExtrudeFlips(definition, specifiedParameters))
+    {
+        if (canSetExtrudeUpToFlip(definition, specifiedParameters))
+        {
+            definition = extrudeUpToBoundaryFlip(context, definition);
+        }
+    }
+    definition = setExtrudeSecondDirectionFlip(definition, specifiedParameters);
+
     // Capture names from input bodies to preserve them after recognition
+    // This is done at the end to ensure it happens even if earlier logic has errors
     if (definition.bodies != undefined)
     {
         try
@@ -800,17 +812,6 @@ export function sheetMetalStartEditLogic(context is Context, id is Id, oldDefini
     {
         println("EditLogic: definition.bodies is undefined");
     }
-
-    // Extrude flips
-    // If this is changed, make sure to reflect the change in extrude::extrudeEditLogic.
-    if (canSetExtrudeFlips(definition, specifiedParameters))
-    {
-        if (canSetExtrudeUpToFlip(definition, specifiedParameters))
-        {
-            definition = extrudeUpToBoundaryFlip(context, definition);
-        }
-    }
-    definition = setExtrudeSecondDirectionFlip(definition, specifiedParameters);
 
     return definition;
 }
