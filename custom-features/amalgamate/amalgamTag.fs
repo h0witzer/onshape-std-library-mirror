@@ -248,9 +248,12 @@ function doTagForm(context is Context, topLevelId is Id, definition is map)
     }
         if (newPartSelected)
     {
-        // When a composite is selected, we need to tag the constituent bodies inside it, not just the composite container
-        // qFlattenedCompositeParts expands composites into their constituents while leaving non-composites unchanged
-        setFormAttribute(context, qFlattenedCompositeParts(definition.newPart), FORM_BODY_NEW_PART);
+        // Tag both the composite container and its constituent bodies to preserve composite structure
+        // When a composite is selected, we need to tag:
+        // 1. The composite body itself (to maintain the composite container)
+        // 2. All constituent bodies within the composite (so they're included in the instantiation)
+        // For non-composite selections, this just tags the body twice (harmless)
+        setFormAttribute(context, qUnion([definition.newPart, qContainedInCompositeParts(definition.newPart)]), FORM_BODY_NEW_PART);
     }
     if (nSketchSelected != 0)
     {
