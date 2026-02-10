@@ -769,17 +769,36 @@ export function sheetMetalStartEditLogic(context is Context, id is Id, oldDefini
     // Capture names from input bodies to preserve them after recognition
     if (definition.bodies != undefined)
     {
-        var inputBodyNames = [];
-        var evaluatedBodies = evaluateQuery(context, definition.bodies);
-        println("EditLogic: Found " ~ size(evaluatedBodies) ~ " input bodies");
-        for (var body in evaluatedBodies)
+        try
         {
-            var bodyName = getProperty(context, { "entity" : body, "propertyType" : PropertyType.NAME });
-            println("EditLogic: Body name = " ~ bodyName);
-            inputBodyNames = append(inputBodyNames, bodyName);
+            var inputBodyNames = [];
+            var evaluatedBodies = evaluateQuery(context, definition.bodies);
+            println("EditLogic: Found " ~ size(evaluatedBodies) ~ " input bodies");
+            for (var body in evaluatedBodies)
+            {
+                try
+                {
+                    var bodyName = getProperty(context, { "entity" : body, "propertyType" : PropertyType.NAME });
+                    println("EditLogic: Body name = " ~ bodyName);
+                    inputBodyNames = append(inputBodyNames, bodyName);
+                }
+                catch (error)
+                {
+                    println("EditLogic: ERROR getting property for body: " ~ error);
+                    inputBodyNames = append(inputBodyNames, undefined);
+                }
+            }
+            definition.inputBodyNames = inputBodyNames;
+            println("EditLogic: Stored " ~ size(inputBodyNames) ~ " names");
         }
-        definition.inputBodyNames = inputBodyNames;
-        println("EditLogic: Stored " ~ size(inputBodyNames) ~ " names");
+        catch (error)
+        {
+            println("EditLogic: ERROR in name capture block: " ~ error);
+        }
+    }
+    else
+    {
+        println("EditLogic: definition.bodies is undefined");
     }
 
     // Extrude flips
