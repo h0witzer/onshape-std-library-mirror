@@ -16,6 +16,7 @@ import(path : "onshape/std/featureList.fs", version : "2815.0");
 import(path : "5418313fd7f629d9c7f1ac10", version : "b97acafda22e3375bf349519"); //modifiedFormedUtils.fs
 import(path : "onshape/std/frameAttributes.fs", version : "2815.0");
 import(path : "onshape/std/frameUtils.fs", version : "2815.0");
+import(path : "onshape/std/properties.fs", version : "2815.0");
 import(path : "onshape/std/surfaceGeometry.fs", version : "2815.0");
 import(path : "onshape/std/units.fs", version : "2815.0");
 import(path : "onshape/std/vector.fs", version : "2815.0");
@@ -103,7 +104,7 @@ export const tag = defineFeature(function(context is Context, id is Id, definiti
             annotation { "Name" : "Tools for subtraction operations", "Filter" : EntityType.BODY && BodyType.SOLID }
             definition.negativePart is Query;
 
-            annotation { "Name" : "Parts to insert as new", "Filter" : EntityType.BODY && BodyType.SOLID}
+            annotation { "Name" : "Parts to insert as new", "Filter" : (EntityType.BODY && BodyType.SOLID) || BodyType.COMPOSITE}
             definition.newPart is Query;
 
             annotation { "Name" : "Sketch for flat view" , "UIHint" : UIHint.ALWAYS_HIDDEN}
@@ -154,7 +155,17 @@ function doTagForm(context is Context, topLevelId is Id, definition is map)
                 FORM_BODY_NEGATIVE_PART,FORM_BODY_NEW_PART, FORM_BODY_SKETCH_FOR_FLAT_VIEW, FORM_BODY_CSYS_MATE_CONNECTOR]);
     if (!isQueryEmpty(context, bodiesWithFormAttribute))
     {
-        throw regenError(ErrorStringEnum.FORMED_TAG_FORM_BODIES_ALREADY_TAGGED, bodiesWithFormAttribute);
+        // Display status message to user about detected tagged bodies
+        reportFeatureInfo(context, topLevelId, "Bodies with existing amalgam tags detected. Removing previous tags before applying new ones.");
+        
+        // Remove existing form attributes from all tagged bodies
+        // Using hardcoded "formBodyAttribute" string because FORM_BODY_ATTRIBUTE_NAME is not exported from modifiedFormedUtils
+        // Setting attribute to undefined is the correct way to remove named attributes per attributes.fs documentation
+        setAttribute(context, {
+            "entities" : bodiesWithFormAttribute,
+            "name" : "formBodyAttribute",
+            "attribute" : undefined
+        });
     }
 
     var positivePartSelected = !isQueryEmpty(context, definition.positivePart);
@@ -184,13 +195,16 @@ function doTagForm(context is Context, topLevelId is Id, definition is map)
         var newPartSelected = !isQueryEmpty(context, definition.newPart);
     if (newPartSelected)
     {
-        if (isQueryEmpty(context, qBodyType(definition.newPart, BodyType.SOLID)))
+        // Allow both SOLID and COMPOSITE bodies for new parts
+        if (isQueryEmpty(context, qBodyType(definition.newPart, [BodyType.SOLID, BodyType.COMPOSITE])))
         {
-            throw regenError(ErrorStringEnum.FORMED_TAG_FORM_NEGATIVE_PART_NOT_SOLID, ["negativePart"], definition.negativePart);
+            // Note: Using NEGATIVE_PART error constant as there's no NEW_PART equivalent in ErrorStringEnum
+            throw regenError(ErrorStringEnum.FORMED_TAG_FORM_NEGATIVE_PART_NOT_SOLID, ["newPart"], definition.newPart);
         }
-        else if (!isQueryEmpty(context, qConsumed(definition.negativePart, Consumed.YES)))
+        else if (!isQueryEmpty(context, qConsumed(definition.newPart, Consumed.YES)))
         {
-            throw regenError(ErrorStringEnum.FORMED_TAG_FORM_NEGATIVE_PART_CONSUMED, ["negativePart"], definition.negativePart);
+            // Note: Using NEGATIVE_PART error constant as there's no NEW_PART equivalent in ErrorStringEnum
+            throw regenError(ErrorStringEnum.FORMED_TAG_FORM_NEGATIVE_PART_CONSUMED, ["newPart"], definition.newPart);
         }
     }
     if (positivePartSelected && negativePartSelected &&
@@ -225,10 +239,21 @@ function doTagForm(context is Context, topLevelId is Id, definition is map)
     if (negativePartSelected)
     {
         setFormAttribute(context, definition.negativePart, FORM_BODY_NEGATIVE_PART);
+        // Apply magenta appearance with 0.2 alpha to subtraction tool bodies for user identification
+        setProperty(context, {
+            "entities" : definition.negativePart,
+            "propertyType" : PropertyType.APPEARANCE,
+            "value" : color(1, 0, 1, 0.2)
+        });
     }
         if (newPartSelected)
     {
-        setFormAttribute(context, definition.newPart, FORM_BODY_NEW_PART);
+        // Tag both the composite container and its constituent bodies to preserve composite structure
+        // When a composite is selected, we need to tag:
+        // 1. The composite body itself (to maintain the composite container)
+        // 2. All constituent bodies within the composite (so they're included in the instantiation)
+        // For non-composite selections, this just tags the body twice (harmless)
+        setFormAttribute(context, qUnion([definition.newPart, qContainedInCompositeParts(definition.newPart)]), FORM_BODY_NEW_PART);
     }
     if (nSketchSelected != 0)
     {

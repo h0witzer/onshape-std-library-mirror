@@ -9,6 +9,7 @@ import(path : "onshape/std/coordSystem.fs", version : "2815.0");
 import(path : "onshape/std/evaluate.fs", version : "2815.0");
 import(path : "onshape/std/feature.fs", version : "2815.0");
 standardFormed::import(path : "onshape/std/formedUtils.fs", version : "2815.0");
+export import(path : "onshape/std/mateconnectoraxistype.gen.fs", version : "2815.0");
 modifiedFormed::import(path : "5418313fd7f629d9c7f1ac10", version : "b97acafda22e3375bf349519"); //modifiedFormedUtils.fs
 import(path : "onshape/std/instantiator.fs", version : "2815.0");
 import(path : "onshape/std/vector.fs", version : "2815.0");
@@ -49,8 +50,11 @@ export const amalgamate = defineFeature(function(context is Context, id is Id, d
         annotation { "Name" : "Location(s)", "Filter" : BodyType.MATE_CONNECTOR || (EntityType.VERTEX && SketchObject.YES && ModifiableEntityOnly.YES) }
         definition.locations is Query;
 
-        annotation { "Name" : "Flip direction", "UIHint" : UIHint.OPPOSITE_DIRECTION }
+        annotation { "Name" : "Flip direction", "UIHint" : [UIHint.OPPOSITE_DIRECTION, UIHint.FIRST_IN_ROW] }
         definition.flipDirection is boolean;
+
+        annotation { "Name" : "Reorient secondary axis", "UIHint" : UIHint.MATE_CONNECTOR_AXIS_TYPE }
+        definition.secondaryAxisType is MateConnectorAxisType;
 
         annotation { "Name" : "Subtraction Scope", "Filter" : EntityType.BODY && BodyType.SOLID && ModifiableEntityOnly.YES }
         definition.subtractionTargets is Query;
@@ -124,6 +128,7 @@ export const amalgamate = defineFeature(function(context is Context, id is Id, d
     },
     {
             "flipDirection" : false,
+            "secondaryAxisType" : MateConnectorAxisType.PLUS_X,
             "subtractionTargets" : qAllModifiableSolidBodies(),
             "unionTargets" : qAllModifiableSolidBodies(),
             "thickness" : 1 * millimeter,
@@ -147,6 +152,27 @@ function addFormInstances(context is Context, id is Id, definition is map, insta
         {
             cSys.zAxis = -cSys.zAxis;
         }
+
+        // Apply secondary axis rotation around Z-axis
+        // Based on implementation from Point Derive and standard library transformation features
+        var xAxis = cSys.xAxis;
+        var zAxis = cSys.zAxis;
+        
+        if (definition.secondaryAxisType == MateConnectorAxisType.PLUS_Y)
+        {
+            xAxis = cross(zAxis, xAxis);
+        }
+        else if (definition.secondaryAxisType == MateConnectorAxisType.MINUS_X)
+        {
+            xAxis = -xAxis;
+        }
+        else if (definition.secondaryAxisType == MateConnectorAxisType.MINUS_Y)
+        {
+            xAxis = -cross(zAxis, xAxis);
+        }
+        // PLUS_X is the default, no change needed
+        
+        cSys = coordSystem(cSys.origin, xAxis, zAxis);
 
         const formedBodies = addInstance(instantiator, definition.formPartStudio, {
                     "transform" : toWorld(cSys),
