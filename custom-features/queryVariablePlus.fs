@@ -83,12 +83,12 @@ export enum SelectionType
     ALL_SOLID_BODIES,
     annotation { "Name" : "Everything" }
     EVERYTHING,
+    annotation { "Name" : "Nothing" }
+    NOTHING,
     annotation { "Name" : "Edge convexity" }
     EDGE_CONVEXITY,
     annotation { "Name" : "Load from derive feature" }
-    LOAD_FROM_DERIVE,
-    annotation { "Name" : "Nothing" }
-    NOTHING
+    LOAD_FROM_DERIVE
 }
 
 /**
@@ -117,9 +117,9 @@ const SelectionTypeToLowercaseName = {
         SelectionType.GEOMETRY : "geometry type",
         SelectionType.ALL_SOLID_BODIES : "all solid bodies",
         SelectionType.EVERYTHING : "everything",
+        SelectionType.NOTHING : "nothing",
         SelectionType.EDGE_CONVEXITY : "edge convexity",
-        SelectionType.LOAD_FROM_DERIVE : "load from derive feature",
-        SelectionType.NOTHING : "nothing"
+        SelectionType.LOAD_FROM_DERIVE : "load from derive feature"
     };
 
 const MATCHING_BODY_CLUSTER_RELATIVE_TOLERANCE = 1e-4;
@@ -898,8 +898,8 @@ function mapSelectionTypeToQuery(context is Context, definition is map) returns 
                 SelectionType.GEOMETRY : qGeometry(definition.geometrySeedEntities, definition.geometryType),
                 SelectionType.ALL_SOLID_BODIES : qAllSolidBodies(),
                 SelectionType.EVERYTHING : everythingSelection(context, definition),
-                SelectionType.EDGE_CONVEXITY : qEdgeConvexityTypeFilter(qOwnedByBody(definition.seedBodies, EntityType.EDGE), definition.edgeConvexityType),
-                SelectionType.NOTHING : qNothing()
+                SelectionType.NOTHING : qNothing(),
+                SelectionType.EDGE_CONVEXITY : qEdgeConvexityTypeFilter(qOwnedByBody(definition.seedBodies, EntityType.EDGE), definition.edgeConvexityType)
             };
 }
 
