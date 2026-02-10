@@ -156,7 +156,7 @@ function doTagForm(context is Context, topLevelId is Id, definition is map)
     if (!isQueryEmpty(context, bodiesWithFormAttribute))
     {
         // Display status message to user about detected tagged bodies
-        reportFeatureInfo(context, topLevelId, "Bodies with amalgam tag information detected. Stripping existing attributes to provide a clean slate.");
+        reportFeatureInfo(context, topLevelId, "Bodies with existing amalgam tags detected. Removing previous tags before applying new ones.");
         
         // Remove existing form attributes from all tagged bodies
         // Using hardcoded "formBodyAttribute" string because FORM_BODY_ATTRIBUTE_NAME is not exported from modifiedFormedUtils
