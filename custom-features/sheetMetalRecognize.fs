@@ -571,30 +571,43 @@ function sheetMetalRecognize(context is Context, id is Id, definition is map)
     // Iterate through surface IDs and find their corresponding final bodies for better performance
     if (definition.inputBodyNames != undefined && size(definition.inputBodyNames) > 0)
     {
+        println("Feature: Have " ~ size(definition.inputBodyNames) ~ " names to apply");
+        println("Feature: surfaceIdToBodyIndex size = " ~ size(surfaceIdToBodyIndex));
         for (var idMapping in surfaceIdToBodyIndex)
         {
             var surfaceId = idMapping.key;
             var bodyIndex = idMapping.value;
+            println("Feature: Processing surfaceId with bodyIndex " ~ bodyIndex);
             
             if (bodyIndex < size(definition.inputBodyNames) && definition.inputBodyNames[bodyIndex] != undefined)
             {
+                var nameToApply = definition.inputBodyNames[bodyIndex];
+                println("Feature: Attempting to apply name: " ~ nameToApply);
+                
                 // Find the final body that contains faces created by this surface ID
                 var createdFaces = evaluateQuery(context, qCreatedBy(surfaceId, EntityType.FACE));
+                println("Feature: Found " ~ size(createdFaces) ~ " created faces");
                 if (size(createdFaces) > 0)
                 {
                     var owningBody = qOwnerBody(createdFaces[0]);
                     var finalBodies = evaluateQuery(context, owningBody);
+                    println("Feature: Found " ~ size(finalBodies) ~ " final bodies");
                     if (size(finalBodies) > 0)
                     {
                         setProperty(context, {
                             "entities" : finalBodies[0],
                             "propertyType" : PropertyType.NAME,
-                            "value" : definition.inputBodyNames[bodyIndex]
+                            "value" : nameToApply
                         });
+                        println("Feature: Applied name '" ~ nameToApply ~ "' to body");
                     }
                 }
             }
         }
+    }
+    else
+    {
+        println("Feature: No names to apply or inputBodyNames is undefined");
     }
 }
 
@@ -754,12 +767,16 @@ export function sheetMetalStartEditLogic(context is Context, id is Id, oldDefini
     if (definition.bodies != undefined)
     {
         var inputBodyNames = [];
-        for (var body in evaluateQuery(context, definition.bodies))
+        var evaluatedBodies = evaluateQuery(context, definition.bodies);
+        println("EditLogic: Found " ~ size(evaluatedBodies) ~ " input bodies");
+        for (var body in evaluatedBodies)
         {
             var bodyName = getProperty(context, { "entity" : body, "propertyType" : PropertyType.NAME });
+            println("EditLogic: Body name = " ~ bodyName);
             inputBodyNames = append(inputBodyNames, bodyName);
         }
         definition.inputBodyNames = inputBodyNames;
+        println("EditLogic: Stored " ~ size(inputBodyNames) ~ " names");
     }
 
     // Extrude flips
