@@ -14,10 +14,26 @@ import(path : "onshape/std/instantiator.fs", version : "2815.0");
 import(path : "onshape/std/vector.fs", version : "2815.0");
 
 /**
+ * Variable name used to store and retrieve the custom feature name for Amalgamate.
+ * This constant must match the corresponding constant in amalgamTag.fs.
+ * Variables can be retrieved from the source Part Studio context using buildFunction.
+ */
+const AMALGAM_FEATURE_NAME_VAR = "amalgamFeatureName";
+
+/**
+ * Separator used between "Amalgamate" and the custom feature name in the feature tree display.
+ */
+const FEATURE_NAME_SEPARATOR = " - ";
+
+/**
  * Abuses the Sheet Metal Formed functionality to tag part studios as new, additive, and subtractive bodies for non-sheet metal parts
  * This feature mirrors the Sheet Metal Form tool but performs traditional boolean operations so it can be used outside sheet metal.
+ * 
+ * Feature Name Template: The template "Amalgamate#featureName" references the computed parameter 'featureName'.
+ * Onshape will substitute #featureName with the actual value at runtime, displaying as "Amalgamate - [custom name]"
+ * or just "Amalgamate" if featureName is empty.
  */
-annotation { "Feature Type Name" : "Amalgamate" }
+annotation { "Feature Type Name" : "Amalgamate", "Feature Name Template" : "Amalgamate#featureName" }
 export const amalgamate = defineFeature(function(context is Context, id is Id, definition is map)
     precondition
     {
@@ -48,6 +64,11 @@ export const amalgamate = defineFeature(function(context is Context, id is Id, d
         annotation { "Name" : "Form thickness (only needed for sheet metal tagged form tools)", "Default" : millimeter }
         isLength(definition.thickness, LENGTH_BOUNDS);
 
+        // Hidden computed parameter used for Feature Name Template. Not a user input.
+        // This field is populated at runtime from the variable stored by Amalgam Tag.
+        annotation { "Name" : "Feature name (computed)", "UIHint" : UIHint.ALWAYS_HIDDEN }
+        definition.featureName is string;
+
     }
     {
         const subtractionSolids = definition.subtractionTargets;//->qBodyType(BodyType.SOLID);
@@ -72,13 +93,42 @@ export const amalgamate = defineFeature(function(context is Context, id is Id, d
         }
 
         performFormBooleans(context, id, subtractionSolids, unionSolids, allFormedBodies, definition.createNewBodies);
+
+        // Retrieve the feature name from the source Part Studio context.
+        // Call buildFunction to get the source context, then getVariable to retrieve the name.
+        // This works because variables are stored in the Part Studio context.
+        var featureName = "";
+        try silent
+        {
+            // Build the source Part Studio context with its configuration
+            // Use the same configuration that was used for instantiation
+            var sourceConfig = {};
+            if (definition.formPartStudio.configuration != undefined)
+            {
+                sourceConfig = definition.formPartStudio.configuration;
+            }
+            
+            // Call buildFunction to create the source Part Studio context
+            const sourceContext = definition.formPartStudio.buildFunction(sourceConfig);
+            
+            // Retrieve the variable from that context
+            const retrievedName = getVariable(sourceContext, AMALGAM_FEATURE_NAME_VAR);
+            
+            // Type check and format
+            if (retrievedName != undefined && retrievedName is string && retrievedName != "")
+            {
+                featureName = FEATURE_NAME_SEPARATOR ~ retrievedName;
+            }
+        }
+        setFeatureComputedParameter(context, id, { "name" : "featureName", "value" : featureName });
     },
     {
             "flipDirection" : false,
             "subtractionTargets" : qAllModifiableSolidBodies(),
             "unionTargets" : qAllModifiableSolidBodies(),
             "thickness" : 1 * millimeter,
-            "createNewBodies" : true
+            "createNewBodies" : true,
+            "featureName" : ""
         });
 
 /**

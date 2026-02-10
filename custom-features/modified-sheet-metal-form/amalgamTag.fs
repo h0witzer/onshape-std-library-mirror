@@ -21,6 +21,13 @@ import(path : "onshape/std/units.fs", version : "2815.0");
 import(path : "onshape/std/vector.fs", version : "2815.0");
 
 /**
+ * Variable name used to store and retrieve the custom feature name for Amalgamate.
+ * This constant must match the corresponding constant in amalgamate.fs.
+ * Variables can be retrieved from the source Part Studio context using buildFunction.
+ */
+const AMALGAM_FEATURE_NAME_VAR = "amalgamFeatureName";
+
+/**
  * Defines the kind of entity being tagged in the feature.
  * @value FRAME : Tag a frame profile with metadata. The metadata will be displayed in the cut list for frames derived from the
  * tagged profile.
@@ -36,9 +43,12 @@ export enum TagPurpose
 
 /**
  * Tag an entity with metadata. The metadata will be used for formed and frame features.
+ * 
+ * Feature Name Template: The template "Amalgam Tag#featureNameDisplay" references the computed parameter 'featureNameDisplay'.
+ * Onshape will substitute #featureNameDisplay with the actual value at runtime.
  */
 
-annotation { "Feature Type Name" : "Amalgam Tag" }
+annotation { "Feature Type Name" : "Amalgam Tag", "Feature Name Template" : "Amalgam Tag#featureNameDisplay" }
 export const tag = defineFeature(function(context is Context, id is Id, definition is map)
     precondition
     {
@@ -102,7 +112,15 @@ export const tag = defineFeature(function(context is Context, id is Id, definiti
             annotation { "Name" : "Amalgam tool origin mate connector", "Description" : "If none selected, this feature will create one at Origin",
                         "Filter" : BodyType.MATE_CONNECTOR, "MaxNumberOfPicks" : 1 }
             definition.cSysMateConnector is Query;
+
+            annotation { "Name" : "Feature name for Amalgamate (optional)" }
+            definition.featureName is string;
         }
+
+        // Hidden computed parameter used for Feature Name Template. Not a user input.
+        // This field is populated at runtime to display the custom name in the feature tree.
+        annotation { "Name" : "Feature name display (computed)", "UIHint" : UIHint.ALWAYS_HIDDEN }
+        definition.featureNameDisplay is string;
     }
     {
         if (definition.tagPurpose == TagPurpose.FRAME)
@@ -123,7 +141,9 @@ export const tag = defineFeature(function(context is Context, id is Id, definiti
             positivePart : qNothing(),
             negativePart : qNothing(),
             newPart : qNothing(),
-            cSysMateConnector : qNothing()
+            cSysMateConnector : qNothing(),
+            featureName : "",
+            featureNameDisplay : ""
         });
 
 function doTagForm(context is Context, topLevelId is Id, definition is map)
@@ -223,6 +243,19 @@ function doTagForm(context is Context, topLevelId is Id, definition is map)
         cSysMateConnector = qCreatedBy(originMateConnectorId, EntityType.BODY)->qBodyType(BodyType.MATE_CONNECTOR);
     }
     setFormAttribute(context, qOwnerBody(cSysMateConnector), FORM_BODY_CSYS_MATE_CONNECTOR);
+
+    // Store the feature name as a variable if specified.
+    // Variables in the Part Studio context can be retrieved by Amalgamate using buildFunction.
+    // Only non-empty names are stored to avoid cluttering the context.
+    if (definition.featureName != "")
+    {
+        setVariable(context, AMALGAM_FEATURE_NAME_VAR, definition.featureName);
+    }
+
+    // Set the computed parameter for the feature name display in the Amalgam Tag feature tree.
+    // Format with " - " prefix for visual clarity, or empty if no name specified.
+    const displayName = (definition.featureName != "") ? (" - " ~ definition.featureName) : "";
+    setFeatureComputedParameter(context, topLevelId, { "name" : "featureNameDisplay", "value" : displayName });
 }
 
 
