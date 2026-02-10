@@ -768,14 +768,22 @@ export function sheetMetalStartEditLogic(context is Context, id is Id, oldDefini
 
     // Extrude flips
     // If this is changed, make sure to reflect the change in extrude::extrudeEditLogic.
-    if (canSetExtrudeFlips(definition, specifiedParameters))
+    try
     {
-        if (canSetExtrudeUpToFlip(definition, specifiedParameters))
+        if (canSetExtrudeFlips(definition, specifiedParameters))
         {
-            definition = extrudeUpToBoundaryFlip(context, definition);
+            if (canSetExtrudeUpToFlip(definition, specifiedParameters))
+            {
+                definition = extrudeUpToBoundaryFlip(context, definition);
+            }
         }
+        definition = setExtrudeSecondDirectionFlip(definition, specifiedParameters);
     }
-    definition = setExtrudeSecondDirectionFlip(definition, specifiedParameters);
+    catch (error)
+    {
+        // Silently ignore errors in extrude flip logic as it may not apply to sheet metal recognize
+        println("EditLogic: Skipping extrude flip logic (error: " ~ error ~ ")");
+    }
 
     // Capture names from input bodies to preserve them after recognition
     // This is done at the end to ensure it happens even if earlier logic has errors
