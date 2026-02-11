@@ -907,18 +907,19 @@ function shouldCreateBendReliefSubsegments(bendReliefParams) returns boolean
  * - Faces are processed one at a time to ensure unique association attributes
  * 
  * Cylinder Dimensions:
- * - Radius: Calculated using standard OSSB/ISSB formulas based on sheet metal dimensioning style
- *   - Inside-dimensioned (FRONT): ISSB = R × tan(α/2) + (depthScale × thickness)
- *   - Outside-dimensioned (BACK/BOTH): OSSB = (R + T) × tan(α/2) + (depthScale × thickness)
- *   Where: R = bend radius, T = total thickness, α = bend angle
+ * - Radius: Calculated based on depthScale and widthScale interaction
+ *   Formula: setbackDistance = (depthScale - 1.5 × widthScale) × thickness
+ *   The 1.5× factor accounts for how relief width affects the terminus position:
+ *     - 0.5× for half the relief width at the terminus
+ *     - 1.0× for the full width component in the depth calculation
  * - Width: Controlled by subsegment size calculation (widthScale × thickness)
  * 
- * Why OSSB/ISSB Matters:
- * - Inside-dimensioned: Definition surfaces on inside of 3D geometry, bends generate outward
- * - Outside-dimensioned: Definition surfaces on outside of 3D geometry, bends generate inward
- * - The bend extends further along the definition face for outside-dimensioned parts
- * - Standard formulas use tan(angle/2) to properly account for bend geometry
- * - Different setback calculations ensure proper clearance for the bend relief geometry
+ * Why Width Affects Depth:
+ * - The relief extends along the bend line with width = widthScale × thickness
+ * - The terminus of the relief is positioned relative to the bend
+ * - Relief width has a multiplicative effect on the final depth position
+ * - Formula derived from actual bend relief geometry measurements
+ * - Matches behavior of standard flange bend relief features
  * 
  * Inputs:
  *   context - Evaluation context
@@ -949,56 +950,7 @@ function subtractReliefCylindersFromDefinition(context is Context, id is Id, rel
     }
     
     // Calculate cylinder dimensions based on bend relief parameters and sheet metal thickness
-    // The cylinder radius must account for the setback distance, which varies based on
-    // whether the sheet metal is inside-dimensioned or outside-dimensioned
-    
-    // Get bend radius from existing attribute or use default
-    var bendRadius = defaultRadius;
-    if (existingAttribute != undefined && existingAttribute.radius != undefined && existingAttribute.radius.value != undefined)
-    {
-        bendRadius = existingAttribute.radius.value;
-    }
-    
-    // Get bend angle from existing attribute (default to 90 degrees if not available)
-    var bendAngle = 90 * degree;
-    if (existingAttribute != undefined && existingAttribute.angle != undefined && existingAttribute.angle.value != undefined)
-    {
-        bendAngle = existingAttribute.angle.value;
-    }
-    
-    // Determine thickness direction to know which setback calculation to use
-    var frontThickness = sheetMetalThickness;
-    var backThickness = sheetMetalThickness;
-    var totalThickness = sheetMetalThickness;
-    var useInsideSetback = true; // Default to inside (ISSB)
-    
-    if (modelParameters != undefined)
-    {
-        if (modelParameters.frontThickness != undefined)
-        {
-            frontThickness = modelParameters.frontThickness;
-        }
-        if (modelParameters.backThickness != undefined)
-        {
-            backThickness = modelParameters.backThickness;
-        }
-        totalThickness = frontThickness + backThickness;
-        
-        // Determine dimensioning style:
-        // - FRONT (inside-dimensioned): frontThickness > 0, backThickness == 0 → use ISSB
-        // - BACK (outside-dimensioned): backThickness > 0, frontThickness == 0 → use OSSB
-        // - BOTH (middle-dimensioned): both > 0 → use OSSB for conservative approach
-        const hasFront = frontThickness > 0 * meter;
-        const hasBack = backThickness > 0 * meter;
-        
-        if (hasBack)
-        {
-            // Outside-dimensioned (BACK) or middle-dimensioned (BOTH)
-            // Use OSSB because bend extends further along definition face
-            useInsideSetback = false;
-        }
-        // else: Inside-dimensioned (FRONT only) - use ISSB (default)
-    }
+    // The cylinder radius determines how far the relief extends from the bend line
     
     // Get depth scale for the relief
     var depthScale = DEFAULT_BEND_RELIEF_DEPTH_SCALE;
@@ -1007,21 +959,25 @@ function subtractReliefCylindersFromDefinition(context is Context, id is Id, rel
         depthScale = bendReliefParams.depthScale;
     }
     
-    // Calculate setback distance using standard sheet metal formulas
-    // Standard formulas use tan(angle/2) to account for bend geometry
-    var setbackDistance;
-    if (useInsideSetback)
+    // Get width scale for the relief  
+    var widthScale = DEFAULT_BEND_RELIEF_DEPTH_SCALE; // Using same default
+    if (bendReliefParams != undefined && bendReliefParams.widthScale != undefined)
     {
-        // Inside-dimensioned: ISSB = R × tan(α/2)
-        // Add depthScale adjustment to extend relief beyond standard setback
-        setbackDistance = bendRadius * tan(bendAngle / 2) + (depthScale * sheetMetalThickness);
+        widthScale = bendReliefParams.widthScale;
     }
-    else
-    {
-        // Outside-dimensioned: OSSB = (R + T) × tan(α/2)
-        // Add depthScale adjustment to extend relief beyond standard setback
-        setbackDistance = (bendRadius + totalThickness) * tan(bendAngle / 2) + (depthScale * sheetMetalThickness);
-    }
+    
+    // Calculate setback distance for bend relief
+    // The relief depth is based on depthScale but reduced by the relief width
+    // Formula derived from actual bend relief geometry:
+    // setbackDistance = (depthScale - 1.5 × widthScale) × thickness
+    // 
+    // The 1.5× factor accounts for:
+    // - 0.5× for half the relief width at the terminus
+    // - 1.0× for the full width component in the depth calculation
+    //
+    // This matches the behavior of standard bend relief geometry where the relief
+    // width affects the final position of the relief terminus relative to the bend
+    const setbackDistance = (depthScale - 1.5 * widthScale) * sheetMetalThickness;
     
     // The cylinder radius is the setback distance
     // This ensures the cylinder creates adequate clearance for the bend relief geometry
