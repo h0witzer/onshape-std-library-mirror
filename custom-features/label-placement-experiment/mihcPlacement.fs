@@ -13,7 +13,7 @@ import(path : "onshape/std/mateConnector.fs", version : "2878.0");
 import(path : "onshape/std/query.fs", version : "2878.0");
 import(path : "onshape/std/valueBounds.fs", version : "2878.0");
 import(path : "onshape/std/vector.fs", version : "2878.0");
-import(path : "labelPlacementUtils.fs", version : "");  // Shared utilities
+import(path : "1470642f04a4ab4b999322bb", version : "44894d58ba1e712a741fef9d");  // Shared utilities
 
 annotation {
     "Feature Type Name" : "MIHC Label Placement",
@@ -120,7 +120,8 @@ export const mihcPlacement = defineFeature(function(context is Context, id is Id
         // Create coordinate system for mate connector
         // Z-axis is face normal, X-axis aligned with chord direction
         const chordDirection2D = normalize(bestChord.end - bestChord.start);
-        const chordDirection3D = tangentPlane.x * chordDirection2D[0] + tangentPlane.y * chordDirection2D[1];
+        const planeY = cross(tangentPlane.normal, tangentPlane.x);
+        const chordDirection3D = tangentPlane.x * chordDirection2D[0] + planeY * chordDirection2D[1];
         
         const placementCsys = coordSystem(placement3D, chordDirection3D, tangentPlane.normal);
         

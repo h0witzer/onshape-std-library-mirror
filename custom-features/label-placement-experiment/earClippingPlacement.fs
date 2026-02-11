@@ -12,7 +12,7 @@ import(path : "onshape/std/feature.fs", version : "2878.0");
 import(path : "onshape/std/mateConnector.fs", version : "2878.0");
 import(path : "onshape/std/query.fs", version : "2878.0");
 import(path : "onshape/std/vector.fs", version : "2878.0");
-import(path : "labelPlacementUtils.fs", version : "");  // Shared utilities
+import(path : "1470642f04a4ab4b999322bb", version : "44894d58ba1e712a741fef9d");  // Shared utilities
 
 annotation {
     "Feature Type Name" : "Ear Clipping Placement",
@@ -74,7 +74,8 @@ export const earClippingPlacement = defineFeature(function(context is Context, i
         // Create coordinate system for mate connector
         // Z-axis is face normal, X-axis aligned with one edge of the ear
         const edgeDirection2D = normalize(ear.p2 - ear.p1);
-        const edgeDirection3D = tangentPlane.x * edgeDirection2D[0] + tangentPlane.y * edgeDirection2D[1];
+        const planeY = cross(tangentPlane.normal, tangentPlane.x);
+        const edgeDirection3D = tangentPlane.x * edgeDirection2D[0] + planeY * edgeDirection2D[1];
         
         const placementCsys = coordSystem(placement3D, edgeDirection3D, tangentPlane.normal);
         

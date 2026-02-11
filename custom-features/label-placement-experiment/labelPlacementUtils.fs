@@ -17,8 +17,9 @@ import(path : "onshape/std/vector.fs", version : "2878.0");
 export function project2DPoint(plane is Plane, point3D is Vector) returns Vector
 {
     const relativePoint = point3D - plane.origin;
+    const planeY = cross(plane.normal, plane.x);
     const xCoord = dot(relativePoint, plane.x);
-    const yCoord = dot(relativePoint, plane.y);
+    const yCoord = dot(relativePoint, planeY);
     return vector(xCoord, yCoord);
 }
 
@@ -30,7 +31,8 @@ export function project2DPoint(plane is Plane, point3D is Vector) returns Vector
  */
 export function unproject2DPoint(plane is Plane, point2D is Vector) returns Vector
 {
-    return plane.origin + plane.x * point2D[0] + plane.y * point2D[1];
+    const planeY = cross(plane.normal, plane.x);
+    return plane.origin + plane.x * point2D[0] + planeY * point2D[1];
 }
 
 /**
