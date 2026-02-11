@@ -951,28 +951,6 @@ function subtractReliefCylindersFromDefinition(context is Context, id is Id, rel
         cylinderRadius = sheetMetalThickness * bendReliefParams.depthScale * 0.5;
     }
     
-    // Get bend radius from existing attribute or use default
-    var bendRadius = defaultRadius;
-    if (existingAttribute != undefined && existingAttribute.radius != undefined && existingAttribute.radius.value != undefined)
-    {
-        bendRadius = existingAttribute.radius.value;
-    }
-    
-    // Get front and back thickness for proper OSSB/ISSB calculation
-    var frontThickness = sheetMetalThickness;
-    var backThickness = sheetMetalThickness;
-    if (modelParameters != undefined)
-    {
-        if (modelParameters.frontThickness != undefined)
-        {
-            frontThickness = modelParameters.frontThickness;
-        }
-        if (modelParameters.backThickness != undefined)
-        {
-            backThickness = modelParameters.backThickness;
-        }
-    }
-    
     // Note: The cylinder radius (calculated above using depthScale) controls how deep the relief extends
     // The subsegment size (calculated separately using widthScale) controls how wide the relief is
     // These work together to create the relief geometry
