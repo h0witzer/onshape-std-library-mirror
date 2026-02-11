@@ -1012,7 +1012,9 @@ function subtractReliefCylindersFromDefinition(context is Context, id is Id, rel
                     }
                     
                     // Add face and cylinder to this wall's lists
-                    // qUnion will handle any duplicates automatically
+                    // Note: Same face/cylinder may be added multiple times if a cylinder
+                    // collides with multiple faces in the same wall, but this is acceptable
+                    // because qUnion efficiently handles duplicates when creating the query union
                     wallToToolsMap[wallId].faces = append(wallToToolsMap[wallId].faces, face);
                     wallToToolsMap[wallId].tools = append(wallToToolsMap[wallId].tools, cylinderBody);
                 }
