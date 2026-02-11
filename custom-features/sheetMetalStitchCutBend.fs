@@ -1025,13 +1025,13 @@ function subtractReliefCylindersFromDefinition(context is Context, id is Id, rel
     
     // Calculate bend relief depth adjustment
     // Bend reliefs build on top of the OSSB/ISSB base
-    // The relief depth is extended by depthScale but reduced by width effects
-    // Formula: adjustment = depthScale × T - 1.5 × widthScale × T - setbackBase
+    // Per user guidance:
+    // - At depthScale=0: no additional component (just OSSB)
+    // - At depthScale=1: additional = 0.5 × width = 0.5 × widthScale × T
+    // - Scales linearly with depthScale
     // 
-    // The 1.5× widthScale factor accounts for:
-    // - 0.5× for half the relief width at the terminus
-    // - 1.0× for the full width component in the depth calculation
-    const reliefDepthAdjustment = (depthScale * sheetMetalThickness) - (1.5 * widthScale * sheetMetalThickness) - setbackBase;
+    // Formula: adjustment = depthScale × 0.5 × widthScale × T
+    const reliefDepthAdjustment = depthScale * 0.5 * widthScale * sheetMetalThickness;
     
     // Total cylinder radius = OSSB/ISSB base + bend relief adjustment
     const setbackDistance = setbackBase + reliefDepthAdjustment;
