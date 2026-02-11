@@ -44,10 +44,11 @@ Implements the **Ear Clipping** algorithm as a fast alternative for finding guar
 4. Places a mate connector at the incenter
 
 **Advantages:**
-- Very fast O(n) algorithm
+- Very fast for simple polygons
 - Always finds a guaranteed interior point
 - Simpler logic than MIHC
 - Good for small icons or markers
+- O(n²) complexity but still efficient for typical face sizes
 
 **Usage:**
 1. Select a planar face
@@ -62,7 +63,7 @@ Implements the **Ear Clipping** algorithm as a fast alternative for finding guar
 | Feature | Algorithm | Speed | Optimality | Best Use Case |
 |---------|-----------|-------|------------|---------------|
 | **MIHC** | Scanline intersection | O(n·s) where s = scanlines | Finds widest part | Labels that should span the bulk of the face |
-| **Ear Clipping** | Triangle decomposition | O(n²) typical/worst case | First valid ear | Quick placement, icons, markers |
+| **Ear Clipping** | Triangle decomposition | O(n²) | First valid ear | Quick placement, icons, markers |
 
 Both features:
 - Only work on planar faces (filtered in precondition)
