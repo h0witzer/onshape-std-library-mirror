@@ -895,23 +895,19 @@ function shouldCreateBendReliefSubsegments(bendReliefParams) returns boolean
  * Uses face-based boolean operations with localizedInFaces for proper sheet metal handling.
  * 
  * Performance Optimization:
- * Uses a two-pass approach with grouping by sheet metal wall:
- * - Pass 1: Create all cylinders and build a map of sheet metal wall → array of tools and faces
- * - Pass 2: For each face, call createBooleanToolsForFace with ALL tools that affect that wall
+ * Uses a two-pass approach to batch cylinders per face:
+ * - Pass 1: Create all cylinders and build a map of face → array of cylinder tools
+ * - Pass 2: For each face, call createBooleanToolsForFace once with all cylinders for that face
  * 
- * Why group by wall?
- * - Instead of calling createBooleanToolsForFace once per face per cylinder (N×M calls),
- *   we call it once per face with all cylinders for that wall (N calls)
- * - Each face in the wall gets processed with all cylinders that hit any face in that wall
+ * Why this optimization works:
+ * - Original approach: Process each cylinder-face collision individually (N×M operations)
+ * - Optimized approach: Group cylinders by face, process each face once (N operations)
+ * - Example: 5 faces × 3 cylinders = 15 operations reduced to 5 operations
  * 
- * Why not call createBooleanToolsForFace once per wall?
- * - Tool bodies from createBooleanToolsForFace get consumed/modified by opBoolean
- * - Cannot reuse the same tool bodies for multiple boolean operations
- * - Must create fresh tools for each face
- * 
- * Example: 1 wall with 5 definition faces, 3 cylinders hit all faces
- * - Original: 15 calls (5 faces × 3 cylinders)
- * - Optimized: 5 calls (once per face with all 3 cylinders)
+ * Important considerations:
+ * - Each face is processed with all cylinders that hit it in a single call
+ * - Cannot reuse tool bodies between faces (each face gets fresh tools)
+ * - Faces are processed one at a time to ensure unique association attributes
  * 
  * Inputs:
  *   context - Evaluation context
@@ -941,8 +937,8 @@ function subtractReliefCylindersFromDefinition(context is Context, id is Id, rel
     var sketchQueries = [];
     
     // PASS 1: Create all cylinder tools and collect collision data
-    // Build a map of sheet metal wall → array of cylinder bodies and faces
-    var wallToToolsMap = {};
+    // Build a map of face → array of cylinder bodies that collide with that face
+    var faceToToolsMap = {};
     
     for (var i = 0; i < size(reliefEdgeList); i += 1)
     {
@@ -990,7 +986,7 @@ function subtractReliefCylindersFromDefinition(context is Context, id is Id, rel
             
             if (collisions != undefined && size(collisions) > 0)
             {
-                // Group cylinder with all sheet metal walls it collides with
+                // Group cylinder with all faces it collides with
                 for (var collision in collisions)
                 {
                     // Skip if collision type is NONE (no actual intersection)
@@ -1000,31 +996,19 @@ function subtractReliefCylindersFromDefinition(context is Context, id is Id, rel
                     }
                     
                     const face = collision.target;
+                    const faceKey = transientQueriesToStrings(face);
                     
-                    // Get the sheet metal wall attribute to group by wall, not individual face
-                    const wallAttribute = try silent(getWallAttribute(context, face));
-                    if (wallAttribute == undefined)
+                    // Initialize array for this face if not exists
+                    if (faceToToolsMap[faceKey] == undefined)
                     {
-                        continue;
-                    }
-                    
-                    const wallId = wallAttribute.attributeId;
-                    
-                    // Initialize data structure for this wall if not exists
-                    if (wallToToolsMap[wallId] == undefined)
-                    {
-                        wallToToolsMap[wallId] = {
-                            "faces" : [],
+                        faceToToolsMap[faceKey] = {
+                            "face" : face,
                             "tools" : []
                         };
                     }
                     
-                    // Add face and cylinder to this wall's lists
-                    // Note: Same face/cylinder may be added multiple times if a cylinder
-                    // collides with multiple faces in the same wall, but this is acceptable
-                    // because qUnion efficiently handles duplicates when creating the query union
-                    wallToToolsMap[wallId].faces = append(wallToToolsMap[wallId].faces, face);
-                    wallToToolsMap[wallId].tools = append(wallToToolsMap[wallId].tools, cylinderBody);
+                    // Add cylinder to this face's tool list
+                    faceToToolsMap[faceKey].tools = append(faceToToolsMap[faceKey].tools, cylinderBody);
                 }
             }
         }
@@ -1035,65 +1019,53 @@ function subtractReliefCylindersFromDefinition(context is Context, id is Id, rel
         }
     }
     
-    // PASS 2: For each sheet metal wall, process all its faces
-    // Create tools once per face (not once per wall) to avoid entity resolution errors,
-    // but group by wall to pass all relevant cylinders to each face in that wall
-    var wallIndex = 0;
-    for (var entry in wallToToolsMap)
+    // PASS 2: For each face, call createBooleanToolsForFace once with all its cylinders
+    var faceIndex = 0;
+    for (var entry in faceToToolsMap)
     {
-        const wallData = entry.value;
-        const facesList = wallData.faces;
-        const toolsList = wallData.tools;
+        const faceData = entry.value;
+        const face = faceData.face;
+        const toolsList = faceData.tools;
         
-        if (size(toolsList) == 0 || size(facesList) == 0)
+        if (size(toolsList) == 0)
         {
             continue;
         }
         
-        // Get model parameters once for this wall (all faces in wall have same parameters)
-        const targetModelParameters = try silent(getModelParameters(context, qOwnerBody(facesList[0])));
-        if (targetModelParameters == undefined)
+        try
         {
-            wallIndex += 1;
-            continue;
-        }
-        
-        // Create union of all tools for this wall (will be passed to each face)
-        const allToolsForWall = qUnion(toolsList);
-        
-        // Process each face individually to ensure proper entity resolution
-        // and unique association attributes
-        for (var faceIdx = 0; faceIdx < size(facesList); faceIdx += 1)
-        {
-            try
+            // Get model parameters from face owner body
+            const ownerBody = qOwnerBody(face);
+            const targetModelParameters = try silent(getModelParameters(context, ownerBody));
+            if (targetModelParameters == undefined)
             {
-                const face = facesList[faceIdx];
-                
-                // Create boolean tools for this specific face with ALL cylinders that affect this wall
-                // This ensures each boolean operation has its own tool bodies
-                const toolId = id + ("tool" ~ wallIndex ~ "_" ~ faceIdx);
-                const tool = createBooleanToolsForFace(context, toolId, face, 
-                    allToolsForWall, targetModelParameters);
-                
-                if (tool != undefined)
-                {
-                    // Perform boolean subtraction on this face
-                    opBoolean(context, id + ("bool" ~ wallIndex ~ "_" ~ faceIdx), {
-                        "tools" : qCreatedBy(toolId, EntityType.FACE),
-                        "targets" : face,
-                        "operationType" : BooleanOperationType.SUBTRACTION,
-                        "localizedInFaces" : true,
-                        "allowSheets" : true
-                    });
-                }
+                faceIndex += 1;
+                continue;
             }
-            catch
+            
+            // Create boolean tools for this face with ALL cylinders that interact with it
+            const toolId = id + ("tool" ~ faceIndex);
+            const allToolsForFace = qUnion(toolsList);
+            const tool = createBooleanToolsForFace(context, toolId, face, 
+                allToolsForFace, targetModelParameters);
+            
+            if (tool != undefined)
             {
-                // Continue with next face if this one fails
+                // Perform boolean subtraction with the prepared tool
+                opBoolean(context, id + ("bool" ~ faceIndex), {
+                    "tools" : qCreatedBy(toolId, EntityType.FACE),
+                    "targets" : face,
+                    "operationType" : BooleanOperationType.SUBTRACTION,
+                    "localizedInFaces" : true,
+                    "allowSheets" : true
+                });
             }
         }
-        
-        wallIndex += 1;
+        catch
+        {
+            // Continue with next face if this one fails
+        }
+        faceIndex += 1;
     }
     
     // Clean up all sketches after sweep operations complete
