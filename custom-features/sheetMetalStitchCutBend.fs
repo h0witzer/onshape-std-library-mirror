@@ -907,15 +907,17 @@ function shouldCreateBendReliefSubsegments(bendReliefParams) returns boolean
  * - Faces are processed one at a time to ensure unique association attributes
  * 
  * Cylinder Dimensions:
- * - Radius: Calculated using OSSB/ISSB setback based on sheet metal dimensioning style
- *   - Inside-dimensioned (FRONT): ISSB = radius + frontThickness + (depthScale × thickness)
- *   - Outside-dimensioned (BACK/BOTH): OSSB = radius + backThickness + (depthScale × thickness)
+ * - Radius: Calculated using standard OSSB/ISSB formulas based on sheet metal dimensioning style
+ *   - Inside-dimensioned (FRONT): ISSB = R × tan(α/2) + (depthScale × thickness)
+ *   - Outside-dimensioned (BACK/BOTH): OSSB = (R + T) × tan(α/2) + (depthScale × thickness)
+ *   Where: R = bend radius, T = total thickness, α = bend angle
  * - Width: Controlled by subsegment size calculation (widthScale × thickness)
  * 
  * Why OSSB/ISSB Matters:
  * - Inside-dimensioned: Definition surfaces on inside of 3D geometry, bends generate outward
  * - Outside-dimensioned: Definition surfaces on outside of 3D geometry, bends generate inward
  * - The bend extends further along the definition face for outside-dimensioned parts
+ * - Standard formulas use tan(angle/2) to properly account for bend geometry
  * - Different setback calculations ensure proper clearance for the bend relief geometry
  * 
  * Inputs:
@@ -957,9 +959,17 @@ function subtractReliefCylindersFromDefinition(context is Context, id is Id, rel
         bendRadius = existingAttribute.radius.value;
     }
     
+    // Get bend angle from existing attribute (default to 90 degrees if not available)
+    var bendAngle = 90 * degree;
+    if (existingAttribute != undefined && existingAttribute.angle != undefined && existingAttribute.angle.value != undefined)
+    {
+        bendAngle = existingAttribute.angle.value;
+    }
+    
     // Determine thickness direction to know which setback calculation to use
     var frontThickness = sheetMetalThickness;
     var backThickness = sheetMetalThickness;
+    var totalThickness = sheetMetalThickness;
     var useInsideSetback = true; // Default to inside (ISSB)
     
     if (modelParameters != undefined)
@@ -972,6 +982,7 @@ function subtractReliefCylindersFromDefinition(context is Context, id is Id, rel
         {
             backThickness = modelParameters.backThickness;
         }
+        totalThickness = frontThickness + backThickness;
         
         // Determine dimensioning style:
         // - FRONT (inside-dimensioned): frontThickness > 0, backThickness == 0 → use ISSB
@@ -996,19 +1007,20 @@ function subtractReliefCylindersFromDefinition(context is Context, id is Id, rel
         depthScale = bendReliefParams.depthScale;
     }
     
-    // Calculate setback distance based on dimensioning style
-    // ISSB (Inside Setback): For inside-dimensioned parts (bends generate outward)
-    // OSSB (Outside Setback): For outside-dimensioned parts (bends generate inward, extend further)
+    // Calculate setback distance using standard sheet metal formulas
+    // Standard formulas use tan(angle/2) to account for bend geometry
     var setbackDistance;
     if (useInsideSetback)
     {
-        // Inside-dimensioned: ISSB = radius + frontThickness + (depthScale × thickness)
-        setbackDistance = bendRadius + frontThickness + (depthScale * sheetMetalThickness);
+        // Inside-dimensioned: ISSB = R × tan(α/2)
+        // Add depthScale adjustment to extend relief beyond standard setback
+        setbackDistance = bendRadius * tan(bendAngle / 2) + (depthScale * sheetMetalThickness);
     }
     else
     {
-        // Outside-dimensioned: OSSB = radius + backThickness + (depthScale × thickness)
-        setbackDistance = bendRadius + backThickness + (depthScale * sheetMetalThickness);
+        // Outside-dimensioned: OSSB = (R + T) × tan(α/2)
+        // Add depthScale adjustment to extend relief beyond standard setback
+        setbackDistance = (bendRadius + totalThickness) * tan(bendAngle / 2) + (depthScale * sheetMetalThickness);
     }
     
     // The cylinder radius is the setback distance
