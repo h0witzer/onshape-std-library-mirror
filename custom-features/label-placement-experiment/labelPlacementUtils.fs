@@ -13,28 +13,26 @@ import(path : "onshape/std/vector.fs", version : "2878.0");
  * Project a 3D point onto a 2D plane coordinate system using standard library functions
  * @param plane : Plane (from evPlane)
  * @param point3D : 3D point to project
- * @returns 2D vector in the plane's coordinate system (dimensionless)
+ * @returns 2D vector in the plane's coordinate system (with length units)
  */
 export function project2DPoint(plane is Plane, point3D is Vector) returns Vector
 {
     // Use standard library worldToPlane function
-    const point2DWithUnits = worldToPlane(plane, point3D);
-    // Strip units for dimensionless 2D operations
-    return vector(stripUnits(point2DWithUnits[0]), stripUnits(point2DWithUnits[1]));
+    // Returns vector WITH units - keep them!
+    return worldToPlane(plane, point3D);
 }
 
 /**
  * Unproject a 2D point back to 3D space using standard library functions
  * @param plane : Plane (from evPlane)
- * @param point2D : 2D point in the plane's coordinate system (dimensionless)
+ * @param point2D : 2D point in the plane's coordinate system (with length units)
  * @returns 3D point in world coordinates
  */
 export function unproject2DPoint(plane is Plane, point2D is Vector) returns Vector
 {
-    // Add units back - planeToWorld expects a length vector
-    const point2DWithUnits = point2D * meter;
     // Use standard library planeToWorld function
-    return planeToWorld(plane, point2DWithUnits);
+    // Expects vector WITH units
+    return planeToWorld(plane, point2D);
 }
 
 /**

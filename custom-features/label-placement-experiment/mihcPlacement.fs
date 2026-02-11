@@ -133,9 +133,11 @@ export const mihcPlacement = defineFeature(function(context is Context, id is Id
         const placement3D = unproject2DPoint(plane, placement2D);
         
         // Create coordinate system (X-axis along chord)
-        const chordDir2D = normalize(bestChord.end - bestChord.start);
-        const planeY = cross(plane.normal, plane.x);
-        const chordDir3D = plane.x * (chordDir2D[0] * meter) + planeY * (chordDir2D[1] * meter);
+        // Unproject a point along the chord direction to get 3D direction
+        const chordDir2D = bestChord.end - bestChord.start;
+        const chordEnd3D = unproject2DPoint(plane, bestChord.end);
+        const chordStart3D = unproject2DPoint(plane, bestChord.start);
+        const chordDir3D = chordEnd3D - chordStart3D;
         
         const placementCsys = coordSystem(placement3D, chordDir3D, plane.normal);
         

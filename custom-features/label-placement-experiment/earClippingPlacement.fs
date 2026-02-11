@@ -83,9 +83,10 @@ export const earClippingPlacement = defineFeature(function(context is Context, i
         const placement3D = unproject2DPoint(plane, incenter2D);
         
         // Create coordinate system (X-axis along first ear edge)
-        const edgeDir2D = normalize(ear.p2 - ear.p1);
-        const planeY = cross(plane.normal, plane.x);
-        const edgeDir3D = plane.x * (edgeDir2D[0] * meter) + planeY * (edgeDir2D[1] * meter);
+        // Unproject edge endpoints to get 3D direction
+        const edge1_3D = unproject2DPoint(plane, ear.p1);
+        const edge2_3D = unproject2DPoint(plane, ear.p2);
+        const edgeDir3D = edge2_3D - edge1_3D;
         
         const placementCsys = coordSystem(placement3D, edgeDir3D, plane.normal);
         
