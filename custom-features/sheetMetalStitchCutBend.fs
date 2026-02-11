@@ -907,15 +907,17 @@ function shouldCreateBendReliefSubsegments(bendReliefParams) returns boolean
  * - Faces are processed one at a time to ensure unique association attributes
  * 
  * Cylinder Dimensions:
- * - Radius (width): Calculated from widthScale * thickness (not depthScale!)
- * - Depth: Calculated from bend radius + face offset + (depthScale * thickness)
- *   - For outside bend: radius + backThickness + (depthScale * thickness)
- *   - For inside bend: radius + frontThickness + (depthScale * thickness)
+ * - Radius (DEPTH): Calculated from depthScale * thickness - controls how deep relief extends into material
+ * - Width: Controlled by subsegment size calculation (widthScale * thickness) - controls how wide along bend line
+ * 
+ * Note: The subsegment size (calculateBendReliefSubsegmentSize) uses widthScale to determine
+ * how wide the relief domain is along the bend line. The cylinder radius uses depthScale to
+ * determine how deep the relief extends perpendicular to the bend line.
  * 
  * Inputs:
  *   context - Evaluation context
  *   id - Feature ID for this operation
- *   reliefEdges - Query for relief segment edges
+ *   reliefEdges - Query for relief segment edges  
  *   trackedDefinitionBody - Tracked query for the sheet metal definition body
  *   existingAttribute - Original joint attribute (contains radius, angle info)
  *   defaultRadius - Default bend radius from model parameters
@@ -941,12 +943,12 @@ function subtractReliefCylindersFromDefinition(context is Context, id is Id, rel
     }
     
     // Calculate cylinder dimensions based on bend relief parameters and sheet metal thickness
-    // Width (cylinder radius): Based on widthScale, NOT depthScale
+    // Cylinder radius controls DEPTH: How deep the relief extends into the material
     var cylinderRadius = sheetMetalThickness * 0.5; // Default: half thickness
-    if (bendReliefParams != undefined && bendReliefParams.widthScale != undefined && sheetMetalThickness != undefined)
+    if (bendReliefParams != undefined && bendReliefParams.depthScale != undefined && sheetMetalThickness != undefined)
     {
-        // Relief width should use widthScale parameter
-        cylinderRadius = sheetMetalThickness * bendReliefParams.widthScale * 0.5;
+        // Relief DEPTH should use depthScale parameter (not widthScale!)
+        cylinderRadius = sheetMetalThickness * bendReliefParams.depthScale * 0.5;
     }
     
     // Get bend radius from existing attribute or use default
@@ -954,13 +956,6 @@ function subtractReliefCylindersFromDefinition(context is Context, id is Id, rel
     if (existingAttribute != undefined && existingAttribute.radius != undefined && existingAttribute.radius.value != undefined)
     {
         bendRadius = existingAttribute.radius.value;
-    }
-    
-    // Calculate relief depth scale
-    var depthScale = DEFAULT_BEND_RELIEF_DEPTH_SCALE;
-    if (bendReliefParams != undefined && bendReliefParams.depthScale != undefined)
-    {
-        depthScale = bendReliefParams.depthScale;
     }
     
     // Get front and back thickness for proper OSSB/ISSB calculation
@@ -978,19 +973,9 @@ function subtractReliefCylindersFromDefinition(context is Context, id is Id, rel
         }
     }
     
-    // Calculate cylinder extent (how far it reaches from the bend axis)
-    // The bend angle sign or other factors would determine inside vs outside
-    // For a conservative approach that works for both cases, use the larger offset
-    // OSSB (Outside Setback) = radius + backThickness + (depthScale * thickness)
-    // ISSB (Inside Setback) = radius + frontThickness + (depthScale * thickness)
-    // Use the maximum to ensure relief is created in all cases
-    const outsideSetback = bendRadius + backThickness + (depthScale * sheetMetalThickness);
-    const insideSetback = bendRadius + frontThickness + (depthScale * sheetMetalThickness);
-    
-    // Note: The cylinder extends perpendicular to the edge (radially from bend axis)
-    // This isn't actually used for the sweep (which follows the edge), but documents the calculation
-    // For now, we use cylinderRadius which controls the cross-section
-    const cylinderExtent = max(outsideSetback, insideSetback);
+    // Note: The cylinder radius (calculated above using depthScale) controls how deep the relief extends
+    // The subsegment size (calculated separately using widthScale) controls how wide the relief is
+    // These work together to create the relief geometry
     
     // Collect all cylinder bodies and sketches created for cleanup at the end
     var cylinderBodies = [];
@@ -1169,17 +1154,17 @@ precondition
         return 0 * meter;
     }
     
-    // Calculate based on bend relief depth scale
-    // Bend relief depth is typically thickness * depthScale (not radius!)
-    var depthScale = DEFAULT_BEND_RELIEF_DEPTH_SCALE;
-    if (bendReliefParams != undefined && bendReliefParams.depthScale != undefined)
+    // Calculate based on bend relief width scale
+    // Bend relief WIDTH is the dimension along the bend line (subsegment length)
+    var widthScale = DEFAULT_BEND_RELIEF_DEPTH_SCALE; // Using same default for now
+    if (bendReliefParams != undefined && bendReliefParams.widthScale != undefined)
     {
-        depthScale = bendReliefParams.depthScale;
+        widthScale = bendReliefParams.widthScale;
     }
     
-    // The bend relief depth is thickness * depthScale
+    // The bend relief width is thickness * widthScale
     // Use the size directly without safety margin to avoid self-intersecting geometry
-    const subsegmentSize = thickness * depthScale;
+    const subsegmentSize = thickness * widthScale;
     
     return subsegmentSize;
 }
