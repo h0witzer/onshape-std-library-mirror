@@ -12,11 +12,17 @@
 
 Since these are FeatureScript files, they need to be imported into Onshape:
 
-1. **Create a new FeatureScript document** in Onshape
-2. **Copy the contents** of the desired feature file (mihcPlacement.fs or earClippingPlacement.fs)
-3. **Paste into the FeatureScript editor**
-4. **Import the utilities**: You'll need to also create labelPlacementUtils.fs in the same document or adjust the import path
-5. **Save and test** on a part with planar faces
+1. **Upload labelPlacementUtils.fs** to Onshape as a FeatureScript document
+   - This creates a document with an ID like `1470642f04a4ab4b999322bb`
+   - Note the document ID and version for imports
+2. **Create the feature documents** (mihcPlacement.fs or earClippingPlacement.fs)
+3. **Update the import path** in each feature to point to your uploaded utils document:
+   ```featurescript
+   import(path : "YOUR_UTILS_DOC_ID", version : "YOUR_VERSION");
+   ```
+4. **Save and test** on a part with planar faces
+
+**Note:** The import paths in the repository files reference a specific Onshape document ID. You'll need to update these to match your own uploaded utils document.
 
 ## Testing Scenarios
 

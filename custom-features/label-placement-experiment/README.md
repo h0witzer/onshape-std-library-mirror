@@ -78,8 +78,11 @@ Both features:
 ### 2D Projection
 
 Both features project the 3D face into a local 2D coordinate system using:
-- `evFaceTangentPlane()` to get the plane
-- Dot product projection: `x = dot(point - origin, plane.x)`, `y = dot(point - origin, plane.y)`
+- `evFaceTangentPlane()` to get the plane (which has `origin`, `normal`, and `x` properties)
+- The y-axis is computed as: `cross(plane.normal, plane.x)`
+- Dot product projection: 
+  - `x = dot(point - origin, plane.x)`
+  - `y = dot(point - origin, planeY)` where `planeY = cross(plane.normal, plane.x)`
 
 ### Edge Loop Reconstruction
 
