@@ -114,6 +114,7 @@ export const sheetMetalStitchCutBend = defineSheetMetalFeature(function(context 
         var defaultKFactor;
         var bendReliefParams;
         var sheetMetalThickness;
+        var modelParameters;
         
         if (definition.useDefaultRadius)
         {
@@ -128,13 +129,13 @@ export const sheetMetalStitchCutBend = defineSheetMetalFeature(function(context 
         // These will be used to create subsegments if needed
         bendReliefParams = getBendReliefParameters(context, definition.entity);
         
-        // Extract sheet metal thickness for bend relief sizing
+        // Extract sheet metal thickness and model parameters for bend relief sizing
         if (bendReliefParams != undefined)
         {
             try
             {
                 var sheetMetalEntity = qUnion(getSMDefinitionEntities(context, definition.entity));
-                var modelParameters = getModelParameters(context, qOwnerBody(sheetMetalEntity));
+                modelParameters = getModelParameters(context, qOwnerBody(sheetMetalEntity));
                 sheetMetalThickness = modelParameters.frontThickness;
                 if (sheetMetalThickness == undefined || abs(sheetMetalThickness) < EDGE_LENGTH_TOLERANCE)
                 {
@@ -163,7 +164,7 @@ export const sheetMetalStitchCutBend = defineSheetMetalFeature(function(context 
         for (var jointEntity in jointEdgeEntities)
         {
             const processedEdges = processJointEntity(context, id + ("entity" ~ entityIndex), 
-                jointEntity, definition, defaultRadius, defaultKFactor, bendReliefParams, sheetMetalThickness);
+                jointEntity, definition, defaultRadius, defaultKFactor, bendReliefParams, sheetMetalThickness, modelParameters);
             allProcessedEdges = append(allProcessedEdges, processedEdges);
             entityIndex += 1;
         }
@@ -196,7 +197,7 @@ export const sheetMetalStitchCutBend = defineSheetMetalFeature(function(context 
  * Outputs: Query for all processed edges from this joint entity
  */
 function processJointEntity(context is Context, id is Id, jointEntity is Query, 
-    definition is map, defaultRadius, defaultKFactor, bendReliefParams, sheetMetalThickness) returns Query
+    definition is map, defaultRadius, defaultKFactor, bendReliefParams, sheetMetalThickness, modelParameters) returns Query
 {
     // Get existing attribute to understand current joint state
     var existingAttribute = getJointAttribute(context, jointEntity);
@@ -541,7 +542,7 @@ function processJointEntity(context is Context, id is Id, jointEntity is Query,
     {
         subtractReliefCylindersFromDefinition(context, id + "reliefSubtract", 
                                               bendReliefSegmentEdges, smDefinitionBodyTracking, 
-                                              existingAttribute, defaultRadius, bendReliefParams, sheetMetalThickness);
+                                              existingAttribute, defaultRadius, bendReliefParams, sheetMetalThickness, modelParameters);
     }
     
     return allEdgesAfterSplitQuery;
@@ -920,9 +921,10 @@ function shouldCreateBendReliefSubsegments(bendReliefParams) returns boolean
  *   defaultRadius - Default bend radius from model parameters
  *   bendReliefParams - Bend relief parameters (widthScale, depthScale)
  *   sheetMetalThickness - Sheet metal thickness
+ *   modelParameters - Full model parameters (contains frontThickness, backThickness)
  */
 function subtractReliefCylindersFromDefinition(context is Context, id is Id, reliefEdges is Query, trackedDefinitionBody is Query,
-    existingAttribute is SMAttribute, defaultRadius, bendReliefParams, sheetMetalThickness)
+    existingAttribute is SMAttribute, defaultRadius, bendReliefParams, sheetMetalThickness, modelParameters)
 {
     const reliefEdgeList = evaluateQuery(context, reliefEdges);
     
@@ -947,11 +949,6 @@ function subtractReliefCylindersFromDefinition(context is Context, id is Id, rel
         cylinderRadius = sheetMetalThickness * bendReliefParams.widthScale * 0.5;
     }
     
-    // Depth (cylinder length along edge): NOT from user input
-    // Should be calculated based on bend geometry (OSSB/ISSB)
-    // For now, we'll calculate a reasonable default based on bend radius and relief depth
-    // The cylinder needs to extend from the neutral axis outward
-    
     // Get bend radius from existing attribute or use default
     var bendRadius = defaultRadius;
     if (existingAttribute != undefined && existingAttribute.radius != undefined && existingAttribute.radius.value != undefined)
@@ -966,18 +963,34 @@ function subtractReliefCylindersFromDefinition(context is Context, id is Id, rel
         depthScale = bendReliefParams.depthScale;
     }
     
-    // The bend angle determines if it's an inside or outside bend
-    // For simplicity, we'll use a formula that works for both:
-    // Cylinder depth = bend radius + thickness + (depthScale * thickness)
-    // This extends from the neutral axis through the material and into the relief zone
-    var cylinderDepthFromNeutral = bendRadius + sheetMetalThickness + (depthScale * sheetMetalThickness);
+    // Get front and back thickness for proper OSSB/ISSB calculation
+    var frontThickness = sheetMetalThickness;
+    var backThickness = sheetMetalThickness;
+    if (modelParameters != undefined)
+    {
+        if (modelParameters.frontThickness != undefined)
+        {
+            frontThickness = modelParameters.frontThickness;
+        }
+        if (modelParameters.backThickness != undefined)
+        {
+            backThickness = modelParameters.backThickness;
+        }
+    }
     
-    // However, we need the cylinder to be swept along the edge, so the "depth" here
-    // refers to how far it extends perpendicular to the edge (the radius of the swept cylinder)
-    // The actual calculation should be the radial distance from the bend axis
-    // For a proper calculation, we'd need to know the face orientation (inside vs outside)
-    // For now, use a conservative estimate that works for typical cases
-    const cylinderExtent = bendRadius + sheetMetalThickness * (1.0 + depthScale);
+    // Calculate cylinder extent (how far it reaches from the bend axis)
+    // The bend angle sign or other factors would determine inside vs outside
+    // For a conservative approach that works for both cases, use the larger offset
+    // OSSB (Outside Setback) = radius + backThickness + (depthScale * thickness)
+    // ISSB (Inside Setback) = radius + frontThickness + (depthScale * thickness)
+    // Use the maximum to ensure relief is created in all cases
+    const outsideSetback = bendRadius + backThickness + (depthScale * sheetMetalThickness);
+    const insideSetback = bendRadius + frontThickness + (depthScale * sheetMetalThickness);
+    
+    // Note: The cylinder extends perpendicular to the edge (radially from bend axis)
+    // This isn't actually used for the sweep (which follows the edge), but documents the calculation
+    // For now, we use cylinderRadius which controls the cross-section
+    const cylinderExtent = max(outsideSetback, insideSetback);
     
     // Collect all cylinder bodies and sketches created for cleanup at the end
     var cylinderBodies = [];
