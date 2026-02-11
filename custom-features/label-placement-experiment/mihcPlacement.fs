@@ -35,12 +35,6 @@ export const mihcPlacement = defineFeature(function(context is Context, id is Id
             "Default" : 3
         }
         isInteger(definition.scanlineCount, POSITIVE_COUNT_BOUNDS);
-        
-        annotation {
-            "Name" : "Scanline count",
-            "UIHint" : UIHint.SHOW_LABEL
-        }
-        definition.scanlineCount is number;
     }
     {
         // Verify face is selected
@@ -220,8 +214,8 @@ function findLongestHorizontalChord(polygon is array, yValue is number) returns 
         return undefined;
     }
     
-    // Sort intersections
-    intersections = sort(intersections);
+    // Sort intersections in ascending order
+    intersections = sort(intersections, function(a, b) { return a - b; });
     
     // Find longest internal segment
     // Due to Jordan Curve Theorem, segments [x0, x1], [x2, x3], ... are interior
