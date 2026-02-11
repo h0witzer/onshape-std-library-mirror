@@ -181,9 +181,20 @@ function calculateTriangleIncenter(p1 is Vector, p2 is Vector, p3 is Vector) ret
     
     const perimeter = a + b + c;
     
-    if (perimeter < TOLERANCE.zeroLength)
+    // Use .value for tolerance comparison when dealing with units
+    if (perimeter is ValueWithUnits)
     {
-        return (p1 + p2 + p3) / 3;
+        if (perimeter.value < TOLERANCE.zeroLength)
+        {
+            return (p1 + p2 + p3) / 3;
+        }
+    }
+    else
+    {
+        if (perimeter < TOLERANCE.zeroLength)
+        {
+            return (p1 + p2 + p3) / 3;
+        }
     }
     
     return (a * p1 + b * p2 + c * p3) / perimeter;

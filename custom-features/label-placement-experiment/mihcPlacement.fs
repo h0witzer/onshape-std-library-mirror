@@ -148,7 +148,7 @@ export const mihcPlacement = defineFeature(function(context is Context, id is Id
     });
 
 // Find longest horizontal chord at given Y value
-function findLongestHorizontalChord(polygon is array, yValue is number) returns map
+function findLongestHorizontalChord(polygon is array, yValue) returns map
 {
     var intersections = [];
     const edges = getPolygonEdges(polygon);
@@ -162,9 +162,21 @@ function findLongestHorizontalChord(polygon is array, yValue is number) returns 
         
         if ((y1 <= yValue && yValue <= y2) || (y2 <= yValue && yValue <= y1))
         {
-            if (abs(y1 - y2) < TOLERANCE.zeroLength)
+            // Use .value for tolerance comparison when dealing with units
+            const yDiff = abs(y1 - y2);
+            if (yDiff is ValueWithUnits)
             {
-                continue;
+                if (yDiff.value < TOLERANCE.zeroLength * TOLERANCE.zeroLength)
+                {
+                    continue;
+                }
+            }
+            else
+            {
+                if (yDiff < TOLERANCE.zeroLength)
+                {
+                    continue;
+                }
             }
             
             const t = (yValue - y1) / (y2 - y1);
