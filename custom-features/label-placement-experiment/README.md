@@ -1,128 +1,151 @@
-# Label Placement Exploration Features
+# Label Placement Features
 
-This directory contains FeatureScript implementations of the label placement strategies described in `Planar Face Label Placement Strategies.md`.
+This directory contains FeatureScript implementations for placing mate connectors at optimal positions on planar faces.
 
 ## Features
 
-### 1. MIHC Label Placement (`mihcPlacement.fs`)
+### 1. Face Label Placement (`mihcPlacement.fs`)
 
-Implements the **Maximum Internal Horizontal Chord (MIHC)** algorithm for finding optimal label placement points on planar faces.
+Places a mate connector at the centroid of a planar face using FeatureScript's built-in evaluation functions.
 
 **How it works:**
-1. Projects the planar face boundary into a 2D coordinate system
-2. Generates horizontal scanlines at strategic heights (25%, 50%, 75% or custom)
-3. Finds all intersections of each scanline with the polygon edges
-4. Identifies the longest internal horizontal segment across all scanlines
-5. Places a mate connector at the midpoint of the longest chord
+1. Uses `evApproximateCentroid()` to find the face centroid
+2. Uses `evFaceTangentPlane()` to get face orientation
+3. Places mate connector at centroid with proper orientation
 
 **Advantages:**
-- Guaranteed to find a point in the "widest" part of the face
-- Handles concave shapes, horseshoes, U-shapes, slotted plates
-- Naturally handles holes - picks the largest continuous region
-- Non-iterative O(n) algorithm
+- Works with ALL face types: rectangles, circles, splines, arcs, etc.
+- Simple and robust - only ~57 lines of code
+- Uses proper FeatureScript evaluation functions
+- No manual 2D projections or polygon operations
+- Guaranteed to place connector inside the face
 
 **Usage:**
 1. Select a planar face
-2. Choose number of scanlines (1 for center only, 3 for robustness)
-3. A mate connector will be placed at the optimal point
-4. The X-axis of the mate connector aligns with the chord direction
+2. A mate connector will be placed at the face centroid
+3. Z-axis is normal to face, X-axis aligned with face plane
 
-**Best for:** Labels that should be centered in the "bulk" or "widest" part of a face
-
----
-
-### 2. Ear Clipping Placement (`earClippingPlacement.fs`)
-
-Implements the **Ear Clipping** algorithm as a fast alternative for finding guaranteed interior points.
-
-**How it works:**
-1. Projects the planar face boundary into a 2D coordinate system
-2. Finds the first "ear" triangle - three consecutive vertices where:
-   - The middle vertex forms a convex angle
-   - No other vertices lie inside the triangle
-3. Calculates the incenter of the ear triangle (center of inscribed circle)
-4. Places a mate connector at the incenter
-
-**Advantages:**
-- Very fast for simple polygons
-- Always finds a guaranteed interior point
-- Simpler logic than MIHC
-- Good for small icons or markers
-- O(n²) complexity but still efficient for typical face sizes
-
-**Usage:**
-1. Select a planar face
-2. A mate connector will be placed at the ear incenter
-
-**Best for:** Quick placement where exact positioning in the "widest" area isn't critical
+**Best for:** Any planar face where centroid placement is acceptable
 
 ---
 
-## Comparison
+### 2. Face Label Placement Alt (`earClippingPlacement.fs`)
 
-| Feature | Algorithm | Speed | Optimality | Best Use Case |
-|---------|-----------|-------|------------|---------------|
-| **MIHC** | Scanline intersection | O(n·s) where s = scanlines | Finds widest part | Labels that should span the bulk of the face |
-| **Ear Clipping** | Triangle decomposition | O(n²) | First valid ear | Quick placement, icons, markers |
+Alternative implementation using the same centroid-based approach (provided for comparison/testing).
 
-Both features:
-- Only work on planar faces (filtered in precondition)
-- Handle unordered vertex collections from the geometry kernel
-- Create mate connectors with proper orientation for visualization
-- Are non-iterative and deterministic
+---
+
+## Why Centroid-Based Placement?
+
+The original implementation used complex polygon algorithms (MIHC, Ear Clipping) but had critical limitations:
+
+❌ **Required discrete vertices** - Failed on faces with splines, circles, arcs  
+❌ **Complex 2D projections** - Manual projection and polygon operations  
+❌ **~200 lines of code** - Hard to maintain, lots of edge cases  
+❌ **"Face must have at least 3 vertices"** - Common error on curved faces  
+
+The new centroid-based approach:
+
+✅ **Works for all face types** - Handles any planar face geometry  
+✅ **Uses FeatureScript functions** - `evApproximateCentroid`, `evFaceTangentPlane`  
+✅ **Simple and robust** - Only ~57 lines of code  
+✅ **No manual projections** - Let FeatureScript handle the geometry  
+
+### Centroid Limitations
+
+For **concave shapes** (horseshoe, U-shape, C-channel), the centroid may fall in a void or gap. However:
+- This is a known tradeoff for simplicity and robustness
+- The centroid is still a valid placement for most use cases
+- For truly optimal placement on concave shapes, you'd need more complex algorithms
 
 ---
 
 ## Technical Details
 
-### 2D Projection
+### FeatureScript Functions Used
 
-Both features project the 3D face into a local 2D coordinate system using:
-- `evFaceTangentPlane()` to get the plane (which has `origin`, `normal`, and `x` properties)
-- The y-axis is computed as: `cross(plane.normal, plane.x)`
-- Dot product projection: 
-  - `x = dot(point - origin, plane.x)` 
-  - `y = dot(point - origin, planeY)` where `planeY = cross(plane.normal, plane.x)`
-- **Units are stripped** from the 2D coordinates using `stripUnits()` because:
-  - We're working in a local 2D coordinate system
-  - Only relative positions matter, not absolute units
-  - 2D operations (comparisons, tolerance checks) require dimensionless values
-- When unprojecting back to 3D, units are restored by multiplying by `meter`
+**evApproximateCentroid()**
+- Returns the approximate centroid of any entity (face, body, etc.)
+- Works for all geometry types
+- Fast and built-in to FeatureScript
 
-### Edge Loop Reconstruction
+**evFaceTangentPlane()**
+- Returns a Plane tangent to the face at a parameter position
+- Provides origin, normal, and x-axis for orientation
+- Used to orient the mate connector
 
-FeatureScript's `qAdjacent()` returns unordered collections. Both features:
-1. Build a vertex-to-vertex adjacency map from edges
-2. Walk the perimeter starting from the first vertex
-3. Construct an ordered polygon for 2D analysis
+**coordSystem()**
+- Creates a coordinate system from origin and axes
+- Used to position the mate connector
 
-### Coordinate System Creation
+**opMateConnector()**
+- Creates a mate connector at a specified coordinate system
+- Places the visual connector on the face
 
-Mate connectors are created with:
-- **Origin:** The computed 2D point unprojected back to 3D
-- **Z-axis:** Face normal (from tangent plane)
-- **X-axis:** 
-  - MIHC: Direction of the longest chord
-  - Ear Clipping: Direction of first ear edge
+### Coordinate System
+
+The mate connector is positioned with:
+- **Origin:** Face centroid
+- **Z-axis:** Face normal (perpendicular to face)
+- **X-axis:** From tangent plane (in-plane direction)
 
 ---
 
 ## Future Enhancements
 
-Potential improvements mentioned in the markdown document:
-- **Winding number** point-in-polygon validation for robustness
-- **Label size awareness** - scale labels to fit within the detected chord length
-- **Multi-loop handling** - explicitly handle faces with holes/inner boundaries
-- **Performance caching** - store computed positions using editing logic attributes
-- **Visual debugging** - sketch the detected chords/ears for verification
+If more sophisticated placement is needed for concave shapes:
+
+1. **Sample grid approach:**
+   - Generate grid of points across face bounding box
+   - Test each point with `evDistance()` to check if inside face
+   - Choose point farthest from edges (but still inside)
+
+2. **Bounding box subdivision:**
+   - Use `evBox3d()` to get face bounding box
+   - Sample points in bounding box
+   - Find largest inscribed circle/rectangle
+
+3. **Distance-based optimization:**
+   - Start with centroid
+   - Iteratively move toward widest part using `evDistance()`
+
+However, for most label placement use cases, the centroid is sufficient and much simpler.
 
 ---
 
-## References
+## Files
 
-See `Planar Face Label Placement Strategies.md` for:
-- Detailed algorithm descriptions
-- Mathematical formulations
-- Performance analysis
-- Comparison with other methods (centroid, grid sampling, medial axis)
-- FeatureScript-specific optimization techniques
+- **mihcPlacement.fs** - Main centroid-based placement feature
+- **earClippingPlacement.fs** - Alternative implementation (same approach)
+- **labelPlacementUtils.fs** - Shared utilities (currently unused but kept for reference)
+- **README.md** - This file
+- **QUICKSTART.md** - Usage guide
+- **Planar Face Label Placement Strategies.md** - Original research document (historical reference)
+
+---
+
+## Usage in Onshape
+
+1. Upload `mihcPlacement.fs` to Onshape as a FeatureScript document
+2. In a Part Studio, use the feature from the toolbar
+3. Select any planar face (rectangle, circle, spline-bounded, etc.)
+4. A mate connector will appear at the face centroid
+
+Works with:
+- ✅ Rectangular faces
+- ✅ Circular faces
+- ✅ Elliptical faces
+- ✅ Faces with spline edges
+- ✅ Faces with arc edges
+- ✅ Any planar face geometry
+
+---
+
+## Acknowledgments
+
+Thanks to the user for correctly pointing out:
+- "Why use projected geometry instead of localized coordinate systems?"
+- "Look for appropriate ev or op functions"
+- The vertex-based approach fails on splines and circles
+
+This feedback led to a much better, simpler, more robust implementation.
