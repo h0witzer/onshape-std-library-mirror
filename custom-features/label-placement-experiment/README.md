@@ -81,8 +81,13 @@ Both features project the 3D face into a local 2D coordinate system using:
 - `evFaceTangentPlane()` to get the plane (which has `origin`, `normal`, and `x` properties)
 - The y-axis is computed as: `cross(plane.normal, plane.x)`
 - Dot product projection: 
-  - `x = dot(point - origin, plane.x)`
+  - `x = dot(point - origin, plane.x)` 
   - `y = dot(point - origin, planeY)` where `planeY = cross(plane.normal, plane.x)`
+- **Units are stripped** from the 2D coordinates using `stripUnits()` because:
+  - We're working in a local 2D coordinate system
+  - Only relative positions matter, not absolute units
+  - 2D operations (comparisons, tolerance checks) require dimensionless values
+- When unprojecting back to 3D, units are restored by multiplying by `meter`
 
 ### Edge Loop Reconstruction
 

@@ -74,6 +74,11 @@ To compare the two strategies, try these test cases:
 - For MIHC: Try increasing scanline count to 3
 - For Ear Clipping: This finds the first ear, which may not be optimal - use MIHC instead
 
+**Unit-related errors**: The features now properly handle units by:
+- Stripping units from 2D coordinates after projection (working in dimensionless local space)
+- Restoring units when unprojecting back to 3D
+- This ensures all 2D operations work with dimensionless values as expected
+
 ## Further Development
 
 See README.md section "Future Enhancements" for ideas like:
