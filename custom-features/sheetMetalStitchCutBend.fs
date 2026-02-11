@@ -903,6 +903,11 @@ function shouldCreateBendReliefSubsegments(bendReliefParams) returns boolean
  * - How many definition faces that wall contains
  * - How many cylinders interact with faces in that wall
  * 
+ * Important: While createBooleanToolsForFace is called once per wall, the boolean operations
+ * are applied to each face individually to avoid disambiguation errors. Applying boolean ops
+ * to multiple faces at once can result in "Failed to completely disambiguate created topology"
+ * because the resulting faces may share association attributes.
+ * 
  * Example: A stitch cut bend across 2 sheet metal walls → exactly 2 calls to createBooleanToolsForFace
  * 
  * Inputs:
@@ -1064,14 +1069,19 @@ function subtractReliefCylindersFromDefinition(context is Context, id is Id, rel
             
             if (tool != undefined)
             {
-                // Perform boolean subtraction with the prepared tool on all faces in this wall
-                opBoolean(context, id + ("bool" ~ wallIndex), {
-                    "tools" : qCreatedBy(toolId, EntityType.FACE),
-                    "targets" : allFacesInWall,
-                    "operationType" : BooleanOperationType.SUBTRACTION,
-                    "localizedInFaces" : true,
-                    "allowSheets" : true
-                });
+                // Perform boolean subtraction on each face individually to avoid disambiguation errors
+                // Even though we created the tools once for all faces, we must apply them separately
+                // to ensure each resulting face gets unique association attributes
+                for (var faceIdx = 0; faceIdx < size(facesList); faceIdx += 1)
+                {
+                    opBoolean(context, id + ("bool" ~ wallIndex ~ "_" ~ faceIdx), {
+                        "tools" : qCreatedBy(toolId, EntityType.FACE),
+                        "targets" : facesList[faceIdx],
+                        "operationType" : BooleanOperationType.SUBTRACTION,
+                        "localizedInFaces" : true,
+                        "allowSheets" : true
+                    });
+                }
             }
         }
         catch
