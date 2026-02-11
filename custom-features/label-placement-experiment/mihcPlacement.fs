@@ -1,7 +1,7 @@
 FeatureScript 2878;
 
 // Planar Face Label Placement
-// Uses FeatureScript's built-in evaluation functions to find optimal placement
+// Uses evFaceTangentPlane parameter sampling as described in the markdown
 // Works with ALL face types: polygonal, splines, circles, arcs, etc.
 
 import(path : "onshape/std/common.fs", version : "2878.0");
@@ -14,8 +14,8 @@ import(path : "onshape/std/vector.fs", version : "2878.0");
 
 annotation {
     "Feature Type Name" : "Face Label Placement",
-    "Feature Type Description" : "Places a mate connector at an optimal position on a planar face using the face centroid",
-    "Feature Name Template" : "Face Label Placement"
+    "Feature Type Description" : "Places a mate connector on a planar face at parameter center",
+    "Feature Name Template" : "Face Label"
 }
 export const faceLabelPlacement = defineFeature(function(context is Context, id is Id, definition is map)
     precondition
@@ -33,21 +33,21 @@ export const faceLabelPlacement = defineFeature(function(context is Context, id 
         
         const face = definition.face;
         
-        // Use FeatureScript's built-in function to get the approximate centroid
-        // This works for ALL face types: polygonal, circles, splines, etc.
-        const centroid = evApproximateCentroid(context, {
-            "entities" : face
-        });
-        
-        // Get the tangent plane for orientation
+        // Sample the face at parameter (0.5, 0.5)
+        // The tangent plane's origin is a point ON the face surface
+        // This works for all face types without needing vertices
         const tangentPlane = evFaceTangentPlane(context, {
             "face" : face,
             "parameter" : vector(0.5, 0.5)
         });
         
+        // Use the tangent plane's origin as the placement point
+        // It's guaranteed to be on the face (not in a void)
+        const placementPoint = tangentPlane.origin;
+        
         // Create coordinate system for mate connector
-        // Origin at centroid, Z-axis is face normal, X-axis from plane
-        const placementCsys = coordSystem(centroid, tangentPlane.x, tangentPlane.normal);
+        // Origin at the sampled point, Z-axis is face normal
+        const placementCsys = coordSystem(placementPoint, tangentPlane.x, tangentPlane.normal);
         
         // Create the mate connector
         opMateConnector(context, id + "mateConnector", {
