@@ -20,19 +20,21 @@ export function project2DPoint(plane is Plane, point3D is Vector) returns Vector
     const planeY = cross(plane.normal, plane.x);
     const xCoord = dot(relativePoint, plane.x);
     const yCoord = dot(relativePoint, planeY);
-    return vector(xCoord, yCoord);
+    // Strip units - we're working in a local 2D coordinate system where only relative positions matter
+    return vector(stripUnits(xCoord), stripUnits(yCoord));
 }
 
 /**
  * Unproject a 2D point back to 3D space
  * @param plane : Plane with origin and basis vectors (x, y)
- * @param point2D : 2D point in the plane's coordinate system
+ * @param point2D : 2D point in the plane's coordinate system (dimensionless)
  * @returns 3D point in world coordinates
  */
 export function unproject2DPoint(plane is Plane, point2D is Vector) returns Vector
 {
     const planeY = cross(plane.normal, plane.x);
-    return plane.origin + plane.x * point2D[0] + planeY * point2D[1];
+    // point2D is dimensionless, so we multiply by meter to get proper units for 3D space
+    return plane.origin + plane.x * (point2D[0] * meter) + planeY * (point2D[1] * meter);
 }
 
 /**

@@ -184,14 +184,14 @@ function isPointInTriangle(p is Vector, a is Vector, b is Vector, c is Vector) r
 // The incenter is the center of the inscribed circle, equidistant from all sides
 function calculateTriangleIncenter(p1 is Vector, p2 is Vector, p3 is Vector) returns Vector
 {
-    // Calculate side lengths
+    // Calculate side lengths (norm of dimensionless vectors gives dimensionless result)
     const a = norm(p2 - p3);  // Side opposite to p1
     const b = norm(p1 - p3);  // Side opposite to p2
     const c = norm(p1 - p2);  // Side opposite to p3
     
     const perimeter = a + b + c;
     
-    // Use dimensionless tolerance since we're in 2D projected space
+    // Use dimensionless tolerance since we're in 2D projected space with dimensionless coordinates
     if (perimeter < TOLERANCE.zeroLength)
     {
         // Degenerate triangle, return centroid
