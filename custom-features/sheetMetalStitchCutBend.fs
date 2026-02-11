@@ -895,20 +895,23 @@ function shouldCreateBendReliefSubsegments(bendReliefParams) returns boolean
  * Uses face-based boolean operations with localizedInFaces for proper sheet metal handling.
  * 
  * Performance Optimization:
- * Uses a two-pass approach to minimize calls to createBooleanToolsForFace:
+ * Uses a two-pass approach with grouping by sheet metal wall:
  * - Pass 1: Create all cylinders and build a map of sheet metal wall → array of tools and faces
- * - Pass 2: Call createBooleanToolsForFace ONCE per sheet metal wall with all its tools
+ * - Pass 2: For each face, call createBooleanToolsForFace with ALL tools that affect that wall
  * 
- * This ensures exactly one call per sheet metal wall, regardless of:
- * - How many definition faces that wall contains
- * - How many cylinders interact with faces in that wall
+ * Why group by wall?
+ * - Instead of calling createBooleanToolsForFace once per face per cylinder (N×M calls),
+ *   we call it once per face with all cylinders for that wall (N calls)
+ * - Each face in the wall gets processed with all cylinders that hit any face in that wall
  * 
- * Important: While createBooleanToolsForFace is called once per wall, the boolean operations
- * are applied to each face individually to avoid disambiguation errors. Applying boolean ops
- * to multiple faces at once can result in "Failed to completely disambiguate created topology"
- * because the resulting faces may share association attributes.
+ * Why not call createBooleanToolsForFace once per wall?
+ * - Tool bodies from createBooleanToolsForFace get consumed/modified by opBoolean
+ * - Cannot reuse the same tool bodies for multiple boolean operations
+ * - Must create fresh tools for each face
  * 
- * Example: A stitch cut bend across 2 sheet metal walls → exactly 2 calls to createBooleanToolsForFace
+ * Example: 1 wall with 5 definition faces, 3 cylinders hit all faces
+ * - Original: 15 calls (5 faces × 3 cylinders)
+ * - Optimized: 5 calls (once per face with all 3 cylinders)
  * 
  * Inputs:
  *   context - Evaluation context
@@ -1032,8 +1035,9 @@ function subtractReliefCylindersFromDefinition(context is Context, id is Id, rel
         }
     }
     
-    // PASS 2: For each sheet metal wall, call createBooleanToolsForFace once with all its tools
-    // This ensures exactly one call per sheet metal wall, not per individual definition face
+    // PASS 2: For each sheet metal wall, process all its faces
+    // Create tools once per face (not once per wall) to avoid entity resolution errors,
+    // but group by wall to pass all relevant cylinders to each face in that wall
     var wallIndex = 0;
     for (var entry in wallToToolsMap)
     {
@@ -1046,48 +1050,49 @@ function subtractReliefCylindersFromDefinition(context is Context, id is Id, rel
             continue;
         }
         
-        try
+        // Get model parameters once for this wall (all faces in wall have same parameters)
+        const targetModelParameters = try silent(getModelParameters(context, qOwnerBody(facesList[0])));
+        if (targetModelParameters == undefined)
         {
-            // Use first face to get model parameters (all faces in same wall have same parameters)
-            const ownerBody = qOwnerBody(facesList[0]);
-            const targetModelParameters = try silent(getModelParameters(context, ownerBody));
-            if (targetModelParameters == undefined)
+            wallIndex += 1;
+            continue;
+        }
+        
+        // Create union of all tools for this wall (will be passed to each face)
+        const allToolsForWall = qUnion(toolsList);
+        
+        // Process each face individually to ensure proper entity resolution
+        // and unique association attributes
+        for (var faceIdx = 0; faceIdx < size(facesList); faceIdx += 1)
+        {
+            try
             {
-                wallIndex += 1;
-                continue;
-            }
-            
-            // Create union of all faces in this wall
-            const allFacesInWall = qUnion(facesList);
-            
-            // Create boolean tools for this wall with ALL cylinders that interact with it
-            // KEY OPTIMIZATION: One call per sheet metal wall, regardless of how many definition faces or cylinders
-            const toolId = id + ("tool" ~ wallIndex);
-            const allToolsForWall = qUnion(toolsList);
-            const tool = createBooleanToolsForFace(context, toolId, allFacesInWall, 
-                allToolsForWall, targetModelParameters);
-            
-            if (tool != undefined)
-            {
-                // Perform boolean subtraction on each face individually to avoid disambiguation errors
-                // Even though we created the tools once for all faces, we must apply them separately
-                // to ensure each resulting face gets unique association attributes
-                for (var faceIdx = 0; faceIdx < size(facesList); faceIdx += 1)
+                const face = facesList[faceIdx];
+                
+                // Create boolean tools for this specific face with ALL cylinders that affect this wall
+                // This ensures each boolean operation has its own tool bodies
+                const toolId = id + ("tool" ~ wallIndex ~ "_" ~ faceIdx);
+                const tool = createBooleanToolsForFace(context, toolId, face, 
+                    allToolsForWall, targetModelParameters);
+                
+                if (tool != undefined)
                 {
+                    // Perform boolean subtraction on this face
                     opBoolean(context, id + ("bool" ~ wallIndex ~ "_" ~ faceIdx), {
                         "tools" : qCreatedBy(toolId, EntityType.FACE),
-                        "targets" : facesList[faceIdx],
+                        "targets" : face,
                         "operationType" : BooleanOperationType.SUBTRACTION,
                         "localizedInFaces" : true,
                         "allowSheets" : true
                     });
                 }
             }
+            catch
+            {
+                // Continue with next face if this one fails
+            }
         }
-        catch
-        {
-            // Continue with next wall if this one fails
-        }
+        
         wallIndex += 1;
     }
     
