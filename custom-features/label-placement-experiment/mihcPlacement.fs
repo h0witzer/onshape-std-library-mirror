@@ -13,6 +13,7 @@ import(path : "onshape/std/mateConnector.fs", version : "2878.0");
 import(path : "onshape/std/query.fs", version : "2878.0");
 import(path : "onshape/std/valueBounds.fs", version : "2878.0");
 import(path : "onshape/std/vector.fs", version : "2878.0");
+import(path : "labelPlacementUtils.fs", version : "");  // Shared utilities
 
 annotation {
     "Feature Type Name" : "MIHC Label Placement",
@@ -56,17 +57,8 @@ export const mihcPlacement = defineFeature(function(context is Context, id is Id
             throw regenError("Face must have at least 3 vertices");
         }
         
-        // Project vertices to 2D
-        var polygon2D = [];
-        for (var vertex in vertices)
-        {
-            const point3D = evVertexPoint(context, { "vertex" : vertex });
-            const point2D = project2DPoint(tangentPlane, point3D);
-            polygon2D = append(polygon2D, point2D);
-        }
-        
-        // Sort vertices into a contiguous loop
-        polygon2D = sortPolygonVertices(context, face, vertices, tangentPlane);
+        // Sort vertices into a contiguous loop and project to 2D
+        const polygon2D = sortPolygonVertices(context, face, vertices, tangentPlane);
         
         // Compute bounding box
         const boundingBox = computeBoundingBox2D(polygon2D);
@@ -139,56 +131,17 @@ export const mihcPlacement = defineFeature(function(context is Context, id is Id
         });
     });
 
-// Project a 3D point onto the 2D plane
-function project2DPoint(plane is Plane, point3D is Vector) returns Vector
-{
-    const relativePoint = point3D - plane.origin;
-    const xCoord = dot(relativePoint, plane.x);
-    const yCoord = dot(relativePoint, plane.y);
-    return vector(xCoord, yCoord);
-}
-
-// Unproject a 2D point back to 3D space
-function unproject2DPoint(plane is Plane, point2D is Vector) returns Vector
-{
-    return plane.origin + plane.x * point2D[0] + plane.y * point2D[1];
-}
-
-// Compute the 2D bounding box
-function computeBoundingBox2D(polygon is array) returns map
-{
-    var minX = polygon[0][0];
-    var maxX = polygon[0][0];
-    var minY = polygon[0][1];
-    var maxY = polygon[0][1];
-    
-    for (var point in polygon)
-    {
-        minX = min(minX, point[0]);
-        maxX = max(maxX, point[0]);
-        minY = min(minY, point[1]);
-        maxY = max(maxY, point[1]);
-    }
-    
-    return {
-        "minX" : minX,
-        "maxX" : maxX,
-        "minY" : minY,
-        "maxY" : maxY
-    };
-}
-
 // Find the longest horizontal chord at a given Y value
 function findLongestHorizontalChord(polygon is array, yValue is number) returns map
 {
     // Find all intersections of the scanline with polygon edges
     var intersections = [];
-    const numVertices = size(polygon);
+    const edges = getPolygonEdges(polygon);
     
-    for (var i = 0; i < numVertices; i += 1)
+    for (var edge in edges)
     {
-        const p1 = polygon[i];
-        const p2 = polygon[(i + 1) % numVertices];
+        const p1 = edge.p1;
+        const p2 = edge.p2;
         
         const y1 = p1[1];
         const y2 = p2[1];
@@ -197,7 +150,8 @@ function findLongestHorizontalChord(polygon is array, yValue is number) returns 
         if ((y1 <= yValue && yValue <= y2) || (y2 <= yValue && yValue <= y1))
         {
             // Skip if edge is horizontal and on the scanline (degenerate case)
-            if (abs(y1 - y2) < TOLERANCE.zeroLength * meter)
+            // Use dimensionless tolerance since we're in 2D projected space
+            if (abs(y1 - y2) < TOLERANCE.zeroLength)
             {
                 continue;
             }
@@ -240,94 +194,4 @@ function findLongestHorizontalChord(polygon is array, yValue is number) returns 
     }
     
     return longestChord;
-}
-
-// Sort polygon vertices into a contiguous loop
-// This handles the fact that qAdjacent returns unordered edges
-function sortPolygonVertices(context is Context, face is Query, vertices is array, plane is Plane) returns array
-{
-    // Get all edges of the face
-    const edges = evaluateQuery(context, qAdjacent(face, AdjacencyType.EDGE, EntityType.EDGE));
-    
-    if (size(edges) == 0)
-    {
-        // Fallback: return vertices as-is (may not be ordered)
-        var result = [];
-        for (var vertex in vertices)
-        {
-            const point3D = evVertexPoint(context, { "vertex" : vertex });
-            result = append(result, project2DPoint(plane, point3D));
-        }
-        return result;
-    }
-    
-    // Build adjacency map: vertex -> adjacent vertices
-    var adjacencyMap = {};
-    
-    for (var edge in edges)
-    {
-        const edgeVertices = evaluateQuery(context, qAdjacent(edge, AdjacencyType.VERTEX, EntityType.VERTEX));
-        if (size(edgeVertices) == 2)
-        {
-            const v1 = edgeVertices[0];
-            const v2 = edgeVertices[1];
-            
-            if (adjacencyMap[v1] == undefined)
-            {
-                adjacencyMap[v1] = [];
-            }
-            if (adjacencyMap[v2] == undefined)
-            {
-                adjacencyMap[v2] = [];
-            }
-            
-            adjacencyMap[v1] = append(adjacencyMap[v1], v2);
-            adjacencyMap[v2] = append(adjacencyMap[v2], v1);
-        }
-    }
-    
-    // Walk around the perimeter starting from the first vertex
-    var orderedVertices = [];
-    var visited = {};
-    var current = vertices[0];
-    
-    while (size(orderedVertices) < size(vertices))
-    {
-        orderedVertices = append(orderedVertices, current);
-        visited[current] = true;
-        
-        // Find next unvisited adjacent vertex
-        const adjacentVertices = adjacencyMap[current];
-        var nextVertex = undefined;
-        
-        if (adjacentVertices != undefined)
-        {
-            for (var adj in adjacentVertices)
-            {
-                if (visited[adj] == undefined)
-                {
-                    nextVertex = adj;
-                    break;
-                }
-            }
-        }
-        
-        if (nextVertex == undefined)
-        {
-            // No unvisited neighbors, we've completed the loop or hit a problem
-            break;
-        }
-        
-        current = nextVertex;
-    }
-    
-    // Convert ordered vertices to 2D points
-    var result = [];
-    for (var vertex in orderedVertices)
-    {
-        const point3D = evVertexPoint(context, { "vertex" : vertex });
-        result = append(result, project2DPoint(plane, point3D));
-    }
-    
-    return result;
 }

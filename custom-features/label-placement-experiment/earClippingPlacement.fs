@@ -12,6 +12,7 @@ import(path : "onshape/std/feature.fs", version : "2878.0");
 import(path : "onshape/std/mateConnector.fs", version : "2878.0");
 import(path : "onshape/std/query.fs", version : "2878.0");
 import(path : "onshape/std/vector.fs", version : "2878.0");
+import(path : "labelPlacementUtils.fs", version : "");  // Shared utilities
 
 annotation {
     "Feature Type Name" : "Ear Clipping Placement",
@@ -83,21 +84,6 @@ export const earClippingPlacement = defineFeature(function(context is Context, i
             "owner" : qNothing()
         });
     });
-
-// Project a 3D point onto the 2D plane
-function project2DPoint(plane is Plane, point3D is Vector) returns Vector
-{
-    const relativePoint = point3D - plane.origin;
-    const xCoord = dot(relativePoint, plane.x);
-    const yCoord = dot(relativePoint, plane.y);
-    return vector(xCoord, yCoord);
-}
-
-// Unproject a 2D point back to 3D space
-function unproject2DPoint(plane is Plane, point2D is Vector) returns Vector
-{
-    return plane.origin + plane.x * point2D[0] + plane.y * point2D[1];
-}
 
 // Find an ear triangle in the polygon
 // An ear is a triangle formed by three consecutive vertices where:
@@ -204,7 +190,8 @@ function calculateTriangleIncenter(p1 is Vector, p2 is Vector, p3 is Vector) ret
     
     const perimeter = a + b + c;
     
-    if (perimeter < TOLERANCE.zeroLength * meter)
+    // Use dimensionless tolerance since we're in 2D projected space
+    if (perimeter < TOLERANCE.zeroLength)
     {
         // Degenerate triangle, return centroid
         return (p1 + p2 + p3) / 3;
@@ -214,93 +201,4 @@ function calculateTriangleIncenter(p1 is Vector, p2 is Vector, p3 is Vector) ret
     const incenter = (a * p1 + b * p2 + c * p3) / perimeter;
     
     return incenter;
-}
-
-// Sort polygon vertices into a contiguous loop
-function sortPolygonVertices(context is Context, face is Query, vertices is array, plane is Plane) returns array
-{
-    // Get all edges of the face
-    const edges = evaluateQuery(context, qAdjacent(face, AdjacencyType.EDGE, EntityType.EDGE));
-    
-    if (size(edges) == 0)
-    {
-        // Fallback: return vertices as-is (may not be ordered)
-        var result = [];
-        for (var vertex in vertices)
-        {
-            const point3D = evVertexPoint(context, { "vertex" : vertex });
-            result = append(result, project2DPoint(plane, point3D));
-        }
-        return result;
-    }
-    
-    // Build adjacency map: vertex -> adjacent vertices
-    var adjacencyMap = {};
-    
-    for (var edge in edges)
-    {
-        const edgeVertices = evaluateQuery(context, qAdjacent(edge, AdjacencyType.VERTEX, EntityType.VERTEX));
-        if (size(edgeVertices) == 2)
-        {
-            const v1 = edgeVertices[0];
-            const v2 = edgeVertices[1];
-            
-            if (adjacencyMap[v1] == undefined)
-            {
-                adjacencyMap[v1] = [];
-            }
-            if (adjacencyMap[v2] == undefined)
-            {
-                adjacencyMap[v2] = [];
-            }
-            
-            adjacencyMap[v1] = append(adjacencyMap[v1], v2);
-            adjacencyMap[v2] = append(adjacencyMap[v2], v1);
-        }
-    }
-    
-    // Walk around the perimeter starting from the first vertex
-    var orderedVertices = [];
-    var visited = {};
-    var current = vertices[0];
-    
-    while (size(orderedVertices) < size(vertices))
-    {
-        orderedVertices = append(orderedVertices, current);
-        visited[current] = true;
-        
-        // Find next unvisited adjacent vertex
-        const adjacentVertices = adjacencyMap[current];
-        var nextVertex = undefined;
-        
-        if (adjacentVertices != undefined)
-        {
-            for (var adj in adjacentVertices)
-            {
-                if (visited[adj] == undefined)
-                {
-                    nextVertex = adj;
-                    break;
-                }
-            }
-        }
-        
-        if (nextVertex == undefined)
-        {
-            // No unvisited neighbors, completed the loop
-            break;
-        }
-        
-        current = nextVertex;
-    }
-    
-    // Convert ordered vertices to 2D points
-    var result = [];
-    for (var vertex in orderedVertices)
-    {
-        const point3D = evVertexPoint(context, { "vertex" : vertex });
-        result = append(result, project2DPoint(plane, point3D));
-    }
-    
-    return result;
 }
