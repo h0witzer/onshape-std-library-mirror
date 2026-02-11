@@ -33,11 +33,8 @@ export const earClippingPlacement = defineFeature(function(context is Context, i
         
         const face = definition.face;
         
-        // Get tangent plane for 2D projection
-        const tangentPlane = evFaceTangentPlane(context, {
-            "face" : face,
-            "parameter" : vector(0.5, 0.5)
-        });
+        // Get the plane the face lies on (simpler than evFaceTangentPlane for planar faces)
+        const plane = evPlane(context, {"face" : face});
         
         // Sample edges to create polygon (works for all edge types)
         const edges = evaluateQuery(context, qAdjacent(face, AdjacencyType.EDGE, EntityType.EDGE));
@@ -61,7 +58,7 @@ export const earClippingPlacement = defineFeature(function(context is Context, i
             
             for (var line in tangentLines)
             {
-                const point2D = project2DPoint(tangentPlane, line.origin);
+                const point2D = project2DPoint(plane, line.origin);
                 polygon2D = append(polygon2D, point2D);
             }
         }
@@ -83,14 +80,14 @@ export const earClippingPlacement = defineFeature(function(context is Context, i
         const incenter2D = calculateTriangleIncenter(ear.p1, ear.p2, ear.p3);
         
         // Convert back to 3D
-        const placement3D = unproject2DPoint(tangentPlane, incenter2D);
+        const placement3D = unproject2DPoint(plane, incenter2D);
         
         // Create coordinate system (X-axis along first ear edge)
         const edgeDir2D = normalize(ear.p2 - ear.p1);
-        const planeY = cross(tangentPlane.normal, tangentPlane.x);
-        const edgeDir3D = tangentPlane.x * (edgeDir2D[0] * meter) + planeY * (edgeDir2D[1] * meter);
+        const planeY = cross(plane.normal, plane.x);
+        const edgeDir3D = plane.x * (edgeDir2D[0] * meter) + planeY * (edgeDir2D[1] * meter);
         
-        const placementCsys = coordSystem(placement3D, edgeDir3D, tangentPlane.normal);
+        const placementCsys = coordSystem(placement3D, edgeDir3D, plane.normal);
         
         opMateConnector(context, id + "mateConnector", {
             "coordSystem" : placementCsys,

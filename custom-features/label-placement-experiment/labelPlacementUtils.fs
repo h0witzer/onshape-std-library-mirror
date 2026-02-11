@@ -1,40 +1,40 @@
 FeatureScript 2878;
 
 // Shared utility functions for label placement features
-// Provides common 2D polygon operations and projection helpers
+// Provides common 2D polygon operations and helpers
 
 import(path : "onshape/std/common.fs", version : "2878.0");
 import(path : "onshape/std/evaluate.fs", version : "2878.0");
 import(path : "onshape/std/query.fs", version : "2878.0");
+import(path : "onshape/std/surfaceGeometry.fs", version : "2878.0");
 import(path : "onshape/std/vector.fs", version : "2878.0");
 
 /**
- * Project a 3D point onto a 2D plane coordinate system
- * @param plane : Plane with origin and basis vectors (x, y)
+ * Project a 3D point onto a 2D plane coordinate system using standard library functions
+ * @param plane : Plane (from evPlane)
  * @param point3D : 3D point to project
  * @returns 2D vector in the plane's coordinate system (dimensionless)
  */
 export function project2DPoint(plane is Plane, point3D is Vector) returns Vector
 {
-    const relativePoint = point3D - plane.origin;
-    const planeY = cross(plane.normal, plane.x);
-    const xCoord = dot(relativePoint, plane.x);
-    const yCoord = dot(relativePoint, planeY);
-    // Strip units - we're working in a local 2D coordinate system where only relative positions matter
-    return vector(stripUnits(xCoord), stripUnits(yCoord));
+    // Use standard library worldToPlane function
+    const point2DWithUnits = worldToPlane(plane, point3D);
+    // Strip units for dimensionless 2D operations
+    return vector(stripUnits(point2DWithUnits[0]), stripUnits(point2DWithUnits[1]));
 }
 
 /**
- * Unproject a 2D point back to 3D space
- * @param plane : Plane with origin and basis vectors (x, y)
+ * Unproject a 2D point back to 3D space using standard library functions
+ * @param plane : Plane (from evPlane)
  * @param point2D : 2D point in the plane's coordinate system (dimensionless)
  * @returns 3D point in world coordinates
  */
 export function unproject2DPoint(plane is Plane, point2D is Vector) returns Vector
 {
-    const planeY = cross(plane.normal, plane.x);
-    // point2D is dimensionless, so we multiply by meter to get proper units for 3D space
-    return plane.origin + plane.x * (point2D[0] * meter) + planeY * (point2D[1] * meter);
+    // Add units back - planeToWorld expects a length vector
+    const point2DWithUnits = point2D * meter;
+    // Use standard library planeToWorld function
+    return planeToWorld(plane, point2DWithUnits);
 }
 
 /**

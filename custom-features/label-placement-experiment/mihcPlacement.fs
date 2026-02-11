@@ -41,11 +41,8 @@ export const mihcPlacement = defineFeature(function(context is Context, id is Id
         
         const face = definition.face;
         
-        // Get tangent plane for 2D projection
-        const tangentPlane = evFaceTangentPlane(context, {
-            "face" : face,
-            "parameter" : vector(0.5, 0.5)
-        });
+        // Get the plane the face lies on (simpler than evFaceTangentPlane for planar faces)
+        const plane = evPlane(context, {"face" : face});
         
         // Sample edges to create polygon (works for all edge types)
         const edges = evaluateQuery(context, qAdjacent(face, AdjacencyType.EDGE, EntityType.EDGE));
@@ -69,7 +66,7 @@ export const mihcPlacement = defineFeature(function(context is Context, id is Id
             
             for (var line in tangentLines)
             {
-                const point2D = project2DPoint(tangentPlane, line.origin);
+                const point2D = project2DPoint(plane, line.origin);
                 polygon2D = append(polygon2D, point2D);
             }
         }
@@ -133,14 +130,14 @@ export const mihcPlacement = defineFeature(function(context is Context, id is Id
         );
         
         // Convert back to 3D
-        const placement3D = unproject2DPoint(tangentPlane, placement2D);
+        const placement3D = unproject2DPoint(plane, placement2D);
         
         // Create coordinate system (X-axis along chord)
         const chordDir2D = normalize(bestChord.end - bestChord.start);
-        const planeY = cross(tangentPlane.normal, tangentPlane.x);
-        const chordDir3D = tangentPlane.x * (chordDir2D[0] * meter) + planeY * (chordDir2D[1] * meter);
+        const planeY = cross(plane.normal, plane.x);
+        const chordDir3D = plane.x * (chordDir2D[0] * meter) + planeY * (chordDir2D[1] * meter);
         
-        const placementCsys = coordSystem(placement3D, chordDir3D, tangentPlane.normal);
+        const placementCsys = coordSystem(placement3D, chordDir3D, plane.normal);
         
         opMateConnector(context, id + "mateConnector", {
             "coordSystem" : placementCsys,
