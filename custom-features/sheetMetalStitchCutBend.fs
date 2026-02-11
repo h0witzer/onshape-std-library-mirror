@@ -907,19 +907,20 @@ function shouldCreateBendReliefSubsegments(bendReliefParams) returns boolean
  * - Faces are processed one at a time to ensure unique association attributes
  * 
  * Cylinder Dimensions:
- * - Radius: Calculated based on depthScale and widthScale interaction
- *   Formula: setbackDistance = (depthScale - 1.5 × widthScale) × thickness
- *   The 1.5× factor accounts for how relief width affects the terminus position:
- *     - 0.5× for half the relief width at the terminus
- *     - 1.0× for the full width component in the depth calculation
- * - Width: Controlled by subsegment size calculation (widthScale × thickness)
+ * - Radius: OSSB/ISSB base + bend relief depth adjustment
+ *   - OSSB/ISSB base: Standard setback to tangent vertex of bend
+ *     - Inside: ISSB = R × tan(α/2)
+ *     - Outside: OSSB = (R + T) × tan(α/2)
+ *   - Bend relief adjustment = depthScale × T - 1.5 × widthScale × T - base
+ *   - Total: base + adjustment (simplifies to depthScale × T - 1.5 × widthScale × T)
+ * - Width: Controlled by subsegment size (widthScale × thickness)
  * 
- * Why Width Affects Depth:
- * - The relief extends along the bend line with width = widthScale × thickness
- * - The terminus of the relief is positioned relative to the bend
- * - Relief width has a multiplicative effect on the final depth position
- * - Formula derived from actual bend relief geometry measurements
- * - Matches behavior of standard flange bend relief features
+ * Why This Formula:
+ * - OSSB/ISSB provides the base distance to the tangent vertex of the bend
+ * - Bend reliefs build on top of this base
+ * - depthScale extends the relief depth beyond the base
+ * - Relief width affects depth: 1.5× width scale reduction accounts for terminus position
+ * - Formula verified against actual flange bend relief geometry
  * 
  * Inputs:
  *   context - Evaluation context
@@ -950,7 +951,63 @@ function subtractReliefCylindersFromDefinition(context is Context, id is Id, rel
     }
     
     // Calculate cylinder dimensions based on bend relief parameters and sheet metal thickness
-    // The cylinder radius determines how far the relief extends from the bend line
+    // Uses OSSB/ISSB as the base, with bend relief depth adjustments applied on top
+    
+    // Get bend radius from existing attribute or use default
+    var bendRadius = defaultRadius;
+    if (existingAttribute != undefined && existingAttribute.radius != undefined && existingAttribute.radius.value != undefined)
+    {
+        bendRadius = existingAttribute.radius.value;
+    }
+    
+    // Get bend angle from existing attribute (default to 90 degrees if not available)
+    var bendAngle = 90 * degree;
+    if (existingAttribute != undefined && existingAttribute.angle != undefined && existingAttribute.angle.value != undefined)
+    {
+        bendAngle = existingAttribute.angle.value;
+    }
+    
+    // Determine thickness direction to calculate appropriate setback base
+    var frontThickness = sheetMetalThickness;
+    var backThickness = sheetMetalThickness;
+    var totalThickness = sheetMetalThickness;
+    var useInsideSetback = true; // Default to inside (ISSB)
+    
+    if (modelParameters != undefined)
+    {
+        if (modelParameters.frontThickness != undefined)
+        {
+            frontThickness = modelParameters.frontThickness;
+        }
+        if (modelParameters.backThickness != undefined)
+        {
+            backThickness = modelParameters.backThickness;
+        }
+        totalThickness = frontThickness + backThickness;
+        
+        // Determine dimensioning style
+        const hasFront = frontThickness > 0 * meter;
+        const hasBack = backThickness > 0 * meter;
+        
+        if (hasBack)
+        {
+            // Outside-dimensioned (BACK) or middle-dimensioned (BOTH)
+            useInsideSetback = false;
+        }
+    }
+    
+    // Calculate OSSB/ISSB base - distance from virtual sharp to tangent vertex of bend
+    var setbackBase;
+    if (useInsideSetback)
+    {
+        // Inside-dimensioned: ISSB = R × tan(α/2)
+        setbackBase = bendRadius * tan(bendAngle / 2);
+    }
+    else
+    {
+        // Outside-dimensioned: OSSB = (R + T) × tan(α/2)
+        setbackBase = (bendRadius + totalThickness) * tan(bendAngle / 2);
+    }
     
     // Get depth scale for the relief
     var depthScale = DEFAULT_BEND_RELIEF_DEPTH_SCALE;
@@ -966,21 +1023,20 @@ function subtractReliefCylindersFromDefinition(context is Context, id is Id, rel
         widthScale = bendReliefParams.widthScale;
     }
     
-    // Calculate setback distance for bend relief
-    // The relief depth is based on depthScale but reduced by the relief width
-    // Formula derived from actual bend relief geometry:
-    // setbackDistance = (depthScale - 1.5 × widthScale) × thickness
+    // Calculate bend relief depth adjustment
+    // Bend reliefs build on top of the OSSB/ISSB base
+    // The relief depth is extended by depthScale but reduced by width effects
+    // Formula: adjustment = depthScale × T - 1.5 × widthScale × T - setbackBase
     // 
-    // The 1.5× factor accounts for:
+    // The 1.5× widthScale factor accounts for:
     // - 0.5× for half the relief width at the terminus
     // - 1.0× for the full width component in the depth calculation
-    //
-    // This matches the behavior of standard bend relief geometry where the relief
-    // width affects the final position of the relief terminus relative to the bend
-    const setbackDistance = (depthScale - 1.5 * widthScale) * sheetMetalThickness;
+    const reliefDepthAdjustment = (depthScale * sheetMetalThickness) - (1.5 * widthScale * sheetMetalThickness) - setbackBase;
     
-    // The cylinder radius is the setback distance
-    // This ensures the cylinder creates adequate clearance for the bend relief geometry
+    // Total cylinder radius = OSSB/ISSB base + bend relief adjustment
+    const setbackDistance = setbackBase + reliefDepthAdjustment;
+    
+    // The cylinder radius is the total setback distance
     var cylinderRadius = setbackDistance;
     
     // Collect all cylinder bodies and sketches created for cleanup at the end
