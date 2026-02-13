@@ -66,7 +66,7 @@ export const extendSurface = defineFeature(function(context is Context, id is Id
         }
 
         // Handle positive distances (extension) and negative distances (retraction) differently
-        if (definition.extendDistance >= 0 * meter)
+        if (definition.extendDistance >= 0)
         {
             // Positive distance: use opExtendSheetBody for extension
             var extendDefinition = {
@@ -83,7 +83,7 @@ export const extendSurface = defineFeature(function(context is Context, id is Id
             
             if (size(edgesToRetract) == 0)
             {
-                throw regenError("No edges found to retract");
+                throw regenError("No valid edges found for retraction. Ensure the selected entities have boundary edges.");
             }
             
             var edgeChangeOptions = [];
