@@ -80,6 +80,10 @@ export const sheetMetalStitchCutBend = defineSheetMetalFeature(function(context 
 
         // Use centralized spacing predicate from spacingUtils
         curvePatternSpacingPredicate(definition);
+        
+        // Relief geometry method selection (for performance comparison)
+        annotation { "Name" : "Use edge change for relief (experimental)", "Default" : false }
+        definition.useEdgeChangeForRelief is boolean;
     }
     {
         // Validate sheet metal context
@@ -536,13 +540,27 @@ function processJointEntity(context is Context, id is Id, jointEntity is Query,
             SMJointType.RIP, definition, false, false, undefined, undefined);
     }
     
-    // Subtract cylinders from sheet metal definition in relief regions
-    // Follows Sheet Metal Tab pattern: sweep cylinders, boolean subtract before SM update
+    // Create relief geometry in relief regions using selected method
+    // Two methods available:
+    // 1. Cylinder subtraction (original): Creates cylinders via sweep, boolean subtract
+    // 2. Edge change (alternative): Direct edge offset with opEdgeChange
     if (bendReliefSegmentCount > 0 && smDefinitionBodyTracking != undefined)
     {
-        subtractReliefCylindersFromDefinition(context, id + "reliefSubtract", 
-                                              bendReliefSegmentEdges, smDefinitionBodyTracking, 
-                                              existingAttribute, defaultRadius, bendReliefParams, sheetMetalThickness, modelParameters, bendReliefSubsegmentSize);
+        if (definition.useEdgeChangeForRelief == true)
+        {
+            // Alternative method: Use opEdgeChange for rectangular reliefs
+            retractReliefEdgesWithEdgeChange(context, id + "reliefRetract", 
+                                            bendReliefSegmentEdges, smDefinitionBodyTracking, 
+                                            existingAttribute, defaultRadius, bendReliefParams, sheetMetalThickness, modelParameters, bendReliefSubsegmentSize);
+        }
+        else
+        {
+            // Original method: Subtract cylinders from sheet metal definition
+            // Follows Sheet Metal Tab pattern: sweep cylinders, boolean subtract before SM update
+            subtractReliefCylindersFromDefinition(context, id + "reliefSubtract", 
+                                                  bendReliefSegmentEdges, smDefinitionBodyTracking, 
+                                                  existingAttribute, defaultRadius, bendReliefParams, sheetMetalThickness, modelParameters, bendReliefSubsegmentSize);
+        }
     }
     
     return allEdgesAfterSplitQuery;
@@ -1234,7 +1252,178 @@ function subtractReliefCylindersFromDefinition(context is Context, id is Id, rel
     }
 }
 
-
+/**
+ * Alternative method: Retracts relief edges using opEdgeChange instead of cylinder subtraction.
+ * This approach directly offsets edges by a negative dimension rather than creating boolean tools.
+ * Implements only rectangular reliefs (obround case not supported in this alternative).
+ * 
+ * Performance Comparison:
+ * - Cylinder method: Creates geometry, collision detection, boolean operations
+ * - EdgeChange method: Direct edge offset operations
+ * 
+ * Edge Offset Calculation:
+ * - Offset distance = OSSB/ISSB base + bend relief adjustment
+ * - Same calculation as cylinder radius in original method
+ * - Applied as negative offset to retract edges inward
+ * 
+ * For each relief edge:
+ * - Find all adjacent faces
+ * - Apply negative offset to edge for each adjacent face
+ * - Creates rectangular relief cutouts
+ * 
+ * Inputs:
+ *   context - Evaluation context
+ *   id - Feature ID for this operation
+ *   reliefEdges - Query for relief segment edges
+ *   trackedDefinitionBody - Tracked query for the sheet metal definition body
+ *   existingAttribute - Original joint attribute (contains radius, angle info)
+ *   defaultRadius - Default bend radius from model parameters
+ *   bendReliefParams - Bend relief parameters (widthScale, depthScale)
+ *   sheetMetalThickness - Sheet metal thickness
+ *   modelParameters - Full model parameters (contains frontThickness, backThickness)
+ *   bendReliefSubsegmentSize - Pre-calculated subsegment size (not used in this method but kept for signature compatibility)
+ */
+function retractReliefEdgesWithEdgeChange(context is Context, id is Id, reliefEdges is Query, trackedDefinitionBody is Query,
+    existingAttribute is SMAttribute, defaultRadius, bendReliefParams, sheetMetalThickness, modelParameters, bendReliefSubsegmentSize)
+{
+    const reliefEdgeList = evaluateQuery(context, reliefEdges);
+    
+    if (size(reliefEdgeList) == 0)
+    {
+        return;
+    }
+    
+    // Evaluate the tracked body once to get the current sheet metal body
+    const sheetMetalBody = evaluateQuery(context, trackedDefinitionBody);
+    if (size(sheetMetalBody) == 0)
+    {
+        return;
+    }
+    
+    // Calculate offset distance based on bend relief parameters and sheet metal thickness
+    // Uses same calculation as cylinder radius in original method
+    
+    // Get bend radius from existing attribute or use default
+    var bendRadius = defaultRadius;
+    if (existingAttribute != undefined && existingAttribute.radius != undefined && existingAttribute.radius.value != undefined)
+    {
+        bendRadius = existingAttribute.radius.value;
+    }
+    
+    // Get bend angle from existing attribute (default to 90 degrees if not available)
+    var bendAngle = 90 * degree;
+    if (existingAttribute != undefined && existingAttribute.angle != undefined && existingAttribute.angle.value != undefined)
+    {
+        bendAngle = existingAttribute.angle.value;
+    }
+    
+    // Determine thickness direction to calculate appropriate setback base
+    var frontThickness = sheetMetalThickness;
+    var backThickness = sheetMetalThickness;
+    var totalThickness = sheetMetalThickness;
+    var useInsideSetback = true; // Default to inside (ISSB)
+    
+    if (modelParameters != undefined)
+    {
+        if (modelParameters.frontThickness != undefined)
+        {
+            frontThickness = modelParameters.frontThickness;
+        }
+        if (modelParameters.backThickness != undefined)
+        {
+            backThickness = modelParameters.backThickness;
+        }
+        totalThickness = frontThickness + backThickness;
+        
+        // Determine dimensioning style
+        const hasFront = frontThickness > 0 * meter;
+        const hasBack = backThickness > 0 * meter;
+        
+        if (hasBack)
+        {
+            // Outside-dimensioned (BACK) or middle-dimensioned (BOTH)
+            useInsideSetback = false;
+        }
+    }
+    
+    // Calculate OSSB/ISSB base - distance from virtual sharp to tangent vertex of bend
+    var setbackBase;
+    if (useInsideSetback)
+    {
+        // Inside-dimensioned: ISSB = R × tan(α/2)
+        setbackBase = bendRadius * tan(bendAngle / 2);
+    }
+    else
+    {
+        // Outside-dimensioned: OSSB = (R + T) × tan(α/2)
+        setbackBase = (bendRadius + totalThickness) * tan(bendAngle / 2);
+    }
+    
+    // Get depth scale for the relief
+    var depthScale = DEFAULT_BEND_RELIEF_DEPTH_SCALE;
+    if (bendReliefParams != undefined && bendReliefParams.depthScale != undefined)
+    {
+        depthScale = bendReliefParams.depthScale;
+    }
+    
+    // Get width scale for the relief
+    var widthScale = DEFAULT_BEND_RELIEF_DEPTH_SCALE; // Using same default
+    if (bendReliefParams != undefined && bendReliefParams.widthScale != undefined)
+    {
+        widthScale = bendReliefParams.widthScale;
+    }
+    
+    // Calculate bend relief depth adjustment
+    // Same formula as cylinder method
+    const reliefDepthAdjustment = ((depthScale - 1) * sheetMetalThickness) + (0.5 * widthScale * sheetMetalThickness);
+    
+    // Total offset distance = OSSB/ISSB base + bend relief adjustment
+    const offsetDistance = setbackBase + reliefDepthAdjustment;
+    
+    // Build edge change options for all relief edges and their adjacent faces
+    var edgeChangeOptions = [];
+    
+    for (var reliefEdge in reliefEdgeList)
+    {
+        try
+        {
+            // Get all adjacent faces for this edge
+            const adjacentFaces = evaluateQuery(context, qAdjacent(reliefEdge, AdjacencyType.EDGE, EntityType.FACE));
+            
+            // Apply edge change to each adjacent face
+            // For two-sided edges, this creates an opening between both surfaces
+            for (var face in adjacentFaces)
+            {
+                edgeChangeOptions = append(edgeChangeOptions, {
+                    "edge" : reliefEdge,
+                    "face" : face,
+                    "offset" : -offsetDistance  // Negative offset to retract edge inward
+                });
+            }
+        }
+        catch
+        {
+            // If any edge fails, continue with others
+            // Some relief edges may not be suitable for edge change
+        }
+    }
+    
+    // Apply all edge changes in a single operation
+    if (size(edgeChangeOptions) > 0)
+    {
+        try
+        {
+            opEdgeChange(context, id + "edgeChange", {
+                "edgeChangeOptions" : edgeChangeOptions
+            });
+        }
+        catch
+        {
+            // Edge change operation may fail on certain geometry configurations
+            // This is acceptable as it's an alternative method being tested
+        }
+    }
+}
 
 /**
  * Calculates the size of bend relief subsegments based on sheet metal thickness and relief parameters.
