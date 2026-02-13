@@ -1095,8 +1095,9 @@ function subtractReliefCylindersFromDefinition(context is Context, id is Id, rel
                     const filletRadius = cylinderHeight / 2;
                     
                     // Query for cap face edges (both start and end caps)
-                    const capFaceEdges = qOwnedByBody(qCreatedBy(sweepId, EntityType.BODY), EntityType.EDGE)
-                        ->qIntersection(qCapEntity(sweepId, CapType.EITHER, EntityType.EDGE));
+                    const sweepBodyEdges = qOwnedByBody(qCreatedBy(sweepId, EntityType.BODY), EntityType.EDGE);
+                    const capEdges = qCapEntity(sweepId, CapType.EITHER, EntityType.EDGE);
+                    const capFaceEdges = sweepBodyEdges->qIntersection(capEdges);
                     
                     // Apply fillet to the cap face edges
                     const filletId = id + ("fillet" ~ i);
@@ -1107,8 +1108,10 @@ function subtractReliefCylindersFromDefinition(context is Context, id is Id, rel
                 }
                 catch
                 {
-                    // If fillet fails, continue with the non-filleted cylinder
-                    // The cylinder will still function, just with sharp corners
+                    // If fillet fails, continue with the non-filleted cylinder.
+                    // The cylinder will still function, just with sharp corners.
+                    // Fillet can fail on degenerate geometry or if the radius is too large.
+                    // This graceful fallback ensures the feature doesn't break on edge cases.
                 }
             }
             
