@@ -542,7 +542,7 @@ function processJointEntity(context is Context, id is Id, jointEntity is Query,
     {
         subtractReliefCylindersFromDefinition(context, id + "reliefSubtract", 
                                               bendReliefSegmentEdges, smDefinitionBodyTracking, 
-                                              existingAttribute, defaultRadius, bendReliefParams, sheetMetalThickness, modelParameters);
+                                              existingAttribute, defaultRadius, bendReliefParams, sheetMetalThickness, modelParameters, bendReliefSubsegmentSize);
     }
     
     return allEdgesAfterSplitQuery;
@@ -932,9 +932,10 @@ function shouldCreateBendReliefSubsegments(bendReliefParams) returns boolean
  *   bendReliefParams - Bend relief parameters (widthScale, depthScale)
  *   sheetMetalThickness - Sheet metal thickness
  *   modelParameters - Full model parameters (contains frontThickness, backThickness)
+ *   bendReliefSubsegmentSize - Pre-calculated subsegment size (cylinder height along edge)
  */
 function subtractReliefCylindersFromDefinition(context is Context, id is Id, reliefEdges is Query, trackedDefinitionBody is Query,
-    existingAttribute is SMAttribute, defaultRadius, bendReliefParams, sheetMetalThickness, modelParameters)
+    existingAttribute is SMAttribute, defaultRadius, bendReliefParams, sheetMetalThickness, modelParameters, bendReliefSubsegmentSize)
 {
     const reliefEdgeList = evaluateQuery(context, reliefEdges);
     
@@ -1080,6 +1081,40 @@ function subtractReliefCylindersFromDefinition(context is Context, id is Id, rel
                 "profiles" : qSketchRegion(sketchId),
                 "path" : reliefEdge
             });
+            
+            // Apply fillet to cap faces for OBROUND style
+            if (bendReliefParams.style == SMReliefStyle.OBROUND)
+            {
+                try
+                {
+                    // Use pre-calculated subsegment size as cylinder height
+                    // This value was already calculated as thickness * widthScale
+                    // and represents the length of each relief edge segment
+                    const cylinderHeight = bendReliefSubsegmentSize;
+                    
+                    // Fillet radius is half the cylinder height
+                    const filletRadius = cylinderHeight / 2;
+                    
+                    // Query for cap face edges (both start and end caps)
+                    const sweepBodyEdges = qOwnedByBody(qCreatedBy(sweepId, EntityType.BODY), EntityType.EDGE);
+                    const capEdges = qCapEntity(sweepId, CapType.EITHER, EntityType.EDGE);
+                    const capFaceEdges = sweepBodyEdges->qIntersection(capEdges);
+                    
+                    // Apply fillet to the cap face edges
+                    const filletId = id + ("fillet" ~ i);
+                    opFillet(context, filletId, {
+                        "entities" : capFaceEdges,
+                        "radius" : filletRadius
+                    });
+                }
+                catch
+                {
+                    // If fillet fails, continue with the non-filleted cylinder.
+                    // The cylinder will still function, just with sharp corners.
+                    // Fillet can fail on degenerate geometry or if the radius is too large.
+                    // This graceful fallback ensures the feature doesn't break on edge cases.
+                }
+            }
             
             // Collect cylinder for cleanup
             const cylinderBody = qCreatedBy(sweepId, EntityType.BODY);
