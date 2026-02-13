@@ -55,7 +55,7 @@ export const extendSurface = defineFeature(function(context is Context, id is Id
     }
     {
         // Determine which entities to work with based on extend type
-        var entities is Query;
+        var entities;
         if (definition.extendType == ExtendTypeEnum.EXTEND_BY_DISTANCE_FULL)
         {
             entities = definition.surfaceToExtend;
