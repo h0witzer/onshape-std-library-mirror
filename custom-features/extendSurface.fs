@@ -18,8 +18,8 @@ export enum ExtendTypeEnum
 }
 
 
-annotation { "Feature Type Name" : "Extend Surface" }
-export const extendSurface = defineFeature(function(context is Context, id is Id, definition is map)
+annotation { "Feature Type Name" : "Modify Surface Edges" }
+export const modifyEdges = defineFeature(function(context is Context, id is Id, definition is map)
     precondition
     {
         annotation { "Name" : "Extend Type" }
@@ -83,17 +83,24 @@ export const extendSurface = defineFeature(function(context is Context, id is Id
             
             if (size(edgesToRetract) == 0)
             {
-                throw regenError("No valid edges found for retraction. Ensure the selected entities have boundary edges.");
+                throw regenError("No valid edges found for retraction. Ensure the selected entities have edges.");
             }
             
             var edgeChangeOptions = [];
-            for (var edge in edgesToRetract)
+            for (var edgeInfo in edgesToRetract)
             {
-                edgeChangeOptions = append(edgeChangeOptions, {
-                    "edge" : edge,
-                    "face" : qAdjacent(edge, AdjacencyType.EDGE, EntityType.FACE),
-                    "offset" : definition.extendDistance
-                });
+                // For each edge, get all adjacent faces
+                var adjacentFaces = evaluateQuery(context, qAdjacent(edgeInfo.edge, AdjacencyType.EDGE, EntityType.FACE));
+                
+                // Apply edge change to each adjacent face
+                for (var face in adjacentFaces)
+                {
+                    edgeChangeOptions = append(edgeChangeOptions, {
+                        "edge" : edgeInfo.edge,
+                        "face" : face,
+                        "offset" : definition.extendDistance
+                    });
+                }
             }
             
             opEdgeChange(context, id + "edgeChange", { "edgeChangeOptions" : edgeChangeOptions });
@@ -102,11 +109,11 @@ export const extendSurface = defineFeature(function(context is Context, id is Id
 
 /**
  * Helper function to get edges for retraction operation.
- * Extracts edges from the entities query, filtering for one-sided edges.
+ * Extracts edges from the entities query, now supporting both one-sided and two-sided edges.
  * 
  * @param context : The context to evaluate queries in
- * @param entities : Query for either edges or sheet bodies to retract
- * @returns : Array of edge queries suitable for retraction
+ * @param entities : Query for either edges or sheet bodies to modify
+ * @returns : Array of maps with edge information, each containing an "edge" field
  */
 function getEdgesForRetraction(context is Context, entities is Query) returns array
 {
@@ -115,9 +122,17 @@ function getEdgesForRetraction(context is Context, entities is Query) returns ar
     var bodyEdges = qOwnedByBody(entities, EntityType.EDGE);
     var allEdges = qUnion([selectedEdges, bodyEdges]);
     
-    // Filter for one-sided edges (sheet body boundaries)
+    // Get both one-sided edges (sheet body boundaries) and two-sided edges (internal edges)
     var oneSidedEdges = qEdgeTopologyFilter(allEdges, EdgeTopology.ONE_SIDED);
+    var twoSidedEdges = qEdgeTopologyFilter(allEdges, EdgeTopology.TWO_SIDED);
+    var relevantEdges = qUnion([oneSidedEdges, twoSidedEdges]);
     
-    // Evaluate and return as array
-    return evaluateQuery(context, oneSidedEdges);
+    // Evaluate and return as array of edge info maps
+    var edgeArray = evaluateQuery(context, relevantEdges);
+    var result = [];
+    for (var edge in edgeArray)
+    {
+        result = append(result, { "edge" : edge });
+    }
+    return result;
 }
