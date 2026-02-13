@@ -575,6 +575,7 @@ function findAllJointDefinitionEntities(context is Context, entity is Query, ent
  * Inputs:
  *   context - Evaluation context
  *   id - Operation ID (unique per segment)
+ *   sharedAttributeId - Shared attribute ID for grouping related segments
  *   jointEdge - Query for the joint edge
  *   existingAttribute - Existing joint attribute to reference
  *   radius - Bend radius
@@ -583,7 +584,7 @@ function findAllJointDefinitionEntities(context is Context, entity is Query, ent
  *   useDefaultKFactor - Whether using default K-factor
  * Outputs: New bend attribute with full metadata
  */
-function createNewEdgeBendAttribute(context is Context, id is Id, jointEdge is Query,
+function createNewEdgeBendAttribute(context is Context, id is Id, sharedAttributeId is string, jointEdge is Query,
     existingAttribute is SMAttribute,
     radius, useDefaultRadius is boolean,
     kFactor, useDefaultKFactor is boolean) returns SMAttribute
@@ -592,12 +593,12 @@ precondition
     isLength(radius);
 }
 {
-    // Always create a new bend attribute with unique ID
-    var bendAttribute = makeSMJointAttribute(toAttributeId(id));
+    // Use shared attribute ID to group all bend segments from same input edge
+    var bendAttribute = makeSMJointAttribute(sharedAttributeId);
     bendAttribute.jointType = {
             "value" : SMJointType.BEND,
             "canBeEdited" : false,
-            "controllingFeatureId" : toAttributeId(id),
+            "controllingFeatureId" : sharedAttributeId,
             "parameterIdInFeature" : "stitchJointType"
         };
     
@@ -630,11 +631,10 @@ precondition
     // This ensures changes via sheet metal table modify this feature rather than creating separate ones
     if (!useDefaultRadius || !useDefaultKFactor)
     {
-        const attributeId = toAttributeId(id);
-        bendAttribute.radius.controllingFeatureId = attributeId;
+        bendAttribute.radius.controllingFeatureId = sharedAttributeId;
         bendAttribute.radius.parameterIdInFeature = "radius";
         bendAttribute.radius.defaultIdInFeature = "useDefaultRadius";
-        bendAttribute['k-factor'].controllingFeatureId = attributeId;
+        bendAttribute['k-factor'].controllingFeatureId = sharedAttributeId;
         bendAttribute['k-factor'].parameterIdInFeature = "kFactor";
         bendAttribute['k-factor'].defaultIdInFeature = "useDefaultKFactor";
     }
@@ -646,18 +646,19 @@ precondition
  * Creates a new rip attribute with proper metadata.
  * Inputs:
  *   id - Operation ID (unique per segment)
+ *   sharedAttributeId - Shared attribute ID for grouping related segments
  *   existingAttribute - Existing joint attribute to reference
  *   jointStyle - Rip joint style (EDGE, BUTT, BUTT2)
  * Outputs: New rip attribute with full metadata
  */
-function createNewRipAttribute(id is Id, existingAttribute is SMAttribute, jointStyle is SMJointStyle) returns SMAttribute
+function createNewRipAttribute(id is Id, sharedAttributeId is string, existingAttribute is SMAttribute, jointStyle is SMJointStyle) returns SMAttribute
 {
-    // Always create a new rip attribute with unique ID
-    var ripAttribute = makeSMJointAttribute(toAttributeId(id));
+    // Use shared attribute ID to group all rip segments from same input edge
+    var ripAttribute = makeSMJointAttribute(sharedAttributeId);
     ripAttribute.jointType = {
             "value" : SMJointType.RIP,
             "canBeEdited" : false,
-            "controllingFeatureId" : toAttributeId(id),
+            "controllingFeatureId" : sharedAttributeId,
             "parameterIdInFeature" : "entity"
         };
     
@@ -665,7 +666,7 @@ function createNewRipAttribute(id is Id, existingAttribute is SMAttribute, joint
     ripAttribute.jointStyle = {
             "value" : jointStyle,
             "canBeEdited" : false,
-            "controllingFeatureId" : toAttributeId(id),
+            "controllingFeatureId" : sharedAttributeId,
             "parameterIdInFeature" : "entity"
         };
     
@@ -683,7 +684,8 @@ function createNewRipAttribute(id is Id, existingAttribute is SMAttribute, joint
 
 /**
  * Applies joint attributes to a set of edge segments.
- * Creates appropriate bend or rip attributes with unique IDs and assigns them to the segments.
+ * Creates appropriate bend or rip attributes with a shared ID (for grouping) and assigns them to the segments.
+ * All segments of the same type from the same input edge share an attribute ID to reduce clutter in the context window.
  * Inputs:
  *   context - Evaluation context
  *   id - Operation ID for this attribute assignment
@@ -703,12 +705,16 @@ function applyJointAttributesToSegments(context is Context, id is Id, segmentEdg
     // Get each individual edge segment
     const edges = evaluateQuery(context, segmentEdges);
     
+    // Create a SHARED attribute ID for all segments of this type from this input edge
+    // This groups all bends or all rips from the same input edge together in the context window
+    const sharedAttributeId = toAttributeId(id);
+    
     for (var i = 0; i < size(edges); i += 1)
     {
         const edge = edges[i];
         const edgeQuery = qUnion([edge]);
         
-        // Create new attribute with unique ID based on target joint type
+        // Create new attribute with shared ID based on target joint type
         var newAttribute;
         
         if (targetJointType == SMJointType.BEND)
@@ -741,8 +747,8 @@ function applyJointAttributesToSegments(context is Context, id is Id, segmentEdg
                 kFactor = definition.kFactor;
             }
             
-            // Create new BEND attribute with unique ID and full metadata
-            newAttribute = createNewEdgeBendAttribute(context, id + ("bend" ~ i), edgeQuery,
+            // Create new BEND attribute with SHARED ID for grouping
+            newAttribute = createNewEdgeBendAttribute(context, id + ("bend" ~ i), sharedAttributeId, edgeQuery,
                 existingAttribute, radius, definition.useDefaultRadius,
                 kFactor, definition.useDefaultKFactor);
         }
@@ -753,8 +759,8 @@ function applyJointAttributesToSegments(context is Context, id is Id, segmentEdg
                 throw regenError("Cannot create rip attributes on face bend segments", ["entity"]);
             }
             
-            // Create new RIP attribute with unique ID and full metadata
-            newAttribute = createNewRipAttribute(id + ("rip" ~ i), existingAttribute, SMJointStyle.EDGE);
+            // Create new RIP attribute with SHARED ID for grouping
+            newAttribute = createNewRipAttribute(id + ("rip" ~ i), sharedAttributeId, existingAttribute, SMJointStyle.EDGE);
         }
         else
         {
