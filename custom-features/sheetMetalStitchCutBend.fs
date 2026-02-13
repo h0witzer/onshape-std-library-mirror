@@ -1081,6 +1081,37 @@ function subtractReliefCylindersFromDefinition(context is Context, id is Id, rel
                 "path" : reliefEdge
             });
             
+            // Apply fillet to cap faces for OBROUND style
+            if (bendReliefParams.style == SMReliefStyle.OBROUND)
+            {
+                try
+                {
+                    // Get the height of the cylinder (edge length)
+                    const cylinderHeight = evLength(context, {
+                        "entities" : reliefEdge
+                    });
+                    
+                    // Fillet radius is half the cylinder height
+                    const filletRadius = cylinderHeight / 2;
+                    
+                    // Query for cap face edges (both start and end caps)
+                    const capFaceEdges = qOwnedByBody(qCreatedBy(sweepId, EntityType.BODY), EntityType.EDGE)
+                        ->qIntersection(qCapEntity(sweepId, CapType.EITHER, EntityType.EDGE));
+                    
+                    // Apply fillet to the cap face edges
+                    const filletId = id + ("fillet" ~ i);
+                    opFillet(context, filletId, {
+                        "entities" : capFaceEdges,
+                        "radius" : filletRadius
+                    });
+                }
+                catch
+                {
+                    // If fillet fails, continue with the non-filleted cylinder
+                    // The cylinder will still function, just with sharp corners
+                }
+            }
+            
             // Collect cylinder for cleanup
             const cylinderBody = qCreatedBy(sweepId, EntityType.BODY);
             cylinderBodies = append(cylinderBodies, cylinderBody);
