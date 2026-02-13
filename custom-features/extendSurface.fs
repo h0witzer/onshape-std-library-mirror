@@ -1,5 +1,10 @@
-FeatureScript 638;
-import(path : "onshape/std/geometry.fs", version : "638.0");
+FeatureScript 2878;
+import(path : "onshape/std/geometry.fs", version : "2878.0");
+import(path : "onshape/std/query.fs", version : "2878.0");
+import(path : "onshape/std/evaluate.fs", version : "2878.0");
+import(path : "onshape/std/feature.fs", version : "2878.0");
+import(path : "onshape/std/valueBounds.fs", version : "2878.0");
+import(path : "onshape/std/geomOperations.fs", version : "2878.0");
 
 export enum ExtendTypeEnum
 {
@@ -49,39 +54,70 @@ export const extendSurface = defineFeature(function(context is Context, id is Id
 
     }
     {
-        var isBody = evaluateQuery(context, qEntityFilter(definition.surfaceToExtend, EntityType.BODY));
-        var extendDefinition = {};
+        // Determine which entities to work with based on extend type
+        var entities is Query;
+        if (definition.extendType == ExtendTypeEnum.EXTEND_BY_DISTANCE_FULL)
+        {
+            entities = definition.surfaceToExtend;
+        }
+        else if (definition.extendType == ExtendTypeEnum.EXTEND_BY_DISTANCE_EDGES)
+        {
+            entities = definition.extendEdges;
+        }
 
-        // if (isBody == [])
-        // {
-        //     opExtractSurface(context, id + "extractSurface", { "faces" : definition.surfaceToExtend });
-        //     // debug(context, );
-        //     extendDefinition = { "extendMethod" : "EXTEND_BY_DISTANCE", "entities" : qCreatedBy(id + "extractSurface", EntityType.BODY), "distance" : definition.extendDistance };
-        // }
-        // else
-        // {
-
-            if (definition.extendType == ExtendTypeEnum.EXTEND_BY_DISTANCE_FULL)
+        // Handle positive distances (extension) and negative distances (retraction) differently
+        if (definition.extendDistance >= 0 * meter)
+        {
+            // Positive distance: use opExtendSheetBody for extension
+            var extendDefinition = {
+                "extendMethod" : "EXTEND_BY_DISTANCE",
+                "entities" : entities,
+                "distance" : definition.extendDistance
+            };
+            opExtendSheetBody(context, id, extendDefinition);
+        }
+        else
+        {
+            // Negative distance: use opEdgeChange for retraction
+            var edgesToRetract = getEdgesForRetraction(context, entities);
+            
+            if (size(edgesToRetract) == 0)
             {
-                extendDefinition = { "extendMethod" : "EXTEND_BY_DISTANCE", "entities" : definition.surfaceToExtend, "distance" : definition.extendDistance };
+                throw regenError("No edges found to retract");
             }
-            else if (definition.extendType == ExtendTypeEnum.EXTEND_BY_DISTANCE_EDGES)
+            
+            var edgeChangeOptions = [];
+            for (var edge in edgesToRetract)
             {
-                extendDefinition = { "extendMethod" : "EXTEND_BY_DISTANCE", "entities" : definition.extendEdges, "distance" : definition.extendDistance };
+                edgeChangeOptions = append(edgeChangeOptions, {
+                    "edge" : edge,
+                    "face" : qAdjacent(edge, AdjacencyType.EDGE, EntityType.FACE),
+                    "offset" : definition.extendDistance
+                });
             }
-            // else if (definition.extendType == ExtendTypeEnum.EXTEND_UP_TO_SURFACE)
-            // {
-            //     var edges = evaluateQuery(context, definition.extendToSurfaceEdges);
-            //     var edgeLimitOptions = [];
-            //     for (var i = 0; i < size(edges); i += 1)
-            //     {
-            //         edgeLimitOptions = append(edgeLimitOptions, { "edge" : edges[i], "limitEntity" : definition.limitSurface, "faceToExtend" : qEntityFilter(qOwnerBody(edges[i]), EntityType.FACE) });
-            //     }
-            //     extendDefinition = { "extendMethod" : "EXTEND_TO_SURFACE", "entities" : definition.extendToSurfaceEdges, "limitEntity" : definition.limitSurface, "oppositeDirection" : true};
-            //     debug(context, definition.extendToSurfaceEdges);
-            //     debug(context, definition.limitSurface);
-            // }
-        // }
-
-        opExtendSheetBody(context, id, extendDefinition);
+            
+            opEdgeChange(context, id + "edgeChange", { "edgeChangeOptions" : edgeChangeOptions });
+        }
     });
+
+/**
+ * Helper function to get edges for retraction operation.
+ * Extracts edges from the entities query, filtering for one-sided edges.
+ * 
+ * @param context : The context to evaluate queries in
+ * @param entities : Query for either edges or sheet bodies to retract
+ * @returns : Array of edge queries suitable for retraction
+ */
+function getEdgesForRetraction(context is Context, entities is Query) returns array
+{
+    // Get edges from the query - either directly selected edges or edges owned by selected bodies
+    var selectedEdges = qEntityFilter(entities, EntityType.EDGE);
+    var bodyEdges = qOwnedByBody(entities, EntityType.EDGE);
+    var allEdges = qUnion([selectedEdges, bodyEdges]);
+    
+    // Filter for one-sided edges (sheet body boundaries)
+    var oneSidedEdges = qEdgeTopologyFilter(allEdges, EdgeTopology.ONE_SIDED);
+    
+    // Evaluate and return as array
+    return evaluateQuery(context, oneSidedEdges);
+}
