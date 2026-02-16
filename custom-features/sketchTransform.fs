@@ -141,10 +141,10 @@ function resolveAnchorCoordinateSystem(context is Context, definition is map, bo
 
         // If not a mate connector, treat as a vertex and create a world-aligned coordinate system
         const anchorPoint = evVertexPoint(context, { "vertex" : selectedAnchor });
-        return coordSystem(anchorPoint, vector(1, 0, 0), vector(0, 1, 0));
+        return coordSystem(anchorPoint, vector(1, 0, 0), vector(0, 0, 1));
     }
 
     // No anchor provided - use the approximate centroid of the bodies as the origin
     const fallbackOrigin = evApproximateCentroid(context, { "entities" : bodiesToTransform });
-    return coordSystem(fallbackOrigin, vector(1, 0, 0), vector(0, 1, 0));
+    return coordSystem(fallbackOrigin, vector(1, 0, 0), vector(0, 0, 1));
 }
