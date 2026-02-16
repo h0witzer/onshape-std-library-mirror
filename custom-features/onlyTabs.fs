@@ -56,9 +56,14 @@ export const TAB_DEPTH_BOUNDS =
             (inch) : [1e-6, .05, 1e6]
         } as LengthBoundSpec;
 
-export const SLOT_MARGIN_BOUNDS =
+export const SLOT_WIDTH_CLEARANCE_BOUNDS =
 {
             (inch) : [0, .01, 1e6]
+        } as LengthBoundSpec;
+
+export const SLOT_THICKNESS_CLEARANCE_BOUNDS =
+{
+            (inch) : [0, 0, 1e6]
         } as LengthBoundSpec;
 export const CHAMFER_WIDTH_BOUNDS =
 {
@@ -107,8 +112,11 @@ export const tabAndSlotBossDisplay = defineSheetMetalFeature(function(context is
         
         annotation { "Group Name" : "Slot parameters", "Driving Parameter" : "showSlotParameters", "Collapsed By Default" : false }
         {
-            annotation { "Name" : "Slot width margin", "UIHint" : UIHint.REMEMBER_PREVIOUS_VALUE }
-            isLength(definition.slotMargin, SLOT_MARGIN_BOUNDS);
+            annotation { "Name" : "Slot width clearance", "UIHint" : UIHint.REMEMBER_PREVIOUS_VALUE }
+            isLength(definition.slotWidthClearance, SLOT_WIDTH_CLEARANCE_BOUNDS);
+
+            annotation { "Name" : "Slot thickness clearance", "UIHint" : UIHint.REMEMBER_PREVIOUS_VALUE }
+            isLength(definition.slotThicknessClearance, SLOT_THICKNESS_CLEARANCE_BOUNDS);
 
             annotation { "Name" : "Slot bodies (for overlapping tabs)", "Filter" : EntityType.BODY }
             definition.mergeScope is Query;
@@ -912,7 +920,8 @@ function getCorrespondingJointEntitiesInPart(context is Context, selection is Qu
 
 /**
  * Thickens the input sheet body based on the parameters of the sheet metal model and performs subtraction operations.
- * Inputs: definition (feature definition with offset settings), subtractQueries (separated queries for subtraction),
+ * Applies slot width clearance to extension edge faces and slot thickness clearance to cap faces of the thicken operation.
+ * Inputs: definition (feature definition with clearance settings), subtractQueries (separated queries for subtraction),
  *         coincidentGrouping (map with tabBody and walls), rootId (root feature ID).
  */
 function subtractTab(context is Context, id is Id, definition is map, subtractQueries is map, coincidentGrouping is map, rootId is Id)
@@ -949,7 +958,7 @@ function subtractTab(context is Context, id is Id, definition is map, subtractQu
 
     if (size(subtractSMFaces) != 0 || !isQueryEmpty(context, subtractQueries.nonSheetMetalQueries))
     {
-        if (definition.booleanOffset > 0 * meter && definition.extensionEdgesTracking != undefined)
+        if (definition.slotWidthClearance > 0 * meter && definition.extensionEdgesTracking != undefined)
         {
             const thickenedBody = qCreatedBy(id + "thicken", EntityType.BODY);
             const thickenedFaces = qOwnedByBody(thickenedBody, EntityType.FACE);
@@ -960,10 +969,27 @@ function subtractTab(context is Context, id is Id, definition is map, subtractQu
                 const moveFaceDefinition = {
                         "moveFaces" : facesToOffset,
                         "moveFaceType" : MoveFaceType.OFFSET,
-                        "offsetDistance" : definition.booleanOffset,
+                        "offsetDistance" : definition.slotWidthClearance,
                         "reFillet" : false };
 
                 opOffsetFace(context, id + "move", moveFaceDefinition);
+            }
+        }
+
+        // Apply slot thickness clearance to cap faces of the thicken operation
+        if (definition.slotThicknessClearance != undefined && definition.slotThicknessClearance > 0 * meter)
+        {
+            const capFacesToOffset = qCapEntity(id + "thicken", CapType.EITHER, EntityType.FACE);
+
+            if (!isQueryEmpty(context, capFacesToOffset))
+            {
+                const moveFaceDefinition = {
+                        "moveFaces" : capFacesToOffset,
+                        "moveFaceType" : MoveFaceType.OFFSET,
+                        "offsetDistance" : definition.slotThicknessClearance,
+                        "reFillet" : false };
+
+                opOffsetFace(context, id + "moveCapFaces", moveFaceDefinition);
             }
         }
 
@@ -971,9 +997,9 @@ function subtractTab(context is Context, id is Id, definition is map, subtractQu
         solidSubtractTab(context, id + "solid", qCreatedBy(id + "thicken", EntityType.BODY), subtractQueries.nonSheetMetalQueries);
     }
 
-    if (modelParameters.minimalClearance > definition.booleanOffset && !isQueryEmpty(context, unionComplementTracking))
+    if (modelParameters.minimalClearance > definition.slotWidthClearance && !isQueryEmpty(context, unionComplementTracking))
     {
-        throw regenError(ErrorStringEnum.SHEET_METAL_TAB_LOW_CLEARANCE, ["booleanOffset"], getSMCorrespondingInPart(context, unionComplementTracking, EntityType.FACE));
+        throw regenError(ErrorStringEnum.SHEET_METAL_TAB_LOW_CLEARANCE, ["slotWidthClearance"], getSMCorrespondingInPart(context, unionComplementTracking, EntityType.FACE));
     }
 
     try silent(opDeleteBodies(context, id + "deleteBodies", {
@@ -1269,7 +1295,7 @@ function applyTab(context is Context, id is Id, definition is map, tabQuery is Q
  *   id - Operation ID for this merge operation
  *   tabSurfaceBodies - Query for the surface bodies to merge (created by extracting and extending wall faces)
  *   sourceWallFaces - The wall faces adjacent to tab segments (will be converted to definition entities by sheetMetalTab)
- *   definition - The feature definition containing merge scope (for slot subtraction) and slot margin parameters
+ *   definition - The feature definition containing merge scope (for slot subtraction), slot clearance parameters (width and thickness)
  */
 function mergeTabSurfacesWithSheetMetal(context is Context, id is Id, tabSurfaceBodies is Query, sourceWallFaces is Query, definition is map)
 {
@@ -1297,7 +1323,8 @@ function mergeTabSurfacesWithSheetMetal(context is Context, id is Id, tabSurface
     const tabDefinition = {
             "tabFaces" : tabFaces,
             "booleanUnionScope" : sourceWallFaces,
-            "booleanOffset" : definition.slotMargin,
+            "slotWidthClearance" : definition.slotWidthClearance,
+            "slotThicknessClearance" : definition.slotThicknessClearance,
             "booleanSubtractScope" : subtractScope,
             "extensionEdgesTracking" : definition.extensionEdgesTracking,
             "extensionVerticesTracking" : definition.extensionVerticesTracking,
