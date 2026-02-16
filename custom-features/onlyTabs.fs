@@ -56,14 +56,14 @@ export const TAB_DEPTH_BOUNDS =
             (inch) : [1e-6, .05, 1e6]
         } as LengthBoundSpec;
 
-export const SLOT_MARGIN_BOUNDS =
+export const SLOT_WIDTH_CLEARANCE_BOUNDS =
 {
             (inch) : [0, .01, 1e6]
         } as LengthBoundSpec;
 
 export const SLOT_THICKNESS_CLEARANCE_BOUNDS =
 {
-            (inch) : [0, .01, 1e6]
+            (inch) : [0, 0, 1e6]
         } as LengthBoundSpec;
 export const CHAMFER_WIDTH_BOUNDS =
 {
@@ -113,7 +113,7 @@ export const tabAndSlotBossDisplay = defineSheetMetalFeature(function(context is
         annotation { "Group Name" : "Slot parameters", "Driving Parameter" : "showSlotParameters", "Collapsed By Default" : false }
         {
             annotation { "Name" : "Slot width clearance", "UIHint" : UIHint.REMEMBER_PREVIOUS_VALUE }
-            isLength(definition.slotMargin, SLOT_MARGIN_BOUNDS);
+            isLength(definition.slotWidthClearance, SLOT_WIDTH_CLEARANCE_BOUNDS);
 
             annotation { "Name" : "Slot thickness clearance", "UIHint" : UIHint.REMEMBER_PREVIOUS_VALUE }
             isLength(definition.slotThicknessClearance, SLOT_THICKNESS_CLEARANCE_BOUNDS);
@@ -958,7 +958,7 @@ function subtractTab(context is Context, id is Id, definition is map, subtractQu
 
     if (size(subtractSMFaces) != 0 || !isQueryEmpty(context, subtractQueries.nonSheetMetalQueries))
     {
-        if (definition.booleanOffset > 0 * meter && definition.extensionEdgesTracking != undefined)
+        if (definition.slotWidthClearance > 0 * meter && definition.extensionEdgesTracking != undefined)
         {
             const thickenedBody = qCreatedBy(id + "thicken", EntityType.BODY);
             const thickenedFaces = qOwnedByBody(thickenedBody, EntityType.FACE);
@@ -969,7 +969,7 @@ function subtractTab(context is Context, id is Id, definition is map, subtractQu
                 const moveFaceDefinition = {
                         "moveFaces" : facesToOffset,
                         "moveFaceType" : MoveFaceType.OFFSET,
-                        "offsetDistance" : definition.booleanOffset,
+                        "offsetDistance" : definition.slotWidthClearance,
                         "reFillet" : false };
 
                 opOffsetFace(context, id + "move", moveFaceDefinition);
@@ -997,9 +997,9 @@ function subtractTab(context is Context, id is Id, definition is map, subtractQu
         solidSubtractTab(context, id + "solid", qCreatedBy(id + "thicken", EntityType.BODY), subtractQueries.nonSheetMetalQueries);
     }
 
-    if (modelParameters.minimalClearance > definition.booleanOffset && !isQueryEmpty(context, unionComplementTracking))
+    if (modelParameters.minimalClearance > definition.slotWidthClearance && !isQueryEmpty(context, unionComplementTracking))
     {
-        throw regenError(ErrorStringEnum.SHEET_METAL_TAB_LOW_CLEARANCE, ["booleanOffset"], getSMCorrespondingInPart(context, unionComplementTracking, EntityType.FACE));
+        throw regenError(ErrorStringEnum.SHEET_METAL_TAB_LOW_CLEARANCE, ["slotWidthClearance"], getSMCorrespondingInPart(context, unionComplementTracking, EntityType.FACE));
     }
 
     try silent(opDeleteBodies(context, id + "deleteBodies", {
@@ -1323,7 +1323,7 @@ function mergeTabSurfacesWithSheetMetal(context is Context, id is Id, tabSurface
     const tabDefinition = {
             "tabFaces" : tabFaces,
             "booleanUnionScope" : sourceWallFaces,
-            "booleanOffset" : definition.slotMargin,
+            "slotWidthClearance" : definition.slotWidthClearance,
             "slotThicknessClearance" : definition.slotThicknessClearance,
             "booleanSubtractScope" : subtractScope,
             "extensionEdgesTracking" : definition.extensionEdgesTracking,
