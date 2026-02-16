@@ -920,7 +920,8 @@ function getCorrespondingJointEntitiesInPart(context is Context, selection is Qu
 
 /**
  * Thickens the input sheet body based on the parameters of the sheet metal model and performs subtraction operations.
- * Inputs: definition (feature definition with offset settings), subtractQueries (separated queries for subtraction),
+ * Applies slot width clearance to extension edge faces and slot thickness clearance to cap faces of the thicken operation.
+ * Inputs: definition (feature definition with clearance settings), subtractQueries (separated queries for subtraction),
  *         coincidentGrouping (map with tabBody and walls), rootId (root feature ID).
  */
 function subtractTab(context is Context, id is Id, definition is map, subtractQueries is map, coincidentGrouping is map, rootId is Id)
@@ -1294,7 +1295,7 @@ function applyTab(context is Context, id is Id, definition is map, tabQuery is Q
  *   id - Operation ID for this merge operation
  *   tabSurfaceBodies - Query for the surface bodies to merge (created by extracting and extending wall faces)
  *   sourceWallFaces - The wall faces adjacent to tab segments (will be converted to definition entities by sheetMetalTab)
- *   definition - The feature definition containing merge scope (for slot subtraction) and slot margin parameters
+ *   definition - The feature definition containing merge scope (for slot subtraction), slot clearance parameters (width and thickness)
  */
 function mergeTabSurfacesWithSheetMetal(context is Context, id is Id, tabSurfaceBodies is Query, sourceWallFaces is Query, definition is map)
 {
