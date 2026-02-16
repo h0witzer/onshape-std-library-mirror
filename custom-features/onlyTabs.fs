@@ -60,6 +60,11 @@ export const SLOT_MARGIN_BOUNDS =
 {
             (inch) : [0, .01, 1e6]
         } as LengthBoundSpec;
+
+export const SLOT_THICKNESS_CLEARANCE_BOUNDS =
+{
+            (inch) : [0, .01, 1e6]
+        } as LengthBoundSpec;
 export const CHAMFER_WIDTH_BOUNDS =
 {
             (inch) : [0, .02, 1]
@@ -107,8 +112,11 @@ export const tabAndSlotBossDisplay = defineSheetMetalFeature(function(context is
         
         annotation { "Group Name" : "Slot parameters", "Driving Parameter" : "showSlotParameters", "Collapsed By Default" : false }
         {
-            annotation { "Name" : "Slot width margin", "UIHint" : UIHint.REMEMBER_PREVIOUS_VALUE }
+            annotation { "Name" : "Slot width clearance", "UIHint" : UIHint.REMEMBER_PREVIOUS_VALUE }
             isLength(definition.slotMargin, SLOT_MARGIN_BOUNDS);
+
+            annotation { "Name" : "Slot thickness clearance", "UIHint" : UIHint.REMEMBER_PREVIOUS_VALUE }
+            isLength(definition.slotThicknessClearance, SLOT_THICKNESS_CLEARANCE_BOUNDS);
 
             annotation { "Name" : "Slot bodies (for overlapping tabs)", "Filter" : EntityType.BODY }
             definition.mergeScope is Query;
@@ -967,6 +975,23 @@ function subtractTab(context is Context, id is Id, definition is map, subtractQu
             }
         }
 
+        // Apply slot thickness clearance to cap faces of the thicken operation
+        if (definition.slotThicknessClearance != undefined && definition.slotThicknessClearance > 0 * meter)
+        {
+            const capFacesToOffset = qCapEntity(id + "thicken", CapType.EITHER, EntityType.FACE);
+
+            if (!isQueryEmpty(context, capFacesToOffset))
+            {
+                const moveFaceDefinition = {
+                        "moveFaces" : capFacesToOffset,
+                        "moveFaceType" : MoveFaceType.OFFSET,
+                        "offsetDistance" : definition.slotThicknessClearance,
+                        "reFillet" : false };
+
+                opOffsetFace(context, id + "moveCapFaces", moveFaceDefinition);
+            }
+        }
+
         smSubtractTab(context, id + "sm", qCreatedBy(id + "thicken", EntityType.BODY), subtractSMFaces);
         solidSubtractTab(context, id + "solid", qCreatedBy(id + "thicken", EntityType.BODY), subtractQueries.nonSheetMetalQueries);
     }
@@ -1298,6 +1323,7 @@ function mergeTabSurfacesWithSheetMetal(context is Context, id is Id, tabSurface
             "tabFaces" : tabFaces,
             "booleanUnionScope" : sourceWallFaces,
             "booleanOffset" : definition.slotMargin,
+            "slotThicknessClearance" : definition.slotThicknessClearance,
             "booleanSubtractScope" : subtractScope,
             "extensionEdgesTracking" : definition.extensionEdgesTracking,
             "extensionVerticesTracking" : definition.extensionVerticesTracking,
