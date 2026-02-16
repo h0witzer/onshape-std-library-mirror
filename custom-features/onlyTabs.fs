@@ -1379,6 +1379,9 @@ function mergeTabSurfacesWithSheetMetal(context is Context, id is Id, tabSurface
  * Applies width randomization to tab domains.
  * Modifies each tab's width by a random amount within the specified variation threshold.
  * 
+ * Uses chained LCG approach: each LCG output becomes the next seed.
+ * This is the standard way to use an LCG for generating sequential random values.
+ * 
  * @param tabDomains : Array of {start, end} maps representing normalized tab positions (0 to 1)
  * @param totalLength : Total length of the edge chain
  * @param definition : Map containing randomization parameters (randomSeed, widthVariation)
@@ -1388,18 +1391,24 @@ function applyWidthRandomizationToTabDomains(tabDomains is array, totalLength is
 {
     var randomizedDomains = [];
     
+    // Initialize with user's random seed, then chain subsequent values
+    var currentSeed = definition.randomSeed;
+    
     for (var i = 0; i < size(tabDomains); i += 1)
     {
         const domain = tabDomains[i];
         
-        // Calculate unique seed for this tab instance
-        const currentSeed = definition.randomSeed + i;
-        
         // Get current tab width in absolute units
         const currentTabWidth = (domain.end - domain.start) * totalLength;
         
-        // Generate random variation within the specified range
-        const randomVariation = pseudoRandomNumber(currentSeed, -definition.widthVariation, definition.widthVariation, meter);
+        // Generate LCG output
+        const lcgOutput = pseudoRandomNumber(currentSeed);
+        
+        // Remap to desired range
+        const randomVariation = remap(lcgOutput, 0, LCG_MODULUS, -definition.widthVariation, definition.widthVariation);
+        
+        // Chain: Use this output as the seed for the next iteration
+        currentSeed = lcgOutput;
         
         // Apply variation with minimum size constraint (at least 10% of original)
         const minAllowedWidth = currentTabWidth * 0.1;
