@@ -87,6 +87,12 @@ export const sketchTransform = defineFeature(function(context is Context, id is 
                 throw regenError("Select a sketch feature", ["sketchFeature"]);
             }
             bodiesToTransform = qCreatedBy(definition.sketchFeature, EntityType.BODY);
+            
+            // Validate that the selected feature actually created bodies (likely a sketch)
+            if (isQueryEmpty(context, bodiesToTransform))
+            {
+                throw regenError("Selected feature did not create any bodies. Please select a sketch feature.", ["sketchFeature"]);
+            }
         }
         else
         {
@@ -104,7 +110,16 @@ export const sketchTransform = defineFeature(function(context is Context, id is 
         const anchorSystem = resolveAnchorCoordinateSystem(context, definition, bodiesToTransform);
 
         // Get the bounding box for manipulator placement
-        const boundingBox = evBox3d(context, { "topology" : bodiesToTransform, "cSys" : anchorSystem, "tight" : false });
+        var boundingBox;
+        try
+        {
+            boundingBox = evBox3d(context, { "topology" : bodiesToTransform, "cSys" : anchorSystem, "tight" : false });
+        }
+        catch
+        {
+            throw regenError("Unable to compute bounding box for selected geometry. Ensure valid sketch bodies are selected.",
+                definition.inputType == SketchInputType.SKETCH_FEATURE ? ["sketchFeature"] : ["sketchBodies"]);
+        }
         const transformExtents = boundingBox.maxCorner - boundingBox.minCorner;
 
         // Build the planar transformation matrix (focusing on XY plane, sketch plane)
@@ -187,7 +202,11 @@ export function sketchTransformManipulatorChange(context is Context, definition 
         {
             const manipOffset = newManipulators[SCALE_X_MANIPULATOR].offset;
             const baseExtent = xExtent / definition.scaleX;
-            definition.scaleX = max(0.01, (baseExtent + manipOffset) / baseExtent);
+            // Guard against division by zero for extreme scale values
+            if (abs(baseExtent) > TOLERANCE.zeroLength * meter)
+            {
+                definition.scaleX = max(0.01, (baseExtent + manipOffset) / baseExtent);
+            }
         }
     }
 
@@ -199,7 +218,11 @@ export function sketchTransformManipulatorChange(context is Context, definition 
         {
             const manipOffset = newManipulators[SCALE_Y_MANIPULATOR].offset;
             const baseExtent = yExtent / definition.scaleY;
-            definition.scaleY = max(0.01, (baseExtent + manipOffset) / baseExtent);
+            // Guard against division by zero for extreme scale values
+            if (abs(baseExtent) > TOLERANCE.zeroLength * meter)
+            {
+                definition.scaleY = max(0.01, (baseExtent + manipOffset) / baseExtent);
+            }
         }
     }
 
