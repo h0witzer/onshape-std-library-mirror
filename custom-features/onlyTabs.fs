@@ -22,6 +22,8 @@ import(path : "onshape/std/surfaceGeometry.fs", version : "2856.0");
 import(path : "onshape/std/topologyUtils.fs", version : "2856.0");
 import(path : "onshape/std/vector.fs", version : "2856.0");
 import(path : "onshape/std/smcornerbreakstyle.gen.fs", version : "2856.0");
+import(path : "onshape/std/frameUtils.fs", version : "2856.0");
+import(path : "onshape/std/frameAttributes.fs", version : "2856.0");
 // Import spacingUtils module for centralized pattern spacing logic
 export import(path : "c51f6558b7346f455a634ff5/cf14633de6fca78124306ce9/8ce820287d75ed2e92412d90", version : "cf26b6d26aa41f8853237904");//spacingUtils.fs
 // Import numberUtils for pseudo-random number generation
@@ -36,6 +38,18 @@ import(path : "9f4c9835d8018ff7dbdb5683/c06f405c6cafaa13845f6727/f937aebd788e8d7
 // NOTE: This feature uses the centralized spacingUtils.fs module for spacing logic.
 // All spacing types, predicates, and calculations are imported from spacingUtils
 // to ensure consistency across pattern generation tools.
+
+// Selects which type of body the tab generation targets.
+// SHEET_METAL uses the existing SM surface-copy-and-extend approach with SM attribute merging.
+// FRAME uses the same edge-split / surface-copy / surface-extend approach adapted for solid frame bodies,
+// with bounding-box trimming to avoid artifact geometry along the full swept face.
+export enum OnlyTabsMode
+{
+    annotation { "Name" : "Sheet Metal" }
+    SHEET_METAL,
+    annotation { "Name" : "Frame" }
+    FRAME
+}
 
 const EDGE_LENGTH_TOLERANCE = 1e-9 * meter;
 const EDGE_PARAMETER_TOLERANCE = 1e-6;
@@ -83,17 +97,31 @@ annotation { "Feature Type Name" : "OnlyTabs", "Icon" : ICON::BLOB_DATA, "Featur
 export const tabAndSlotBossDisplay = defineSheetMetalFeature(function(context is Context, id is Id, definition is map)
     precondition
     {
-        // Edge selection
-        annotation { "Name" : "Edges", "Filter" : EntityType.EDGE, "UIHint" : UIHint.SHOW_CREATE_SELECTION }
-        definition.edges is Query;
+        // Mode selector: switch between sheet metal and frame tab generation
+        annotation { "Name" : "Mode", "UIHint" : [UIHint.HORIZONTAL_ENUM, UIHint.REMEMBER_PREVIOUS_VALUE] }
+        definition.tabMode is OnlyTabsMode;
 
-        // Spacing parameters (uses centralized spacing predicate from spacingUtils)
+        // Sheet metal edge selection (hidden in frame mode)
+        if (definition.tabMode != OnlyTabsMode.FRAME)
+        {
+            annotation { "Name" : "Edges", "Filter" : EntityType.EDGE, "UIHint" : UIHint.SHOW_CREATE_SELECTION }
+            definition.edges is Query;
+        }
+
+        // Frame edge selection: select edges on the perimeter of a frame cap face (start or end face)
+        if (definition.tabMode == OnlyTabsMode.FRAME)
+        {
+            annotation { "Name" : "Frame Edges", "Filter" : EntityType.EDGE, "UIHint" : UIHint.SHOW_CREATE_SELECTION }
+            definition.frameEdges is Query;
+        }
+
+        // Spacing parameters (uses centralized spacing predicate from spacingUtils, shared between modes)
         curvePatternSpacingPredicate(definition);
 
         // Tab parameters group - always visible but collapsible
         annotation { "Name" : "Tab parameters", "Default" : true, "UIHint" : UIHint.ALWAYS_HIDDEN }
         definition.showTabParameters is boolean;
-        
+
         annotation { "Group Name" : "Tab parameters", "Driving Parameter" : "showTabParameters", "Collapsed By Default" : false }
         {
             annotation { "Name" : "Tab width", "UIHint" : UIHint.REMEMBER_PREVIOUS_VALUE }
@@ -102,27 +130,37 @@ export const tabAndSlotBossDisplay = defineSheetMetalFeature(function(context is
             annotation { "Name" : "Tab depth", "UIHint" : UIHint.REMEMBER_PREVIOUS_VALUE }
             isLength(definition.tabDepth, TAB_DEPTH_BOUNDS);
 
+            // Frame tab extrusion depth: how far the tab surface protrudes beyond the frame cap face
+            if (definition.tabMode == OnlyTabsMode.FRAME)
+            {
+                annotation { "Name" : "Frame tab extrusion depth", "UIHint" : UIHint.REMEMBER_PREVIOUS_VALUE }
+                isLength(definition.frameTabDepth, TAB_DEPTH_BOUNDS);
+            }
+
             annotation { "Name" : "Tab chamfer width", "UIHint" : UIHint.REMEMBER_PREVIOUS_VALUE }
             isLength(definition.tabChamfer, CHAMFER_WIDTH_BOUNDS);
         }
 
-        // Slot parameters group - always visible but collapsible
-        annotation { "Name" : "Slot parameters", "Default" : true, "UIHint" : UIHint.ALWAYS_HIDDEN }
-        definition.showSlotParameters is boolean;
-        
-        annotation { "Group Name" : "Slot parameters", "Driving Parameter" : "showSlotParameters", "Collapsed By Default" : false }
+        // Slot parameters group - sheet metal only (frame body merge is a later phase)
+        if (definition.tabMode != OnlyTabsMode.FRAME)
         {
-            annotation { "Name" : "Slot width clearance", "UIHint" : UIHint.REMEMBER_PREVIOUS_VALUE }
-            isLength(definition.slotWidthClearance, SLOT_WIDTH_CLEARANCE_BOUNDS);
+            annotation { "Name" : "Slot parameters", "Default" : true, "UIHint" : UIHint.ALWAYS_HIDDEN }
+            definition.showSlotParameters is boolean;
 
-            annotation { "Name" : "Slot thickness clearance", "UIHint" : UIHint.REMEMBER_PREVIOUS_VALUE }
-            isLength(definition.slotThicknessClearance, SLOT_THICKNESS_CLEARANCE_BOUNDS);
+            annotation { "Group Name" : "Slot parameters", "Driving Parameter" : "showSlotParameters", "Collapsed By Default" : false }
+            {
+                annotation { "Name" : "Slot width clearance", "UIHint" : UIHint.REMEMBER_PREVIOUS_VALUE }
+                isLength(definition.slotWidthClearance, SLOT_WIDTH_CLEARANCE_BOUNDS);
 
-            annotation { "Name" : "Slot bodies (for overlapping tabs)", "Filter" : EntityType.BODY }
-            definition.mergeScope is Query;
+                annotation { "Name" : "Slot thickness clearance", "UIHint" : UIHint.REMEMBER_PREVIOUS_VALUE }
+                isLength(definition.slotThicknessClearance, SLOT_THICKNESS_CLEARANCE_BOUNDS);
+
+                annotation { "Name" : "Slot bodies (for overlapping tabs)", "Filter" : EntityType.BODY }
+                definition.mergeScope is Query;
+            }
         }
 
-        // Tab width randomization group
+        // Tab width randomization group (available in both modes)
         annotation { "Group Name" : "Tab width randomization", "Collapsed By Default" : true }
         {
             annotation { "Name" : "Enable randomization", "Default" : false, "UIHint" : UIHint.REMEMBER_PREVIOUS_VALUE }
@@ -143,6 +181,13 @@ export const tabAndSlotBossDisplay = defineSheetMetalFeature(function(context is
 
     }
     {
+        // Dispatch to frame tab generation when in frame mode
+        if (definition.tabMode == OnlyTabsMode.FRAME)
+        {
+            executeFrameTabGeneration(context, id, definition);
+            return;
+        }
+
         // Phase 1: Split the input edges using the edge splitting method
         const selectedEdgesQuery = qEntityFilter(definition.edges, EntityType.EDGE);
         const selectedEdges = evaluateQuery(context, selectedEdgesQuery);
@@ -1460,6 +1505,359 @@ function applyWidthRandomizationToTabDomains(tabDomains is array, totalLength is
     }
     
     return randomizedDomains;
+}
+
+// ========================================
+// Frame tab generation helper functions
+// These functions implement tab generation for solid frame bodies.
+// The approach mirrors the sheet metal implementation but uses a bounding-box
+// slab to limit the extracted swept face copy to only the region near the
+// frame cap face, avoiding artifact geometry along the full frame length.
+// ========================================
+
+/**
+ * Finds the first frame cap face (start or end) that is adjacent to the supplied edge query.
+ * Used to validate that selected frame tab edges are on a frame cap face perimeter.
+ * Inputs: edges (query for candidate edges on the cap face perimeter).
+ * Outputs: Query for the adjacent cap face, or qNothing() when none is found.
+ */
+function findFrameCapFaceForEdges(context is Context, edges is Query) returns Query
+{
+    const adjacentFaces = evaluateQuery(context, qAdjacent(edges, AdjacencyType.EDGE, EntityType.FACE));
+    for (var face in adjacentFaces)
+    {
+        const faceQuery = qUnion([face]);
+        if (isCapFace(context, faceQuery))
+        {
+            return faceQuery;
+        }
+    }
+    return qNothing();
+}
+
+/**
+ * Filters a face query to return only frame swept faces (the long side faces of a frame body).
+ * Inputs: faceQuery (query containing candidate faces).
+ * Outputs: Query containing only faces with the SWEPT_FACE frame topology attribute.
+ */
+function filterFrameSweptFaces(context is Context, faceQuery is Query) returns Query
+{
+    const faces = evaluateQuery(context, faceQuery);
+    var sweptFaceQueries = [];
+    for (var face in faces)
+    {
+        const faceAsQuery = qUnion([face]);
+        if (isSweptFace(context, faceAsQuery))
+        {
+            sweptFaceQueries = append(sweptFaceQueries, faceAsQuery);
+        }
+    }
+    if (size(sweptFaceQueries) == 0)
+    {
+        return qNothing();
+    }
+    return qUnion(sweptFaceQueries);
+}
+
+/**
+ * Creates a solid bounding slab aligned with the cap face plane and uses a SUBTRACT_COMPLEMENT
+ * boolean operation to trim the extracted swept face surface bodies to only the region within
+ * the slab (the thin strip at the cap face boundary). This prevents artifact geometry from the
+ * full length of the extracted swept face being retained after extension.
+ *
+ * The slab extends:
+ *   - slabInwardMargin inside the frame along the cap face normal (to capture the swept face edge)
+ *   - frameTabDepth + slabOutwardMargin outside the frame (to allow room for the tab extension)
+ *
+ * Inputs:
+ *   id - operation ID base for all sub-operations
+ *   definition - feature definition containing frameTabDepth
+ *   capFacePlane - plane of the frame cap face; normal points outward from the frame body
+ *   frameBody - query for the frame solid body (used to size the slab to cover the cross-section)
+ *   extractedBodies - query for the extracted swept face surface bodies to trim
+ */
+function trimExtractedSurfacesToFrameEnd(context is Context, id is Id, definition is map,
+    capFacePlane is Plane, frameBody is Query, extractedBodies is Query)
+{
+    // Compute a slab half-width large enough to fully cover the frame cross-section.
+    // Using the bounding box diagonal of the frame body is a conservative safe bound.
+    const frameBBox = evBox3d(context, {
+                "topology" : frameBody,
+                "tight" : false
+            });
+    const bboxDiagonal = norm(frameBBox.maxCorner - frameBBox.minCorner);
+
+    // Small margins to ensure clean intersection geometry at the slab boundaries
+    const slabInwardMargin = 0.001 * inch;
+    const slabOutwardMargin = 0.001 * inch;
+
+    // Build a large rectangle on the cap face plane covering the entire cross-section
+    const slabSketchId = id + "frameCapSlabSketch";
+    const slabSketch = newSketchOnPlane(context, slabSketchId, {
+                "sketchPlane" : capFacePlane
+            });
+    skRectangle(slabSketch, "slabRect", {
+                "firstCorner" : vector(-bboxDiagonal, -bboxDiagonal),
+                "secondCorner" : vector(bboxDiagonal, bboxDiagonal)
+            });
+    skSolve(slabSketch);
+
+    // Extrude the slab profile:
+    //   startDepth goes in the -capFacePlane.normal direction (into the frame body)
+    //   endDepth goes in the +capFacePlane.normal direction (outward from the frame body)
+    opExtrude(context, id + "frameCapSlabExtrude", {
+                "entities" : qSketchRegion(slabSketchId),
+                "direction" : capFacePlane.normal,
+                "startBound" : BoundingType.BLIND,
+                "startDepth" : slabInwardMargin,
+                "endBound" : BoundingType.BLIND,
+                "endDepth" : definition.frameTabDepth + slabOutwardMargin
+            });
+
+    // Delete the sketch body used to generate the slab profile
+    opDeleteBodies(context, id + "deleteSlabSketch", {
+                "entities" : qCreatedBy(slabSketchId, EntityType.BODY)
+            });
+
+    const slabBody = qCreatedBy(id + "frameCapSlabExtrude", EntityType.BODY);
+
+    // SUBTRACT_COMPLEMENT removes everything OUTSIDE the slab tool from the extracted surface targets.
+    // After this operation each extracted surface body only retains the thin strip within the slab,
+    // i.e., the portion of the swept face that is adjacent to the cap face edge.
+    try
+    {
+        opBoolean(context, id + "trimToFrameSlab", {
+                    "tools" : slabBody,
+                    "targets" : extractedBodies,
+                    "operationType" : BooleanOperationType.SUBTRACT_COMPLEMENT
+                });
+    }
+    catch
+    {
+        try
+        {
+            opDeleteBodies(context, id + "deleteSlabOnError", { "entities" : slabBody });
+        }
+        throw regenError("Failed to trim extracted swept faces to frame end region. Verify that the selected edges are on a frame cap face perimeter.", ["frameEdges"]);
+    }
+
+    // Remove the slab tool body - it has served its purpose
+    opDeleteBodies(context, id + "deleteFrameSlab", {
+                "entities" : slabBody
+            });
+}
+
+/**
+ * Main frame tab generation function. Implements the Phase 1 pipeline for frame bodies:
+ *   1. Validate selected edges are on a frame cap face perimeter
+ *   2. Build ordered path and compute tab domains using the centralized spacing utilities
+ *   3. Split edges at tab domain boundaries
+ *   4. Identify the tab segment edges from the split result
+ *   5. Extract the adjacent swept faces as surface bodies
+ *   6. Trim extracted surfaces to a bounding slab around the frame end (avoids artifact geometry)
+ *   7. Extend the trimmed surfaces outward from the cap face edge by frameTabDepth
+ *
+ * The resulting surface bodies represent the tab geometry. Boolean union with the frame body
+ * is deferred to a later phase so that this phase can be validated independently.
+ *
+ * Inputs: definition - feature definition map containing:
+ *   frameEdges, tabWidth, frameTabDepth, spacingType, instanceCount, tabChamfer, randomization params
+ */
+function executeFrameTabGeneration(context is Context, id is Id, definition is map)
+{
+    // --- Step 1: Validate edge selection ---
+    const selectedEdgesQuery = qEntityFilter(definition.frameEdges, EntityType.EDGE);
+    const selectedEdges = evaluateQuery(context, selectedEdgesQuery);
+    if (size(selectedEdges) == 0)
+    {
+        throw regenError("Select at least one frame edge on a cap face perimeter", ["frameEdges"]);
+    }
+
+    // --- Step 2: Find the adjacent frame cap face ---
+    const capFace = findFrameCapFaceForEdges(context, selectedEdgesQuery);
+    if (isQueryEmpty(context, capFace))
+    {
+        throw regenError("Selected edges must be on the perimeter of a frame cap face (start or end face)", ["frameEdges"]);
+    }
+
+    const capFacePlane = evPlane(context, { "face" : capFace });
+    const frameBody = qOwnerBody(capFace);
+
+    // --- Step 3: Build ordered path and compute total length ---
+    const orderedEdgeQuery = qUnion(selectedEdges);
+    const edgePath = try silent(constructPath(context, orderedEdgeQuery));
+    if (edgePath == undefined)
+    {
+        throw regenError("Unable to order the selected frame edges into a continuous chain", ["frameEdges"], definition.frameEdges);
+    }
+
+    const totalLength = evLength(context, { "entities" : definition.frameEdges });
+
+    // computeCurvePatternSpacing reads definition.edges for the length calculation.
+    // Redirect it to definition.frameEdges by temporarily aliasing the field.
+    var spacingDefinition = definition;
+    spacingDefinition.edges = definition.frameEdges;
+    spacingDefinition = computeCurvePatternSpacing(context, id, spacingDefinition);
+
+    var tabCount = spacingDefinition.instanceCount;
+    var tabDomains = [];
+
+    // Resolve start/end offsets from spacing parameters
+    var startOffset = 0 * meter;
+    var endOffset = 0 * meter;
+    if (spacingDefinition.useOffsets == true)
+    {
+        if (!spacingDefinition.twoOffsets)
+        {
+            startOffset = spacingDefinition.offset;
+            endOffset = spacingDefinition.offset;
+        }
+        else
+        {
+            if (!spacingDefinition.oppositeDirection)
+            {
+                startOffset = spacingDefinition.offset1;
+                endOffset = spacingDefinition.offset2;
+            }
+            else
+            {
+                startOffset = spacingDefinition.offset2;
+                endOffset = spacingDefinition.offset1;
+            }
+        }
+    }
+
+    // --- Step 4: Compute tab domains ---
+    if (spacingDefinition.spacingType == CurvePatternSpacingType.EQUAL)
+    {
+        tabDomains = calculateEqualSpacedDomains(totalLength, definition.tabWidth, tabCount, startOffset, endOffset, spacingDefinition.endMode);
+    }
+    else if (spacingDefinition.spacingType == CurvePatternSpacingType.DISTANCE)
+    {
+        tabDomains = calculateDistanceSpacedDomains(totalLength, definition.tabWidth, spacingDefinition.distance, tabCount, startOffset, endOffset);
+    }
+    else if (spacingDefinition.spacingType == CurvePatternSpacingType.BESTFIT)
+    {
+        tabDomains = calculateEqualSpacedDomains(totalLength, definition.tabWidth, tabCount, startOffset, endOffset, spacingDefinition.endMode);
+    }
+
+    // Apply width randomization if enabled
+    if (definition.enableRandomization && definition.widthVariation > 0 * meter)
+    {
+        tabDomains = applyWidthRandomizationToTabDomains(tabDomains, totalLength, definition);
+    }
+
+    if (tabCount == 0 || size(tabDomains) == 0)
+    {
+        throw regenError("No tabs can fit with the specified parameters", ["tabWidth", "frameEdges"]);
+    }
+
+    if (!validateDomainsNoOverlap(tabDomains, FRACTION_TOLERANCE))
+    {
+        throw regenError("Resultant tabs would overlap. Reduce instance count or tab width to avoid overlapping tabs.", ["tabWidth"]);
+    }
+
+    // --- Step 5: Split edges at tab domain boundaries ---
+    const trackedEdges = qUnion([orderedEdgeQuery, startTracking(context, orderedEdgeQuery)]);
+    const splitParameters = calculateSplitParametersFromTabDomains(tabDomains);
+    const splitInstructions = calculateEdgeSplitInstructionsFromParameters(context, edgePath, splitParameters);
+
+    if (size(splitInstructions) == 0)
+    {
+        throw regenError("Unable to calculate edge split locations for frame tabs", ["frameEdges"]);
+    }
+
+    const splitOperationId = id + "frameEdgeSplit";
+    var splitIndex = 0;
+    for (var instruction in splitInstructions)
+    {
+        try
+        {
+            @opSplitEdges(context, splitOperationId + ("split" ~ toString(splitIndex)), {
+                        "edges" : instruction.edge,
+                        "parameters" : [instruction.parameters]
+                    });
+        }
+        catch
+        {
+            throw regenError("Failed to split frame edge at the requested tab boundary location", ["frameEdges"], instruction.edge);
+        }
+        splitIndex += 1;
+    }
+
+    // --- Step 6: Identify tab segment edges after splitting ---
+    const allEdgesAfterSplit = qEntityFilter(qUnion([orderedEdgeQuery, trackedEdges]), EntityType.EDGE);
+    const tabSegmentEdges = identifyTabSegmentsByEdgeMidpoints(context, allEdgesAfterSplit, edgePath, totalLength, tabDomains);
+
+    if (isQueryEmpty(context, tabSegmentEdges))
+    {
+        throw regenError("Could not identify tab segment edges after splitting. Check spacing parameters.", ["frameEdges"]);
+    }
+
+    // --- Step 7: Find adjacent swept faces and extract them as surface bodies ---
+    const adjacentFaces = qAdjacent(tabSegmentEdges, AdjacencyType.EDGE, EntityType.FACE);
+    const sweptFaces = filterFrameSweptFaces(context, adjacentFaces);
+
+    if (isQueryEmpty(context, sweptFaces))
+    {
+        throw regenError("No adjacent swept faces found on the frame body. Verify selected edges are on a frame cap face perimeter.", ["frameEdges"]);
+    }
+
+    // Track the tab segment edges through the upcoming extract operation so we can locate
+    // the corresponding laminar edges on the extracted surface body for the extension step.
+    const trackedTabSegments = startTracking(context, tabSegmentEdges);
+
+    try
+    {
+        @opExtractSurface(context, id + "extractFrameSweptFaces", {
+                    "faces" : sweptFaces,
+                    "tangentPropagation" : false
+                });
+    }
+    catch
+    {
+        throw regenError("Failed to extract swept faces adjacent to the frame tab edges", ["frameEdges"]);
+    }
+
+    const extractedBodies = qCreatedBy(id + "extractFrameSweptFaces", EntityType.BODY);
+
+    // --- Step 8: Trim extracted surfaces to frame end bounding slab ---
+    // This removes the full-length swept face copy, retaining only the thin strip
+    // at the cap face boundary that will be extended into tab geometry.
+    trimExtractedSurfacesToFrameEnd(context, id + "frameTrim", definition, capFacePlane, frameBody, extractedBodies);
+
+    // --- Step 9: Extend from the cap face edge outward to form the tab surface ---
+    const trackedTabSegmentsAfterExtract = qEntityFilter(trackedTabSegments, EntityType.EDGE);
+
+    // Only laminar (one-sided) edges on the extracted surface bodies can be extended.
+    // The cap-face-side edges are laminar after extraction and slab trimming.
+    const edgesToExtend = qEdgeTopologyFilter(trackedTabSegmentsAfterExtract, EdgeTopology.ONE_SIDED);
+
+    if (!isQueryEmpty(context, edgesToExtend))
+    {
+        try
+        {
+            @opExtendSheetBody(context, id + "extendFrameTabs", {
+                        "endCondition" : ExtendEndType.EXTEND_BLIND,
+                        "entities" : edgesToExtend,
+                        "tangentPropagation" : false,
+                        "extendDistance" : definition.frameTabDepth,
+                        "extensionShape" : ExtendSheetShapeType.LINEAR
+                    });
+        }
+        catch
+        {
+            throw regenError("Failed to extend frame tab surfaces. Check that frameTabDepth is valid and the selected edges are on a planar frame cap face.", ["frameTabDepth"]);
+        }
+    }
+    else
+    {
+        throw regenError("No extendable edges found on the extracted frame surfaces after trimming. Check that the selected edges are on a frame cap face perimeter.", ["frameEdges"]);
+    }
+
+    // Tab surface bodies now exist in the model representing the desired tab geometry.
+    // Boolean union with the frame body will be implemented in a subsequent phase.
+    reportFeatureInfo(context, id, "Frame tab surfaces created successfully. Boolean union with the frame body is a planned next phase.");
 }
 
 /**
