@@ -1560,102 +1560,17 @@ function filterFrameSweptFaces(context is Context, faceQuery is Query) returns Q
 }
 
 /**
- * Creates a solid bounding slab aligned with the cap face plane and uses a SUBTRACT_COMPLEMENT
- * boolean operation to trim the extracted swept face surface bodies to only the region within
- * the slab (the thin strip at the cap face boundary). This prevents artifact geometry from the
- * full length of the extracted swept face being retained after extension.
- *
- * The slab extends:
- *   - slabInwardMargin inside the frame along the cap face normal (to capture the swept face edge)
- *   - frameTabDepth + slabOutwardMargin outside the frame (to allow room for the tab extension)
- *
- * Inputs:
- *   id - operation ID base for all sub-operations
- *   definition - feature definition containing frameTabDepth
- *   capFacePlane - plane of the frame cap face; normal points outward from the frame body
- *   frameBody - query for the frame solid body (used to size the slab to cover the cross-section)
- *   extractedBodies - query for the extracted swept face surface bodies to trim
- */
-function trimExtractedSurfacesToFrameEnd(context is Context, id is Id, definition is map,
-    capFacePlane is Plane, frameBody is Query, extractedBodies is Query)
-{
-    // Compute a slab half-width large enough to fully cover the frame cross-section.
-    // Using the bounding box diagonal of the frame body is a conservative safe bound.
-    const frameBBox = evBox3d(context, {
-                "topology" : frameBody,
-                "tight" : false
-            });
-    const bboxDiagonal = norm(frameBBox.maxCorner - frameBBox.minCorner);
-
-    // Small margins to ensure clean intersection geometry at the slab boundaries
-    const slabInwardMargin = 0.001 * inch;
-    const slabOutwardMargin = 0.001 * inch;
-
-    // Build a large rectangle on the cap face plane covering the entire cross-section
-    const slabSketchId = id + "frameCapSlabSketch";
-    const slabSketch = newSketchOnPlane(context, slabSketchId, {
-                "sketchPlane" : capFacePlane
-            });
-    skRectangle(slabSketch, "slabRect", {
-                "firstCorner" : vector(-bboxDiagonal, -bboxDiagonal),
-                "secondCorner" : vector(bboxDiagonal, bboxDiagonal)
-            });
-    skSolve(slabSketch);
-
-    // Extrude the slab profile:
-    //   startDepth goes in the -capFacePlane.normal direction (into the frame body)
-    //   endDepth goes in the +capFacePlane.normal direction (outward from the frame body)
-    opExtrude(context, id + "frameCapSlabExtrude", {
-                "entities" : qSketchRegion(slabSketchId),
-                "direction" : capFacePlane.normal,
-                "startBound" : BoundingType.BLIND,
-                "startDepth" : slabInwardMargin,
-                "endBound" : BoundingType.BLIND,
-                "endDepth" : definition.frameTabDepth + slabOutwardMargin
-            });
-
-    // Delete the sketch body used to generate the slab profile
-    opDeleteBodies(context, id + "deleteSlabSketch", {
-                "entities" : qCreatedBy(slabSketchId, EntityType.BODY)
-            });
-
-    const slabBody = qCreatedBy(id + "frameCapSlabExtrude", EntityType.BODY);
-
-    // SUBTRACT_COMPLEMENT removes everything OUTSIDE the slab tool from the extracted surface targets.
-    // After this operation each extracted surface body only retains the thin strip within the slab,
-    // i.e., the portion of the swept face that is adjacent to the cap face edge.
-    try
-    {
-        opBoolean(context, id + "trimToFrameSlab", {
-                    "tools" : slabBody,
-                    "targets" : extractedBodies,
-                    "operationType" : BooleanOperationType.SUBTRACT_COMPLEMENT
-                });
-    }
-    catch
-    {
-        try
-        {
-            opDeleteBodies(context, id + "deleteSlabOnError", { "entities" : slabBody });
-        }
-        throw regenError("Failed to trim extracted swept faces to frame end region. Verify that the selected edges are on a frame cap face perimeter.", ["frameEdges"]);
-    }
-
-    // Remove the slab tool body - it has served its purpose
-    opDeleteBodies(context, id + "deleteFrameSlab", {
-                "entities" : slabBody
-            });
-}
-
-/**
  * Main frame tab generation function. Implements the Phase 1 pipeline for frame bodies:
  *   1. Validate selected edges are on a frame cap face perimeter
  *   2. Build ordered path and compute tab domains using the centralized spacing utilities
  *   3. Split edges at tab domain boundaries
  *   4. Identify the tab segment edges from the split result
  *   5. Extract the adjacent swept faces as surface bodies
- *   6. Trim extracted surfaces to a bounding slab around the frame end (avoids artifact geometry)
- *   7. Extend the trimmed surfaces outward from the cap face edge by frameTabDepth
+ *   6. Extend from the cap face boundary laminar edges outward by frameTabDepth
+ *
+ * No sketch-based geometry is used for surface extraction or extension — the approach
+ * works for all frame profile geometries including round tubes, rectangular profiles,
+ * and coped (angle-cut) frame ends.
  *
  * The resulting surface bodies represent the tab geometry. Boolean union with the frame body
  * is deferred to a later phase so that this phase can be validated independently.
@@ -1679,9 +1594,6 @@ function executeFrameTabGeneration(context is Context, id is Id, definition is m
     {
         throw regenError("Selected edges must be on the perimeter of a frame cap face (start or end face)", ["frameEdges"]);
     }
-
-    const capFacePlane = evPlane(context, { "face" : capFace });
-    const frameBody = qOwnerBody(capFace);
 
     // --- Step 3: Build ordered path and compute total length ---
     const orderedEdgeQuery = qUnion(selectedEdges);
@@ -1821,16 +1733,13 @@ function executeFrameTabGeneration(context is Context, id is Id, definition is m
 
     const extractedBodies = qCreatedBy(id + "extractFrameSweptFaces", EntityType.BODY);
 
-    // --- Step 8: Trim extracted surfaces to frame end bounding slab ---
-    // This removes the full-length swept face copy, retaining only the thin strip
-    // at the cap face boundary that will be extended into tab geometry.
-    trimExtractedSurfacesToFrameEnd(context, id + "frameTrim", definition, capFacePlane, frameBody, extractedBodies);
-
-    // --- Step 9: Extend from the cap face edge outward to form the tab surface ---
+    // --- Step 8: Extend from the cap face boundary laminar edges to form the tab surfaces ---
+    // The tab segment edges tracked through opExtractSurface become laminar (one-sided) on the
+    // extracted surface body, because the cap face / swept face boundary is now a free boundary.
+    // opExtendSheetBody is called only on these tracked edges — not all laminar edges — so only
+    // the tab positions are extended. This works for all profile shapes (rectangular, round,
+    // coped) because no sketches or plane assumptions are made.
     const trackedTabSegmentsAfterExtract = qEntityFilter(trackedTabSegments, EntityType.EDGE);
-
-    // Only laminar (one-sided) edges on the extracted surface bodies can be extended.
-    // The cap-face-side edges are laminar after extraction and slab trimming.
     const edgesToExtend = qEdgeTopologyFilter(trackedTabSegmentsAfterExtract, EdgeTopology.ONE_SIDED);
 
     if (!isQueryEmpty(context, edgesToExtend))
@@ -1847,12 +1756,12 @@ function executeFrameTabGeneration(context is Context, id is Id, definition is m
         }
         catch
         {
-            throw regenError("Failed to extend frame tab surfaces. Check that frameTabDepth is valid and the selected edges are on a planar frame cap face.", ["frameTabDepth"]);
+            throw regenError("Failed to extend frame tab surfaces. Check that frameTabDepth is a positive value and the selected edges are on a valid frame cap face perimeter.", ["frameTabDepth"]);
         }
     }
     else
     {
-        throw regenError("No extendable edges found on the extracted frame surfaces after trimming. Check that the selected edges are on a frame cap face perimeter.", ["frameEdges"]);
+        throw regenError("No extendable edges found on the extracted frame surfaces. Verify the selected edges are on a frame cap face perimeter and that edge splitting succeeded.", ["frameEdges"]);
     }
 
     // Tab surface bodies now exist in the model representing the desired tab geometry.
