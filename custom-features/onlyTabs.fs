@@ -54,6 +54,10 @@ export enum OnlyTabsMode
 const EDGE_LENGTH_TOLERANCE = 1e-9 * meter;
 const EDGE_PARAMETER_TOLERANCE = 1e-6;
 const FRACTION_TOLERANCE = 1e-9;
+// Geometric distance tolerance used when locating a specific 3D position on a post-split edge.
+// Tighter than typical model tolerances to avoid false matches on nearby edges, but wide enough
+// to absorb floating-point rounding from evEdgeTangentLine → evDistance round-trips.
+const PATH_START_POSITION_TOLERANCE = 1e-6 * meter;
 
 export const SPACING_BOUNDS =
 {
@@ -301,6 +305,16 @@ export const tabAndSlotBossDisplay = defineSheetMetalFeature(function(context is
         // This ensures we capture both affected (split) and unaffected edges
         const trackedEdges = qUnion([orderedEdgeQuery, startTracking(context, orderedEdgeQuery)]);
 
+        // Capture the 3D world-space position of the pre-split path start point.
+        // For closed loops this is needed by identifyTabSegmentsByEdgeMidpoints to correct
+        // the fractional offset introduced when constructPath picks an arbitrary start vertex
+        // on the post-split edge set.
+        const pathStartParameter = path.flipped[0] ? 1 : 0;
+        const pathStartPosition = evEdgeTangentLine(context, {
+                        "edge" : path.edges[0],
+                        "parameter" : pathStartParameter
+                    }).origin;
+
         // Split the edges at tab boundaries
         const splitParameters = calculateSplitParametersFromTabDomains(tabDomains);
         const splitInstructions = calculateEdgeSplitInstructionsFromParameters(context, path, splitParameters);
@@ -334,7 +348,7 @@ export const tabAndSlotBossDisplay = defineSheetMetalFeature(function(context is
         // Filter to edges only and combine with original to handle both split and unsplit edges
         const allEdgesAfterSplit = qEntityFilter(qUnion([orderedEdgeQuery, trackedEdges]), EntityType.EDGE);
 
-        const tabSegmentEdges = identifyTabSegmentsByEdgeMidpoints(context, allEdgesAfterSplit, path, totalLength, tabDomains);
+        const tabSegmentEdges = identifyTabSegmentsByEdgeMidpoints(context, allEdgesAfterSplit, path, totalLength, tabDomains, pathStartPosition);
 
         // Phase 2: Copy adjacent sheet metal wall surfaces
         // Use the identified tab segment edges to find adjacent faces
@@ -596,31 +610,49 @@ function calculateEdgeSplitInstructionsFromParameters(context is Context, path i
 }
 
 // Identifies edges that correspond to tab segments by checking edge midpoints against tab domains.
-// For each edge, calculates its midpoint position along the edge chain and checks if it falls
-// within any tab domain. This works for all edges after splitting.
+// For each post-split edge, calculates its midpoint position along the edge chain and checks
+// whether it falls within any tab domain.
+//
+// For CLOSED loop edge chains (e.g. the circular perimeter of a round tube cap face),
+// re-ordering the split edges with constructPath may start at an arbitrary vertex that
+// differs from the pre-split path start. This produces a systematic fractional offset
+// that shifts every midpoint fraction away from the pre-split tab domain fractions and
+// causes tabs to be generated in the wrong positions.
+//
+// The fix: pathStartPosition is the 3D world-space position of the pre-split path's
+// start vertex (parameter 0 or 1 of path.edges[0], accounting for path.flipped[0]).
+// After reconstructing the post-split path, the function walks it to find where that
+// 3D position lies on the post-split geometry using evDistance. The arc-length from the
+// post-split path's start to that position divided by totalLength is the closed-loop
+// offset fraction. Every midpoint fraction is corrected by subtracting this offset
+// (wrapping negative results back into [0, 1]) before being compared to tab domains.
+//
+// For open paths the offset is always zero (the pre-split start vertex is still at the
+// start of the open chain after splitting).
+//
 // Inputs:
-//   allSplitEdges - Query for all edges created by split operations
-//   path - Original path before splitting (used for reference)
-//   totalLength - Total length of the edge chain
-//   tabDomains - Array of {start, end} maps with normalized parameters for each tab
-// Outputs: Query containing all edges that fall within tab domains
-function identifyTabSegmentsByEdgeMidpoints(context is Context, allSplitEdges is Query, path is Path, totalLength is ValueWithUnits, tabDomains is array) returns Query
+//   allSplitEdges    - Query for all edges after the split operations
+//   path             - Original pre-split path (used only for its Path type, not queried after splits)
+//   totalLength      - Total arc length of the full edge chain
+//   tabDomains       - Array of {start, end} maps with normalized parameters (0 to 1) for each tab
+//   pathStartPosition - 3D world-space position of the pre-split path's start point
+// Outputs: Query containing all edges whose midpoints fall within tab domains
+function identifyTabSegmentsByEdgeMidpoints(context is Context, allSplitEdges is Query, path is Path,
+    totalLength is ValueWithUnits, tabDomains is array, pathStartPosition is Vector) returns Query
 {
     if (size(tabDomains) == 0)
     {
         return qNothing();
     }
 
-    // Get all split edges and try to reconstruct them into an ordered path
     const edges = evaluateQuery(context, allSplitEdges);
-    const edgeCount = size(edges);
-
-    if (edgeCount == 0)
+    if (size(edges) == 0)
     {
         return qNothing();
     }
 
-    // Try to construct a path from the split edges to get them in order
+    // Re-order the post-split edges into a connected chain.
+    // For closed loops this gives an arbitrary start vertex; the offset correction below fixes that.
     const orderedPath = try silent(constructPath(context, qUnion(edges)));
     var orderedEdges = edges;
     if (orderedPath != undefined)
@@ -628,41 +660,84 @@ function identifyTabSegmentsByEdgeMidpoints(context is Context, allSplitEdges is
         orderedEdges = orderedPath.edges;
     }
 
-    // Calculate the normalized position (0 to 1) of each edge's midpoint along the chain
-    var edgeMidpointParameters = [];
-    var accumulatedLength = 0 * meter;
-
-    for (var edge in orderedEdges)
+    // Compute the closed-loop offset: how far (as a fraction of totalLength) the post-split
+    // path's start point is from the pre-split path's start point.
+    // This is zero for open paths (where the start vertex is unambiguous) and non-zero for
+    // closed loops when constructPath picks a different start than the original traversal.
+    var closedLoopOffsetFraction = 0;
+    if (orderedPath != undefined && orderedPath.closed)
     {
-        const edgeLength = evLength(context, { "entities" : edge });
-        const midpointParameter = (accumulatedLength + edgeLength / 2) / totalLength;
-        edgeMidpointParameters = append(edgeMidpointParameters, midpointParameter);
-        accumulatedLength += edgeLength;
+        // Walk the post-split path and find the edge that contains pathStartPosition.
+        // The accumulated arc-length at that point, divided by totalLength, is the offset.
+        var accumulatedOffset = 0 * meter;
+        var offsetFound = false;
+        for (var searchIndex = 0; searchIndex < size(orderedEdges) && !offsetFound; searchIndex += 1)
+        {
+            const searchEdge = orderedEdges[searchIndex];
+            const distResult = try(evDistance(context, {
+                            "side0" : pathStartPosition,
+                            "side1" : searchEdge,
+                            "arcLengthParameterization" : true
+                        }));
+            if (distResult == undefined)
+            {
+                // evDistance failed for this edge — skip and continue searching.
+                // If the path start position is on this edge we won't find it and
+                // closedLoopOffsetFraction will remain 0 (no correction applied).
+                accumulatedOffset += evLength(context, { "entities" : searchEdge });
+            }
+            else if (distResult.distance < PATH_START_POSITION_TOLERANCE)
+            {
+                // pathStartPosition lies on searchEdge at this arc-length parameter.
+                // Account for whether the path traverses this edge in reverse.
+                var paramAlongEdge = distResult.sides[1].parameter;
+                if (orderedPath.flipped[searchIndex])
+                {
+                    paramAlongEdge = 1 - paramAlongEdge;
+                }
+                const searchEdgeLength = evLength(context, { "entities" : searchEdge });
+                closedLoopOffsetFraction = (accumulatedOffset + paramAlongEdge * searchEdgeLength) / totalLength;
+                offsetFound = true;
+            }
+            else
+            {
+                accumulatedOffset += evLength(context, { "entities" : searchEdge });
+            }
+        }
     }
 
-    // Check which edges fall within tab domains
+    // Calculate the normalized midpoint position (0 to 1, relative to the pre-split path start)
+    // of each post-split edge. Apply the closed-loop offset correction so that these fractions
+    // are in the same reference frame as the tab domain fractions.
     var tabEdgeQueries = [];
+    var accumulatedLength = 0 * meter;
 
     for (var i = 0; i < size(orderedEdges); i += 1)
     {
         const edge = orderedEdges[i];
-        const midpointParameter = edgeMidpointParameters[i];
+        const edgeLength = evLength(context, { "entities" : edge });
 
-        // Check if this parameter falls within any tab domain
-        var isInTabDomain = false;
+        // Raw midpoint fraction measured from the post-split path's (arbitrary) start.
+        var midpointFraction = (accumulatedLength + edgeLength / 2) / totalLength;
+
+        // Correct for the offset between the post-split start and the pre-split start.
+        midpointFraction = midpointFraction - closedLoopOffsetFraction;
+        if (midpointFraction < 0)
+        {
+            midpointFraction += 1;
+        }
+
+        accumulatedLength += edgeLength;
+
+        // Check whether this corrected fraction falls within any tab domain.
         for (var j = 0; j < size(tabDomains); j += 1)
         {
             const domain = tabDomains[j];
-            if (midpointParameter >= domain.start && midpointParameter <= domain.end)
+            if (midpointFraction >= domain.start && midpointFraction <= domain.end)
             {
-                isInTabDomain = true;
+                tabEdgeQueries = append(tabEdgeQueries, edge);
                 break;
             }
-        }
-
-        if (isInTabDomain)
-        {
-            tabEdgeQueries = append(tabEdgeQueries, edge);
         }
     }
 
@@ -1671,6 +1746,17 @@ function executeFrameTabGeneration(context is Context, id is Id, definition is m
 
     // --- Step 5: Split edges at tab domain boundaries ---
     const trackedEdges = qUnion([orderedEdgeQuery, startTracking(context, orderedEdgeQuery)]);
+
+    // Capture the 3D world-space position of the pre-split path start point before any splits
+    // occur. For closed-loop cap face perimeters (e.g. round tube ends), this lets the
+    // post-split tab identification function correct for the arbitrary start vertex that
+    // constructPath picks when re-ordering the split-edge set.
+    const pathStartParameter = edgePath.flipped[0] ? 1 : 0;
+    const framePathStartPosition = evEdgeTangentLine(context, {
+                    "edge" : edgePath.edges[0],
+                    "parameter" : pathStartParameter
+                }).origin;
+
     const splitParameters = calculateSplitParametersFromTabDomains(tabDomains);
     const splitInstructions = calculateEdgeSplitInstructionsFromParameters(context, edgePath, splitParameters);
 
@@ -1699,7 +1785,7 @@ function executeFrameTabGeneration(context is Context, id is Id, definition is m
 
     // --- Step 6: Identify tab segment edges after splitting ---
     const allEdgesAfterSplit = qEntityFilter(qUnion([orderedEdgeQuery, trackedEdges]), EntityType.EDGE);
-    const tabSegmentEdges = identifyTabSegmentsByEdgeMidpoints(context, allEdgesAfterSplit, edgePath, totalLength, tabDomains);
+    const tabSegmentEdges = identifyTabSegmentsByEdgeMidpoints(context, allEdgesAfterSplit, edgePath, totalLength, tabDomains, framePathStartPosition);
 
     if (isQueryEmpty(context, tabSegmentEdges))
     {
