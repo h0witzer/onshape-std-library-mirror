@@ -1579,9 +1579,51 @@ function executeNestedProfileLoft(context is Context, id is Id, definition is ma
 
     if (groupCount <= 1)
     {
-        // No nesting detected – fall back to a standard single-group loft.
-        // Use a child id so the result is still found by qCreatedBy(id, …).
-        opLoft(context, id + "nestedSingleLoft", definition);
+        // Even when only one region is detected per station, the profile face may
+        // have inner edge loops (e.g., an annular sketch face selected directly as
+        // the profile rather than via the full sketch body).  Apply the same
+        // outer-boundary extraction used by the multi-group path so that opLoft
+        // always receives simply-connected, inner-loop-free profile faces.
+        //
+        // qLoopEdges on a face (or union of faces) returns the loops forming the
+        // outer boundary of the joined faces – inner loops / holes are not
+        // included.  A fill surface built from those edges is always safe for
+        // a solid opLoft.
+        const singleGroupStationCount = size(definition.profileSubqueries);
+        var cleanProfiles = [];
+        var singleGroupTempFillBodyQueries = [];
+
+        for (var stationIndex = 0; stationIndex < singleGroupStationCount; stationIndex += 1)
+        {
+            var stationQuery = definition.profileSubqueries[stationIndex];
+            var faceEntities = evaluateQuery(context, qEntityFilter(stationQuery, EntityType.FACE));
+
+            if (size(faceEntities) > 0)
+            {
+                var outerBoundaryEdges = qLoopEdges(qUnion(faceEntities));
+                var fillId = id + ("singleLoftFill_station" ~ stationIndex);
+                opFillSurface(context, fillId, { "edgesG0" : outerBoundaryEdges });
+                cleanProfiles = append(cleanProfiles, qCreatedBy(fillId, EntityType.FACE));
+                singleGroupTempFillBodyQueries = append(singleGroupTempFillBodyQueries,
+                    qBodyType(qCreatedBy(fillId, EntityType.BODY), BodyType.SHEET));
+            }
+            else
+            {
+                // Vertex or point profile – no inner loops possible, pass through unchanged.
+                cleanProfiles = append(cleanProfiles, stationQuery);
+            }
+        }
+
+        var cleanDefinition = definition;
+        cleanDefinition.profileSubqueries = cleanProfiles;
+        opLoft(context, id + "nestedSingleLoft", cleanDefinition);
+
+        if (size(singleGroupTempFillBodyQueries) > 0)
+        {
+            opDeleteBodies(context, id + "singleLoftFillCleanup", {
+                "entities" : qUnion(singleGroupTempFillBodyQueries)
+            });
+        }
         return;
     }
 
