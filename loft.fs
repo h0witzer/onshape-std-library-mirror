@@ -1273,16 +1273,20 @@ function thinLoft(context is Context, id is Id, definition is map)
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * Sorts an array of individual face queries in descending order of face area.
- * The largest face (outermost closed region) is placed at index 0, the next
- * largest at index 1, and so on.  Used to determine nesting order so that
- * corresponding regions are matched across profile stations consistently.
+ * Sorts an array of individual face queries in descending order of their bounding box
+ * diagonal, placing the outermost (largest enclosing) face at index 0.
+ *
+ * Area-based sorting is intentionally avoided here because an annular (donut-shaped)
+ * sketch region has a smaller face area than the inner solid when the hole occupies
+ * more than half the outer boundary.  The axis-aligned bounding box diagonal, however,
+ * always strictly contains the bounding boxes of all regions nested inside a given
+ * profile face, making it a robust proxy for nesting depth.
  *
  * @param context {Context}
  * @param faceQueries {array} : Each element is a Query that resolves to one face.
- * @returns {array} : The same queries re-ordered, largest area first.
+ * @returns {array} : The same queries re-ordered, largest bounding box first (outermost first).
  */
-function sortFaceQueriesByAreaDescending(context is Context, faceQueries is array) returns array
+function sortFaceQueriesByBoundingBoxDescending(context is Context, faceQueries is array) returns array
 {
     const faceCount = size(faceQueries);
     if (faceCount <= 1)
@@ -1290,31 +1294,35 @@ function sortFaceQueriesByAreaDescending(context is Context, faceQueries is arra
         return faceQueries;
     }
 
-    // Pair each face query with its computed area so comparisons are cheap.
-    var facesWithAreas = [];
+    // Pair each face query with the squared length of its tight bounding box diagonal
+    // so comparisons are cheap and unit-safe.
+    var facesWithSizes = [];
     for (var faceQuery in faceQueries)
     {
-        facesWithAreas = append(facesWithAreas, {
-            "faceQuery" : faceQuery,
-            "area"      : evArea(context, { "entities" : faceQuery })
+        var bbox = evBox3d(context, { "topology" : faceQuery, "tight" : true });
+        var diagonal = bbox.maxCorner - bbox.minCorner;
+        var diagonalSquared = squaredNorm(diagonal);
+        facesWithSizes = append(facesWithSizes, {
+            "faceQuery"       : faceQuery,
+            "diagonalSquared" : diagonalSquared
         });
     }
 
     // Selection sort – O(n^2) is fine for the small region counts expected here.
     var sortedFaceQueries = [];
-    var remaining = facesWithAreas;
+    var remaining = facesWithSizes;
     while (size(remaining) > 0)
     {
-        var maxAreaIndex = 0;
+        var maxSizeIndex = 0;
         for (var checkIndex = 1; checkIndex < size(remaining); checkIndex += 1)
         {
-            if (remaining[checkIndex].area > remaining[maxAreaIndex].area)
+            if (remaining[checkIndex].diagonalSquared > remaining[maxSizeIndex].diagonalSquared)
             {
-                maxAreaIndex = checkIndex;
+                maxSizeIndex = checkIndex;
             }
         }
-        sortedFaceQueries = append(sortedFaceQueries, remaining[maxAreaIndex].faceQuery);
-        remaining = removeElementAt(remaining, maxAreaIndex);
+        sortedFaceQueries = append(sortedFaceQueries, remaining[maxSizeIndex].faceQuery);
+        remaining = removeElementAt(remaining, maxSizeIndex);
     }
 
     return sortedFaceQueries;
@@ -1324,11 +1332,11 @@ function sortFaceQueriesByAreaDescending(context is Context, faceQueries is arra
  * Splits the per-station profile subqueries into nesting-level groups.
  *
  * At each profile station the selected faces are evaluated individually,
- * sorted by area (largest = outermost), and matched by index to the same
- * position at every other station.  The returned array has one entry per
- * nesting level; each entry is itself an array of one query per profile
- * station.  Group 0 contains the outermost (largest) region at each station,
- * group 1 the next region inward, and so on.
+ * sorted by bounding box diagonal (largest = outermost), and matched by
+ * index to the same position at every other station.  The returned array
+ * has one entry per nesting level; each entry is itself an array of one
+ * query per profile station.  Group 0 contains the outermost (largest)
+ * region at each station, group 1 the next region inward, and so on.
  *
  * Returns a single-element array wrapping the original profileSubqueries
  * when every station has exactly one region (no nesting detected), so
@@ -1371,7 +1379,7 @@ function groupNestedProfilesByNestingLevel(context is Context, profileSubqueries
         }
         else
         {
-            var sortedFaces = sortFaceQueriesByAreaDescending(context, faceEntities);
+            var sortedFaces = sortFaceQueriesByBoundingBoxDescending(context, faceEntities);
             if (regionCount == -1)
             {
                 regionCount = size(sortedFaces);
@@ -1539,12 +1547,20 @@ function buildDerivativeInfoForGroup(context is Context, definition is map, grou
  *      inner region, group 2 = next deeper region, etc.).
  *   2. If only one group is found (no nesting), a single opLoft is performed
  *      under a child id so processNewBodyIfNeeded still resolves it correctly.
- *   3. Otherwise each group is lofted separately.  User-defined connections
- *      are routed to the appropriate group via routeConnectionsToProfileGroups
- *      so that each nesting level can carry independent connection strategies.
- *      Start/end derivative conditions are rebuilt per-group via
- *      buildDerivativeInfoForGroup.
- *   4. Boolean combination:
+ *   3. For each group, a temporary clean planar fill surface is created at each
+ *      profile station before calling opLoft.  The clean surface covers the
+ *      entire closed region for that group (outer boundary only, no inner loops)
+ *      by using qLoopEdges on the union of that group's face and all faces nested
+ *      inside it, then calling opFillSurface on the resulting outer-boundary edges.
+ *      This prevents opLoft from encountering faces with inner edge loops
+ *      (which would otherwise throw LOFT_PROFILE_NO_INNER_LOOPS for solid lofts).
+ *      The clean profile bodies are deleted after all loft and boolean operations.
+ *   4. User-defined connections are routed to the appropriate group via
+ *      routeConnectionsToProfileGroups so that each nesting level can carry
+ *      independent connection strategies.  Start/end derivative conditions are
+ *      rebuilt per-group via buildDerivativeInfoForGroup (using the original face
+ *      queries so that sketch-plane geometry is evaluated correctly).
+ *   5. Boolean combination:
  *        - Even-indexed groups (0, 2, 4, …) add material (outer → inner-inner).
  *        - Odd-indexed groups  (1, 3, 5, …) remove material (inner cavities).
  *
@@ -1586,17 +1602,66 @@ function executeNestedProfileLoft(context is Context, id is Id, definition is ma
         }
     }
 
-    // Loft every group and collect their body queries for boolean combination.
+    // Build clean profile face queries for each group at each station.
+    //
+    // The faces stored in profileGroups may be annular (have inner edge loops)
+    // because each sketch region only covers the space between its outer boundary
+    // and the next inner boundary.  opLoft in solid mode rejects such faces with
+    // LOFT_PROFILE_NO_INNER_LOOPS.
+    //
+    // Fix: for group K at station S, compute the outer boundary of the combined
+    // region from group K through the innermost group at that station.  Those
+    // edges always form a simple closed loop (no inner loops) because the inner
+    // boundaries cancel when the regions are joined.  A temporary fill surface
+    // created from those outer-boundary edges gives opLoft a clean profile face.
+    const stationCount = size(profileGroups[0]);
+    var cleanProfileGroups = [];
+    var tempFillBodyQueries = [];
+
+    for (var groupIndex = 0; groupIndex < groupCount; groupIndex += 1)
+    {
+        var cleanGroupProfiles = [];
+        for (var stationIndex = 0; stationIndex < stationCount; stationIndex += 1)
+        {
+            // Collect this group's face and all faces from inner groups at the same station.
+            // qLoopEdges on the combined query returns only the outer boundary of the
+            // joined region – the inner loop edges cancel where adjacent faces meet.
+            var combinedFacesAtStation = [];
+            for (var innerGroupIndex = groupIndex; innerGroupIndex < groupCount; innerGroupIndex += 1)
+            {
+                combinedFacesAtStation = append(combinedFacesAtStation,
+                    profileGroups[innerGroupIndex][stationIndex]);
+            }
+            var combinedFaceQuery = qUnion(combinedFacesAtStation);
+            var outerBoundaryEdges = qLoopEdges(combinedFaceQuery);
+
+            // Create a temporary planar fill surface body whose single face serves
+            // as a clean, inner-loop-free profile for this group's solid loft.
+            var fillId = id + ("nestedFill_group" ~ groupIndex ~ "_station" ~ stationIndex);
+            opFillSurface(context, fillId, {
+                "edgesG0" : outerBoundaryEdges
+            });
+
+            cleanGroupProfiles = append(cleanGroupProfiles, qCreatedBy(fillId, EntityType.FACE));
+            tempFillBodyQueries = append(tempFillBodyQueries,
+                qBodyType(qCreatedBy(fillId, EntityType.BODY), BodyType.SHEET));
+        }
+        cleanProfileGroups = append(cleanProfileGroups, cleanGroupProfiles);
+    }
+
+    // Loft every group using its clean (inner-loop-free) profile faces.
+    // Derivative conditions are rebuilt from the original sketch-face queries so
+    // that evPlane and evOwnerSketchPlane see the correct sketch geometry.
     var groupBodyQueries = [];
 
     for (var groupIndex = 0; groupIndex < groupCount; groupIndex += 1)
     {
-        // Build a tailored definition for this nesting level.
         var groupDefinition = definition;
-        groupDefinition.profileSubqueries  = profileGroups[groupIndex];
-        groupDefinition.connections        = groupConnectionArrays[groupIndex];
-        groupDefinition.matchConnections   = size(groupConnectionArrays[groupIndex]) > 0;
-        groupDefinition.derivativeInfo     = buildDerivativeInfoForGroup(context, definition, profileGroups[groupIndex]);
+        groupDefinition.profileSubqueries = cleanProfileGroups[groupIndex];
+        groupDefinition.connections       = groupConnectionArrays[groupIndex];
+        groupDefinition.matchConnections  = size(groupConnectionArrays[groupIndex]) > 0;
+        groupDefinition.derivativeInfo    = buildDerivativeInfoForGroup(context, definition,
+                                               profileGroups[groupIndex]);
 
         var groupLoftId = id + ("nestedLoft" ~ groupIndex);
         opLoft(context, groupLoftId, groupDefinition);
@@ -1632,6 +1697,16 @@ function executeNestedProfileLoft(context is Context, id is Id, definition is ma
                 "tools"         : qUnion([outerBodyQuery, innerBodyQuery])
             });
         }
+    }
+
+    // Remove the temporary fill surface bodies now that all loft and boolean
+    // operations are complete.  The solid loft bodies are independent and
+    // unaffected by this cleanup.
+    if (size(tempFillBodyQueries) > 0)
+    {
+        opDeleteBodies(context, id + "nestedFillCleanup", {
+            "entities" : qUnion(tempFillBodyQueries)
+        });
     }
 }
 
