@@ -29,7 +29,7 @@ const FEATURE_NAME_SEPARATOR = " - ";
 /**
  * Abuses the Sheet Metal Formed functionality to tag part studios as new, additive, and subtractive bodies for non-sheet metal parts
  * This feature mirrors the Sheet Metal Form tool but performs traditional boolean operations so it can be used outside sheet metal.
- * 
+ *
  * Feature Name Template: The template "Amalgamate#featureName" references the computed parameter 'featureName'.
  * Onshape will substitute #featureName with the actual value at runtime, displaying as "Amalgamate - [custom name]"
  * or just "Amalgamate" if featureName is empty.
@@ -61,11 +61,11 @@ export const amalgamate = defineFeature(function(context is Context, id is Id, d
 
         annotation { "Name" : "Union Scope", "Filter" : EntityType.BODY && BodyType.SOLID && ModifiableEntityOnly.YES }
         definition.unionTargets is Query;
-        
-        annotation { "Name" : "Include bodies tagged as New", "Default" : true }
+
+        annotation { "Name" : "Include bodies tagged as New", "Default" : true, "UIHint" : UIHint.REMEMBER_PREVIOUS_VALUE }
         definition.createNewBodies is boolean;
-        
-        annotation { "Name" : "Form thickness (only needed for sheet metal tagged form tools)", "Default" : millimeter }
+
+        annotation { "Name" : "Form thickness (only needed for sheet metal tagged form tools)", "Default" : millimeter, "UIHint" : UIHint.ALWAYS_HIDDEN }
         isLength(definition.thickness, LENGTH_BOUNDS);
 
         // Hidden computed parameter used for Feature Name Template. Not a user input.
@@ -75,8 +75,8 @@ export const amalgamate = defineFeature(function(context is Context, id is Id, d
 
     }
     {
-        const subtractionSolids = definition.subtractionTargets;//->qBodyType(BodyType.SOLID);
-        const unionSolids = definition.unionTargets;//->qBodyType(BodyType.SOLID);
+        const subtractionSolids = definition.subtractionTargets; //->qBodyType(BodyType.SOLID);
+        const unionSolids = definition.unionTargets; //->qBodyType(BodyType.SOLID);
 
         if (isQueryEmpty(context, definition.locations))
         {
@@ -111,13 +111,13 @@ export const amalgamate = defineFeature(function(context is Context, id is Id, d
             {
                 sourceConfig = definition.formPartStudio.configuration;
             }
-            
+
             // Call buildFunction to create the source Part Studio context
             const sourceContext = definition.formPartStudio.buildFunction(sourceConfig);
-            
+
             // Retrieve the variable from that context
             const retrievedName = getVariable(sourceContext, AMALGAM_FEATURE_NAME_VAR);
-            
+
             // Type check and format
             if (retrievedName != undefined && retrievedName is string && retrievedName != "")
             {
@@ -157,7 +157,7 @@ function addFormInstances(context is Context, id is Id, definition is map, insta
         // Based on implementation from Point Derive and standard library transformation features
         var xAxis = cSys.xAxis;
         var zAxis = cSys.zAxis;
-        
+
         if (definition.secondaryAxisType == MateConnectorAxisType.PLUS_Y)
         {
             xAxis = cross(zAxis, xAxis);
@@ -171,7 +171,7 @@ function addFormInstances(context is Context, id is Id, definition is map, insta
             xAxis = -cross(zAxis, xAxis);
         }
         // PLUS_X is the default, no change needed
-        
+
         cSys = coordSystem(cSys.origin, xAxis, zAxis);
 
         const formedBodies = addInstance(instantiator, definition.formPartStudio, {
