@@ -27,7 +27,9 @@ const TRIAD_MANIPULATOR = "triadManipulator";
 
 predicate triadTransformPredicate(definition is map)
 {
-    annotation { "Name" : "Entities to transform", "Filter" : EntityType.BODY && ModifiableEntityOnly.YES && AllowMeshGeometry.YES && SketchObject.NO }
+    annotation { "Name" : "Entities to transform",
+                 "Filter" : (EntityType.BODY && ModifiableEntityOnly.YES && AllowMeshGeometry.YES && SketchObject.NO) || BodyType.MATE_CONNECTOR,
+                 "UIHint" : UIHint.PREVENT_CREATING_NEW_MATE_CONNECTORS }
     definition.entities is Query;
 
     annotation { "Name" : "X translation", "Group Name" : "Transform", "Collapsed By Default" : true }
@@ -125,11 +127,20 @@ export const triadTransform = defineFeature(function(context is Context, id is I
 
         if (definition.copyParts)
         {
-            opPattern(context, id, {
-                        "entities" : qOwnerBody(definition.entities),
-                        "transforms" : [worldTransform],
-                        "instanceNames" : ["copy"]
-                    });
+            try
+            {
+                opPattern(context, id, {
+                            "entities" : qOwnerBody(definition.entities),
+                            "transforms" : [worldTransform],
+                            "instanceNames" : ["copy"]
+                        });
+            }
+            catch (error)
+            {
+                if (error.message == (ErrorStringEnum.CANNOT_USE_MATECONNECTORS_IN_PATTERN as string))
+                    throw regenError(ErrorStringEnum.CANNOT_COPY_MATECONNECTORS);
+                throw error;
+            }
         }
         else
         {
@@ -316,12 +327,25 @@ function getBaseCoordinateSystem(context is Context, definition is map) returns 
     }
     
     // Default behavior: use centroid of selected entities
+    const mateConnectors = qBodyType(definition.entities, BodyType.MATE_CONNECTOR);
+    const regularBodies = qSubtraction(definition.entities, mateConnectors);
+    const mateConnectorList = evaluateQuery(context, mateConnectors);
+    const regularBodyList = evaluateQuery(context, regularBodies);
+
+    // When exactly one mate connector is selected and no other bodies, use its full coordinate system
+    if (@size(mateConnectorList) == 1 && @size(regularBodyList) == 0)
+    {
+        return evMateConnector(context, { "mateConnector" : mateConnectors });
+    }
+
     const origin = findCenter(context, definition.entities);
     return coordSystem(origin, vector(1, 0, 0), vector(0, 0, 1));
 }
 
 /**
- * Calculates the center point (centroid) of the bounding box for the given entities.
+ * Calculates the center point (centroid) of the given entities.
+ * For regular bodies, uses the bounding box center. For mate connectors,
+ * uses their origin position. Returns the average of all collected positions.
  * 
  * @param context {Context} : The context for the feature
  * @param entities {Query} : The entities to find the center of
@@ -330,6 +354,36 @@ function getBaseCoordinateSystem(context is Context, definition is map) returns 
  */
 function findCenter(context is Context, entities is Query) returns Vector
 {
-    const boxResult = evBox3d(context, { 'topology' : entities, 'tight' : false });
-    return box3dCenter(boxResult);
+    const mateConnectors = qBodyType(entities, BodyType.MATE_CONNECTOR);
+    const regularBodies = qSubtraction(entities, mateConnectors);
+    const mateConnectorList = evaluateQuery(context, mateConnectors);
+    const regularBodyList = evaluateQuery(context, regularBodies);
+
+    var entityPositions = [];
+
+    // Get origins from mate connectors via evMateConnector
+    for (var mateConnector in mateConnectorList)
+    {
+        const coordSys = evMateConnector(context, { "mateConnector" : mateConnector });
+        entityPositions = append(entityPositions, coordSys.origin);
+    }
+
+    // Get bounding box center from regular bodies
+    if (@size(regularBodyList) > 0)
+    {
+        const boxResult = evBox3d(context, { 'topology' : regularBodies, 'tight' : false });
+        entityPositions = append(entityPositions, box3dCenter(boxResult));
+    }
+
+    if (@size(entityPositions) == 0)
+    {
+        throw regenError(ErrorStringEnum.CANNOT_RESOLVE_ENTITIES, ["entities"]);
+    }
+
+    var positionSum = entityPositions[0];
+    for (var index = 1; index < @size(entityPositions); index += 1)
+    {
+        positionSum = positionSum + entityPositions[index];
+    }
+    return positionSum / @size(entityPositions);
 }
