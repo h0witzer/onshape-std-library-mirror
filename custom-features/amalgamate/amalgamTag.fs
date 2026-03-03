@@ -36,7 +36,7 @@ const AMALGAM_FEATURE_NAME_VAR = "amalgamFeatureName";
  */
 export enum TagPurpose
 {
-        annotation { "Name" : "Form" }
+    annotation { "Name" : "Form" }
     FORM,
     annotation { "Name" : "Frame" }
     FRAME
@@ -44,7 +44,7 @@ export enum TagPurpose
 
 /**
  * Tag an entity with metadata. The metadata will be used for formed and frame features.
- * 
+ *
  * Feature Name Template: The template "Amalgam Tag#featureNameDisplay" references the computed parameter 'featureNameDisplay'.
  * Onshape will substitute #featureNameDisplay with the actual value at runtime.
  */
@@ -98,16 +98,16 @@ export const tag = defineFeature(function(context is Context, id is Id, definiti
         }
         else if (definition.tagPurpose == TagPurpose.FORM)
         {
-            annotation { "Name" : "Tools for union operations", "Filter" : EntityType.BODY && BodyType.SOLID}
+            annotation { "Name" : "Tools for union operations", "Filter" : EntityType.BODY && BodyType.SOLID }
             definition.positivePart is Query;
 
             annotation { "Name" : "Tools for subtraction operations", "Filter" : EntityType.BODY && BodyType.SOLID }
             definition.negativePart is Query;
 
-            annotation { "Name" : "Parts to insert as new", "Filter" : (EntityType.BODY && BodyType.SOLID) || BodyType.COMPOSITE}
+            annotation { "Name" : "Parts to insert as new", "Filter" : (EntityType.BODY && BodyType.SOLID) || BodyType.COMPOSITE }
             definition.newPart is Query;
 
-            annotation { "Name" : "Sketch for flat view" , "UIHint" : UIHint.ALWAYS_HIDDEN}
+            annotation { "Name" : "Sketch for flat view", "UIHint" : UIHint.ALWAYS_HIDDEN }
             definition.flatFormSketch is FeatureList;
 
             annotation { "Name" : "Amalgam tool origin mate connector", "Description" : "If none selected, this feature will create one at Origin",
@@ -152,20 +152,20 @@ function doTagForm(context is Context, topLevelId is Id, definition is map)
     verify(!isInFeaturePattern(context), ErrorStringEnum.FORMED_TAG_FORM_NO_FEATURE_PATTERN);
 
     const bodiesWithFormAttribute = qBodiesWithFormAttributes(qEverything(EntityType.BODY), [FORM_BODY_POSITIVE_PART,
-                FORM_BODY_NEGATIVE_PART,FORM_BODY_NEW_PART, FORM_BODY_SKETCH_FOR_FLAT_VIEW, FORM_BODY_CSYS_MATE_CONNECTOR]);
+                FORM_BODY_NEGATIVE_PART, FORM_BODY_NEW_PART, FORM_BODY_SKETCH_FOR_FLAT_VIEW, FORM_BODY_CSYS_MATE_CONNECTOR]);
     if (!isQueryEmpty(context, bodiesWithFormAttribute))
     {
         // Display status message to user about detected tagged bodies
         reportFeatureInfo(context, topLevelId, "Bodies with existing amalgam tags detected. Removing previous tags before applying new ones.");
-        
+
         // Remove existing form attributes from all tagged bodies
         // Using hardcoded "formBodyAttribute" string because FORM_BODY_ATTRIBUTE_NAME is not exported from modifiedFormedUtils
         // Setting attribute to undefined is the correct way to remove named attributes per attributes.fs documentation
         setAttribute(context, {
-            "entities" : bodiesWithFormAttribute,
-            "name" : "formBodyAttribute",
-            "attribute" : undefined
-        });
+                    "entities" : bodiesWithFormAttribute,
+                    "name" : "formBodyAttribute",
+                    "attribute" : undefined
+                });
     }
 
     var positivePartSelected = !isQueryEmpty(context, definition.positivePart);
@@ -192,7 +192,7 @@ function doTagForm(context is Context, topLevelId is Id, definition is map)
             throw regenError(ErrorStringEnum.FORMED_TAG_FORM_NEGATIVE_PART_CONSUMED, ["negativePart"], definition.negativePart);
         }
     }
-        var newPartSelected = !isQueryEmpty(context, definition.newPart);
+    var newPartSelected = !isQueryEmpty(context, definition.newPart);
     if (newPartSelected)
     {
         // Allow both SOLID and COMPOSITE bodies for new parts
@@ -241,12 +241,12 @@ function doTagForm(context is Context, topLevelId is Id, definition is map)
         setFormAttribute(context, definition.negativePart, FORM_BODY_NEGATIVE_PART);
         // Apply magenta appearance with 0.2 alpha to subtraction tool bodies for user identification
         setProperty(context, {
-            "entities" : definition.negativePart,
-            "propertyType" : PropertyType.APPEARANCE,
-            "value" : color(1, 0, 1, 0.2)
-        });
+                    "entities" : definition.negativePart,
+                    "propertyType" : PropertyType.APPEARANCE,
+                    "value" : color(1, 0, 1, 0.2)
+                });
     }
-        if (newPartSelected)
+    if (newPartSelected)
     {
         // Tag both the composite container and its constituent bodies to preserve composite structure
         // When a composite is selected, we need to tag:
