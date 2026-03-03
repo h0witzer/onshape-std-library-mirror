@@ -1338,6 +1338,11 @@ function sortFaceQueriesByBoundingBoxDescending(context is Context, faceQueries 
  * query per profile station.  Group 0 contains the outermost (largest)
  * region at each station, group 1 the next region inward, and so on.
  *
+ * Station queries that resolve to sheet bodies (e.g., the user selected an
+ * entire sketch body rather than individual region faces) are expanded to
+ * the non-construction faces owned by that body before counting regions,
+ * so that selecting a whole sketch is equivalent to selecting all its faces.
+ *
  * Returns a single-element array wrapping the original profileSubqueries
  * when every station has exactly one region (no nesting detected), so
  * callers can use the same code path for both cases.
@@ -1362,6 +1367,17 @@ function groupNestedProfilesByNestingLevel(context is Context, profileSubqueries
     {
         var stationQuery = profileSubqueries[stationIndex];
         var faceEntities = evaluateQuery(context, qEntityFilter(stationQuery, EntityType.FACE));
+
+        if (size(faceEntities) == 0)
+        {
+            // stationQuery may resolve to a sheet body (e.g., the user selected an entire
+            // sketch body rather than picking individual region faces).  Expand it to the
+            // non-construction faces owned by that body so that multi-region nesting can be
+            // detected correctly.  If the query is truly a vertex or non-face entity, the
+            // owned-face lookup returns empty and the vertex/point branch below is taken.
+            faceEntities = evaluateQuery(context, qConstructionFilter(
+                qOwnedByBody(stationQuery, EntityType.FACE), ConstructionObject.NO));
+        }
 
         if (size(faceEntities) == 0)
         {
@@ -1549,13 +1565,20 @@ function buildDerivativeInfoForGroup(context is Context, definition is map, grou
  *      under a child id so processNewBodyIfNeeded still resolves it correctly.
  *   3. For each group, a temporary clean planar fill surface is created at each
  *      profile station before calling opLoft.  The clean surface covers the
- *      entire closed region for that group (outer boundary only, no inner loops)
- *      by using qLoopEdges on the union of that group's face and all faces nested
- *      inside it, then calling opFillSurface on the resulting outer-boundary edges.
- *      This prevents opLoft from encountering faces with inner edge loops
- *      (which would otherwise throw LOFT_PROFILE_NO_INNER_LOOPS for solid lofts).
- *      The clean profile bodies are deleted after all loft and boolean operations.
- *   4. User-defined connections are routed to the appropriate group via
+ *      entire closed region for that group (outer boundary only, no inner loops).
+ *      opExtractSurface combines the group's face with all faces nested inside it
+ *      into a temporary sheet body; edges shared between those faces become
+ *      TWO_SIDED while the outer perimeter remains ONE_SIDED.
+ *      qEdgeTopologyFilter(ONE_SIDED) then isolates the single outer closed loop,
+ *      which opFillSurface fills into a clean, simply-connected profile face for
+ *      opLoft.  The clean profile bodies are deleted after all loft and boolean
+ *      operations.
+ *   4. Profile station queries that resolve to sheet bodies (e.g., the user
+ *      selected an entire sketch body rather than individual region faces) are
+ *      transparently expanded to the non-construction faces owned by that body,
+ *      so that multi-region nesting is detected correctly in both the grouping
+ *      step and the per-station boundary extraction step.
+ *   5. User-defined connections are routed to the appropriate group via
  *      routeConnectionsToProfileGroups so that each nesting level can carry
  *      independent connection strategies.  Start/end derivative conditions are
  *      rebuilt per-group via buildDerivativeInfoForGroup (using the original face
@@ -1584,11 +1607,8 @@ function executeNestedProfileLoft(context is Context, id is Id, definition is ma
         // the profile rather than via the full sketch body).  Apply the same
         // outer-boundary extraction used by the multi-group path so that opLoft
         // always receives simply-connected, inner-loop-free profile faces.
-        //
-        // qLoopEdges on a face (or union of faces) returns the loops forming the
-        // outer boundary of the joined faces – inner loops / holes are not
-        // included.  A fill surface built from those edges is always safe for
-        // a solid opLoft.
+        // Sheet body queries (entire sketch body selected) are expanded to their
+        // owned non-construction faces before the boundary extraction is applied.
         const singleGroupStationCount = size(definition.profileSubqueries);
         var cleanProfiles = [];
         var singleGroupTempFillBodyQueries = [];
@@ -1597,6 +1617,15 @@ function executeNestedProfileLoft(context is Context, id is Id, definition is ma
         {
             var stationQuery = definition.profileSubqueries[stationIndex];
             var faceEntities = evaluateQuery(context, qEntityFilter(stationQuery, EntityType.FACE));
+
+            if (size(faceEntities) == 0)
+            {
+                // stationQuery may resolve to a sheet body rather than individual face entities.
+                // Expand to owned non-construction faces so that annular sketch bodies receive
+                // the same outer-boundary extraction as explicitly selected face entities.
+                faceEntities = evaluateQuery(context, qConstructionFilter(
+                    qOwnedByBody(stationQuery, EntityType.FACE), ConstructionObject.NO));
+            }
 
             if (size(faceEntities) > 0)
             {
@@ -1750,6 +1779,16 @@ function executeNestedProfileLoft(context is Context, id is Id, definition is ma
     {
         var innerBodyQuery = groupBodyQueries[groupIndex];
         var booleanId = id + ("nestedBoolean" ~ groupIndex);
+
+        // Guard: verify the inner loft produced a solid body before attempting the boolean.
+        // An empty query here means opLoft for this group created no solid (e.g., all profiles
+        // were degenerate), which would silently leave the outer body unmodified.
+        if (isQueryEmpty(context, innerBodyQuery))
+        {
+            throw regenError("Nested profile loft group " ~ toString(groupIndex)
+                ~ " did not produce a solid body and cannot be combined. "
+                ~ "Check that all profile stations at this nesting level contain valid closed regions.");
+        }
 
         if (groupIndex % 2 == 1)
         {
