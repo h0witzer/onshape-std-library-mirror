@@ -127,12 +127,7 @@ export const triadTransform = defineFeature(function(context is Context, id is I
 
         if (definition.copyParts)
         {
-            // The Onshape kernel's @opPattern (geometry pattern) explicitly rejects mate connector bodies,
-            // throwing CANNOT_USE_MATECONNECTORS_IN_PATTERN. Only a feature pattern (PatternType.FEATURE,
-            // which replays the creation feature) can pattern mate connectors natively. Since we are doing
-            // a geometry transform — not replaying a feature — we instead create each copy by evaluating
-            // the mate connector's coordinate system and calling opMateConnector at the transformed position,
-            // which is functionally equivalent to what a feature pattern produces.
+            // opPattern cannot copy mate connectors - handle them separately using opMateConnector
             const mateConnectorsToCopy = qBodyType(definition.entities, BodyType.MATE_CONNECTOR);
             const regularBodiesToCopy = qSubtraction(definition.entities, mateConnectorsToCopy);
             const mateConnectorCopyList = evaluateQuery(context, mateConnectorsToCopy);
