@@ -127,19 +127,29 @@ export const triadTransform = defineFeature(function(context is Context, id is I
 
         if (definition.copyParts)
         {
-            try
+            // opPattern cannot copy mate connectors - handle them separately using opMateConnector
+            const mateConnectorsToCopy = qBodyType(definition.entities, BodyType.MATE_CONNECTOR);
+            const regularBodiesToCopy = qSubtraction(definition.entities, mateConnectorsToCopy);
+            const mateConnectorCopyList = evaluateQuery(context, mateConnectorsToCopy);
+
+            if (!isQueryEmpty(context, regularBodiesToCopy))
             {
-                opPattern(context, id, {
-                            "entities" : qOwnerBody(definition.entities),
+                opPattern(context, id + "pattern", {
+                            "entities" : qOwnerBody(regularBodiesToCopy),
                             "transforms" : [worldTransform],
                             "instanceNames" : ["copy"]
                         });
             }
-            catch (error)
+
+            // Create a new mate connector at the transformed coordinate system for each selected mate connector
+            for (var mateConnectorCopyIndex = 0; mateConnectorCopyIndex < @size(mateConnectorCopyList); mateConnectorCopyIndex += 1)
             {
-                if (error.message == (ErrorStringEnum.CANNOT_USE_MATECONNECTORS_IN_PATTERN as string))
-                    throw regenError(ErrorStringEnum.CANNOT_COPY_MATECONNECTORS);
-                throw error;
+                const originalCoordSys = evMateConnector(context, { "mateConnector" : mateConnectorCopyList[mateConnectorCopyIndex] });
+                const transformedCoordSys = worldTransform * originalCoordSys;
+                opMateConnector(context, id + "mateConnectorCopy" + mateConnectorCopyIndex, {
+                            "owner" : qNothing(),
+                            "coordSystem" : transformedCoordSys
+                        });
             }
         }
         else
