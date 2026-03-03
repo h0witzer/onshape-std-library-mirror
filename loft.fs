@@ -1600,12 +1600,28 @@ function executeNestedProfileLoft(context is Context, id is Id, definition is ma
 
             if (size(faceEntities) > 0)
             {
-                var outerBoundaryEdges = qLoopEdges(qUnion(faceEntities));
-                var fillId = id + ("singleLoftFill_station" ~ stationIndex);
-                opFillSurface(context, fillId, { "edgesG0" : outerBoundaryEdges });
-                cleanProfiles = append(cleanProfiles, qCreatedBy(fillId, EntityType.FACE));
-                singleGroupTempFillBodyQueries = append(singleGroupTempFillBodyQueries,
-                    qBodyType(qCreatedBy(fillId, EntityType.BODY), BodyType.SHEET));
+                // In the original sketch body, edges shared between adjacent sketch regions
+                // are TWO_SIDED while edges on the true outer perimeter are ONE_SIDED.
+                // Filtering to ONE_SIDED edges therefore excludes inner-loop edges on any
+                // annular (donut-shaped) profile face, giving opFillSurface a single closed
+                // outer loop rather than the inner+outer double-loop that qLoopEdges returns.
+                var boundaryEdges = qAdjacent(qUnion(faceEntities), AdjacencyType.EDGE, EntityType.EDGE);
+                var outerBoundaryEdges = qEdgeTopologyFilter(boundaryEdges, EdgeTopology.ONE_SIDED);
+
+                if (isQueryEmpty(context, outerBoundaryEdges))
+                {
+                    // All boundary edges are TWO_SIDED: the face is from a solid body and
+                    // cannot have inner loops – pass through unchanged.
+                    cleanProfiles = append(cleanProfiles, stationQuery);
+                }
+                else
+                {
+                    var fillId = id + ("singleLoftFill_station" ~ stationIndex);
+                    opFillSurface(context, fillId, { "edgesG0" : outerBoundaryEdges });
+                    cleanProfiles = append(cleanProfiles, qCreatedBy(fillId, EntityType.FACE));
+                    singleGroupTempFillBodyQueries = append(singleGroupTempFillBodyQueries,
+                        qBodyType(qCreatedBy(fillId, EntityType.BODY), BodyType.SHEET));
+                }
             }
             else
             {
@@ -1651,11 +1667,12 @@ function executeNestedProfileLoft(context is Context, id is Id, definition is ma
     // and the next inner boundary.  opLoft in solid mode rejects such faces with
     // LOFT_PROFILE_NO_INNER_LOOPS.
     //
-    // Fix: for group K at station S, compute the outer boundary of the combined
-    // region from group K through the innermost group at that station.  Those
-    // edges always form a simple closed loop (no inner loops) because the inner
-    // boundaries cancel when the regions are joined.  A temporary fill surface
-    // created from those outer-boundary edges gives opLoft a clean profile face.
+    // Fix: for group K at station S, opExtractSurface is used on the combined faces
+    // from group K through the innermost group.  In the resulting sheet body, shared
+    // interior edges between the collected faces become TWO_SIDED while the outer
+    // perimeter edges remain ONE_SIDED.  qEdgeTopologyFilter with ONE_SIDED then
+    // reliably isolates the single outer closed loop, which opFillSurface fills into
+    // a clean, simply-connected profile face for opLoft.
     const stationCount = size(profileGroups[0]);
     var cleanProfileGroups = [];
     var tempFillBodyQueries = [];
@@ -1666,8 +1683,7 @@ function executeNestedProfileLoft(context is Context, id is Id, definition is ma
         for (var stationIndex = 0; stationIndex < stationCount; stationIndex += 1)
         {
             // Collect this group's face and all faces from inner groups at the same station.
-            // qLoopEdges on the combined query returns only the outer boundary of the
-            // joined region – the inner loop edges cancel where adjacent faces meet.
+            // The combined region's outer boundary is computed via opExtractSurface below.
             var combinedFacesAtStation = [];
             for (var innerGroupIndex = groupIndex; innerGroupIndex < groupCount; innerGroupIndex += 1)
             {
@@ -1675,7 +1691,19 @@ function executeNestedProfileLoft(context is Context, id is Id, definition is ma
                     profileGroups[innerGroupIndex][stationIndex]);
             }
             var combinedFaceQuery = qUnion(combinedFacesAtStation);
-            var outerBoundaryEdges = qLoopEdges(combinedFaceQuery);
+
+            // Extract the combined faces into a temporary sheet body.
+            // In this extracted body, edges that are shared between two of the collected
+            // faces become TWO_SIDED, while edges on the outer perimeter of the combined
+            // region remain ONE_SIDED.  Filtering to ONE_SIDED edges therefore reliably
+            // isolates the outer boundary at any nesting depth – unlike qLoopEdges, which
+            // returns all loops (inner + outer) of the original face.
+            var extractId = id + ("nestedExtract_group" ~ groupIndex ~ "_station" ~ stationIndex);
+            opExtractSurface(context, extractId, { "faces" : combinedFaceQuery });
+
+            var extractedBody = qBodyType(qCreatedBy(extractId, EntityType.BODY), BodyType.SHEET);
+            var ownedEdges = qOwnedByBody(extractedBody, EntityType.EDGE);
+            var outerBoundaryEdges = qEdgeTopologyFilter(ownedEdges, EdgeTopology.ONE_SIDED);
 
             // Create a temporary planar fill surface body whose single face serves
             // as a clean, inner-loop-free profile for this group's solid loft.
@@ -1685,6 +1713,8 @@ function executeNestedProfileLoft(context is Context, id is Id, definition is ma
             });
 
             cleanGroupProfiles = append(cleanGroupProfiles, qCreatedBy(fillId, EntityType.FACE));
+            // Track both the extracted sheet body and the fill surface body for cleanup.
+            tempFillBodyQueries = append(tempFillBodyQueries, extractedBody);
             tempFillBodyQueries = append(tempFillBodyQueries,
                 qBodyType(qCreatedBy(fillId, EntityType.BODY), BodyType.SHEET));
         }
