@@ -39,8 +39,7 @@ import(path : "onshape/std/valueBounds.fs", version : "2892.0");
  * sheetMetalJoint features appear in the feature tree.
  */
 annotation { "Feature Type Name" : "Modify joints",
-        "Filter Selector" : "allparts",
-        "Editing Logic Function" : "sheetMetalModifyJointsEditLogic" }
+        "Filter Selector" : "allparts" }
 export const sheetMetalModifyJoints = defineSheetMetalFeature(function(context is Context, id is Id, definition is map)
     precondition
     {
@@ -73,14 +72,8 @@ export const sheetMetalModifyJoints = defineSheetMetalFeature(function(context i
 
         if (definition.jointType == SMJointType.RIP)
         {
-            // hasStyle is driven by editing logic; always hidden from user
-            annotation { "Name" : "Has style", "Default" : true, "UIHint" : UIHint.ALWAYS_HIDDEN }
-            definition.hasStyle is boolean;
-            if (definition.hasStyle)
-            {
-                annotation { "Name" : "Joint style" }
-                definition.jointStyle is SMJointStyle;
-            }
+            annotation { "Name" : "Joint style" }
+            definition.jointStyle is SMJointStyle;
         }
     }
     {
@@ -226,50 +219,7 @@ export const sheetMetalModifyJoints = defineSheetMetalFeature(function(context i
                     "entities" : allModifiedEdgesQuery,
                     "associatedChanges" : allModifiedEdgesQuery
                 });
-    }, { jointStyle : SMJointStyle.EDGE, useDefaultRadius : true, hasStyle : true, useDefaultKFactor : true });
-
-
-// ─── Editing logic ──────────────────────────────────────────────────────────
-
-/**
- * @internal
- * Editing logic for sheetMetalModifyJoints.
- * Keeps the hidden `hasStyle` flag in sync with whether the selected joints have a non-zero
- * angle (which determines whether a RIP joint style option is meaningful).
- * Parameter isCreating is required so that this function is also called during editing.
- */
-export function sheetMetalModifyJointsEditLogic(context is Context, id is Id, oldDefinition is map, definition is map,
-    isCreating is boolean, specifiedParameters is map, hiddenBodies is Query) returns map
-{
-    // Editing logic must not throw — use try silent so that partial or empty selections
-    // return the current definition unchanged rather than surfacing an error to the user.
-    const definitionEntities = try silent(getSMDefinitionEntities(context, definition.joints, EntityType.EDGE));
-    if (definitionEntities == undefined || size(definitionEntities) == 0)
-    {
-        return definition;
-    }
-
-    const jointEdgesQuery = qUnion(definitionEntities);
-
-    // Check the first resolved joint edge: if it has a non-trivial angle the RIP style
-    // option should be shown. We conservatively check only the first edge to avoid
-    // iterating the full selection on every edit-logic invocation.
-    // try silent is appropriate here as the edit logic must not throw.
-    var existingAttribute = try silent(getJointAttribute(context, jointEdgesQuery));
-    if (existingAttribute != undefined &&
-        existingAttribute.angle != undefined &&
-        existingAttribute.angle.value != undefined &&
-        abs(existingAttribute.angle.value / radian) > TOLERANCE.zeroAngle)
-    {
-        definition.hasStyle = true;
-    }
-    else
-    {
-        definition.hasStyle = false;
-    }
-
-    return definition;
-}
+    }, { jointStyle : SMJointStyle.EDGE, useDefaultRadius : true, useDefaultKFactor : true });
 
 
 // ─── Private helper functions ────────────────────────────────────────────────
