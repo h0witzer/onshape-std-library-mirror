@@ -8,12 +8,12 @@ import(path : "df6ff502d6e067dbccb62db7", version : "48e4b06a3a673f47ce0c5c2f");
  * This feature provides an interactive diagnostic environment for the two directions
  * of mate-connector ownership resolution:
  *
- *   Mode 1 — Connector → Owner Parts  (qOwnerPartsOfMateConnectors)
+ *   Mode 1 - Connector -> Owner Parts  (qOwnerPartsOfMateConnectors)
  *     Select one or more named mate connector bodies. The feature resolves which
  *     modifiable body (solid, sheet, wire, or composite) owns each connector and
  *     highlights those owner bodies in GREEN.
  *
- *   Mode 2 — Part → Owned Connectors  (qMateConnectorsOfParts)
+ *   Mode 2 - Part -> Owned Connectors  (qMateConnectorsOfParts)
  *     Select a modifiable part body. The feature calls qMateConnectorsOfParts
  *     directly on that part and highlights the mate connectors it owns in BLUE.
  *     Use this mode to verify that qMateConnectorsOfParts is returning results
@@ -26,14 +26,14 @@ import(path : "df6ff502d6e067dbccb62db7", version : "48e4b06a3a673f47ce0c5c2f");
 
 /**
  * Selects which direction of the ownership relationship to explore.
- *   OWNER_PARTS_OF_CONNECTOR : connector selection → owner part lookup
- *   CONNECTORS_OF_PART       : part selection → owned connector lookup
+ *   OWNER_PARTS_OF_CONNECTOR : connector selection -> owner part lookup
+ *   CONNECTORS_OF_PART       : part selection -> owned connector lookup
  */
 export enum TesterMode
 {
-    annotation { "Name" : "Connector → Owner Parts  (qOwnerPartsOfMateConnectors)" }
+    annotation { "Name" : "Connector -> Owner Parts (qOwnerPartsOfMateConnectors)" }
     OWNER_PARTS_OF_CONNECTOR,
-    annotation { "Name" : "Part → Owned Connectors  (qMateConnectorsOfParts)" }
+    annotation { "Name" : "Part -> Owned Connectors (qMateConnectorsOfParts)" }
     CONNECTORS_OF_PART
 }
 
@@ -114,7 +114,7 @@ function testOwnerPartsOfConnector(context is Context, id is Id, definition is m
     {
         reportFeatureInfo(context, id,
             "No owner parts found for " ~ selectedConnectorCount ~ " selected connector(s). " ~
-            "Try Mode 2 (Part → Owned Connectors) to verify qMateConnectorsOfParts returns " ~
+            "Try Mode 2 (Part -> Owned Connectors) to verify qMateConnectorsOfParts returns " ~
             "results for the part you expect to be the owner.");
     }
     else

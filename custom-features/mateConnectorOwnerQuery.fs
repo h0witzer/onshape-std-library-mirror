@@ -25,12 +25,13 @@ import(path : "onshape/std/common.fs", version : "2892.0");
  * Returns a query for every modifiable body (solid, sheet, wire, or composite) that
  * owns at least one of the mate connectors matched by `mateConnectors`.
  *
- * The function works by iterating over every modifiable body in the context,
- * evaluating `qMateConnectorsOfParts` for each body to an entity array, and
- * comparing those entities directly against the pre-evaluated `mateConnectors`
- * array. Direct entity comparison is used instead of `qIntersection` to avoid
- * unreliable behaviour when intersecting a UI-selection query with a historical
- * `MATE_CONNECTOR` query type.
+ * The function works by iterating over every modifiable body in the context via
+ * `qNthElement`, evaluating `qMateConnectorsOfParts` for each body, and comparing
+ * the resulting transient entity references against the pre-evaluated `mateConnectors`
+ * array. `qNthElement` is used instead of iterating over `evaluateQuery` results because
+ * passing a `QueryType.TRANSIENT` query as the subquery of `qMateConnectorsOfParts`
+ * silently returns nothing; the ownership lookup only works when the subquery is a
+ * non-transient query type such as `QueryType.NTH_ELEMENT`.
  *
  * Mate connectors that were created without an explicit owner part (e.g. implicit
  * connectors generated inside a feature dialog) will not match any body and are
@@ -45,9 +46,8 @@ import(path : "onshape/std/common.fs", version : "2892.0");
  */
 export function qOwnerPartsOfMateConnectors(context is Context, mateConnectors is Query) returns Query
 {
-    // Pre-evaluate the requested connectors once so we can compare by entity identity
-    // in the inner loop rather than relying on qIntersection across different query
-    // types (selection query vs. MATE_CONNECTOR historical query).
+    // Pre-evaluate the requested connectors to transient entity references once.
+    // These are used for direct entity comparison in the inner loop.
     const requestedConnectorEntities = evaluateQuery(context, mateConnectors);
     if (requestedConnectorEntities == [])
     {
@@ -65,19 +65,26 @@ export function qOwnerPartsOfMateConnectors(context is Context, mateConnectors i
         )
     );
 
-    const candidateBodies = evaluateQuery(context, allModifiableBodies);
+    const bodyCount = evaluateQueryCount(context, allModifiableBodies);
 
     // Accumulate bodies that own at least one of the supplied mate connectors.
     var ownerBodies = [] as array;
 
-    for (var candidateBody in candidateBodies)
+    for (var bodyIndex = 0; bodyIndex < bodyCount; bodyIndex += 1)
     {
-        // Evaluate qMateConnectorsOfParts to an array so we can compare entities
-        // directly. This avoids potential failures when intersecting a UI-selection
-        // query with a MATE_CONNECTOR historical query via qIntersection.
-        const ownedConnectorEntities = evaluateQuery(context, qMateConnectorsOfParts(candidateBody));
+        // Use qNthElement rather than a transient entity reference from evaluateQuery.
+        // Passing a QueryType.TRANSIENT query as the subquery of qMateConnectorsOfParts
+        // causes the ownership lookup to silently return nothing; qNthElement keeps the
+        // query in a form the runtime can correctly resolve against the ownership table.
+        const singleBodyQuery = qNthElement(allModifiableBodies, bodyIndex);
 
-        // Walk both lists looking for any entity that appears in both sets.
+        // Evaluate the connectors owned by this body to transient entity references.
+        const ownedConnectorEntities = evaluateQuery(context, qMateConnectorsOfParts(singleBodyQuery));
+
+        // Walk both entity lists looking for any connector that appears in both sets.
+        // Entity comparison with == on two transient queries from evaluateQuery is
+        // reliable because the runtime assigns stable transient IDs within a single
+        // feature execution.
         var foundOwnership = false;
         for (var ownedConnector in ownedConnectorEntities)
         {
@@ -97,7 +104,7 @@ export function qOwnerPartsOfMateConnectors(context is Context, mateConnectors i
 
         if (foundOwnership)
         {
-            ownerBodies = append(ownerBodies, candidateBody);
+            ownerBodies = append(ownerBodies, singleBodyQuery);
         }
     }
 
