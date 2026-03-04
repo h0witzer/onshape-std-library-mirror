@@ -1,11 +1,17 @@
 FeatureScript 2892;
-// Sheet Metal Modify Joints (Multi-Joint) Custom Feature
+// Sheet Metal Modify Joints (Multi-Group) Custom Feature
 //
-// This feature is a multi-selection version of the standard "Modify joint" (sheetMetalJoint)
-// feature. Selecting many joints and applying settings one at a time triggers a full sheet metal
-// rebuild for every joint, causing significant performance overhead. By collecting all attribute
-// changes first and calling updateSheetMetalGeometry only once at the end, this feature reduces
-// rebuild cost to a single pass regardless of how many joints are selected.
+// This feature replaces the standard single-pick "Modify joint" (sheetMetalJoint) feature with
+// an array-based approach that supports multiple independent joint groups in a single feature.
+// Each group has its own joint selection and type settings, so the user can simultaneously:
+//   • Turn one set of joints into RIP / Butt Direction 1
+//   • Turn another set into RIP / Butt Direction 2
+//   • Adjust bend radii on a third set
+//   … all within one feature, with a single sheet metal rebuild at the end.
+//
+// By batching every attribute change across every group before calling updateSheetMetalGeometry
+// exactly once, the feature avoids the O(n) rebuild overhead that accumulates when many
+// individual sheetMetalJoint features appear in the feature tree.
 //
 // Joints that are incompatible with the chosen type (e.g. face bends selected with RIP or
 // TANGENT, or face bends with a non-default radius) are silently skipped so that a mixed
@@ -31,64 +37,84 @@ import(path : "onshape/std/units.fs", version : "2892.0");
 import(path : "onshape/std/valueBounds.fs", version : "2892.0");
 
 /**
- * Multi-joint version of "Modify joint". Select any number of sheet metal joints and apply
- * a uniform joint-type change (BEND / RIP / TANGENT) with a single sheet metal rebuild.
+ * Array-based multi-group version of "Modify joint". Define any number of joint groups; each
+ * group independently selects joints and specifies a joint type with its type-specific options.
+ * For example:
+ *   Group 1 — RIP / Butt Direction 1 on a set of joints along one edge
+ *   Group 2 — RIP / Butt Direction 2 on a different set of joints
+ *   Group 3 — BEND with a custom radius on yet another set
  *
- * Compared with using the standard single-joint Modify Joint feature repeatedly, this
- * feature avoids the O(n) rebuild overhead that accumulates when many individual
- * sheetMetalJoint features appear in the feature tree.
+ * All attribute changes from all groups are batched before the single updateSheetMetalGeometry
+ * call, so the rebuild cost is always one pass regardless of the number of groups or joints.
  */
 annotation { "Feature Type Name" : "Modify joints",
         "Filter Selector" : "allparts" }
 export const sheetMetalModifyJoints = defineSheetMetalFeature(function(context is Context, id is Id, definition is map)
     precondition
     {
-        annotation { "Name" : "Joints",
-                    "Filter" : (SheetMetalDefinitionEntityType.FACE || SheetMetalDefinitionEntityType.EDGE) && AllowFlattenedGeometry.YES && ModifiableEntityOnly.YES,
-                    "MaxNumberOfPicks" : 500 }
-        definition.joints is Query;
+        annotation {
+                    "Name" : "Joint groups",
+                    "Item name" : "Group",
+                    "Item label template" : "Group #index",
+                    "UIHint" : UIHint.COLLAPSE_ARRAY_ITEMS
+                }
+        definition.jointGroups is array;
 
-        annotation { "Name" : "Joint type", "Default" : SMJointType.BEND }
-        definition.jointType is SMJointType;
-
-        if (definition.jointType == SMJointType.BEND)
+        for (var group in definition.jointGroups)
         {
-            annotation { "Name" : "Use model bend radius", "Default" : true }
-            definition.useDefaultRadius is boolean;
-            if (!definition.useDefaultRadius)
+            annotation { "Name" : "Joints",
+                        "Filter" : (SheetMetalDefinitionEntityType.FACE || SheetMetalDefinitionEntityType.EDGE) && AllowFlattenedGeometry.YES && ModifiableEntityOnly.YES,
+                        "MaxNumberOfPicks" : 500 }
+            group.joints is Query;
+
+            annotation { "Name" : "Joint type", "Default" : SMJointType.BEND }
+            group.jointType is SMJointType;
+
+            if (group.jointType == SMJointType.BEND)
             {
-                annotation { "Name" : "Bend radius" }
-                isLength(definition.radius, SM_BEND_RADIUS_BOUNDS);
+                annotation { "Name" : "Use model bend radius", "Default" : true }
+                group.useDefaultRadius is boolean;
+                if (!group.useDefaultRadius)
+                {
+                    annotation { "Name" : "Bend radius" }
+                    isLength(group.radius, SM_BEND_RADIUS_BOUNDS);
+                }
+
+                annotation { "Name" : "Use model K Factor", "Default" : true }
+                group.useDefaultKFactor is boolean;
+                if (!group.useDefaultKFactor)
+                {
+                    annotation { "Name" : "K Factor" }
+                    isReal(group.kFactor, K_FACTOR_BOUNDS);
+                }
             }
 
-            annotation { "Name" : "Use model K Factor", "Default" : true }
-            definition.useDefaultKFactor is boolean;
-            if (!definition.useDefaultKFactor)
+            if (group.jointType == SMJointType.RIP)
             {
-                annotation { "Name" : "K Factor" }
-                isReal(definition.kFactor, K_FACTOR_BOUNDS);
+                annotation { "Name" : "Joint style" }
+                group.jointStyle is SMJointStyle;
             }
-        }
-
-        if (definition.jointType == SMJointType.RIP)
-        {
-            annotation { "Name" : "Joint style" }
-            definition.jointStyle is SMJointStyle;
         }
     }
     {
-        // Prevents accidental use inside a feature pattern where rebuild semantics differ
-        checkNotInFeaturePattern(context, definition.joints, ErrorStringEnum.SHEET_METAL_NO_FEATURE_PATTERN);
-
-        // All selected joints must belong to a single active sheet metal model
-        if (!areEntitiesFromSingleActiveSheetMetalModel(context, definition.joints))
+        // Collect all joints from every group into a single union for global validation.
+        // This ensures checkNotInFeaturePattern and the single-model check cover all groups.
+        var allGroupJointQueries = [];
+        for (var group in definition.jointGroups)
         {
-            throw regenError(ErrorStringEnum.SHEET_METAL_ACTIVE_JOIN_NEEDED, ["joints"]);
+            allGroupJointQueries = append(allGroupJointQueries, group.joints);
+        }
+        const allJointsQuery = qUnion(allGroupJointQueries);
+
+        // Prevents accidental use inside a feature pattern where rebuild semantics differ
+        checkNotInFeaturePattern(context, allJointsQuery, ErrorStringEnum.SHEET_METAL_NO_FEATURE_PATTERN);
+
+        // All selected joints across every group must belong to a single active sheet metal model
+        if (!areEntitiesFromSingleActiveSheetMetalModel(context, allJointsQuery))
+        {
+            throw regenError(ErrorStringEnum.SHEET_METAL_ACTIVE_JOIN_NEEDED, ["jointGroups"]);
         }
 
-        // Iterate over each selected entity individually so that per-joint attribute changes
-        // can be batched before the single updateSheetMetalGeometry call at the end.
-        var selectedEntities = evaluateQuery(context, definition.joints);
         var allModifiedEdges = [];
         var processedJointCount = 0;
 
@@ -96,130 +122,147 @@ export const sheetMetalModifyJoints = defineSheetMetalFeature(function(context i
         // string so that the sheet metal table can locate this feature for editing.
         const controllingFeatureId = toAttributeId(id);
 
-        for (var jointIndex = 0; jointIndex < size(selectedEntities); jointIndex += 1)
+        // Outer loop: iterate over each joint group
+        for (var groupIndex = 0; groupIndex < size(definition.jointGroups); groupIndex += 1)
         {
-            // Access the current joint's query from the evaluated array
-            var currentJointQuery = selectedEntities[jointIndex] as Query;
+            var group = definition.jointGroups[groupIndex];
+            var groupSelectedEntities = evaluateQuery(context, group.joints);
 
-            // Each joint gets a unique sub-id ONLY for the bendAngle temporary operation
-            // so that temporary fillet sub-operations do not collide across iterations.
-            var jointSubId = id + ("joint" ~ jointIndex);
-
-            // Determine whether this entity resolves to an edge joint or a face bend
-            var jointDefinitionEntity = resolveJointDefinitionEntity(context, currentJointQuery, EntityType.EDGE);
-            var isFaceBend = false;
-
-            if (jointDefinitionEntity == undefined)
+            // Inner loop: iterate over each joint within the current group
+            for (var jointIndex = 0; jointIndex < size(groupSelectedEntities); jointIndex += 1)
             {
-                jointDefinitionEntity = resolveJointDefinitionEntity(context, currentJointQuery, EntityType.FACE);
-                isFaceBend = true;
-            }
+                // Access the current joint's query from the evaluated array
+                var currentJointQuery = groupSelectedEntities[jointIndex] as Query;
 
-            // Skip if the entity does not resolve to a recognisable joint
-            if (jointDefinitionEntity == undefined)
-            {
-                continue;
-            }
+                // Each joint gets a unique sub-id ONLY for the bendAngle temporary operation
+                // so that temporary fillet sub-operations do not collide across groups or joints.
+                var jointSubId = id + ("group" ~ groupIndex ~ "joint" ~ jointIndex);
 
-            var existingAttribute = getJointAttribute(context, jointDefinitionEntity);
-            if (existingAttribute == undefined)
-            {
-                continue;
-            }
+                // Determine whether this entity resolves to an edge joint or a face bend
+                var jointDefinitionEntity = resolveJointDefinitionEntity(context, currentJointQuery, EntityType.EDGE);
+                var isFaceBend = false;
 
-            // Build the replacement attribute according to the chosen joint type,
-            // skipping combinations that are geometrically invalid for this entity.
-            var newAttribute;
-            if (definition.jointType == SMJointType.BEND)
-            {
-                // Resolve the bend radius: use the model default or the user-supplied value
-                var bendRadius;
-                if (definition.useDefaultRadius)
+                if (jointDefinitionEntity == undefined)
                 {
-                    bendRadius = getDefaultBendRadius(context, currentJointQuery);
+                    jointDefinitionEntity = resolveJointDefinitionEntity(context, currentJointQuery, EntityType.FACE);
+                    isFaceBend = true;
                 }
-                else if (isFaceBend)
+
+                // Skip if the entity does not resolve to a recognizable joint
+                if (jointDefinitionEntity == undefined)
                 {
-                    // Custom radius cannot be applied to a face bend — skip silently
                     continue;
+                }
+
+                var existingAttribute = getJointAttribute(context, jointDefinitionEntity);
+                if (existingAttribute == undefined)
+                {
+                    continue;
+                }
+
+                // Build the replacement attribute according to the group's joint type,
+                // skipping combinations that are geometrically invalid for this entity.
+                var newAttribute;
+                if (group.jointType == SMJointType.BEND)
+                {
+                    // Resolve the bend radius: use the model default or the user-supplied value
+                    var bendRadius;
+                    if (group.useDefaultRadius)
+                    {
+                        bendRadius = getDefaultBendRadius(context, currentJointQuery);
+                    }
+                    else if (isFaceBend)
+                    {
+                        // Custom radius cannot be applied to a face bend — skip silently
+                        continue;
+                    }
+                    else
+                    {
+                        bendRadius = group.radius;
+                    }
+
+                    // Resolve the K-factor: use the model default or the user-supplied value
+                    var kFactor;
+                    if (group.useDefaultKFactor)
+                    {
+                        kFactor = getDefaultKFactor(context, currentJointQuery);
+                    }
+                    else
+                    {
+                        kFactor = group.kFactor;
+                    }
+
+                    if (!isFaceBend)
+                    {
+                        newAttribute = buildEdgeBendAttribute(context, jointSubId, controllingFeatureId,
+                            jointDefinitionEntity, existingAttribute, bendRadius, group.useDefaultRadius,
+                            kFactor, group.useDefaultKFactor);
+                    }
+                    else
+                    {
+                        newAttribute = buildFaceBendAttribute(controllingFeatureId,
+                            existingAttribute, kFactor, group.useDefaultKFactor);
+                    }
+                }
+                else if (group.jointType == SMJointType.RIP)
+                {
+                    if (isFaceBend)
+                    {
+                        // RIP is not valid for face bends — skip silently
+                        continue;
+                    }
+                    newAttribute = buildRipAttribute(controllingFeatureId, existingAttribute, group.jointStyle);
+                }
+                else if (group.jointType == SMJointType.TANGENT)
+                {
+                    if (isFaceBend)
+                    {
+                        // TANGENT is not valid for face bends — skip silently
+                        continue;
+                    }
+                    newAttribute = buildTangentAttribute(controllingFeatureId, existingAttribute);
                 }
                 else
                 {
-                    bendRadius = definition.radius;
-                }
-
-                // Resolve the K-factor: use the model default or the user-supplied value
-                var kFactor;
-                if (definition.useDefaultKFactor)
-                {
-                    kFactor = getDefaultKFactor(context, currentJointQuery);
-                }
-                else
-                {
-                    kFactor = definition.kFactor;
-                }
-
-                if (!isFaceBend)
-                {
-                    newAttribute = buildEdgeBendAttribute(context, jointSubId, controllingFeatureId,
-                        jointDefinitionEntity, existingAttribute, bendRadius, definition.useDefaultRadius,
-                        kFactor, definition.useDefaultKFactor);
-                }
-                else
-                {
-                    newAttribute = buildFaceBendAttribute(controllingFeatureId,
-                        existingAttribute, kFactor, definition.useDefaultKFactor);
-                }
-            }
-            else if (definition.jointType == SMJointType.RIP)
-            {
-                if (isFaceBend)
-                {
-                    // RIP is not valid for face bends — skip silently
+                    // Unrecognized joint type — skip rather than hard-fail so the loop continues
                     continue;
                 }
-                newAttribute = buildRipAttribute(controllingFeatureId, existingAttribute, definition.jointStyle);
-            }
-            else if (definition.jointType == SMJointType.TANGENT)
-            {
-                if (isFaceBend)
+
+                // Verify the attribute is geometrically compatible before committing
+                if (!isEntityAppropriateForAttribute(context, jointDefinitionEntity, newAttribute))
                 {
-                    // TANGENT is not valid for face bends — skip silently
                     continue;
                 }
-                newAttribute = buildTangentAttribute(controllingFeatureId, existingAttribute);
-            }
-            else
-            {
-                // Unrecognised joint type — skip rather than hard-fail so the loop continues
-                continue;
-            }
 
-            // Verify the attribute is geometrically compatible before committing
-            if (!isEntityAppropriateForAttribute(context, jointDefinitionEntity, newAttribute))
-            {
-                continue;
+                // Apply the attribute change and record the affected edges for the batch update
+                var modifiedEdgeQuery = replaceSMAttribute(context, existingAttribute, newAttribute);
+                allModifiedEdges = append(allModifiedEdges, modifiedEdgeQuery);
+                processedJointCount += 1;
             }
-
-            // Apply the attribute change and record the affected edges for the batch update
-            var modifiedEdgeQuery = replaceSMAttribute(context, existingAttribute, newAttribute);
-            allModifiedEdges = append(allModifiedEdges, modifiedEdgeQuery);
-            processedJointCount += 1;
         }
 
-        // If no joints were successfully processed, raise an error
+        // If no joints across any group were successfully processed, raise an error
         if (processedJointCount == 0)
         {
-            throw regenError(ErrorStringEnum.SHEET_METAL_ACTIVE_JOIN_NEEDED, ["joints"]);
+            throw regenError(ErrorStringEnum.SHEET_METAL_ACTIVE_JOIN_NEEDED, ["jointGroups"]);
         }
 
-        // Single sheet metal rebuild covering all modified joints
+        // Single sheet metal rebuild covering all modified joints from all groups
         var allModifiedEdgesQuery = qUnion(allModifiedEdges);
         updateSheetMetalGeometry(context, id, {
                     "entities" : allModifiedEdgesQuery,
                     "associatedChanges" : allModifiedEdgesQuery
                 });
-    }, { jointStyle : SMJointStyle.EDGE, useDefaultRadius : true, useDefaultKFactor : true });
+    }, {
+        jointGroups : [
+            {
+                jointType : SMJointType.BEND,
+                jointStyle : SMJointStyle.EDGE,
+                useDefaultRadius : true,
+                useDefaultKFactor : true
+            }
+        ]
+    });
 
 
 // ─── Private helper functions ────────────────────────────────────────────────
