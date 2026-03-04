@@ -104,7 +104,36 @@ function testOwnerPartsOfConnector(context is Context, id is Id, definition is m
         return;
     }
 
-    const selectedConnectorCount = size(evaluateQuery(context, definition.mateConnectors));
+    // --- DIAG: dump everything the selection resolved to ---
+    println("[TESTER] definition.mateConnectors raw query: " ~ toString(definition.mateConnectors));
+    const selectedConnectorEntities = evaluateQuery(context, definition.mateConnectors);
+    const selectedConnectorCount = size(selectedConnectorEntities);
+    println("[TESTER] Connector selection evaluates to " ~ selectedConnectorCount ~ " entity/entities:");
+    for (var selectIndex = 0; selectIndex < selectedConnectorCount; selectIndex += 1)
+    {
+        println("[TESTER]   selection[" ~ selectIndex ~ "]: " ~ toString(selectedConnectorEntities[selectIndex]));
+    }
+
+    // Also probe what qMateConnectorsOfParts gives for ALL bodies to compare IDs
+    // directly here in the tester, independent of the library function.
+    println("[TESTER] Probing qMateConnectorsOfParts across all modifiable bodies for cross-check:");
+    const allBodies = qModifiableEntityFilter(
+        qBodyType(qEverything(EntityType.BODY),
+                  [BodyType.SOLID, BodyType.SHEET, BodyType.WIRE, BodyType.COMPOSITE]));
+    const probeBodyCount = evaluateQueryCount(context, allBodies);
+    println("[TESTER] Total modifiable bodies visible: " ~ probeBodyCount);
+    for (var probeIndex = 0; probeIndex < probeBodyCount; probeIndex += 1)
+    {
+        const probeBodyQuery = qNthElement(allBodies, probeIndex);
+        const probeConnectors = evaluateQuery(context, qMateConnectorsOfParts(probeBodyQuery));
+        println("[TESTER]   body[" ~ probeIndex ~ "] owns " ~ size(probeConnectors) ~ " connector(s):");
+        for (var probeConnIndex = 0; probeConnIndex < size(probeConnectors); probeConnIndex += 1)
+        {
+            println("[TESTER]     body[" ~ probeIndex ~ "].connector[" ~ probeConnIndex ~ "]: " ~
+                    toString(probeConnectors[probeConnIndex]));
+        }
+    }
+    // -----------------------------------------------------------------------
 
     const ownerPartsQuery    = qOwnerPartsOfMateConnectors(context, definition.mateConnectors);
     const ownerPartEntities  = evaluateQuery(context, ownerPartsQuery);

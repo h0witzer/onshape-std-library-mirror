@@ -46,11 +46,24 @@ import(path : "onshape/std/common.fs", version : "2892.0");
  */
 export function qOwnerPartsOfMateConnectors(context is Context, mateConnectors is Query) returns Query
 {
+    // --- DIAG 1: what did the caller actually pass in? ---
+    println("[MCOWQ] qOwnerPartsOfMateConnectors called.");
+    println("[MCOWQ] Raw mateConnectors query: " ~ toString(mateConnectors));
+
     // Pre-evaluate the requested connectors to transient entity references once.
     // These are used for direct entity comparison in the inner loop.
     const requestedConnectorEntities = evaluateQuery(context, mateConnectors);
+
+    // --- DIAG 2: what did evaluateQuery give us? ---
+    println("[MCOWQ] evaluateQuery(mateConnectors) count: " ~ size(requestedConnectorEntities));
+    for (var requestedIndex = 0; requestedIndex < size(requestedConnectorEntities); requestedIndex += 1)
+    {
+        println("[MCOWQ]   requested[" ~ requestedIndex ~ "]: " ~ toString(requestedConnectorEntities[requestedIndex]));
+    }
+
     if (requestedConnectorEntities == [])
     {
+        println("[MCOWQ] Early return: mateConnectors evaluated to nothing.");
         return qNothing();
     }
 
@@ -67,6 +80,9 @@ export function qOwnerPartsOfMateConnectors(context is Context, mateConnectors i
 
     const bodyCount = evaluateQueryCount(context, allModifiableBodies);
 
+    // --- DIAG 3: how many candidate owner bodies did we find? ---
+    println("[MCOWQ] Candidate modifiable body count: " ~ bodyCount);
+
     // Accumulate bodies that own at least one of the supplied mate connectors.
     var ownerBodies = [] as array;
 
@@ -81,15 +97,26 @@ export function qOwnerPartsOfMateConnectors(context is Context, mateConnectors i
         // Evaluate the connectors owned by this body to transient entity references.
         const ownedConnectorEntities = evaluateQuery(context, qMateConnectorsOfParts(singleBodyQuery));
 
+        // --- DIAG 4: per-body connector count ---
+        println("[MCOWQ] Body[" ~ bodyIndex ~ "] qMateConnectorsOfParts count: " ~ size(ownedConnectorEntities));
+
         // Walk both entity lists looking for any connector that appears in both sets.
-        // Entity comparison with == on two transient queries from evaluateQuery is
-        // reliable because the runtime assigns stable transient IDs within a single
-        // feature execution.
         var foundOwnership = false;
-        for (var ownedConnector in ownedConnectorEntities)
+        for (var ownedIndex = 0; ownedIndex < size(ownedConnectorEntities); ownedIndex += 1)
         {
-            for (var requestedConnector in requestedConnectorEntities)
+            const ownedConnector = ownedConnectorEntities[ownedIndex];
+
+            // --- DIAG 5: print each owned connector entity ---
+            println("[MCOWQ]   Body[" ~ bodyIndex ~ "] ownedConnector[" ~ ownedIndex ~ "]: " ~ toString(ownedConnector));
+
+            for (var requestedIndex = 0; requestedIndex < size(requestedConnectorEntities); requestedIndex += 1)
             {
+                const requestedConnector = requestedConnectorEntities[requestedIndex];
+
+                // --- DIAG 6: print each side-by-side comparison ---
+                println("[MCOWQ]     compare owned[" ~ ownedIndex ~ "] == requested[" ~ requestedIndex ~ "]: " ~
+                        toString(ownedConnector == requestedConnector));
+
                 if (ownedConnector == requestedConnector)
                 {
                     foundOwnership = true;
@@ -104,9 +131,17 @@ export function qOwnerPartsOfMateConnectors(context is Context, mateConnectors i
 
         if (foundOwnership)
         {
+            println("[MCOWQ] Body[" ~ bodyIndex ~ "] MATCHED - adding to ownerBodies.");
             ownerBodies = append(ownerBodies, singleBodyQuery);
         }
+        else
+        {
+            println("[MCOWQ] Body[" ~ bodyIndex ~ "] no match.");
+        }
     }
+
+    // --- DIAG 7: summary ---
+    println("[MCOWQ] Done. Owner bodies found: " ~ size(ownerBodies));
 
     return qUnion(ownerBodies);
 }
