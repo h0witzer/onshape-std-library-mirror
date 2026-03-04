@@ -33,14 +33,20 @@ import(path : "onshape/std/common.fs", version : "2892.0");
  * silently returns nothing; the ownership lookup only works when the subquery is a
  * non-transient query type such as `QueryType.NTH_ELEMENT`.
  *
+ * Important: UI selection fields filtered by BodyType.MATE_CONNECTOR return the vertex
+ * entity at the mate connector origin, not the mate connector body entity. This function
+ * normalizes the input through qOwnerBody() so that vertex entities are promoted to their
+ * owning body entities, which are what qMateConnectorsOfParts returns. If a body entity
+ * is passed directly the qOwnerBody call is a no-op (it returns the body itself).
+ *
  * Mate connectors that were created without an explicit owner part (e.g. implicit
  * connectors generated inside a feature dialog) will not match any body and are
  * silently ignored; the returned query simply will not include an owner for them.
  *
  * @param context      : The active FeatureScript context.
  * @param mateConnectors {Query} : A query that resolves to one or more mate connector
- *                                 bodies (BodyType.MATE_CONNECTOR). Passing a query
- *                                 that resolves to nothing returns qNothing().
+ *                                 bodies or vertices (BodyType.MATE_CONNECTOR). Passing
+ *                                 a query that resolves to nothing returns qNothing().
  * @returns {Query} : A union of every modifiable body that owns at least one connector
  *                    matched by `mateConnectors`, or qNothing() if no owner is found.
  */
@@ -50,12 +56,20 @@ export function qOwnerPartsOfMateConnectors(context is Context, mateConnectors i
     println("[MCOWQ] qOwnerPartsOfMateConnectors called.");
     println("[MCOWQ] Raw mateConnectors query: " ~ toString(mateConnectors));
 
-    // Pre-evaluate the requested connectors to transient entity references once.
-    // These are used for direct entity comparison in the inner loop.
-    const requestedConnectorEntities = evaluateQuery(context, mateConnectors);
+    // UI selection fields with a BodyType.MATE_CONNECTOR filter return the VERTEX entity
+    // at the mate connector origin (e.g. transientId IK), not the BODY entity that
+    // qMateConnectorsOfParts returns (e.g. transientId JLD). Normalize through qOwnerBody
+    // so that vertex entities are promoted to their owning mate connector body entities.
+    // When a body entity is passed directly, qOwnerBody returns that same body unchanged.
+    const normalizedConnectors = qOwnerBody(mateConnectors);
+    println("[MCOWQ] Normalized via qOwnerBody: " ~ toString(normalizedConnectors));
 
-    // --- DIAG 2: what did evaluateQuery give us? ---
-    println("[MCOWQ] evaluateQuery(mateConnectors) count: " ~ size(requestedConnectorEntities));
+    // Pre-evaluate the normalized connectors to transient entity references once.
+    // These are used for direct entity comparison in the inner loop.
+    const requestedConnectorEntities = evaluateQuery(context, normalizedConnectors);
+
+    // --- DIAG 2: what did evaluateQuery give us after normalization? ---
+    println("[MCOWQ] evaluateQuery(normalizedConnectors) count: " ~ size(requestedConnectorEntities));
     for (var requestedIndex = 0; requestedIndex < size(requestedConnectorEntities); requestedIndex += 1)
     {
         println("[MCOWQ]   requested[" ~ requestedIndex ~ "]: " ~ toString(requestedConnectorEntities[requestedIndex]));
@@ -63,7 +77,7 @@ export function qOwnerPartsOfMateConnectors(context is Context, mateConnectors i
 
     if (requestedConnectorEntities == [])
     {
-        println("[MCOWQ] Early return: mateConnectors evaluated to nothing.");
+        println("[MCOWQ] Early return: normalizedConnectors evaluated to nothing.");
         return qNothing();
     }
 
