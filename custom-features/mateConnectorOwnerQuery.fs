@@ -25,11 +25,12 @@ import(path : "onshape/std/common.fs", version : "2892.0");
  * Returns a query for every modifiable body (solid, sheet, wire, or composite) that
  * owns at least one of the mate connectors matched by `mateConnectors`.
  *
- * The function works by iterating over every modifiable body in the context and
- * checking whether the intersection of the caller-supplied connector query and the
- * connectors owned by that body is non-empty. Because the test requires evaluating
- * queries against the context this is a context-taking function rather than a pure
- * query builder.
+ * The function works by iterating over every modifiable body in the context,
+ * evaluating `qMateConnectorsOfParts` for each body to an entity array, and
+ * comparing those entities directly against the pre-evaluated `mateConnectors`
+ * array. Direct entity comparison is used instead of `qIntersection` to avoid
+ * unreliable behaviour when intersecting a UI-selection query with a historical
+ * `MATE_CONNECTOR` query type.
  *
  * Mate connectors that were created without an explicit owner part (e.g. implicit
  * connectors generated inside a feature dialog) will not match any body and are
@@ -44,6 +45,15 @@ import(path : "onshape/std/common.fs", version : "2892.0");
  */
 export function qOwnerPartsOfMateConnectors(context is Context, mateConnectors is Query) returns Query
 {
+    // Pre-evaluate the requested connectors once so we can compare by entity identity
+    // in the inner loop rather than relying on qIntersection across different query
+    // types (selection query vs. MATE_CONNECTOR historical query).
+    const requestedConnectorEntities = evaluateQuery(context, mateConnectors);
+    if (requestedConnectorEntities == [])
+    {
+        return qNothing();
+    }
+
     // Collect all candidate owner bodies: solid parts, surface bodies, wire bodies,
     // and composite parts. This mirrors the filter used on the ownerPart field in
     // the mateConnector feature definition so that every legally ownable body type
@@ -62,15 +72,30 @@ export function qOwnerPartsOfMateConnectors(context is Context, mateConnectors i
 
     for (var candidateBody in candidateBodies)
     {
-        // qMateConnectorsOfParts returns all mate connectors whose owner field was
-        // set to this body when opMateConnector was called.
-        const connectorsOwnedByThisBody = qMateConnectorsOfParts(candidateBody);
+        // Evaluate qMateConnectorsOfParts to an array so we can compare entities
+        // directly. This avoids potential failures when intersecting a UI-selection
+        // query with a MATE_CONNECTOR historical query via qIntersection.
+        const ownedConnectorEntities = evaluateQuery(context, qMateConnectorsOfParts(candidateBody));
 
-        // If the intersection with the caller's connector query is non-empty, this
-        // body is an owner of at least one requested connector.
-        const matchingConnectors = qIntersection([mateConnectors, connectorsOwnedByThisBody]);
+        // Walk both lists looking for any entity that appears in both sets.
+        var foundOwnership = false;
+        for (var ownedConnector in ownedConnectorEntities)
+        {
+            for (var requestedConnector in requestedConnectorEntities)
+            {
+                if (ownedConnector == requestedConnector)
+                {
+                    foundOwnership = true;
+                    break;
+                }
+            }
+            if (foundOwnership)
+            {
+                break;
+            }
+        }
 
-        if (!isQueryEmpty(context, matchingConnectors))
+        if (foundOwnership)
         {
             ownerBodies = append(ownerBodies, candidateBody);
         }
