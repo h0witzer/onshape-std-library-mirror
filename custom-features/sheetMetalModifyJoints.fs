@@ -13,13 +13,17 @@ FeatureScript 2892;
 // exactly once, the feature avoids the O(n) rebuild overhead that accumulates when many
 // individual sheetMetalJoint features appear in the feature tree.
 //
-// Joints that are incompatible with the chosen type (e.g. face bends selected with RIP or
-// TANGENT, or face bends with a non-default radius) are silently skipped so that a mixed
-// selection of edge and face bends still succeeds for the compatible subset.
+// Joints that are incompatible with the chosen type (e.g. face bends selected with RIP,
+// or face bends with a non-default radius) are silently skipped so that a mixed selection
+// of edge and face bends still succeeds for the compatible subset.
 
 // Enums exported so they are accessible from the precondition annotation
-export import(path : "onshape/std/smjointtype.gen.fs", version : "2892.0");
 export import(path : "onshape/std/smjointstyle.gen.fs", version : "2892.0");
+
+// SMJointType is used internally by the helper functions but is not part of the
+// public precondition API; ModifyJointType below is used instead to limit the
+// choices presented to the user to only the applicable joint types.
+import(path : "onshape/std/smjointtype.gen.fs", version : "2892.0");
 
 import(path : "onshape/std/common.fs", version : "2892.0");
 import(path : "onshape/std/attributes.fs", version : "2892.0");
@@ -35,6 +39,19 @@ import(path : "onshape/std/string.fs", version : "2892.0");
 import(path : "onshape/std/surfaceGeometry.fs", version : "2892.0");
 import(path : "onshape/std/units.fs", version : "2892.0");
 import(path : "onshape/std/valueBounds.fs", version : "2892.0");
+
+/**
+ * The joint types available when modifying joints with this feature.
+ * TANGENT is intentionally excluded: it is set automatically by the geometry engine
+ * when two faces meet tangentially and cannot be meaningfully forced onto arbitrary geometry.
+ */
+export enum ModifyJointType
+{
+    annotation { "Name" : "Bend" }
+    BEND,
+    annotation { "Name" : "Rip" }
+    RIP
+}
 
 /**
  * Array-based multi-group version of "Modify joint". Define any number of joint groups; each
@@ -68,10 +85,10 @@ export const sheetMetalModifyJoints = defineSheetMetalFeature(function(context i
                         "MaxNumberOfPicks" : 500 }
             group.joints is Query;
 
-            annotation { "Name" : "Joint type", "Default" : SMJointType.BEND }
-            group.jointType is SMJointType;
+            annotation { "Name" : "Joint type", "Default" : ModifyJointType.BEND }
+            group.jointType is ModifyJointType;
 
-            if (group.jointType == SMJointType.BEND)
+            if (group.jointType == ModifyJointType.BEND)
             {
                 annotation { "Name" : "Use model bend radius", "Default" : true }
                 group.useDefaultRadius is boolean;
@@ -90,7 +107,7 @@ export const sheetMetalModifyJoints = defineSheetMetalFeature(function(context i
                 }
             }
 
-            if (group.jointType == SMJointType.RIP)
+            if (group.jointType == ModifyJointType.RIP)
             {
                 annotation { "Name" : "Joint style" }
                 group.jointStyle is SMJointStyle;
@@ -164,7 +181,7 @@ export const sheetMetalModifyJoints = defineSheetMetalFeature(function(context i
                 // Build the replacement attribute according to the group's joint type,
                 // skipping combinations that are geometrically invalid for this entity.
                 var newAttribute;
-                if (group.jointType == SMJointType.BEND)
+                if (group.jointType == ModifyJointType.BEND)
                 {
                     // Resolve the bend radius: use the model default or the user-supplied value
                     var bendRadius;
@@ -205,7 +222,7 @@ export const sheetMetalModifyJoints = defineSheetMetalFeature(function(context i
                             existingAttribute, kFactor, group.useDefaultKFactor);
                     }
                 }
-                else if (group.jointType == SMJointType.RIP)
+                else if (group.jointType == ModifyJointType.RIP)
                 {
                     if (isFaceBend)
                     {
@@ -213,15 +230,6 @@ export const sheetMetalModifyJoints = defineSheetMetalFeature(function(context i
                         continue;
                     }
                     newAttribute = buildRipAttribute(controllingFeatureId, existingAttribute, group.jointStyle);
-                }
-                else if (group.jointType == SMJointType.TANGENT)
-                {
-                    if (isFaceBend)
-                    {
-                        // TANGENT is not valid for face bends — skip silently
-                        continue;
-                    }
-                    newAttribute = buildTangentAttribute(controllingFeatureId, existingAttribute);
                 }
                 else
                 {
@@ -257,7 +265,7 @@ export const sheetMetalModifyJoints = defineSheetMetalFeature(function(context i
     }, {
         jointGroups : [
             {
-                jointType : SMJointType.BEND,
+                jointType : ModifyJointType.BEND,
                 jointStyle : SMJointStyle.EDGE,
                 useDefaultRadius : true,
                 useDefaultKFactor : true
@@ -470,25 +478,4 @@ function buildRipAttribute(controllingFeatureId is string, existingAttribute is 
             };
     }
     return ripAttribute;
-}
-
-/**
- * Build a replacement SMAttribute for a TANGENT joint.
- * Mirrors the logic in sheetMetalJoint.fs createNewTangentAttribute.
- *
- * Inputs:
- *   controllingFeatureId - String attribute id of the top-level feature (for sheet metal table linkage)
- *   existingAttribute    - Current SMAttribute on this edge
- * Output: SMAttribute with TANGENT joint type
- */
-function buildTangentAttribute(controllingFeatureId is string, existingAttribute is SMAttribute) returns SMAttribute
-{
-    var tangentAttribute = makeSMJointAttribute(existingAttribute.attributeId);
-    tangentAttribute.jointType = {
-            "value" : SMJointType.TANGENT,
-            "controllingFeatureId" : controllingFeatureId,
-            "parameterIdInFeature" : "jointType",
-            "canBeEdited" : true
-        };
-    return tangentAttribute;
 }
