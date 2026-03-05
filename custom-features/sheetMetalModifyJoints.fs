@@ -55,7 +55,8 @@ export const sheetMetalModifyJoints = defineSheetMetalFeature(function(context i
         annotation {
                     "Name" : "Joint groups",
                     "Item name" : "Group",
-                    "Item label template" : "Group #index",
+                    "Driven query" : "joints",
+                    "Item label template" : "[#jointType] #joints",
                     "UIHint" : UIHint.COLLAPSE_ARRAY_ITEMS
                 }
         definition.jointGroups is array;
