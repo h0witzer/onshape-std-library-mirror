@@ -1401,12 +1401,17 @@ function evaluateChainExpression(context is Context, definition is map)
 /**
  * Formats the evaluated result value as a human-readable string for display
  * in the feature report panel.
- * The result type is auto-detected by probing the value:
+ * The result type is detected by inspecting the value's unit map directly:
  *   string          -> returned as-is
  *   number          -> formatted as a plain number
- *   length units    -> converted to millimeters, e.g. "12.5 mm"
- *   angle units     -> converted to degrees,     e.g. "45.0 deg"
+ *   LENGTH_UNITS    -> converted to millimeters, e.g. "12.5 mm"
+ *   ANGLE_UNITS     -> converted to degrees, e.g. "45.0 deg"
  *   other units     -> standard library toString(ValueWithUnits), e.g. "9 m^2"
+ *
+ * Note: unit-map comparison is used instead of testing whether (result / unit) is number
+ * because dividing two ValueWithUnits values whose units cancel out returns a dimensionless
+ * ValueWithUnits (empty unit map), not a plain number. That makes the `is number` check
+ * unreliable for angle units and produces raw radian values in the report.
  *
  * @param result : The computed result value.
  *                 Left untyped intentionally: FeatureScript has no union type and the same
@@ -1423,23 +1428,22 @@ function formatResultValue(result) returns string
     {
         return toString(result);
     }
-    // ValueWithUnits — probe for length and angle dimensions.
-    // Dividing a length (meter units) by millimeter yields a plain number.
-    // Dividing an angle (radian units) by degree yields a plain number.
-    // If neither division produces a dimensionless number, fall back to the SI value.
-    const inMillimeters = try(result / millimeter);
-    if (inMillimeters is number)
+    if (result is ValueWithUnits)
     {
-        return toString(inMillimeters) ~ " mm";
+        // Simple length (meter^1): convert to millimeters for display.
+        if (result.unit == LENGTH_UNITS)
+        {
+            return toString(result / millimeter) ~ " mm";
+        }
+        // Simple angle (radian^1): convert to degrees for display.
+        if (result.unit == ANGLE_UNITS)
+        {
+            return toString(result / degree) ~ " deg";
+        }
+        // Compound or unknown units (e.g. m^2 from a POWER operation): stdlib
+        // toString emits SI base-unit notation like "9 m^2".
+        return toString(result);
     }
-    const inDegrees = try(result / degree);
-    if (inDegrees is number)
-    {
-        return toString(inDegrees) ~ " deg";
-    }
-    // Compound or unknown units (e.g. mm^2 area from a POWER operation): fall back to
-    // the standard library's ValueWithUnits toString, which emits SI base-unit notation
-    // like "9 m^2" rather than an opaque "(SI units)" label.
     return toString(result);
 }
 
