@@ -162,37 +162,6 @@ export enum ChainLength
     FOUR
 }
 
-/**
- * Unit used when displaying a length result in the report panel.
- * This does not affect the stored variable value, which is always in SI meters.
- * Choose the unit that matches what you entered as operands so that the
- * reported number matches your intent (e.g. select INCH when operands are in inches).
- */
-export enum LengthDisplayUnit
-{
-    annotation { "Name" : "Millimeters (mm)" }
-    MILLIMETER,
-    annotation { "Name" : "Centimeters (cm)" }
-    CENTIMETER,
-    annotation { "Name" : "Inches (in)" }
-    INCH,
-    annotation { "Name" : "Feet (ft)" }
-    FOOT
-}
-
-/**
- * Unit used when displaying an angle result in the report panel.
- * This does not affect the stored variable value, which is always in SI radians.
- * Choose DEGREE when operands are entered in degrees (the default and most common case).
- */
-export enum AngleDisplayUnit
-{
-    annotation { "Name" : "Degrees (deg)" }
-    DEGREE,
-    annotation { "Name" : "Radians (rad)" }
-    RADIAN
-}
-
 // ---------------------------------------------------------------------------
 // Shared numeric bounds
 // ---------------------------------------------------------------------------
@@ -268,7 +237,7 @@ const EXPRESSION_BUILDER_SCALAR_BOUNDS =
  * }}
  */
 annotation { "Feature Type Name" : "Expression Builder",
-             "Feature Name Template" : "###variableName",
+             "Feature Name Template" : "###variableName = #result",
              "UIHint" : UIHint.NO_PREVIEW_PROVIDED,
              "Feature Type Description" : "Compose a mathematical expression and store the result as a named variable readable anywhere in the Part Studio with the #variableName syntax." }
 export const expressionBuilder = defineFeature(function(context is Context, id is Id, definition is map)
@@ -761,21 +730,13 @@ export const expressionBuilder = defineFeature(function(context is Context, id i
             }
         }
 
-        // ---------------------------------------------------------------
-        // Display options
-        // ---------------------------------------------------------------
-        annotation { "Group Name" : "Display Options", "Collapsed By Default" : true }
-        {
-            annotation { "Name" : "Length result units",
-                         "Description" : "Units to use when displaying a length result in the report panel. Choose the unit that matches your operand inputs. The stored variable value is always in SI meters regardless of this setting.",
-                         "UIHint" : UIHint.HORIZONTAL_ENUM }
-            definition.lengthDisplayUnit is LengthDisplayUnit;
-
-            annotation { "Name" : "Angle result units",
-                         "Description" : "Units to use when displaying an angle result in the report panel. The stored variable value is always in SI radians regardless of this setting.",
-                         "UIHint" : UIHint.HORIZONTAL_ENUM }
-            definition.angleDisplayUnit is AngleDisplayUnit;
-        }
+        // The result of the expression is stored here as a computed parameter so that the
+        // Feature Name Template can reference it via "#result". The engine formats ValueWithUnits
+        // values in the document's preferred unit system automatically (identical to how the
+        // built-in Variable feature uses setFeatureComputedParameter to show values in inches
+        // for imperial documents). This parameter is never shown in the panel.
+        annotation { "UIHint" : UIHint.ALWAYS_HIDDEN }
+        isAnything(definition.result);
     }
 
     // =========================================================================
@@ -812,6 +773,16 @@ export const expressionBuilder = defineFeature(function(context is Context, id i
         // Store the computed value as a named context variable
         setVariable(context, definition.variableName, result, definition.variableDescription);
 
+        // Push the result into the Feature Name Template so the feature list shows
+        // "variableName = <value>" with automatic document-unit formatting (e.g. inches
+        // for imperial documents). This is identical to the mechanism used by the built-in
+        // Variable feature: setFeatureComputedParameter feeds a ValueWithUnits into the
+        // slot referenced by "#result" in the Feature Name Template, and the Onshape engine
+        // renders it in the document's preferred unit system automatically.
+        // Strings are wrapped in double-quotes to match the Variable feature convention.
+        const quotedResult = (result is string) ? ('"' ~ result ~ '"') : result;
+        setFeatureComputedParameter(context, id, { "name" : "result", "value" : quotedResult });
+
         // Report the evaluated result and a copy-pasteable expression string to the user
         var expressionString = "";
         if (definition.expressionMode == ExpressionBuilderMode.ARITHMETIC)
@@ -831,7 +802,7 @@ export const expressionBuilder = defineFeature(function(context is Context, id i
             expressionString = "(unknown expression mode)";
         }
 
-        const resultStr = formatResultValue(result, definition.lengthDisplayUnit, definition.angleDisplayUnit);
+        const resultStr = formatResultValue(result);
         reportFeatureInfo(context, id,
             "Result: " ~ resultStr ~
             "\nExpression: " ~ expressionString);
@@ -1447,27 +1418,30 @@ function evaluateChainExpression(context is Context, definition is map)
 
 /**
  * Formats the evaluated result value as a human-readable string for display
- * in the feature report panel.
+ * in the feature report panel (the info text shown when the feature is expanded).
  * The result type is detected by inspecting the value's unit map directly:
  *   string          -> returned as-is
  *   number          -> formatted as a plain number
- *   LENGTH_UNITS    -> converted to the chosen lengthDisplayUnit (mm/cm/in/ft)
- *   ANGLE_UNITS     -> converted to the chosen angleDisplayUnit (deg/rad)
+ *   LENGTH_UNITS    -> converted to millimeters, e.g. "12.5 mm"
+ *   ANGLE_UNITS     -> converted to degrees, e.g. "45.0 deg"
  *   other units     -> standard library toString(ValueWithUnits), e.g. "9 m^2"
  *
- * Note: unit-map comparison is used instead of testing whether (result / unit) is number
+ * NOTE: The Feature Name Template ("#result") is handled separately by the engine via
+ * setFeatureComputedParameter, which automatically formats ValueWithUnits values in the
+ * document's preferred unit system (inches for imperial documents, mm for metric). This
+ * function only produces the secondary text shown in the reportFeatureInfo panel.
+ *
+ * NOTE: Unit-map comparison is used instead of testing whether (result / unit) is number
  * because dividing two ValueWithUnits values whose units cancel out returns a dimensionless
  * ValueWithUnits (empty unit map), not a plain number. That makes the `is number` check
  * unreliable for angle units and produces raw radian values in the report.
  *
- * @param result            : The computed result value.
- *                            Left untyped intentionally: FeatureScript has no union type and the same
- *                            function must accept strings, numbers, and ValueWithUnits values.
- * @param lengthDisplayUnit : The LengthDisplayUnit the user chose in the Display Options group.
- * @param angleDisplayUnit  : The AngleDisplayUnit the user chose in the Display Options group.
- * @returns                 : Formatted string for display.
+ * @param result : The computed result value.
+ *                 Left untyped intentionally: FeatureScript has no union type and the same
+ *                 function must accept strings, numbers, and ValueWithUnits values.
+ * @returns      : Formatted string for display.
  */
-function formatResultValue(result, lengthDisplayUnit is LengthDisplayUnit, angleDisplayUnit is AngleDisplayUnit) returns string
+function formatResultValue(result) returns string
 {
     if (result is string)
     {
@@ -1479,37 +1453,15 @@ function formatResultValue(result, lengthDisplayUnit is LengthDisplayUnit, angle
     }
     if (result is ValueWithUnits)
     {
-        // Simple length (meter^1): convert to the user's chosen display unit.
+        // Simple length (meter^1): convert to millimeters for display.
         if (result.unit == LENGTH_UNITS)
         {
-            if (lengthDisplayUnit == LengthDisplayUnit.INCH)
-            {
-                return toString(result / inch) ~ " in";
-            }
-            else if (lengthDisplayUnit == LengthDisplayUnit.FOOT)
-            {
-                return toString(result / foot) ~ " ft";
-            }
-            else if (lengthDisplayUnit == LengthDisplayUnit.CENTIMETER)
-            {
-                return toString(result / centimeter) ~ " cm";
-            }
-            else
-            {
-                return toString(result / millimeter) ~ " mm";
-            }
+            return toString(result / millimeter) ~ " mm";
         }
-        // Simple angle (radian^1): convert to the user's chosen display unit.
+        // Simple angle (radian^1): convert to degrees for display.
         if (result.unit == ANGLE_UNITS)
         {
-            if (angleDisplayUnit == AngleDisplayUnit.RADIAN)
-            {
-                return toString(result / radian) ~ " rad";
-            }
-            else
-            {
-                return toString(result / degree) ~ " deg";
-            }
+            return toString(result / degree) ~ " deg";
         }
         // Compound or unknown units (e.g. m^2 from a POWER operation): stdlib
         // toString emits SI base-unit notation like "9 m^2".
