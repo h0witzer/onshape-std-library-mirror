@@ -662,7 +662,7 @@ export const expressionBuilder = defineFeature(function(context is Context, id i
         setVariable(context, definition.variableName, result, definition.variableDescription);
 
         // Report the evaluated result and a copy-pasteable expression string to the user
-        var expressionString;
+        var expressionString = "";
         if (definition.expressionMode == ExpressionBuilderMode.ARITHMETIC)
         {
             expressionString = buildArithmeticExpressionString(definition);
@@ -674,6 +674,10 @@ export const expressionBuilder = defineFeature(function(context is Context, id i
         else if (definition.expressionMode == ExpressionBuilderMode.CHAIN)
         {
             expressionString = buildChainExpressionString(definition);
+        }
+        else
+        {
+            expressionString = "(unknown expression mode)";
         }
 
         const resultStr = formatResultValue(result, definition.outputType);
@@ -1110,7 +1114,9 @@ function evaluateChainExpression(context is Context, definition is map)
  *   ANGLE   → value in degrees,      e.g. "45.0 deg"
  *   NUMBER  → dimensionless number,  e.g. "3.14159"
  *
- * @param result     : The computed result value.
+ * @param result     : The computed result value (ValueWithUnits for LENGTH/ANGLE, number for NUMBER).
+ *                     Left untyped intentionally: FeatureScript has no union type and the same
+ *                     function must accept both ValueWithUnits and plain number values.
  * @param outputType : ExpressionOutputType describing the result's type.
  * @returns          : Formatted string for display.
  */
@@ -1136,7 +1142,9 @@ function formatResultValue(result, outputType is ExpressionOutputType) returns s
  *   ANGLE   → "X * deg"
  *   NUMBER  → "X"
  *
- * @param literalValue : The literal value to format.
+ * @param literalValue : The literal value to format (ValueWithUnits for LENGTH/ANGLE, number for NUMBER).
+ *                       Left untyped intentionally: FeatureScript has no union type and the same
+ *                       function must accept both ValueWithUnits and plain number values.
  * @param literalType  : ExpressionOutputType indicating the value's units.
  * @returns            : Onshape expression syntax string for the literal.
  */
@@ -1162,7 +1170,8 @@ function formatLiteralAsExpression(literalValue, literalType is ExpressionOutput
  *
  * @param mode         : OperandInputMode (LITERAL or VARIABLE).
  * @param variableName : Context variable name string (used when mode is VARIABLE).
- * @param literalValue : Pre-selected literal value (used when mode is LITERAL).
+ * @param literalValue : Pre-selected literal value (ValueWithUnits or number; used when mode is LITERAL).
+ *                       Left untyped intentionally: must accept both ValueWithUnits and plain number.
  * @param literalType  : ExpressionOutputType for the literal value's units.
  * @returns            : Expression fragment string, e.g. "#myVar", "5.0 * mm", "45.0 * deg".
  */
@@ -1388,6 +1397,10 @@ function buildMathFunctionExpressionString(definition is map) returns string
  */
 function buildChainTermExpression(definition is map, termIndex is number) returns string
 {
+    // All four vars are assigned in every branch of the termIndex if-else block below.
+    // This untyped var pattern mirrors resolveChainTerm in this same file and is the
+    // standard FeatureScript idiom when the same variable must hold different types
+    // (ValueWithUnits for LENGTH/ANGLE, number for NUMBER) across branches.
     var termMode;
     var variableName;
     var literalValue;
