@@ -776,10 +776,11 @@ export const expressionBuilder = defineFeature(function(context is Context, id i
         // Push the result into the Feature Name Template so the feature list shows
         // "variableName = <value>" with automatic document-unit formatting (e.g. inches
         // for imperial documents). This is identical to the mechanism used by the built-in
-        // Variable feature: setFeatureComputedParameter feeds a ValueWithUnits into the
-        // slot referenced by "#result" in the Feature Name Template, and the Onshape engine
-        // renders it in the document's preferred unit system automatically.
-        // Strings are wrapped in double-quotes to match the Variable feature convention.
+        // Variable feature: setFeatureComputedParameter (exported from onshape/std/feature.fs)
+        // feeds a ValueWithUnits into the slot referenced by "#result" in the Feature Name
+        // Template, and the Onshape engine renders it in the document's preferred unit system
+        // automatically. Strings are wrapped in double-quotes to match the Variable feature
+        // convention (see publishVariableValue in variable.fs).
         const quotedResult = (result is string) ? ('"' ~ result ~ '"') : result;
         setFeatureComputedParameter(context, id, { "name" : "result", "value" : quotedResult });
 
