@@ -17,8 +17,9 @@ FeatureScript 2892;
  *   STRING_CONCAT - Two to six segments joined by ~  "prefix" ~ #var ~ "suffix"
  *
  * Each operand can be:
- *   LITERAL  - a typed numeric field (length, angle, or pure number)
- *   VARIABLE - a text field holding the name of an existing context variable
+ *   LITERAL  - a plain dimensionless number (CHAIN mode only); or a length, angle, number, or
+ *              string value selected via an inline type picker (ARITHMETIC and MATH_FUNCTION flex operands)
+ *   VARIABLE - the name of an existing context variable (may hold any type: number, length, angle, string)
  *
  * STRING_CONCAT segment types:
  *   TEXT     - a literal string the user types in the panel (can include any unit text, e.g. "1.5 in")
@@ -269,11 +270,9 @@ const EXPRESSION_BUILDER_SCALAR_BOUNDS =
  *
  *      // CHAIN mode fields
  *      @field chainLength {ChainLength}         : Number of terms (TWO, THREE, or FOUR).
- *      @field chainTerm1Mode … chainTerm4Mode {OperandInputMode}: Source for each term.
- *      @field chainTerm1VariableName … chainTerm4VariableName {string}: Variable names for each term.
- *      @field chainTerm1Length … chainTerm4Length {ValueWithUnits}: Literal lengths for each term.
- *      @field chainTerm1Angle … chainTerm4Angle {ValueWithUnits}: Literal angles for each term.
- *      @field chainTerm1Number … chainTerm4Number {number}: Literal numbers for each term.
+ *      @field chainTerm1Mode … chainTerm4Mode {OperandInputMode}: Source for each term (LITERAL or VARIABLE).
+ *      @field chainTerm1VariableName … chainTerm4VariableName {string}: Variable names for VARIABLE terms.
+ *      @field chainTerm1Number … chainTerm4Number {number}: Dimensionless literal values for LITERAL terms.
  *      @field chainOp1 … chainOp3 {ArithmeticOperation}: Operators between consecutive terms.
  *
  *      // STRING_CONCAT mode fields
@@ -593,6 +592,10 @@ export const expressionBuilder = defineFeature(function(context is Context, id i
 
         // ===============================================================
         // CHAIN MODE  ( A op1 B  [op2 C  [op3 D]] )
+        // Each term is either a dimensionless number typed directly in the
+        // panel or the value of a named context variable (which may carry
+        // units such as length or angle — those values flow through from
+        // prior Expression Builder features via the VARIABLE path).
         // ===============================================================
         else if (definition.expressionMode == ExpressionBuilderMode.CHAIN)
         {
@@ -604,83 +607,51 @@ export const expressionBuilder = defineFeature(function(context is Context, id i
             // --- Term 1 ---
             annotation { "Group Name" : "Term 1", "Collapsed By Default" : false }
             {
-                annotation { "Name" : "Source", "UIHint" : UIHint.HORIZONTAL_ENUM }
+                annotation { "Name" : "Source",
+                             "Description" : "Enter a dimensionless number, or read any value from an existing context variable.",
+                             "UIHint" : UIHint.HORIZONTAL_ENUM }
                 definition.chainTerm1Mode is OperandInputMode;
 
                 if (definition.chainTerm1Mode == OperandInputMode.VARIABLE)
                 {
-                    annotation { "Name" : "Variable name", "MaxLength" : 256 }
+                    annotation { "Name" : "Variable name",
+                                 "Description" : "Name of the context variable to read (do not include #).",
+                                 "MaxLength" : 256 }
                     definition.chainTerm1VariableName is string;
                 }
                 else
                 {
-                        annotation { "Name" : "Type", "UIHint" : UIHint.HORIZONTAL_ENUM }
-                        definition.chainTerm1ValueType is ExpressionOutputType;
-
-                        if (definition.chainTerm1ValueType == ExpressionOutputType.STRING)
-                        {
-                            annotation { "Name" : "Text value", "MaxLength" : 1024 }
-                            definition.chainTerm1StringLiteral is string;
-                        }
-                        else if (definition.chainTerm1ValueType == ExpressionOutputType.LENGTH)
-                        {
-                            annotation { "Name" : "Value" }
-                            isLength(definition.chainTerm1Length, ZERO_DEFAULT_LENGTH_BOUNDS);
-                        }
-                        else if (definition.chainTerm1ValueType == ExpressionOutputType.ANGLE)
-                        {
-                            annotation { "Name" : "Value" }
-                            isAngle(definition.chainTerm1Angle, ANGLE_360_ZERO_DEFAULT_BOUNDS);
-                        }
-                        else
-                        {
-                            annotation { "Name" : "Value" }
-                            isReal(definition.chainTerm1Number, EXPRESSION_BUILDER_NUMBER_BOUNDS);
-                        }
+                    annotation { "Name" : "Value",
+                                 "Description" : "Dimensionless number. Use Variable mode to pass a length or angle from a prior feature." }
+                    isReal(definition.chainTerm1Number, EXPRESSION_BUILDER_NUMBER_BOUNDS);
                 }
             }
 
             // --- Operation 1 (between Term 1 and Term 2) ---
             annotation { "Name" : "Operation 1",
-                         "Description" : "Operator applied between Term 1 and Term 2. Multiply, Divide, and Power treat the right-hand term as a dimensionless scalar. Add applied to two string terms concatenates them." }
+                         "Description" : "Operator applied between Term 1 and Term 2. Multiply, Divide, and Power treat the right-hand term as a dimensionless scalar. When Variable terms hold string values, Add concatenates them with ~." }
             definition.chainOp1 is ArithmeticOperation;
 
             // --- Term 2 ---
             annotation { "Group Name" : "Term 2", "Collapsed By Default" : false }
             {
-                annotation { "Name" : "Source", "UIHint" : UIHint.HORIZONTAL_ENUM }
+                annotation { "Name" : "Source",
+                             "Description" : "Enter a dimensionless number, or read any value from an existing context variable.",
+                             "UIHint" : UIHint.HORIZONTAL_ENUM }
                 definition.chainTerm2Mode is OperandInputMode;
 
                 if (definition.chainTerm2Mode == OperandInputMode.VARIABLE)
                 {
-                    annotation { "Name" : "Variable name", "MaxLength" : 256 }
+                    annotation { "Name" : "Variable name",
+                                 "Description" : "Name of the context variable to read (do not include #).",
+                                 "MaxLength" : 256 }
                     definition.chainTerm2VariableName is string;
                 }
                 else
                 {
-                    annotation { "Name" : "Type", "UIHint" : UIHint.HORIZONTAL_ENUM }
-                    definition.chainTerm2ValueType is ExpressionOutputType;
-
-                    if (definition.chainTerm2ValueType == ExpressionOutputType.STRING)
-                    {
-                        annotation { "Name" : "Text value", "MaxLength" : 1024 }
-                        definition.chainTerm2StringLiteral is string;
-                    }
-                    else if (definition.chainTerm2ValueType == ExpressionOutputType.LENGTH)
-                    {
-                        annotation { "Name" : "Value" }
-                        isLength(definition.chainTerm2Length, ZERO_DEFAULT_LENGTH_BOUNDS);
-                    }
-                    else if (definition.chainTerm2ValueType == ExpressionOutputType.ANGLE)
-                    {
-                        annotation { "Name" : "Value" }
-                        isAngle(definition.chainTerm2Angle, ANGLE_360_ZERO_DEFAULT_BOUNDS);
-                    }
-                    else
-                    {
-                        annotation { "Name" : "Value" }
-                        isReal(definition.chainTerm2Number, EXPRESSION_BUILDER_NUMBER_BOUNDS);
-                    }
+                    annotation { "Name" : "Value",
+                                 "Description" : "Dimensionless number. Use Variable mode to pass a length or angle from a prior feature." }
+                    isReal(definition.chainTerm2Number, EXPRESSION_BUILDER_NUMBER_BOUNDS);
                 }
             }
 
@@ -694,39 +665,23 @@ export const expressionBuilder = defineFeature(function(context is Context, id i
 
                 annotation { "Group Name" : "Term 3", "Collapsed By Default" : false }
                 {
-                    annotation { "Name" : "Source", "UIHint" : UIHint.HORIZONTAL_ENUM }
+                    annotation { "Name" : "Source",
+                                 "Description" : "Enter a dimensionless number, or read any value from an existing context variable.",
+                                 "UIHint" : UIHint.HORIZONTAL_ENUM }
                     definition.chainTerm3Mode is OperandInputMode;
 
                     if (definition.chainTerm3Mode == OperandInputMode.VARIABLE)
                     {
-                        annotation { "Name" : "Variable name", "MaxLength" : 256 }
+                        annotation { "Name" : "Variable name",
+                                     "Description" : "Name of the context variable to read (do not include #).",
+                                     "MaxLength" : 256 }
                         definition.chainTerm3VariableName is string;
                     }
                     else
                     {
-                        annotation { "Name" : "Type", "UIHint" : UIHint.HORIZONTAL_ENUM }
-                        definition.chainTerm3ValueType is ExpressionOutputType;
-
-                        if (definition.chainTerm3ValueType == ExpressionOutputType.STRING)
-                        {
-                            annotation { "Name" : "Text value", "MaxLength" : 1024 }
-                            definition.chainTerm3StringLiteral is string;
-                        }
-                        else if (definition.chainTerm3ValueType == ExpressionOutputType.LENGTH)
-                        {
-                            annotation { "Name" : "Value" }
-                            isLength(definition.chainTerm3Length, ZERO_DEFAULT_LENGTH_BOUNDS);
-                        }
-                        else if (definition.chainTerm3ValueType == ExpressionOutputType.ANGLE)
-                        {
-                            annotation { "Name" : "Value" }
-                            isAngle(definition.chainTerm3Angle, ANGLE_360_ZERO_DEFAULT_BOUNDS);
-                        }
-                        else
-                        {
-                            annotation { "Name" : "Value" }
-                            isReal(definition.chainTerm3Number, EXPRESSION_BUILDER_NUMBER_BOUNDS);
-                        }
+                        annotation { "Name" : "Value",
+                                     "Description" : "Dimensionless number. Use Variable mode to pass a length or angle from a prior feature." }
+                        isReal(definition.chainTerm3Number, EXPRESSION_BUILDER_NUMBER_BOUNDS);
                     }
                 }
             }
@@ -740,39 +695,23 @@ export const expressionBuilder = defineFeature(function(context is Context, id i
 
                 annotation { "Group Name" : "Term 4", "Collapsed By Default" : false }
                 {
-                    annotation { "Name" : "Source", "UIHint" : UIHint.HORIZONTAL_ENUM }
+                    annotation { "Name" : "Source",
+                                 "Description" : "Enter a dimensionless number, or read any value from an existing context variable.",
+                                 "UIHint" : UIHint.HORIZONTAL_ENUM }
                     definition.chainTerm4Mode is OperandInputMode;
 
                     if (definition.chainTerm4Mode == OperandInputMode.VARIABLE)
                     {
-                        annotation { "Name" : "Variable name", "MaxLength" : 256 }
+                        annotation { "Name" : "Variable name",
+                                     "Description" : "Name of the context variable to read (do not include #).",
+                                     "MaxLength" : 256 }
                         definition.chainTerm4VariableName is string;
                     }
                     else
                     {
-                        annotation { "Name" : "Type", "UIHint" : UIHint.HORIZONTAL_ENUM }
-                        definition.chainTerm4ValueType is ExpressionOutputType;
-
-                        if (definition.chainTerm4ValueType == ExpressionOutputType.STRING)
-                        {
-                            annotation { "Name" : "Text value", "MaxLength" : 1024 }
-                            definition.chainTerm4StringLiteral is string;
-                        }
-                        else if (definition.chainTerm4ValueType == ExpressionOutputType.LENGTH)
-                        {
-                            annotation { "Name" : "Value" }
-                            isLength(definition.chainTerm4Length, ZERO_DEFAULT_LENGTH_BOUNDS);
-                        }
-                        else if (definition.chainTerm4ValueType == ExpressionOutputType.ANGLE)
-                        {
-                            annotation { "Name" : "Value" }
-                            isAngle(definition.chainTerm4Angle, ANGLE_360_ZERO_DEFAULT_BOUNDS);
-                        }
-                        else
-                        {
-                            annotation { "Name" : "Value" }
-                            isReal(definition.chainTerm4Number, EXPRESSION_BUILDER_NUMBER_BOUNDS);
-                        }
+                        annotation { "Name" : "Value",
+                                     "Description" : "Dimensionless number. Use Variable mode to pass a length or angle from a prior feature." }
+                        isReal(definition.chainTerm4Number, EXPRESSION_BUILDER_NUMBER_BOUNDS);
                     }
                 }
             }
@@ -1530,89 +1469,51 @@ function evaluateMathFunctionExpression(context is Context, definition is map)
 }
 
 /**
- * Resolves a single CHAIN mode term from the definition.
- * Returns the value of the term, reading from either a literal field or a
- * named context variable according to the term's mode setting.
- * Each term has its own inline type selector (chainTermNValueType) which controls
- * which literal field is read.
+ * Resolves a single CHAIN mode term and returns its value.
+ * When the term mode is VARIABLE, the named context variable is read.
+ * When the term mode is LITERAL, the plain number typed in the panel is returned.
  *
- * @param context     : Active build context.
- * @param definition  : Feature definition map.
- * @param termIndex   : 1-based term index (1–4).
- * @returns           : The resolved term value.
+ * Variable terms may hold any type (number, length, angle, string) — those values
+ * flow through unchanged to the arithmetic operations that follow.
+ *
+ * @param context    : Active build context.
+ * @param definition : Feature definition map.
+ * @param termIndex  : 1-based term index (1 to 4).
+ * @returns          : Resolved term value.
  */
 function resolveChainTerm(context is Context, definition is map, termIndex is number)
 {
     var termMode;
-    var variableName;
-    var literalValue;
+    // Default values serve as safe fallbacks; all valid indices (1–4) overwrite these below.
+    var variableName  = "";
+    var literalNumber = 0;
 
     if (termIndex == 1)
     {
-        termMode     = definition.chainTerm1Mode;
-        variableName = definition.chainTerm1VariableName;
-        if (termMode == OperandInputMode.LITERAL)
-        {
-            if (definition.chainTerm1ValueType == ExpressionOutputType.STRING)
-                literalValue = definition.chainTerm1StringLiteral;
-            else if (definition.chainTerm1ValueType == ExpressionOutputType.LENGTH)
-                literalValue = definition.chainTerm1Length;
-            else if (definition.chainTerm1ValueType == ExpressionOutputType.ANGLE)
-                literalValue = definition.chainTerm1Angle;
-            else
-                literalValue = definition.chainTerm1Number;
-        }
+        termMode      = definition.chainTerm1Mode;
+        variableName  = definition.chainTerm1VariableName;
+        literalNumber = definition.chainTerm1Number;
     }
     else if (termIndex == 2)
     {
-        termMode     = definition.chainTerm2Mode;
-        variableName = definition.chainTerm2VariableName;
-        if (termMode == OperandInputMode.LITERAL)
-        {
-            if (definition.chainTerm2ValueType == ExpressionOutputType.STRING)
-                literalValue = definition.chainTerm2StringLiteral;
-            else if (definition.chainTerm2ValueType == ExpressionOutputType.LENGTH)
-                literalValue = definition.chainTerm2Length;
-            else if (definition.chainTerm2ValueType == ExpressionOutputType.ANGLE)
-                literalValue = definition.chainTerm2Angle;
-            else
-                literalValue = definition.chainTerm2Number;
-        }
+        termMode      = definition.chainTerm2Mode;
+        variableName  = definition.chainTerm2VariableName;
+        literalNumber = definition.chainTerm2Number;
     }
     else if (termIndex == 3)
     {
-        termMode     = definition.chainTerm3Mode;
-        variableName = definition.chainTerm3VariableName;
-        if (termMode == OperandInputMode.LITERAL)
-        {
-            if (definition.chainTerm3ValueType == ExpressionOutputType.STRING)
-                literalValue = definition.chainTerm3StringLiteral;
-            else if (definition.chainTerm3ValueType == ExpressionOutputType.LENGTH)
-                literalValue = definition.chainTerm3Length;
-            else if (definition.chainTerm3ValueType == ExpressionOutputType.ANGLE)
-                literalValue = definition.chainTerm3Angle;
-            else
-                literalValue = definition.chainTerm3Number;
-        }
+        termMode      = definition.chainTerm3Mode;
+        variableName  = definition.chainTerm3VariableName;
+        literalNumber = definition.chainTerm3Number;
     }
     else // termIndex == 4
     {
-        termMode     = definition.chainTerm4Mode;
-        variableName = definition.chainTerm4VariableName;
-        if (termMode == OperandInputMode.LITERAL)
-        {
-            if (definition.chainTerm4ValueType == ExpressionOutputType.STRING)
-                literalValue = definition.chainTerm4StringLiteral;
-            else if (definition.chainTerm4ValueType == ExpressionOutputType.LENGTH)
-                literalValue = definition.chainTerm4Length;
-            else if (definition.chainTerm4ValueType == ExpressionOutputType.ANGLE)
-                literalValue = definition.chainTerm4Angle;
-            else
-                literalValue = definition.chainTerm4Number;
-        }
+        termMode      = definition.chainTerm4Mode;
+        variableName  = definition.chainTerm4VariableName;
+        literalNumber = definition.chainTerm4Number;
     }
 
-    return resolveTypedOperand(context, termMode, variableName, literalValue, "Term " ~ termIndex);
+    return resolveTypedOperand(context, termMode, variableName, literalNumber, "Term " ~ termIndex);
 }
 
 /**
@@ -2057,96 +1958,52 @@ function buildMathFunctionExpressionString(definition is map) returns string
 }
 
 /**
- * Formats a single CHAIN mode term as a copy-pasteable expression fragment.
- * All chain terms share the feature's declared output type for unit formatting.
+ * Formats a single CHAIN mode term as a copy-pasteable Onshape expression fragment
+ * for the "Expression: ..." line shown in the reportFeatureInfo panel.
+ *
+ *   LITERAL  → the plain number value (e.g. "5.0")
+ *   VARIABLE → #varName
  *
  * @param definition : Feature definition map.
  * @param termIndex  : 1-based term index (1 to 4).
- * @returns          : Expression fragment string for the term.
+ * @returns          : Expression fragment string for this term.
  */
 function buildChainTermExpression(definition is map, termIndex is number) returns string
 {
-    // All vars are assigned in every branch of the termIndex if-else block.
-    // This untyped var pattern mirrors resolveChainTerm and is the standard
-    // FeatureScript idiom when the same variable must hold different types.
-    // When termMode is VARIABLE, literalValue remains undefined — resolveTypedOperand
-    // branches to readContextVariable before ever reading literalValue, so this is safe.
     var termMode;
-    var variableName;
-    var literalValue;
-    var literalType;
+    // Default values serve as safe fallbacks; all valid indices (1–4) overwrite these below.
+    var variableName  = "";
+    var literalNumber = 0;
 
     if (termIndex == 1)
     {
-        termMode     = definition.chainTerm1Mode;
-        variableName = definition.chainTerm1VariableName;
-        literalType  = definition.chainTerm1ValueType;
-        if (literalType == ExpressionOutputType.STRING)
-            literalValue = definition.chainTerm1StringLiteral;
-        else if (literalType == ExpressionOutputType.LENGTH)
-            literalValue = definition.chainTerm1Length;
-        else if (literalType == ExpressionOutputType.ANGLE)
-            literalValue = definition.chainTerm1Angle;
-        else
-        {
-            // Explicit NUMBER assignment normalizes undefined literalType (new feature, default not yet set).
-            literalValue = definition.chainTerm1Number;
-            literalType  = ExpressionOutputType.NUMBER;
-        }
+        termMode      = definition.chainTerm1Mode;
+        variableName  = definition.chainTerm1VariableName;
+        literalNumber = definition.chainTerm1Number;
     }
     else if (termIndex == 2)
     {
-        termMode     = definition.chainTerm2Mode;
-        variableName = definition.chainTerm2VariableName;
-        literalType  = definition.chainTerm2ValueType;
-        if (literalType == ExpressionOutputType.STRING)
-            literalValue = definition.chainTerm2StringLiteral;
-        else if (literalType == ExpressionOutputType.LENGTH)
-            literalValue = definition.chainTerm2Length;
-        else if (literalType == ExpressionOutputType.ANGLE)
-            literalValue = definition.chainTerm2Angle;
-        else
-        {
-            literalValue = definition.chainTerm2Number;
-            literalType  = ExpressionOutputType.NUMBER;
-        }
+        termMode      = definition.chainTerm2Mode;
+        variableName  = definition.chainTerm2VariableName;
+        literalNumber = definition.chainTerm2Number;
     }
     else if (termIndex == 3)
     {
-        termMode     = definition.chainTerm3Mode;
-        variableName = definition.chainTerm3VariableName;
-        literalType  = definition.chainTerm3ValueType;
-        if (literalType == ExpressionOutputType.STRING)
-            literalValue = definition.chainTerm3StringLiteral;
-        else if (literalType == ExpressionOutputType.LENGTH)
-            literalValue = definition.chainTerm3Length;
-        else if (literalType == ExpressionOutputType.ANGLE)
-            literalValue = definition.chainTerm3Angle;
-        else
-        {
-            literalValue = definition.chainTerm3Number;
-            literalType  = ExpressionOutputType.NUMBER;
-        }
+        termMode      = definition.chainTerm3Mode;
+        variableName  = definition.chainTerm3VariableName;
+        literalNumber = definition.chainTerm3Number;
     }
     else // termIndex == 4
     {
-        termMode     = definition.chainTerm4Mode;
-        variableName = definition.chainTerm4VariableName;
-        literalType  = definition.chainTerm4ValueType;
-        if (literalType == ExpressionOutputType.STRING)
-            literalValue = definition.chainTerm4StringLiteral;
-        else if (literalType == ExpressionOutputType.LENGTH)
-            literalValue = definition.chainTerm4Length;
-        else if (literalType == ExpressionOutputType.ANGLE)
-            literalValue = definition.chainTerm4Angle;
-        else
-        {
-            literalValue = definition.chainTerm4Number;
-            literalType  = ExpressionOutputType.NUMBER;
-        }
+        termMode      = definition.chainTerm4Mode;
+        variableName  = definition.chainTerm4VariableName;
+        literalNumber = definition.chainTerm4Number;
     }
 
-    return formatOperandAsExpression(termMode, variableName, literalValue, literalType);
+    if (termMode == OperandInputMode.VARIABLE)
+        return "#" ~ variableName;
+    else
+        return toString(literalNumber);
 }
 
 /**
