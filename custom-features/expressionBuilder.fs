@@ -658,6 +658,12 @@ export const expressionBuilder = defineFeature(function(context is Context, id i
             result = evaluateChainExpression(context, definition);
         }
 
+        if (result == undefined)
+        {
+            throw regenError("Expression evaluation produced no result. "
+                             ~ "Check that all operands and settings are valid for the selected mode.");
+        }
+
         // Store the computed value as a named context variable
         setVariable(context, definition.variableName, result, definition.variableDescription);
 
@@ -737,6 +743,8 @@ function resolveTypedOperand(context is Context, operandMode is OperandInputMode
  * Applies an ArithmeticOperation to two already-resolved operands.
  * For MULTIPLY and DIVIDE the right-hand operand is treated as a dimensionless
  * scalar (consistent with the UI labelling).
+ * Wraps each operation in try() so type-mismatch errors (e.g. adding a length
+ * to an angle) are caught and surfaced as clear regenErrors in the feature panel.
  *
  * @param leftOperand  : Left-hand operand value.
  * @param rightOperand : Right-hand operand value (scalar for multiply / divide).
@@ -747,15 +755,33 @@ function applyArithmeticOperation(leftOperand, rightOperand, operation is Arithm
 {
     if (operation == ArithmeticOperation.ADD)
     {
-        return leftOperand + rightOperand;
+        const addResult = try(leftOperand + rightOperand);
+        if (addResult == undefined)
+        {
+            throw regenError("Addition failed: operands have incompatible types or units. "
+                             ~ "Ensure both operands share the same output type (length, angle, or number).");
+        }
+        return addResult;
     }
     else if (operation == ArithmeticOperation.SUBTRACT)
     {
-        return leftOperand - rightOperand;
+        const subResult = try(leftOperand - rightOperand);
+        if (subResult == undefined)
+        {
+            throw regenError("Subtraction failed: operands have incompatible types or units. "
+                             ~ "Ensure both operands share the same output type (length, angle, or number).");
+        }
+        return subResult;
     }
     else if (operation == ArithmeticOperation.MULTIPLY)
     {
-        return leftOperand * rightOperand;
+        const mulResult = try(leftOperand * rightOperand);
+        if (mulResult == undefined)
+        {
+            throw regenError("Multiplication failed: check that the scalar multiplier is a plain number "
+                             ~ "and that the operand type is compatible.");
+        }
+        return mulResult;
     }
     else // DIVIDE
     {
@@ -763,7 +789,13 @@ function applyArithmeticOperation(leftOperand, rightOperand, operation is Arithm
         {
             throw regenError("Division by zero: the scalar divisor evaluated to 0.");
         }
-        return leftOperand / rightOperand;
+        const divResult = try(leftOperand / rightOperand);
+        if (divResult == undefined)
+        {
+            throw regenError("Division failed: check that the scalar divisor is a plain number "
+                             ~ "and that the operand type is compatible.");
+        }
+        return divResult;
     }
 }
 
@@ -914,59 +946,136 @@ function evaluateMathFunctionExpression(context is Context, definition is map)
     // --- Apply single-argument functions ---
     if (mathFunction == MathFunctionType.ABS)
     {
-        return abs(operandA);
+        const absResult = try(abs(operandA));
+        if (absResult == undefined)
+        {
+            throw regenError("abs() failed: check that Operand A is a valid numeric value.");
+        }
+        return absResult;
     }
     else if (mathFunction == MathFunctionType.SQRT)
     {
-        return sqrt(operandA);
+        // sqrt() requires all unit exponents to be even (e.g. mm^2 is valid, mm is not).
+        const sqrtResult = try(sqrt(operandA));
+        if (sqrtResult == undefined)
+        {
+            throw regenError("sqrt() failed: Operand A must be a dimensionless number or a value "
+                             ~ "whose unit exponents are all even (e.g., mm^2). "
+                             ~ "A plain length (mm) or angle cannot be square-rooted.");
+        }
+        return sqrtResult;
     }
     else if (mathFunction == MathFunctionType.FLOOR)
     {
-        return floor(operandA);
+        const floorResult = try(floor(operandA));
+        if (floorResult == undefined)
+        {
+            throw regenError("floor() failed: check that Operand A is a plain dimensionless number.");
+        }
+        return floorResult;
     }
     else if (mathFunction == MathFunctionType.CEIL)
     {
-        return ceil(operandA);
+        const ceilResult = try(ceil(operandA));
+        if (ceilResult == undefined)
+        {
+            throw regenError("ceil() failed: check that Operand A is a plain dimensionless number.");
+        }
+        return ceilResult;
     }
     else if (mathFunction == MathFunctionType.ROUND)
     {
-        return round(operandA);
+        const roundResult = try(round(operandA));
+        if (roundResult == undefined)
+        {
+            throw regenError("round() failed: check that Operand A is a plain dimensionless number.");
+        }
+        return roundResult;
     }
     else if (mathFunction == MathFunctionType.SIN)
     {
-        return sin(operandA);
+        const sinResult = try(sin(operandA));
+        if (sinResult == undefined)
+        {
+            throw regenError("sin() failed: check that Operand A is an angle value.");
+        }
+        return sinResult;
     }
     else if (mathFunction == MathFunctionType.COS)
     {
-        return cos(operandA);
+        const cosResult = try(cos(operandA));
+        if (cosResult == undefined)
+        {
+            throw regenError("cos() failed: check that Operand A is an angle value.");
+        }
+        return cosResult;
     }
     else if (mathFunction == MathFunctionType.TAN)
     {
-        return tan(operandA);
+        const tanResult = try(tan(operandA));
+        if (tanResult == undefined)
+        {
+            throw regenError("tan() failed: check that Operand A is an angle value.");
+        }
+        return tanResult;
     }
     else if (mathFunction == MathFunctionType.ASIN)
     {
-        return asin(operandA);
+        // asin() requires the input to be in the range [-1, 1].
+        const asinResult = try(asin(operandA));
+        if (asinResult == undefined)
+        {
+            throw regenError("asin() failed: Operand A must be a dimensionless number in the range [-1, 1].");
+        }
+        return asinResult;
     }
     else if (mathFunction == MathFunctionType.ACOS)
     {
-        return acos(operandA);
+        // acos() requires the input to be in the range [-1, 1].
+        const acosResult = try(acos(operandA));
+        if (acosResult == undefined)
+        {
+            throw regenError("acos() failed: Operand A must be a dimensionless number in the range [-1, 1].");
+        }
+        return acosResult;
     }
     else if (mathFunction == MathFunctionType.ATAN)
     {
-        return atan(operandA);
+        const atanResult = try(atan(operandA));
+        if (atanResult == undefined)
+        {
+            throw regenError("atan() failed: check that Operand A is a plain dimensionless number.");
+        }
+        return atanResult;
     }
     else if (mathFunction == MathFunctionType.LOG)
     {
-        return log(operandA);
+        // log() requires a strictly positive dimensionless number.
+        const logResult = try(log(operandA));
+        if (logResult == undefined)
+        {
+            throw regenError("log() failed: Operand A must be a positive dimensionless number (> 0).");
+        }
+        return logResult;
     }
     else if (mathFunction == MathFunctionType.LOG10)
     {
-        return log10(operandA);
+        // log10() requires a strictly positive dimensionless number.
+        const log10Result = try(log10(operandA));
+        if (log10Result == undefined)
+        {
+            throw regenError("log10() failed: Operand A must be a positive dimensionless number (> 0).");
+        }
+        return log10Result;
     }
     else if (mathFunction == MathFunctionType.EXP)
     {
-        return exp(operandA);
+        const expResult = try(exp(operandA));
+        if (expResult == undefined)
+        {
+            throw regenError("exp() failed: check that Operand A is a plain dimensionless number.");
+        }
+        return expResult;
     }
 
     // --- Resolve secondary operand B (binary functions) ---
@@ -997,15 +1106,32 @@ function evaluateMathFunctionExpression(context is Context, definition is map)
     // --- Apply dual-argument functions ---
     if (mathFunction == MathFunctionType.ATAN2)
     {
-        return atan2(operandA, operandB);
+        // atan2() requires both operands to be dimensionless numbers; fails when both are 0.
+        const atan2Result = try(atan2(operandA, operandB));
+        if (atan2Result == undefined)
+        {
+            throw regenError("atan2() failed: both operands must be dimensionless numbers, "
+                             ~ "and they cannot both be 0 simultaneously.");
+        }
+        return atan2Result;
     }
     else if (mathFunction == MathFunctionType.MIN)
     {
-        return min(operandA, operandB);
+        const minResult = try(min(operandA, operandB));
+        if (minResult == undefined)
+        {
+            throw regenError("min() failed: both operands must have the same type and units.");
+        }
+        return minResult;
     }
     else // MAX
     {
-        return max(operandA, operandB);
+        const maxResult = try(max(operandA, operandB));
+        if (maxResult == undefined)
+        {
+            throw regenError("max() failed: both operands must have the same type and units.");
+        }
+        return maxResult;
     }
 }
 
