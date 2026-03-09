@@ -402,7 +402,7 @@ export const expressionBuilder = defineFeature(function(context is Context, id i
         else if (definition.expressionMode == ExpressionBuilderMode.MATH_FUNCTION)
         {
             annotation { "Name" : "Function",
-                         "Description" : "Standard math function to apply. Trig functions (sin/cos/tan) require an angle input. Inverse trig (asin/acos/atan/atan2) and numeric functions (floor/ceil/round/log/log10/exp) require a dimensionless number. abs, sqrt, min, max, and toString accept any value type — use the inline Type selector to control the input field." }
+                         "Description" : "Select a math function. Fixed-type functions (sin/cos/tan: angle; asin/atan/floor/log/exp: number) show the correct input field automatically. Flexible functions (abs, sqrt, min, max, toString) show a Type selector for the operand." }
             definition.mathFunction is MathFunctionType;
 
             // --- Primary operand (A) ---
@@ -1402,11 +1402,11 @@ function evaluateChainExpression(context is Context, definition is map)
  * Formats the evaluated result value as a human-readable string for display
  * in the feature report panel.
  * The result type is auto-detected by probing the value:
- *   string          → returned as-is
- *   number          → formatted as a plain number
- *   length units    → converted to millimeters, e.g. "12.5 mm"
- *   angle units     → converted to degrees,     e.g. "45.0 deg"
- *   other units     → shown as the raw SI numeric value (e.g. mm^2)
+ *   string          -> returned as-is
+ *   number          -> formatted as a plain number
+ *   length units    -> converted to millimeters, e.g. "12.5 mm"
+ *   angle units     -> converted to degrees,     e.g. "45.0 deg"
+ *   other units     -> standard library toString(ValueWithUnits), e.g. "9 m^2"
  *
  * @param result : The computed result value.
  *                 Left untyped intentionally: FeatureScript has no union type and the same
@@ -1437,8 +1437,10 @@ function formatResultValue(result) returns string
     {
         return toString(inDegrees) ~ " deg";
     }
-    // Compound or unknown units (e.g. mm^2): show the raw SI numeric value.
-    return toString(result.value) ~ " (SI units)";
+    // Compound or unknown units (e.g. mm^2 area from a POWER operation): fall back to
+    // the standard library's ValueWithUnits toString, which emits SI base-unit notation
+    // like "9 m^2" rather than an opaque "(SI units)" label.
+    return toString(result);
 }
 
 /**
