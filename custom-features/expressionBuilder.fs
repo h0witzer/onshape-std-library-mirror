@@ -60,7 +60,7 @@ export enum ExpressionBuilderMode
     ARITHMETIC,
     annotation { "Name" : "Math function  f(A)" }
     MATH_FUNCTION,
-    annotation { "Name" : "Chain  (A op B op C…)" }
+    annotation { "Name" : "Chain  (A op B op C...)" }
     CHAIN
 }
 
@@ -73,11 +73,11 @@ export enum ArithmeticOperation
 {
     annotation { "Name" : "Add  (A + B)" }
     ADD,
-    annotation { "Name" : "Subtract  (A − B)" }
+    annotation { "Name" : "Subtract  (A - B)" }
     SUBTRACT,
-    annotation { "Name" : "Multiply  (A × B)" }
+    annotation { "Name" : "Multiply  (A * B)" }
     MULTIPLY,
-    annotation { "Name" : "Divide  (A ÷ B)" }
+    annotation { "Name" : "Divide  (A / B)" }
     DIVIDE
 }
 
@@ -91,33 +91,33 @@ export enum MathFunctionType
 {
     annotation { "Name" : "Absolute value  |A|" }
     ABS,
-    annotation { "Name" : "Square root  √A  — Number or even-exponent units" }
+    annotation { "Name" : "Square root  sqrt(A) - Number or even-exponent units" }
     SQRT,
-    annotation { "Name" : "Floor  ⌊A⌋  — Number only" }
+    annotation { "Name" : "Floor  floor(A) - Number only" }
     FLOOR,
-    annotation { "Name" : "Ceiling  ⌈A⌉  — Number only" }
+    annotation { "Name" : "Ceiling  ceil(A) - Number only" }
     CEIL,
-    annotation { "Name" : "Round  — Number only" }
+    annotation { "Name" : "Round - Number only" }
     ROUND,
-    annotation { "Name" : "Sine  sin(A)  — A is an angle" }
+    annotation { "Name" : "Sine  sin(A) - A is an angle" }
     SIN,
-    annotation { "Name" : "Cosine  cos(A)  — A is an angle" }
+    annotation { "Name" : "Cosine  cos(A) - A is an angle" }
     COS,
-    annotation { "Name" : "Tangent  tan(A)  — A is an angle" }
+    annotation { "Name" : "Tangent  tan(A) - A is an angle" }
     TAN,
-    annotation { "Name" : "Arcsine  asin(A)  — returns angle" }
+    annotation { "Name" : "Arcsine  asin(A) - returns angle" }
     ASIN,
-    annotation { "Name" : "Arccosine  acos(A)  — returns angle" }
+    annotation { "Name" : "Arccosine  acos(A) - returns angle" }
     ACOS,
-    annotation { "Name" : "Arctangent  atan(A)  — returns angle" }
+    annotation { "Name" : "Arctangent  atan(A) - returns angle" }
     ATAN,
-    annotation { "Name" : "Arctangent2  atan2(A, B)  — returns angle" }
+    annotation { "Name" : "Arctangent2  atan2(A, B) - returns angle" }
     ATAN2,
-    annotation { "Name" : "Natural log  ln(A)  — Number only" }
+    annotation { "Name" : "Natural log  ln(A) - Number only" }
     LOG,
-    annotation { "Name" : "Log base 10  log₁₀(A)  — Number only" }
+    annotation { "Name" : "Log base 10  log10(A) - Number only" }
     LOG10,
-    annotation { "Name" : "Exponential  eᴬ  — Number only" }
+    annotation { "Name" : "Exponential  exp(A) - Number only" }
     EXP,
     annotation { "Name" : "Minimum  min(A, B)" }
     MIN,
@@ -409,7 +409,7 @@ export const expressionBuilder = defineFeature(function(context is Context, id i
                              definition.mathFunction == MathFunctionType.ATAN2)
                     {
                         annotation { "Name" : "Number value",
-                                     "Description" : "Dimensionless ratio (asin / acos expect −1 to 1)." }
+                                     "Description" : "Dimensionless ratio (asin / acos expect -1 to 1)." }
                         isReal(definition.funcOperandANumber, EXPRESSION_BUILDER_NUMBER_BOUNDS);
                     }
                     // All remaining functions use the declared output type
