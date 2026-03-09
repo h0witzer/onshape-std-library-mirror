@@ -37,6 +37,8 @@ import(path : "onshape/std/containers.fs", version : "2892.0");
  * The data type of the output variable.
  * Controls which literal-value fields are shown for operands in ARITHMETIC
  * and CHAIN modes (and for compatible MATH_FUNCTION operands).
+ * STRING output enables string concatenation in ARITHMETIC / CHAIN modes and
+ * the toString() function in MATH_FUNCTION mode.
  */
 export enum ExpressionOutputType
 {
@@ -45,7 +47,9 @@ export enum ExpressionOutputType
     annotation { "Name" : "Angle" }
     ANGLE,
     annotation { "Name" : "Number" }
-    NUMBER
+    NUMBER,
+    annotation { "Name" : "String" }
+    STRING
 }
 
 /**
@@ -66,19 +70,22 @@ export enum ExpressionBuilderMode
 
 /**
  * Binary arithmetic operators used in ARITHMETIC and CHAIN modes.
- * Note: MULTIPLY and DIVIDE treat operand B as a dimensionless scalar so
- * that length * scalar = length (rather than length * length = area).
+ * MULTIPLY, DIVIDE, and POWER treat operand B as a dimensionless scalar so
+ * that the result preserves the units of operand A (length * scalar = length, etc.).
+ * STRING output type always concatenates operands with ~ regardless of this setting.
  */
 export enum ArithmeticOperation
 {
-    annotation { "Name" : "Add  (A + B)" }
+    annotation { "Name" : "Add" }
     ADD,
-    annotation { "Name" : "Subtract  (A - B)" }
+    annotation { "Name" : "Subtract" }
     SUBTRACT,
-    annotation { "Name" : "Multiply  (A * B)" }
+    annotation { "Name" : "Multiply" }
     MULTIPLY,
-    annotation { "Name" : "Divide  (A / B)" }
-    DIVIDE
+    annotation { "Name" : "Divide" }
+    DIVIDE,
+    annotation { "Name" : "Power" }
+    POWER
 }
 
 /**
@@ -86,6 +93,8 @@ export enum ArithmeticOperation
  * Trig functions (SIN, COS, TAN) expect an angle operand.
  * Inverse trig functions (ASIN, ACOS, ATAN, ATAN2) return an angle.
  * All others operate on values whose type matches the declared output type.
+ * TO_STRING converts any operand value to a string and should be used with
+ * String output type.
  */
 export enum MathFunctionType
 {
@@ -122,7 +131,9 @@ export enum MathFunctionType
     annotation { "Name" : "Minimum  min(A, B)" }
     MIN,
     annotation { "Name" : "Maximum  max(A, B)" }
-    MAX
+    MAX,
+    annotation { "Name" : "To string  toString(A) - use with String output type" }
+    TO_STRING
 }
 
 /**
@@ -253,8 +264,7 @@ export const expressionBuilder = defineFeature(function(context is Context, id i
         definition.outputType is ExpressionOutputType;
 
         annotation { "Name" : "Expression mode",
-                     "Description" : "How to structure the expression: two-operand arithmetic, a named function, or a chain of up to four operands.",
-                     "UIHint" : UIHint.HORIZONTAL_ENUM }
+                     "Description" : "How to structure the expression: two-operand arithmetic, a named math function, or a chain of up to four operands." }
         definition.expressionMode is ExpressionBuilderMode;
 
         // ===============================================================
@@ -279,7 +289,14 @@ export const expressionBuilder = defineFeature(function(context is Context, id i
                 }
                 else
                 {
-                    if (definition.outputType == ExpressionOutputType.LENGTH)
+                    if (definition.outputType == ExpressionOutputType.STRING)
+                    {
+                        annotation { "Name" : "Text value",
+                                     "Description" : "String literal to use as the first operand.",
+                                     "MaxLength" : 1024 }
+                        definition.operandAStringLiteral is string;
+                    }
+                    else if (definition.outputType == ExpressionOutputType.LENGTH)
                     {
                         annotation { "Name" : "Value" }
                         isLength(definition.operandALength, ZERO_DEFAULT_LENGTH_BOUNDS);
@@ -298,21 +315,27 @@ export const expressionBuilder = defineFeature(function(context is Context, id i
             }
 
             // --- Operator ---
-            annotation { "Name" : "Operation",
-                         "Description" : "Arithmetic operator. For Multiply and Divide, operand B is treated as a dimensionless scalar.",
-                         "UIHint" : UIHint.HORIZONTAL_ENUM }
-            definition.arithmeticOperation is ArithmeticOperation;
+            // String output always concatenates; no operation selector is needed.
+            if (definition.outputType != ExpressionOutputType.STRING)
+            {
+                annotation { "Name" : "Operation",
+                             "Description" : "Arithmetic operator. Multiply, Divide, and Power treat operand B as a dimensionless scalar (multiplier, divisor, or exponent)." }
+                definition.arithmeticOperation is ArithmeticOperation;
+            }
 
             // --- Operand B ---
             annotation { "Group Name" : "Operand B", "Collapsed By Default" : false }
             {
-                // Multiply and Divide: B is always a dimensionless scalar so the
-                // output preserves the units of A (length × scalar = length, etc.)
-                if (definition.arithmeticOperation == ArithmeticOperation.MULTIPLY ||
-                    definition.arithmeticOperation == ArithmeticOperation.DIVIDE)
+                // Multiply, Divide, and Power: B is always a dimensionless scalar so
+                // the output preserves the units of A (length * scalar = length, etc.).
+                // This branch is suppressed for String output since concatenation takes over.
+                if (definition.outputType != ExpressionOutputType.STRING &&
+                    (definition.arithmeticOperation == ArithmeticOperation.MULTIPLY ||
+                     definition.arithmeticOperation == ArithmeticOperation.DIVIDE ||
+                     definition.arithmeticOperation == ArithmeticOperation.POWER))
                 {
                     annotation { "Name" : "Source",
-                                 "Description" : "Dimensionless scalar multiplier or divisor.",
+                                 "Description" : "Dimensionless scalar (multiplier, divisor, or exponent).",
                                  "UIHint" : UIHint.HORIZONTAL_ENUM }
                     definition.operandBScalarMode is OperandInputMode;
 
@@ -326,13 +349,14 @@ export const expressionBuilder = defineFeature(function(context is Context, id i
                     else
                     {
                         annotation { "Name" : "Scalar value",
-                                     "Description" : "Dimensionless multiplier or divisor." }
+                                     "Description" : "Dimensionless multiplier, divisor, or exponent." }
                         isReal(definition.operandBScalar, EXPRESSION_BUILDER_SCALAR_BOUNDS);
                     }
                 }
                 else
                 {
-                    // Add / Subtract: B has the same type as A
+                    // Add / Subtract: B has the same type as A.
+                    // String output: B is the string to concatenate.
                     annotation { "Name" : "Source",
                                  "Description" : "Enter a typed value, or read from an existing context variable.",
                                  "UIHint" : UIHint.HORIZONTAL_ENUM }
@@ -347,7 +371,14 @@ export const expressionBuilder = defineFeature(function(context is Context, id i
                     }
                     else
                     {
-                        if (definition.outputType == ExpressionOutputType.LENGTH)
+                        if (definition.outputType == ExpressionOutputType.STRING)
+                        {
+                            annotation { "Name" : "Text value",
+                                         "Description" : "String literal to concatenate with Operand A.",
+                                         "MaxLength" : 1024 }
+                            definition.operandBStringLiteral is string;
+                        }
+                        else if (definition.outputType == ExpressionOutputType.LENGTH)
                         {
                             annotation { "Name" : "Value" }
                             isLength(definition.operandBLength, ZERO_DEFAULT_LENGTH_BOUNDS);
@@ -373,7 +404,7 @@ export const expressionBuilder = defineFeature(function(context is Context, id i
         else if (definition.expressionMode == ExpressionBuilderMode.MATH_FUNCTION)
         {
             annotation { "Name" : "Function",
-                         "Description" : "SIN / COS / TAN expect an angle input. ASIN / ACOS / ATAN / ATAN2 return an angle. MIN, MAX, and ATAN2 require a second operand B." }
+                         "Description" : "Standard math function to apply. Trig functions (sin/cos/tan) expect an angle input. Inverse trig (asin/acos/atan/atan2) return an angle. Binary functions (min, max, atan2) show a second Operand B. toString converts any value to a string and should be paired with String output type." }
             definition.mathFunction is MathFunctionType;
 
             // --- Primary operand (A) ---
@@ -497,7 +528,12 @@ export const expressionBuilder = defineFeature(function(context is Context, id i
                 }
                 else
                 {
-                    if (definition.outputType == ExpressionOutputType.LENGTH)
+                    if (definition.outputType == ExpressionOutputType.STRING)
+                    {
+                        annotation { "Name" : "Text value", "MaxLength" : 1024 }
+                        definition.chainTerm1StringLiteral is string;
+                    }
+                    else if (definition.outputType == ExpressionOutputType.LENGTH)
                     {
                         annotation { "Name" : "Value" }
                         isLength(definition.chainTerm1Length, ZERO_DEFAULT_LENGTH_BOUNDS);
@@ -515,11 +551,14 @@ export const expressionBuilder = defineFeature(function(context is Context, id i
                 }
             }
 
-            // --- Operation 1 (between term 1 and term 2) ---
-            annotation { "Name" : "Operation 1",
-                         "Description" : "Operator applied between Term 1 and Term 2. Multiply / Divide treat the right-hand term as a dimensionless scalar.",
-                         "UIHint" : UIHint.HORIZONTAL_ENUM }
-            definition.chainOp1 is ArithmeticOperation;
+            // --- Operation 1 (between Term 1 and Term 2) ---
+            // String output always concatenates; operation selector is hidden.
+            if (definition.outputType != ExpressionOutputType.STRING)
+            {
+                annotation { "Name" : "Operation 1",
+                             "Description" : "Operator applied between Term 1 and Term 2. Multiply, Divide, and Power treat the right-hand term as a dimensionless scalar." }
+                definition.chainOp1 is ArithmeticOperation;
+            }
 
             // --- Term 2 ---
             annotation { "Group Name" : "Term 2", "Collapsed By Default" : false }
@@ -534,7 +573,12 @@ export const expressionBuilder = defineFeature(function(context is Context, id i
                 }
                 else
                 {
-                    if (definition.outputType == ExpressionOutputType.LENGTH)
+                    if (definition.outputType == ExpressionOutputType.STRING)
+                    {
+                        annotation { "Name" : "Text value", "MaxLength" : 1024 }
+                        definition.chainTerm2StringLiteral is string;
+                    }
+                    else if (definition.outputType == ExpressionOutputType.LENGTH)
                     {
                         annotation { "Name" : "Value" }
                         isLength(definition.chainTerm2Length, ZERO_DEFAULT_LENGTH_BOUNDS);
@@ -556,10 +600,12 @@ export const expressionBuilder = defineFeature(function(context is Context, id i
             if (definition.chainLength == ChainLength.THREE ||
                 definition.chainLength == ChainLength.FOUR)
             {
-                annotation { "Name" : "Operation 2",
-                             "Description" : "Operator applied between Term 2 and Term 3.",
-                             "UIHint" : UIHint.HORIZONTAL_ENUM }
-                definition.chainOp2 is ArithmeticOperation;
+                if (definition.outputType != ExpressionOutputType.STRING)
+                {
+                    annotation { "Name" : "Operation 2",
+                                 "Description" : "Operator applied between Term 2 and Term 3." }
+                    definition.chainOp2 is ArithmeticOperation;
+                }
 
                 annotation { "Group Name" : "Term 3", "Collapsed By Default" : false }
                 {
@@ -573,7 +619,12 @@ export const expressionBuilder = defineFeature(function(context is Context, id i
                     }
                     else
                     {
-                        if (definition.outputType == ExpressionOutputType.LENGTH)
+                        if (definition.outputType == ExpressionOutputType.STRING)
+                        {
+                            annotation { "Name" : "Text value", "MaxLength" : 1024 }
+                            definition.chainTerm3StringLiteral is string;
+                        }
+                        else if (definition.outputType == ExpressionOutputType.LENGTH)
                         {
                             annotation { "Name" : "Value" }
                             isLength(definition.chainTerm3Length, ZERO_DEFAULT_LENGTH_BOUNDS);
@@ -595,10 +646,12 @@ export const expressionBuilder = defineFeature(function(context is Context, id i
             // --- Term 4 and Operation 3 (only when chainLength == FOUR) ---
             if (definition.chainLength == ChainLength.FOUR)
             {
-                annotation { "Name" : "Operation 3",
-                             "Description" : "Operator applied between Term 3 and Term 4.",
-                             "UIHint" : UIHint.HORIZONTAL_ENUM }
-                definition.chainOp3 is ArithmeticOperation;
+                if (definition.outputType != ExpressionOutputType.STRING)
+                {
+                    annotation { "Name" : "Operation 3",
+                                 "Description" : "Operator applied between Term 3 and Term 4." }
+                    definition.chainOp3 is ArithmeticOperation;
+                }
 
                 annotation { "Group Name" : "Term 4", "Collapsed By Default" : false }
                 {
@@ -612,7 +665,12 @@ export const expressionBuilder = defineFeature(function(context is Context, id i
                     }
                     else
                     {
-                        if (definition.outputType == ExpressionOutputType.LENGTH)
+                        if (definition.outputType == ExpressionOutputType.STRING)
+                        {
+                            annotation { "Name" : "Text value", "MaxLength" : 1024 }
+                            definition.chainTerm4StringLiteral is string;
+                        }
+                        else if (definition.outputType == ExpressionOutputType.LENGTH)
                         {
                             annotation { "Name" : "Value" }
                             isLength(definition.chainTerm4Length, ZERO_DEFAULT_LENGTH_BOUNDS);
@@ -783,7 +841,7 @@ function applyArithmeticOperation(leftOperand, rightOperand, operation is Arithm
         }
         return mulResult;
     }
-    else // DIVIDE
+    else if (operation == ArithmeticOperation.DIVIDE)
     {
         if (rightOperand == 0)
         {
@@ -797,6 +855,18 @@ function applyArithmeticOperation(leftOperand, rightOperand, operation is Arithm
         }
         return divResult;
     }
+    else // POWER
+    {
+        // FeatureScript uses ^ for exponentiation (no pow() function exists).
+        // For values with units, only integer exponents produce valid results.
+        const powResult = try(leftOperand ^ rightOperand);
+        if (powResult == undefined)
+        {
+            throw regenError("Power failed: check that the exponent is a dimensionless number. "
+                             ~ "For values with units, only integer exponents are valid (e.g., length^2).");
+        }
+        return powResult;
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -805,6 +875,7 @@ function applyArithmeticOperation(leftOperand, rightOperand, operation is Arithm
 
 /**
  * Evaluates an ARITHMETIC mode expression (A op B) and returns the result.
+ * When outputType is STRING, concatenates operand A and operand B with ~.
  *
  * @param context    : Active build context.
  * @param definition : Feature definition map.
@@ -812,6 +883,28 @@ function applyArithmeticOperation(leftOperand, rightOperand, operation is Arithm
  */
 function evaluateArithmeticExpression(context is Context, definition is map)
 {
+    // --- String concatenation shortcut ---
+    if (definition.outputType == ExpressionOutputType.STRING)
+    {
+        const operandAStr = resolveTypedOperand(context,
+                                               definition.operandAMode,
+                                               definition.operandAVariableName,
+                                               definition.operandAStringLiteral,
+                                               "Operand A");
+        const operandBStr = resolveTypedOperand(context,
+                                               definition.operandBMode,
+                                               definition.operandBVariableName,
+                                               definition.operandBStringLiteral,
+                                               "Operand B");
+        const concatResult = try(operandAStr ~ operandBStr);
+        if (concatResult == undefined)
+        {
+            throw regenError("String concatenation failed: both operands must be strings or "
+                             ~ "string-compatible values. Use VARIABLE mode to reference a non-string variable.");
+        }
+        return concatResult;
+    }
+
     // --- Resolve operand A ---
     var literalA;
     if (definition.outputType == ExpressionOutputType.LENGTH)
@@ -837,9 +930,11 @@ function evaluateArithmeticExpression(context is Context, definition is map)
     var operandB;
     const operation = definition.arithmeticOperation;
 
-    if (operation == ArithmeticOperation.MULTIPLY || operation == ArithmeticOperation.DIVIDE)
+    if (operation == ArithmeticOperation.MULTIPLY ||
+        operation == ArithmeticOperation.DIVIDE ||
+        operation == ArithmeticOperation.POWER)
     {
-        // B is always a dimensionless scalar for multiply / divide
+        // B is always a dimensionless scalar for multiply / divide / power
         operandB = resolveTypedOperand(context,
                                        definition.operandBScalarMode,
                                        definition.operandBScalarVariableName,
@@ -923,6 +1018,7 @@ function evaluateMathFunctionExpression(context is Context, definition is map)
     // SQRT accepts a dimensionless number or a ValueWithUnits whose unit exponents are all even.
     // When Output type is set to Length or Angle, these functions cannot be applied correctly.
     // Raise a clear error rather than letting FeatureScript crash with an opaque message.
+    // TO_STRING is exempt: it produces a String regardless of the declared output type.
     const numberOnlyFunctions = [
         MathFunctionType.FLOOR,
         MathFunctionType.CEIL,
@@ -1080,6 +1176,18 @@ function evaluateMathFunctionExpression(context is Context, definition is map)
         }
         return expResult;
     }
+    else if (mathFunction == MathFunctionType.TO_STRING)
+    {
+        // toString() converts any value (number, length, angle, or variable) to a string.
+        // Use with String output type to store the result as a string variable.
+        const toStringResult = try(toString(operandA));
+        if (toStringResult == undefined)
+        {
+            throw regenError("toString() failed: unable to convert Operand A to a string. "
+                             ~ "Ensure Operand A is a valid numeric, length, or angle value.");
+        }
+        return toStringResult;
+    }
 
     // --- Resolve secondary operand B (binary functions) ---
     var literalB;
@@ -1142,6 +1250,7 @@ function evaluateMathFunctionExpression(context is Context, definition is map)
  * Resolves a single CHAIN mode term from the definition.
  * Returns the value of the term, reading from either a literal field or a
  * named context variable according to the term's mode setting.
+ * Handles LENGTH, ANGLE, NUMBER, and STRING output types.
  *
  * @param context     : Active build context.
  * @param definition  : Feature definition map.
@@ -1158,7 +1267,9 @@ function resolveChainTerm(context is Context, definition is map, termIndex is nu
     {
         termMode      = definition.chainTerm1Mode;
         variableName  = definition.chainTerm1VariableName;
-        if (definition.outputType == ExpressionOutputType.LENGTH)
+        if (definition.outputType == ExpressionOutputType.STRING)
+            literalValue = definition.chainTerm1StringLiteral;
+        else if (definition.outputType == ExpressionOutputType.LENGTH)
             literalValue = definition.chainTerm1Length;
         else if (definition.outputType == ExpressionOutputType.ANGLE)
             literalValue = definition.chainTerm1Angle;
@@ -1169,7 +1280,9 @@ function resolveChainTerm(context is Context, definition is map, termIndex is nu
     {
         termMode      = definition.chainTerm2Mode;
         variableName  = definition.chainTerm2VariableName;
-        if (definition.outputType == ExpressionOutputType.LENGTH)
+        if (definition.outputType == ExpressionOutputType.STRING)
+            literalValue = definition.chainTerm2StringLiteral;
+        else if (definition.outputType == ExpressionOutputType.LENGTH)
             literalValue = definition.chainTerm2Length;
         else if (definition.outputType == ExpressionOutputType.ANGLE)
             literalValue = definition.chainTerm2Angle;
@@ -1180,7 +1293,9 @@ function resolveChainTerm(context is Context, definition is map, termIndex is nu
     {
         termMode      = definition.chainTerm3Mode;
         variableName  = definition.chainTerm3VariableName;
-        if (definition.outputType == ExpressionOutputType.LENGTH)
+        if (definition.outputType == ExpressionOutputType.STRING)
+            literalValue = definition.chainTerm3StringLiteral;
+        else if (definition.outputType == ExpressionOutputType.LENGTH)
             literalValue = definition.chainTerm3Length;
         else if (definition.outputType == ExpressionOutputType.ANGLE)
             literalValue = definition.chainTerm3Angle;
@@ -1191,7 +1306,9 @@ function resolveChainTerm(context is Context, definition is map, termIndex is nu
     {
         termMode      = definition.chainTerm4Mode;
         variableName  = definition.chainTerm4VariableName;
-        if (definition.outputType == ExpressionOutputType.LENGTH)
+        if (definition.outputType == ExpressionOutputType.STRING)
+            literalValue = definition.chainTerm4StringLiteral;
+        else if (definition.outputType == ExpressionOutputType.LENGTH)
             literalValue = definition.chainTerm4Length;
         else if (definition.outputType == ExpressionOutputType.ANGLE)
             literalValue = definition.chainTerm4Angle;
@@ -1205,6 +1322,8 @@ function resolveChainTerm(context is Context, definition is map, termIndex is nu
 /**
  * Evaluates a CHAIN mode expression (A op1 B [op2 C [op3 D]]) and returns the result.
  * Operations are evaluated left-to-right with no implicit precedence.
+ * When outputType is STRING, all terms are concatenated with ~ (operation selectors are
+ * hidden in the precondition for string output).
  *
  * @param context    : Active build context.
  * @param definition : Feature definition map.
@@ -1212,6 +1331,44 @@ function resolveChainTerm(context is Context, definition is map, termIndex is nu
  */
 function evaluateChainExpression(context is Context, definition is map)
 {
+    // --- String concatenation mode ---
+    if (definition.outputType == ExpressionOutputType.STRING)
+    {
+        var accumulator = resolveChainTerm(context, definition, 1);
+        var term2 = resolveChainTerm(context, definition, 2);
+        const concat12 = try(accumulator ~ term2);
+        if (concat12 == undefined)
+        {
+            throw regenError("String concatenation failed between Term 1 and Term 2.");
+        }
+        accumulator = concat12;
+
+        if (definition.chainLength == ChainLength.THREE || definition.chainLength == ChainLength.FOUR)
+        {
+            var term3 = resolveChainTerm(context, definition, 3);
+            const concat3 = try(accumulator ~ term3);
+            if (concat3 == undefined)
+            {
+                throw regenError("String concatenation failed for Term 3.");
+            }
+            accumulator = concat3;
+        }
+
+        if (definition.chainLength == ChainLength.FOUR)
+        {
+            var term4 = resolveChainTerm(context, definition, 4);
+            const concat4 = try(accumulator ~ term4);
+            if (concat4 == undefined)
+            {
+                throw regenError("String concatenation failed for Term 4.");
+            }
+            accumulator = concat4;
+        }
+
+        return accumulator;
+    }
+
+    // --- Numeric / typed chain ---
     // Always at least two terms
     var accumulator = resolveChainTerm(context, definition, 1);
     var term2       = resolveChainTerm(context, definition, 2);
@@ -1242,10 +1399,11 @@ function evaluateChainExpression(context is Context, definition is map)
  *   LENGTH  → value in millimeters,  e.g. "12.5 mm"
  *   ANGLE   → value in degrees,      e.g. "45.0 deg"
  *   NUMBER  → dimensionless number,  e.g. "3.14159"
+ *   STRING  → the string itself,     e.g. "Bracket-Left"
  *
- * @param result     : The computed result value (ValueWithUnits for LENGTH/ANGLE, number for NUMBER).
- *                     Left untyped intentionally: FeatureScript has no union type and the same
- *                     function must accept both ValueWithUnits and plain number values.
+ * @param result     : The computed result value (ValueWithUnits for LENGTH/ANGLE, number for NUMBER,
+ *                     string for STRING). Left untyped intentionally: FeatureScript has no union type
+ *                     and the same function must accept all value types.
  * @param outputType : ExpressionOutputType describing the result's type.
  * @returns          : Formatted string for display.
  */
@@ -1259,6 +1417,10 @@ function formatResultValue(result, outputType is ExpressionOutputType) returns s
     {
         return toString(result / degree) ~ " deg";
     }
+    else if (outputType == ExpressionOutputType.STRING)
+    {
+        return result;
+    }
     else
     {
         return toString(result);
@@ -1270,10 +1432,11 @@ function formatResultValue(result, outputType is ExpressionOutputType) returns s
  *   LENGTH  → "X * mm"
  *   ANGLE   → "X * deg"
  *   NUMBER  → "X"
+ *   STRING  → '"text"'  (the literal string wrapped in double-quotes)
  *
- * @param literalValue : The literal value to format (ValueWithUnits for LENGTH/ANGLE, number for NUMBER).
- *                       Left untyped intentionally: FeatureScript has no union type and the same
- *                       function must accept both ValueWithUnits and plain number values.
+ * @param literalValue : The literal value to format (ValueWithUnits for LENGTH/ANGLE, number for NUMBER,
+ *                       string for STRING). Left untyped intentionally: FeatureScript has no union type
+ *                       and the same function must accept all value types.
  * @param literalType  : ExpressionOutputType indicating the value's units.
  * @returns            : Onshape expression syntax string for the literal.
  */
@@ -1286,6 +1449,10 @@ function formatLiteralAsExpression(literalValue, literalType is ExpressionOutput
     else if (literalType == ExpressionOutputType.ANGLE)
     {
         return toString(literalValue / degree) ~ " * deg";
+    }
+    else if (literalType == ExpressionOutputType.STRING)
+    {
+        return "\"" ~ literalValue ~ "\"";
     }
     else
     {
@@ -1318,7 +1485,7 @@ function formatOperandAsExpression(mode is OperandInputMode, variableName is str
  * Returns the Onshape operator symbol string for an ArithmeticOperation.
  *
  * @param operation : ArithmeticOperation enum value.
- * @returns         : Operator string, e.g. " + ", " - ", " * ", " / ".
+ * @returns         : Operator string, e.g. " + ", " - ", " * ", " / ", " ^ ".
  */
 function arithmeticOperationSymbol(operation is ArithmeticOperation) returns string
 {
@@ -1333,6 +1500,10 @@ function arithmeticOperationSymbol(operation is ArithmeticOperation) returns str
     else if (operation == ArithmeticOperation.MULTIPLY)
     {
         return " * ";
+    }
+    else if (operation == ArithmeticOperation.POWER)
+    {
+        return " ^ ";
     }
     else
     {
