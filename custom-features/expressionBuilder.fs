@@ -238,6 +238,7 @@ const EXPRESSION_BUILDER_SCALAR_BOUNDS =
  */
 annotation { "Feature Type Name" : "Expression Builder",
              "Feature Name Template" : "###variableName = #result",
+             "Tooltip Template" : "###variableName = #result",
              "UIHint" : UIHint.NO_PREVIEW_PROVIDED,
              "Feature Type Description" : "Compose a mathematical expression and store the result as a named variable readable anywhere in the Part Studio with the #variableName syntax." }
 export const expressionBuilder = defineFeature(function(context is Context, id is Id, definition is map)
@@ -803,10 +804,12 @@ export const expressionBuilder = defineFeature(function(context is Context, id i
             expressionString = "(unknown expression mode)";
         }
 
-        const resultStr = formatResultValue(result);
-        reportFeatureInfo(context, id,
-            "Result: " ~ resultStr ~
-            "\nExpression: " ~ expressionString);
+        // Show the copy-pasteable expression string in the feature info panel.
+        // The result value is already displayed in document units via the Feature Name
+        // Template ("#result" slot fed by setFeatureComputedParameter above), so we do
+        // not duplicate it here. This matches the Variable feature, which also relies
+        // solely on the Feature Name Template for result display.
+        reportFeatureInfo(context, id, "Expression: " ~ expressionString);
     });
 
 // ---------------------------------------------------------------------------
@@ -1416,60 +1419,6 @@ function evaluateChainExpression(context is Context, definition is map)
 // ---------------------------------------------------------------------------
 // Report formatting helpers
 // ---------------------------------------------------------------------------
-
-/**
- * Formats the evaluated result value as a human-readable string for display
- * in the feature report panel (the info text shown when the feature is expanded).
- * The result type is detected by inspecting the value's unit map directly:
- *   string          -> returned as-is
- *   number          -> formatted as a plain number
- *   LENGTH_UNITS    -> converted to millimeters, e.g. "12.5 mm"
- *   ANGLE_UNITS     -> converted to degrees, e.g. "45.0 deg"
- *   other units     -> standard library toString(ValueWithUnits), e.g. "9 m^2"
- *
- * NOTE: The Feature Name Template ("#result") is handled separately by the engine via
- * setFeatureComputedParameter, which automatically formats ValueWithUnits values in the
- * document's preferred unit system (inches for imperial documents, mm for metric). This
- * function only produces the secondary text shown in the reportFeatureInfo panel.
- *
- * NOTE: Unit-map comparison is used instead of testing whether (result / unit) is number
- * because dividing two ValueWithUnits values whose units cancel out returns a dimensionless
- * ValueWithUnits (empty unit map), not a plain number. That makes the `is number` check
- * unreliable for angle units and produces raw radian values in the report.
- *
- * @param result : The computed result value.
- *                 Left untyped intentionally: FeatureScript has no union type and the same
- *                 function must accept strings, numbers, and ValueWithUnits values.
- * @returns      : Formatted string for display.
- */
-function formatResultValue(result) returns string
-{
-    if (result is string)
-    {
-        return result;
-    }
-    if (result is number)
-    {
-        return toString(result);
-    }
-    if (result is ValueWithUnits)
-    {
-        // Simple length (meter^1): convert to millimeters for display.
-        if (result.unit == LENGTH_UNITS)
-        {
-            return toString(result / millimeter) ~ " mm";
-        }
-        // Simple angle (radian^1): convert to degrees for display.
-        if (result.unit == ANGLE_UNITS)
-        {
-            return toString(result / degree) ~ " deg";
-        }
-        // Compound or unknown units (e.g. m^2 from a POWER operation): stdlib
-        // toString emits SI base-unit notation like "9 m^2".
-        return toString(result);
-    }
-    return toString(result);
-}
 
 /**
  * Formats a single literal value as a copy-pasteable Onshape expression fragment.
