@@ -997,7 +997,8 @@ function evaluateMathFunctionExpression(context is Context, definition is map)
         const sinResult = try(sin(operandA));
         if (sinResult == undefined)
         {
-            throw regenError("sin() failed: check that Operand A is an angle value.");
+            throw regenError("sin() failed: Operand A must be an angle value or a dimensionless number "
+                             ~ "(interpreted as radians).");
         }
         return sinResult;
     }
@@ -1006,7 +1007,8 @@ function evaluateMathFunctionExpression(context is Context, definition is map)
         const cosResult = try(cos(operandA));
         if (cosResult == undefined)
         {
-            throw regenError("cos() failed: check that Operand A is an angle value.");
+            throw regenError("cos() failed: Operand A must be an angle value or a dimensionless number "
+                             ~ "(interpreted as radians).");
         }
         return cosResult;
     }
@@ -1015,7 +1017,8 @@ function evaluateMathFunctionExpression(context is Context, definition is map)
         const tanResult = try(tan(operandA));
         if (tanResult == undefined)
         {
-            throw regenError("tan() failed: check that Operand A is an angle value.");
+            throw regenError("tan() failed: Operand A must be an angle value or a dimensionless number "
+                             ~ "(interpreted as radians).");
         }
         return tanResult;
     }
