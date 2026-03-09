@@ -393,39 +393,37 @@ export const expressionBuilder = defineFeature(function(context is Context, id i
                 }
                 else
                 {
-                    // SIN, COS, TAN operate on angles
-                    if (definition.mathFunction == MathFunctionType.SIN ||
-                        definition.mathFunction == MathFunctionType.COS ||
-                        definition.mathFunction == MathFunctionType.TAN)
+                    // The input type for operand A is determined by the selected function
+                    // first, then by the declared output type for general-purpose functions.
+                    //
+                    // Angle input: SIN / COS / TAN always require an angle operand.
+                    // Any other function whose output type is ANGLE (e.g. ABS on an angle)
+                    // also takes an angle — except inverse-trig (ASIN / ACOS / ATAN / ATAN2)
+                    // which return an angle but accept a dimensionless number as input.
+                    if ((definition.mathFunction == MathFunctionType.SIN ||
+                         definition.mathFunction == MathFunctionType.COS ||
+                         definition.mathFunction == MathFunctionType.TAN) ||
+                        (definition.outputType == ExpressionOutputType.ANGLE &&
+                         definition.mathFunction != MathFunctionType.ASIN &&
+                         definition.mathFunction != MathFunctionType.ACOS &&
+                         definition.mathFunction != MathFunctionType.ATAN &&
+                         definition.mathFunction != MathFunctionType.ATAN2))
                     {
                         annotation { "Name" : "Angle value",
                                      "Description" : "Input angle for the trigonometric function." }
                         isAngle(definition.funcOperandAAngle, ANGLE_360_ZERO_DEFAULT_BOUNDS);
                     }
-                    // ASIN, ACOS, ATAN, ATAN2 operate on dimensionless ratios
-                    else if (definition.mathFunction == MathFunctionType.ASIN ||
-                             definition.mathFunction == MathFunctionType.ACOS ||
-                             definition.mathFunction == MathFunctionType.ATAN ||
-                             definition.mathFunction == MathFunctionType.ATAN2)
-                    {
-                        annotation { "Name" : "Number value",
-                                     "Description" : "Dimensionless ratio (asin / acos expect -1 to 1)." }
-                        isReal(definition.funcOperandANumber, EXPRESSION_BUILDER_NUMBER_BOUNDS);
-                    }
-                    // All remaining functions use the declared output type
                     else if (definition.outputType == ExpressionOutputType.LENGTH)
                     {
                         annotation { "Name" : "Length value" }
                         isLength(definition.funcOperandALength, ZERO_DEFAULT_LENGTH_BOUNDS);
                     }
-                    else if (definition.outputType == ExpressionOutputType.ANGLE)
-                    {
-                        annotation { "Name" : "Angle value" }
-                        isAngle(definition.funcOperandAAngle, ANGLE_360_ZERO_DEFAULT_BOUNDS);
-                    }
                     else
                     {
-                        annotation { "Name" : "Number value" }
+                        // Covers ASIN / ACOS / ATAN / ATAN2 (dimensionless ratio input)
+                        // and any remaining function whose output type is NUMBER.
+                        annotation { "Name" : "Number value",
+                                     "Description" : "Dimensionless ratio (asin / acos expect -1 to 1)." }
                         isReal(definition.funcOperandANumber, EXPRESSION_BUILDER_NUMBER_BOUNDS);
                     }
                 }
@@ -452,8 +450,10 @@ export const expressionBuilder = defineFeature(function(context is Context, id i
                     }
                     else
                     {
-                        // ATAN2(y, x) — both arguments are dimensionless ratios
-                        if (definition.mathFunction == MathFunctionType.ATAN2)
+                        // ATAN2(y, x) - both arguments are dimensionless ratios.
+                        // For MIN / MAX, the second operand matches the declared output type.
+                        if (definition.mathFunction == MathFunctionType.ATAN2 ||
+                            definition.outputType == ExpressionOutputType.NUMBER)
                         {
                             annotation { "Name" : "Number value",
                                          "Description" : "Second dimensionless argument for atan2(A, B)." }
@@ -464,15 +464,10 @@ export const expressionBuilder = defineFeature(function(context is Context, id i
                             annotation { "Name" : "Length value" }
                             isLength(definition.funcOperandBLength, ZERO_DEFAULT_LENGTH_BOUNDS);
                         }
-                        else if (definition.outputType == ExpressionOutputType.ANGLE)
+                        else
                         {
                             annotation { "Name" : "Angle value" }
                             isAngle(definition.funcOperandBAngle, ANGLE_360_ZERO_DEFAULT_BOUNDS);
-                        }
-                        else
-                        {
-                            annotation { "Name" : "Number value" }
-                            isReal(definition.funcOperandBNumber, EXPRESSION_BUILDER_NUMBER_BOUNDS);
                         }
                     }
                 }
