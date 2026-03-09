@@ -21,11 +21,8 @@ FeatureScript 2892;
  *   VARIABLE - a text field holding the name of an existing context variable
  *
  * STRING_CONCAT segment types:
- *   TEXT     - a literal string entered directly in the panel
- *   NUMBER   - a dimensionless number, converted to string via toString()
- *   LENGTH   - a length value formatted with a user-selected display unit (mm / cm / in / ft)
- *   ANGLE    - an angle value formatted with a user-selected display unit (deg / rad)
- *   VARIABLE - a named context variable, auto-converted to string
+ *   TEXT     - a literal string the user types in the panel (can include any unit text, e.g. "1.5 in")
+ *   VARIABLE - a named context variable, auto-converted to string (lengths in mm, angles in deg)
  */
 
 import(path : "onshape/std/common.fs", version : "2892.0");
@@ -174,23 +171,17 @@ export enum ChainLength
 }
 
 /**
- * The source and data type for a single STRING_CONCAT mode segment.
- *   TEXT     – a literal string typed directly into the panel field
- *   NUMBER   – a dimensionless number converted to string via toString()
- *   LENGTH   – a length value formatted with a user-selected display unit
- *   ANGLE    – an angle value formatted with a user-selected display unit
- *   VARIABLE – the value of a named context variable, auto-converted to string
+ * The source type for a single STRING_CONCAT mode segment.
+ *   TEXT     – the user types any literal string directly in the panel (including values
+ *              with units written as plain text such as "1.5 in" or "45 deg")
+ *   VARIABLE – reads the value of a named context variable and converts it to a string
+ *              automatically (strings pass through; numbers, lengths, and angles are
+ *              toString'd; lengths display in mm, angles in deg)
  */
 export enum ConcatSegmentInputType
 {
     annotation { "Name" : "Text" }
     TEXT,
-    annotation { "Name" : "Number" }
-    NUMBER,
-    annotation { "Name" : "Length" }
-    LENGTH,
-    annotation { "Name" : "Angle" }
-    ANGLE,
     annotation { "Name" : "Variable" }
     VARIABLE
 }
@@ -210,34 +201,6 @@ export enum StringConcatLength
     FIVE,
     annotation { "Name" : "6 segments" }
     SIX
-}
-
-/**
- * Length display unit for STRING_CONCAT LENGTH segments.
- * Controls how the length value is formatted in the output string.
- */
-export enum ConcatLengthUnit
-{
-    annotation { "Name" : "mm" }
-    MILLIMETER,
-    annotation { "Name" : "cm" }
-    CENTIMETER,
-    annotation { "Name" : "in" }
-    INCH,
-    annotation { "Name" : "ft" }
-    FOOT
-}
-
-/**
- * Angle display unit for STRING_CONCAT ANGLE segments.
- * Controls how the angle value is formatted in the output string.
- */
-export enum ConcatAngleUnit
-{
-    annotation { "Name" : "deg" }
-    DEGREE,
-    annotation { "Name" : "rad" }
-    RADIAN
 }
 
 // ---------------------------------------------------------------------------
@@ -315,13 +278,8 @@ const EXPRESSION_BUILDER_SCALAR_BOUNDS =
  *
  *      // STRING_CONCAT mode fields
  *      @field stringConcatLength {StringConcatLength} : Number of segments (TWO through SIX).
- *      @field concatSeg1Type … concatSeg6Type {ConcatSegmentInputType}: Source/type for each segment.
- *      @field concatSeg1Text … concatSeg6Text {string}: Literal text for TEXT segments.
- *      @field concatSeg1Number … concatSeg6Number {number}: Literal number for NUMBER segments.
- *      @field concatSeg1Length … concatSeg6Length {ValueWithUnits}: Literal length for LENGTH segments.
- *      @field concatSeg1LengthUnit … concatSeg6LengthUnit {ConcatLengthUnit}: Display unit for LENGTH segments.
- *      @field concatSeg1Angle … concatSeg6Angle {ValueWithUnits}: Literal angle for ANGLE segments.
- *      @field concatSeg1AngleUnit … concatSeg6AngleUnit {ConcatAngleUnit}: Display unit for ANGLE segments.
+ *      @field concatSeg1Type … concatSeg6Type {ConcatSegmentInputType}: TEXT or VARIABLE for each segment.
+ *      @field concatSeg1Text … concatSeg6Text {string}: Literal text for TEXT segments (any string, including "1.5 in").
  *      @field concatSeg1Variable … concatSeg6Variable {string}: Variable names for VARIABLE segments.
  * }}
  */
@@ -822,10 +780,9 @@ export const expressionBuilder = defineFeature(function(context is Context, id i
 
         // ===============================================================
         // STRING_CONCAT MODE  ( Seg1 ~ Seg2 ~ [Seg3 ~ ... ~ Seg6] )
-        // Each segment contributes one piece of the final string. Literal
-        // length and angle values are formatted using the per-segment
-        // display-unit selector so the output matches the user's preferred
-        // unit (e.g. "1.5 in" for an imperial document).
+        // Each segment is either a literal text string (the user can type any value including
+        // unit text such as "1.5 in" or "45 deg") or the name of a context variable whose
+        // value is automatically converted to string at evaluation time.
         // ===============================================================
         else if (definition.expressionMode == ExpressionBuilderMode.STRING_CONCAT)
         {
@@ -838,38 +795,21 @@ export const expressionBuilder = defineFeature(function(context is Context, id i
             annotation { "Group Name" : "Segment 1", "Collapsed By Default" : false }
             {
                 annotation { "Name" : "Type",
-                             "Description" : "Text: a literal string. Number / Length / Angle: a typed value converted to string. Variable: a named context variable converted to string.",
+                             "Description" : "Text: type any string (numbers, units, labels, e.g. 1.5 in or 45 deg). Variable: read and toString() a named context variable.",
                              "UIHint" : UIHint.HORIZONTAL_ENUM }
                 definition.concatSeg1Type is ConcatSegmentInputType;
 
                 if (definition.concatSeg1Type == ConcatSegmentInputType.TEXT)
                 {
-                    annotation { "Name" : "Text", "MaxLength" : 1024 }
+                    annotation { "Name" : "Text",
+                                 "Description" : "Any literal string. You may type values with units here, e.g. 1.5 in or 45 deg.",
+                                 "MaxLength" : 1024 }
                     definition.concatSeg1Text is string;
-                }
-                else if (definition.concatSeg1Type == ConcatSegmentInputType.NUMBER)
-                {
-                    annotation { "Name" : "Value" }
-                    isReal(definition.concatSeg1Number, EXPRESSION_BUILDER_NUMBER_BOUNDS);
-                }
-                else if (definition.concatSeg1Type == ConcatSegmentInputType.LENGTH)
-                {
-                    annotation { "Name" : "Value" }
-                    isLength(definition.concatSeg1Length, ZERO_DEFAULT_LENGTH_BOUNDS);
-                    annotation { "Name" : "Display unit", "UIHint" : UIHint.HORIZONTAL_ENUM }
-                    definition.concatSeg1LengthUnit is ConcatLengthUnit;
-                }
-                else if (definition.concatSeg1Type == ConcatSegmentInputType.ANGLE)
-                {
-                    annotation { "Name" : "Value" }
-                    isAngle(definition.concatSeg1Angle, ANGLE_360_ZERO_DEFAULT_BOUNDS);
-                    annotation { "Name" : "Display unit", "UIHint" : UIHint.HORIZONTAL_ENUM }
-                    definition.concatSeg1AngleUnit is ConcatAngleUnit;
                 }
                 else // VARIABLE
                 {
                     annotation { "Name" : "Variable name",
-                                 "Description" : "Name of the context variable to read and convert to string (do not include #). Lengths auto-display in mm, angles in deg.",
+                                 "Description" : "Name of the context variable to read and convert to string (do not include #). Lengths display in mm, angles in deg.",
                                  "MaxLength" : 256 }
                     definition.concatSeg1Variable is string;
                 }
@@ -878,36 +818,23 @@ export const expressionBuilder = defineFeature(function(context is Context, id i
             // --- Segment 2 ---
             annotation { "Group Name" : "Segment 2", "Collapsed By Default" : false }
             {
-                annotation { "Name" : "Type", "UIHint" : UIHint.HORIZONTAL_ENUM }
+                annotation { "Name" : "Type",
+                             "Description" : "Text: type any string (numbers, units, labels, e.g. 1.5 in or 45 deg). Variable: read and toString() a named context variable.",
+                             "UIHint" : UIHint.HORIZONTAL_ENUM }
                 definition.concatSeg2Type is ConcatSegmentInputType;
 
                 if (definition.concatSeg2Type == ConcatSegmentInputType.TEXT)
                 {
-                    annotation { "Name" : "Text", "MaxLength" : 1024 }
+                    annotation { "Name" : "Text",
+                                 "Description" : "Any literal string. You may type values with units here, e.g. 1.5 in or 45 deg.",
+                                 "MaxLength" : 1024 }
                     definition.concatSeg2Text is string;
-                }
-                else if (definition.concatSeg2Type == ConcatSegmentInputType.NUMBER)
-                {
-                    annotation { "Name" : "Value" }
-                    isReal(definition.concatSeg2Number, EXPRESSION_BUILDER_NUMBER_BOUNDS);
-                }
-                else if (definition.concatSeg2Type == ConcatSegmentInputType.LENGTH)
-                {
-                    annotation { "Name" : "Value" }
-                    isLength(definition.concatSeg2Length, ZERO_DEFAULT_LENGTH_BOUNDS);
-                    annotation { "Name" : "Display unit", "UIHint" : UIHint.HORIZONTAL_ENUM }
-                    definition.concatSeg2LengthUnit is ConcatLengthUnit;
-                }
-                else if (definition.concatSeg2Type == ConcatSegmentInputType.ANGLE)
-                {
-                    annotation { "Name" : "Value" }
-                    isAngle(definition.concatSeg2Angle, ANGLE_360_ZERO_DEFAULT_BOUNDS);
-                    annotation { "Name" : "Display unit", "UIHint" : UIHint.HORIZONTAL_ENUM }
-                    definition.concatSeg2AngleUnit is ConcatAngleUnit;
                 }
                 else // VARIABLE
                 {
-                    annotation { "Name" : "Variable name", "MaxLength" : 256 }
+                    annotation { "Name" : "Variable name",
+                                 "Description" : "Name of the context variable to read and convert to string (do not include #). Lengths display in mm, angles in deg.",
+                                 "MaxLength" : 256 }
                     definition.concatSeg2Variable is string;
                 }
             }
@@ -920,36 +847,23 @@ export const expressionBuilder = defineFeature(function(context is Context, id i
             {
                 annotation { "Group Name" : "Segment 3", "Collapsed By Default" : false }
                 {
-                    annotation { "Name" : "Type", "UIHint" : UIHint.HORIZONTAL_ENUM }
+                    annotation { "Name" : "Type",
+                                 "Description" : "Text: type any string (numbers, units, labels, e.g. 1.5 in or 45 deg). Variable: read and toString() a named context variable.",
+                                 "UIHint" : UIHint.HORIZONTAL_ENUM }
                     definition.concatSeg3Type is ConcatSegmentInputType;
 
                     if (definition.concatSeg3Type == ConcatSegmentInputType.TEXT)
                     {
-                        annotation { "Name" : "Text", "MaxLength" : 1024 }
+                        annotation { "Name" : "Text",
+                                     "Description" : "Any literal string. You may type values with units here, e.g. 1.5 in or 45 deg.",
+                                     "MaxLength" : 1024 }
                         definition.concatSeg3Text is string;
-                    }
-                    else if (definition.concatSeg3Type == ConcatSegmentInputType.NUMBER)
-                    {
-                        annotation { "Name" : "Value" }
-                        isReal(definition.concatSeg3Number, EXPRESSION_BUILDER_NUMBER_BOUNDS);
-                    }
-                    else if (definition.concatSeg3Type == ConcatSegmentInputType.LENGTH)
-                    {
-                        annotation { "Name" : "Value" }
-                        isLength(definition.concatSeg3Length, ZERO_DEFAULT_LENGTH_BOUNDS);
-                        annotation { "Name" : "Display unit", "UIHint" : UIHint.HORIZONTAL_ENUM }
-                        definition.concatSeg3LengthUnit is ConcatLengthUnit;
-                    }
-                    else if (definition.concatSeg3Type == ConcatSegmentInputType.ANGLE)
-                    {
-                        annotation { "Name" : "Value" }
-                        isAngle(definition.concatSeg3Angle, ANGLE_360_ZERO_DEFAULT_BOUNDS);
-                        annotation { "Name" : "Display unit", "UIHint" : UIHint.HORIZONTAL_ENUM }
-                        definition.concatSeg3AngleUnit is ConcatAngleUnit;
                     }
                     else // VARIABLE
                     {
-                        annotation { "Name" : "Variable name", "MaxLength" : 256 }
+                        annotation { "Name" : "Variable name",
+                                     "Description" : "Name of the context variable to read and convert to string (do not include #). Lengths display in mm, angles in deg.",
+                                     "MaxLength" : 256 }
                         definition.concatSeg3Variable is string;
                     }
                 }
@@ -962,36 +876,23 @@ export const expressionBuilder = defineFeature(function(context is Context, id i
             {
                 annotation { "Group Name" : "Segment 4", "Collapsed By Default" : false }
                 {
-                    annotation { "Name" : "Type", "UIHint" : UIHint.HORIZONTAL_ENUM }
+                    annotation { "Name" : "Type",
+                                 "Description" : "Text: type any string (numbers, units, labels, e.g. 1.5 in or 45 deg). Variable: read and toString() a named context variable.",
+                                 "UIHint" : UIHint.HORIZONTAL_ENUM }
                     definition.concatSeg4Type is ConcatSegmentInputType;
 
                     if (definition.concatSeg4Type == ConcatSegmentInputType.TEXT)
                     {
-                        annotation { "Name" : "Text", "MaxLength" : 1024 }
+                        annotation { "Name" : "Text",
+                                     "Description" : "Any literal string. You may type values with units here, e.g. 1.5 in or 45 deg.",
+                                     "MaxLength" : 1024 }
                         definition.concatSeg4Text is string;
-                    }
-                    else if (definition.concatSeg4Type == ConcatSegmentInputType.NUMBER)
-                    {
-                        annotation { "Name" : "Value" }
-                        isReal(definition.concatSeg4Number, EXPRESSION_BUILDER_NUMBER_BOUNDS);
-                    }
-                    else if (definition.concatSeg4Type == ConcatSegmentInputType.LENGTH)
-                    {
-                        annotation { "Name" : "Value" }
-                        isLength(definition.concatSeg4Length, ZERO_DEFAULT_LENGTH_BOUNDS);
-                        annotation { "Name" : "Display unit", "UIHint" : UIHint.HORIZONTAL_ENUM }
-                        definition.concatSeg4LengthUnit is ConcatLengthUnit;
-                    }
-                    else if (definition.concatSeg4Type == ConcatSegmentInputType.ANGLE)
-                    {
-                        annotation { "Name" : "Value" }
-                        isAngle(definition.concatSeg4Angle, ANGLE_360_ZERO_DEFAULT_BOUNDS);
-                        annotation { "Name" : "Display unit", "UIHint" : UIHint.HORIZONTAL_ENUM }
-                        definition.concatSeg4AngleUnit is ConcatAngleUnit;
                     }
                     else // VARIABLE
                     {
-                        annotation { "Name" : "Variable name", "MaxLength" : 256 }
+                        annotation { "Name" : "Variable name",
+                                     "Description" : "Name of the context variable to read and convert to string (do not include #). Lengths display in mm, angles in deg.",
+                                     "MaxLength" : 256 }
                         definition.concatSeg4Variable is string;
                     }
                 }
@@ -1003,36 +904,23 @@ export const expressionBuilder = defineFeature(function(context is Context, id i
             {
                 annotation { "Group Name" : "Segment 5", "Collapsed By Default" : false }
                 {
-                    annotation { "Name" : "Type", "UIHint" : UIHint.HORIZONTAL_ENUM }
+                    annotation { "Name" : "Type",
+                                 "Description" : "Text: type any string (numbers, units, labels, e.g. 1.5 in or 45 deg). Variable: read and toString() a named context variable.",
+                                 "UIHint" : UIHint.HORIZONTAL_ENUM }
                     definition.concatSeg5Type is ConcatSegmentInputType;
 
                     if (definition.concatSeg5Type == ConcatSegmentInputType.TEXT)
                     {
-                        annotation { "Name" : "Text", "MaxLength" : 1024 }
+                        annotation { "Name" : "Text",
+                                     "Description" : "Any literal string. You may type values with units here, e.g. 1.5 in or 45 deg.",
+                                     "MaxLength" : 1024 }
                         definition.concatSeg5Text is string;
-                    }
-                    else if (definition.concatSeg5Type == ConcatSegmentInputType.NUMBER)
-                    {
-                        annotation { "Name" : "Value" }
-                        isReal(definition.concatSeg5Number, EXPRESSION_BUILDER_NUMBER_BOUNDS);
-                    }
-                    else if (definition.concatSeg5Type == ConcatSegmentInputType.LENGTH)
-                    {
-                        annotation { "Name" : "Value" }
-                        isLength(definition.concatSeg5Length, ZERO_DEFAULT_LENGTH_BOUNDS);
-                        annotation { "Name" : "Display unit", "UIHint" : UIHint.HORIZONTAL_ENUM }
-                        definition.concatSeg5LengthUnit is ConcatLengthUnit;
-                    }
-                    else if (definition.concatSeg5Type == ConcatSegmentInputType.ANGLE)
-                    {
-                        annotation { "Name" : "Value" }
-                        isAngle(definition.concatSeg5Angle, ANGLE_360_ZERO_DEFAULT_BOUNDS);
-                        annotation { "Name" : "Display unit", "UIHint" : UIHint.HORIZONTAL_ENUM }
-                        definition.concatSeg5AngleUnit is ConcatAngleUnit;
                     }
                     else // VARIABLE
                     {
-                        annotation { "Name" : "Variable name", "MaxLength" : 256 }
+                        annotation { "Name" : "Variable name",
+                                     "Description" : "Name of the context variable to read and convert to string (do not include #). Lengths display in mm, angles in deg.",
+                                     "MaxLength" : 256 }
                         definition.concatSeg5Variable is string;
                     }
                 }
@@ -1043,36 +931,23 @@ export const expressionBuilder = defineFeature(function(context is Context, id i
             {
                 annotation { "Group Name" : "Segment 6", "Collapsed By Default" : false }
                 {
-                    annotation { "Name" : "Type", "UIHint" : UIHint.HORIZONTAL_ENUM }
+                    annotation { "Name" : "Type",
+                                 "Description" : "Text: type any string (numbers, units, labels, e.g. 1.5 in or 45 deg). Variable: read and toString() a named context variable.",
+                                 "UIHint" : UIHint.HORIZONTAL_ENUM }
                     definition.concatSeg6Type is ConcatSegmentInputType;
 
                     if (definition.concatSeg6Type == ConcatSegmentInputType.TEXT)
                     {
-                        annotation { "Name" : "Text", "MaxLength" : 1024 }
+                        annotation { "Name" : "Text",
+                                     "Description" : "Any literal string. You may type values with units here, e.g. 1.5 in or 45 deg.",
+                                     "MaxLength" : 1024 }
                         definition.concatSeg6Text is string;
-                    }
-                    else if (definition.concatSeg6Type == ConcatSegmentInputType.NUMBER)
-                    {
-                        annotation { "Name" : "Value" }
-                        isReal(definition.concatSeg6Number, EXPRESSION_BUILDER_NUMBER_BOUNDS);
-                    }
-                    else if (definition.concatSeg6Type == ConcatSegmentInputType.LENGTH)
-                    {
-                        annotation { "Name" : "Value" }
-                        isLength(definition.concatSeg6Length, ZERO_DEFAULT_LENGTH_BOUNDS);
-                        annotation { "Name" : "Display unit", "UIHint" : UIHint.HORIZONTAL_ENUM }
-                        definition.concatSeg6LengthUnit is ConcatLengthUnit;
-                    }
-                    else if (definition.concatSeg6Type == ConcatSegmentInputType.ANGLE)
-                    {
-                        annotation { "Name" : "Value" }
-                        isAngle(definition.concatSeg6Angle, ANGLE_360_ZERO_DEFAULT_BOUNDS);
-                        annotation { "Name" : "Display unit", "UIHint" : UIHint.HORIZONTAL_ENUM }
-                        definition.concatSeg6AngleUnit is ConcatAngleUnit;
                     }
                     else // VARIABLE
                     {
-                        annotation { "Name" : "Variable name", "MaxLength" : 256 }
+                        annotation { "Name" : "Variable name",
+                                     "Description" : "Name of the context variable to read and convert to string (do not include #). Lengths display in mm, angles in deg.",
+                                     "MaxLength" : 256 }
                         definition.concatSeg6Variable is string;
                     }
                 }
@@ -1778,19 +1653,16 @@ function evaluateChainExpression(context is Context, definition is map)
 
 /**
  * Resolves a single STRING_CONCAT mode segment and returns its string representation.
- * Reads the appropriate type/value/unit fields from the definition for the given
- * segment index (1 through 6) and converts the value to a formatted string.
+ * Reads concatSegNType and the appropriate value field from the definition for the
+ * given segment index (1 through 6).
  *
  * Conversion rules per segment type:
- *   TEXT     → the literal string as-is
- *   NUMBER   → toString(number)
- *   LENGTH   → toString(value / unit) ~ " unit_symbol"   using the per-segment display unit
- *   ANGLE    → toString(value / unit) ~ " unit_symbol"   using the per-segment display unit
+ *   TEXT     → the literal string as-is (user may have typed "1.5 in", "45 deg", etc.)
  *   VARIABLE → reads the named context variable, then:
  *                 string        → used as-is
  *                 number        → toString(number)
- *                 length        → toString(value / millimeter) ~ " mm"  (auto mm)
- *                 angle         → toString(value / degree) ~ " deg"     (auto deg)
+ *                 length        → toString(value / millimeter) ~ " mm"
+ *                 angle         → toString(value / degree) ~ " deg"
  *                 anything else → stdlib toString()
  *
  * @param context      : Active build context (required to read VARIABLE segments).
@@ -1800,134 +1672,55 @@ function evaluateChainExpression(context is Context, definition is map)
  */
 function resolveStringConcatSegment(context is Context, definition is map, segmentIndex is number) returns string
 {
-    // All vars are left untyped so the same variable can hold different value types
-    // across the if-else branches, matching the FeatureScript pattern used in resolveChainTerm.
     var segmentType;
     var textValue    = "";
-    var numberValue  = 0;
-    var lengthValue;
-    var lengthUnit;
-    var angleValue;
-    var angleUnit;
     var variableName = "";
 
     if (segmentIndex == 1)
     {
-        segmentType = definition.concatSeg1Type;
+        segmentType  = definition.concatSeg1Type;
         if (segmentType == ConcatSegmentInputType.TEXT)
             textValue = definition.concatSeg1Text;
-        else if (segmentType == ConcatSegmentInputType.NUMBER)
-            numberValue = definition.concatSeg1Number;
-        else if (segmentType == ConcatSegmentInputType.LENGTH)
-        {
-            lengthValue = definition.concatSeg1Length;
-            lengthUnit  = definition.concatSeg1LengthUnit;
-        }
-        else if (segmentType == ConcatSegmentInputType.ANGLE)
-        {
-            angleValue = definition.concatSeg1Angle;
-            angleUnit  = definition.concatSeg1AngleUnit;
-        }
         else // VARIABLE
             variableName = definition.concatSeg1Variable;
     }
     else if (segmentIndex == 2)
     {
-        segmentType = definition.concatSeg2Type;
+        segmentType  = definition.concatSeg2Type;
         if (segmentType == ConcatSegmentInputType.TEXT)
             textValue = definition.concatSeg2Text;
-        else if (segmentType == ConcatSegmentInputType.NUMBER)
-            numberValue = definition.concatSeg2Number;
-        else if (segmentType == ConcatSegmentInputType.LENGTH)
-        {
-            lengthValue = definition.concatSeg2Length;
-            lengthUnit  = definition.concatSeg2LengthUnit;
-        }
-        else if (segmentType == ConcatSegmentInputType.ANGLE)
-        {
-            angleValue = definition.concatSeg2Angle;
-            angleUnit  = definition.concatSeg2AngleUnit;
-        }
         else // VARIABLE
             variableName = definition.concatSeg2Variable;
     }
     else if (segmentIndex == 3)
     {
-        segmentType = definition.concatSeg3Type;
+        segmentType  = definition.concatSeg3Type;
         if (segmentType == ConcatSegmentInputType.TEXT)
             textValue = definition.concatSeg3Text;
-        else if (segmentType == ConcatSegmentInputType.NUMBER)
-            numberValue = definition.concatSeg3Number;
-        else if (segmentType == ConcatSegmentInputType.LENGTH)
-        {
-            lengthValue = definition.concatSeg3Length;
-            lengthUnit  = definition.concatSeg3LengthUnit;
-        }
-        else if (segmentType == ConcatSegmentInputType.ANGLE)
-        {
-            angleValue = definition.concatSeg3Angle;
-            angleUnit  = definition.concatSeg3AngleUnit;
-        }
         else // VARIABLE
             variableName = definition.concatSeg3Variable;
     }
     else if (segmentIndex == 4)
     {
-        segmentType = definition.concatSeg4Type;
+        segmentType  = definition.concatSeg4Type;
         if (segmentType == ConcatSegmentInputType.TEXT)
             textValue = definition.concatSeg4Text;
-        else if (segmentType == ConcatSegmentInputType.NUMBER)
-            numberValue = definition.concatSeg4Number;
-        else if (segmentType == ConcatSegmentInputType.LENGTH)
-        {
-            lengthValue = definition.concatSeg4Length;
-            lengthUnit  = definition.concatSeg4LengthUnit;
-        }
-        else if (segmentType == ConcatSegmentInputType.ANGLE)
-        {
-            angleValue = definition.concatSeg4Angle;
-            angleUnit  = definition.concatSeg4AngleUnit;
-        }
         else // VARIABLE
             variableName = definition.concatSeg4Variable;
     }
     else if (segmentIndex == 5)
     {
-        segmentType = definition.concatSeg5Type;
+        segmentType  = definition.concatSeg5Type;
         if (segmentType == ConcatSegmentInputType.TEXT)
             textValue = definition.concatSeg5Text;
-        else if (segmentType == ConcatSegmentInputType.NUMBER)
-            numberValue = definition.concatSeg5Number;
-        else if (segmentType == ConcatSegmentInputType.LENGTH)
-        {
-            lengthValue = definition.concatSeg5Length;
-            lengthUnit  = definition.concatSeg5LengthUnit;
-        }
-        else if (segmentType == ConcatSegmentInputType.ANGLE)
-        {
-            angleValue = definition.concatSeg5Angle;
-            angleUnit  = definition.concatSeg5AngleUnit;
-        }
         else // VARIABLE
             variableName = definition.concatSeg5Variable;
     }
     else // segmentIndex == 6
     {
-        segmentType = definition.concatSeg6Type;
+        segmentType  = definition.concatSeg6Type;
         if (segmentType == ConcatSegmentInputType.TEXT)
             textValue = definition.concatSeg6Text;
-        else if (segmentType == ConcatSegmentInputType.NUMBER)
-            numberValue = definition.concatSeg6Number;
-        else if (segmentType == ConcatSegmentInputType.LENGTH)
-        {
-            lengthValue = definition.concatSeg6Length;
-            lengthUnit  = definition.concatSeg6LengthUnit;
-        }
-        else if (segmentType == ConcatSegmentInputType.ANGLE)
-        {
-            angleValue = definition.concatSeg6Angle;
-            angleUnit  = definition.concatSeg6AngleUnit;
-        }
         else // VARIABLE
             variableName = definition.concatSeg6Variable;
     }
@@ -1936,30 +1729,6 @@ function resolveStringConcatSegment(context is Context, definition is map, segme
     if (segmentType == ConcatSegmentInputType.TEXT)
     {
         return textValue;
-    }
-    else if (segmentType == ConcatSegmentInputType.NUMBER)
-    {
-        return toString(numberValue);
-    }
-    else if (segmentType == ConcatSegmentInputType.LENGTH)
-    {
-        // Format using the selected display unit; default to mm when unit is not yet set.
-        if (lengthUnit == ConcatLengthUnit.CENTIMETER)
-            return toString(lengthValue / centimeter) ~ " cm";
-        else if (lengthUnit == ConcatLengthUnit.INCH)
-            return toString(lengthValue / inch) ~ " in";
-        else if (lengthUnit == ConcatLengthUnit.FOOT)
-            return toString(lengthValue / foot) ~ " ft";
-        else // MILLIMETER or undefined (new feature, default not yet set)
-            return toString(lengthValue / millimeter) ~ " mm";
-    }
-    else if (segmentType == ConcatSegmentInputType.ANGLE)
-    {
-        // Format using the selected display unit; default to degrees when unit is not yet set.
-        if (angleUnit == ConcatAngleUnit.RADIAN)
-            return toString(angleValue / radian) ~ " rad";
-        else // DEGREE or undefined
-            return toString(angleValue / degree) ~ " deg";
     }
     else // VARIABLE
     {
@@ -2415,11 +2184,8 @@ function buildChainExpressionString(definition is map) returns string
  * Formats a single STRING_CONCAT segment as a human-readable fragment for the
  * "Expression: ..." line shown in the reportFeatureInfo panel.
  *
- *   TEXT     → "text"           (quoted literal)
- *   NUMBER   → 5.0              (plain number string)
- *   LENGTH   → "25.4 mm"        (quoted, formatted in the selected display unit)
- *   ANGLE    → "45.0 deg"       (quoted, formatted in the selected display unit)
- *   VARIABLE → #varName         (variable reference)
+ *   TEXT     → "text"     (the literal string in double-quotes)
+ *   VARIABLE → #varName   (variable reference)
  *
  * @param definition   : Feature definition map.
  * @param segmentIndex : 1-based segment index (1 to 6).
@@ -2429,11 +2195,6 @@ function buildConcatSegmentExpression(definition is map, segmentIndex is number)
 {
     var segmentType;
     var textValue    = "";
-    var numberValue  = 0;
-    var lengthValue;
-    var lengthUnit;
-    var angleValue;
-    var angleUnit;
     var variableName = "";
 
     if (segmentIndex == 1)
@@ -2441,18 +2202,6 @@ function buildConcatSegmentExpression(definition is map, segmentIndex is number)
         segmentType = definition.concatSeg1Type;
         if (segmentType == ConcatSegmentInputType.TEXT)
             textValue = definition.concatSeg1Text;
-        else if (segmentType == ConcatSegmentInputType.NUMBER)
-            numberValue = definition.concatSeg1Number;
-        else if (segmentType == ConcatSegmentInputType.LENGTH)
-        {
-            lengthValue = definition.concatSeg1Length;
-            lengthUnit  = definition.concatSeg1LengthUnit;
-        }
-        else if (segmentType == ConcatSegmentInputType.ANGLE)
-        {
-            angleValue = definition.concatSeg1Angle;
-            angleUnit  = definition.concatSeg1AngleUnit;
-        }
         else
             variableName = definition.concatSeg1Variable;
     }
@@ -2461,18 +2210,6 @@ function buildConcatSegmentExpression(definition is map, segmentIndex is number)
         segmentType = definition.concatSeg2Type;
         if (segmentType == ConcatSegmentInputType.TEXT)
             textValue = definition.concatSeg2Text;
-        else if (segmentType == ConcatSegmentInputType.NUMBER)
-            numberValue = definition.concatSeg2Number;
-        else if (segmentType == ConcatSegmentInputType.LENGTH)
-        {
-            lengthValue = definition.concatSeg2Length;
-            lengthUnit  = definition.concatSeg2LengthUnit;
-        }
-        else if (segmentType == ConcatSegmentInputType.ANGLE)
-        {
-            angleValue = definition.concatSeg2Angle;
-            angleUnit  = definition.concatSeg2AngleUnit;
-        }
         else
             variableName = definition.concatSeg2Variable;
     }
@@ -2481,18 +2218,6 @@ function buildConcatSegmentExpression(definition is map, segmentIndex is number)
         segmentType = definition.concatSeg3Type;
         if (segmentType == ConcatSegmentInputType.TEXT)
             textValue = definition.concatSeg3Text;
-        else if (segmentType == ConcatSegmentInputType.NUMBER)
-            numberValue = definition.concatSeg3Number;
-        else if (segmentType == ConcatSegmentInputType.LENGTH)
-        {
-            lengthValue = definition.concatSeg3Length;
-            lengthUnit  = definition.concatSeg3LengthUnit;
-        }
-        else if (segmentType == ConcatSegmentInputType.ANGLE)
-        {
-            angleValue = definition.concatSeg3Angle;
-            angleUnit  = definition.concatSeg3AngleUnit;
-        }
         else
             variableName = definition.concatSeg3Variable;
     }
@@ -2501,18 +2226,6 @@ function buildConcatSegmentExpression(definition is map, segmentIndex is number)
         segmentType = definition.concatSeg4Type;
         if (segmentType == ConcatSegmentInputType.TEXT)
             textValue = definition.concatSeg4Text;
-        else if (segmentType == ConcatSegmentInputType.NUMBER)
-            numberValue = definition.concatSeg4Number;
-        else if (segmentType == ConcatSegmentInputType.LENGTH)
-        {
-            lengthValue = definition.concatSeg4Length;
-            lengthUnit  = definition.concatSeg4LengthUnit;
-        }
-        else if (segmentType == ConcatSegmentInputType.ANGLE)
-        {
-            angleValue = definition.concatSeg4Angle;
-            angleUnit  = definition.concatSeg4AngleUnit;
-        }
         else
             variableName = definition.concatSeg4Variable;
     }
@@ -2521,18 +2234,6 @@ function buildConcatSegmentExpression(definition is map, segmentIndex is number)
         segmentType = definition.concatSeg5Type;
         if (segmentType == ConcatSegmentInputType.TEXT)
             textValue = definition.concatSeg5Text;
-        else if (segmentType == ConcatSegmentInputType.NUMBER)
-            numberValue = definition.concatSeg5Number;
-        else if (segmentType == ConcatSegmentInputType.LENGTH)
-        {
-            lengthValue = definition.concatSeg5Length;
-            lengthUnit  = definition.concatSeg5LengthUnit;
-        }
-        else if (segmentType == ConcatSegmentInputType.ANGLE)
-        {
-            angleValue = definition.concatSeg5Angle;
-            angleUnit  = definition.concatSeg5AngleUnit;
-        }
         else
             variableName = definition.concatSeg5Variable;
     }
@@ -2541,18 +2242,6 @@ function buildConcatSegmentExpression(definition is map, segmentIndex is number)
         segmentType = definition.concatSeg6Type;
         if (segmentType == ConcatSegmentInputType.TEXT)
             textValue = definition.concatSeg6Text;
-        else if (segmentType == ConcatSegmentInputType.NUMBER)
-            numberValue = definition.concatSeg6Number;
-        else if (segmentType == ConcatSegmentInputType.LENGTH)
-        {
-            lengthValue = definition.concatSeg6Length;
-            lengthUnit  = definition.concatSeg6LengthUnit;
-        }
-        else if (segmentType == ConcatSegmentInputType.ANGLE)
-        {
-            angleValue = definition.concatSeg6Angle;
-            angleUnit  = definition.concatSeg6AngleUnit;
-        }
         else
             variableName = definition.concatSeg6Variable;
     }
@@ -2561,42 +2250,6 @@ function buildConcatSegmentExpression(definition is map, segmentIndex is number)
     if (segmentType == ConcatSegmentInputType.TEXT)
     {
         return '"' ~ textValue ~ '"';
-    }
-    else if (segmentType == ConcatSegmentInputType.NUMBER)
-    {
-        return toString(numberValue);
-    }
-    else if (segmentType == ConcatSegmentInputType.LENGTH)
-    {
-        var unitSymbol = " mm";
-        var scaledValue = lengthValue / millimeter;
-        if (lengthUnit == ConcatLengthUnit.CENTIMETER)
-        {
-            unitSymbol  = " cm";
-            scaledValue = lengthValue / centimeter;
-        }
-        else if (lengthUnit == ConcatLengthUnit.INCH)
-        {
-            unitSymbol  = " in";
-            scaledValue = lengthValue / inch;
-        }
-        else if (lengthUnit == ConcatLengthUnit.FOOT)
-        {
-            unitSymbol  = " ft";
-            scaledValue = lengthValue / foot;
-        }
-        return '"' ~ toString(scaledValue) ~ unitSymbol ~ '"';
-    }
-    else if (segmentType == ConcatSegmentInputType.ANGLE)
-    {
-        var unitSymbol = " deg";
-        var scaledValue = angleValue / degree;
-        if (angleUnit == ConcatAngleUnit.RADIAN)
-        {
-            unitSymbol  = " rad";
-            scaledValue = angleValue / radian;
-        }
-        return '"' ~ toString(scaledValue) ~ unitSymbol ~ '"';
     }
     else // VARIABLE
     {
