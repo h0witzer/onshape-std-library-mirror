@@ -660,6 +660,26 @@ export const expressionBuilder = defineFeature(function(context is Context, id i
 
         // Store the computed value as a named context variable
         setVariable(context, definition.variableName, result, definition.variableDescription);
+
+        // Report the evaluated result and a copy-pasteable expression string to the user
+        var expressionString;
+        if (definition.expressionMode == ExpressionBuilderMode.ARITHMETIC)
+        {
+            expressionString = buildArithmeticExpressionString(definition);
+        }
+        else if (definition.expressionMode == ExpressionBuilderMode.MATH_FUNCTION)
+        {
+            expressionString = buildMathFunctionExpressionString(definition);
+        }
+        else if (definition.expressionMode == ExpressionBuilderMode.CHAIN)
+        {
+            expressionString = buildChainExpressionString(definition);
+        }
+
+        const resultStr = formatResultValue(result, definition.outputType);
+        reportFeatureInfo(context, id,
+            "Result: " ~ resultStr ~
+            "\nExpression: " ~ expressionString);
     });
 
 // ---------------------------------------------------------------------------
@@ -1077,4 +1097,413 @@ function evaluateChainExpression(context is Context, definition is map)
     }
 
     return accumulator;
+}
+
+// ---------------------------------------------------------------------------
+// Report formatting helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Formats the evaluated result value as a human-readable string for display
+ * in the feature report panel.
+ *   LENGTH  → value in millimeters,  e.g. "12.5 mm"
+ *   ANGLE   → value in degrees,      e.g. "45.0 deg"
+ *   NUMBER  → dimensionless number,  e.g. "3.14159"
+ *
+ * @param result     : The computed result value.
+ * @param outputType : ExpressionOutputType describing the result's type.
+ * @returns          : Formatted string for display.
+ */
+function formatResultValue(result, outputType is ExpressionOutputType) returns string
+{
+    if (outputType == ExpressionOutputType.LENGTH)
+    {
+        return toString(result / millimeter) ~ " mm";
+    }
+    else if (outputType == ExpressionOutputType.ANGLE)
+    {
+        return toString(result / degree) ~ " deg";
+    }
+    else
+    {
+        return toString(result);
+    }
+}
+
+/**
+ * Formats a single literal value as a copy-pasteable Onshape expression fragment.
+ *   LENGTH  → "X * mm"
+ *   ANGLE   → "X * deg"
+ *   NUMBER  → "X"
+ *
+ * @param literalValue : The literal value to format.
+ * @param literalType  : ExpressionOutputType indicating the value's units.
+ * @returns            : Onshape expression syntax string for the literal.
+ */
+function formatLiteralAsExpression(literalValue, literalType is ExpressionOutputType) returns string
+{
+    if (literalType == ExpressionOutputType.LENGTH)
+    {
+        return toString(literalValue / millimeter) ~ " * mm";
+    }
+    else if (literalType == ExpressionOutputType.ANGLE)
+    {
+        return toString(literalValue / degree) ~ " * deg";
+    }
+    else
+    {
+        return toString(literalValue);
+    }
+}
+
+/**
+ * Formats a single operand as a copy-pasteable Onshape expression fragment.
+ * Variable operands become "#name"; literal values are formatted with units.
+ *
+ * @param mode         : OperandInputMode (LITERAL or VARIABLE).
+ * @param variableName : Context variable name string (used when mode is VARIABLE).
+ * @param literalValue : Pre-selected literal value (used when mode is LITERAL).
+ * @param literalType  : ExpressionOutputType for the literal value's units.
+ * @returns            : Expression fragment string, e.g. "#myVar", "5.0 * mm", "45.0 * deg".
+ */
+function formatOperandAsExpression(mode is OperandInputMode, variableName is string,
+                                   literalValue, literalType is ExpressionOutputType) returns string
+{
+    if (mode == OperandInputMode.VARIABLE)
+    {
+        return "#" ~ variableName;
+    }
+    return formatLiteralAsExpression(literalValue, literalType);
+}
+
+/**
+ * Returns the Onshape operator symbol string for an ArithmeticOperation.
+ *
+ * @param operation : ArithmeticOperation enum value.
+ * @returns         : Operator string, e.g. " + ", " - ", " * ", " / ".
+ */
+function arithmeticOperationSymbol(operation is ArithmeticOperation) returns string
+{
+    if (operation == ArithmeticOperation.ADD)
+    {
+        return " + ";
+    }
+    else if (operation == ArithmeticOperation.SUBTRACT)
+    {
+        return " - ";
+    }
+    else if (operation == ArithmeticOperation.MULTIPLY)
+    {
+        return " * ";
+    }
+    else
+    {
+        return " / ";
+    }
+}
+
+/**
+ * Builds a copy-pasteable Onshape expression string for ARITHMETIC mode  (A op B).
+ *
+ * @param definition : Feature definition map.
+ * @returns          : Expression string, e.g. "(5.0 * mm) + (3.0 * mm)".
+ */
+function buildArithmeticExpressionString(definition is map) returns string
+{
+    // --- Operand A ---
+    var operandAStr;
+    if (definition.outputType == ExpressionOutputType.LENGTH)
+    {
+        operandAStr = formatOperandAsExpression(definition.operandAMode,
+                                               definition.operandAVariableName,
+                                               definition.operandALength,
+                                               ExpressionOutputType.LENGTH);
+    }
+    else if (definition.outputType == ExpressionOutputType.ANGLE)
+    {
+        operandAStr = formatOperandAsExpression(definition.operandAMode,
+                                               definition.operandAVariableName,
+                                               definition.operandAAngle,
+                                               ExpressionOutputType.ANGLE);
+    }
+    else
+    {
+        operandAStr = formatOperandAsExpression(definition.operandAMode,
+                                               definition.operandAVariableName,
+                                               definition.operandANumber,
+                                               ExpressionOutputType.NUMBER);
+    }
+
+    const operatorStr = arithmeticOperationSymbol(definition.arithmeticOperation);
+
+    // --- Operand B ---
+    var operandBStr;
+    if (definition.arithmeticOperation == ArithmeticOperation.MULTIPLY ||
+        definition.arithmeticOperation == ArithmeticOperation.DIVIDE)
+    {
+        // B is always a dimensionless scalar
+        operandBStr = formatOperandAsExpression(definition.operandBScalarMode,
+                                               definition.operandBScalarVariableName,
+                                               definition.operandBScalar,
+                                               ExpressionOutputType.NUMBER);
+    }
+    else if (definition.outputType == ExpressionOutputType.LENGTH)
+    {
+        operandBStr = formatOperandAsExpression(definition.operandBMode,
+                                               definition.operandBVariableName,
+                                               definition.operandBLength,
+                                               ExpressionOutputType.LENGTH);
+    }
+    else if (definition.outputType == ExpressionOutputType.ANGLE)
+    {
+        operandBStr = formatOperandAsExpression(definition.operandBMode,
+                                               definition.operandBVariableName,
+                                               definition.operandBAngle,
+                                               ExpressionOutputType.ANGLE);
+    }
+    else
+    {
+        operandBStr = formatOperandAsExpression(definition.operandBMode,
+                                               definition.operandBVariableName,
+                                               definition.operandBNumber,
+                                               ExpressionOutputType.NUMBER);
+    }
+
+    return "(" ~ operandAStr ~ ")" ~ operatorStr ~ "(" ~ operandBStr ~ ")";
+}
+
+/**
+ * Builds a copy-pasteable Onshape expression string for MATH_FUNCTION mode (fn(A) or fn(A, B)).
+ * Reflects the same operand-type logic as evaluateMathFunctionExpression.
+ *
+ * @param definition : Feature definition map.
+ * @returns          : Expression string, e.g. "sin(45.0 * deg)", "min(3.0, #myVar)".
+ */
+function buildMathFunctionExpressionString(definition is map) returns string
+{
+    const mathFunction = definition.mathFunction;
+
+    // --- Determine function name string ---
+    var functionName;
+    if (mathFunction == MathFunctionType.ABS)        { functionName = "abs"; }
+    else if (mathFunction == MathFunctionType.SQRT)  { functionName = "sqrt"; }
+    else if (mathFunction == MathFunctionType.FLOOR) { functionName = "floor"; }
+    else if (mathFunction == MathFunctionType.CEIL)  { functionName = "ceil"; }
+    else if (mathFunction == MathFunctionType.ROUND) { functionName = "round"; }
+    else if (mathFunction == MathFunctionType.SIN)   { functionName = "sin"; }
+    else if (mathFunction == MathFunctionType.COS)   { functionName = "cos"; }
+    else if (mathFunction == MathFunctionType.TAN)   { functionName = "tan"; }
+    else if (mathFunction == MathFunctionType.ASIN)  { functionName = "asin"; }
+    else if (mathFunction == MathFunctionType.ACOS)  { functionName = "acos"; }
+    else if (mathFunction == MathFunctionType.ATAN)  { functionName = "atan"; }
+    else if (mathFunction == MathFunctionType.ATAN2) { functionName = "atan2"; }
+    else if (mathFunction == MathFunctionType.LOG)   { functionName = "log"; }
+    else if (mathFunction == MathFunctionType.LOG10) { functionName = "log10"; }
+    else if (mathFunction == MathFunctionType.EXP)   { functionName = "exp"; }
+    else if (mathFunction == MathFunctionType.MIN)   { functionName = "min"; }
+    else                                             { functionName = "max"; }
+
+    // --- Format primary operand A ---
+    // Operand type mirrors the merged precondition condition:
+    //   (SIN/COS/TAN) OR (outputType==ANGLE and not inverse-trig) → ANGLE input
+    //   outputType == LENGTH → LENGTH input
+    //   everything else (inverse-trig, NUMBER output)            → NUMBER input
+    var operandAStr;
+    if ((mathFunction == MathFunctionType.SIN ||
+         mathFunction == MathFunctionType.COS ||
+         mathFunction == MathFunctionType.TAN) ||
+        (definition.outputType == ExpressionOutputType.ANGLE &&
+         mathFunction != MathFunctionType.ASIN &&
+         mathFunction != MathFunctionType.ACOS &&
+         mathFunction != MathFunctionType.ATAN &&
+         mathFunction != MathFunctionType.ATAN2))
+    {
+        operandAStr = formatOperandAsExpression(definition.funcOperandAMode,
+                                               definition.funcOperandAVariableName,
+                                               definition.funcOperandAAngle,
+                                               ExpressionOutputType.ANGLE);
+    }
+    else if (definition.outputType == ExpressionOutputType.LENGTH)
+    {
+        operandAStr = formatOperandAsExpression(definition.funcOperandAMode,
+                                               definition.funcOperandAVariableName,
+                                               definition.funcOperandALength,
+                                               ExpressionOutputType.LENGTH);
+    }
+    else
+    {
+        operandAStr = formatOperandAsExpression(definition.funcOperandAMode,
+                                               definition.funcOperandAVariableName,
+                                               definition.funcOperandANumber,
+                                               ExpressionOutputType.NUMBER);
+    }
+
+    // --- Single-argument functions ---
+    if (mathFunction != MathFunctionType.ATAN2 &&
+        mathFunction != MathFunctionType.MIN &&
+        mathFunction != MathFunctionType.MAX)
+    {
+        return functionName ~ "(" ~ operandAStr ~ ")";
+    }
+
+    // --- Format secondary operand B (binary functions: ATAN2, MIN, MAX) ---
+    // Operand type mirrors buildArithmeticExpressionString operand B logic:
+    //   ATAN2 or NUMBER output → NUMBER
+    //   LENGTH output          → LENGTH
+    //   ANGLE output           → ANGLE
+    var operandBStr;
+    if (mathFunction == MathFunctionType.ATAN2 ||
+        definition.outputType == ExpressionOutputType.NUMBER)
+    {
+        operandBStr = formatOperandAsExpression(definition.funcOperandBMode,
+                                               definition.funcOperandBVariableName,
+                                               definition.funcOperandBNumber,
+                                               ExpressionOutputType.NUMBER);
+    }
+    else if (definition.outputType == ExpressionOutputType.LENGTH)
+    {
+        operandBStr = formatOperandAsExpression(definition.funcOperandBMode,
+                                               definition.funcOperandBVariableName,
+                                               definition.funcOperandBLength,
+                                               ExpressionOutputType.LENGTH);
+    }
+    else
+    {
+        operandBStr = formatOperandAsExpression(definition.funcOperandBMode,
+                                               definition.funcOperandBVariableName,
+                                               definition.funcOperandBAngle,
+                                               ExpressionOutputType.ANGLE);
+    }
+
+    return functionName ~ "(" ~ operandAStr ~ ", " ~ operandBStr ~ ")";
+}
+
+/**
+ * Formats a single CHAIN mode term as a copy-pasteable expression fragment.
+ * All chain terms share the feature's declared output type for unit formatting.
+ *
+ * @param definition : Feature definition map.
+ * @param termIndex  : 1-based term index (1 to 4).
+ * @returns          : Expression fragment string for the term.
+ */
+function buildChainTermExpression(definition is map, termIndex is number) returns string
+{
+    var termMode;
+    var variableName;
+    var literalValue;
+    var literalType;
+
+    if (termIndex == 1)
+    {
+        termMode     = definition.chainTerm1Mode;
+        variableName = definition.chainTerm1VariableName;
+        if (definition.outputType == ExpressionOutputType.LENGTH)
+        {
+            literalValue = definition.chainTerm1Length;
+            literalType  = ExpressionOutputType.LENGTH;
+        }
+        else if (definition.outputType == ExpressionOutputType.ANGLE)
+        {
+            literalValue = definition.chainTerm1Angle;
+            literalType  = ExpressionOutputType.ANGLE;
+        }
+        else
+        {
+            literalValue = definition.chainTerm1Number;
+            literalType  = ExpressionOutputType.NUMBER;
+        }
+    }
+    else if (termIndex == 2)
+    {
+        termMode     = definition.chainTerm2Mode;
+        variableName = definition.chainTerm2VariableName;
+        if (definition.outputType == ExpressionOutputType.LENGTH)
+        {
+            literalValue = definition.chainTerm2Length;
+            literalType  = ExpressionOutputType.LENGTH;
+        }
+        else if (definition.outputType == ExpressionOutputType.ANGLE)
+        {
+            literalValue = definition.chainTerm2Angle;
+            literalType  = ExpressionOutputType.ANGLE;
+        }
+        else
+        {
+            literalValue = definition.chainTerm2Number;
+            literalType  = ExpressionOutputType.NUMBER;
+        }
+    }
+    else if (termIndex == 3)
+    {
+        termMode     = definition.chainTerm3Mode;
+        variableName = definition.chainTerm3VariableName;
+        if (definition.outputType == ExpressionOutputType.LENGTH)
+        {
+            literalValue = definition.chainTerm3Length;
+            literalType  = ExpressionOutputType.LENGTH;
+        }
+        else if (definition.outputType == ExpressionOutputType.ANGLE)
+        {
+            literalValue = definition.chainTerm3Angle;
+            literalType  = ExpressionOutputType.ANGLE;
+        }
+        else
+        {
+            literalValue = definition.chainTerm3Number;
+            literalType  = ExpressionOutputType.NUMBER;
+        }
+    }
+    else // termIndex == 4
+    {
+        termMode     = definition.chainTerm4Mode;
+        variableName = definition.chainTerm4VariableName;
+        if (definition.outputType == ExpressionOutputType.LENGTH)
+        {
+            literalValue = definition.chainTerm4Length;
+            literalType  = ExpressionOutputType.LENGTH;
+        }
+        else if (definition.outputType == ExpressionOutputType.ANGLE)
+        {
+            literalValue = definition.chainTerm4Angle;
+            literalType  = ExpressionOutputType.ANGLE;
+        }
+        else
+        {
+            literalValue = definition.chainTerm4Number;
+            literalType  = ExpressionOutputType.NUMBER;
+        }
+    }
+
+    return formatOperandAsExpression(termMode, variableName, literalValue, literalType);
+}
+
+/**
+ * Builds a copy-pasteable Onshape expression string for CHAIN mode
+ * (A op1 B [op2 C [op3 D]]).  Terms are wrapped in parentheses and joined
+ * by their respective operators, left to right with no implicit precedence.
+ *
+ * @param definition : Feature definition map.
+ * @returns          : Expression string, e.g. "(5.0 * mm) + (3.0 * mm) - (1.0 * mm)".
+ */
+function buildChainExpressionString(definition is map) returns string
+{
+    var expressionString = "(" ~ buildChainTermExpression(definition, 1) ~ ")" ~
+                           arithmeticOperationSymbol(definition.chainOp1) ~
+                           "(" ~ buildChainTermExpression(definition, 2) ~ ")";
+
+    if (definition.chainLength == ChainLength.THREE || definition.chainLength == ChainLength.FOUR)
+    {
+        expressionString = expressionString ~
+                           arithmeticOperationSymbol(definition.chainOp2) ~
+                           "(" ~ buildChainTermExpression(definition, 3) ~ ")";
+    }
+
+    if (definition.chainLength == ChainLength.FOUR)
+    {
+        expressionString = expressionString ~
+                           arithmeticOperationSymbol(definition.chainOp3) ~
+                           "(" ~ buildChainTermExpression(definition, 4) ~ ")";
+    }
+
+    return expressionString;
 }
