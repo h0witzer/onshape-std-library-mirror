@@ -61,10 +61,13 @@ export const flattenFullRoundSketch = defineFeature(function(context is Context,
 
         const sketchKey = sketchKeys[0];
 
-        // Collect all non-construction wire edges from the source sketch.
-        const sourceEdges = evaluateQuery(context, qBodyType(
-            qConstructionFilter(qCreatedBy(sketchKey, EntityType.EDGE), ConstructionObject.NO),
-            BodyType.WIRE));
+        // Collect all non-construction edges from the source sketch.
+        // Do NOT filter by BodyType.WIRE: in a solved sketch, edges that form
+        // closed contours belong to SURFACE bodies (the enclosed regions), while
+        // only open contours produce WIRE bodies. Filtering to WIRE alone would
+        // silently drop all internal/structural profile edges.
+        const sourceEdges = evaluateQuery(context,
+            qConstructionFilter(qCreatedBy(sketchKey, EntityType.EDGE), ConstructionObject.NO));
 
         if (size(sourceEdges) == 0)
             throw regenError("The selected sketch contains no geometry.", ["sourceSketch"]);
