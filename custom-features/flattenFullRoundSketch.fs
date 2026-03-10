@@ -61,13 +61,19 @@ export const flattenFullRoundSketch = defineFeature(function(context is Context,
 
         const sketchKey = sketchKeys[0];
 
-        // Collect all non-construction edges from the source sketch.
-        // Do NOT filter by BodyType.WIRE: in a solved sketch, edges that form
-        // closed contours belong to SURFACE bodies (the enclosed regions), while
-        // only open contours produce WIRE bodies. Filtering to WIRE alone would
-        // silently drop all internal/structural profile edges.
+        // Collect all non-construction, native sketch edges from the source sketch.
+        //
+        // BodyType.WIRE is intentionally NOT used: closed contours in a solved sketch
+        // belong to SURFACE bodies, so a WIRE filter silently drops all internal
+        // profile geometry.
+        //
+        // SketchObject.YES IS used: edges projected into the sketch from 3D geometry
+        // via the "Use" command (imprinted edges) are SketchObject.NO.  Including them
+        // would copy unintended reference curves into the output sketch.
         const sourceEdges = evaluateQuery(context,
-            qConstructionFilter(qCreatedBy(sketchKey, EntityType.EDGE), ConstructionObject.NO));
+            qSketchFilter(
+                qConstructionFilter(qCreatedBy(sketchKey, EntityType.EDGE), ConstructionObject.NO),
+                SketchObject.YES));
 
         if (size(sourceEdges) == 0)
             throw regenError("The selected sketch contains no geometry.", ["sourceSketch"]);
@@ -212,17 +218,37 @@ export const flattenFullRoundSketch = defineFeature(function(context is Context,
             }
             else if (curveDefinition.curveType == CurveType.CIRCLE)
             {
-                // Non-full-round arc: reproduce using start / mid / end points.
-                // (Endpoint remapping is applied; the midpoint is always interior
-                // to the arc and is never a shared full-round arc vertex.)
-                const midTangent = evEdgeTangentLine(context, { "edge" : sourceEdge, "parameter" : 0.5 });
-                const mid_2d     = worldToPlane(sketchPlane, midTangent.origin);
+                // Non-full-round arc or full circle: check for full circles first.
+                //
+                // A full circle edge is closed — parameter=0 and parameter=1 land on
+                // the same seam point, making start_2d == end_2d.  Calling skArc with
+                // coincident start/end is degenerate and produces corrupt geometry.
+                // Detect this and emit a skCircle instead.
+                if (norm(startTangent.origin - endTangent.origin) < VERTEX_MATCH_TOLERANCE)
+                {
+                    // Full circle: use the circle's center and radius from the curve
+                    // definition.  Endpoint remapping does not apply — a full circle
+                    // cannot share a seam vertex with a full-round arc endpoint.
+                    const circleCenterPlane = worldToPlane(sketchPlane, curveDefinition.coordSystem.origin);
+                    skCircle(newSketch, "copiedCircle" ~ sketchArcCount, {
+                                "center" : circleCenterPlane,
+                                "radius" : curveDefinition.radius
+                            });
+                }
+                else
+                {
+                    // Partial arc: reproduce using start / mid / end points.
+                    // (Endpoint remapping is applied; the midpoint is always interior
+                    // to the arc and is never a shared full-round arc vertex.)
+                    const midTangent    = evEdgeTangentLine(context, { "edge" : sourceEdge, "parameter" : 0.5 });
+                    const midPointPlane = worldToPlane(sketchPlane, midTangent.origin);
 
-                skArc(newSketch, "copiedArc" ~ sketchArcCount, {
-                            "start" : start_2d,
-                            "mid"   : mid_2d,
-                            "end"   : end_2d
-                        });
+                    skArc(newSketch, "copiedArc" ~ sketchArcCount, {
+                                "start" : start_2d,
+                                "mid"   : midPointPlane,
+                                "end"   : end_2d
+                            });
+                }
                 sketchArcCount += 1;
             }
             else
