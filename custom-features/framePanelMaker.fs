@@ -107,22 +107,28 @@ function buildPanelName(prefix is string, panelDim1 is number, panelDim2 is numb
  *      body-adjacency graph from pairwise evDistance calls and finding a Hamiltonian
  *      cycle. This correctly handles both end-to-end frame joints and T-intersections
  *      where spanning members extend beyond the panel opening.
- *   2. Compute the panel plane using Newell's method on the joint positions (the
- *      midpoints of the closest-point pairs between consecutive bodies in the loop).
- *   3. Build a first-pass fill surface from a polyline through the joint contact
- *      points shifted to the chosen alignment position (alignment shift baked in).
- *      The surface sits at the exact depth where the panel will live.
- *   4. Refine the boundary by splitting that surface with the lateral (sweep) faces
- *      of each frame member AT the alignment position. The interior fragment is the
- *      exact panel boundary for any profile shape at that depth: box tube, round tube,
- *      C-channel, etc. The intersection is correctly different for each alignment choice
- *      because the geometry really is different at each depth.
+ *   2. Compute the panel opening normal using Newell's method on the joint positions
+ *      (midpoints of the closest-point pairs between consecutive bodies in the loop).
+ *      The result is a best-fit area-weighted normal that is exact for planar loops
+ *      and robust for non-planar ones.
+ *   3. Build a fill surface from a polyline through the joint contact points shifted
+ *      to the chosen alignment position. For curved (rolled) frame members, guide
+ *      vertices are added by projecting the chord midpoint of each member's boundary
+ *      segment onto the member body — this pulls the fill surface toward the inner
+ *      curved face of each rolled member, producing a non-planar panel surface that
+ *      follows the frame curvature without any flat-plane assumption.
+ *   4. Refine the boundary by splitting the fill surface with the lateral (sweep)
+ *      faces of each frame member. The interior fragment is the exact panel surface
+ *      for any profile shape — box tube, round tube, C-channel, etc. — and the
+ *      split is geometrically different at each alignment depth, so all three
+ *      alignment choices produce correctly distinct results.
  *   5. Extract the interior fragment into an independent surface body and thicken it
  *      symmetrically to produce the solid panel body.
- *   6. Apply the edge gap AFTER thickening by offsetting the lateral (non-cap) faces
- *      of the thickened panel body inward by definition.gap. The cap faces (front and
- *      back surfaces parallel to openingNormal) are excluded; only the perimeter walls
- *      are moved so the gap is uniform from the actual frame inner-face geometry.
+ *   6. Apply the edge gap AFTER thickening by offsetting only the non-cap faces of
+ *      the thickened panel body inward by definition.gap. The cap faces (front and
+ *      back, identified explicitly via qNonCapEntity) are excluded; only the
+ *      perimeter walls move, keeping the gap uniform from the frame inner-face
+ *      geometry on every side regardless of profile shape.
  *
  * Alignment is controlled by a three-point manipulator along the opening normal:
  *   Index 0 - panel flush with the +openingNormal face of the frames
@@ -257,8 +263,42 @@ export const panelMakerFeature = defineFeature(function(context is Context, id i
 
         // Compute the frame extent in the opening-normal direction for alignment.
         // Use the bounding box of all frame bodies in the panel coordinate system.
-        // Choose a stable in-plane X axis from the centroid toward the first joint.
-        const panelXAxis = normalize((jointPositions[0] - panelCentroid) / meter);
+        //
+        // Build a panel-plane X axis that is guaranteed to be perpendicular to
+        // openingNormal. Projection removes any out-of-plane imprecision from evDistance
+        // contact midpoints (which sit on 3D body surfaces, not a mathematical plane)
+        // so that the coordSystem perpendicularity precondition is always satisfied.
+        //
+        // Strategy:
+        //   1. Seed panelXAxis from the world basis vector most perpendicular to
+        //      openingNormal (guarantees a valid non-degenerate axis in all cases).
+        //   2. Try each joint-to-centroid direction in order; the first whose projected
+        //      magnitude exceeds the collinearity tolerance overrides the seed — this
+        //      gives a geometry-driven axis aligned with the actual panel opening.
+        const worldBasisVectors = [vector(1, 0, 0), vector(0, 1, 0), vector(0, 0, 1)];
+        var panelXAxis = vector(1, 0, 0);
+        var bestWorldProjectionMagnitude = 0;
+        for (var basisIndex = 0; basisIndex < 3; basisIndex += 1)
+        {
+            const projected = projectOntoPlane(worldBasisVectors[basisIndex], openingNormal);
+            if (norm(projected) > bestWorldProjectionMagnitude)
+            {
+                bestWorldProjectionMagnitude = norm(projected);
+                panelXAxis = normalize(projected);
+            }
+        }
+        for (var xAxisSearchIndex = 0; xAxisSearchIndex < memberCount; xAxisSearchIndex += 1)
+        {
+            // Divide by meter to produce a dimensionless direction vector suitable for
+            // dot products and norm comparisons (joint positions carry meter units).
+            const projectedDir = projectOntoPlane(
+                (jointPositions[xAxisSearchIndex] - panelCentroid) / meter, openingNormal);
+            if (norm(projectedDir) > PERPENDICULARITY_TOLERANCE)
+            {
+                panelXAxis = normalize(projectedDir);
+                break;
+            }
+        }
         const centeredCSys = coordSystem(panelCentroid, panelXAxis, openingNormal);
 
         const frameBox = evBox3d(context, {
@@ -324,7 +364,7 @@ export const panelMakerFeature = defineFeature(function(context is Context, id i
                             })
                 });
 
-        // ── 7. Build alignment-positioned boundary polyline through joint positions ────
+        // ── 7. Build alignment-positioned boundary polyline and guide vertices ──────────
         //
         // Each joint is adjusted by the alignment shift: an offset along openingNormal so
         // the panel mid-surface sits at the chosen alignment position (flush front, centered,
@@ -332,16 +372,39 @@ export const panelMakerFeature = defineFeature(function(context is Context, id i
         // intersection trim (step 9b) so the gap is uniform from the actual frame inner-face
         // geometry and not consumed/overridden by the trim.
         //
-        // opPolyline (straight line segments) is used so that rectangular and polygonal
-        // frames produce flat-faced panels with straight edges. The polyline is closed
-        // by repeating the first adjusted point as the last point.
+        // For each frame member in the loop a guide vertex is also computed:
+        //   1. The chord midpoint of that member's boundary segment (linear interpolation
+        //      between its two aligned joint endpoints) is computed.
+        //   2. That chord midpoint is projected onto the frame member's solid body via
+        //      evDistance, which accepts a 3D point as side0. For a straight member the
+        //      chord midpoint already lies on the flat inner face (distance ≈ 0) so the
+        //      guide vertex is a no-op. For a curved (rolled) member the chord midpoint
+        //      sits inside the arc, and the closest body surface point is on the inner
+        //      curved face — pulling the fill surface toward the true curved boundary.
+        //
+        // A temporary wire is created through the guide vertices so they can be passed
+        // to opFillSurface as a Query; it is deleted immediately after the fill.
 
         var boundaryPoints = makeArray(memberCount + 1);
+        var guideMidPoints = makeArray(memberCount);
 
         for (var loopStep = 0; loopStep < memberCount; loopStep += 1)
         {
-            // Alignment: push along the best-fit panel normal to the chosen depth.
-            boundaryPoints[loopStep] = jointPositions[loopStep] + alignmentShift * openingNormal;
+            const alignedJoint     = jointPositions[loopStep] + alignmentShift * openingNormal;
+            const alignedNextJoint = jointPositions[(loopStep + 1) % memberCount] + alignmentShift * openingNormal;
+
+            // Boundary corner at this joint position.
+            boundaryPoints[loopStep] = alignedJoint;
+
+            // Guide vertex: project the chord midpoint of this member's segment onto
+            // the member's body. evDistance with a 3D vector as side0 finds the
+            // closest surface point — for curved members this is the inner curved face.
+            const chordMidpoint = (alignedJoint + alignedNextJoint) / 2;
+            const guideProjResult = evDistance(context, {
+                        "side0" : chordMidpoint,
+                        "side1" : frameMemberBodies[loopOrder[loopStep]]
+                    });
+            guideMidPoints[loopStep] = guideProjResult.sides[1].point;
         }
 
         // Close the polyline by repeating the first point as the last point.
@@ -351,15 +414,29 @@ export const panelMakerFeature = defineFeature(function(context is Context, id i
                     "points" : boundaryPoints
                 });
 
-        // ── 8. Fill the alignment-positioned boundary to create the first-pass surface ──
+        // Guide vertex wire: a separate open polyline through the projected midpoints.
+        // Only its VERTEX entities are used by opFillSurface; the edges are irrelevant.
+        opPolyline(context, id + "guideVertexWire", {
+                    "points" : guideMidPoints
+                });
+
+        // ── 8. Fill the alignment-positioned boundary to create the panel surface ──────
         //
-        // opFillSurface spans the closed polyline wire at the chosen alignment depth.
-        // For coplanar joints the result is a flat patch; for non-coplanar joints it
-        // produces a smooth surface following the 3D frame geometry. This surface is
-        // both the location and the template for the frame-face intersection in step 8b.
+        // opFillSurface spans the closed polyline wire. The guide vertices from the
+        // projected chord midpoints pull the surface toward the inner curved faces of
+        // any rolled members, producing a non-planar surface where the frame geometry
+        // requires it. For straight members (flat inner faces) the guide vertices lie
+        // on the inner face and exert no deforming effect. The result is a surface
+        // that is non-planar exactly to the extent the frame members require it.
 
         opFillSurface(context, id + "panelFill", {
-                    "edgesG0" : qCreatedBy(id + "boundaryPolyline", EntityType.EDGE)
+                    "edgesG0"       : qCreatedBy(id + "boundaryPolyline", EntityType.EDGE),
+                    "guideVertices" : qCreatedBy(id + "guideVertexWire", EntityType.VERTEX)
+                });
+
+        // Guide vertex wire is no longer needed once the fill surface exists.
+        opDeleteBodies(context, id + "deleteGuideWire", {
+                    "entities" : qCreatedBy(id + "guideVertexWire", EntityType.BODY)
                 });
 
         // ── 8b. Refine the boundary via frame-face intersection ───────────────────────
@@ -443,41 +520,35 @@ export const panelMakerFeature = defineFeature(function(context is Context, id i
 
         const panelBodyQuery = qCreatedBy(id + "panelThicken", EntityType.BODY);
 
-        // ── 9b. Apply edge gap by offsetting lateral panel faces inward ──────────────
-        //
-        // The gap is applied AFTER thickening so that it measures a uniform distance
-        // from the actual frame inner-face geometry — the geometry that was established
-        // by the opSplitFace intersection trim above.
-        //
-        // The deletion of panelFillRefined is intentionally deferred to after this step.
-        // While the refined fill surface body still exists in the context, Onshape tracks
-        // the thickened solid's cap faces (front and back) as descendants of the surface
-        // faces via qCreatedBy. Subtracting those from the full face set of the solid
-        // gives the perimeter wall faces explicitly, without relying on normal-direction
-        // geometry tests. The wire body and surface are cleaned up immediately afterward.
-        //
-        // opOffsetFace with a negative offset pushes each wall face inward by gap,
-        // shrinking the panel boundary by that distance on all sides simultaneously.
-
-        if (definition.gap > 0 * meter)
-        {
-            const panelLateralFaces = qSubtraction(
-                qOwnedByBody(panelBodyQuery, EntityType.FACE),
-                qCreatedBy(id + "panelFillRefined", EntityType.FACE)
-            );
-            opOffsetFace(context, id + "panelGapOffset", {
-                        "moveFaces"      : panelLateralFaces,
-                        "offsetDistance" : -definition.gap
-                    });
-        }
-
-        // Delete the polyline wire body and the refined fill surface.
+        // Clean up intermediate bodies now that the solid panel exists.
+        // The boundary polyline wire and refined fill surface are no longer needed.
         opDeleteBodies(context, id + "deleteWire", {
                     "entities" : qCreatedBy(id + "boundaryPolyline", EntityType.BODY)
                 });
         opDeleteBodies(context, id + "deleteFill", {
                     "entities" : qCreatedBy(id + "panelFillRefined", EntityType.BODY)
                 });
+
+        // ── 9b. Apply edge gap by offsetting non-cap panel faces inward ──────────────
+        //
+        // The gap is applied AFTER thickening so that it measures a uniform distance
+        // from the actual frame inner-face geometry — the geometry established by the
+        // opSplitFace intersection trim above.
+        //
+        // qNonCapEntity(id + "panelThicken", EntityType.FACE) returns only the perimeter
+        // wall faces produced by the thicken operation — the faces swept from the boundary
+        // edges of the fill surface. The two cap faces (front and back, produced by
+        // offsetting the fill surface itself) are excluded because they bear the alignment
+        // position and should not move. opOffsetFace with a negative distance shrinks the
+        // panel boundary inward on all sides simultaneously.
+
+        if (definition.gap > 0 * meter)
+        {
+            opOffsetFace(context, id + "panelGapOffset", {
+                        "moveFaces"      : qNonCapEntity(id + "panelThicken", EntityType.FACE),
+                        "offsetDistance" : -definition.gap
+                    });
+        }
 
         // ── 10. Name the panel body ───────────────────────────────────────────────────
 
@@ -603,6 +674,24 @@ function findHamiltonianCycleDFS(adjacencyTable is array, visitedMembers is arra
     }
 
     return [];
+}
+
+/**
+ * Projects a dimensionless direction vector onto the plane defined by planeNormal,
+ * removing any component along planeNormal. Used to guarantee that the panel
+ * coordinate system X axis is perpendicular to openingNormal regardless of any
+ * floating-point imprecision in evDistance contact midpoints.
+ *
+ * Both inputs and the return value are dimensionless vectors (no unit attachment).
+ *
+ * @param directionVector {Vector} : Dimensionless 3D vector to project.
+ * @param planeNormal     {Vector} : Unit normal of the plane to project onto.
+ * @returns {Vector} : Projection of directionVector onto the plane; may be zero if
+ *                     directionVector is parallel to planeNormal.
+ */
+function projectOntoPlane(directionVector is Vector, planeNormal is Vector) returns Vector
+{
+    return directionVector - dot(directionVector, planeNormal) * planeNormal;
 }
 
 /**
