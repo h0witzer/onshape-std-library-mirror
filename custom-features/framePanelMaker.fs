@@ -26,10 +26,6 @@ const DIMENSION_ROUNDING_PRECISION = 3;
 // 2 = panel flush with the -openingNormal face of the frames
 const PANEL_ALIGNMENT_BOUND = { (unitless) : [0, 1, 2] } as IntegerBoundSpec;
 
-// Squared-distance tolerance (dimensionless, in m²/m² units) for the loop-closure
-// check. sqrt(1e-6) ≈ 0.001 m = 1 mm maximum acceptable closure gap.
-const LOOP_CLOSURE_TOLERANCE_SQ = 1e-6;
-
 // Maximum distance between the closest points of two consecutive frame members
 // before a "not touching" warning is issued. 0.1 mm accounts for normal CAD tolerances.
 const JOINT_CONTACT_TOLERANCE = 1e-4 * meter;
@@ -107,10 +103,12 @@ function buildPanelName(prefix is string, panelDim1 is number, panelDim2 is numb
  * selection order, or the frame profile shape (box tube, round tube, L-channel, etc.).
  *
  * Algorithm overview:
- *   1. Sort the selected frame members into a connected closed loop using greedy
- *      nearest-neighbor matching on cap face centroid positions.
+ *   1. Sort the selected frame members into a connected closed loop by building a
+ *      body-adjacency graph from pairwise evDistance calls and finding a Hamiltonian
+ *      cycle. This correctly handles both end-to-end frame joints and T-intersections
+ *      where spanning members extend beyond the panel opening.
  *   2. Compute the panel plane using Newell's method on the joint positions (the
- *      points where consecutive members are geometrically closest to each other).
+ *      midpoints of the closest-point pairs between consecutive bodies in the loop).
  *   3. Build a first-pass fill surface from a polyline through the joint contact
  *      points shifted to the chosen alignment position (alignment shift baked in).
  *      The surface sits at the exact depth where the panel will live.
@@ -121,9 +119,10 @@ function buildPanelName(prefix is string, panelDim1 is number, panelDim2 is numb
  *      because the geometry really is different at each depth.
  *   5. Extract the interior fragment into an independent surface body and thicken it
  *      symmetrically to produce the solid panel body.
- *   6. Apply the edge gap AFTER thickening by offsetting all lateral panel faces inward
- *      by definition.gap. This ensures the gap is a uniform distance from the actual
- *      frame inner-face geometry on every side, regardless of profile shape.
+ *   6. Apply the edge gap AFTER thickening by offsetting the lateral (non-cap) faces
+ *      of the thickened panel body inward by definition.gap. The cap faces (front and
+ *      back surfaces parallel to openingNormal) are excluded; only the perimeter walls
+ *      are moved so the gap is uniform from the actual frame inner-face geometry.
  *
  * Alignment is controlled by a three-point manipulator along the opening normal:
  *   Index 0 - panel flush with the +openingNormal face of the frames
@@ -181,49 +180,34 @@ export const panelMakerFeature = defineFeature(function(context is Context, id i
             }
         }
 
-        // ── 2. Collect cap face centroid positions for loop sorting ─────────────────────
+        // ── 2. Sort members into a closed loop (graph-based body adjacency) ─────────────
+        //
+        // For each pair of selected bodies, evDistance determines whether they are
+        // touching. A Hamiltonian cycle is then found in the resulting adjacency graph.
+        // This approach correctly handles both traditional end-to-end frame joints and
+        // T-intersections where a long spanning member extends beyond the panel opening —
+        // proximity is determined from solid body geometry, not cap face centroid positions.
 
-        var memberStartPoints = makeArray(memberCount);
-        var memberEndPoints   = makeArray(memberCount);
-        for (var memberIndex = 0; memberIndex < memberCount; memberIndex += 1)
+        const loopOrder = buildLoopFromBodyAdjacency(context, frameMemberBodies, JOINT_CONTACT_TOLERANCE);
+
+        if (size(loopOrder) == 0)
         {
-            const startFacePlane = evPlane(context, { "face" : qFrameStartFace(frameMemberBodies[memberIndex]) });
-            const endFacePlane   = evPlane(context, { "face" : qFrameEndFace(frameMemberBodies[memberIndex]) });
-            memberStartPoints[memberIndex] = startFacePlane.origin;
-            memberEndPoints[memberIndex]   = endFacePlane.origin;
+            reportFeatureError(context, id,
+                "Selected frame members do not form a closed loop; verify that each member touches at least two others in the selection");
+            return;
         }
 
-        // ── 3. Sort members into a closed loop (any input order) ───────────────────────
-
-        const loopEntries = sortFrameMembersIntoLoop(memberStartPoints, memberEndPoints);
-
-        // Verify the loop closes back on itself: the last member's exit point should
-        // be close to the first member's entry point.
-        const lastEntry  = loopEntries[memberCount - 1];
-        const firstEntry = loopEntries[0];
-
-        const lastExitPoint  = lastEntry.exitIsEnd  ? memberEndPoints[lastEntry.memberIndex]
-                                                     : memberStartPoints[lastEntry.memberIndex];
-        const firstEntryPoint = firstEntry.exitIsEnd ? memberStartPoints[firstEntry.memberIndex]
-                                                      : memberEndPoints[firstEntry.memberIndex];
-
-        const closureGapSq = squaredNorm((lastExitPoint - firstEntryPoint) / meter);
-        if (closureGapSq > LOOP_CLOSURE_TOLERANCE_SQ)
-        {
-            reportFeatureWarning(context, id,
-                "Selected frame members do not form a closed loop; verify all members are connected end-to-end");
-        }
-
-        // ── 4. Compute joint positions and the panel plane ─────────────────────────────
-
-        // Joint position i = midpoint between the closest points of member i and
-        // the next member in the loop. Using evDistance gives the exact contact point
-        // for any frame profile shape (round, square, mitered, etc.).
+        // ── 3. Compute joint positions and the panel plane ────────────────────────────
+        //
+        // Joint position i = midpoint of the closest-point pair between member i and the
+        // next member in the loop. evDistance finds the exact contact point for any frame
+        // profile shape (round tube, box tube, mitered end) and any junction type,
+        // including T-intersections where the contact lies mid-body on a spanning member.
         var jointPositions = makeArray(memberCount);
         for (var loopStep = 0; loopStep < memberCount; loopStep += 1)
         {
-            const currentMemberIdx = loopEntries[loopStep].memberIndex;
-            const nextMemberIdx    = loopEntries[(loopStep + 1) % memberCount].memberIndex;
+            const currentMemberIdx = loopOrder[loopStep];
+            const nextMemberIdx    = loopOrder[(loopStep + 1) % memberCount];
 
             const jointDistResult = evDistance(context, {
                         "side0" : frameMemberBodies[currentMemberIdx],
@@ -457,6 +441,36 @@ export const panelMakerFeature = defineFeature(function(context is Context, id i
                     "thickness2" : definition.thickness / 2
                 });
 
+        const panelBodyQuery = qCreatedBy(id + "panelThicken", EntityType.BODY);
+
+        // ── 9b. Apply edge gap by offsetting lateral panel faces inward ──────────────
+        //
+        // The gap is applied AFTER thickening so that it measures a uniform distance
+        // from the actual frame inner-face geometry — the geometry that was established
+        // by the opSplitFace intersection trim above.
+        //
+        // The deletion of panelFillRefined is intentionally deferred to after this step.
+        // While the refined fill surface body still exists in the context, Onshape tracks
+        // the thickened solid's cap faces (front and back) as descendants of the surface
+        // faces via qCreatedBy. Subtracting those from the full face set of the solid
+        // gives the perimeter wall faces explicitly, without relying on normal-direction
+        // geometry tests. The wire body and surface are cleaned up immediately afterward.
+        //
+        // opOffsetFace with a negative offset pushes each wall face inward by gap,
+        // shrinking the panel boundary by that distance on all sides simultaneously.
+
+        if (definition.gap > 0 * meter)
+        {
+            const panelLateralFaces = qSubtraction(
+                qOwnedByBody(panelBodyQuery, EntityType.FACE),
+                qCreatedBy(id + "panelFillRefined", EntityType.FACE)
+            );
+            opOffsetFace(context, id + "panelGapOffset", {
+                        "moveFaces"      : panelLateralFaces,
+                        "offsetDistance" : -definition.gap
+                    });
+        }
+
         // Delete the polyline wire body and the refined fill surface.
         opDeleteBodies(context, id + "deleteWire", {
                     "entities" : qCreatedBy(id + "boundaryPolyline", EntityType.BODY)
@@ -464,37 +478,6 @@ export const panelMakerFeature = defineFeature(function(context is Context, id i
         opDeleteBodies(context, id + "deleteFill", {
                     "entities" : qCreatedBy(id + "panelFillRefined", EntityType.BODY)
                 });
-
-        const panelBodyQuery = qCreatedBy(id + "panelThicken", EntityType.BODY);
-
-        // ── 9b. Apply edge gap by offsetting lateral panel faces inward ──────────────
-        //
-        // The gap is applied AFTER thickening so that it measures a uniform distance
-        // from the actual frame inner-face geometry — the geometry that was established
-        // by the opSplitFace intersection trim above. Applying the gap before the trim
-        // would shrink the polyline, but the trim would then re-pin the boundary to the
-        // frame faces and the gap would be lost.
-        //
-        // "Lateral" faces are those whose plane contains the openingNormal (i.e., their
-        // normal is perpendicular to openingNormal). These are the side walls of the
-        // thickened panel — one face per frame member edge, including any curves from
-        // non-rectangular profiles. The top and bottom faces (normal parallel to
-        // openingNormal) are intentionally excluded.
-        //
-        // opOffsetFace with a negative offset pushes each lateral face inward by gap,
-        // shrinking the panel boundary by that distance on all sides simultaneously.
-
-        if (definition.gap > 0 * meter)
-        {
-            const panelLateralFaces = qFacesParallelToDirection(
-                qOwnedByBody(panelBodyQuery, EntityType.FACE),
-                openingNormal
-            );
-            opOffsetFace(context, id + "panelGapOffset", {
-                        "moveFaces"      : panelLateralFaces,
-                        "offsetDistance" : -definition.gap
-                    });
-        }
 
         // ── 10. Name the panel body ───────────────────────────────────────────────────
 
@@ -518,77 +501,108 @@ export const panelMakerFeature = defineFeature(function(context is Context, id i
     });
 
 /**
- * Sorts an unordered set of frame members into a connected closed loop using greedy
- * nearest-neighbor matching on cap face centroid positions.
+ * Builds an ordered closed loop of frame member indices using a body-adjacency graph.
  *
- * Each iteration finds the unused member whose start or end cap centroid is closest
- * to the current traversal exit point, appends it to the loop, and advances the exit
- * point to the far end of the newly appended member.
+ * For each pair of selected bodies, evDistance is used to determine whether they are
+ * touching. A Hamiltonian cycle is then found in the resulting adjacency graph via
+ * depth-first search. This approach correctly handles both traditional end-to-end
+ * frame joints and T-intersections where long spanning members extend beyond the panel
+ * boundary — adjacency is determined from solid body geometry, not cap face positions.
  *
- * Returns an array of maps (one per member in loop order) with fields:
- *   "memberIndex" {number}  : Original (unsorted) index into frameMemberBodies.
- *   "exitIsEnd"   {boolean} : true  → this member's end cap is the exit toward the next member;
- *                             false → this member's start cap is the exit toward the next member.
+ * The adjacency table is stored as a flat array indexed by
+ * (outerMemberIndex * memberCount + innerMemberIndex) to avoid nested-array mutation.
  *
- * @param startPoints {array} : Array of start cap face centroid positions (ValueWithUnits vectors).
- * @param endPoints   {array} : Array of end cap face centroid positions (ValueWithUnits vectors).
- * @returns {array}           : Sorted loop descriptor array.
+ * @param context          {Context}        : The active feature context.
+ * @param frameBodies      {array}          : Array of frame member body queries.
+ * @param contactTolerance {ValueWithUnits} : Maximum body-to-body distance for two
+ *                                            members to be considered adjacent/touching.
+ * @returns {array} : Ordered array of member indices (length == memberCount) forming a
+ *                    closed loop, or an empty array if no valid Hamiltonian cycle exists.
  */
-function sortFrameMembersIntoLoop(startPoints is array, endPoints is array) returns array
+function buildLoopFromBodyAdjacency(context is Context, frameBodies is array, contactTolerance is ValueWithUnits) returns array
 {
-    const memberCount = size(startPoints);
-    var loop = makeArray(memberCount);
-    var usedByStep = makeArray(memberCount, false);
+    const memberCount = size(frameBodies);
 
-    // Seed the loop with member 0; treat its end cap as the initial exit point.
-    loop[0] = { "memberIndex" : 0, "exitIsEnd" : true };
-    usedByStep[0] = true;
-    var currentExitPoint = endPoints[0];
+    // Flat adjacency table: index = outerIndex * memberCount + innerIndex.
+    // adjacencyTable[i * memberCount + j] is true when bodies i and j are touching.
+    var adjacencyTable = makeArray(memberCount * memberCount, false);
 
-    for (var step = 1; step < memberCount; step += 1)
+    for (var outerIndex = 0; outerIndex < memberCount; outerIndex += 1)
     {
-        var bestMemberIndex = -1;
-        // bestDistSq is only meaningful after bestMemberIndex is first assigned
-        // (guarded by the bestMemberIndex == -1 condition below).
-        var bestDistSq is number = 0;
-        var bestEntryIsStart is boolean = true;
-
-        for (var candidateIndex = 0; candidateIndex < memberCount; candidateIndex += 1)
+        for (var innerIndex = outerIndex + 1; innerIndex < memberCount; innerIndex += 1)
         {
-            if (!usedByStep[candidateIndex])
+            const distanceResult = evDistance(context, {
+                        "side0" : frameBodies[outerIndex],
+                        "side1" : frameBodies[innerIndex]
+                    });
+            if (distanceResult.distance <= contactTolerance)
             {
-                // Squared distances (dimensionless) from the current exit point to both
-                // caps of this candidate. squaredNorm avoids a sqrt and keeps units clean.
-                const diffToStart = (startPoints[candidateIndex] - currentExitPoint) / meter;
-                const distSqToStart = squaredNorm(diffToStart);
-
-                const diffToEnd = (endPoints[candidateIndex] - currentExitPoint) / meter;
-                const distSqToEnd = squaredNorm(diffToEnd);
-
-                if (bestMemberIndex == -1 || distSqToStart < bestDistSq)
-                {
-                    bestMemberIndex    = candidateIndex;
-                    bestDistSq         = distSqToStart;
-                    bestEntryIsStart   = true;
-                }
-
-                if (distSqToEnd < bestDistSq)
-                {
-                    bestMemberIndex    = candidateIndex;
-                    bestDistSq         = distSqToEnd;
-                    bestEntryIsStart   = false;
-                }
+                adjacencyTable[outerIndex * memberCount + innerIndex] = true;
+                adjacencyTable[innerIndex * memberCount + outerIndex] = true;
             }
         }
-
-        // If the entry is via the start cap, the exit is via the end cap, and vice versa.
-        const exitIsEnd = bestEntryIsStart;
-        loop[step] = { "memberIndex" : bestMemberIndex, "exitIsEnd" : exitIsEnd };
-        usedByStep[bestMemberIndex] = true;
-        currentExitPoint = exitIsEnd ? endPoints[bestMemberIndex] : startPoints[bestMemberIndex];
     }
 
-    return loop;
+    // Find a Hamiltonian cycle starting from member 0 via depth-first search.
+    // FeatureScript arrays are value types (copy-on-write), so backtracking works
+    // correctly without explicit undo: each recursive call gets its own copy of
+    // visitedMembers and cyclePath.
+    var initialVisited = makeArray(memberCount, false);
+    initialVisited[0] = true;
+    var initialPath = makeArray(memberCount, 0);
+
+    return findHamiltonianCycleDFS(adjacencyTable, initialVisited, initialPath, memberCount, 1);
+}
+
+/**
+ * Recursive depth-first search that attempts to extend a partial Hamiltonian path
+ * to a complete cycle through all frame members.
+ *
+ * Because FeatureScript arrays are value types, each call operates on independent
+ * copies of visitedMembers and cyclePath; backtracking is implicit.
+ *
+ * @param adjacencyTable  {array}  : Flat n*n boolean adjacency table (see buildLoopFromBodyAdjacency).
+ * @param visitedMembers  {array}  : Boolean array, true for each member already in the path.
+ * @param cyclePath       {array}  : Current partial path of member indices.
+ * @param memberCount     {number} : Total number of frame members.
+ * @param currentDepth    {number} : Number of members placed in cyclePath so far.
+ * @returns {array} : Complete cycle path (length == memberCount) if found, otherwise empty array.
+ */
+function findHamiltonianCycleDFS(adjacencyTable is array, visitedMembers is array, cyclePath is array, memberCount is number, currentDepth is number) returns array
+{
+    if (currentDepth == memberCount)
+    {
+        // All members placed — verify that the last member connects back to the first
+        // to close the cycle.
+        if (adjacencyTable[cyclePath[currentDepth - 1] * memberCount + cyclePath[0]])
+        {
+            return cyclePath;
+        }
+        return [];
+    }
+
+    const previousMemberIndex = cyclePath[currentDepth - 1];
+
+    for (var candidateIndex = 0; candidateIndex < memberCount; candidateIndex += 1)
+    {
+        if (!visitedMembers[candidateIndex] &&
+            adjacencyTable[previousMemberIndex * memberCount + candidateIndex])
+        {
+            // Create independent copies for this branch (value-type copy-on-write).
+            var branchVisited = visitedMembers;
+            branchVisited[candidateIndex] = true;
+            var branchPath = cyclePath;
+            branchPath[currentDepth] = candidateIndex;
+
+            const searchResult = findHamiltonianCycleDFS(adjacencyTable, branchVisited, branchPath, memberCount, currentDepth + 1);
+            if (size(searchResult) == memberCount)
+            {
+                return searchResult;
+            }
+        }
+    }
+
+    return [];
 }
 
 /**
