@@ -49,6 +49,8 @@ const cutFaces = qFacesParallelToDirection(flatFaces, zDirection);
 3. More maintainable and readable
 4. Less error-prone
 
+**Manual vector math is almost always a sign you have not tried hard enough to use the appropriate queries and must only be used after confirming that an appropriate query exists**
+
 ## Testing Instructions
 - Since there is no way to run Onshape in a localized environment here we will rely mostly on comparing code samples with existing functions in the standard library and against the reference docs to ensure consistency with the code base
 - Debugging will be done largely via reports delivered via console log
