@@ -26,16 +26,6 @@ const DIMENSION_ROUNDING_PRECISION = 3;
 // 2 = panel flush with the -openingNormal face of the frames
 const PANEL_ALIGNMENT_BOUND = { (unitless) : [0, 1, 2] } as IntegerBoundSpec;
 
-// Scale factor applied to the furthest joint radius when sizing each thin intersection
-// slab. A factor of 3 guarantees the slab covers the widest frame body cross-section
-// (e.g., a wide L-channel leg that extends far from the joint point).
-const SLAB_RADIUS_SCALE = 3.0;
-
-// Thickness of the thin intersection slab used to extract panel boundary curves.
-// 0.1 mm is robust for all normal frame cross-section sizes while keeping the slab
-// thin enough to produce clean, precise intersection edges.
-const CROSS_SECTION_SLAB_THICKNESS = 1e-4 * meter;
-
 // Squared-distance tolerance (dimensionless, in m²/m² units) for the loop-closure
 // check. sqrt(1e-6) ≈ 0.001 m = 1 mm maximum acceptable closure gap.
 const LOOP_CLOSURE_TOLERANCE_SQ = 1e-6;
@@ -255,30 +245,26 @@ export const panelMakerFeature = defineFeature(function(context is Context, id i
         }
         panelCentroid = panelCentroid / memberCount;
 
-        // Fit the panel plane normal by scanning consecutive joint triples until a
-        // non-collinear triple is found (cross-product magnitude above tolerance).
-        var openingNormal = vector(0, 0, 1); // placeholder; replaced below
-        var foundNormal = false;
-        for (var loopStep = 0; loopStep < memberCount && !foundNormal; loopStep += 1)
+        // Use Newell's method to compute the best-fit normal of the joint polygon.
+        // Summing cross products of centroid-relative edge pairs gives a normal that
+        // is exact for planar arrangements and a robust area-weighted average for
+        // non-planar ones. This is more reliable than taking the first non-collinear
+        // triple, which can pick a degenerate near-collinear triple on skewed polygons.
+        var newellSum = vector(0, 0, 0);
+        for (var loopStep = 0; loopStep < memberCount; loopStep += 1)
         {
-            const v1 = (jointPositions[(loopStep + 1) % memberCount] -
-                        jointPositions[loopStep]) / meter;
-            const v2 = (jointPositions[(loopStep + 2) % memberCount] -
-                        jointPositions[(loopStep + 1) % memberCount]) / meter;
-            const crossed = cross(v1, v2);
-            if (norm(crossed) > PERPENDICULARITY_TOLERANCE)
-            {
-                openingNormal = normalize(crossed);
-                foundNormal = true;
-            }
+            const p1 = (jointPositions[loopStep] - panelCentroid) / meter;
+            const p2 = (jointPositions[(loopStep + 1) % memberCount] - panelCentroid) / meter;
+            newellSum = newellSum + cross(p1, p2);
         }
 
-        if (!foundNormal)
+        if (norm(newellSum) < PERPENDICULARITY_TOLERANCE)
         {
             reportFeatureError(context, id,
                 "All selected frame members appear to be collinear; they must form a non-degenerate closed loop");
             return;
         }
+        const openingNormal = normalize(newellSum);
 
         // Compute the frame extent in the opening-normal direction for alignment.
         // Use the bounding box of all frame bodies in the panel coordinate system.
@@ -330,155 +316,75 @@ export const panelMakerFeature = defineFeature(function(context is Context, id i
                             })
                 });
 
-        // ── 7. Extract panel boundary edges via per-member thin-slab intersection ───────
+        // ── 7. Build adjusted boundary spline through joint positions ─────────────────
         //
-        // For each frame member a thin slab (CROSS_SECTION_SLAB_THICKNESS thick) is
-        // placed at the panel mid-surface (panel centroid + alignmentShift in the
-        // openingNormal direction) and boolean-intersected with that member. This
-        // produces exactly one cross-section body per member with no body-identification
-        // ambiguity. The edge on the cross-section's flat cap face that is closest to the
-        // panel centroid in the in-plane direction is the boundary where the panel surface
-        // meets this frame member's inner face. Chaining all N such edges gives the closed
-        // boundary wire used by opFill.
+        // Each joint is adjusted in two ways before fitting the spline:
+        //   (a) Alignment shift: offset along openingNormal so the panel mid-surface sits
+        //       at the chosen alignment position (flush front, centered, or flush back).
+        //   (b) Edge gap: offset each joint inward toward the panel centroid by definition.gap,
+        //       projected into the plane perpendicular to openingNormal. This guarantees the
+        //       panel boundary is gap away from each frame member's inner corner with no
+        //       booleans and no post-thicken face-identification.
         //
-        // This approach handles every frame profile (T-slot, round tube, L-channel, box
-        // tube, etc.) and naturally produces a nonplanar fill surface when the joint
-        // positions are not coplanar.
+        // The spline is closed by appending the first adjusted point as the final point.
+        // opFitSpline produces a wire body whose edges are then used by opFillSurface.
+        // For non-planar frame arrangements the joint positions are 3D and the resulting
+        // spline and fill surface are naturally curved — no planarity assumption is made.
 
-        // Slab half-size: large enough to cover the widest frame member cross-section.
-        var maxInPlaneRadiusSq = 0.0;
-        for (var loopStep = 0; loopStep < memberCount; loopStep += 1)
-        {
-            const inPlaneOffset = (jointPositions[loopStep] - panelCentroid) / meter;
-            const radiusSq = squaredNorm(inPlaneOffset);
-            if (radiusSq > maxInPlaneRadiusSq)
-            {
-                maxInPlaneRadiusSq = radiusSq;
-            }
-        }
-        const inPlaneExtentHalfX = max(abs(frameBox.maxCorner[0]), abs(frameBox.minCorner[0]));
-        const inPlaneExtentHalfY = max(abs(frameBox.maxCorner[1]), abs(frameBox.minCorner[1]));
-        const inPlaneExtentNum   = max(inPlaneExtentHalfX, inPlaneExtentHalfY) / meter;
-        const maxInPlaneRadius   = sqrt(maxInPlaneRadiusSq) + inPlaneExtentNum;
-        const slabHalfSizeNum    = maxInPlaneRadius * SLAB_RADIUS_SCALE;
-
-        // Thin slab dimensions in the panel coordinate frame (local Z = openingNormal).
-        const thinHalfNum  = CROSS_SECTION_SLAB_THICKNESS / (2 * meter);
-        const slabShiftNum = alignmentShift / meter;
-
-        var panelBoundaryEdges = makeArray(memberCount);
+        var splinePoints = makeArray(memberCount + 1);
 
         for (var loopStep = 0; loopStep < memberCount; loopStep += 1)
         {
-            const memberIdx    = loopEntries[loopStep].memberIndex;
-            const memberSlabId = id + ("xSlab" ~ toString(loopStep));
-            const memberXSecId = id + ("xSect" ~ toString(loopStep));
+            // (a) Alignment: push along the best-fit panel normal.
+            var adjustedPoint = jointPositions[loopStep] + alignmentShift * openingNormal;
 
-            // Create a fresh thin slab at the panel mid-surface, centered at the origin
-            // in panel-plane local coordinates. opTransform then maps it to world space.
-            fCuboid(context, memberSlabId, {
-                        "corner1" : vector(-slabHalfSizeNum, -slabHalfSizeNum,
-                                           slabShiftNum - thinHalfNum) * meter,
-                        "corner2" : vector( slabHalfSizeNum,  slabHalfSizeNum,
-                                           slabShiftNum + thinHalfNum) * meter
-                    });
-            opTransform(context, memberSlabId + "T", {
-                        "bodies"    : qCreatedBy(memberSlabId, EntityType.BODY),
-                        "transform" : toWorld(centeredCSys)
-                    });
-
-            // Intersect the thin slab with this frame member. The result is the member's
-            // cross-section profile at the panel mid-surface — exactly one body.
-            opBoolean(context, memberXSecId, {
-                        "tools"         : frameMemberBodies[memberIdx],
-                        "targets"       : qCreatedBy(memberSlabId, EntityType.BODY),
-                        "operationType" : BooleanOperationType.INTERSECT,
-                        "keepTools"     : true
-                    });
-
-            const xSectBodies = evaluateQuery(context,
-                qCreatedBy(memberXSecId, EntityType.BODY));
-            if (size(xSectBodies) == 0)
+            // (b) Gap: move the joint inward toward the panel centroid, staying in the
+            //     plane perpendicular to openingNormal so the offset is purely in-boundary.
+            if (definition.gap > 0 * meter)
             {
-                reportFeatureError(context, id,
-                    "Frame member at loop position " ~ toString(loopStep) ~
-                    " does not intersect the panel plane. Verify the frame members " ~
-                    "are close enough to coplanar for a panel at this alignment position.");
-                return;
-            }
-
-            // The cross-section body has two flat cap faces (parallel to the opening
-            // normal) and side faces from the frame member surfaces.
-            // Among the edges on those cap faces, select the one whose midpoint is
-            // closest to the panel centroid in the in-plane direction. This is the
-            // edge where the panel surface meets this member's inner (void-facing) face.
-            const xSectFaces    = qOwnedByBody(xSectBodies[0], EntityType.FACE);
-            const xSectCapFaces = qParallelPlanes(xSectFaces, openingNormal, true);
-            const capEdges      = qAdjacent(xSectCapFaces, AdjacencyType.EDGE, EntityType.EDGE);
-            const capEdgeArray  = evaluateQuery(context, capEdges);
-
-            if (size(capEdgeArray) == 0)
-            {
-                reportFeatureError(context, id,
-                    "No boundary edges found on cross-section cap face for frame member " ~
-                    "at loop position " ~ toString(loopStep) ~
-                    ". The frame member cross-section may be degenerate at this panel position.");
-                return;
-            }
-
-            var innerEdge        = capEdgeArray[0];
-            // innerEdgeDistSq is only meaningful after firstEdgeSeen becomes false;
-            // the initial value of 0 is never compared before the first valid assignment.
-            var innerEdgeDistSq  is number  = 0;
-            var firstEdgeSeen    is boolean = true;
-
-            for (var edgeIdx = 0; edgeIdx < size(capEdgeArray); edgeIdx += 1)
-            {
-                // Midpoint of this edge in 3D world space.
-                const edgeMid = evEdgeTangentLine(context, {
-                            "edge"                      : capEdgeArray[edgeIdx],
-                            "parameter"                 : 0.5,
-                            "arcLengthParameterization" : false
-                        }).origin;
-
-                // In-plane squared distance from edge midpoint to panel centroid.
-                // Remove the openingNormal component so only the in-plane proximity counts.
-                const toMid      = (edgeMid - panelCentroid) / meter;
-                const normalComp = toMid[0] * openingNormal[0] +
-                                   toMid[1] * openingNormal[1] +
-                                   toMid[2] * openingNormal[2];
-                const inPlane    = vector(toMid[0] - normalComp * openingNormal[0],
-                                          toMid[1] - normalComp * openingNormal[1],
-                                          toMid[2] - normalComp * openingNormal[2]);
-                const distSq     = squaredNorm(inPlane);
-
-                if (firstEdgeSeen || distSq < innerEdgeDistSq)
+                const towardCentroid = (panelCentroid - jointPositions[loopStep]) / meter;
+                const normalProjection = towardCentroid[0] * openingNormal[0] +
+                                         towardCentroid[1] * openingNormal[1] +
+                                         towardCentroid[2] * openingNormal[2];
+                const inPlaneVec = vector(
+                    towardCentroid[0] - normalProjection * openingNormal[0],
+                    towardCentroid[1] - normalProjection * openingNormal[1],
+                    towardCentroid[2] - normalProjection * openingNormal[2]);
+                const inPlaneMag = norm(inPlaneVec);
+                if (inPlaneMag > PERPENDICULARITY_TOLERANCE)
                 {
-                    innerEdge       = capEdgeArray[edgeIdx];
-                    innerEdgeDistSq = distSq;
-                    firstEdgeSeen   = false;
+                    adjustedPoint = adjustedPoint + definition.gap * normalize(inPlaneVec);
                 }
             }
 
-            panelBoundaryEdges[loopStep] = innerEdge;
+            splinePoints[loopStep] = adjustedPoint;
         }
 
-        // ── 8. Fill the boundary to create the panel mid-surface ─────────────────────
-        //
-        // opFill creates a surface spanning the closed wire formed by the N inner boundary
-        // edges. For coplanar edges the result is a flat patch; for non-coplanar edges it
-        // produces a smooth interpolated surface that conforms to the 3D frame geometry.
+        // Close the spline by repeating the first point as the last point.
+        splinePoints[memberCount] = splinePoints[0];
 
-        opFill(context, id + "panelFill", {
-                    "edges" : qUnion(panelBoundaryEdges)
+        opFitSpline(context, id + "boundarySpline", {
+                    "points" : splinePoints
+                });
+
+        // ── 8. Fill the closed spline boundary to create the panel mid-surface ────────
+        //
+        // opFillSurface with edgesG0 creates a surface spanning the closed spline wire.
+        // For coplanar joints the result is a flat patch; for non-coplanar joints it
+        // produces a smooth interpolated surface that follows the 3D frame geometry
+        // without any planar assumption.
+
+        opFillSurface(context, id + "panelFill", {
+                    "edgesG0" : qCreatedBy(id + "boundarySpline", EntityType.EDGE)
                 });
 
         // ── 9. Thicken the surface into a solid panel ─────────────────────────────────
         //
-        // Thicken symmetrically about the mid-surface. The alignment shift was encoded
-        // in the slab placement, so the fill surface IS already the panel mid-surface
-        // for the selected alignment position; equal offsets in both normal directions
-        // give the correct panel thickness and position.
+        // Thicken symmetrically about the mid-surface. The alignment shift was already
+        // baked into the spline point positions, so the fill surface IS the panel
+        // mid-surface at the chosen alignment position. Equal offsets in both normal
+        // directions give the correct panel thickness at every point on the surface,
+        // including curved regions of a non-planar panel.
 
         opThicken(context, id + "panelThicken", {
                     "entities"   : qCreatedBy(id + "panelFill", EntityType.BODY),
@@ -486,45 +392,18 @@ export const panelMakerFeature = defineFeature(function(context is Context, id i
                     "thickness2" : definition.thickness / 2
                 });
 
-        // The fill surface is no longer needed once the solid exists.
+        // Delete the spline wire body and the fill surface — both are consumed by the
+        // thicken operation and are no longer needed.
+        opDeleteBodies(context, id + "deleteWire", {
+                    "entities" : qCreatedBy(id + "boundarySpline", EntityType.BODY)
+                });
         opDeleteBodies(context, id + "deleteFill", {
                     "entities" : qCreatedBy(id + "panelFill", EntityType.BODY)
                 });
 
-        // Delete all temporary thin cross-section bodies. The opFill has already
-        // consumed the boundary edges topologically, so these bodies can be removed.
-        for (var loopStep = 0; loopStep < memberCount; loopStep += 1)
-        {
-            const xSectBodiesCleanup = evaluateQuery(context,
-                qCreatedBy(id + ("xSect" ~ toString(loopStep)), EntityType.BODY));
-            if (size(xSectBodiesCleanup) > 0)
-            {
-                opDeleteBodies(context, id + ("delXSect" ~ toString(loopStep)), {
-                            "entities" : qCreatedBy(id + ("xSect" ~ toString(loopStep)), EntityType.BODY)
-                        });
-            }
-        }
-
         const panelBodyQuery = qCreatedBy(id + "panelThicken", EntityType.BODY);
 
-        // ── 10. Apply edge gap ─────────────────────────────────────────────────────────
-
-        // The side faces of the panel (those NOT parallel to the opening normal) are
-        // offset inward by the edge gap to create clearance between the panel edges
-        // and the frame body surfaces.
-        if (definition.gap > 0 * meter)
-        {
-            const allPanelFaces     = qOwnedByBody(panelBodyQuery, EntityType.FACE);
-            const panelFrontBackFaces = qParallelPlanes(allPanelFaces, openingNormal, true);
-            const panelSideFaces    = qSubtraction(allPanelFaces, panelFrontBackFaces);
-
-            opOffsetFace(context, id + "edgeGap", {
-                        "moveFaces"      : panelSideFaces,
-                        "offsetDistance" : -definition.gap
-                    });
-        }
-
-        // ── 11. Name the panel body ────────────────────────────────────────────────────
+        // ── 10. Name the panel body ───────────────────────────────────────────────────
 
         // Use the panel body's bounding box in the panel coordinate system to derive
         // width and height dimensions for the name string. This works for any panel shape.
