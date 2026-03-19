@@ -109,16 +109,18 @@ function buildPanelName(prefix is string, panelDim1 is number, panelDim2 is numb
  * Algorithm overview:
  *   1. Sort the selected frame members into a connected closed loop using greedy
  *      nearest-neighbor matching on cap face centroid positions.
- *   2. Compute the panel plane by fitting a plane to the joint positions (the points
- *      where consecutive members are closest to each other).
- *   3. Create a large flat slab body centered on the panel plane and thick enough
- *      to span the full panel thickness (with alignment shift applied).
- *   4. Boolean-subtract all frame bodies from the slab simultaneously. The frame
- *      bodies cut through the slab, leaving an inner panel region that exactly
- *      follows the frame intersection boundary curves.
- *   5. Identify the inner panel region using qContainsPoint and delete all outer
- *      slab fragments.
- *   6. If Edge Gap > 0, offset the panel side faces inward to add clearance.
+ *   2. Compute the panel plane using Newell's method on the joint positions (the
+ *      points where consecutive members are geometrically closest to each other).
+ *   3. Build a first-pass fill surface from a polyline through the joint contact
+ *      points shifted to the chosen alignment position (both edge gap and alignment
+ *      shift baked in). The surface sits at the exact depth where the panel will live.
+ *   4. Refine the boundary by splitting that surface with the lateral (sweep) faces
+ *      of each frame member AT the alignment position. The interior fragment is the
+ *      exact panel boundary for any profile shape at that depth: box tube, round tube,
+ *      C-channel, etc. The intersection is correctly different for each alignment choice
+ *      because the geometry really is different at each depth.
+ *   5. Extract the interior fragment into an independent surface body and thicken it
+ *      symmetrically to produce the solid panel body.
  *
  * Alignment is controlled by a three-point manipulator along the opening normal:
  *   Index 0 - panel flush with the +openingNormal face of the frames
@@ -335,27 +337,30 @@ export const panelMakerFeature = defineFeature(function(context is Context, id i
                             })
                 });
 
-        // ── 7. Build adjusted boundary polyline through joint positions ──────────────
+        // ── 7. Build alignment-positioned boundary polyline through joint positions ────
         //
         // Each joint is adjusted in two ways before building the boundary:
-        //   (a) Alignment shift: offset along openingNormal so the panel mid-surface sits
-        //       at the chosen alignment position (flush front, centered, or flush back).
+        //   (a) Alignment shift: offset along openingNormal so the panel mid-surface
+        //       sits at the chosen alignment position (flush front, centered, flush back).
         //   (b) Edge gap: offset each joint inward toward the panel centroid by
         //       definition.gap, projected into the plane perpendicular to openingNormal.
         //
-        // opPolyline (straight line segments, not a smooth spline) is used so that
-        // rectangular and polygonal frames produce flat-faced panels with straight edges.
-        // opFitSpline interpolates a smooth cubic curve through the same points, which
-        // rounds the corners of rectangular frames into a wobbly disc shape.
-        // For non-planar frames the straight segments between 3D joint positions still
-        // produce an accurate polygonal boundary without any planarity assumption.
-        // The polyline is closed by repeating the first adjusted point as the last point.
+        // The alignment shift is intentionally applied HERE, not after intersection.
+        // Intersection curves are curves of intersection between the fill surface and the
+        // frame faces AT a given position. The intersection result is inherently tied to
+        // depth: a panel flush with the front of a round tube crosses the cylindrical
+        // surface at a different curve than one centered in the frame. That is correct
+        // geometry — both positions are valid, each gives its own correct boundary.
+        //
+        // opPolyline (straight line segments) is used so that rectangular and polygonal
+        // frames produce flat-faced panels with straight edges. The polyline is closed
+        // by repeating the first adjusted point as the last point.
 
         var boundaryPoints = makeArray(memberCount + 1);
 
         for (var loopStep = 0; loopStep < memberCount; loopStep += 1)
         {
-            // (a) Alignment: push along the best-fit panel normal.
+            // (a) Alignment: push along the best-fit panel normal to the chosen depth.
             var adjustedPoint = jointPositions[loopStep] + alignmentShift * openingNormal;
 
             // (b) Gap: move the joint inward toward the panel centroid, staying in the
@@ -387,38 +392,102 @@ export const panelMakerFeature = defineFeature(function(context is Context, id i
                     "points" : boundaryPoints
                 });
 
-        // ── 8. Fill the closed polyline boundary to create the panel mid-surface ──────
+        // ── 8. Fill the alignment-positioned boundary to create the first-pass surface ──
         //
-        // opFillSurface with edgesG0 creates a surface spanning the closed polyline wire.
+        // opFillSurface spans the closed polyline wire at the chosen alignment depth.
         // For coplanar joints the result is a flat patch; for non-coplanar joints it
-        // produces a smooth interpolated surface that follows the 3D frame geometry
-        // without any planarity assumption.
+        // produces a smooth surface following the 3D frame geometry. This surface is
+        // both the location and the template for the frame-face intersection in step 8b.
 
         opFillSurface(context, id + "panelFill", {
                     "edgesG0" : qCreatedBy(id + "boundaryPolyline", EntityType.EDGE)
                 });
 
-        // ── 9. Thicken the surface into a solid panel ─────────────────────────────────
+        // ── 8b. Refine the boundary via frame-face intersection ───────────────────────
         //
-        // Thicken symmetrically about the mid-surface. The alignment shift was already
-        // baked into the polyline point positions, so the fill surface IS the panel
-        // mid-surface at the chosen alignment position. Equal offsets in both normal
-        // directions give the correct panel thickness at every point on the surface,
-        // including curved regions of a non-planar panel.
+        // For non-rectangular profiles (C-channel, round tube, L-angle, etc.) the
+        // true panel boundary is the curve where the panel mid-surface meets the inner
+        // (sweep) faces of each frame member at the alignment depth. opSplitFace cuts
+        // the first-pass fill surface along those exact geometric curves. The interior
+        // fragment is the correctly bounded panel surface at that alignment position.
+        //
+        // For rectangular box tube the lateral inner faces are coincident with the
+        // fill-surface edge; opSplitFace adds no interior splits and the first-pass
+        // surface is used directly.
+
+        // Collect lateral (sweep) faces for all frame members by excluding the start
+        // and end cap faces. These are the profile-facing surfaces that define the
+        // inner boundary geometry for any cross-section shape.
+        var capFaceQueryArray = makeArray(memberCount);
+        for (var memberIdx = 0; memberIdx < memberCount; memberIdx += 1)
+        {
+            capFaceQueryArray[memberIdx] = qUnion([
+                qFrameStartFace(frameMemberBodies[memberIdx]),
+                qFrameEndFace(frameMemberBodies[memberIdx])
+            ]);
+        }
+        const allLateralFaces = qSubtraction(
+            qOwnedByBody(qUnion(frameMemberBodies), EntityType.FACE),
+            qUnion(capFaceQueryArray)
+        );
+
+        // Split the first-pass fill surface along the lateral frame face boundaries.
+        // Wrapped in try: if no frame face crosses the fill surface interior (e.g., a
+        // gap-reduced fill that no longer reaches the frame inner faces, or box tube
+        // where the frame faces are flush with the fill edge) the fill surface is left
+        // intact and the fragment search below returns it unchanged.
+        try(opSplitFace(context, id + "splitPanelFill", {
+                    "targets" : qCreatedBy(id + "panelFill", EntityType.FACE),
+                    "edges"   : allLateralFaces
+                }));
+
+        // Identify the interior fragment: the face containing (or closest to) the
+        // panel centroid translated to the alignment plane. The centroid is inside the
+        // frame opening by construction and therefore always inside the interior fragment.
+        const centroidAtAlignment = panelCentroid + alignmentShift * openingNormal;
+        var refinedFillFaces = qContainsPoint(
+            qCreatedBy(id + "panelFill", EntityType.FACE),
+            centroidAtAlignment
+        );
+        if (isQueryEmpty(context, refinedFillFaces))
+        {
+            refinedFillFaces = qClosestTo(
+                qCreatedBy(id + "panelFill", EntityType.FACE),
+                centroidAtAlignment
+            );
+        }
+
+        // Extract the interior fragment into a new independent surface body.
+        // opExtractSurface copies the selected face(s) without modifying the original
+        // fill body, which may now hold outer fragments from the split.
+        opExtractSurface(context, id + "panelFillRefined", {
+                    "faces" : refinedFillFaces
+                });
+
+        // The original first-pass fill body (and any outer fragments) is no longer needed.
+        opDeleteBodies(context, id + "deleteFirstPassFill", {
+                    "entities" : qCreatedBy(id + "panelFill", EntityType.BODY)
+                });
+
+        // ── 9. Thicken the refined fill surface into a solid panel ────────────────────
+        //
+        // Thicken symmetrically about the refined mid-surface. The surface is already
+        // at the alignment position and has the correct boundary for that depth.
+        // Equal offsets in both normal directions give the correct panel thickness at
+        // every point, including curved boundary regions for non-rectangular profiles.
 
         opThicken(context, id + "panelThicken", {
-                    "entities"   : qCreatedBy(id + "panelFill", EntityType.BODY),
+                    "entities"   : qCreatedBy(id + "panelFillRefined", EntityType.BODY),
                     "thickness1" : definition.thickness / 2,
                     "thickness2" : definition.thickness / 2
                 });
 
-        // Delete the polyline wire body and the fill surface — both are consumed by the
-        // thicken operation and are no longer needed.
+        // Delete the polyline wire body and the refined fill surface.
         opDeleteBodies(context, id + "deleteWire", {
                     "entities" : qCreatedBy(id + "boundaryPolyline", EntityType.BODY)
                 });
         opDeleteBodies(context, id + "deleteFill", {
-                    "entities" : qCreatedBy(id + "panelFill", EntityType.BODY)
+                    "entities" : qCreatedBy(id + "panelFillRefined", EntityType.BODY)
                 });
 
         const panelBodyQuery = qCreatedBy(id + "panelThicken", EntityType.BODY);
