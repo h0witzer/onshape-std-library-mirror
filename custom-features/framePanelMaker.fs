@@ -8,48 +8,49 @@ const METERS_TO_MM = 1000;
 const MM_PER_INCH = 25.4;
 const METERS_TO_INCHES = METERS_TO_MM / MM_PER_INCH;
 
-// Minimum cross-product magnitude used to verify that two sweep axes are not parallel.
-// A value of 1e-6 corresponds to an angle deviation of less than 0.06 degrees from parallel.
+// Minimum cross-product magnitude used to verify that three joint positions are
+// non-collinear (i.e., they define a valid plane). Value of 1e-6 corresponds to
+// an angle deviation of less than 0.06 degrees from collinear.
 const PERPENDICULARITY_TOLERANCE = 1e-6;
+
+// Minimum frame members required to enclose a panel (triangle = 3 sides minimum).
+const MINIMUM_FRAME_MEMBERS = 3;
 
 // Number of decimal places kept when rounding computed panel dimensions in meters
 // (3 places = 1 mm resolution).
 const DIMENSION_ROUNDING_PRECISION = 3;
 
 // Integer bound spec for the alignment manipulator index.
-// 0 = panel flush with the +openingNormal face of the frame
+// 0 = panel flush with the +openingNormal face of the frames
 // 1 = panel centered between the two parallel frame faces (default)
-// 2 = panel flush with the -openingNormal face of the frame
+// 2 = panel flush with the -openingNormal face of the frames
 const PANEL_ALIGNMENT_BOUND = { (unitless) : [0, 1, 2] } as IntegerBoundSpec;
 
-// Minimum signed depth (from the channel mouth face) for a face to be considered
-// the channel bottom rather than the mouth face itself. This tolerance filters out
-// numerical noise that could cause the inner face to report a tiny nonzero depth.
-const CHANNEL_DEPTH_TOLERANCE = 1e-5 * meter;
+// Scale factor applied to the furthest joint radius when sizing each thin intersection
+// slab. A factor of 3 guarantees the slab covers the widest frame body cross-section
+// (e.g., a wide L-channel leg that extends far from the joint point).
+const SLAB_RADIUS_SCALE = 3.0;
 
-/**
- * Returns the sweep axis of a frame body as a normalized Vector, computed from
- * the vector connecting the start cap face centroid to the end cap face centroid.
- * This approach is robust for both perpendicular and mitered end cuts.
- *
- * @param context : The active feature context.
- * @param frameBody {Query} : A query resolving to a single frame body.
- * @returns {Vector} : A normalized 3D vector along the member's sweep direction.
- */
-function getFrameSweepAxis(context is Context, frameBody is Query) returns Vector
-{
-    const startCapPlane = evPlane(context, { "face" : qFrameStartFace(frameBody) });
-    const endCapPlane = evPlane(context, { "face" : qFrameEndFace(frameBody) });
-    return normalize(endCapPlane.origin - startCapPlane.origin);
-}
+// Thickness of the thin intersection slab used to extract panel boundary curves.
+// 0.1 mm is robust for all normal frame cross-section sizes while keeping the slab
+// thin enough to produce clean, precise intersection edges.
+const CROSS_SECTION_SLAB_THICKNESS = 1e-4 * meter;
+
+// Squared-distance tolerance (dimensionless, in m²/m² units) for the loop-closure
+// check. sqrt(1e-6) ≈ 0.001 m = 1 mm maximum acceptable closure gap.
+const LOOP_CLOSURE_TOLERANCE_SQ = 1e-6;
+
+// Maximum distance between the closest points of two consecutive frame members
+// before a "not touching" warning is issued. 0.1 mm accounts for normal CAD tolerances.
+const JOINT_CONTACT_TOLERANCE = 1e-4 * meter;
 
 /**
  * Formats a dimensionless length value (in meters) as a fractional-inches string,
  * reduced to lowest terms. For example, 0.047625 m => "1-7/8".
  *
  * @param lengthInMeters {number} : Dimensionless number representing the length in meters.
- * @param maximumDenominator {number} : Finest denominator to use; must be a positive power of 2
- *                                      (e.g. 16 for 1/16-inch resolution).
+ * @param maximumDenominator {number} : Finest denominator to use; must be a positive power
+ *                                      of 2 (e.g. 16 for 1/16-inch resolution).
  * @returns {string} : Formatted string such as "12", "3-1/2", or "0-3/16".
  */
 function formatInchFractionString(lengthInMeters is number, maximumDenominator is number) returns string
@@ -59,7 +60,6 @@ function formatInchFractionString(lengthInMeters is number, maximumDenominator i
     var numerator = round((totalInches - wholePart) * maximumDenominator);
     var denominator = maximumDenominator;
 
-    // Guard against rounding the fractional part up to a full inch
     if (numerator >= denominator)
     {
         return toString(wholePart + 1);
@@ -70,25 +70,28 @@ function formatInchFractionString(lengthInMeters is number, maximumDenominator i
         return toString(wholePart);
     }
 
-    // Reduce the fraction by dividing numerator and denominator by 2 until
-    // the numerator is odd (fully reduced form)
     while (numerator % 2 == 0)
     {
         numerator = numerator / 2;
         denominator = denominator / 2;
     }
 
+    if (wholePart == 0)
+    {
+        return toString(numerator) ~ "/" ~ toString(denominator);
+    }
     return toString(wholePart) ~ "-" ~ toString(numerator) ~ "/" ~ toString(denominator);
 }
 
 /**
- * Builds the display name string for the panel body given its computed dimensions.
+ * Builds the display name string for the panel body given its computed bounding-box
+ * dimensions (width and height of the tightest bounding rectangle in the panel plane).
  *
  * @param prefix {string} : User-specified name prefix (e.g. "Panel").
  * @param panelDim1 {number} : Dimensionless first panel dimension in meters.
  * @param panelDim2 {number} : Dimensionless second panel dimension in meters.
- * @param useMillimeters {boolean} : When true, formats dimensions as "Xmm x Ymm";
- *                                   when false, formats as fractional inches "W-N/D in x W-N/D in".
+ * @param useMillimeters {boolean} : When true, formats as "Xmm x Ymm";
+ *                                   when false, formats as fractional inches.
  * @returns {string} : The complete formatted name string.
  */
 function buildPanelName(prefix is string, panelDim1 is number, panelDim2 is number, useMillimeters is boolean) returns string
@@ -108,37 +111,37 @@ function buildPanelName(prefix is string, panelDim1 is number, panelDim2 is numb
 }
 
 /**
- * Creates a solid panel body sized to fit within the clear opening formed by four
- * adjacent frame members. The channel insertion depth is automatically measured from
- * the frame body geometry, so no manual "channel depth" entry is required. The user
- * supplies only an Edge Gap (clearance from the channel bottom) and an alignment position.
+ * Creates a solid panel body whose edges follow the intersection boundary between the
+ * panel plane and each bordering frame member. The panel fills the void enclosed by the
+ * closed loop of frame members, regardless of the number of members (3 or more), the
+ * selection order, or the frame profile shape (box tube, round tube, L-channel, etc.).
  *
- * Selections must be four frame members (created by the Frame feature) chosen in
- * sequential order so that each consecutive pair shares a corner, forming a closed loop.
- * Members 0 and 2 are treated as one opposite pair; members 1 and 3 as the other.
- *
- * Channel depth is auto-detected per pair by scanning the frame member's swept faces
- * for the shallowest face whose normal is parallel to the insertion axis and whose signed
- * depth from the channel mouth exceeds a small tolerance. For a T-slot extrusion this
- * is the slot bottom face. The minimum across all four members is used.
+ * Algorithm overview:
+ *   1. Sort the selected frame members into a connected closed loop using greedy
+ *      nearest-neighbor matching on cap face centroid positions.
+ *   2. Compute the panel plane by fitting a plane to the joint positions (the points
+ *      where consecutive members are closest to each other).
+ *   3. Create a large flat slab body centered on the panel plane and thick enough
+ *      to span the full panel thickness (with alignment shift applied).
+ *   4. Boolean-subtract all frame bodies from the slab simultaneously. The frame
+ *      bodies cut through the slab, leaving an inner panel region that exactly
+ *      follows the frame intersection boundary curves.
+ *   5. Identify the inner panel region using qContainsPoint and delete all outer
+ *      slab fragments.
+ *   6. If Edge Gap > 0, offset the panel side faces inward to add clearance.
  *
  * Alignment is controlled by a three-point manipulator along the opening normal:
  *   Index 0 - panel flush with the +openingNormal face of the frames
  *   Index 1 - panel centered between the two frame faces (default)
  *   Index 2 - panel flush with the -openingNormal face of the frames
- *
- * Frame topology attributes are used to:
- *   - Validate that all selections are proper frame members.
- *   - Derive each member's sweep axis from its cap face positions.
- *   - Identify the swept faces that bound the clear opening.
  */
 annotation { "Feature Type Name" : "Panel Maker",
-             "Feature Type Description" : "Creates a panel within a clear opening bounded by four frame members",
+             "Feature Type Description" : "Creates a panel that fills the void of a closed loop of frame members",
              "Manipulator Change Function" : "panelMakerManipulatorChange" }
 export const panelMakerFeature = defineFeature(function(context is Context, id is Id, definition is map)
     precondition
     {
-        annotation { "Name" : "Frame Members", "Filter" : EntityType.BODY && BodyType.SOLID, "MaxNumberOfPicks" : 4 }
+        annotation { "Name" : "Frame Members", "Filter" : EntityType.BODY && BodyType.SOLID }
         definition.frameMembers is Query;
 
         annotation { "Group Name" : "Detail Parameters" }
@@ -160,199 +163,146 @@ export const panelMakerFeature = defineFeature(function(context is Context, id i
         definition.namePrefix is string;
     }
     {
-        // Resolve and count the selected bodies
-        const frameMemberBodies = evaluateQuery(context, definition.frameMembers);
+        // ── 1. Resolve and validate the selected frame members ──────────────────────────
 
-        if (size(frameMemberBodies) != 4)
+        const frameMemberBodies = evaluateQuery(context, definition.frameMembers);
+        const memberCount = size(frameMemberBodies);
+
+        if (memberCount < MINIMUM_FRAME_MEMBERS)
         {
-            reportFeatureError(context, id, "Exactly four frame members must be selected");
+            reportFeatureError(context, id,
+                "At least " ~ toString(MINIMUM_FRAME_MEMBERS) ~ " frame members must be selected to enclose a panel");
             return;
         }
 
-        // Validate that every selected body is a proper frame member by checking for
-        // the frame profile attribute assigned by the Frame feature
-        for (var memberIndex = 0; memberIndex < 4; memberIndex += 1)
+        for (var memberIndex = 0; memberIndex < memberCount; memberIndex += 1)
         {
             const frameProfileQuery = qHasAttribute(frameMemberBodies[memberIndex], FRAME_ATTRIBUTE_PROFILE_NAME);
             if (isQueryEmpty(context, frameProfileQuery))
             {
-                reportFeatureError(context, id, "All selections must be frame members created by the Frame feature");
+                reportFeatureError(context, id,
+                    "All selections must be frame members created by the Frame feature");
                 return;
             }
         }
 
-        // Derive each member's sweep axis from its cap face centroids.
-        // Using the centroid-to-centroid direction (rather than the raw cap face normal)
-        // keeps the axis correct for both perpendicular cuts and mitered end cuts.
-        var memberSweepAxis = makeArray(4);
-        for (var memberIndex = 0; memberIndex < 4; memberIndex += 1)
+        // ── 2. Collect cap face centroid positions for loop sorting ─────────────────────
+
+        var memberStartPoints = makeArray(memberCount);
+        var memberEndPoints   = makeArray(memberCount);
+        for (var memberIndex = 0; memberIndex < memberCount; memberIndex += 1)
         {
-            memberSweepAxis[memberIndex] = getFrameSweepAxis(context, frameMemberBodies[memberIndex]);
+            const startFacePlane = evPlane(context, { "face" : qFrameStartFace(frameMemberBodies[memberIndex]) });
+            const endFacePlane   = evPlane(context, { "face" : qFrameEndFace(frameMemberBodies[memberIndex]) });
+            memberStartPoints[memberIndex] = startFacePlane.origin;
+            memberEndPoints[memberIndex]   = endFacePlane.origin;
         }
 
-        // Verify that sequential members are touching (zero gap), confirming they form
-        // a closed rectangular loop
-        for (var memberIndex = 0; memberIndex < 4; memberIndex += 1)
-        {
-            const nextIndex = (memberIndex == 3) ? 0 : memberIndex + 1;
-            const gapDistance = evDistance(context, {
-                        "side0" : frameMemberBodies[memberIndex],
-                        "side1" : frameMemberBodies[nextIndex]
-                    }).distance;
+        // ── 3. Sort members into a closed loop (any input order) ───────────────────────
 
-            if (gapDistance != 0 * meter)
-            {
-                reportFeatureWarning(context, id, "Selections must be sequential and form a closed loop");
-                return;
-            }
+        const loopEntries = sortFrameMembersIntoLoop(memberStartPoints, memberEndPoints);
+
+        // Verify the loop closes back on itself: the last member's exit point should
+        // be close to the first member's entry point.
+        const lastEntry  = loopEntries[memberCount - 1];
+        const firstEntry = loopEntries[0];
+
+        const lastExitPoint  = lastEntry.exitIsEnd  ? memberEndPoints[lastEntry.memberIndex]
+                                                     : memberStartPoints[lastEntry.memberIndex];
+        const firstEntryPoint = firstEntry.exitIsEnd ? memberStartPoints[firstEntry.memberIndex]
+                                                      : memberEndPoints[firstEntry.memberIndex];
+
+        const closureGapSq = squaredNorm((lastExitPoint - firstEntryPoint) / meter);
+        if (closureGapSq > LOOP_CLOSURE_TOLERANCE_SQ)
+        {
+            reportFeatureWarning(context, id,
+                "Selected frame members do not form a closed loop; verify all members are connected end-to-end");
         }
 
-        // Compute the opening normal (the panel thickness direction) as the cross product
-        // of two adjacent members' perpendicular sweep axes
-        const sweepAxisCross = cross(memberSweepAxis[0], memberSweepAxis[1]);
-        if (norm(sweepAxisCross) < PERPENDICULARITY_TOLERANCE)
-        {
-            reportFeatureError(context, id, "Members 1 and 2 must sweep in perpendicular directions; select four sequential adjacent members");
-            return;
-        }
-        const openingNormal = normalize(sweepAxisCross);
+        // ── 4. Compute joint positions and the panel plane ─────────────────────────────
 
-        // For each member, separate its swept faces into two groups:
-        //   frontBackSweptFaces : faces parallel to the opening plane (define panel thickness extents)
-        //   sideSweptFaces      : the remaining faces (include the inner channel face and outer face)
-        var memberSideSweptFaces = makeArray(4);
-        for (var memberIndex = 0; memberIndex < 4; memberIndex += 1)
+        // Joint position i = midpoint between the closest points of member i and
+        // the next member in the loop. Using evDistance gives the exact contact point
+        // for any frame profile shape (round, square, mitered, etc.).
+        var jointPositions = makeArray(memberCount);
+        for (var loopStep = 0; loopStep < memberCount; loopStep += 1)
         {
-            const allSweptFaces = qFrameSweptFace(frameMemberBodies[memberIndex]);
-            const frontBackSweptFaces = qParallelPlanes(allSweptFaces, openingNormal, true);
-            memberSideSweptFaces[memberIndex] = qSubtraction(allSweptFaces, frontBackSweptFaces);
-        }
+            const currentMemberIdx = loopEntries[loopStep].memberIndex;
+            const nextMemberIdx    = loopEntries[(loopStep + 1) % memberCount].memberIndex;
 
-        // Compute the clear-opening edge geometry for each opposite pair.
-        // evDistance between the side swept faces of opposite members automatically finds
-        // the inner channel faces (they are the closest faces across the opening).
-        //   Pair 0: members 0 and 2 (one axis of the opening)
-        //   Pair 1: members 1 and 3 (perpendicular axis of the opening)
-        //
-        // Also save the raw (pre-projection) inner face points and the direction connecting
-        // each pair's inner faces. These are used later to orient the evBox3d measurement
-        // for auto channel-depth detection.
-        var openingEdgeStart = makeArray(2);
-        var openingEdgeEnd = makeArray(2);
-        var openingEdgeMid = makeArray(2);
-        var openingEdgeMidPlane = makeArray(2);
-        var rawInnerFacePoint = makeArray(4); // [member0, member1, member2, member3]
-        var rawPairAxis = makeArray(2);       // unit vector from side-0 member to side-1 member per pair
-
-        for (var pairIndex = 0; pairIndex < 2; pairIndex += 1)
-        {
-            const oppositeMemberIndex = pairIndex + 2;
-            const distanceResult = evDistance(context, {
-                        "side0" : memberSideSweptFaces[pairIndex],
-                        "side1" : memberSideSweptFaces[oppositeMemberIndex]
+            const jointDistResult = evDistance(context, {
+                        "side0" : frameMemberBodies[currentMemberIdx],
+                        "side1" : frameMemberBodies[nextMemberIdx]
                     });
 
-            // Save raw face points before any projection, for the channel-depth measurement below
-            rawInnerFacePoint[pairIndex] = distanceResult.sides[0].point;
-            rawInnerFacePoint[pairIndex + 2] = distanceResult.sides[1].point;
-            rawPairAxis[pairIndex] = normalize(rawInnerFacePoint[pairIndex + 2] - rawInnerFacePoint[pairIndex]);
+            if (jointDistResult.distance > JOINT_CONTACT_TOLERANCE)
+            {
+                reportFeatureWarning(context, id,
+                    "Frame members at loop position " ~ toString(loopStep) ~
+                    " do not touch; results may be incorrect");
+            }
 
-            openingEdgeStart[pairIndex] = distanceResult.sides[0].point;
-            openingEdgeEnd[pairIndex] = distanceResult.sides[1].point;
-            openingEdgeMid[pairIndex] = (openingEdgeStart[pairIndex] + openingEdgeEnd[pairIndex]) / 2;
-            openingEdgeMidPlane[pairIndex] = plane(
-                openingEdgeMid[pairIndex],
-                normalize(openingEdgeEnd[pairIndex] - openingEdgeStart[pairIndex]));
+            jointPositions[loopStep] = (jointDistResult.sides[0].point +
+                                        jointDistResult.sides[1].point) / 2;
         }
 
-        // Locate the front and back faces of member 0 (swept faces parallel to the opening
-        // plane) to establish the center plane of the opening in the thickness direction
-        const member0AllSweptFaces = qFrameSweptFace(frameMemberBodies[0]);
-        const member0FrontBackFaces = evaluateQuery(context, qParallelPlanes(member0AllSweptFaces, openingNormal, true));
-
-        if (size(member0FrontBackFaces) < 2)
+        // Centroid of joint positions = interior point of the panel (used later for
+        // body identification and as the manipulator base).
+        var panelCentroid = vector(0, 0, 0) * meter;
+        for (var loopStep = 0; loopStep < memberCount; loopStep += 1)
         {
-            reportFeatureError(context, id, "Could not determine the panel plane from frame member swept faces; verify the frame profile has planar faces parallel to the opening");
+            panelCentroid = panelCentroid + jointPositions[loopStep];
+        }
+        panelCentroid = panelCentroid / memberCount;
+
+        // Fit the panel plane normal by scanning consecutive joint triples until a
+        // non-collinear triple is found (cross-product magnitude above tolerance).
+        var openingNormal = vector(0, 0, 1); // placeholder; replaced below
+        var foundNormal = false;
+        for (var loopStep = 0; loopStep < memberCount && !foundNormal; loopStep += 1)
+        {
+            const v1 = (jointPositions[(loopStep + 1) % memberCount] -
+                        jointPositions[loopStep]) / meter;
+            const v2 = (jointPositions[(loopStep + 2) % memberCount] -
+                        jointPositions[(loopStep + 1) % memberCount]) / meter;
+            const crossed = cross(v1, v2);
+            if (norm(crossed) > PERPENDICULARITY_TOLERANCE)
+            {
+                openingNormal = normalize(crossed);
+                foundNormal = true;
+            }
+        }
+
+        if (!foundNormal)
+        {
+            reportFeatureError(context, id,
+                "All selected frame members appear to be collinear; they must form a non-degenerate closed loop");
             return;
         }
 
-        // Bisect the front-to-back distance to find the true center plane of the opening
-        const frontBackDistanceResult = evDistance(context, {
-                    "side0" : member0FrontBackFaces[0],
-                    "side1" : member0FrontBackFaces[1]
+        // Compute the frame extent in the opening-normal direction for alignment.
+        // Use the bounding box of all frame bodies in the panel coordinate system.
+        // Choose a stable in-plane X axis from the centroid toward the first joint.
+        const panelXAxis = normalize((jointPositions[0] - panelCentroid) / meter);
+        const centeredCSys = coordSystem(panelCentroid, panelXAxis, openingNormal);
+
+        const frameBox = evBox3d(context, {
+                    "topology" : qUnion(frameMemberBodies),
+                    "cSys"     : centeredCSys,
+                    "tight"    : true
                 });
-        const openingFaceCenter0 = frontBackDistanceResult.sides[0].point;
-        const openingFaceCenter1 = frontBackDistanceResult.sides[1].point;
-        const frameDepth = frontBackDistanceResult.distance;
-        const centerPlane = plane((openingFaceCenter0 + openingFaceCenter1) / 2, openingNormal);
+        const frameDepth = frameBox.maxCorner[2] - frameBox.minCorner[2];
 
-        // Project all edge points onto the center plane, collapsing out the thickness
-        // component. Also project each pair's points onto the midplane of the other pair
-        // so corner points land at the true intersections of the opening edges.
-        var openingEdgeAxis = makeArray(2);
-        for (var pairIndex = 0; pairIndex < 2; pairIndex += 1)
-        {
-            const otherPairIndex = pairIndex == 0 ? 1 : 0;
+        // ── 5. Compute alignment shift ─────────────────────────────────────────────────
 
-            openingEdgeStart[pairIndex] = project(openingEdgeMidPlane[otherPairIndex], openingEdgeStart[pairIndex]);
-            openingEdgeEnd[pairIndex]   = project(openingEdgeMidPlane[otherPairIndex], openingEdgeEnd[pairIndex]);
-
-            openingEdgeStart[pairIndex] = project(centerPlane, openingEdgeStart[pairIndex]);
-            openingEdgeEnd[pairIndex]   = project(centerPlane, openingEdgeEnd[pairIndex]);
-
-            openingEdgeAxis[pairIndex] = normalize(openingEdgeEnd[pairIndex] - openingEdgeStart[pairIndex]);
-        }
-
-        // Auto-detect channel insertion depth from the frame body geometry.
-        //
-        // For each member in each pair, scan its swept faces for the shallowest face
-        // whose normal is parallel to the insertion axis and that lies at a positive
-        // signed depth past the channel mouth face. For a T-slot extrusion this is the
-        // slot bottom face. Taking the minimum across all four members gives a uniform
-        // safe insertion depth that fits the narrowest channel in the assembly.
-        var availableChannelDepthPerPair = makeArray(2);
-        for (var pairIndex = 0; pairIndex < 2; pairIndex += 1)
-        {
-            const availableDepthSide0 = findChannelBottomDepth(context,
-                        memberSideSweptFaces[pairIndex],
-                        rawInnerFacePoint[pairIndex],
-                        -rawPairAxis[pairIndex]);
-
-            const availableDepthSide1 = findChannelBottomDepth(context,
-                        memberSideSweptFaces[pairIndex + 2],
-                        rawInnerFacePoint[pairIndex + 2],
-                        rawPairAxis[pairIndex]);
-
-            availableChannelDepthPerPair[pairIndex] = (availableDepthSide0 < availableDepthSide1) ?
-                availableDepthSide0 : availableDepthSide1;
-        }
-
-        // Use the more restrictive of the two axis depths, then subtract the edge-gap clearance.
-        // Guard against a negative insertion depth if the specified gap exceeds the available depth.
-        const availableChannelDepth = (availableChannelDepthPerPair[0] < availableChannelDepthPerPair[1]) ?
-            availableChannelDepthPerPair[0] : availableChannelDepthPerPair[1];
-        if (definition.gap > availableChannelDepth)
-        {
-            reportFeatureWarning(context, id, "Edge Gap exceeds the available channel depth; panel edges will be flush with the inner frame faces");
-        }
-        const channelInsertionDepth = max(0 * meter, availableChannelDepth - definition.gap);
-
-        // Compute the panel alignment offset along the opening normal.
-        //
-        // maxAlignmentOffset is the distance the panel center must move from the frame center
-        // so that one panel face is flush with a frame face. Clamped to zero if the panel is
-        // as thick as (or thicker than) the frame in the normal direction.
         const maxAlignmentOffset = (frameDepth > definition.thickness) ?
             (frameDepth - definition.thickness) / 2 : 0 * meter;
         if (definition.thickness >= frameDepth)
         {
-            reportFeatureWarning(context, id, "Panel thickness equals or exceeds the frame depth; alignment adjustment is not available");
+            reportFeatureWarning(context, id,
+                "Panel thickness equals or exceeds the frame depth; alignment adjustment is not available");
         }
 
-        // Translate the alignment index (0/1/2) into a signed offset from the frame center.
-        //   Index 0 → panel flush with the +openingNormal frame face (+offset)
-        //   Index 1 → panel centered (zero offset)
-        //   Index 2 → panel flush with the -openingNormal frame face (-offset)
         var alignmentShift is ValueWithUnits = 0 * meter;
         if (definition.alignmentIndex == 0)
         {
@@ -363,19 +313,9 @@ export const panelMakerFeature = defineFeature(function(context is Context, id i
             alignmentShift = -maxAlignmentOffset;
         }
 
-        // Compute diagonally opposite corners of the panel cuboid.
-        // The alignmentShift offsets both corners in the normal direction, moving the panel
-        // to the selected alignment position while keeping the panel thickness constant.
-        const panelCorner0 = project(plane(openingEdgeStart[0], openingEdgeAxis[0]), openingEdgeStart[1]) +
-            (definition.thickness / 2 + alignmentShift) * openingNormal;
+        // ── 6. Register the three-point alignment manipulator ─────────────────────────
 
-        const panelCorner1 = project(plane(openingEdgeEnd[0], openingEdgeAxis[0]), openingEdgeEnd[1]) +
-            (-definition.thickness / 2 + alignmentShift) * openingNormal;
-
-        // Register the three-point alignment manipulator before creating geometry.
-        // The points lie along the opening normal at the frame's +normal face, center, and
-        // -normal face positions, placed at the center of the clear opening rectangle.
-        const manipulatorBasePoint = centerPlane.origin;
+        const manipulatorBasePoint = panelCentroid;
         const alignmentPointPositive = manipulatorBasePoint + maxAlignmentOffset * openingNormal;
         const alignmentPointCenter   = manipulatorBasePoint;
         const alignmentPointNegative = manipulatorBasePoint - maxAlignmentOffset * openingNormal;
@@ -390,103 +330,301 @@ export const panelMakerFeature = defineFeature(function(context is Context, id i
                             })
                 });
 
-        // Create the panel cuboid sized to the clear opening
-        fCuboid(context, id + "panel", { "corner1" : panelCorner0, "corner2" : panelCorner1 });
+        // ── 7. Extract panel boundary edges via per-member thin-slab intersection ───────
+        //
+        // For each frame member a thin slab (CROSS_SECTION_SLAB_THICKNESS thick) is
+        // placed at the panel mid-surface (panel centroid + alignmentShift in the
+        // openingNormal direction) and boolean-intersected with that member. This
+        // produces exactly one cross-section body per member with no body-identification
+        // ambiguity. The edge on the cross-section's flat cap face that is closest to the
+        // panel centroid in the in-plane direction is the boundary where the panel surface
+        // meets this frame member's inner face. Chaining all N such edges gives the closed
+        // boundary wire used by opFill.
+        //
+        // This approach handles every frame profile (T-slot, round tube, L-channel, box
+        // tube, etc.) and naturally produces a nonplanar fill surface when the joint
+        // positions are not coplanar.
 
-        // Identify the four panel side faces (not parallel to the opening normal).
-        // Using the Vector form of qParallelPlanes (not the Plane form) ensures faces
-        // are matched by normal direction alone, independent of their position along
-        // the opening normal axis. This is required for non-centered alignment positions
-        // where both panel faces are on the same side of the frame center plane.
-        const allPanelFaces = qCreatedBy(id + "panel", EntityType.FACE);
-        const panelFrontBackFaces = qParallelPlanes(allPanelFaces, openingNormal, true);
-        const panelSideFaces = qSubtraction(allPanelFaces, panelFrontBackFaces);
+        // Slab half-size: large enough to cover the widest frame member cross-section.
+        var maxInPlaneRadiusSq = 0.0;
+        for (var loopStep = 0; loopStep < memberCount; loopStep += 1)
+        {
+            const inPlaneOffset = (jointPositions[loopStep] - panelCentroid) / meter;
+            const radiusSq = squaredNorm(inPlaneOffset);
+            if (radiusSq > maxInPlaneRadiusSq)
+            {
+                maxInPlaneRadiusSq = radiusSq;
+            }
+        }
+        const inPlaneExtentHalfX = max(abs(frameBox.maxCorner[0]), abs(frameBox.minCorner[0]));
+        const inPlaneExtentHalfY = max(abs(frameBox.maxCorner[1]), abs(frameBox.minCorner[1]));
+        const inPlaneExtentNum   = max(inPlaneExtentHalfX, inPlaneExtentHalfY) / meter;
+        const maxInPlaneRadius   = sqrt(maxInPlaneRadiusSq) + inPlaneExtentNum;
+        const slabHalfSizeNum    = maxInPlaneRadius * SLAB_RADIUS_SCALE;
 
-        // Offset each side face inward by the auto-detected channel depth minus the edge gap,
-        // seating the panel inside the frame channels with the specified clearance
-        opOffsetFace(context, id + "offsetFace1", {
-                    "moveFaces" : panelSideFaces,
-                    "offsetDistance" : channelInsertionDepth
+        // Thin slab dimensions in the panel coordinate frame (local Z = openingNormal).
+        const thinHalfNum  = CROSS_SECTION_SLAB_THICKNESS / (2 * meter);
+        const slabShiftNum = alignmentShift / meter;
+
+        var panelBoundaryEdges = makeArray(memberCount);
+
+        for (var loopStep = 0; loopStep < memberCount; loopStep += 1)
+        {
+            const memberIdx    = loopEntries[loopStep].memberIndex;
+            const memberSlabId = id + ("xSlab" ~ toString(loopStep));
+            const memberXSecId = id + ("xSect" ~ toString(loopStep));
+
+            // Create a fresh thin slab at the panel mid-surface, centered at the origin
+            // in panel-plane local coordinates. opTransform then maps it to world space.
+            fCuboid(context, memberSlabId, {
+                        "corner1" : vector(-slabHalfSizeNum, -slabHalfSizeNum,
+                                           slabShiftNum - thinHalfNum) * meter,
+                        "corner2" : vector( slabHalfSizeNum,  slabHalfSizeNum,
+                                           slabShiftNum + thinHalfNum) * meter
+                    });
+            opTransform(context, memberSlabId + "T", {
+                        "bodies"    : qCreatedBy(memberSlabId, EntityType.BODY),
+                        "transform" : toWorld(centeredCSys)
+                    });
+
+            // Intersect the thin slab with this frame member. The result is the member's
+            // cross-section profile at the panel mid-surface — exactly one body.
+            opBoolean(context, memberXSecId, {
+                        "tools"         : frameMemberBodies[memberIdx],
+                        "targets"       : qCreatedBy(memberSlabId, EntityType.BODY),
+                        "operationType" : BooleanOperationType.INTERSECT,
+                        "keepTools"     : true
+                    });
+
+            const xSectBodies = evaluateQuery(context,
+                qCreatedBy(memberXSecId, EntityType.BODY));
+            if (size(xSectBodies) == 0)
+            {
+                reportFeatureError(context, id,
+                    "Frame member at loop position " ~ toString(loopStep) ~
+                    " does not intersect the panel plane. Verify the frame members " ~
+                    "are close enough to coplanar for a panel at this alignment position.");
+                return;
+            }
+
+            // The cross-section body has two flat cap faces (parallel to the opening
+            // normal) and side faces from the frame member surfaces.
+            // Among the edges on those cap faces, select the one whose midpoint is
+            // closest to the panel centroid in the in-plane direction. This is the
+            // edge where the panel surface meets this member's inner (void-facing) face.
+            const xSectFaces    = qOwnedByBody(xSectBodies[0], EntityType.FACE);
+            const xSectCapFaces = qParallelPlanes(xSectFaces, openingNormal, true);
+            const capEdges      = qAdjacent(xSectCapFaces, AdjacencyType.EDGE, EntityType.EDGE);
+            const capEdgeArray  = evaluateQuery(context, capEdges);
+
+            if (size(capEdgeArray) == 0)
+            {
+                reportFeatureError(context, id,
+                    "No boundary edges found on cross-section cap face for frame member " ~
+                    "at loop position " ~ toString(loopStep) ~
+                    ". The frame member cross-section may be degenerate at this panel position.");
+                return;
+            }
+
+            var innerEdge        = capEdgeArray[0];
+            // innerEdgeDistSq is only meaningful after firstEdgeSeen becomes false;
+            // the initial value of 0 is never compared before the first valid assignment.
+            var innerEdgeDistSq  is number  = 0;
+            var firstEdgeSeen    is boolean = true;
+
+            for (var edgeIdx = 0; edgeIdx < size(capEdgeArray); edgeIdx += 1)
+            {
+                // Midpoint of this edge in 3D world space.
+                const edgeMid = evEdgeTangentLine(context, {
+                            "edge"                      : capEdgeArray[edgeIdx],
+                            "parameter"                 : 0.5,
+                            "arcLengthParameterization" : false
+                        }).origin;
+
+                // In-plane squared distance from edge midpoint to panel centroid.
+                // Remove the openingNormal component so only the in-plane proximity counts.
+                const toMid      = (edgeMid - panelCentroid) / meter;
+                const normalComp = toMid[0] * openingNormal[0] +
+                                   toMid[1] * openingNormal[1] +
+                                   toMid[2] * openingNormal[2];
+                const inPlane    = vector(toMid[0] - normalComp * openingNormal[0],
+                                          toMid[1] - normalComp * openingNormal[1],
+                                          toMid[2] - normalComp * openingNormal[2]);
+                const distSq     = squaredNorm(inPlane);
+
+                if (firstEdgeSeen || distSq < innerEdgeDistSq)
+                {
+                    innerEdge       = capEdgeArray[edgeIdx];
+                    innerEdgeDistSq = distSq;
+                    firstEdgeSeen   = false;
+                }
+            }
+
+            panelBoundaryEdges[loopStep] = innerEdge;
+        }
+
+        // ── 8. Fill the boundary to create the panel mid-surface ─────────────────────
+        //
+        // opFill creates a surface spanning the closed wire formed by the N inner boundary
+        // edges. For coplanar edges the result is a flat patch; for non-coplanar edges it
+        // produces a smooth interpolated surface that conforms to the 3D frame geometry.
+
+        opFill(context, id + "panelFill", {
+                    "edges" : qUnion(panelBoundaryEdges)
                 });
 
-        // Calculate the final panel dimensions (clear opening + channel insertion on both sides)
-        const panelDim1 = roundToPrecision(
-            (norm(openingEdgeEnd[0] - openingEdgeStart[0]) + 2 * channelInsertionDepth) / meter, DIMENSION_ROUNDING_PRECISION);
-        const panelDim2 = roundToPrecision(
-            (norm(openingEdgeEnd[1] - openingEdgeStart[1]) + 2 * channelInsertionDepth) / meter, DIMENSION_ROUNDING_PRECISION);
+        // ── 9. Thicken the surface into a solid panel ─────────────────────────────────
+        //
+        // Thicken symmetrically about the mid-surface. The alignment shift was encoded
+        // in the slab placement, so the fill surface IS already the panel mid-surface
+        // for the selected alignment position; equal offsets in both normal directions
+        // give the correct panel thickness and position.
 
-        // Apply the formatted name to the finished panel body
+        opThicken(context, id + "panelThicken", {
+                    "entities"   : qCreatedBy(id + "panelFill", EntityType.BODY),
+                    "thickness1" : definition.thickness / 2,
+                    "thickness2" : definition.thickness / 2
+                });
+
+        // The fill surface is no longer needed once the solid exists.
+        opDeleteBodies(context, id + "deleteFill", {
+                    "entities" : qCreatedBy(id + "panelFill", EntityType.BODY)
+                });
+
+        // Delete all temporary thin cross-section bodies. The opFill has already
+        // consumed the boundary edges topologically, so these bodies can be removed.
+        for (var loopStep = 0; loopStep < memberCount; loopStep += 1)
+        {
+            const xSectBodiesCleanup = evaluateQuery(context,
+                qCreatedBy(id + ("xSect" ~ toString(loopStep)), EntityType.BODY));
+            if (size(xSectBodiesCleanup) > 0)
+            {
+                opDeleteBodies(context, id + ("delXSect" ~ toString(loopStep)), {
+                            "entities" : qCreatedBy(id + ("xSect" ~ toString(loopStep)), EntityType.BODY)
+                        });
+            }
+        }
+
+        const panelBodyQuery = qCreatedBy(id + "panelThicken", EntityType.BODY);
+
+        // ── 10. Apply edge gap ─────────────────────────────────────────────────────────
+
+        // The side faces of the panel (those NOT parallel to the opening normal) are
+        // offset inward by the edge gap to create clearance between the panel edges
+        // and the frame body surfaces.
+        if (definition.gap > 0 * meter)
+        {
+            const allPanelFaces     = qOwnedByBody(panelBodyQuery, EntityType.FACE);
+            const panelFrontBackFaces = qParallelPlanes(allPanelFaces, openingNormal, true);
+            const panelSideFaces    = qSubtraction(allPanelFaces, panelFrontBackFaces);
+
+            opOffsetFace(context, id + "edgeGap", {
+                        "moveFaces"      : panelSideFaces,
+                        "offsetDistance" : -definition.gap
+                    });
+        }
+
+        // ── 11. Name the panel body ────────────────────────────────────────────────────
+
+        // Use the panel body's bounding box in the panel coordinate system to derive
+        // width and height dimensions for the name string. This works for any panel shape.
+        const panelBox = evBox3d(context, {
+                    "topology" : panelBodyQuery,
+                    "cSys"     : centeredCSys,
+                    "tight"    : true
+                });
+        const panelDim1 = roundToPrecision(
+            (panelBox.maxCorner[0] - panelBox.minCorner[0]) / meter, DIMENSION_ROUNDING_PRECISION);
+        const panelDim2 = roundToPrecision(
+            (panelBox.maxCorner[1] - panelBox.minCorner[1]) / meter, DIMENSION_ROUNDING_PRECISION);
+
         setProperty(context, {
-                    "entities" : qCreatedBy(id + "panel", EntityType.BODY),
+                    "entities"     : panelBodyQuery,
                     "propertyType" : PropertyType.NAME,
-                    "value" : buildPanelName(definition.namePrefix, panelDim1, panelDim2, definition.mm)
+                    "value"        : buildPanelName(definition.namePrefix, panelDim1, panelDim2, definition.mm)
                 });
     });
 
 /**
- * Finds the available insertion depth for a panel edge entering a frame member's channel,
- * measured from the channel mouth (inner face) to the channel bottom face.
+ * Sorts an unordered set of frame members into a connected closed loop using greedy
+ * nearest-neighbor matching on cap face centroid positions.
  *
- * For a T-slot extrusion the channel bottom is the slot-floor face: the shallowest planar
- * face whose normal is parallel (or anti-parallel) to the insertion axis and that lies at
- * a positive signed depth past the channel mouth. Scanning all such faces and taking the
- * minimum positive depth gives the T-slot depth without relying on the full bounding-box
- * extent of the frame body (which would span the entire frame width, not just the groove).
+ * Each iteration finds the unused member whose start or end cap centroid is closest
+ * to the current traversal exit point, appends it to the loop, and advances the exit
+ * point to the far end of the newly appended member.
  *
- * Returns 0 * meter if no channel bottom face is found (no insertable groove detected).
+ * Returns an array of maps (one per member in loop order) with fields:
+ *   "memberIndex" {number}  : Original (unsorted) index into frameMemberBodies.
+ *   "exitIsEnd"   {boolean} : true  → this member's end cap is the exit toward the next member;
+ *                             false → this member's start cap is the exit toward the next member.
  *
- * @param context              : The active feature context.
- * @param memberSweptFaces     : Swept faces of the frame member, pre-filtered to exclude
- *                               faces whose normals are parallel to the opening normal.
- * @param innerFacePoint       : A point on the channel mouth face (the clear-opening boundary).
- * @param insertionDirection   : Normalized unit vector pointing INTO the member body from
- *                               the inner face (away from the clear opening).
- * @returns {ValueWithUnits}   : Available channel depth in meter units.
+ * @param startPoints {array} : Array of start cap face centroid positions (ValueWithUnits vectors).
+ * @param endPoints   {array} : Array of end cap face centroid positions (ValueWithUnits vectors).
+ * @returns {array}           : Sorted loop descriptor array.
  */
-function findChannelBottomDepth(context is Context, memberSweptFaces is Query, innerFacePoint is Vector, insertionDirection is Vector) returns ValueWithUnits
+function sortFrameMembersIntoLoop(startPoints is array, endPoints is array) returns array
 {
-    // qParallelPlanes with true returns faces whose normals are parallel OR anti-parallel to
-    // the insertion direction. These are the faces "perpendicular to the insertion axis" —
-    // the floor and ceiling faces of the channel tunnel. For a T-slot extrusion:
-    //   - The channel mouth face (inner face, at signed depth ≈ 0 from innerFacePoint)
-    //   - The channel bottom face (at signed depth = slot_depth > 0)
-    //   - Possibly the frame outer face (at signed depth = full_frame_width >> slot_depth)
-    // The minimum positive depth past the tolerance gives the channel bottom.
-    const candidateFaces = qParallelPlanes(memberSweptFaces, insertionDirection, true);
-    const candidateFaceArray = evaluateQuery(context, candidateFaces);
+    const memberCount = size(startPoints);
+    var loop = makeArray(memberCount);
+    var usedByStep = makeArray(memberCount, false);
 
-    var channelBottomDepth is ValueWithUnits = 0 * meter;
-    var foundChannelBottom is boolean = false;
+    // Seed the loop with member 0; treat its end cap as the initial exit point.
+    loop[0] = { "memberIndex" : 0, "exitIsEnd" : true };
+    usedByStep[0] = true;
+    var currentExitPoint = endPoints[0];
 
-    for (var faceIndex = 0; faceIndex < size(candidateFaceArray); faceIndex += 1)
+    for (var step = 1; step < memberCount; step += 1)
     {
-        const facePlane = evPlane(context, { "face" : candidateFaceArray[faceIndex] });
+        var bestMemberIndex = -1;
+        // bestDistSq is only meaningful after bestMemberIndex is first assigned
+        // (guarded by the bestMemberIndex == -1 condition below).
+        var bestDistSq is number = 0;
+        var bestEntryIsStart is boolean = true;
 
-        // Compute the signed depth from the inner face point to this candidate face,
-        // measured along the insertion direction. Component-wise multiplication avoids
-        // any type ambiguity between length vectors and the unitless direction vector.
-        const offset = facePlane.origin - innerFacePoint;
-        const signedDepth = offset[0] * insertionDirection[0] +
-                            offset[1] * insertionDirection[1] +
-                            offset[2] * insertionDirection[2];
-
-        // Accept only faces that are strictly past the channel mouth (positive depth > tolerance)
-        // and shallower than any previously found candidate.
-        if (signedDepth > CHANNEL_DEPTH_TOLERANCE &&
-            (!foundChannelBottom || signedDepth < channelBottomDepth))
+        for (var candidateIndex = 0; candidateIndex < memberCount; candidateIndex += 1)
         {
-            channelBottomDepth = signedDepth;
-            foundChannelBottom = true;
+            if (!usedByStep[candidateIndex])
+            {
+                // Squared distances (dimensionless) from the current exit point to both
+                // caps of this candidate. squaredNorm avoids a sqrt and keeps units clean.
+                const diffToStart = (startPoints[candidateIndex] - currentExitPoint) / meter;
+                const distSqToStart = squaredNorm(diffToStart);
+
+                const diffToEnd = (endPoints[candidateIndex] - currentExitPoint) / meter;
+                const distSqToEnd = squaredNorm(diffToEnd);
+
+                if (bestMemberIndex == -1 || distSqToStart < bestDistSq)
+                {
+                    bestMemberIndex    = candidateIndex;
+                    bestDistSq         = distSqToStart;
+                    bestEntryIsStart   = true;
+                }
+
+                if (distSqToEnd < bestDistSq)
+                {
+                    bestMemberIndex    = candidateIndex;
+                    bestDistSq         = distSqToEnd;
+                    bestEntryIsStart   = false;
+                }
+            }
         }
+
+        // If the entry is via the start cap, the exit is via the end cap, and vice versa.
+        const exitIsEnd = bestEntryIsStart;
+        loop[step] = { "memberIndex" : bestMemberIndex, "exitIsEnd" : exitIsEnd };
+        usedByStep[bestMemberIndex] = true;
+        currentExitPoint = exitIsEnd ? endPoints[bestMemberIndex] : startPoints[bestMemberIndex];
     }
 
-    // channelBottomDepth stays 0 if no face was found past the channel mouth tolerance
-    return channelBottomDepth;
+    return loop;
 }
+
+/**
+ * Manipulator change function for panelMakerFeature.
  *
  * When the user clicks one of the three alignment points, this function updates
- * `definition.alignmentIndex` to the newly selected index (0, 1, or 2), which
- * causes the feature to regenerate with the new alignment position.
+ * definition.alignmentIndex to the newly selected index (0, 1, or 2) and returns
+ * the updated definition so the feature regenerates with the new alignment position.
  *
  * @param context : The active feature context.
  * @param definition {map} : The current feature definition.
