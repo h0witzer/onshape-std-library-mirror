@@ -437,8 +437,8 @@ export const panelMakerFeature = defineFeature(function(context is Context, id i
         // where the frame faces are flush with the fill edge) the fill surface is left
         // intact and the fragment search below returns it unchanged.
         try(opSplitFace(context, id + "splitPanelFill", {
-                    "targets" : qCreatedBy(id + "panelFill", EntityType.FACE),
-                    "edges"   : allLateralFaces
+                    "faceTargets" : qCreatedBy(id + "panelFill", EntityType.FACE),
+                    "faceTools"   : allLateralFaces
                 }));
 
         // Identify the interior fragment: the face containing (or closest to) the
