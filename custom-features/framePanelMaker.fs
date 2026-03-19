@@ -351,7 +351,7 @@ export const panelMakerFeature = defineFeature(function(context is Context, id i
             cornerPoints[loopStep] = computeCornerPoint(context,
                     innerFaceCurrent, currentMemberBody,
                     innerFaceNext,    nextMemberBody,
-                    panelXAxis, panelYAxis, openingNormal, panelCentroid, alignmentZ);
+                    panelCSys, alignmentZ);
         }
 
         // ── 10. Build closed boundary wire ───────────────────────────────────────────────
@@ -464,12 +464,35 @@ function getFrameSweepDirection(context is Context, memberBody is Query, pathPar
                 }).direction;
     }
 
-    // Strategy 2: cylindrical swept face axis — used for round tubes and pipes.
+    // Strategy 2: cylindrical swept face axis — used for straight round tubes and pipes.
     const sweptFaces = qFrameSweptFace(memberBody);
     const cylinderFaces = evaluateQuery(context, qGeometry(sweptFaces, GeometryType.CYLINDER));
     if (size(cylinderFaces) > 0)
     {
         return evSurfaceDefinition(context, { "face" : cylinderFaces[0] }).coordSystem.zAxis;
+    }
+
+    // Strategy 2b: toroidal swept face — used for rolled (arc-swept) round tube members.
+    //
+    // When a round tube is swept along an arc, its swept face is a torus rather than a
+    // cylinder, so Strategy 2 finds no faces. The sweep tangent at the requested end is
+    // cross(torusAxis, radialDirection), where radialDirection is the in-plane vector from
+    // the torus center to the cap face centroid at that end.
+    const torusFaces = evaluateQuery(context, qGeometry(sweptFaces, GeometryType.TORUS));
+    if (size(torusFaces) > 0)
+    {
+        const torusDefinition  = evSurfaceDefinition(context, { "face" : torusFaces[0] });
+        const torusCenter      = torusDefinition.coordSystem.origin;
+        const torusAxis        = torusDefinition.coordSystem.zAxis;
+        const startCapCentroid = evApproximateCentroid(context, { "entities" : qFrameStartFace(memberBody) });
+        const endCapCentroid   = evApproximateCentroid(context, { "entities" : qFrameEndFace(memberBody) });
+        const capCentroid      = (pathParameter < 0.5) ? startCapCentroid : endCapCentroid;
+
+        // Project the radial vector into the torus equatorial (sweep) plane.
+        const radialVec      = capCentroid - torusCenter;
+        const axialComponent = dot(radialVec, torusAxis);
+        const radialInPlane  = radialVec - axialComponent * torusAxis;
+        return normalize(cross(torusAxis, radialInPlane / meter));
     }
 
     // Strategy 3: arc or general swept edge — used for curved (arc-swept) members.
@@ -627,71 +650,199 @@ function getInnerFaceCornerPlane(context is Context, innerFace is Query, memberB
  * placed at the chosen panel alignment depth.
  *
  * Method:
- *   1. Get the constraint plane of each member's inner swept face at its corner end via
- *      getInnerFaceCornerPlane. For planar faces this is exact; for curved faces it is
- *      the local tangent at the relevant arc end.
- *   2. Project each plane's normal and origin to the panel XY coordinate system
- *      (dimensionless, units stripped) to obtain two 2D constraint lines.
- *   3. Solve the 2x2 system for the corner XY position, then reconstruct the world point
- *      at Z = alignmentZ.
+ *   1. Derive a 2D constraint for each member's inner swept face in the panel XY plane
+ *      via getInnerFaceConstraint2D:
+ *        - Planar/cylindrical face → line constraint from the tangent plane at the corner edge.
+ *        - Toroidal face (rolled round tube) → circle constraint from the torus inner arc.
+ *   2. Intersect the two constraints (line-line, line-circle, or circle-circle).
+ *      Circle-circle is reduced to line-circle via the radical axis.
+ *   3. Reconstruct the world-space corner with toWorld at Z = alignmentZ.
  *
- * If the two inner face planes are parallel (T-junction or collinear members, detected with
- * parallelVectors from the standard library), a midpoint fallback is used.
+ * For straight (planar/cylindrical) inner faces, the constraint is a line derived from the
+ * tangent plane at the corner edge — the same approach used previously.
+ * For toroidal inner faces (rolled round tube members), the constraint is a circle: the arc
+ * at radius (torus.radius - torus.minorRadius) from the torus axis projected to the panel
+ * plane. Line-circle and circle-circle intersections are solved analytically. The correct
+ * root (of the two intersection candidates) is chosen by proximity to the cap face centroid
+ * at the junction end of the rolled member.
  *
  * @param context           {Context}        : The active feature context.
  * @param innerFaceCurrent  {Query}          : Inner swept face of the current member.
  * @param currentBody       {Query}          : Current frame member body.
  * @param innerFaceNext     {Query}          : Inner swept face of the next member.
  * @param nextBody          {Query}          : Next frame member body.
- * @param panelXAxis        {Vector}         : Dimensionless X axis of the panel system.
- * @param panelYAxis        {Vector}         : Dimensionless Y axis of the panel system.
- * @param panelNormal       {Vector}         : Dimensionless panel normal (Z axis).
- * @param panelOrigin       {Vector}         : World-space origin of the panel coordinate system.
- * @param alignmentZ        {ValueWithUnits} : Alignment depth along panelNormal from panelOrigin.
+ * @param panelCSys         {CoordSystem}    : Panel coordinate system (Z = normal, origin = centroid).
+ * @param alignmentZ        {ValueWithUnits} : Alignment depth along the panel normal from the panel origin.
  * @returns {Vector} : World-space corner position with meter units.
  */
-function computeCornerPoint(context is Context, innerFaceCurrent is Query, currentBody is Query, innerFaceNext is Query, nextBody is Query, panelXAxis is Vector, panelYAxis is Vector, panelNormal is Vector, panelOrigin is Vector, alignmentZ is ValueWithUnits) returns Vector
+function computeCornerPoint(context is Context, innerFaceCurrent is Query, currentBody is Query, innerFaceNext is Query, nextBody is Query, panelCSys is CoordSystem, alignmentZ is ValueWithUnits) returns Vector
 {
-    const planeCurrent = getInnerFaceCornerPlane(context, innerFaceCurrent, currentBody, nextBody);
-    const planeNext    = getInnerFaceCornerPlane(context, innerFaceNext,    nextBody,    currentBody);
-
-    // Project each plane normal to panel XY (the 2D constraint directions).
-    const nCx = dot(planeCurrent.normal, panelXAxis);
-    const nCy = dot(planeCurrent.normal, panelYAxis);
-    const nNx = dot(planeNext.normal,    panelXAxis);
-    const nNy = dot(planeNext.normal,    panelYAxis);
-
-    // Project each plane origin to panel XY, units stripped to dimensionless meters.
-    const oCx = dot(planeCurrent.origin - panelOrigin, panelXAxis) / meter;
-    const oCy = dot(planeCurrent.origin - panelOrigin, panelYAxis) / meter;
-    const oNx = dot(planeNext.origin    - panelOrigin, panelXAxis) / meter;
-    const oNy = dot(planeNext.origin    - panelOrigin, panelYAxis) / meter;
-
-    // 2x2 system:  nCx*x + nCy*y = bC   and   nNx*x + nNy*y = bN
-    const bC = nCx * oCx + nCy * oCy;
-    const bN = nNx * oNx + nNy * oNy;
-    const det = nCx * nNy - nCy * nNx;
+    const constraintCurrent = getInnerFaceConstraint2D(context, innerFaceCurrent, currentBody, nextBody,    panelCSys);
+    const constraintNext    = getInnerFaceConstraint2D(context, innerFaceNext,    nextBody,    currentBody, panelCSys);
 
     var cornerX is number = 0;
     var cornerY is number = 0;
 
-    // parallelVectors() from the standard library detects when the inner face planes
-    // are parallel (T-junction or collinear members), avoiding division by zero.
-    if (parallelVectors(planeCurrent.normal, planeNext.normal))
+    if (constraintCurrent.type == "line" && constraintNext.type == "line")
     {
-        cornerX = (oCx + oNx) / 2;
-        cornerY = (oCy + oNy) / 2;
+        // Two straight (or planar) members: solve the 2x2 linear system
+        //   nx1*x + ny1*y = rhs1
+        //   nx2*x + ny2*y = rhs2
+        const det = constraintCurrent.nx * constraintNext.ny - constraintCurrent.ny * constraintNext.nx;
+
+        if (parallelVectors(vector(constraintCurrent.nx, constraintCurrent.ny, 0),
+                            vector(constraintNext.nx,    constraintNext.ny,    0)))
+        {
+            // Parallel faces (T-junction or collinear): midpoint of the two foot-of-perpendicular projections.
+            cornerX = (constraintCurrent.rhs * constraintCurrent.nx + constraintNext.rhs * constraintNext.nx) / 2;
+            cornerY = (constraintCurrent.rhs * constraintCurrent.ny + constraintNext.rhs * constraintNext.ny) / 2;
+        }
+        else
+        {
+            cornerX = (constraintCurrent.rhs * constraintNext.ny - constraintNext.rhs * constraintCurrent.ny) / det;
+            cornerY = (constraintCurrent.nx * constraintNext.rhs - constraintNext.nx * constraintCurrent.rhs) / det;
+        }
     }
     else
     {
-        cornerX = (bC * nNy - bN * nCy) / det;
-        cornerY = (nCx * bN - nNx * bC) / det;
+        // At least one rolled member: handle line-circle or circle-circle.
+        //
+        // For circle-circle, subtract the two circle equations to obtain the radical axis
+        // (a line), then reduce to the line-circle case.
+
+        var lineConstraint  = { "nx" : 0, "ny" : 1, "rhs" : 0 };
+        var circleConstraint = constraintCurrent;
+        var rolledBody  = currentBody;
+        var adjacentBodyForRoot = nextBody;
+
+        if (constraintCurrent.type == "circle" && constraintNext.type == "circle")
+        {
+            // Radical axis: 2*(cx2-cx1)*x + 2*(cy2-cy1)*y = r1^2 - r2^2 + cx2^2 - cx1^2 + cy2^2 - cy1^2
+            const dx  = constraintNext.cx - constraintCurrent.cx;
+            const dy  = constraintNext.cy - constraintCurrent.cy;
+            const len = sqrt(dx * dx + dy * dy);
+            const radicalRhs = (constraintNext.cx ^ 2 - constraintCurrent.cx ^ 2
+                              + constraintNext.cy ^ 2 - constraintCurrent.cy ^ 2
+                              + constraintCurrent.radius ^ 2 - constraintNext.radius ^ 2) / (2 * len);
+            lineConstraint   = { "nx" : dx / len, "ny" : dy / len, "rhs" : radicalRhs };
+            circleConstraint = constraintCurrent;
+            rolledBody       = currentBody;
+            adjacentBodyForRoot = nextBody;
+        }
+        else if (constraintCurrent.type == "circle")
+        {
+            lineConstraint   = constraintNext;
+            circleConstraint = constraintCurrent;
+            rolledBody       = currentBody;
+            adjacentBodyForRoot = nextBody;
+        }
+        else
+        {
+            lineConstraint   = constraintCurrent;
+            circleConstraint = constraintNext;
+            rolledBody       = nextBody;
+            adjacentBodyForRoot = currentBody;
+        }
+
+        // Line-circle intersection.
+        // Signed distance from circle center to the line (positive on the normal side):
+        const nx = lineConstraint.nx;
+        const ny = lineConstraint.ny;
+        const b  = lineConstraint.rhs;
+        const cx = circleConstraint.cx;
+        const cy = circleConstraint.cy;
+        const r  = circleConstraint.radius;
+        const d  = nx * cx + ny * cy - b;
+        const discriminant = r ^ 2 - d ^ 2;
+        const t  = (discriminant > 0) ? sqrt(discriminant) : 0;
+
+        // Foot of perpendicular from circle center to line, then offset along the line direction (ny, -nx).
+        const fx = cx - nx * d;
+        const fy = cy - ny * d;
+        const x1 = fx + ny * t;
+        const y1 = fy - nx * t;
+        const x2 = fx - ny * t;
+        const y2 = fy + nx * t;
+
+        // Pick the root nearest to the cap face of the rolled member at the junction end.
+        // The cap face closest to the adjacent member centroid is the correct junction end.
+        const junctionCentroid = evApproximateCentroid(context, {
+                    "entities" : qClosestTo(
+                        qUnion([qFrameStartFace(rolledBody), qFrameEndFace(rolledBody)]),
+                        evApproximateCentroid(context, { "entities" : adjacentBodyForRoot })
+                    )
+                });
+        const junctionLocal = fromWorld(panelCSys, junctionCentroid);
+        const jx = junctionLocal[0] / meter;
+        const jy = junctionLocal[1] / meter;
+
+        const dist1 = (x1 - jx) ^ 2 + (y1 - jy) ^ 2;
+        const dist2 = (x2 - jx) ^ 2 + (y2 - jy) ^ 2;
+        cornerX = (dist1 <= dist2) ? x1 : x2;
+        cornerY = (dist1 <= dist2) ? y1 : y2;
     }
 
-    return panelOrigin
-        + cornerX * meter * panelXAxis
-        + cornerY * meter * panelYAxis
-        + alignmentZ * panelNormal;
+    return toWorld(panelCSys, vector(cornerX * meter, cornerY * meter, alignmentZ));
+}
+
+/**
+ * Returns a 2D constraint map for the inner swept face of a frame member at a panel corner,
+ * expressed in the panel coordinate system. Two constraint types are possible:
+ *
+ *   "line"   : { "type", "nx", "ny", "rhs" }
+ *              Normal-form line equation  nx*x + ny*y = rhs.
+ *              Used for planar and cylindrical (straight) inner faces.
+ *              (nx, ny) is the face normal projected to the panel XY plane (unit vector).
+ *              rhs is computed from the face origin projected by fromWorld.
+ *
+ *   "circle" : { "type", "cx", "cy", "radius" }
+ *              Circle  (x-cx)^2 + (y-cy)^2 = radius^2.
+ *              Used for toroidal (rolled round tube) inner faces.
+ *              Center = torus axis projected to panel XY by fromWorld.
+ *              Radius = torus.radius - torus.minorRadius (inner boundary arc in the panel plane).
+ *
+ * All dimensionless values are expressed in meters.
+ *
+ * @param context       {Context}     : The active feature context.
+ * @param innerFace     {Query}       : The inner swept face of the member.
+ * @param memberBody    {Query}       : The frame member body owning innerFace.
+ * @param adjacentBody  {Query}       : The adjacent frame member at this corner.
+ * @param panelCSys     {CoordSystem} : Panel coordinate system (Z = panel normal, origin = centroid).
+ * @returns {map} : Constraint map with "type" key equal to "line" or "circle".
+ */
+function getInnerFaceConstraint2D(context is Context, innerFace is Query, memberBody is Query, adjacentBody is Query, panelCSys is CoordSystem) returns map
+{
+    const surfaceDefinition = evSurfaceDefinition(context, { "face" : innerFace });
+
+    if (surfaceDefinition is Torus)
+    {
+        // Rolled member: the inner boundary arc in the panel plane is a circle.
+        // Center = torus axis projected to panel XY via fromWorld.
+        // Radius = torus major radius minus tube minor radius (the innermost arc).
+        const torusCenterLocal = fromWorld(panelCSys, surfaceDefinition.coordSystem.origin);
+        return {
+            "type"   : "circle",
+            "cx"     : torusCenterLocal[0] / meter,
+            "cy"     : torusCenterLocal[1] / meter,
+            "radius" : (surfaceDefinition.radius - surfaceDefinition.minorRadius) / meter
+        };
+    }
+
+    // Planar or cylindrical face: derive a line constraint from the corner tangent plane.
+    // fromWorld projects the plane origin to panel local coordinates.
+    // yAxis(panelCSys) provides the panel Y axis without manual cross-product recomputation.
+    const cornerPlane = getInnerFaceCornerPlane(context, innerFace, memberBody, adjacentBody);
+    const localOrigin = fromWorld(panelCSys, cornerPlane.origin);
+    const nx          = dot(cornerPlane.normal, panelCSys.xAxis);
+    const ny          = dot(cornerPlane.normal, yAxis(panelCSys));
+    const ox          = localOrigin[0] / meter;
+    const oy          = localOrigin[1] / meter;
+    return {
+        "type" : "line",
+        "nx"   : nx,
+        "ny"   : ny,
+        "rhs"  : nx * ox + ny * oy
+    };
 }
 
 /**
