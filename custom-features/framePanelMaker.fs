@@ -277,7 +277,14 @@ export const panelMakerFeature = defineFeature(function(context is Context, id i
                     "cSys"     : centeredCSys,
                     "tight"    : true
                 });
-        const frameDepth = frameBox.maxCorner[2] - frameBox.minCorner[2];
+        const frameDepth   = frameBox.maxCorner[2] - frameBox.minCorner[2];
+
+        // Midpoint of the frame assembly in the opening-normal direction, measured from
+        // panelCentroid along openingNormal. For frames that are symmetric about the joint
+        // plane this is ~0; for asymmetric frames it can be a significant non-zero offset,
+        // which is the root cause of alignment points appearing outside the frame window
+        // when this offset is ignored.
+        const frameCenterZ = (frameBox.maxCorner[2] + frameBox.minCorner[2]) / 2;
 
         // ── 5. Compute alignment shift ─────────────────────────────────────────────────
 
@@ -289,22 +296,34 @@ export const panelMakerFeature = defineFeature(function(context is Context, id i
                 "Panel thickness equals or exceeds the frame depth; alignment adjustment is not available");
         }
 
-        var alignmentShift is ValueWithUnits = 0 * meter;
+        // Panel mid-surface positions along openingNormal, measured from panelCentroid:
+        //   flushFrontZ  = frameBox.maxCorner[2] - thickness/2  (flush with +normal face)
+        //   frameCenterZ = (max + min) / 2                      (centered in frame depth)
+        //   flushBackZ   = frameBox.minCorner[2] + thickness/2  (flush with -normal face)
+        const flushFrontZ = frameCenterZ + maxAlignmentOffset;
+        const flushBackZ  = frameCenterZ - maxAlignmentOffset;
+
+        var alignmentShift is ValueWithUnits = frameCenterZ;
         if (definition.alignmentIndex == 0)
         {
-            alignmentShift = maxAlignmentOffset;
+            alignmentShift = flushFrontZ;
         }
         else if (definition.alignmentIndex == 2)
         {
-            alignmentShift = -maxAlignmentOffset;
+            alignmentShift = flushBackZ;
         }
 
         // ── 6. Register the three-point alignment manipulator ─────────────────────────
+        //
+        // Each manipulator point is placed at the in-plane centroid of the panel but at the
+        // exact normal-direction position the panel mid-surface would occupy for that alignment
+        // choice. Anchoring to flushFrontZ/frameCenterZ/flushBackZ (not to ±maxAlignmentOffset
+        // from panelCentroid) guarantees all three points always appear INSIDE the frame body
+        // depth regardless of whether the frame is symmetric about the joint plane.
 
-        const manipulatorBasePoint = panelCentroid;
-        const alignmentPointPositive = manipulatorBasePoint + maxAlignmentOffset * openingNormal;
-        const alignmentPointCenter   = manipulatorBasePoint;
-        const alignmentPointNegative = manipulatorBasePoint - maxAlignmentOffset * openingNormal;
+        const alignmentPointPositive = panelCentroid + flushFrontZ  * openingNormal;
+        const alignmentPointCenter   = panelCentroid + frameCenterZ * openingNormal;
+        const alignmentPointNegative = panelCentroid + flushBackZ   * openingNormal;
         addManipulators(context, id, {
                     "alignmentManipulator" : pointsManipulator({
                                 "points" : [
@@ -316,22 +335,23 @@ export const panelMakerFeature = defineFeature(function(context is Context, id i
                             })
                 });
 
-        // ── 7. Build adjusted boundary spline through joint positions ─────────────────
+        // ── 7. Build adjusted boundary polyline through joint positions ──────────────
         //
-        // Each joint is adjusted in two ways before fitting the spline:
+        // Each joint is adjusted in two ways before building the boundary:
         //   (a) Alignment shift: offset along openingNormal so the panel mid-surface sits
         //       at the chosen alignment position (flush front, centered, or flush back).
-        //   (b) Edge gap: offset each joint inward toward the panel centroid by definition.gap,
-        //       projected into the plane perpendicular to openingNormal. This guarantees the
-        //       panel boundary is gap away from each frame member's inner corner with no
-        //       booleans and no post-thicken face-identification.
+        //   (b) Edge gap: offset each joint inward toward the panel centroid by
+        //       definition.gap, projected into the plane perpendicular to openingNormal.
         //
-        // The spline is closed by appending the first adjusted point as the final point.
-        // opFitSpline produces a wire body whose edges are then used by opFillSurface.
-        // For non-planar frame arrangements the joint positions are 3D and the resulting
-        // spline and fill surface are naturally curved — no planarity assumption is made.
+        // opPolyline (straight line segments, not a smooth spline) is used so that
+        // rectangular and polygonal frames produce flat-faced panels with straight edges.
+        // opFitSpline interpolates a smooth cubic curve through the same points, which
+        // rounds the corners of rectangular frames into a wobbly disc shape.
+        // For non-planar frames the straight segments between 3D joint positions still
+        // produce an accurate polygonal boundary without any planarity assumption.
+        // The polyline is closed by repeating the first adjusted point as the last point.
 
-        var splinePoints = makeArray(memberCount + 1);
+        var boundaryPoints = makeArray(memberCount + 1);
 
         for (var loopStep = 0; loopStep < memberCount; loopStep += 1)
         {
@@ -357,31 +377,31 @@ export const panelMakerFeature = defineFeature(function(context is Context, id i
                 }
             }
 
-            splinePoints[loopStep] = adjustedPoint;
+            boundaryPoints[loopStep] = adjustedPoint;
         }
 
-        // Close the spline by repeating the first point as the last point.
-        splinePoints[memberCount] = splinePoints[0];
+        // Close the polyline by repeating the first point as the last point.
+        boundaryPoints[memberCount] = boundaryPoints[0];
 
-        opFitSpline(context, id + "boundarySpline", {
-                    "points" : splinePoints
+        opPolyline(context, id + "boundaryPolyline", {
+                    "points" : boundaryPoints
                 });
 
-        // ── 8. Fill the closed spline boundary to create the panel mid-surface ────────
+        // ── 8. Fill the closed polyline boundary to create the panel mid-surface ──────
         //
-        // opFillSurface with edgesG0 creates a surface spanning the closed spline wire.
+        // opFillSurface with edgesG0 creates a surface spanning the closed polyline wire.
         // For coplanar joints the result is a flat patch; for non-coplanar joints it
         // produces a smooth interpolated surface that follows the 3D frame geometry
-        // without any planar assumption.
+        // without any planarity assumption.
 
         opFillSurface(context, id + "panelFill", {
-                    "edgesG0" : qCreatedBy(id + "boundarySpline", EntityType.EDGE)
+                    "edgesG0" : qCreatedBy(id + "boundaryPolyline", EntityType.EDGE)
                 });
 
         // ── 9. Thicken the surface into a solid panel ─────────────────────────────────
         //
         // Thicken symmetrically about the mid-surface. The alignment shift was already
-        // baked into the spline point positions, so the fill surface IS the panel
+        // baked into the polyline point positions, so the fill surface IS the panel
         // mid-surface at the chosen alignment position. Equal offsets in both normal
         // directions give the correct panel thickness at every point on the surface,
         // including curved regions of a non-planar panel.
@@ -392,10 +412,10 @@ export const panelMakerFeature = defineFeature(function(context is Context, id i
                     "thickness2" : definition.thickness / 2
                 });
 
-        // Delete the spline wire body and the fill surface — both are consumed by the
+        // Delete the polyline wire body and the fill surface — both are consumed by the
         // thicken operation and are no longer needed.
         opDeleteBodies(context, id + "deleteWire", {
-                    "entities" : qCreatedBy(id + "boundarySpline", EntityType.BODY)
+                    "entities" : qCreatedBy(id + "boundaryPolyline", EntityType.BODY)
                 });
         opDeleteBodies(context, id + "deleteFill", {
                     "entities" : qCreatedBy(id + "panelFill", EntityType.BODY)
