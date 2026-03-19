@@ -201,7 +201,7 @@ export const panelMakerFeature = defineFeature(function(context is Context, id i
         // Joint position i = midpoint of the cap face centroids of the two members
         // adjacent at loop position i.
         //
-        // Cap face centroids (via qFrameStartFace / qFrameEndFace + evCentroid) are
+        // Cap face centroids (via qFrameStartFace / qFrameEndFace + evApproximateCentroid) are
         // used instead of the midpoint of an evDistance closest-point pair on the full
         // member bodies. evDistance on full bodies finds points on the outer surfaces of
         // the members. At different joints those outer-surface contact points can land on
@@ -234,10 +234,10 @@ export const panelMakerFeature = defineFeature(function(context is Context, id i
                     " do not touch; results may be incorrect");
             }
 
-            const currentMemberCentroid = evCentroid(context, {
+            const currentMemberCentroid = evApproximateCentroid(context, {
                         "entities" : frameMemberBodies[currentMemberIdx]
                     });
-            const nextMemberCentroid = evCentroid(context, {
+            const nextMemberCentroid = evApproximateCentroid(context, {
                         "entities" : frameMemberBodies[nextMemberIdx]
                     });
 
@@ -253,8 +253,8 @@ export const panelMakerFeature = defineFeature(function(context is Context, id i
             const closestCapOfCurrent = qClosestTo(currentCapFaces, nextMemberCentroid);
             const closestCapOfNext    = qClosestTo(nextCapFaces, currentMemberCentroid);
 
-            const capCentroidOfCurrent = evCentroid(context, { "entities" : closestCapOfCurrent });
-            const capCentroidOfNext    = evCentroid(context, { "entities" : closestCapOfNext });
+            const capCentroidOfCurrent = evApproximateCentroid(context, { "entities" : closestCapOfCurrent });
+            const capCentroidOfNext    = evApproximateCentroid(context, { "entities" : closestCapOfNext });
 
             jointPositions[loopStep] = (capCentroidOfCurrent + capCentroidOfNext) / 2;
 
