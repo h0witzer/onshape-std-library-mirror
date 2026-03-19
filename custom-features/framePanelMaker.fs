@@ -112,8 +112,8 @@ function buildPanelName(prefix is string, panelDim1 is number, panelDim2 is numb
  *   2. Compute the panel plane using Newell's method on the joint positions (the
  *      points where consecutive members are geometrically closest to each other).
  *   3. Build a first-pass fill surface from a polyline through the joint contact
- *      points shifted to the chosen alignment position (both edge gap and alignment
- *      shift baked in). The surface sits at the exact depth where the panel will live.
+ *      points shifted to the chosen alignment position (alignment shift baked in).
+ *      The surface sits at the exact depth where the panel will live.
  *   4. Refine the boundary by splitting that surface with the lateral (sweep) faces
  *      of each frame member AT the alignment position. The interior fragment is the
  *      exact panel boundary for any profile shape at that depth: box tube, round tube,
@@ -121,6 +121,9 @@ function buildPanelName(prefix is string, panelDim1 is number, panelDim2 is numb
  *      because the geometry really is different at each depth.
  *   5. Extract the interior fragment into an independent surface body and thicken it
  *      symmetrically to produce the solid panel body.
+ *   6. Apply the edge gap AFTER thickening by offsetting all lateral panel faces inward
+ *      by definition.gap. This ensures the gap is a uniform distance from the actual
+ *      frame inner-face geometry on every side, regardless of profile shape.
  *
  * Alignment is controlled by a three-point manipulator along the opening normal:
  *   Index 0 - panel flush with the +openingNormal face of the frames
@@ -339,18 +342,11 @@ export const panelMakerFeature = defineFeature(function(context is Context, id i
 
         // ── 7. Build alignment-positioned boundary polyline through joint positions ────
         //
-        // Each joint is adjusted in two ways before building the boundary:
-        //   (a) Alignment shift: offset along openingNormal so the panel mid-surface
-        //       sits at the chosen alignment position (flush front, centered, flush back).
-        //   (b) Edge gap: offset each joint inward toward the panel centroid by
-        //       definition.gap, projected into the plane perpendicular to openingNormal.
-        //
-        // The alignment shift is intentionally applied HERE, not after intersection.
-        // Intersection curves are curves of intersection between the fill surface and the
-        // frame faces AT a given position. The intersection result is inherently tied to
-        // depth: a panel flush with the front of a round tube crosses the cylindrical
-        // surface at a different curve than one centered in the frame. That is correct
-        // geometry — both positions are valid, each gives its own correct boundary.
+        // Each joint is adjusted by the alignment shift: an offset along openingNormal so
+        // the panel mid-surface sits at the chosen alignment position (flush front, centered,
+        // flush back). The edge gap is NOT applied here — it is applied after the frame-face
+        // intersection trim (step 9b) so the gap is uniform from the actual frame inner-face
+        // geometry and not consumed/overridden by the trim.
         //
         // opPolyline (straight line segments) is used so that rectangular and polygonal
         // frames produce flat-faced panels with straight edges. The polyline is closed
@@ -360,29 +356,8 @@ export const panelMakerFeature = defineFeature(function(context is Context, id i
 
         for (var loopStep = 0; loopStep < memberCount; loopStep += 1)
         {
-            // (a) Alignment: push along the best-fit panel normal to the chosen depth.
-            var adjustedPoint = jointPositions[loopStep] + alignmentShift * openingNormal;
-
-            // (b) Gap: move the joint inward toward the panel centroid, staying in the
-            //     plane perpendicular to openingNormal so the offset is purely in-boundary.
-            if (definition.gap > 0 * meter)
-            {
-                const towardCentroid = (panelCentroid - jointPositions[loopStep]) / meter;
-                const normalProjection = towardCentroid[0] * openingNormal[0] +
-                                         towardCentroid[1] * openingNormal[1] +
-                                         towardCentroid[2] * openingNormal[2];
-                const inPlaneVec = vector(
-                    towardCentroid[0] - normalProjection * openingNormal[0],
-                    towardCentroid[1] - normalProjection * openingNormal[1],
-                    towardCentroid[2] - normalProjection * openingNormal[2]);
-                const inPlaneMag = norm(inPlaneVec);
-                if (inPlaneMag > PERPENDICULARITY_TOLERANCE)
-                {
-                    adjustedPoint = adjustedPoint + definition.gap * normalize(inPlaneVec);
-                }
-            }
-
-            boundaryPoints[loopStep] = adjustedPoint;
+            // Alignment: push along the best-fit panel normal to the chosen depth.
+            boundaryPoints[loopStep] = jointPositions[loopStep] + alignmentShift * openingNormal;
         }
 
         // Close the polyline by repeating the first point as the last point.
@@ -491,6 +466,35 @@ export const panelMakerFeature = defineFeature(function(context is Context, id i
                 });
 
         const panelBodyQuery = qCreatedBy(id + "panelThicken", EntityType.BODY);
+
+        // ── 9b. Apply edge gap by offsetting lateral panel faces inward ──────────────
+        //
+        // The gap is applied AFTER thickening so that it measures a uniform distance
+        // from the actual frame inner-face geometry — the geometry that was established
+        // by the opSplitFace intersection trim above. Applying the gap before the trim
+        // would shrink the polyline, but the trim would then re-pin the boundary to the
+        // frame faces and the gap would be lost.
+        //
+        // "Lateral" faces are those whose plane contains the openingNormal (i.e., their
+        // normal is perpendicular to openingNormal). These are the side walls of the
+        // thickened panel — one face per frame member edge, including any curves from
+        // non-rectangular profiles. The top and bottom faces (normal parallel to
+        // openingNormal) are intentionally excluded.
+        //
+        // opOffsetFace with a negative offset pushes each lateral face inward by gap,
+        // shrinking the panel boundary by that distance on all sides simultaneously.
+
+        if (definition.gap > 0 * meter)
+        {
+            const panelLateralFaces = qFacesParallelToDirection(
+                qOwnedByBody(panelBodyQuery, EntityType.FACE),
+                openingNormal
+            );
+            opOffsetFace(context, id + "panelGapOffset", {
+                        "moveFaces"      : panelLateralFaces,
+                        "offsetDistance" : -definition.gap
+                    });
+        }
 
         // ── 10. Name the panel body ───────────────────────────────────────────────────
 
