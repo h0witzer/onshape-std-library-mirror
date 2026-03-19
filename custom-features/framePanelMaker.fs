@@ -16,6 +16,12 @@ const PERPENDICULARITY_TOLERANCE = 1e-6;
 // (3 places = 1 mm resolution).
 const DIMENSION_ROUNDING_PRECISION = 3;
 
+// Integer bound spec for the alignment manipulator index.
+// 0 = panel flush with the +openingNormal face of the frame
+// 1 = panel centered between the two parallel frame faces (default)
+// 2 = panel flush with the -openingNormal face of the frame
+const PANEL_ALIGNMENT_BOUND = { (unitless) : [0, 1, 2] } as IntegerBoundSpec;
+
 /**
  * Returns the sweep axis of a frame body as a normalized Vector, computed from
  * the vector connecting the start cap face centroid to the end cap face centroid.
@@ -98,20 +104,31 @@ function buildPanelName(prefix is string, panelDim1 is number, panelDim2 is numb
 
 /**
  * Creates a solid panel body sized to fit within the clear opening formed by four
- * adjacent frame members. The panel extends into the channel of each member by
- * (Channel Depth - Edge Gap) on every side.
+ * adjacent frame members. The channel insertion depth is automatically measured from
+ * the frame body geometry, so no manual "channel depth" entry is required. The user
+ * supplies only an Edge Gap (clearance from the channel bottom) and an alignment position.
  *
  * Selections must be four frame members (created by the Frame feature) chosen in
  * sequential order so that each consecutive pair shares a corner, forming a closed loop.
  * Members 0 and 2 are treated as one opposite pair; members 1 and 3 as the other.
  *
+ * Channel depth is auto-detected per pair using an axis-aligned bounding box of each
+ * frame body measured from its inner channel face. The minimum across all four members
+ * is used as a single uniform insertion depth.
+ *
+ * Alignment is controlled by a three-point manipulator along the opening normal:
+ *   Index 0 - panel flush with the +openingNormal face of the frames
+ *   Index 1 - panel centered between the two frame faces (default)
+ *   Index 2 - panel flush with the -openingNormal face of the frames
+ *
  * Frame topology attributes are used to:
  *   - Validate that all selections are proper frame members.
  *   - Derive each member's sweep axis from its cap face positions.
- *   - Identify the swept faces that bound the clear opening (instead of bounding-box
- *     cuboid approximations), giving correct results for any profile shape.
+ *   - Identify the swept faces that bound the clear opening.
  */
-annotation { "Feature Type Name" : "Panel Maker", "Feature Type Description" : "Creates a panel within a clear opening bounded by four frame members" }
+annotation { "Feature Type Name" : "Panel Maker",
+             "Feature Type Description" : "Creates a panel within a clear opening bounded by four frame members",
+             "Manipulator Change Function" : "panelMakerManipulatorChange" }
 export const panelMakerFeature = defineFeature(function(context is Context, id is Id, definition is map)
     precondition
     {
@@ -123,12 +140,12 @@ export const panelMakerFeature = defineFeature(function(context is Context, id i
             annotation { "Name" : "Panel Thickness", "UIHint" : UIHint.REMEMBER_PREVIOUS_VALUE }
             isLength(definition.thickness, {(millimeter) : [0.1, 5.6, 100]} as LengthBoundSpec);
 
-            annotation { "Name" : "Channel Depth", "UIHint" : UIHint.REMEMBER_PREVIOUS_VALUE }
-            isLength(definition.depth, {(millimeter) : [0.1, 9.18, 100]} as LengthBoundSpec);
-
             annotation { "Name" : "Edge Gap", "UIHint" : UIHint.REMEMBER_PREVIOUS_VALUE }
             isLength(definition.gap, {(millimeter) : [0.0, 3, 100]} as LengthBoundSpec);
         }
+
+        annotation { "Name" : "Alignment position", "UIHint" : UIHint.REMEMBER_PREVIOUS_VALUE }
+        isInteger(definition.alignmentIndex, PANEL_ALIGNMENT_BOUND);
 
         annotation { "Name" : "Name Dimensions in mm" }
         definition.mm is boolean;
@@ -210,10 +227,16 @@ export const panelMakerFeature = defineFeature(function(context is Context, id i
         // the inner channel faces (they are the closest faces across the opening).
         //   Pair 0: members 0 and 2 (one axis of the opening)
         //   Pair 1: members 1 and 3 (perpendicular axis of the opening)
+        //
+        // Also save the raw (pre-projection) inner face points and the direction connecting
+        // each pair's inner faces. These are used later to orient the evBox3d measurement
+        // for auto channel-depth detection.
         var openingEdgeStart = makeArray(2);
         var openingEdgeEnd = makeArray(2);
         var openingEdgeMid = makeArray(2);
         var openingEdgeMidPlane = makeArray(2);
+        var rawInnerFacePoint = makeArray(4); // [member0, member1, member2, member3]
+        var rawPairAxis = makeArray(2);       // unit vector from side-0 member to side-1 member per pair
 
         for (var pairIndex = 0; pairIndex < 2; pairIndex += 1)
         {
@@ -222,6 +245,11 @@ export const panelMakerFeature = defineFeature(function(context is Context, id i
                         "side0" : memberSideSweptFaces[pairIndex],
                         "side1" : memberSideSweptFaces[oppositeMemberIndex]
                     });
+
+            // Save raw face points before any projection, for the channel-depth measurement below
+            rawInnerFacePoint[pairIndex] = distanceResult.sides[0].point;
+            rawInnerFacePoint[pairIndex + 2] = distanceResult.sides[1].point;
+            rawPairAxis[pairIndex] = normalize(rawInnerFacePoint[pairIndex + 2] - rawInnerFacePoint[pairIndex]);
 
             openingEdgeStart[pairIndex] = distanceResult.sides[0].point;
             openingEdgeEnd[pairIndex] = distanceResult.sides[1].point;
@@ -247,9 +275,10 @@ export const panelMakerFeature = defineFeature(function(context is Context, id i
                     "side0" : member0FrontBackFaces[0],
                     "side1" : member0FrontBackFaces[1]
                 });
-        const openingFrontCenter = frontBackDistanceResult.sides[0].point;
-        const openingBackCenter = frontBackDistanceResult.sides[1].point;
-        const centerPlane = plane((openingFrontCenter + openingBackCenter) / 2, openingNormal);
+        const openingFaceCenter0 = frontBackDistanceResult.sides[0].point;
+        const openingFaceCenter1 = frontBackDistanceResult.sides[1].point;
+        const frameDepth = frontBackDistanceResult.distance;
+        const centerPlane = plane((openingFaceCenter0 + openingFaceCenter1) / 2, openingNormal);
 
         // Project all edge points onto the center plane, collapsing out the thickness
         // component. Also project each pair's points onto the midplane of the other pair
@@ -268,14 +297,100 @@ export const panelMakerFeature = defineFeature(function(context is Context, id i
             openingEdgeAxis[pairIndex] = normalize(openingEdgeEnd[pairIndex] - openingEdgeStart[pairIndex]);
         }
 
-        // Compute diagonally opposite corners of the panel cuboid.
-        // Each corner sits at the intersection of both opening-edge planes, offset by
-        // half the panel thickness in the opening normal direction.
-        const panelCorner0 = project(plane(openingEdgeStart[0], openingEdgeAxis[0]), openingEdgeStart[1]) +
-            (definition.thickness / 2) * openingNormal;
+        // Auto-detect channel insertion depth from the frame body geometry.
+        //
+        // For each member, build a coordinate system at its raw inner face point (the point
+        // on the face that bounds the clear opening), with the Z-axis pointing INTO the frame
+        // body (away from the opening). evBox3d then gives the bounding extent of the member
+        // in that direction; the maximum Z value is the full available depth of the channel.
+        //
+        // The minimum across all four members is used for a uniform, safe insertion depth.
+        var availableChannelDepthPerPair = makeArray(2);
+        for (var pairIndex = 0; pairIndex < 2; pairIndex += 1)
+        {
+            // Side 0 of this pair (member 0 or 1): panel inserts in the -rawPairAxis direction
+            // Use openingNormal as the cSys x-axis since it is always perpendicular to the
+            // insertion direction and gives a consistent, deterministic orientation.
+            const side0InsertionDir = -rawPairAxis[pairIndex];
+            const cSysSide0 = coordSystem(
+                rawInnerFacePoint[pairIndex],
+                openingNormal,
+                side0InsertionDir
+            );
+            const boxSide0 = evBox3d(context, {
+                        "topology" : frameMemberBodies[pairIndex],
+                        "tight" : true,
+                        "cSys" : cSysSide0
+                    });
+            const availableDepthSide0 = boxSide0.maxCorner[2];
 
-        const panelCorner1 = project(plane(openingEdgeEnd[0], openingEdgeAxis[0]), openingEdgeEnd[1]) -
-            (definition.thickness / 2) * openingNormal;
+            // Side 1 of this pair (member 2 or 3): panel inserts in the +rawPairAxis direction
+            const side1InsertionDir = rawPairAxis[pairIndex];
+            const cSysSide1 = coordSystem(
+                rawInnerFacePoint[pairIndex + 2],
+                openingNormal,
+                side1InsertionDir
+            );
+            const boxSide1 = evBox3d(context, {
+                        "topology" : frameMemberBodies[pairIndex + 2],
+                        "tight" : true,
+                        "cSys" : cSysSide1
+                    });
+            const availableDepthSide1 = boxSide1.maxCorner[2];
+
+            availableChannelDepthPerPair[pairIndex] = min(availableDepthSide0, availableDepthSide1);
+        }
+
+        // Use the more restrictive of the two axis depths, then subtract the edge-gap clearance.
+        // Guard against a negative insertion depth if the specified gap exceeds the available depth.
+        const availableChannelDepth = min(availableChannelDepthPerPair[0], availableChannelDepthPerPair[1]);
+        if (definition.gap > availableChannelDepth)
+        {
+            reportFeatureWarning(context, id, "Edge Gap exceeds the available channel depth; panel edges will be flush with the inner frame faces");
+        }
+        const channelInsertionDepth = max(0 * meter, availableChannelDepth - definition.gap);
+
+        // Compute the panel alignment offset along the opening normal.
+        //
+        // maxAlignmentOffset is the distance the panel center must move from the frame center
+        // so that one panel face is flush with a frame face. Clamped to zero if the panel is
+        // as thick as (or thicker than) the frame in the normal direction.
+        const maxAlignmentOffset = max(0 * meter, (frameDepth - definition.thickness) / 2);
+        if (definition.thickness >= frameDepth)
+        {
+            reportFeatureWarning(context, id, "Panel thickness equals or exceeds the frame depth; alignment adjustment is not available");
+        }
+        const alignmentShift =
+            definition.alignmentIndex == 0 ? maxAlignmentOffset :
+            definition.alignmentIndex == 2 ? -maxAlignmentOffset :
+            0 * meter;
+
+        // Compute diagonally opposite corners of the panel cuboid.
+        // The alignmentShift offsets both corners in the normal direction, moving the panel
+        // to the selected alignment position while keeping the panel thickness constant.
+        const panelCorner0 = project(plane(openingEdgeStart[0], openingEdgeAxis[0]), openingEdgeStart[1]) +
+            (definition.thickness / 2 + alignmentShift) * openingNormal;
+
+        const panelCorner1 = project(plane(openingEdgeEnd[0], openingEdgeAxis[0]), openingEdgeEnd[1]) +
+            (-definition.thickness / 2 + alignmentShift) * openingNormal;
+
+        // Register the three-point alignment manipulator before creating geometry.
+        // The points lie along the opening normal at the frame's +normal face, center, and
+        // -normal face positions, placed at the center of the clear opening rectangle.
+        const manipulatorBasePoint = centerPlane.origin;
+        const alignmentPointPositive = manipulatorBasePoint + maxAlignmentOffset * openingNormal;
+        const alignmentPointCenter   = manipulatorBasePoint;
+        const alignmentPointNegative = manipulatorBasePoint - maxAlignmentOffset * openingNormal;
+        addManipulators(context, id, {
+                    "alignmentManipulator" : pointsManipulator({
+                                "points" : [
+                                    alignmentPointPositive,
+                                    alignmentPointCenter,
+                                    alignmentPointNegative
+                                ],
+                                "index" : definition.alignmentIndex
+                            })
+                });
 
         // Create the panel cuboid sized to the clear opening
         fCuboid(context, id + "panel", { "corner1" : panelCorner0, "corner2" : panelCorner1 });
@@ -286,10 +401,8 @@ export const panelMakerFeature = defineFeature(function(context is Context, id i
         const panelFrontBackFaces = qParallelPlanes(allPanelFaces, centerPlane, true);
         const panelSideFaces = qSubtraction(allPanelFaces, panelFrontBackFaces);
 
-        // Offset each side face inward by (channel depth - edge gap) to seat the panel
-        // inside the frame channels while respecting the specified clearance gap
-        const channelInsertionDepth = definition.depth - definition.gap;
-
+        // Offset each side face inward by the auto-detected channel depth minus the edge gap,
+        // seating the panel inside the frame channels with the specified clearance
         opOffsetFace(context, id + "offsetFace1", {
                     "moveFaces" : panelSideFaces,
                     "offsetDistance" : channelInsertionDepth
@@ -308,3 +421,25 @@ export const panelMakerFeature = defineFeature(function(context is Context, id i
                     "value" : buildPanelName(definition.namePrefix, panelDim1, panelDim2, definition.mm)
                 });
     });
+
+/**
+ * Manipulator change function for panelMakerFeature.
+ *
+ * When the user clicks one of the three alignment points, this function updates
+ * `definition.alignmentIndex` to the newly selected index (0, 1, or 2), which
+ * causes the feature to regenerate with the new alignment position.
+ *
+ * @param context : The active feature context.
+ * @param definition {map} : The current feature definition.
+ * @param newManipulators {map} : Map of manipulator keys to their updated state.
+ * @returns {map} : The updated feature definition.
+ */
+export function panelMakerManipulatorChange(context is Context, definition is map, newManipulators is map) returns map
+{
+    const newManipulator = newManipulators["alignmentManipulator"];
+    if (newManipulator != undefined)
+    {
+        definition.alignmentIndex = newManipulator.index;
+    }
+    return definition;
+}
