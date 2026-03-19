@@ -222,6 +222,9 @@ export const panelMakerFeature = defineFeature(function(context is Context, id i
 
             jointPositions[loopStep] = (jointDistResult.sides[0].point +
                                         jointDistResult.sides[1].point) / 2;
+
+            println("[DBG] jointPositions[" ~ toString(loopStep) ~ "] = " ~
+                toString(jointPositions[loopStep]));
         }
 
         // Centroid of joint positions = interior point of the panel (used later for
@@ -232,6 +235,8 @@ export const panelMakerFeature = defineFeature(function(context is Context, id i
             panelCentroid = panelCentroid + jointPositions[loopStep];
         }
         panelCentroid = panelCentroid / memberCount;
+
+        println("[DBG] panelCentroid = " ~ toString(panelCentroid));
 
         // Use Newell's method to compute the best-fit normal of the joint polygon.
         // Summing cross products of centroid-relative edge pairs gives a normal that
@@ -253,6 +258,9 @@ export const panelMakerFeature = defineFeature(function(context is Context, id i
             return;
         }
         const openingNormal = normalize(newellSum);
+
+        println("[DBG] Newell sum magnitude = " ~ toString(norm(newellSum)));
+        println("[DBG] openingNormal = " ~ toString(openingNormal));
 
         // Compute the frame extent in the opening-normal direction for alignment.
         // Use the bounding box of all frame bodies in the panel coordinate system.
@@ -280,6 +288,9 @@ export const panelMakerFeature = defineFeature(function(context is Context, id i
                 panelXAxis = normalize(projected);
             }
         }
+        println("[DBG] panelXAxis world-basis seed = " ~ toString(panelXAxis) ~
+            "  |dot(xAxis,normal)| = " ~ toString(abs(dot(panelXAxis, openingNormal))));
+
         for (var xAxisSearchIndex = 0; xAxisSearchIndex < memberCount; xAxisSearchIndex += 1)
         {
             // Divide by meter to produce a dimensionless direction vector suitable for
@@ -289,10 +300,22 @@ export const panelMakerFeature = defineFeature(function(context is Context, id i
             if (norm(projectedDir) > PERPENDICULARITY_TOLERANCE)
             {
                 panelXAxis = normalize(projectedDir);
+                println("[DBG] panelXAxis overridden by joint " ~ toString(xAxisSearchIndex) ~
+                    " = " ~ toString(panelXAxis) ~
+                    "  |dot(xAxis,normal)| = " ~ toString(abs(dot(panelXAxis, openingNormal))));
                 break;
+            }
+            else
+            {
+                println("[DBG] joint " ~ toString(xAxisSearchIndex) ~
+                    " projected magnitude too small (" ~ toString(norm(projectedDir)) ~
+                    "), skipping for xAxis");
             }
         }
         const centeredCSys = coordSystem(panelCentroid, panelXAxis, openingNormal);
+        println("[DBG] centeredCSys origin = " ~ toString(centeredCSys.origin));
+        println("[DBG] centeredCSys xAxis  = " ~ toString(centeredCSys.xAxis));
+        println("[DBG] centeredCSys zAxis  = " ~ toString(centeredCSys.zAxis));
 
         const frameBox = evBox3d(context, {
                     "topology" : qUnion(frameMemberBodies),
@@ -301,12 +324,18 @@ export const panelMakerFeature = defineFeature(function(context is Context, id i
                 });
         const frameDepth   = frameBox.maxCorner[2] - frameBox.minCorner[2];
 
+        println("[DBG] frameBox.minCorner = " ~ toString(frameBox.minCorner));
+        println("[DBG] frameBox.maxCorner = " ~ toString(frameBox.maxCorner));
+        println("[DBG] frameDepth = " ~ toString(frameDepth));
+
         // Midpoint of the frame assembly in the opening-normal direction, measured from
         // panelCentroid along openingNormal. For frames that are symmetric about the joint
         // plane this is ~0; for asymmetric frames it can be a significant non-zero offset,
         // which is the root cause of alignment points appearing outside the frame window
         // when this offset is ignored.
         const frameCenterZ = (frameBox.maxCorner[2] + frameBox.minCorner[2]) / 2;
+
+        println("[DBG] frameCenterZ = " ~ toString(frameCenterZ));
 
         // ── 5. Compute alignment shift ─────────────────────────────────────────────────
 
@@ -325,6 +354,10 @@ export const panelMakerFeature = defineFeature(function(context is Context, id i
         const flushFrontZ = frameCenterZ + maxAlignmentOffset;
         const flushBackZ  = frameCenterZ - maxAlignmentOffset;
 
+        println("[DBG] maxAlignmentOffset = " ~ toString(maxAlignmentOffset));
+        println("[DBG] flushFrontZ = " ~ toString(flushFrontZ));
+        println("[DBG] flushBackZ  = " ~ toString(flushBackZ));
+
         var alignmentShift is ValueWithUnits = frameCenterZ;
         if (definition.alignmentIndex == 0)
         {
@@ -334,6 +367,9 @@ export const panelMakerFeature = defineFeature(function(context is Context, id i
         {
             alignmentShift = flushBackZ;
         }
+
+        println("[DBG] alignmentIndex = " ~ toString(definition.alignmentIndex) ~
+            "  alignmentShift = " ~ toString(alignmentShift));
 
         // ── 6. Register the three-point alignment manipulator ─────────────────────────
         //
@@ -346,6 +382,11 @@ export const panelMakerFeature = defineFeature(function(context is Context, id i
         const alignmentPointPositive = panelCentroid + flushFrontZ  * openingNormal;
         const alignmentPointCenter   = panelCentroid + frameCenterZ * openingNormal;
         const alignmentPointNegative = panelCentroid + flushBackZ   * openingNormal;
+
+        println("[DBG] manipulator[0] flushFront  = " ~ toString(alignmentPointPositive));
+        println("[DBG] manipulator[1] center       = " ~ toString(alignmentPointCenter));
+        println("[DBG] manipulator[2] flushBack    = " ~ toString(alignmentPointNegative));
+
         addManipulators(context, id, {
                     "alignmentManipulator" : pointsManipulator({
                                 "points" : [
@@ -373,6 +414,8 @@ export const panelMakerFeature = defineFeature(function(context is Context, id i
         for (var loopStep = 0; loopStep < memberCount; loopStep += 1)
         {
             boundaryPoints[loopStep] = jointPositions[loopStep] + alignmentShift * openingNormal;
+            println("[DBG] boundaryPoints[" ~ toString(loopStep) ~ "] = " ~
+                toString(boundaryPoints[loopStep]));
         }
 
         // Close the polyline by repeating the first point as the last point.
