@@ -107,28 +107,21 @@ function buildPanelName(prefix is string, panelDim1 is number, panelDim2 is numb
  *      body-adjacency graph from pairwise evDistance calls and finding a Hamiltonian
  *      cycle. This correctly handles both end-to-end frame joints and T-intersections
  *      where spanning members extend beyond the panel opening.
- *   2. Compute the panel opening normal using Newell's method on the joint positions
+ *   2. Compute the panel plane normal using Newell's method on the joint positions
  *      (midpoints of the closest-point pairs between consecutive bodies in the loop).
- *      The result is a best-fit area-weighted normal that is exact for planar loops
- *      and robust for non-planar ones.
- *   3. Build a fill surface from a polyline through the joint contact points shifted
- *      to the chosen alignment position. For curved (rolled) frame members, guide
- *      vertices are added by projecting the chord midpoint of each member's boundary
- *      segment onto the member body — this pulls the fill surface toward the inner
- *      curved face of each rolled member, producing a non-planar panel surface that
- *      follows the frame curvature without any flat-plane assumption.
+ *   3. Build a flat fill surface from a closed polyline through the joint contact
+ *      points shifted to the chosen alignment position along the panel normal.
+ *      The frame members are assumed to define a planar opening; non-planar frames
+ *      are not supported.
  *   4. Refine the boundary by splitting the fill surface with the lateral (sweep)
  *      faces of each frame member. The interior fragment is the exact panel surface
- *      for any profile shape — box tube, round tube, C-channel, etc. — and the
- *      split is geometrically different at each alignment depth, so all three
- *      alignment choices produce correctly distinct results.
+ *      for any profile shape — box tube, round tube, C-channel, etc.
  *   5. Extract the interior fragment into an independent surface body and thicken it
  *      symmetrically to produce the solid panel body.
  *   6. Apply the edge gap AFTER thickening by offsetting only the non-cap faces of
  *      the thickened panel body inward by definition.gap. The cap faces (front and
- *      back, identified explicitly via qNonCapEntity) are excluded; only the
- *      perimeter walls move, keeping the gap uniform from the frame inner-face
- *      geometry on every side regardless of profile shape.
+ *      back) are identified explicitly via qNonCapEntity; only the perimeter walls
+ *      are moved so the gap is uniform from the frame inner-face geometry.
  *
  * Alignment is controlled by a three-point manipulator along the opening normal:
  *   Index 0 - panel flush with the +openingNormal face of the frames
@@ -364,7 +357,7 @@ export const panelMakerFeature = defineFeature(function(context is Context, id i
                             })
                 });
 
-        // ── 7. Build alignment-positioned boundary polyline and guide vertices ──────────
+        // ── 7. Build alignment-positioned boundary polyline ─────────────────────────────
         //
         // Each joint is adjusted by the alignment shift: an offset along openingNormal so
         // the panel mid-surface sits at the chosen alignment position (flush front, centered,
@@ -372,39 +365,14 @@ export const panelMakerFeature = defineFeature(function(context is Context, id i
         // intersection trim (step 9b) so the gap is uniform from the actual frame inner-face
         // geometry and not consumed/overridden by the trim.
         //
-        // For each frame member in the loop a guide vertex is also computed:
-        //   1. The chord midpoint of that member's boundary segment (linear interpolation
-        //      between its two aligned joint endpoints) is computed.
-        //   2. That chord midpoint is projected onto the frame member's solid body via
-        //      evDistance, which accepts a 3D point as side0. For a straight member the
-        //      chord midpoint already lies on the flat inner face (distance ≈ 0) so the
-        //      guide vertex is a no-op. For a curved (rolled) member the chord midpoint
-        //      sits inside the arc, and the closest body surface point is on the inner
-        //      curved face — pulling the fill surface toward the true curved boundary.
-        //
-        // A temporary wire is created through the guide vertices so they can be passed
-        // to opFillSurface as a Query; it is deleted immediately after the fill.
+        // opPolyline produces straight-line segments between the joint positions; for a
+        // planar frame opening this gives the exact flat boundary polygon.
 
         var boundaryPoints = makeArray(memberCount + 1);
-        var guideMidPoints = makeArray(memberCount);
 
         for (var loopStep = 0; loopStep < memberCount; loopStep += 1)
         {
-            const alignedJoint     = jointPositions[loopStep] + alignmentShift * openingNormal;
-            const alignedNextJoint = jointPositions[(loopStep + 1) % memberCount] + alignmentShift * openingNormal;
-
-            // Boundary corner at this joint position.
-            boundaryPoints[loopStep] = alignedJoint;
-
-            // Guide vertex: project the chord midpoint of this member's segment onto
-            // the member's body. evDistance with a 3D vector as side0 finds the
-            // closest surface point — for curved members this is the inner curved face.
-            const chordMidpoint = (alignedJoint + alignedNextJoint) / 2;
-            const guideProjResult = evDistance(context, {
-                        "side0" : chordMidpoint,
-                        "side1" : frameMemberBodies[loopOrder[loopStep]]
-                    });
-            guideMidPoints[loopStep] = guideProjResult.sides[1].point;
+            boundaryPoints[loopStep] = jointPositions[loopStep] + alignmentShift * openingNormal;
         }
 
         // Close the polyline by repeating the first point as the last point.
@@ -414,29 +382,14 @@ export const panelMakerFeature = defineFeature(function(context is Context, id i
                     "points" : boundaryPoints
                 });
 
-        // Guide vertex wire: a separate open polyline through the projected midpoints.
-        // Only its VERTEX entities are used by opFillSurface; the edges are irrelevant.
-        opPolyline(context, id + "guideVertexWire", {
-                    "points" : guideMidPoints
-                });
-
-        // ── 8. Fill the alignment-positioned boundary to create the panel surface ──────
+        // ── 8. Fill the boundary polyline to create a flat panel surface ─────────────
         //
-        // opFillSurface spans the closed polyline wire. The guide vertices from the
-        // projected chord midpoints pull the surface toward the inner curved faces of
-        // any rolled members, producing a non-planar surface where the frame geometry
-        // requires it. For straight members (flat inner faces) the guide vertices lie
-        // on the inner face and exert no deforming effect. The result is a surface
-        // that is non-planar exactly to the extent the frame members require it.
+        // opFillSurface spans the closed polyline wire with a smooth surface. For a
+        // planar frame opening the result is a flat patch; the frame members are assumed
+        // to define a planar loop so no guide vertices or tangency constraints are used.
 
         opFillSurface(context, id + "panelFill", {
-                    "edgesG0"       : qCreatedBy(id + "boundaryPolyline", EntityType.EDGE),
-                    "guideVertices" : qCreatedBy(id + "guideVertexWire", EntityType.VERTEX)
-                });
-
-        // Guide vertex wire is no longer needed once the fill surface exists.
-        opDeleteBodies(context, id + "deleteGuideWire", {
-                    "entities" : qCreatedBy(id + "guideVertexWire", EntityType.BODY)
+                    "edgesG0" : qCreatedBy(id + "boundaryPolyline", EntityType.EDGE)
                 });
 
         // ── 8b. Refine the boundary via frame-face intersection ───────────────────────
