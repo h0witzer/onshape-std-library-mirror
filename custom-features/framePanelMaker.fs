@@ -198,30 +198,65 @@ export const panelMakerFeature = defineFeature(function(context is Context, id i
 
         // ── 3. Compute joint positions and the panel plane ────────────────────────────
         //
-        // Joint position i = midpoint of the closest-point pair between member i and the
-        // next member in the loop. evDistance finds the exact contact point for any frame
-        // profile shape (round tube, box tube, mitered end) and any junction type,
-        // including T-intersections where the contact lies mid-body on a spanning member.
+        // Joint position i = midpoint of the cap face centroids of the two members
+        // adjacent at loop position i.
+        //
+        // Cap face centroids (via qFrameStartFace / qFrameEndFace + evCentroid) are
+        // used instead of the midpoint of an evDistance closest-point pair on the full
+        // member bodies. evDistance on full bodies finds points on the outer surfaces of
+        // the members. At different joints those outer-surface contact points can land on
+        // different lateral faces of the cross-section (e.g. the +Y face at one corner
+        // and the -Y face at another), making the joint polygon non-coplanar and
+        // producing a twisted opFillSurface. Cap face centroids lie on the member axis
+        // (the cross-section centroid) regardless of which outer surface happened to be
+        // geometrically closest, so the resulting joint polygon is coplanar for any
+        // planar frame.
+        //
+        // For each member, qClosestTo selects the cap face (start or end) nearest to
+        // the other member's body centroid — this naturally picks the end cap at or
+        // nearest to the shared joint for both corner joints and butt-style T-joints.
         var jointPositions = makeArray(memberCount);
         for (var loopStep = 0; loopStep < memberCount; loopStep += 1)
         {
             const currentMemberIdx = loopOrder[loopStep];
             const nextMemberIdx    = loopOrder[(loopStep + 1) % memberCount];
 
-            const jointDistResult = evDistance(context, {
+            // Contact check: evDistance on full bodies detects non-touching member pairs.
+            const jointContactResult = evDistance(context, {
                         "side0" : frameMemberBodies[currentMemberIdx],
                         "side1" : frameMemberBodies[nextMemberIdx]
                     });
 
-            if (jointDistResult.distance > JOINT_CONTACT_TOLERANCE)
+            if (jointContactResult.distance > JOINT_CONTACT_TOLERANCE)
             {
                 reportFeatureWarning(context, id,
                     "Frame members at loop position " ~ toString(loopStep) ~
                     " do not touch; results may be incorrect");
             }
 
-            jointPositions[loopStep] = (jointDistResult.sides[0].point +
-                                        jointDistResult.sides[1].point) / 2;
+            const currentMemberCentroid = evCentroid(context, {
+                        "entities" : frameMemberBodies[currentMemberIdx]
+                    });
+            const nextMemberCentroid = evCentroid(context, {
+                        "entities" : frameMemberBodies[nextMemberIdx]
+                    });
+
+            const currentCapFaces = qUnion([
+                        qFrameStartFace(frameMemberBodies[currentMemberIdx]),
+                        qFrameEndFace(frameMemberBodies[currentMemberIdx])
+                    ]);
+            const nextCapFaces = qUnion([
+                        qFrameStartFace(frameMemberBodies[nextMemberIdx]),
+                        qFrameEndFace(frameMemberBodies[nextMemberIdx])
+                    ]);
+
+            const closestCapOfCurrent = qClosestTo(currentCapFaces, nextMemberCentroid);
+            const closestCapOfNext    = qClosestTo(nextCapFaces, currentMemberCentroid);
+
+            const capCentroidOfCurrent = evCentroid(context, { "entities" : closestCapOfCurrent });
+            const capCentroidOfNext    = evCentroid(context, { "entities" : closestCapOfNext });
+
+            jointPositions[loopStep] = (capCentroidOfCurrent + capCentroidOfNext) / 2;
 
             println("[DBG] jointPositions[" ~ toString(loopStep) ~ "] = " ~
                 toString(jointPositions[loopStep]));
@@ -266,8 +301,7 @@ export const panelMakerFeature = defineFeature(function(context is Context, id i
         // Use the bounding box of all frame bodies in the panel coordinate system.
         //
         // Build a panel-plane X axis that is guaranteed to be perpendicular to
-        // openingNormal. Projection removes any out-of-plane imprecision from evDistance
-        // contact midpoints (which sit on 3D body surfaces, not a mathematical plane)
+        // openingNormal. Projection removes any residual floating-point imprecision
         // so that the coordSystem perpendicularity precondition is always satisfied.
         //
         // Strategy:
@@ -676,7 +710,7 @@ function findHamiltonianCycleDFS(adjacencyTable is array, visitedMembers is arra
  * Projects a dimensionless direction vector onto the plane defined by planeNormal,
  * removing any component along planeNormal. Used to guarantee that the panel
  * coordinate system X axis is perpendicular to openingNormal regardless of any
- * floating-point imprecision in evDistance contact midpoints.
+ * residual floating-point imprecision in the input direction vector.
  *
  * Both inputs and the return value are dimensionless vectors (no unit attachment).
  *
