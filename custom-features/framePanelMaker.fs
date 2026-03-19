@@ -22,6 +22,11 @@ const DIMENSION_ROUNDING_PRECISION = 3;
 // 2 = panel flush with the -openingNormal face of the frame
 const PANEL_ALIGNMENT_BOUND = { (unitless) : [0, 1, 2] } as IntegerBoundSpec;
 
+// Minimum signed depth (from the channel mouth face) for a face to be considered
+// the channel bottom rather than the mouth face itself. This tolerance filters out
+// numerical noise that could cause the inner face to report a tiny nonzero depth.
+const CHANNEL_DEPTH_TOLERANCE = 1e-5 * meter;
+
 /**
  * Returns the sweep axis of a frame body as a normalized Vector, computed from
  * the vector connecting the start cap face centroid to the end cap face centroid.
@@ -112,9 +117,10 @@ function buildPanelName(prefix is string, panelDim1 is number, panelDim2 is numb
  * sequential order so that each consecutive pair shares a corner, forming a closed loop.
  * Members 0 and 2 are treated as one opposite pair; members 1 and 3 as the other.
  *
- * Channel depth is auto-detected per pair using an axis-aligned bounding box of each
- * frame body measured from its inner channel face. The minimum across all four members
- * is used as a single uniform insertion depth.
+ * Channel depth is auto-detected per pair by scanning the frame member's swept faces
+ * for the shallowest face whose normal is parallel to the insertion axis and whose signed
+ * depth from the channel mouth exceeds a small tolerance. For a T-slot extrusion this
+ * is the slot bottom face. The minimum across all four members is used.
  *
  * Alignment is controlled by a three-point manipulator along the opening normal:
  *   Index 0 - panel flush with the +openingNormal face of the frames
@@ -299,51 +305,32 @@ export const panelMakerFeature = defineFeature(function(context is Context, id i
 
         // Auto-detect channel insertion depth from the frame body geometry.
         //
-        // For each member, build a coordinate system at its raw inner face point (the point
-        // on the face that bounds the clear opening), with the Z-axis pointing INTO the frame
-        // body (away from the opening). evBox3d then gives the bounding extent of the member
-        // in that direction; the maximum Z value is the full available depth of the channel.
-        //
-        // The minimum across all four members is used for a uniform, safe insertion depth.
+        // For each member in each pair, scan its swept faces for the shallowest face
+        // whose normal is parallel to the insertion axis and that lies at a positive
+        // signed depth past the channel mouth face. For a T-slot extrusion this is the
+        // slot bottom face. Taking the minimum across all four members gives a uniform
+        // safe insertion depth that fits the narrowest channel in the assembly.
         var availableChannelDepthPerPair = makeArray(2);
         for (var pairIndex = 0; pairIndex < 2; pairIndex += 1)
         {
-            // Side 0 of this pair (member 0 or 1): panel inserts in the -rawPairAxis direction
-            // Use openingNormal as the cSys x-axis since it is always perpendicular to the
-            // insertion direction and gives a consistent, deterministic orientation.
-            const side0InsertionDir = -rawPairAxis[pairIndex];
-            const cSysSide0 = coordSystem(
-                rawInnerFacePoint[pairIndex],
-                openingNormal,
-                side0InsertionDir
-            );
-            const boxSide0 = evBox3d(context, {
-                        "topology" : frameMemberBodies[pairIndex],
-                        "tight" : true,
-                        "cSys" : cSysSide0
-                    });
-            const availableDepthSide0 = boxSide0.maxCorner[2];
+            const availableDepthSide0 = findChannelBottomDepth(context,
+                        memberSideSweptFaces[pairIndex],
+                        rawInnerFacePoint[pairIndex],
+                        -rawPairAxis[pairIndex]);
 
-            // Side 1 of this pair (member 2 or 3): panel inserts in the +rawPairAxis direction
-            const side1InsertionDir = rawPairAxis[pairIndex];
-            const cSysSide1 = coordSystem(
-                rawInnerFacePoint[pairIndex + 2],
-                openingNormal,
-                side1InsertionDir
-            );
-            const boxSide1 = evBox3d(context, {
-                        "topology" : frameMemberBodies[pairIndex + 2],
-                        "tight" : true,
-                        "cSys" : cSysSide1
-                    });
-            const availableDepthSide1 = boxSide1.maxCorner[2];
+            const availableDepthSide1 = findChannelBottomDepth(context,
+                        memberSideSweptFaces[pairIndex + 2],
+                        rawInnerFacePoint[pairIndex + 2],
+                        rawPairAxis[pairIndex]);
 
-            availableChannelDepthPerPair[pairIndex] = min(availableDepthSide0, availableDepthSide1);
+            availableChannelDepthPerPair[pairIndex] = (availableDepthSide0 < availableDepthSide1) ?
+                availableDepthSide0 : availableDepthSide1;
         }
 
         // Use the more restrictive of the two axis depths, then subtract the edge-gap clearance.
         // Guard against a negative insertion depth if the specified gap exceeds the available depth.
-        const availableChannelDepth = min(availableChannelDepthPerPair[0], availableChannelDepthPerPair[1]);
+        const availableChannelDepth = (availableChannelDepthPerPair[0] < availableChannelDepthPerPair[1]) ?
+            availableChannelDepthPerPair[0] : availableChannelDepthPerPair[1];
         if (definition.gap > availableChannelDepth)
         {
             reportFeatureWarning(context, id, "Edge Gap exceeds the available channel depth; panel edges will be flush with the inner frame faces");
@@ -355,15 +342,26 @@ export const panelMakerFeature = defineFeature(function(context is Context, id i
         // maxAlignmentOffset is the distance the panel center must move from the frame center
         // so that one panel face is flush with a frame face. Clamped to zero if the panel is
         // as thick as (or thicker than) the frame in the normal direction.
-        const maxAlignmentOffset = max(0 * meter, (frameDepth - definition.thickness) / 2);
+        const maxAlignmentOffset = (frameDepth > definition.thickness) ?
+            (frameDepth - definition.thickness) / 2 : 0 * meter;
         if (definition.thickness >= frameDepth)
         {
             reportFeatureWarning(context, id, "Panel thickness equals or exceeds the frame depth; alignment adjustment is not available");
         }
-        const alignmentShift =
-            definition.alignmentIndex == 0 ? maxAlignmentOffset :
-            definition.alignmentIndex == 2 ? -maxAlignmentOffset :
-            0 * meter;
+
+        // Translate the alignment index (0/1/2) into a signed offset from the frame center.
+        //   Index 0 → panel flush with the +openingNormal frame face (+offset)
+        //   Index 1 → panel centered (zero offset)
+        //   Index 2 → panel flush with the -openingNormal frame face (-offset)
+        var alignmentShift is ValueWithUnits = 0 * meter;
+        if (definition.alignmentIndex == 0)
+        {
+            alignmentShift = maxAlignmentOffset;
+        }
+        else if (definition.alignmentIndex == 2)
+        {
+            alignmentShift = -maxAlignmentOffset;
+        }
 
         // Compute diagonally opposite corners of the panel cuboid.
         // The alignmentShift offsets both corners in the normal direction, moving the panel
@@ -395,10 +393,13 @@ export const panelMakerFeature = defineFeature(function(context is Context, id i
         // Create the panel cuboid sized to the clear opening
         fCuboid(context, id + "panel", { "corner1" : panelCorner0, "corner2" : panelCorner1 });
 
-        // Identify the four panel side faces (not parallel to the center plane).
-        // These are the faces that will be extended into the frame channels.
+        // Identify the four panel side faces (not parallel to the opening normal).
+        // Using the Vector form of qParallelPlanes (not the Plane form) ensures faces
+        // are matched by normal direction alone, independent of their position along
+        // the opening normal axis. This is required for non-centered alignment positions
+        // where both panel faces are on the same side of the frame center plane.
         const allPanelFaces = qCreatedBy(id + "panel", EntityType.FACE);
-        const panelFrontBackFaces = qParallelPlanes(allPanelFaces, centerPlane, true);
+        const panelFrontBackFaces = qParallelPlanes(allPanelFaces, openingNormal, true);
         const panelSideFaces = qSubtraction(allPanelFaces, panelFrontBackFaces);
 
         // Offset each side face inward by the auto-detected channel depth minus the edge gap,
@@ -423,7 +424,65 @@ export const panelMakerFeature = defineFeature(function(context is Context, id i
     });
 
 /**
- * Manipulator change function for panelMakerFeature.
+ * Finds the available insertion depth for a panel edge entering a frame member's channel,
+ * measured from the channel mouth (inner face) to the channel bottom face.
+ *
+ * For a T-slot extrusion the channel bottom is the slot-floor face: the shallowest planar
+ * face whose normal is parallel (or anti-parallel) to the insertion axis and that lies at
+ * a positive signed depth past the channel mouth. Scanning all such faces and taking the
+ * minimum positive depth gives the T-slot depth without relying on the full bounding-box
+ * extent of the frame body (which would span the entire frame width, not just the groove).
+ *
+ * Returns 0 * meter if no channel bottom face is found (no insertable groove detected).
+ *
+ * @param context              : The active feature context.
+ * @param memberSweptFaces     : Swept faces of the frame member, pre-filtered to exclude
+ *                               faces whose normals are parallel to the opening normal.
+ * @param innerFacePoint       : A point on the channel mouth face (the clear-opening boundary).
+ * @param insertionDirection   : Normalized unit vector pointing INTO the member body from
+ *                               the inner face (away from the clear opening).
+ * @returns {ValueWithUnits}   : Available channel depth in meter units.
+ */
+function findChannelBottomDepth(context is Context, memberSweptFaces is Query, innerFacePoint is Vector, insertionDirection is Vector) returns ValueWithUnits
+{
+    // qParallelPlanes with true returns faces whose normals are parallel OR anti-parallel to
+    // the insertion direction. These are the faces "perpendicular to the insertion axis" —
+    // the floor and ceiling faces of the channel tunnel. For a T-slot extrusion:
+    //   - The channel mouth face (inner face, at signed depth ≈ 0 from innerFacePoint)
+    //   - The channel bottom face (at signed depth = slot_depth > 0)
+    //   - Possibly the frame outer face (at signed depth = full_frame_width >> slot_depth)
+    // The minimum positive depth past the tolerance gives the channel bottom.
+    const candidateFaces = qParallelPlanes(memberSweptFaces, insertionDirection, true);
+    const candidateFaceArray = evaluateQuery(context, candidateFaces);
+
+    var channelBottomDepth is ValueWithUnits = 0 * meter;
+    var foundChannelBottom is boolean = false;
+
+    for (var faceIndex = 0; faceIndex < size(candidateFaceArray); faceIndex += 1)
+    {
+        const facePlane = evPlane(context, { "face" : candidateFaceArray[faceIndex] });
+
+        // Compute the signed depth from the inner face point to this candidate face,
+        // measured along the insertion direction. Component-wise multiplication avoids
+        // any type ambiguity between length vectors and the unitless direction vector.
+        const offset = facePlane.origin - innerFacePoint;
+        const signedDepth = offset[0] * insertionDirection[0] +
+                            offset[1] * insertionDirection[1] +
+                            offset[2] * insertionDirection[2];
+
+        // Accept only faces that are strictly past the channel mouth (positive depth > tolerance)
+        // and shallower than any previously found candidate.
+        if (signedDepth > CHANNEL_DEPTH_TOLERANCE &&
+            (!foundChannelBottom || signedDepth < channelBottomDepth))
+        {
+            channelBottomDepth = signedDepth;
+            foundChannelBottom = true;
+        }
+    }
+
+    // channelBottomDepth stays 0 if no face was found past the channel mouth tolerance
+    return channelBottomDepth;
+}
  *
  * When the user clicks one of the three alignment points, this function updates
  * `definition.alignmentIndex` to the newly selected index (0, 1, or 2), which
