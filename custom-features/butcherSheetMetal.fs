@@ -1,5 +1,5 @@
 FeatureScript 2909;
-// Sheet Metal Split Feature
+// Butcher Sheet Metal Feature
 // Splits an active sheet metal part by operating on only the master surface definition
 // body faces that are actually associated with the selected solid output parts, then
 // triggering a sheet metal rebuild to update all part representations.
@@ -11,16 +11,15 @@ FeatureScript 2909;
 //      (via face-level SMAssociationAttribute links, not the whole definition body)
 //   2. Performing opSplitFace on only those faces — faces that belong to other parts
 //      sharing the same definition body are never touched
-//   3. For keepBothSides = true: assigning RIP joint attributes to the new boundary edges
-//      so the SM engine treats the split line as a physical separation between two distinct
-//      solid output parts (same pattern used by sheetMetalRip.fs)
+//   3. For keepBothSides = true: the split edges are left as raw geometry (no joint
+//      attribute is applied); assignSMAttributesToNewOrSplitEntities handles attribute
+//      propagation on the modified surfaces
 //   4. For keepBothSides = false: deleting the unwanted face fragments from the definition
 //      body using opDeleteFace (leaveOpen = true), leaving only the wanted side
 //   5. Calling assignSMAttributesToNewOrSplitEntities and updateSheetMetalGeometry to
 //      propagate attributes and rebuild the solid parts
 
 // Imports used in interface
-export import(path : "onshape/std/splitoperationkeeptype.gen.fs", version : "2909.0");
 export import(path : "onshape/std/query.fs", version : "2909.0");
 
 // Imports used internally
@@ -43,9 +42,9 @@ import(path : "onshape/std/uihint.gen.fs", version : "2909.0");
  * surface definition body faces associated with the selected solid output parts, then
  * rebuilds the sheet metal geometry from the modified surfaces.
  *
- * Unlike the standard Split feature, this feature correctly handles the sheet metal
- * association and attribute tracking system, so the resulting halves are both valid
- * active sheet metal parts.
+ * Unlike the standard Split feature, this feature works directly with the sheet metal
+ * association and attribute tracking system, operating on the definition body surfaces
+ * rather than the 3D solid output parts.
  *
  * Selective scoping: when a single sheet metal model produces multiple solid output parts
  * from one shared definition body (for example, walls connected by bends vs. walls
@@ -57,10 +56,10 @@ import(path : "onshape/std/uihint.gen.fs", version : "2909.0");
  * face-level SMAssociationAttribute links from the solid part faces to the definition
  * body faces) rather than opSplitPart on the entire shared definition body.
  */
-annotation { "Feature Type Name" : "Sheet metal split",
+annotation { "Feature Type Name" : "Butcher sheet metal",
              "Filter Selector" : "allparts",
-             "Manipulator Change Function" : "sheetMetalSplitManipulatorChange" }
-export const sheetMetalSplit = defineSheetMetalFeature(function(context is Context, id is Id, definition is map)
+             "Manipulator Change Function" : "butcherSheetMetalManipulatorChange" }
+export const butcherSheetMetal = defineSheetMetalFeature(function(context is Context, id is Id, definition is map)
     precondition
     {
         // Target selection: only active sheet metal solid bodies may be split
@@ -185,25 +184,10 @@ export const sheetMetalSplit = defineSheetMetalFeature(function(context is Conte
         const splitId = id + "splitFaces";
         opSplitFace(context, splitId, buildOpSplitFaceDefinition(context, selectedDefinitionFaces, effectiveTool));
 
-        // ── Post-split: apply RIP joints or delete unwanted fragments ─────────────
-        if (definition.keepBothSides)
-        {
-            // Assign a RIP joint attribute to every new edge created at the split boundary.
-            // Without this the SM engine does not know to separate the two halves of the
-            // selected part into distinct solid output parts.  This is the same pattern
-            // used by the sheet metal Rip feature (sheetMetalRip.fs).
-            const newSplitEdges = evaluateQuery(context, qCreatedBy(splitId, EntityType.EDGE));
-            for (var splitEdgeIndex = 0; splitEdgeIndex < size(newSplitEdges); splitEdgeIndex += 1)
-            {
-                setAttribute(context, {
-                    "entities"  : newSplitEdges[splitEdgeIndex],
-                    "attribute" : createRipAttribute(context, newSplitEdges[splitEdgeIndex],
-                                                     toAttributeId(id + "rip" + splitEdgeIndex),
-                                                     SMJointStyle.EDGE, {})
-                });
-            }
-        }
-        else
+        // ── Post-split: delete unwanted fragments when keeping only one side ─────────
+        // In keep-both-sides mode no joint attribute is applied to the new split edges;
+        // the SM rebuild processes the modified definition body surfaces directly.
+        if (!definition.keepBothSides)
         {
             // Collect all face fragments produced by the split: the "surviving" tracked
             // fragment for each originally-targeted face plus any new fragments created
@@ -219,12 +203,14 @@ export const sheetMetalSplit = defineSheetMetalFeature(function(context is Conte
             // Classify each fragment against the tool plane and collect the ones to discard.
             // A fragment whose centroid lies on the positive-normal side of the tool plane
             // is considered "front"; the other side is "back".
+            // signedDistance has length units (dot of a displacement vector and a unit normal).
+            const zeroLength = 0 * meter;
             var facesToDiscard = [];
             for (var fragment in allSplitFragments)
             {
                 const centroid = evApproximateCentroid(context, { "entities" : fragment });
                 const signedDistance = dot(centroid - toolPlane.origin, toolPlane.normal);
-                const isOnFront = signedDistance > 0 * meter;
+                const isOnFront = signedDistance > zeroLength;
                 const shouldDiscard = definition.keepFront ? !isOnFront : isOnFront;
                 if (shouldDiscard)
                 {
@@ -262,15 +248,32 @@ export const sheetMetalSplit = defineSheetMetalFeature(function(context is Conte
         });
 
         // ── Tool cleanup ─────────────────────────────────────────────────────────
-        // opSplitFace preserves the tool (keepToolSurfaces: true), so we delete it
-        // manually here when the user has not checked "Keep tools".  Face tools and
-        // construction planes are non-deletable and are handled by the info message above.
+        // opSplitFace preserves body tools (keepToolSurfaces: true), so we delete them
+        // manually here when the user has not checked "Keep tools".
+        //
+        // Two cases:
+        //   • Tool was selected as a whole sheet body (EntityType.BODY): delete it directly.
+        //   • Tool was selected as a face (EntityType.FACE): resolve the owning sheet body
+        //     and delete that.  We only delete non-construction BodyType.SHEET owners so we
+        //     never accidentally remove solid parts or SM definition bodies.
+        // Face tools that are construction planes and mate-connector temp planes are handled
+        // separately and are always cleaned up regardless of keepTools.
         if (!definition.keepTools)
         {
-            const toolBodyQuery = qEntityFilter(effectiveTool, EntityType.BODY);
-            if (!isQueryEmpty(context, toolBodyQuery))
+            var toolBodiesToDelete = qEntityFilter(effectiveTool, EntityType.BODY);
+            if (isQueryEmpty(context, toolBodiesToDelete))
             {
-                opDeleteBodies(context, id + "deleteTool", { "entities" : toolBodyQuery });
+                const faceToolQuery = qEntityFilter(effectiveTool, EntityType.FACE);
+                if (!isQueryEmpty(context, faceToolQuery))
+                {
+                    const ownerBodies = qOwnerBody(faceToolQuery);
+                    const nonConstructionOwnerBodies = qConstructionFilter(ownerBodies, ConstructionObject.NO);
+                    toolBodiesToDelete = qBodyType(nonConstructionOwnerBodies, BodyType.SHEET);
+                }
+            }
+            if (!isQueryEmpty(context, toolBodiesToDelete))
+            {
+                opDeleteBodies(context, id + "deleteTool", { "entities" : toolBodiesToDelete });
             }
         }
 
@@ -343,10 +346,10 @@ function addSplitSideManipulator(context is Context, id is Id, definition is map
 }
 
 /**
- * Manipulator change handler for the sheet metal split feature.
+ * Manipulator change handler for the Butcher Sheet Metal feature.
  * Responds to the flip manipulator by updating the keepFront field.
  */
-export function sheetMetalSplitManipulatorChange(context is Context, definition is map, newManipulators is map) returns map
+export function butcherSheetMetalManipulatorChange(context is Context, definition is map, newManipulators is map) returns map
 {
     for (var manipulatorEntry in newManipulators)
     {
