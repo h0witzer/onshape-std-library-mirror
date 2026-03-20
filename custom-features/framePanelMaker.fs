@@ -95,25 +95,28 @@ function buildPanelName(prefix is string, panelDim1 is number, panelDim2 is numb
  *
  * Algorithm overview:
  *   1. Validate member count and confirm all selections are Frame feature members.
- *   2. Extract sweep directions using the same strategy as the Onshape Cut List feature:
- *      straight swept edges via evEdgeTangentLine, cylindrical swept faces via
- *      evSurfaceDefinition, or arc swept edges for curved members. This is correct for
- *      mitered ends, compound cuts, and curved arc frames — unlike cap face normals.
+ *   2. Extract sweep tangent directions (used for panel normal computation only) via the
+ *      Cut List strategy: straight swept edges, cylindrical faces, toroidal faces, or arc
+ *      swept edges in that priority order.
  *   3. Compute panel normal N = normalize(cross(dir_i, dir_j)) from the first two
- *      non-parallel sweep directions (determined with parallelVectors from the std lib).
- *      Validate every direction is perpendicular to N (perpendicularVectors from std lib).
- *   4. Build the panel coordinate system (Z = N, X = first sweep direction). Use evBox3d
+ *      non-parallel sweep directions.
+ *   4. Validate coplanarity by sampling actual 3D world-space positions from every
+ *      longitudinal edge of every member (sampleMemberSweepPoints) and verifying all
+ *      points lie within COPLANARITY_TOLERANCE of the panel plane. Using point positions
+ *      rather than tangent-direction perpendicularity is geometry-type agnostic and avoids
+ *      false failures caused by minor numeric noise in arc-edge tangent vectors.
+ *   5. Build the panel coordinate system (Z = N, X = first sweep direction). Use evBox3d
  *      in that system to derive the three alignment positions from the frame depth.
- *   5. Sort the selected members into a closed loop via a body-adjacency graph and a
+ *   6. Sort the selected members into a closed loop via a body-adjacency graph and a
  *      Hamiltonian cycle search.
- *   6. For each consecutive pair in the loop, find the inner swept face with
- *      qClosestTo(qFrameSweptFace(body), openingCenter). Get the constraint plane at the
- *      correct corner end via evFaceTangentPlaneAtEdge on the edge shared between the
- *      inner face and the cap face nearest to the adjacent member (found with qClosestTo).
- *      Solve a 2x2 system in panel XY for the corner position.
- *   7. opPolyline -> opFillSurface -> opExtrude (+/-thickness/2 along N).
- *   8. Apply edge gap via opOffsetFace on the panel's non-cap perimeter faces.
- *   9. Name the panel body from its XY bounding box dimensions.
+ *   7. For each consecutive pair in the loop, find the inner swept face with
+ *      findInnerSweptFace(). This selects the face whose panel-plane intersection curve
+ *      correctly constrains the panel opening for any profile — including L-channels, where
+ *      the groove wall face (not the outer leg tip) must be used. Get the 2D constraint via
+ *      getInnerFaceConstraint2D and solve for the corner position.
+ *   8. opPolyline -> opFillSurface -> opExtrude (+/-thickness/2 along N).
+ *   9. Apply edge gap via opOffsetFace on the panel's non-cap perimeter faces.
+ *  10. Name the panel body from its XY bounding box dimensions.
  *
  * Alignment manipulator:
  *   Index 0 - panel flush with the +normal face of the frames (front)
@@ -225,19 +228,33 @@ export const panelMakerFeature = defineFeature(function(context is Context, id i
             return;
         }
 
-        // ── 4. Validate planarity ───────────────────────────────────────────────────────
+        // ── 4. Validate coplanarity using actual sweep-path point positions ───────────────
         //
-        // Every sweep direction must be perpendicular to N for the frame to lie in a plane.
-        // perpendicularVectors() from the standard library handles the tolerance comparison.
+        // Sample 3D world-space positions from each member's longitudinal swept-path edges
+        // and verify that every sampled point lies within COPLANARITY_TOLERANCE of the panel
+        // plane (defined by openingNormal and the first member's centroid as the origin).
+        //
+        // Using point positions rather than tangent-direction perpendicularity is
+        // geometry-type agnostic: it works correctly for arc-swept members of any cross-section
+        // profile (square tube, L-channel, round tube, custom) without relying on edge tangent
+        // vectors, which can carry minor numeric noise on curved edges that causes false
+        // "not coplanar" failures even when the frame is genuinely planar.
 
-        for (var directionIndex = 0; directionIndex < sweepDirectionCount; directionIndex += 1)
+        const COPLANARITY_TOLERANCE = 0.1 * millimeter;
+        const planarityOrigin = evApproximateCentroid(context, { "entities" : frameMemberBodies[0] });
+
+        for (var memberIndex = 0; memberIndex < memberCount; memberIndex += 1)
         {
-            if (!perpendicularVectors(sweepDirections[directionIndex], openingNormal))
+            for (var samplePoint in sampleMemberSweepPoints(context, frameMemberBodies[memberIndex]))
             {
-                reportFeatureError(context, id,
-                    "Selected frame members do not all lie in a common plane. " ~
-                    "Panel Maker requires all sweep paths to be coplanar.");
-                return;
+                const deviation = abs(dot(samplePoint - planarityOrigin, openingNormal));
+                if (deviation > COPLANARITY_TOLERANCE)
+                {
+                    reportFeatureError(context, id,
+                        "Selected frame members do not all lie in a common plane. " ~
+                        "Panel Maker requires all sweep paths to be coplanar.");
+                    return;
+                }
             }
         }
 
@@ -331,13 +348,14 @@ export const panelMakerFeature = defineFeature(function(context is Context, id i
         // ── 9. Compute panel boundary corners from inner swept faces ─────────────────────
         //
         // For each consecutive pair (A, B) in the loop, the panel corner is the intersection
-        // of their inner swept face constraint lines in panel XY at Z = alignmentZ.
+        // of their inner swept face constraint lines/curves in panel XY at Z = alignmentZ.
         //
-        // The inner swept face is found with qClosestTo(qFrameSweptFace(body), openingCenter),
-        // using the frame topology attribute to select only the profile-swept lateral faces.
-        // The frame opening center is the centroid of all member bodies; the swept face whose
-        // geometry is closest to that point is the face bordering the void — no manual vector
-        // scoring needed.
+        // findInnerSweptFace() replaces the previous qClosestTo(qFrameSweptFace, panelCentroid)
+        // approach, which incorrectly selected the outer leg-tip face of an L-channel member
+        // (the tip of the horizontal leg is geometrically closer to the panel centroid than
+        // the groove wall) instead of the groove wall that actually constrains the panel void.
+        // findInnerSweptFace() scores by void-direction alignment of the projected face normal
+        // and breaks ties by minimum signed offset (rhs), picking the innermost face.
 
         var cornerPoints = makeArray(memberCount);
         for (var loopStep = 0; loopStep < memberCount; loopStep += 1)
@@ -345,8 +363,8 @@ export const panelMakerFeature = defineFeature(function(context is Context, id i
             const currentMemberBody = frameMemberBodies[loopOrder[loopStep]];
             const nextMemberBody    = frameMemberBodies[loopOrder[(loopStep + 1) % memberCount]];
 
-            const innerFaceCurrent = qClosestTo(qFrameSweptFace(currentMemberBody), panelCentroid);
-            const innerFaceNext    = qClosestTo(qFrameSweptFace(nextMemberBody),    panelCentroid);
+            const innerFaceCurrent = findInnerSweptFace(context, currentMemberBody, panelCentroid, openingNormal);
+            const innerFaceNext    = findInnerSweptFace(context, nextMemberBody,    panelCentroid, openingNormal);
 
             cornerPoints[loopStep] = computeCornerPoint(context,
                     innerFaceCurrent, currentMemberBody,
@@ -509,6 +527,162 @@ function getFrameSweepDirection(context is Context, memberBody is Query, pathPar
     reportFeatureError(context, makeId("panelMakerFeature"),
         "Could not determine sweep direction for a selected frame member.");
     return vector(1, 0, 0);
+}
+
+/**
+ * Samples world-space positions from the longitudinal (sweep-path) edges of a frame member.
+ * Returns three points per longitudinal edge: start (parameter 0), midpoint (parameter 0.5),
+ * and end (parameter 1.0).
+ *
+ * Longitudinal edges are those NOT adjacent to the member's start or end cap faces.
+ * Subtracting cap-face-adjacent edges from all body edges leaves only the edges that
+ * run along the length of the sweep — arcs for curved members, lines for straight members —
+ * regardless of profile shape (square, round, L-channel, I-beam, custom).
+ *
+ * These sampled positions are used by the coplanarity check (step 4) in place of tangent-
+ * direction perpendicularity tests, which can produce false failures on arc edges due to
+ * minor numeric noise in edge tangent evaluation.
+ *
+ * @param context    {Context} : The active feature context.
+ * @param memberBody {Query}   : A single frame member solid body.
+ * @returns {array}  : Array of Vector world-space positions (with meter units).
+ */
+function sampleMemberSweepPoints(context is Context, memberBody is Query) returns array
+{
+    const capEdges = qAdjacent(
+        qUnion([qFrameStartFace(memberBody), qFrameEndFace(memberBody)]),
+        AdjacencyType.EDGE,
+        EntityType.EDGE);
+
+    const longitudinalEdges = evaluateQuery(context,
+        qSubtraction(qOwnedByBody(memberBody, EntityType.EDGE), capEdges));
+
+    var points = [];
+    for (var longitudinalEdge in longitudinalEdges)
+    {
+        points = concatenateArrays([points, [
+            evEdgeTangentLine(context, { "edge" : longitudinalEdge, "parameter" : 0.0 }).origin,
+            evEdgeTangentLine(context, { "edge" : longitudinalEdge, "parameter" : 0.5 }).origin,
+            evEdgeTangentLine(context, { "edge" : longitudinalEdge, "parameter" : 1.0 }).origin
+        ]]);
+    }
+    return points;
+}
+
+/**
+ * Selects the swept face of a frame member that forms the panel boundary on this member's
+ * side of the frame opening.
+ *
+ * This replaces qClosestTo(qFrameSweptFace, panelCentroid), which selects the face whose
+ * surface geometry is nearest to the panel-ring centroid. For non-convex profiles such as
+ * L-channels, the outer tip of the horizontal leg is geometrically nearer to the panel
+ * centroid than the inner groove wall, causing the wrong face to be selected and the panel
+ * boundary to terminate at the outer leg extent rather than the groove wall.
+ *
+ * Algorithm:
+ *   1. For each planar swept face: skip faces whose normals are approximately parallel to
+ *      the panel normal — they are parallel to the panel plane and their intersection with
+ *      the panel plane is degenerate (the step face of an L-channel is this type of face).
+ *   2. Score each remaining planar face by dot(projectedNormal, voidDirection), where
+ *      voidDirection is the panel-plane projection of (panelCentroid - memberCentroid).
+ *      Faces aligned with the void direction score near +1; faces opposing it score near -1.
+ *   3. Among faces with equal top score, break ties by selecting the face with the smallest
+ *      signed offset (rhs = dot(normal, origin) / meter). A smaller rhs means the face's
+ *      plane is closer to the member's material centre in the void direction — i.e., the
+ *      innermost constraining face. For an L-channel, the groove wall (rhs ≈ 2mm) beats the
+ *      outer leg tip (rhs ≈ 10mm) via this tiebreaker.
+ *   4. Non-planar faces (cylindrical, toroidal, etc.) are used as a fallback if no planar
+ *      face with a positive void-direction score is found.
+ *
+ * @param context       {Context} : The active feature context.
+ * @param memberBody    {Query}   : The frame member body to search.
+ * @param panelCentroid {Vector}  : World-space centroid of the frame ring (with units).
+ * @param openingNormal {Vector}  : Panel normal unit vector (dimensionless).
+ * @returns {Query} : The swept face to use for the panel boundary constraint.
+ */
+function findInnerSweptFace(context is Context, memberBody is Query, panelCentroid is Vector, openingNormal is Vector) returns Query
+{
+    const memberCentroid = evApproximateCentroid(context, { "entities" : memberBody });
+
+    // Void direction: direction from member centroid toward panel interior, projected to
+    // the panel XY plane (panel normal component removed).
+    const rawVoidVector = (panelCentroid - memberCentroid) -
+                          dot(panelCentroid - memberCentroid, openingNormal) * openingNormal;
+    const voidMagnitude  = norm(rawVoidVector);
+    // Fallback when the member centroid coincides with the panel centroid: pick any vector
+    // perpendicular to openingNormal. Guard against the degenerate case where openingNormal
+    // is parallel to (1,0,0), which would make cross(openingNormal,(1,0,0)) a zero vector.
+    const fallbackPerpendicular = (abs(dot(openingNormal, vector(1, 0, 0))) < 0.9) ?
+                                  vector(1, 0, 0) : vector(0, 1, 0);
+    const voidDirection  = (voidMagnitude > 1e-8 * meter) ?
+                           rawVoidVector / voidMagnitude :
+                           normalize(cross(openingNormal, fallbackPerpendicular));
+
+    var bestFace  = qNothing();
+    var bestScore = -2.0;
+    var bestRhs   = 1e30;
+
+    for (var sweptFace in evaluateQuery(context, qFrameSweptFace(memberBody)))
+    {
+        const surfaceDefinition = evSurfaceDefinition(context, { "face" : sweptFace });
+
+        if (surfaceDefinition is Plane)
+        {
+            // Skip faces that are parallel (or nearly parallel) to the panel plane.
+            // Their projected normal in the panel XY plane is near zero, giving no useful
+            // intersection line with the panel mid-plane.
+            if (abs(dot(surfaceDefinition.normal, openingNormal)) > 0.99)
+            {
+                continue;
+            }
+
+            // Project the face normal into the panel XY plane and normalise.
+            const normalInPanel = surfaceDefinition.normal -
+                                  dot(surfaceDefinition.normal, openingNormal) * openingNormal;
+            const normalMagnitude = norm(normalInPanel);
+            if (normalMagnitude < 1e-6)
+            {
+                continue;
+            }
+            const unitNormal = normalInPanel / normalMagnitude;
+            const score      = dot(unitNormal, voidDirection);
+
+            // rhs: signed offset of this face's plane from the world origin (dimensionless
+            // after dividing by meter). Among faces with the same projected-normal direction,
+            // the face with the smallest rhs is the innermost — it constrains the panel most.
+            const rhs = dot(surfaceDefinition.normal, surfaceDefinition.origin) / meter;
+
+            if (score > bestScore + 1e-6)
+            {
+                bestScore = score;
+                bestRhs   = rhs;
+                bestFace  = sweptFace;
+            }
+            else if (score > bestScore - 1e-6 && rhs < bestRhs)
+            {
+                bestRhs  = rhs;
+                bestFace = sweptFace;
+            }
+        }
+        else
+        {
+            // Non-planar face (cylindrical, toroidal, etc.): use as a fallback only when no
+            // planar face facing the void has been found yet.
+            if (bestScore <= 0.0)
+            {
+                bestFace = sweptFace;
+            }
+        }
+    }
+
+    // Final fallback: if nothing was selected (empty swept face set), use the original
+    // closest-to-centroid approach so the feature degrades gracefully.
+    if (isQueryEmpty(context, bestFace))
+    {
+        bestFace = qClosestTo(qFrameSweptFace(memberBody), panelCentroid);
+    }
+
+    return bestFace;
 }
 
 /**
