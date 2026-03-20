@@ -483,16 +483,21 @@ function buildOpSplitFaceDefinition(context is Context, faceTargets is Query, to
 {
     var splitDefinition = { "faceTargets" : faceTargets };
 
+    // Separate the tool query into its constituent entity types.
+    // Each type maps to a distinct opSplitFace parameter name (parity with splitpart.fs).
     const toolBodies = qEntityFilter(tool, EntityType.BODY);
     const toolFaces  = qEntityFilter(tool, EntityType.FACE);
+    // Non-construction edges (e.g. sketch edges) feed the "edgeTools" parameter of opSplitFace.
+    const toolEdges  = qConstructionFilter(qEntityFilter(tool, EntityType.EDGE), ConstructionObject.NO);
 
     if (!isQueryEmpty(context, toolBodies))
     {
-        // Sheet body tool: preserve it so we can delete it ourselves per keepTools.
+        // Sheet or wire body tool: preserve it so we can delete it ourselves per keepTools.
         splitDefinition["bodyTools"]        = toolBodies;
         splitDefinition["keepToolSurfaces"] = true;
     }
-    else if (!isQueryEmpty(context, toolFaces))
+
+    if (!isQueryEmpty(context, toolFaces))
     {
         // Construction plane faces (and mate-connector temp planes from opPlane) are
         // treated as infinite so the split extends fully across each targeted face.
@@ -509,6 +514,14 @@ function buildOpSplitFaceDefinition(context is Context, faceTargets is Query, to
         }
     }
 
+    if (!isQueryEmpty(context, toolEdges))
+    {
+        // Sketch edge (and other non-construction edge) tools are projected onto the target
+        // faces using the configured projection type and direction.  Without this assignment
+        // opSplitFace never receives the edge geometry and reports nothing selected.
+        splitDefinition["edgeTools"] = toolEdges;
+    }
+
     // Thread projectionType through to opSplitFace for parity with the standard face split.
     splitDefinition["projectionType"] = definition.projectionType;
 
@@ -516,21 +529,25 @@ function buildOpSplitFaceDefinition(context is Context, faceTargets is Query, to
     // wire body tools.  Mirrors setDirectionForEdgeTools in splitpart.fs.
     if (definition.projectionType == ProjectionType.DIRECTION)
     {
-        const edgeTools     = qEntityFilter(tool, EntityType.EDGE);
-        const wireBodyTools = qBodyType(qEntityFilter(tool, EntityType.BODY), BodyType.WIRE);
+        const wireBodyTools = qBodyType(toolBodies, BodyType.WIRE);
 
-        if (!isQueryEmpty(context, edgeTools) || !isQueryEmpty(context, wireBodyTools))
+        if (!isQueryEmpty(context, toolEdges) || !isQueryEmpty(context, wireBodyTools))
         {
             var splitDirection = undefined;
             if (definition.useSketchPlaneDirection)
             {
                 // Use the normal of the sketch plane that owns the sketch edges.
-                const sketchPlane = try(evOwnerSketchPlane(context, {
-                    "entity" : qSketchFilter(edgeTools, SketchObject.YES)
-                }));
-                if (sketchPlane != undefined)
+                // Guard on non-empty toolEdges: when only wire body tools are present
+                // (no sketch edges), evOwnerSketchPlane would receive an empty query.
+                if (!isQueryEmpty(context, toolEdges))
                 {
-                    splitDirection = sketchPlane.normal;
+                    const sketchPlane = try(evOwnerSketchPlane(context, {
+                        "entity" : qSketchFilter(toolEdges, SketchObject.YES)
+                    }));
+                    if (sketchPlane != undefined)
+                    {
+                        splitDirection = sketchPlane.normal;
+                    }
                 }
             }
             else
