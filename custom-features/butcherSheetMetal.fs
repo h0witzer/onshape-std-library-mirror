@@ -6,12 +6,20 @@ FeatureScript 2909;
 //   The entire definition body (which may serve multiple solid output parts) is split
 //   into new sheet body pieces.  Fast and blunt: every part in the shared definition
 //   body is affected, regardless of which parts were individually selected.
+//   Single-side keep uses opSplitPart's built-in keepType parameter
+//   (SplitOperationKeepType.KEEP_FRONT/KEEP_BACK), the same API as the standard Split
+//   feature (splitpart.fs:167).  No geometry math is needed for side selection.
 //
 // SCALPEL mode — calls opSplitFace scoped exclusively to the definition body wall
 //   faces that are associated with the selected solid output parts.  Parts in the same
 //   definition body that were NOT selected are completely untouched.  New split
 //   boundary edges are stamped with editable RIP joint attributes (all fields set to
 //   canBeEdited: true) so the Modify Joints panel remains live after the feature.
+//   Single-side keep uses qSplitBy(splitId, EntityType.FACE, backBody) to classify
+//   split face fragments (query.fs: "front = direction of tool surface normal").
+//   A dot product against the tool plane is retained only for the exceptional case of
+//   definition faces that were not intersected by the tool at all, for which no
+//   standard library query provides half-space classification.
 //
 // Both modes share the same parameters and post-split SM rebuild pipeline
 // (assignSMAttributesToNewOrSplitEntities + updateSheetMetalGeometry).
@@ -160,10 +168,14 @@ export const sheetMetalSplit = defineSheetMetalFeature(function(context is Conte
             }
         }
 
-        // ── Extract the tool plane before any geometry changes ────────────────────
-        // Needed for single-side mode to classify which fragments/bodies to discard.
+        // ── Extract the tool plane (scalpel single-side only) ────────────────────
+        // Chainsaw mode uses opSplitPart's built-in keepType and never needs this.
+        // In scalpel single-side mode, the plane is used to classify un-split
+        // definition faces (faces entirely on one side that opSplitFace did not split
+        // and therefore qSplitBy does not cover).  qSplitBy handles all split fragments
+        // without geometry math; this is only the fallback for the un-split edge case.
         var toolPlane = undefined;
-        if (!definition.keepBothSides)
+        if (definition.splitMode == ButcherMode.SCALPEL && !definition.keepBothSides)
         {
             toolPlane = try(extractToolPlaneForSplit(context, effectiveTool));
             if (toolPlane == undefined)
@@ -196,13 +208,20 @@ export const sheetMetalSplit = defineSheetMetalFeature(function(context is Conte
         const splitId = id + "split";
         if (definition.splitMode == ButcherMode.CHAINSAW)
         {
-            // Chainsaw: opSplitPart on the entire definition body.  Creates new sheet
-            // body pieces — one per side of the cut.  keepTools: true so we manage
-            // tool deletion ourselves in the cleanup section.
+            // Chainsaw: opSplitPart on the entire definition body.  keepType is the
+            // engine-native API for single-side selection (identical to splitpart.fs:167).
+            // Using keepType here means the engine handles side selection internally,
+            // with the same "front = tool normal direction" semantics as qSplitBy and
+            // as the standard Split feature.  No geometry math or post-split deletion
+            // is needed for chainsaw single-side mode.
             opSplitPart(context, splitId, {
                 "targets"   : definitionBodyQuery,
                 "tool"      : effectiveTool,
-                "keepTools" : true
+                "keepTools" : true,
+                "keepType"  : definition.keepBothSides
+                    ? SplitOperationKeepType.KEEP_ALL
+                    : (definition.keepFront ? SplitOperationKeepType.KEEP_FRONT
+                                           : SplitOperationKeepType.KEEP_BACK)
             });
         }
         else
@@ -233,80 +252,76 @@ export const sheetMetalSplit = defineSheetMetalFeature(function(context is Conte
             }
         }
 
-        // ── Post-split: discard unwanted fragments when keeping only one side ──────
-        if (!definition.keepBothSides)
+        // ── Post-split: discard unwanted face fragments (scalpel single-side only) ──
+        // Chainsaw single-side is fully handled by keepType in opSplitPart above;
+        // the engine discards the unwanted body natively with no code here.
+        //
+        // For scalpel single-side we use qSplitBy to classify the fragments produced
+        // by opSplitFace without any centroid arithmetic.  qSplitBy semantics for a
+        // split by face or part (query.fs):
+        //   false = front = in the direction of the split tool's surface normal
+        //   true  = back  = opposite the tool normal
+        // These map directly to definition.keepFront: if keeping front, delete back
+        // (true); if keeping back, delete front (false).
+        if (!definition.keepBothSides && definition.splitMode == ButcherMode.SCALPEL)
         {
-            const zeroLength = 0 * meter;
-            if (definition.splitMode == ButcherMode.CHAINSAW)
+            // Phase 1 – split fragment side classification via qSplitBy.
+            // Any face fragment produced by opSplitFace that lands on the wrong side
+            // is collected here without geometry evaluation.
+            const wrongSideSplitFragments = qSplitBy(splitId, EntityType.FACE,
+                                                     definition.keepFront ? true : false);
+
+            // Phase 2 – un-split selected face classification.
+            // qSplitBy only covers faces that were actually intersected by the tool.
+            // A selected definition face that lay entirely on one side of the tool was
+            // not split and therefore does not appear in any qSplitBy result.  We use
+            // the per-face trackers (set up before the split) to locate these survivors.
+            //
+            // These un-split faces cannot be classified by any query or ev function:
+            // there is no half-space face query in the standard library, and
+            // evDistance returns only unsigned magnitude.  The signed dot product of
+            // (centroid − planeOrigin) · planeNormal is therefore the minimal, correct
+            // approach for determining which side of the plane a face centroid is on.
+            const allSplitFragmentsQ = qUnion([
+                qSplitBy(splitId, EntityType.FACE, false),
+                qSplitBy(splitId, EntityType.FACE, true)
+            ]);
+            const planeBoundary = 0 * meter;
+            var unSplitFacesToDiscard = [];
+            for (var tracker in selectedFaceTrackers)
             {
-                // Chainsaw single-side: opSplitPart produced new sheet bodies.
-                // Classify each body by its centroid relative to the tool plane and
-                // delete the bodies on the unwanted side.
-                const resultingBodies = evaluateQuery(context,
-                    qEntityFilter(trackedDefinitionBody, EntityType.BODY));
-                var bodiesToDiscard = [];
-                for (var bodyFragment in resultingBodies)
+                for (var trackedFace in evaluateQuery(context, tracker))
                 {
-                // Signed distance from the tool plane: positive means "front" (on the normal side).
-                // FeatureScript's evDistance returns only unsigned magnitude, so the dot product
-                // of (centroid − planeOrigin) with the unit plane normal is the correct and
-                // only way to obtain a signed scalar for side classification.
-                const centroid = evApproximateCentroid(context, { "entities" : bodyFragment });
-                const signedDistance = dot(centroid - toolPlane.origin, toolPlane.normal);
-                    const isOnFront = signedDistance > zeroLength;
-                    const shouldDiscard = definition.keepFront ? !isOnFront : isOnFront;
-                    if (shouldDiscard)
+                    // Skip faces that are already in qSplitBy — they were split and
+                    // Phase 1 has already handled them.
+                    if (!isQueryEmpty(context, qIntersection([trackedFace, allSplitFragmentsQ])))
                     {
-                        bodiesToDiscard = append(bodiesToDiscard, bodyFragment);
+                        continue;
                     }
-                }
-                if (bodiesToDiscard != [])
-                {
-                    opDeleteBodies(context, id + "deleteDiscardedBodies", {
-                        "entities" : qUnion(bodiesToDiscard)
-                    });
+                    // This face was not intersected by the tool.  Classify by signed
+                    // centroid distance from the tool plane.
+                    const centroid = evApproximateCentroid(context, { "entities" : trackedFace });
+                    const signedDist = dot(centroid - toolPlane.origin, toolPlane.normal);
+                    const isOnFront = signedDist > planeBoundary;
+                    if (definition.keepFront ? !isOnFront : isOnFront)
+                    {
+                        unSplitFacesToDiscard = append(unSplitFacesToDiscard, trackedFace);
+                    }
                 }
             }
-            else
+
+            // Phase 3 – delete everything on the wrong side in a single pass.
+            var allFacesToDiscard = evaluateQuery(context, wrongSideSplitFragments);
+            allFacesToDiscard = concatenateArrays([allFacesToDiscard, unSplitFacesToDiscard]);
+            // leaveOpen = true is required for surface (definition) bodies.
+            if (allFacesToDiscard != [])
             {
-                // Scalpel single-side: opSplitFace produced new face fragments.
-                // Collect the tracked surviving fragments plus any new face IDs,
-                // then classify by centroid and remove the unwanted faces.
-                var allSplitFragments = [];
-                for (var tracker in selectedFaceTrackers)
-                {
-                    allSplitFragments = concatenateArrays([allSplitFragments, evaluateQuery(context, tracker)]);
-                }
-                allSplitFragments = concatenateArrays([allSplitFragments,
-                                                       evaluateQuery(context, qCreatedBy(splitId, EntityType.FACE))]);
-
-                var facesToDiscard = [];
-                for (var fragment in allSplitFragments)
-                {
-                    // Signed distance from the tool plane: positive means "front" (on the normal side).
-                    // FeatureScript's evDistance returns only unsigned magnitude, so the dot product
-                    // of (centroid − planeOrigin) with the unit plane normal is the correct and
-                    // only way to obtain a signed scalar for side classification.
-                    const centroid = evApproximateCentroid(context, { "entities" : fragment });
-                    const signedDistance = dot(centroid - toolPlane.origin, toolPlane.normal);
-                    const isOnFront = signedDistance > zeroLength;
-                    const shouldDiscard = definition.keepFront ? !isOnFront : isOnFront;
-                    if (shouldDiscard)
-                    {
-                        facesToDiscard = append(facesToDiscard, fragment);
-                    }
-                }
-
-                // leaveOpen = true is required for surface bodies.
-                if (facesToDiscard != [])
-                {
-                    opDeleteFace(context, id + "deleteDiscardedFragments", {
-                        "deleteFaces"   : qUnion(facesToDiscard),
-                        "includeFillet" : false,
-                        "capVoid"       : false,
-                        "leaveOpen"     : true
-                    });
-                }
+                opDeleteFace(context, id + "deleteDiscardedFragments", {
+                    "deleteFaces"   : qUnion(allFacesToDiscard),
+                    "includeFillet" : false,
+                    "capVoid"       : false,
+                    "leaveOpen"     : true
+                });
             }
         }
 
@@ -528,11 +543,15 @@ function buildOpSplitFaceDefinition(context is Context, faceTargets is Query, to
 }
 
 /**
- * Returns a Plane extracted from the cutting tool, used to classify face fragments as
- * "front" (positive normal side) or "back" for the single-side keep mode.
+ * Returns a Plane extracted from the cutting tool.
  *
- * For face or construction-plane tools the tangent plane at the face's parametric centre
- * is sampled.  For sheet body tools the first face of the body is sampled.
+ * Only used in scalpel single-side mode to classify definition body faces that were
+ * NOT intersected by the tool (and are therefore not reachable via qSplitBy).  All
+ * split face fragments are classified by qSplitBy without this plane; this function
+ * is only the fallback for un-split faces that lay entirely on one side of the cut.
+ *
+ * Chainsaw single-side mode does NOT call this function — opSplitPart's built-in
+ * keepType handles side selection natively.
  *
  * @param tool {Query} : the cutting tool query (after mate-connector conversion)
  * @returns {Plane} : a representative plane describing the tool's orientation
