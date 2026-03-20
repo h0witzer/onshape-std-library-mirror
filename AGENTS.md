@@ -28,7 +28,7 @@
 
 ### Why Not Dot Products?
 
-**Avoid manual vector math when robust query functions exist.**
+**Avoid manual vector math when robust query, ev, or coordinate transformation functions exist.**
 
 ❌ **Wrong approach:**
 ```featurescript
@@ -49,7 +49,7 @@ const cutFaces = qFacesParallelToDirection(flatFaces, zDirection);
 3. More maintainable and readable
 4. Less error-prone
 
-**Manual vector math is almost always a sign you have not tried hard enough to use the appropriate queries and must only be used after confirming that an appropriate query exists**
+**Manual vector math is almost always a sign you have not tried hard enough to use the appropriate functions and must only be used after confirming that an appropriate query, ev, or coordinate transformation function does not exist, when it is relied on explain what the intention of the function was and why it was not found in the standard library**
 
 ## Testing Instructions
 - Since there is no way to run Onshape in a localized environment here we will rely mostly on comparing code samples with existing functions in the standard library and against the reference docs to ensure consistency with the code base
