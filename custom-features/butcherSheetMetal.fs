@@ -58,7 +58,7 @@ import(path : "onshape/std/uihint.gen.fs", version : "2909.0");
  *            Analogous to the "Face" mode of the standard Split feature; no keep-side
  *            option is exposed (matching standard face split behaviour).
  */
-enum ButcherMode
+export enum ButcherMode
 {
     annotation { "Name" : "Chainsaw" }
     CHAINSAW,
@@ -95,11 +95,27 @@ export const sheetMetalSplit = defineSheetMetalFeature(function(context is Conte
                      "Filter" : EntityType.BODY && BodyType.SOLID && ActiveSheetMetal.YES && ModifiableEntityOnly.YES }
         definition.targets is Query;
 
-        // Splitting tool: same geometry types supported by the standard split feature
-        annotation { "Name" : "Entity to split with",
-                     "Filter" : ((EntityType.BODY && BodyType.SHEET && SketchObject.NO) || EntityType.FACE || BodyType.MATE_CONNECTOR),
-                     "MaxNumberOfPicks" : 1 }
-        definition.tool is Query;
+        // Chainsaw splitting tool: sheet bodies, faces, and mate connectors (part-split parity)
+        // Scalpel splitting tool: additionally accepts sketch edges and wire body curves for
+        // use with the edge projection options (face-split parity, splitpart.fs:82-88)
+        if (definition.splitMode == ButcherMode.CHAINSAW)
+        {
+            annotation { "Name" : "Entity to split with",
+                         "Filter" : ((EntityType.BODY && BodyType.SHEET && SketchObject.NO) || EntityType.FACE || BodyType.MATE_CONNECTOR),
+                         "MaxNumberOfPicks" : 1 }
+            definition.tool is Query;
+        }
+
+        if (definition.splitMode == ButcherMode.SCALPEL)
+        {
+            annotation { "Name" : "Entity to split with",
+                         "Filter" : (EntityType.EDGE && SketchObject.YES && ConstructionObject.NO) ||
+                             (EntityType.BODY && (BodyType.SHEET || BodyType.WIRE) && ModifiableEntityOnly.NO && SketchObject.NO) ||
+                             EntityType.FACE ||
+                             BodyType.MATE_CONNECTOR,
+                         "MaxNumberOfPicks" : 1 }
+            definition.scalpelTool is Query;
+        }
 
         annotation { "Name" : "Keep tools" }
         definition.keepTools is boolean;
@@ -151,11 +167,18 @@ export const sheetMetalSplit = defineSheetMetalFeature(function(context is Conte
             throw regenError("Select at least one active sheet metal part to split", ["targets"]);
         }
 
+        // ── Resolve the active tool query for this mode ───────────────────────────
+        // Chainsaw uses definition.tool (part-split filter); scalpel uses definition.scalpelTool
+        // (face-split filter, includes sketch edges and wire bodies).
+        var rawToolQuery = (definition.splitMode == ButcherMode.CHAINSAW)
+            ? definition.tool
+            : definition.scalpelTool;
+
         // ── Warn when a single face tool is always kept, mirroring standard split ─
-        const toolFaceCount = size(evaluateQuery(context, qEntityFilter(definition.tool, EntityType.FACE)));
+        const toolFaceCount = size(evaluateQuery(context, qEntityFilter(rawToolQuery, EntityType.FACE)));
         if (toolFaceCount == 1 && !definition.keepTools)
         {
-            const toolIsConstructionPlane = !isQueryEmpty(context, qConstructionFilter(definition.tool, ConstructionObject.YES));
+            const toolIsConstructionPlane = !isQueryEmpty(context, qConstructionFilter(rawToolQuery, ConstructionObject.YES));
             if (toolIsConstructionPlane)
             {
                 reportFeatureInfo(context, id, ErrorStringEnum.SPLIT_KEEP_PLANES_AND_MATE_CONNECTORS);
@@ -168,18 +191,21 @@ export const sheetMetalSplit = defineSheetMetalFeature(function(context is Conte
 
         // ── Convert mate connectors to temporary planar bodies ────────────────────
         // This is done once so the same plane can be used for every face target group.
-        const temporaryPlaneQueries = buildTemporaryPlanesForMateConnectors(context, id, definition.tool);
+        const temporaryPlaneQueries = buildTemporaryPlanesForMateConnectors(context, id, rawToolQuery);
         const temporaryPlaneCount = size(temporaryPlaneQueries);
         if (temporaryPlaneCount == 1)
         {
-            definition.tool = temporaryPlaneQueries[0];
+            rawToolQuery = temporaryPlaneQueries[0];
         }
         else if (temporaryPlaneCount > 1)
         {
-            throw regenError("Only one splitting tool may be selected", ["tool"], definition.tool);
+            throw regenError("Only one splitting tool may be selected",
+                             definition.splitMode == ButcherMode.CHAINSAW ? ["tool"] : ["scalpelTool"],
+                             rawToolQuery);
         }
 
-        const effectiveTool = definition.tool;
+        // effectiveTool is rawToolQuery after mate-connector conversion.
+        const effectiveTool = rawToolQuery;
 
         // ── Locate the shared master surface definition body ──────────────────────
         // For a single SM model, this is the one SHEET body that the engine uses to
@@ -318,10 +344,12 @@ export const sheetMetalSplit = defineSheetMetalFeature(function(context is Conte
 /**
  * Adds a flip manipulator positioned on the splitting tool face nearest to the sheet metal
  * definition bodies, allowing the user to interactively choose which side of the split to keep.
+ * Only called for chainsaw mode; scalpel mode has no keep-side option.
  *
  * @param id {Id}
  * @param definition {map} : feature definition (reads tool, keepFront)
- * @param definitionBodies {Query} : sheet metal master surface definition bodies
+ * @param definitionBodies {Query} : sheet metal master surface definition bodies used to
+ *                                   find the closest point for manipulator placement
  */
 function addSplitSideManipulator(context is Context, id is Id, definition is map, definitionBodies is Query)
 {
