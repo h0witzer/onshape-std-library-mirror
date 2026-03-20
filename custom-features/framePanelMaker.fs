@@ -379,6 +379,111 @@ export const panelMakerFeature = defineFeature(function(context is Context, id i
                     panelCSys, alignmentZ);
         }
 
+        // ── DEBUG: Alignment and boundary construction geometry ────────────────────────────
+        //
+        // Diagnostic visualization to help identify panel misalignment and "twisties".
+        // Remove this block when the feature is working correctly.
+        //
+        // Color key:
+        //   RED/GREEN/BLUE : Panel coordinate system — X = first sweep direction (RED),
+        //                    Y (GREEN), Z = opening normal (BLUE).
+        //                    If the panel is twisted, check whether RED is pointing in an
+        //                    unexpected direction; sweepDirections[0] drives panelXAxis and
+        //                    a sign flip here will mirror the constraint RHS values.
+        //   YELLOW         : Panel centroid (coordinate system origin).
+        //   CYAN           : Inner swept face per member. The inner face determines the
+        //                    boundary constraint — if the wrong wall of the profile is
+        //                    CYAN, the corner will be computed from the wrong face.
+        //   BLACK          : Alignment front point (YELLOW = center, ORANGE = back).
+        //                    The panel sits at YELLOW for alignmentIndex 1 (centered).
+        //   ORANGE         : Alignment back point; also void-direction arrows.
+        //                    Each arrow runs from a member centroid to the panel centroid
+        //                    projected onto the panel plane.  findInnerSweptFace ranks
+        //                    candidate faces by alignment with this direction — a wrong
+        //                    arrow means a wrong face score.
+        //   MAGENTA        : Per-member body centroids (void-direction arrow tails).
+        //   GREEN          : Constraint lines in the panel plane at Z = alignmentZ.
+        //                    One line per loop step.  Each pair of adjacent GREEN lines
+        //                    should intersect exactly at the adjacent RED corner point.
+        //                    Circle constraints (rolled tube) appear as BLUE center points.
+        //   RED (points)   : Computed corner vertices before polyline construction.
+
+        // Panel coordinate system axes
+        debug(context, panelCSys, DebugColor.RED, DebugColor.GREEN, DebugColor.BLUE);
+        addDebugPoint(context, panelCentroid, DebugColor.YELLOW);
+
+        // Alignment depth reference points
+        addDebugPoint(context, alignmentPointFront,  DebugColor.BLACK);
+        addDebugPoint(context, alignmentPointCenter, DebugColor.YELLOW);
+        addDebugPoint(context, alignmentPointBack,   DebugColor.ORANGE);
+
+        // Per-member: centroid (MAGENTA), void-direction arrow (ORANGE), inner face (CYAN)
+        for (var debugMemberIndex = 0; debugMemberIndex < memberCount; debugMemberIndex += 1)
+        {
+            const debugMemberBody     = frameMemberBodies[debugMemberIndex];
+            const debugMemberCentroid = evApproximateCentroid(context, { "entities" : debugMemberBody });
+            addDebugPoint(context, debugMemberCentroid, DebugColor.MAGENTA);
+
+            // Void direction: panel-plane projection of (panelCentroid - memberCentroid).
+            // findInnerSweptFace scores candidate faces by alignment with this direction.
+            const voidDelta   = panelCentroid - debugMemberCentroid;
+            const voidInPlane = voidDelta - dot(voidDelta, openingNormal) * openingNormal;
+            if (norm(voidInPlane) > 1e-6 * meter)
+            {
+                addDebugArrow(context, debugMemberCentroid, debugMemberCentroid + voidInPlane,
+                        1.5 * millimeter, DebugColor.ORANGE);
+            }
+
+            // Inner swept face: the boundary constraint face selected for this member
+            addDebugEntities(context,
+                    findInnerSweptFace(context, debugMemberBody, panelCentroid, openingNormal),
+                    DebugColor.CYAN);
+        }
+
+        // Constraint lines and corner points, indexed by loop order.
+        // 100mm half-length gives a ~200mm visible segment — roughly 4-8x typical tube
+        // depth — so lines are readable without dominating the viewport for normal frames.
+        const debugSegmentHalfLength = 100 * millimeter;
+        for (var debugLoopStep = 0; debugLoopStep < memberCount; debugLoopStep += 1)
+        {
+            // Show the constraint contributed by the current member at this loop step.
+            const debugCurrentBody = frameMemberBodies[loopOrder[debugLoopStep]];
+            const debugNextBody    = frameMemberBodies[loopOrder[(debugLoopStep + 1) % memberCount]];
+            const debugInnerFace   = findInnerSweptFace(context, debugCurrentBody, panelCentroid, openingNormal);
+            const debugConstraint  = getInnerFaceConstraint2D(context, debugInnerFace, debugCurrentBody, debugNextBody, panelCSys);
+
+            if (debugConstraint.kind == "line")
+            {
+                // Foot of perpendicular from the panel origin to the constraint line,
+                // then extend ±halfLen along the line direction (-ny, nx) for visibility.
+                const debugNx      = debugConstraint.nx;
+                const debugNy      = debugConstraint.ny;
+                const debugRhs     = debugConstraint.rhs;
+                const debugHalfLen = debugSegmentHalfLength / meter;
+                const lineA = toWorld(panelCSys, vector(
+                            (debugNx * debugRhs + debugNy * debugHalfLen) * meter,
+                            (debugNy * debugRhs - debugNx * debugHalfLen) * meter,
+                            alignmentZ));
+                const lineB = toWorld(panelCSys, vector(
+                            (debugNx * debugRhs - debugNy * debugHalfLen) * meter,
+                            (debugNy * debugRhs + debugNx * debugHalfLen) * meter,
+                            alignmentZ));
+                addDebugLine(context, lineA, lineB, DebugColor.GREEN);
+            }
+            else
+            {
+                // Circle constraint (rolled round tube): show center at alignmentZ depth
+                addDebugPoint(context, toWorld(panelCSys, vector(
+                            debugConstraint.cx * meter,
+                            debugConstraint.cy * meter,
+                            alignmentZ)), DebugColor.BLUE);
+            }
+
+            // Corner vertex: should sit at the intersection of adjacent GREEN lines
+            addDebugPoint(context, cornerPoints[debugLoopStep], DebugColor.RED);
+        }
+        // ── END DEBUG ──────────────────────────────────────────────────────────────────────
+
         // ── 10. Build closed boundary wire ───────────────────────────────────────────────
 
         var boundaryPoints = makeArray(memberCount + 1);
