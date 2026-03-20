@@ -1,26 +1,24 @@
 FeatureScript 2909;
 // Butcher Sheet Metal Feature
-// Splits an active sheet metal part by operating on only the master surface definition
-// body faces that are actually associated with the selected solid output parts, then
-// triggering a sheet metal rebuild to update all part representations.
+// Splits one or more active sheet metal parts using one of two operating modes:
 //
-// The standard split feature cannot operate on active sheet metal parts because of the
-// special tracking, associations, and attribute system used by the sheet metal engine.
-// This feature works around that limitation by:
-//   1. Resolving the exact definition body wall faces associated with each selected solid part
-//      (via face-level SMAssociationAttribute links, not the whole definition body)
-//   2. Performing opSplitFace on only those faces — faces that belong to other parts
-//      sharing the same definition body are never touched
-//   3. For keepBothSides = true: the split edges are left as raw geometry (no joint
-//      attribute is applied); assignSMAttributesToNewOrSplitEntities handles attribute
-//      propagation on the modified surfaces
-//   4. For keepBothSides = false: deleting the unwanted face fragments from the definition
-//      body using opDeleteFace (leaveOpen = true), leaving only the wanted side
-//   5. Calling assignSMAttributesToNewOrSplitEntities and updateSheetMetalGeometry to
-//      propagate attributes and rebuild the solid parts
+// CHAINSAW mode — calls opSplitPart on the shared master surface definition body.
+//   The entire definition body (which may serve multiple solid output parts) is split
+//   into new sheet body pieces.  Fast and blunt: every part in the shared definition
+//   body is affected, regardless of which parts were individually selected.
+//
+// SCALPEL mode — calls opSplitFace scoped exclusively to the definition body wall
+//   faces that are associated with the selected solid output parts.  Parts in the same
+//   definition body that were NOT selected are completely untouched.  New split
+//   boundary edges are stamped with editable RIP joint attributes (all fields set to
+//   canBeEdited: true) so the Modify Joints panel remains live after the feature.
+//
+// Both modes share the same parameters and post-split SM rebuild pipeline
+// (assignSMAttributesToNewOrSplitEntities + updateSheetMetalGeometry).
 
 // Imports used in interface
 export import(path : "onshape/std/query.fs", version : "2909.0");
+export import(path : "onshape/std/splitoperationkeeptype.gen.fs", version : "2909.0");
 
 // Imports used internally
 import(path : "onshape/std/common.fs", version : "2909.0");
@@ -38,30 +36,47 @@ import(path : "onshape/std/geomOperations.fs", version : "2909.0");
 import(path : "onshape/std/uihint.gen.fs", version : "2909.0");
 
 /**
- * Splits one or more active sheet metal parts by targeting only the underlying master
- * surface definition body faces associated with the selected solid output parts, then
- * rebuilds the sheet metal geometry from the modified surfaces.
+ * Operating mode for the Butcher Sheet Metal feature.
+ *
+ * CHAINSAW - Direct opSplitPart on the entire SM definition body.  Every part that
+ *            shares the definition body is split (or the body becomes two new bodies).
+ *            Fast and blunt: no per-part face-level scoping.
+ *
+ * SCALPEL  - opSplitFace scoped exclusively to the definition body faces that belong
+ *            to the selected solid output parts.  Parts sharing the same definition body
+ *            that are NOT selected are never touched.  New split boundary edges receive
+ *            editable RIP joint attributes so the Modify Joints panel stays live.
+ */
+enum ButcherMode
+{
+    annotation { "Name" : "Chainsaw" }
+    CHAINSAW,
+    annotation { "Name" : "Scalpel" }
+    SCALPEL
+}
+
+/**
+ * Splits one or more active sheet metal parts by operating on the underlying master
+ * surface definition body, then rebuilds the sheet metal geometry.
  *
  * Unlike the standard Split feature, this feature works directly with the sheet metal
  * association and attribute tracking system, operating on the definition body surfaces
  * rather than the 3D solid output parts.
  *
- * Selective scoping: when a single sheet metal model produces multiple solid output parts
- * from one shared definition body (for example, walls connected by bends vs. walls
- * separated only by rip joints), only the definition body faces that are explicitly
- * associated with the selected parts are split.  Faces belonging to unselected parts
- * in the same definition body remain completely untouched.
- *
- * This is achieved by using opSplitFace with a scoped faceTargets query (resolved via
- * face-level SMAssociationAttribute links from the solid part faces to the definition
- * body faces) rather than opSplitPart on the entire shared definition body.
+ * See the ButcherMode enum for a description of the two operating modes.
  */
+// The exported constant is intentionally named `sheetMetalSplit` for backward compatibility
+// with existing Part Studio scripts that already reference this feature by that name.
+// All other naming (Feature Type Name, file, manipulator handler) uses "Butcher Sheet Metal".
 annotation { "Feature Type Name" : "Butcher sheet metal",
              "Filter Selector" : "allparts",
              "Manipulator Change Function" : "butcherSheetMetalManipulatorChange" }
-export const butcherSheetMetal = defineSheetMetalFeature(function(context is Context, id is Id, definition is map)
+export const sheetMetalSplit = defineSheetMetalFeature(function(context is Context, id is Id, definition is map)
     precondition
     {
+        annotation { "Name" : "Split mode", "Default" : ButcherMode.SCALPEL }
+        definition.splitMode is ButcherMode;
+
         // Target selection: only active sheet metal solid bodies may be split
         annotation { "Name" : "Sheet metal parts to split",
                      "Filter" : EntityType.BODY && BodyType.SOLID && ActiveSheetMetal.YES && ModifiableEntityOnly.YES }
@@ -131,19 +146,22 @@ export const butcherSheetMetal = defineSheetMetalFeature(function(context is Con
             throw regenError("Could not locate the sheet metal definition body for the selected parts", ["targets"]);
         }
 
-        // ── Resolve the SPECIFIC definition body faces for the selected parts ─────
+        // ── SCALPEL only: resolve definition faces scoped to selected parts ────────
         // Walking the face-level SMAssociationAttribute links from the solid part faces
-        // to the definition body faces gives us a scoped faceTargets query.  opSplitFace
-        // will only modify these faces; all other faces in the shared definition body
-        // (belonging to unselected parts) are left completely untouched.
-        const selectedDefinitionFaces = collectDefinitionFacesForSelectedParts(context, definition.targets, definitionBodyQuery);
-        if (isQueryEmpty(context, selectedDefinitionFaces))
+        // to the definition body faces gives us a scoped faceTargets query that leaves
+        // all other parts in the same definition body completely untouched.
+        var selectedDefinitionFaces = undefined;
+        if (definition.splitMode == ButcherMode.SCALPEL)
         {
-            throw regenError("Could not resolve the sheet metal definition faces for the selected parts", ["targets"]);
+            selectedDefinitionFaces = collectDefinitionFacesForSelectedParts(context, definition.targets, definitionBodyQuery);
+            if (isQueryEmpty(context, selectedDefinitionFaces))
+            {
+                throw regenError("Could not resolve the sheet metal definition faces for the selected parts", ["targets"]);
+            }
         }
 
         // ── Extract the tool plane before any geometry changes ────────────────────
-        // Needed for single-side mode to classify which face fragments to discard.
+        // Needed for single-side mode to classify which fragments/bodies to discard.
         var toolPlane = undefined;
         if (!definition.keepBothSides)
         {
@@ -164,11 +182,9 @@ export const butcherSheetMetal = defineSheetMetalFeature(function(context is Con
             addSplitSideManipulator(context, id, definition, definitionBodyQuery);
         }
 
-        // ── Track each selected definition face individually for fragment collection ─
-        // Needed only in single-side mode: we collect both the tracked (surviving) and
-        // newly-created face fragments so we can classify each one against the tool plane.
+        // ── SCALPEL only: track individual faces for single-side fragment collection ─
         var selectedFaceTrackers = [];
-        if (!definition.keepBothSides)
+        if (definition.splitMode == ButcherMode.SCALPEL && !definition.keepBothSides)
         {
             for (var faceToTrack in evaluateQuery(context, selectedDefinitionFaces))
             {
@@ -176,66 +192,127 @@ export const butcherSheetMetal = defineSheetMetalFeature(function(context is Con
             }
         }
 
-        // ── Split ONLY the selected definition faces ───────────────────────────────
-        // opSplitFace confines the geometry change to exactly the wall faces that belong
-        // to the selected solid parts.  All other faces in the same definition body remain
-        // untouched.  This is the key difference from opSplitPart, which would always
-        // split the entire shared definition body.
-        const splitId = id + "splitFaces";
-        opSplitFace(context, splitId, buildOpSplitFaceDefinition(context, selectedDefinitionFaces, effectiveTool));
-
-        // ── Post-split: delete unwanted fragments when keeping only one side ─────────
-        // In keep-both-sides mode no joint attribute is applied to the new split edges;
-        // the SM rebuild processes the modified definition body surfaces directly.
-        if (!definition.keepBothSides)
+        // ── Execute the split ─────────────────────────────────────────────────────
+        const splitId = id + "split";
+        if (definition.splitMode == ButcherMode.CHAINSAW)
         {
-            // Collect all face fragments produced by the split: the "surviving" tracked
-            // fragment for each originally-targeted face plus any new fragments created
-            // by the split operation (which carry brand-new transient IDs).
-            var allSplitFragments = [];
-            for (var tracker in selectedFaceTrackers)
-            {
-                allSplitFragments = concatenateArrays([allSplitFragments, evaluateQuery(context, tracker)]);
-            }
-            allSplitFragments = concatenateArrays([allSplitFragments,
-                                                   evaluateQuery(context, qCreatedBy(splitId, EntityType.FACE))]);
+            // Chainsaw: opSplitPart on the entire definition body.  Creates new sheet
+            // body pieces — one per side of the cut.  keepTools: true so we manage
+            // tool deletion ourselves in the cleanup section.
+            opSplitPart(context, splitId, {
+                "targets"   : definitionBodyQuery,
+                "tool"      : effectiveTool,
+                "keepTools" : true
+            });
+        }
+        else
+        {
+            // Scalpel: opSplitFace confined to definition body faces belonging to the
+            // selected solid parts.  All other faces in the shared definition body remain
+            // untouched.  keepToolSurfaces: true (set inside buildOpSplitFaceDefinition
+            // for body tools) so we manage deletion ourselves.
+            const splitResult = opSplitFace(context, splitId,
+                                            buildOpSplitFaceDefinition(context, selectedDefinitionFaces, effectiveTool));
 
-            // Classify each fragment against the tool plane and collect the ones to discard.
-            // A fragment whose centroid lies on the positive-normal side of the tool plane
-            // is considered "front"; the other side is "back".
-            // signedDistance has length units (dot of a displacement vector and a unit normal).
-            const zeroLength = 0 * meter;
-            var facesToDiscard = [];
-            for (var fragment in allSplitFragments)
+            // In keep-both-sides mode: stamp every new split boundary edge with an
+            // editable RIP joint attribute.  All fields (including angle) are marked
+            // canBeEdited: true so the Modify Joints panel remains live and fully
+            // interactive after the feature is applied.
+            if (definition.keepBothSides)
             {
-                const centroid = evApproximateCentroid(context, { "entities" : fragment });
-                const signedDistance = dot(centroid - toolPlane.origin, toolPlane.normal);
-                const isOnFront = signedDistance > zeroLength;
-                const shouldDiscard = definition.keepFront ? !isOnFront : isOnFront;
-                if (shouldDiscard)
+                var ripIndex = 0;
+                for (var splitEdge in splitResult.splittingEdges)
                 {
-                    facesToDiscard = append(facesToDiscard, fragment);
+                    setAttribute(context, {
+                        "entities"  : splitEdge,
+                        "attribute" : createEditableRipAttribute(context, splitEdge,
+                                                                 toAttributeId(id + "rip" + ripIndex))
+                    });
+                    ripIndex += 1;
                 }
             }
+        }
 
-            // Remove the discarded face fragments from the definition body.
-            // leaveOpen = true is required for surface bodies (confirmed by sheetMetalBend.fs).
-            // Adjacent edges become open boundary edges of the remaining fragments, which
-            // the SM engine correctly treats as cut edges of the trimmed sheet.
-            if (facesToDiscard != [])
+        // ── Post-split: discard unwanted fragments when keeping only one side ──────
+        if (!definition.keepBothSides)
+        {
+            const zeroLength = 0 * meter;
+            if (definition.splitMode == ButcherMode.CHAINSAW)
             {
-                opDeleteFace(context, id + "deleteDiscardedFragments", {
-                    "deleteFaces"   : qUnion(facesToDiscard),
-                    "includeFillet" : false,
-                    "capVoid"       : false,
-                    "leaveOpen"     : true
-                });
+                // Chainsaw single-side: opSplitPart produced new sheet bodies.
+                // Classify each body by its centroid relative to the tool plane and
+                // delete the bodies on the unwanted side.
+                const resultingBodies = evaluateQuery(context,
+                    qEntityFilter(trackedDefinitionBody, EntityType.BODY));
+                var bodiesToDiscard = [];
+                for (var bodyFragment in resultingBodies)
+                {
+                // Signed distance from the tool plane: positive means "front" (on the normal side).
+                // FeatureScript's evDistance returns only unsigned magnitude, so the dot product
+                // of (centroid − planeOrigin) with the unit plane normal is the correct and
+                // only way to obtain a signed scalar for side classification.
+                const centroid = evApproximateCentroid(context, { "entities" : bodyFragment });
+                const signedDistance = dot(centroid - toolPlane.origin, toolPlane.normal);
+                    const isOnFront = signedDistance > zeroLength;
+                    const shouldDiscard = definition.keepFront ? !isOnFront : isOnFront;
+                    if (shouldDiscard)
+                    {
+                        bodiesToDiscard = append(bodiesToDiscard, bodyFragment);
+                    }
+                }
+                if (bodiesToDiscard != [])
+                {
+                    opDeleteBodies(context, id + "deleteDiscardedBodies", {
+                        "entities" : qUnion(bodiesToDiscard)
+                    });
+                }
+            }
+            else
+            {
+                // Scalpel single-side: opSplitFace produced new face fragments.
+                // Collect the tracked surviving fragments plus any new face IDs,
+                // then classify by centroid and remove the unwanted faces.
+                var allSplitFragments = [];
+                for (var tracker in selectedFaceTrackers)
+                {
+                    allSplitFragments = concatenateArrays([allSplitFragments, evaluateQuery(context, tracker)]);
+                }
+                allSplitFragments = concatenateArrays([allSplitFragments,
+                                                       evaluateQuery(context, qCreatedBy(splitId, EntityType.FACE))]);
+
+                var facesToDiscard = [];
+                for (var fragment in allSplitFragments)
+                {
+                    // Signed distance from the tool plane: positive means "front" (on the normal side).
+                    // FeatureScript's evDistance returns only unsigned magnitude, so the dot product
+                    // of (centroid − planeOrigin) with the unit plane normal is the correct and
+                    // only way to obtain a signed scalar for side classification.
+                    const centroid = evApproximateCentroid(context, { "entities" : fragment });
+                    const signedDistance = dot(centroid - toolPlane.origin, toolPlane.normal);
+                    const isOnFront = signedDistance > zeroLength;
+                    const shouldDiscard = definition.keepFront ? !isOnFront : isOnFront;
+                    if (shouldDiscard)
+                    {
+                        facesToDiscard = append(facesToDiscard, fragment);
+                    }
+                }
+
+                // leaveOpen = true is required for surface bodies.
+                if (facesToDiscard != [])
+                {
+                    opDeleteFace(context, id + "deleteDiscardedFragments", {
+                        "deleteFaces"   : qUnion(facesToDiscard),
+                        "includeFillet" : false,
+                        "capVoid"       : false,
+                        "leaveOpen"     : true
+                    });
+                }
             }
         }
 
         // ── Propagate SM attributes and rebuild ────────────────────────────────────
-        // opSplitFace does not create new bodies, so postSplitBodiesQuery is the same
-        // definition body (augmented by the tracking query in case of body-level changes).
+        // The tracked definition body query captures all resulting bodies (new pieces
+        // from opSplitPart, or the modified original body from opSplitFace).
         const postSplitBodiesQuery = qUnion([
             definitionBodyQuery,
             qEntityFilter(trackedDefinitionBody, EntityType.BODY)
@@ -248,16 +325,14 @@ export const butcherSheetMetal = defineSheetMetalFeature(function(context is Con
         });
 
         // ── Tool cleanup ─────────────────────────────────────────────────────────
-        // opSplitFace preserves body tools (keepToolSurfaces: true), so we delete them
-        // manually here when the user has not checked "Keep tools".
+        // Both opSplitFace (keepToolSurfaces: true) and opSplitPart (keepTools: true)
+        // preserve the tool body so we can manage its lifetime here.
         //
         // Two cases:
-        //   • Tool was selected as a whole sheet body (EntityType.BODY): delete it directly.
-        //   • Tool was selected as a face (EntityType.FACE): resolve the owning sheet body
-        //     and delete that.  We only delete non-construction BodyType.SHEET owners so we
-        //     never accidentally remove solid parts or SM definition bodies.
-        // Face tools that are construction planes and mate-connector temp planes are handled
-        // separately and are always cleaned up regardless of keepTools.
+        //   • Tool was selected as a whole sheet body: delete it directly.
+        //   • Tool was selected as a face: resolve the owning non-construction sheet body
+        //     and delete that.  Solid bodies and SM definition bodies are never touched.
+        // Construction planes and mate-connector temp planes are handled separately.
         if (!definition.keepTools)
         {
             var toolBodiesToDelete = qEntityFilter(effectiveTool, EntityType.BODY);
@@ -278,13 +353,13 @@ export const butcherSheetMetal = defineSheetMetalFeature(function(context is Con
         }
 
         // Always remove any temporary planar bodies created from mate connectors.
-        // opSplitFace does not delete construction planes regardless of keepToolSurfaces.
+        // Neither opSplitFace nor opSplitPart cleans these up automatically.
         if (temporaryPlaneQueries != [])
         {
             opDeleteBodies(context, id + "deleteTempPlanes", { "entities" : qUnion(temporaryPlaneQueries) });
         }
     },
-    { keepTools : false, keepBothSides : true, keepFront : true });
+    { keepTools : false, keepBothSides : true, keepFront : true, splitMode : ButcherMode.SCALPEL });
 
 
 // ─── Manipulator ─────────────────────────────────────────────────────────────
@@ -514,4 +589,42 @@ function buildTemporaryPlanesForMateConnectors(context is Context, id is Id, too
         }
     }
     return temporaryPlanes;
+}
+
+/**
+ * Creates a RIP joint SMAttribute for the given split edge with ALL fields marked as
+ * canBeEdited: true, including the rip angle.
+ *
+ * This differs from the standard library's createRipAttribute which marks the angle
+ * field as canBeEdited: false.  Keeping every field editable ensures the Modify Joints
+ * panel remains fully interactive after the Butcher Sheet Metal feature is applied.
+ *
+ * @param entity {Query} : the split edge to attribute
+ * @param ripId {string} : unique attribute identifier (produced by toAttributeId)
+ * @returns {SMAttribute} : a JOINT / RIP attribute with all fields editable
+ */
+function createEditableRipAttribute(context is Context, entity is Query, ripId is string) returns SMAttribute
+{
+    var ripAttribute = makeSMJointAttribute(ripId);
+    ripAttribute.jointType = { "value" : SMJointType.RIP, "canBeEdited" : true };
+
+    // try silent mirrors the pattern in the standard library's createRipAttribute
+    // (sheetMetalUtils.fs).  An undefined angle is a valid state for a flat-sheet rip
+    // edge (zero dihedral angle) — the attribute is still valid without the angle field.
+    const angle = try silent(edgeAngle(context, entity));
+    if (angle != undefined)
+    {
+        // Set canBeEdited: true on the angle so the Modify Joints panel is not locked.
+        // The standard createRipAttribute sets this to false (angle is read-only there).
+        ripAttribute.angle = { "value" : angle, "canBeEdited" : true };
+    }
+
+    // Only set a joint style when the rip edge has a non-zero dihedral angle,
+    // consistent with the gate used by createRipAttribute in sheetMetalUtils.fs.
+    if (angle != undefined && abs(angle) >= TOLERANCE.zeroAngle * radian)
+    {
+        ripAttribute.jointStyle = { "value" : SMJointStyle.EDGE, "canBeEdited" : true };
+    }
+
+    return ripAttribute;
 }
