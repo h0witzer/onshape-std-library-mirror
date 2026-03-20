@@ -100,11 +100,11 @@ function buildPanelName(prefix is string, panelDim1 is number, panelDim2 is numb
  *      swept edges in that priority order.
  *   3. Compute panel normal N = normalize(cross(dir_i, dir_j)) from the first two
  *      non-parallel sweep directions.
- *   4. Validate coplanarity by sampling actual 3D world-space positions from every
- *      longitudinal edge of every member (sampleMemberSweepPoints) and verifying all
- *      points lie within COPLANARITY_TOLERANCE of the panel plane. Using point positions
- *      rather than tangent-direction perpendicularity is geometry-type agnostic and avoids
- *      false failures caused by minor numeric noise in arc-edge tangent vectors.
+ *   4. Validate coplanarity by inspecting the surface geometry of every swept face of
+ *      every member. For Plane faces: normal must be ∥ or ⊥ to openingNormal. For
+ *      Cylinder/Torus faces: axis must be ∥ to openingNormal. Other types: sample the
+ *      face-centre tangent plane. Cap faces are never consulted — they may be mitered,
+ *      compound-cut, or absent entirely.
  *   5. Build the panel coordinate system (Z = N, X = first sweep direction). Use evBox3d
  *      in that system to derive the three alignment positions from the frame depth.
  *   6. Sort the selected members into a closed loop via a body-adjacency graph and a
@@ -228,27 +228,73 @@ export const panelMakerFeature = defineFeature(function(context is Context, id i
             return;
         }
 
-        // ── 4. Validate coplanarity using actual sweep-path point positions ───────────────
+        // ── 4. Validate coplanarity using swept face surface geometry ────────────────────
         //
-        // Sample 3D world-space positions from each member's longitudinal swept-path edges
-        // and verify that every sampled point lies within COPLANARITY_TOLERANCE of the panel
-        // plane (defined by openingNormal and the first member's centroid as the origin).
+        // For a frame ring swept in a common plane, every swept face must be oriented
+        // consistently with openingNormal:
+        //   - Planar swept faces must have their surface normal either parallel to
+        //     openingNormal (faces whose plane contains the sweep path — e.g. the
+        //     flat top/bottom flanges of a tube whose depth axis is openingNormal) or
+        //     perpendicular to openingNormal (faces whose plane is parallel to the sweep
+        //     path direction — e.g. the inner/outer walls).
+        //   - Cylindrical swept faces must have their cylinder axis parallel to
+        //     openingNormal (a planar arc sweep produces a cylinder whose axis = the
+        //     plane normal).
+        //   - Toroidal swept faces must have their torus axis parallel to openingNormal
+        //     (a planar arc sweep of a round tube produces a torus whose axis = the plane
+        //     normal).
+        //   - Other surface types (B-spline, etc.) are checked by sampling the tangent
+        //     plane normal at the face centre.
         //
-        // Using point positions rather than tangent-direction perpendicularity is
-        // geometry-type agnostic: it works correctly for arc-swept members of any cross-section
-        // profile (square tube, L-channel, round tube, custom) without relying on edge tangent
-        // vectors, which can carry minor numeric noise on curved edges that causes false
-        // "not coplanar" failures even when the frame is genuinely planar.
-
-        const COPLANARITY_TOLERANCE = 0.1 * millimeter;
-        const planarityOrigin = evApproximateCentroid(context, { "entities" : frameMemberBodies[0] });
+        // All checks use evSurfaceDefinition (analytical, noise-free) or evFaceTangentPlane
+        // (sampled at UV centre) on qFrameSweptFace — no cap faces are consulted.
+        // Cap faces (qFrameStartFace / qFrameEndFace) are deliberately excluded: mitered
+        // or compound-cut caps have arbitrary orientations that convey no information about
+        // whether the sweep path is planar, and some frame configurations produce no clean
+        // planar cap face at all.
 
         for (var memberIndex = 0; memberIndex < memberCount; memberIndex += 1)
         {
-            for (var samplePoint in sampleMemberSweepPoints(context, frameMemberBodies[memberIndex]))
+            for (var sweptFace in evaluateQuery(context, qFrameSweptFace(frameMemberBodies[memberIndex])))
             {
-                const deviation = abs(dot(samplePoint - planarityOrigin, openingNormal));
-                if (deviation > COPLANARITY_TOLERANCE)
+                const surfaceDefinition = evSurfaceDefinition(context, { "face" : sweptFace });
+                var faceConsistentWithPanel = false;
+
+                if (surfaceDefinition is Plane)
+                {
+                    // Planar face: normal must be either parallel or perpendicular to openingNormal.
+                    // parallelVectors and perpendicularVectors use the standard library's built-in
+                    // angular tolerance — preferred over manual dot-product thresholds.
+                    faceConsistentWithPanel =
+                        parallelVectors(surfaceDefinition.normal, openingNormal) ||
+                        perpendicularVectors(surfaceDefinition.normal, openingNormal);
+                }
+                else if (surfaceDefinition is Cylinder)
+                {
+                    // Cylindrical face: axis must be parallel to openingNormal.
+                    faceConsistentWithPanel =
+                        parallelVectors(surfaceDefinition.coordSystem.zAxis, openingNormal);
+                }
+                else if (surfaceDefinition is Torus)
+                {
+                    // Toroidal face: axis must be parallel to openingNormal.
+                    faceConsistentWithPanel =
+                        parallelVectors(surfaceDefinition.coordSystem.zAxis, openingNormal);
+                }
+                else
+                {
+                    // Other surface type (spline surface, etc.): sample the face-centre tangent
+                    // plane to get a representative normal and apply the same ∥/⊥ check.
+                    const centreTangentPlane = evFaceTangentPlane(context, {
+                                "face"      : sweptFace,
+                                "parameter" : vector(0.5, 0.5)
+                            });
+                    faceConsistentWithPanel =
+                        parallelVectors(centreTangentPlane.normal, openingNormal) ||
+                        perpendicularVectors(centreTangentPlane.normal, openingNormal);
+                }
+
+                if (!faceConsistentWithPanel)
                 {
                     reportFeatureError(context, id,
                         "Selected frame members do not all lie in a common plane. " ~
@@ -495,19 +541,29 @@ function getFrameSweepDirection(context is Context, memberBody is Query, pathPar
     // When a round tube is swept along an arc, its swept face is a torus rather than a
     // cylinder, so Strategy 2 finds no faces. The sweep tangent at the requested end is
     // cross(torusAxis, radialDirection), where radialDirection is the in-plane vector from
-    // the torus center to the cap face centroid at that end.
+    // the torus center to a point on the torus boundary edge at that end of the arc.
+    //
+    // The torus face has exactly two boundary circle edges — one at each end of the arc.
+    // Evaluating the midpoint (parameter 0.5) of each boundary circle gives a point at the
+    // correct angular position without consulting cap faces. Cap faces are not used here
+    // because mitered or compound-cut caps have arbitrary orientations and may not exist.
     const torusFaces = evaluateQuery(context, qGeometry(sweptFaces, GeometryType.TORUS));
     if (size(torusFaces) > 0)
     {
-        const torusDefinition  = evSurfaceDefinition(context, { "face" : torusFaces[0] });
-        const torusCenter      = torusDefinition.coordSystem.origin;
-        const torusAxis        = torusDefinition.coordSystem.zAxis;
-        const startCapCentroid = evApproximateCentroid(context, { "entities" : qFrameStartFace(memberBody) });
-        const endCapCentroid   = evApproximateCentroid(context, { "entities" : qFrameEndFace(memberBody) });
-        const capCentroid      = (pathParameter < 0.5) ? startCapCentroid : endCapCentroid;
+        const torusDefinition    = evSurfaceDefinition(context, { "face" : torusFaces[0] });
+        const torusCenter        = torusDefinition.coordSystem.origin;
+        const torusAxis          = torusDefinition.coordSystem.zAxis;
+
+        const torusBoundaryEdges = evaluateQuery(context,
+                qAdjacent(torusFaces[0], AdjacencyType.EDGE, EntityType.EDGE));
+        const boundaryEdgeIndex  = (pathParameter < 0.5) ? 0 : (size(torusBoundaryEdges) - 1);
+        const referencePoint     = evEdgeTangentLine(context, {
+                    "edge"      : torusBoundaryEdges[boundaryEdgeIndex],
+                    "parameter" : 0.5
+                }).origin;
 
         // Project the radial vector into the torus equatorial (sweep) plane.
-        const radialVec      = capCentroid - torusCenter;
+        const radialVec      = referencePoint - torusCenter;
         const axialComponent = dot(radialVec, torusAxis);
         const radialInPlane  = radialVec - axialComponent * torusAxis;
         return normalize(cross(torusAxis, radialInPlane / meter));
@@ -527,46 +583,6 @@ function getFrameSweepDirection(context is Context, memberBody is Query, pathPar
     reportFeatureError(context, makeId("panelMakerFeature"),
         "Could not determine sweep direction for a selected frame member.");
     return vector(1, 0, 0);
-}
-
-/**
- * Samples world-space positions from the longitudinal (sweep-path) edges of a frame member.
- * Returns three points per longitudinal edge: start (parameter 0), midpoint (parameter 0.5),
- * and end (parameter 1.0).
- *
- * Longitudinal edges are those NOT adjacent to the member's start or end cap faces.
- * Subtracting cap-face-adjacent edges from all body edges leaves only the edges that
- * run along the length of the sweep — arcs for curved members, lines for straight members —
- * regardless of profile shape (square, round, L-channel, I-beam, custom).
- *
- * These sampled positions are used by the coplanarity check (step 4) in place of tangent-
- * direction perpendicularity tests, which can produce false failures on arc edges due to
- * minor numeric noise in edge tangent evaluation.
- *
- * @param context    {Context} : The active feature context.
- * @param memberBody {Query}   : A single frame member solid body.
- * @returns {array}  : Array of Vector world-space positions (with meter units).
- */
-function sampleMemberSweepPoints(context is Context, memberBody is Query) returns array
-{
-    const capEdges = qAdjacent(
-        qUnion([qFrameStartFace(memberBody), qFrameEndFace(memberBody)]),
-        AdjacencyType.EDGE,
-        EntityType.EDGE);
-
-    const longitudinalEdges = evaluateQuery(context,
-        qSubtraction(qOwnedByBody(memberBody, EntityType.EDGE), capEdges));
-
-    var points = [];
-    for (var longitudinalEdge in longitudinalEdges)
-    {
-        points = concatenateArrays([points, [
-            evEdgeTangentLine(context, { "edge" : longitudinalEdge, "parameter" : 0.0 }).origin,
-            evEdgeTangentLine(context, { "edge" : longitudinalEdge, "parameter" : 0.5 }).origin,
-            evEdgeTangentLine(context, { "edge" : longitudinalEdge, "parameter" : 1.0 }).origin
-        ]]);
-    }
-    return points;
 }
 
 /**
@@ -791,27 +807,31 @@ function findHamiltonianCycleDFS(adjacencyTable is array, visitedMembers is arra
  * @param innerFace     {Query}   : The inner swept face of the member at this corner.
  * @param memberBody    {Query}   : The frame member body that owns innerFace.
  * @param adjacentBody  {Query}   : The adjacent frame member at this corner.
- * @returns {Plane} : Tangent plane of innerFace at the edge connecting it to the
- *                    cap face nearest to adjacentBody.
+ * @returns {Plane} : Tangent plane of innerFace at the end edge closest to adjacentBody.
  */
 function getInnerFaceCornerPlane(context is Context, innerFace is Query, memberBody is Query, adjacentBody is Query) returns Plane
 {
-    // Find the cap face (start or end) of this member that is closest to the adjacent member.
     const adjacentBodyCentroid = evApproximateCentroid(context, { "entities" : adjacentBody });
-    const nearestCapFace = qClosestTo(
-        qUnion([qFrameStartFace(memberBody), qFrameEndFace(memberBody)]),
+
+    // The inner swept face has two types of edges:
+    //   - Longitudinal swept-path edges: run along the length of the member (in qFrameSweptEdge).
+    //   - End edges: lie across the cross-section at each end of the sweep; these are the
+    //     intersection of the swept face with the end of the member.
+    //
+    // Subtracting the longitudinal swept edges from the face's edge set leaves only the
+    // end edges. Among those, qClosestTo selects the end edge nearest to the adjacent
+    // member — the correct junction end — without consulting cap faces.
+    //
+    // Cap faces (qFrameStartFace / qFrameEndFace) are intentionally not used here:
+    // they may be mitered, compound-cut, or otherwise absent, giving unreliable geometry.
+    const cornerEdge = qClosestTo(
+        qSubtraction(
+            qAdjacent(innerFace, AdjacencyType.EDGE, EntityType.EDGE),
+            qFrameSweptEdge(memberBody)
+        ),
         adjacentBodyCentroid
     );
 
-    // The corner edge is the edge shared between the inner swept face and that cap face.
-    const cornerEdge = qIntersection([
-        qAdjacent(innerFace,     AdjacencyType.EDGE, EntityType.EDGE),
-        qAdjacent(nearestCapFace, AdjacencyType.EDGE, EntityType.EDGE)
-    ]);
-
-    // Tangent plane of the inner face along the corner edge (midpoint of the edge).
-    // For planar faces this equals evPlane; for cylindrical or other curved faces this
-    // gives the local tangent at the correct arc end, improving corner accuracy.
     return evFaceTangentPlaneAtEdge(context, {
                 "face"      : innerFace,
                 "edge"      : cornerEdge,
@@ -938,14 +958,27 @@ function computeCornerPoint(context is Context, innerFaceCurrent is Query, curre
         const x2 = fx - ny * t;
         const y2 = fy + nx * t;
 
-        // Pick the root nearest to the cap face of the rolled member at the junction end.
-        // The cap face closest to the adjacent member centroid is the correct junction end.
-        const junctionCentroid = evApproximateCentroid(context, {
-                    "entities" : qClosestTo(
-                        qUnion([qFrameStartFace(rolledBody), qFrameEndFace(rolledBody)]),
-                        evApproximateCentroid(context, { "entities" : adjacentBodyForRoot })
-                    )
-                });
+        // Pick the root nearest to the junction end of the rolled member.
+        // The torus face has two boundary circle edges, one at each end of the arc.
+        // Evaluate the midpoint of each boundary circle and pick the one closer to the
+        // adjacent member centroid — no cap faces consulted.
+        const adjacentCentroid       = evApproximateCentroid(context, { "entities" : adjacentBodyForRoot });
+        const torusBoundaryEdges     = evaluateQuery(context,
+                qAdjacent(
+                    qGeometry(qFrameSweptFace(rolledBody), GeometryType.TORUS),
+                    AdjacencyType.EDGE,
+                    EntityType.EDGE));
+        const torusEdge0Sample       = evEdgeTangentLine(context, {
+                    "edge"      : torusBoundaryEdges[0],
+                    "parameter" : 0.5
+                }).origin;
+        const torusEdgeLastSample    = evEdgeTangentLine(context, {
+                    "edge"      : torusBoundaryEdges[size(torusBoundaryEdges) - 1],
+                    "parameter" : 0.5
+                }).origin;
+        const junctionCentroid       = (norm(torusEdge0Sample    - adjacentCentroid) <=
+                                        norm(torusEdgeLastSample  - adjacentCentroid)) ?
+                                       torusEdge0Sample : torusEdgeLastSample;
         const junctionLocal = fromWorld(panelCSys, junctionCentroid);
         const jx = junctionLocal[0] / meter;
         const jy = junctionLocal[1] / meter;
