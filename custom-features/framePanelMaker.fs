@@ -95,16 +95,17 @@ function buildPanelName(prefix is string, panelDim1 is number, panelDim2 is numb
  *
  * Algorithm overview:
  *   1. Validate member count and confirm all selections are Frame feature members.
- *   2. Extract sweep tangent directions (used for panel normal computation only) via the
- *      Cut List strategy: straight swept edges, cylindrical faces, toroidal faces, or arc
- *      swept edges in that priority order.
- *   3. Compute panel normal N = normalize(cross(dir_i, dir_j)) from the first two
- *      non-parallel sweep directions.
- *   4. Validate coplanarity: every sweep direction in the sweepDirections array (already
- *      computed in step 2 from swept edges/faces, no cap faces) must be perpendicular to
- *      openingNormal. Uses perpendicularVectors() from the standard library — the same
- *      tolerance as parallelVectors() used in step 3.
- *   5. Build the panel coordinate system (Z = N, X = first sweep direction). Use evBox3d
+ *   2. Collect 3 centroid points per member (start cap face, body, end cap face) and
+ *      compute their world-coordinate bounding box. The axis with the minimum extent is
+ *      the panel opening normal — this is the "bounding box of the full sweep curve" spec:
+ *      a member whose path lies in the XY plane has all centroids at Z ≈ 0, giving extentZ ≈ 0.
+ *   3. If no world axis has a clearly minimal extent (frame not axis-aligned), fall back to the
+ *      cross-product-of-tangents approach using getFrameSweepDirection with corrected strategy
+ *      order (arc swept edges checked before cylindrical faces to prevent rolled box tube members
+ *      from returning the opening normal direction as a "sweep direction").
+ *   4. Coplanarity validated on the cross-product fallback path via perpendicularVectors().
+ *      The bounding box path is self-validating (minExtent < 20 % of maxExtent).
+ *   5. Build the panel coordinate system (Z = N, X = first member sweep direction). Use evBox3d
  *      in that system to derive the three alignment positions from the frame depth.
  *   6. Sort the selected members into a closed loop via a body-adjacency graph and a
  *      Hamiltonian cycle search.
@@ -171,103 +172,157 @@ export const panelMakerFeature = defineFeature(function(context is Context, id i
             }
         }
 
-        // ── 2. Extract sweep directions using the Cut List strategy ─────────────────────
+        // ── 2. Collect path centroid points for bounding box planarity detection ─────────
         //
-        // Mirrors the direction evaluation used by the Onshape Cut List feature:
-        //   1. Straight swept edges (rectangular tube, I-beam, channel): evEdgeTangentLine
-        //      on the first straight swept edge gives the exact sweep axis.
-        //   2. Cylindrical swept faces (round tube, pipe with no swept edges):
-        //      evSurfaceDefinition on the first cylindrical swept face; its coordSystem.zAxis
-        //      is the cylinder axis and sweep direction.
-        //   3. Arc or other swept edges (curved members): evEdgeTangentLine at parameter 0
-        //      gives the sweep tangent at the start of the arc.
+        // Three centroid samples per member: start cap face centroid, member body centroid,
+        // and end cap face centroid. The start and end cap centroids are points on the sweep
+        // path at each end of the member. The body centroid approximates the midpoint of the
+        // path. Together they faithfully trace the sweep path for straight, arc-swept, and
+        // torus-swept members without needing direct access to the path curve itself.
         //
-        // Cap face normals are intentionally NOT used here. A mitered cap face has a normal
-        // angled to the actual sweep path, producing wrong directions for planarity checks.
-        //
-        // Two samples per member (path parameters 0 and 1) ensure that curved members have
-        // both arc endpoints validated for planarity, not just one end.
+        // For a torus-swept (rolled round tube) member this is especially important: the
+        // previous tangent-vector approach fired Strategy 2 (cylinder face axis) first for
+        // rolled box tube members, returning the opening normal direction instead of a path
+        // tangent. Using centroid coordinates avoids all surface-type strategy logic for the
+        // purpose of plane detection, since the centroids simply lie on the path.
 
-        var sweepDirections = makeArray(memberCount * 2);
-        var sweepDirectionCount = 0;
+        const totalCentroidCount = memberCount * 3;
+        var pathCentroids = makeArray(totalCentroidCount);
 
         for (var memberIndex = 0; memberIndex < memberCount; memberIndex += 1)
         {
-            sweepDirections[sweepDirectionCount]     = getFrameSweepDirection(context, frameMemberBodies[memberIndex], 0);
-            sweepDirections[sweepDirectionCount + 1] = getFrameSweepDirection(context, frameMemberBodies[memberIndex], 1);
-            sweepDirectionCount += 2;
+            pathCentroids[memberIndex * 3]     = evApproximateCentroid(context, { "entities" : qFrameStartFace(frameMemberBodies[memberIndex]) });
+            pathCentroids[memberIndex * 3 + 1] = evApproximateCentroid(context, { "entities" : frameMemberBodies[memberIndex] });
+            pathCentroids[memberIndex * 3 + 2] = evApproximateCentroid(context, { "entities" : qFrameEndFace(frameMemberBodies[memberIndex]) });
         }
 
-        // ── 3. Compute panel normal N ───────────────────────────────────────────────────
+        // ── 3. Bounding box in world coordinates → minimum-extent axis = opening normal ─
         //
-        // Find the first pair of sweep directions that are not parallel to each other.
-        // parallelVectors() from the standard library handles the tolerance comparison.
+        // For a frame ring that lies in the XY plane, all path centroid points have Z ≈ 0,
+        // so extentZ ≈ 0 while extentX and extentY reflect the frame's in-plane dimensions.
+        // The axis with the smallest bounding-box extent is the panel normal.
+        //
+        // This directly implements the spec:
+        //   "Evaluate the curve in its entirety with a tight bounding box calc. If that
+        //   bounding box has a 0 dimension in any axis, it's planar. Find direction of
+        //   planarity from 0 direction. This handles any circular case or wiggly spline
+        //   case."
+        //
+        // If no world axis has a clearly minimal extent (frame is not axis-aligned), fall
+        // through to the cross-product-of-tangents fallback for general orientation support.
+
+        var pathMinX is ValueWithUnits = pathCentroids[0][0];
+        var pathMaxX is ValueWithUnits = pathCentroids[0][0];
+        var pathMinY is ValueWithUnits = pathCentroids[0][1];
+        var pathMaxY is ValueWithUnits = pathCentroids[0][1];
+        var pathMinZ is ValueWithUnits = pathCentroids[0][2];
+        var pathMaxZ is ValueWithUnits = pathCentroids[0][2];
+
+        for (var pointIndex = 1; pointIndex < totalCentroidCount; pointIndex += 1)
+        {
+            const pathPoint = pathCentroids[pointIndex];
+            if (pathPoint[0] < pathMinX) pathMinX = pathPoint[0];
+            if (pathPoint[0] > pathMaxX) pathMaxX = pathPoint[0];
+            if (pathPoint[1] < pathMinY) pathMinY = pathPoint[1];
+            if (pathPoint[1] > pathMaxY) pathMaxY = pathPoint[1];
+            if (pathPoint[2] < pathMinZ) pathMinZ = pathPoint[2];
+            if (pathPoint[2] > pathMaxZ) pathMaxZ = pathPoint[2];
+        }
+
+        const pathExtentX = pathMaxX - pathMinX;
+        const pathExtentY = pathMaxY - pathMinY;
+        const pathExtentZ = pathMaxZ - pathMinZ;
 
         var openingNormal = vector(0, 0, 1);
         var panelNormalFound = false;
 
-        for (var outerIndex = 0; outerIndex < sweepDirectionCount && !panelNormalFound; outerIndex += 1)
+        // Determine the maximum in-plane extent of the centroid cloud.
+        var pathMaxExtent is ValueWithUnits = pathExtentX;
+        if (pathExtentY > pathMaxExtent) pathMaxExtent = pathExtentY;
+        if (pathExtentZ > pathMaxExtent) pathMaxExtent = pathExtentZ;
+
+        if (pathMaxExtent > 1e-6 * meter)
         {
-            for (var innerIndex = outerIndex + 1; innerIndex < sweepDirectionCount && !panelNormalFound; innerIndex += 1)
+            // An axis qualifies as the panel normal when its centroid extent is no more
+            // than 20 % of the largest extent. This allows small floating-point deviations
+            // while still rejecting frames that are clearly not axis-aligned.
+            const planarity_threshold = 0.20;
+
+            if (pathExtentZ <= pathExtentX && pathExtentZ <= pathExtentY &&
+                    pathExtentZ < pathMaxExtent * planarity_threshold)
             {
-                if (!parallelVectors(sweepDirections[outerIndex], sweepDirections[innerIndex]))
-                {
-                    openingNormal = normalize(cross(sweepDirections[outerIndex], sweepDirections[innerIndex]));
-                    panelNormalFound = true;
-                }
+                openingNormal   = vector(0, 0, 1);
+                panelNormalFound = true;
+            }
+            else if (pathExtentY <= pathExtentX && pathExtentY <= pathExtentZ &&
+                    pathExtentY < pathMaxExtent * planarity_threshold)
+            {
+                openingNormal   = vector(0, 1, 0);
+                panelNormalFound = true;
+            }
+            else if (pathExtentX <= pathExtentY && pathExtentX <= pathExtentZ &&
+                    pathExtentX < pathMaxExtent * planarity_threshold)
+            {
+                openingNormal   = vector(1, 0, 0);
+                panelNormalFound = true;
             }
         }
 
+        // ── 4. Fallback: cross-product of non-parallel tangents (non-axis-aligned frames) ─
+        //
+        // If the bounding box approach did not find a world-axis-aligned normal (e.g., for
+        // frames tilted at an oblique angle), fall back to the original cross-product method.
+        // Coplanarity is verified on this path by checking that every tangent is perpendicular
+        // to the derived opening normal.
+
         if (!panelNormalFound)
         {
-            reportFeatureError(context, id,
-                "All selected frame members appear to sweep in the same direction and cannot enclose a panel");
-            return;
-        }
+            var sweepDirections = makeArray(memberCount * 2);
+            var sweepDirectionCount = 0;
 
-        // ── 4. Validate coplanarity using the sweep directions already computed ──────────────
-        //
-        // A frame ring is coplanar when every member's sweep path lies in a single common
-        // plane. That plane has already been characterised by openingNormal (step 3). The
-        // membership condition is exactly: every sweep direction must be perpendicular to
-        // openingNormal (i.e. the direction must lie IN the panel plane).
-        //
-        // Why sweep directions and NOT swept-face surface geometry:
-        //   Inspecting surface types introduces a dependency on the profile shape. A
-        //   straight round tube produces a cylindrical swept face whose axis is the sweep
-        //   direction (perpendicular to openingNormal), while an arc-swept round tube
-        //   produces a toroidal swept face whose axis equals openingNormal. Both cases are
-        //   valid coplanar rings, but the correct axis orientation is opposite in the two
-        //   cases — so any single axis check either passes one and blocks the other, or
-        //   passes both without actually validating coplanarity.
-        //
-        //   The sweep directions themselves carry exactly the information we need and are
-        //   already available in the sweepDirections array computed in step 2.  No
-        //   additional geometry queries are required, and no cap faces are involved.
-        //
-        // Why perpendicularVectors and NOT a manual dot product:
-        //   perpendicularVectors() is a standard library function (math.fs) that encapsulates
-        //   the angular tolerance consistently with every other directional comparison in
-        //   the Onshape Standard Library. Using a manual dot product would require choosing
-        //   an arbitrary threshold and risk inconsistency with the tolerance used in step 3
-        //   (parallelVectors) to find the normal in the first place.
+            for (var fallbackIndex = 0; fallbackIndex < memberCount; fallbackIndex += 1)
+            {
+                sweepDirections[sweepDirectionCount]     = getFrameSweepDirection(context, frameMemberBodies[fallbackIndex], 0);
+                sweepDirections[sweepDirectionCount + 1] = getFrameSweepDirection(context, frameMemberBodies[fallbackIndex], 1);
+                sweepDirectionCount += 2;
+            }
 
-        for (var directionIndex = 0; directionIndex < sweepDirectionCount; directionIndex += 1)
-        {
-            if (!perpendicularVectors(sweepDirections[directionIndex], openingNormal))
+            for (var outerIndex = 0; outerIndex < sweepDirectionCount && !panelNormalFound; outerIndex += 1)
+            {
+                for (var innerIndex = outerIndex + 1; innerIndex < sweepDirectionCount && !panelNormalFound; innerIndex += 1)
+                {
+                    if (!parallelVectors(sweepDirections[outerIndex], sweepDirections[innerIndex]))
+                    {
+                        openingNormal   = normalize(cross(sweepDirections[outerIndex], sweepDirections[innerIndex]));
+                        panelNormalFound = true;
+                    }
+                }
+            }
+
+            if (!panelNormalFound)
             {
                 reportFeatureError(context, id,
-                    "Selected frame members do not all lie in a common plane. " ~
-                    "Panel Maker requires all sweep paths to be coplanar.");
+                    "All selected frame members appear to sweep in the same direction and cannot enclose a panel");
                 return;
+            }
+
+            for (var directionIndex = 0; directionIndex < sweepDirectionCount; directionIndex += 1)
+            {
+                if (!perpendicularVectors(sweepDirections[directionIndex], openingNormal))
+                {
+                    reportFeatureError(context, id,
+                        "Selected frame members do not all lie in a common plane. " ~
+                        "Panel Maker requires all sweep paths to be coplanar.");
+                    return;
+                }
             }
         }
 
         // ── 5. Build panel coordinate system ────────────────────────────────────────────
         //
         // Origin: centroid of all member body centroids (approximate center of the frame ring).
-        // Z axis: openingNormal (the panel normal, perpendicular to all sweep directions).
-        // X axis: first sweep direction (guaranteed in the panel plane by the planarity check).
+        // Z axis: openingNormal (the panel normal).
+        // X axis: sweep direction of the first member at its start end (in the panel plane).
         // Y axis: cross(Z, X) for a right-handed system.
 
         var panelCentroid = vector(0, 0, 0) * meter;
@@ -279,7 +334,10 @@ export const panelMakerFeature = defineFeature(function(context is Context, id i
         }
         panelCentroid = panelCentroid / memberCount;
 
-        const panelXAxis = normalize(sweepDirections[0]);
+        // panelXAxis is the sweep direction of frameMemberBodies[0] at its start end.
+        // Selection order determines which member is [0]; for consistent orientation the
+        // user should select members in a predictable order (e.g., left-to-right).
+        const panelXAxis = normalize(getFrameSweepDirection(context, frameMemberBodies[0], 0));
         const panelYAxis = normalize(cross(openingNormal, panelXAxis));
         const panelCSys  = coordSystem(panelCentroid, panelXAxis, openingNormal);
 
@@ -385,11 +443,11 @@ export const panelMakerFeature = defineFeature(function(context is Context, id i
         // Remove this block when the feature is working correctly.
         //
         // Color key:
-        //   RED/GREEN/BLUE : Panel coordinate system — X = first sweep direction (RED),
+        //   RED/GREEN/BLUE : Panel coordinate system — X = first member sweep direction (RED),
         //                    Y (GREEN), Z = opening normal (BLUE).
         //                    A twisted panel almost always traces to RED pointing the wrong
-        //                    way; sweepDirections[0] drives panelXAxis, a sign flip mirrors
-        //                    all constraint RHS values.
+        //                    way; panelXAxis comes from getFrameSweepDirection on member 0,
+        //                    a sign flip mirrors all constraint RHS values.
         //   YELLOW         : Panel centroid (coordinate system origin) and alignment center.
         //   CYAN           : Boundary constraint source per member.
         //                    - Non-torus: bounding box rectangle projected to alignment plane.
@@ -622,18 +680,24 @@ export const panelMakerFeature = defineFeature(function(context is Context, id i
 
 /**
  * Returns the sweep direction of a frame member at the specified path parameter (0 = start,
- * 1 = end). Mirrors the direction evaluation strategy used by the Onshape Cut List feature:
+ * 1 = end). Uses a priority-ordered set of strategies to obtain the path tangent from the
+ * frame member's geometry:
  *
  *   1. Straight swept edges (rectangular tube, I-beam, channel, angle iron):
  *      evEdgeTangentLine on the first LINE-geometry swept edge. Returns the exact sweep axis
  *      regardless of how the ends are cut (perpendicular, mitered, compound).
- *   2. Cylindrical swept faces (round tube / pipe with no swept edges):
- *      evSurfaceDefinition on the first CYLINDER-geometry swept face; coordSystem.zAxis is
- *      the cylinder axis = the sweep direction (same at all parameters for a straight sweep).
- *   3. Arc or other curved swept edges (arc-swept curved member):
+ *   2. Arc or other curved swept edges (rolled box tube, rolled channel, etc.):
  *      evEdgeTangentLine on the first available swept edge at the requested parameter.
- *      This gives the arc tangent at that point, which lies in the panel plane for any
- *      frame member whose sweep path is a planar arc.
+ *      This MUST come before the cylindrical-face check (Strategy 3) because rolled box
+ *      tubes have cylindrical swept faces whose zAxis equals the arc rotation axis (= panel
+ *      opening normal), not the path tangent.
+ *   3. Cylindrical swept faces (straight round tube / pipe with no swept edges):
+ *      evSurfaceDefinition on the first CYLINDER-geometry swept face; coordSystem.zAxis is
+ *      the cylinder axis = the sweep direction for a straight round tube.
+ *   4. Toroidal swept face (rolled round tube with no swept edges):
+ *      The torus axis is the panel normal, not the path tangent, so the tangent is computed
+ *      as cross(torusAxis, radialDirection) using the boundary edge nearest the requested
+ *      cap face.
  *
  * @param context        {Context} : The active feature context.
  * @param memberBody     {Query}   : A single frame member solid body.
@@ -642,7 +706,8 @@ export const panelMakerFeature = defineFeature(function(context is Context, id i
  */
 function getFrameSweepDirection(context is Context, memberBody is Query, pathParameter is number) returns Vector
 {
-    // Strategy 1: straight swept edge — most common for profiled sections.
+    // Strategy 1: straight swept edge — most common for profiled sections (box tube, I-beam,
+    // channel, angle iron). A straight edge tangent is the exact sweep direction.
     const sweptEdges = qFrameSweptEdge(memberBody);
     const straightEdges = evaluateQuery(context, qGeometry(sweptEdges, GeometryType.LINE));
     if (size(straightEdges) > 0)
@@ -653,7 +718,26 @@ function getFrameSweepDirection(context is Context, memberBody is Query, pathPar
                 }).direction;
     }
 
-    // Strategy 2: cylindrical swept face axis — used for straight round tubes and pipes.
+    // Strategy 2: arc or general swept edge — used for rolled (arc-swept) profiled sections
+    // such as rolled box tube, rolled rectangular tube, or rolled channel.
+    //
+    // IMPORTANT: This check must come BEFORE the cylindrical-face check (Strategy 3).
+    // A rolled box tube swept along an arc in the XY plane has cylindrical swept faces whose
+    // coordSystem.zAxis is the arc's rotation axis — which equals the PANEL OPENING NORMAL,
+    // not a path tangent. Using the arc edge tangent via evEdgeTangentLine correctly gives a
+    // direction IN the panel plane, avoiding a false planarity failure.
+    const allSweptEdges = evaluateQuery(context, sweptEdges);
+    if (size(allSweptEdges) > 0)
+    {
+        return evEdgeTangentLine(context, {
+                    "edge"      : allSweptEdges[0],
+                    "parameter" : pathParameter
+                }).direction;
+    }
+
+    // Strategy 3: cylindrical swept face axis — used for straight round tubes and pipes.
+    // A straight round tube has no corner swept edges, so the cylinder face axis is the
+    // only available source of the sweep direction.
     const sweptFaces = qFrameSweptFace(memberBody);
     const cylinderFaces = evaluateQuery(context, qGeometry(sweptFaces, GeometryType.CYLINDER));
     if (size(cylinderFaces) > 0)
@@ -661,10 +745,10 @@ function getFrameSweepDirection(context is Context, memberBody is Query, pathPar
         return evSurfaceDefinition(context, { "face" : cylinderFaces[0] }).coordSystem.zAxis;
     }
 
-    // Strategy 2b: toroidal swept face — used for rolled (arc-swept) round tube members.
+    // Strategy 4: toroidal swept face — used for rolled (arc-swept) round tube members.
     //
     // When a round tube is swept along an arc, its swept face is a torus rather than a
-    // cylinder, so Strategy 2 finds no faces. The sweep tangent at the requested end is
+    // cylinder, so Strategy 3 finds no faces. The sweep tangent at the requested end is
     // cross(torusAxis, radialDirection), where radialDirection is the in-plane vector from
     // the torus center to a point on the torus boundary edge at that end of the arc.
     //
@@ -693,16 +777,6 @@ function getFrameSweepDirection(context is Context, memberBody is Query, pathPar
         const axialComponent = dot(radialVec, torusAxis);
         const radialInPlane  = radialVec - axialComponent * torusAxis;
         return normalize(cross(torusAxis, radialInPlane / meter));
-    }
-
-    // Strategy 3: arc or general swept edge — used for curved (arc-swept) members.
-    const allSweptEdges = evaluateQuery(context, sweptEdges);
-    if (size(allSweptEdges) > 0)
-    {
-        return evEdgeTangentLine(context, {
-                    "edge"      : allSweptEdges[0],
-                    "parameter" : pathParameter
-                }).direction;
     }
 
     // Fallback: should not be reached for valid frame members created by the Frame feature.
