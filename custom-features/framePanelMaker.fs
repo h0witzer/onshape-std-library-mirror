@@ -683,7 +683,7 @@ function computeCornerPoint(context is Context, innerFaceCurrent is Query, curre
     var cornerX is number = 0;
     var cornerY is number = 0;
 
-    if (constraintCurrent.type == "line" && constraintNext.type == "line")
+    if (constraintCurrent.kind == "line" && constraintNext.kind == "line")
     {
         // Two straight (or planar) members: solve the 2x2 linear system
         //   nx1*x + ny1*y = rhs1
@@ -715,7 +715,7 @@ function computeCornerPoint(context is Context, innerFaceCurrent is Query, curre
         var rolledBody  = currentBody;
         var adjacentBodyForRoot = nextBody;
 
-        if (constraintCurrent.type == "circle" && constraintNext.type == "circle")
+        if (constraintCurrent.kind == "circle" && constraintNext.kind == "circle")
         {
             // Radical axis: 2*(cx2-cx1)*x + 2*(cy2-cy1)*y = r1^2 - r2^2 + cx2^2 - cx1^2 + cy2^2 - cy1^2
             const dx  = constraintNext.cx - constraintCurrent.cx;
@@ -729,7 +729,7 @@ function computeCornerPoint(context is Context, innerFaceCurrent is Query, curre
             rolledBody       = currentBody;
             adjacentBodyForRoot = nextBody;
         }
-        else if (constraintCurrent.type == "circle")
+        else if (constraintCurrent.kind == "circle")
         {
             lineConstraint   = constraintNext;
             circleConstraint = constraintCurrent;
@@ -789,13 +789,13 @@ function computeCornerPoint(context is Context, innerFaceCurrent is Query, curre
  * Returns a 2D constraint map for the inner swept face of a frame member at a panel corner,
  * expressed in the panel coordinate system. Two constraint types are possible:
  *
- *   "line"   : { "type", "nx", "ny", "rhs" }
+ *   "line"   : { "kind", "nx", "ny", "rhs" }
  *              Normal-form line equation  nx*x + ny*y = rhs.
  *              Used for planar and cylindrical (straight) inner faces.
  *              (nx, ny) is the face normal projected to the panel XY plane (unit vector).
  *              rhs is computed from the face origin projected by fromWorld.
  *
- *   "circle" : { "type", "cx", "cy", "radius" }
+ *   "circle" : { "kind", "cx", "cy", "radius" }
  *              Circle  (x-cx)^2 + (y-cy)^2 = radius^2.
  *              Used for toroidal (rolled round tube) inner faces.
  *              Center = torus axis projected to panel XY by fromWorld.
@@ -808,7 +808,7 @@ function computeCornerPoint(context is Context, innerFaceCurrent is Query, curre
  * @param memberBody    {Query}       : The frame member body owning innerFace.
  * @param adjacentBody  {Query}       : The adjacent frame member at this corner.
  * @param panelCSys     {CoordSystem} : Panel coordinate system (Z = panel normal, origin = centroid).
- * @returns {map} : Constraint map with "type" key equal to "line" or "circle".
+ * @returns {map} : Constraint map with "kind" key equal to "line" or "circle".
  */
 function getInnerFaceConstraint2D(context is Context, innerFace is Query, memberBody is Query, adjacentBody is Query, panelCSys is CoordSystem) returns map
 {
@@ -821,7 +821,7 @@ function getInnerFaceConstraint2D(context is Context, innerFace is Query, member
         // Radius = torus major radius minus tube minor radius (the innermost arc).
         const torusCenterLocal = fromWorld(panelCSys, surfaceDefinition.coordSystem.origin);
         return {
-            "type"   : "circle",
+            "kind"   : "circle",
             "cx"     : torusCenterLocal[0] / meter,
             "cy"     : torusCenterLocal[1] / meter,
             "radius" : (surfaceDefinition.radius - surfaceDefinition.minorRadius) / meter
@@ -838,7 +838,7 @@ function getInnerFaceConstraint2D(context is Context, innerFace is Query, member
     const ox          = localOrigin[0] / meter;
     const oy          = localOrigin[1] / meter;
     return {
-        "type" : "line",
+        "kind" : "line",
         "nx"   : nx,
         "ny"   : ny,
         "rhs"  : nx * ox + ny * oy
