@@ -37,6 +37,12 @@ import(path : "onshape/std/uihint.gen.fs", version : "2909.0");
  * Unlike the standard Split feature, this feature correctly handles the sheet metal
  * association and attribute tracking system, so the resulting halves are both valid
  * active sheet metal parts.
+ *
+ * When the selection contains parts from multiple independent sheet metal models each model
+ * is processed in complete isolation — its own snapshot, split, attribute propagation, and
+ * rebuild cycle — so that operations on one model never contaminate another.  The splitting
+ * tool is always preserved until every model has been processed; it is only deleted at the
+ * very end when the user has not checked "Keep tools".
  */
 annotation { "Feature Type Name" : "Sheet metal split",
              "Filter Selector" : "allparts",
@@ -90,8 +96,9 @@ export const sheetMetalSplit = defineSheetMetalFeature(function(context is Conte
             }
         }
 
-        // Convert any mate connector tools to temporary planar bodies so opSplitPart can use them
-        var temporaryPlaneQueries = buildTemporaryPlanesForMateConnectors(context, id, definition.tool);
+        // Convert any mate connector tools to temporary planar bodies so opSplitPart can use them.
+        // This is done once, before the per-model loop, so the same plane serves every model.
+        const temporaryPlaneQueries = buildTemporaryPlanesForMateConnectors(context, id, definition.tool);
         const temporaryPlaneCount = size(temporaryPlaneQueries);
         if (temporaryPlaneCount == 1)
         {
@@ -102,70 +109,121 @@ export const sheetMetalSplit = defineSheetMetalFeature(function(context is Conte
             throw regenError("Only one splitting tool may be selected", ["tool"], definition.tool);
         }
 
-        // Gather the master surface definition body for each selected sheet metal part.
-        // The definition body is the internal sheet surface that the SM engine uses to
-        // describe the flat geometry — splitting it is what actually divides the part.
-        var allDefinitionBodyQueries = [];
-        for (var solidPart in evaluateQuery(context, definition.targets))
-        {
-            const definitionEntities = qUnion(getSMDefinitionEntities(context, solidPart));
-            if (!isQueryEmpty(context, definitionEntities))
-            {
-                allDefinitionBodyQueries = append(allDefinitionBodyQueries, qOwnerBody(definitionEntities));
-            }
-        }
-
-        if (size(allDefinitionBodyQueries) == 0)
-        {
-            throw regenError("Could not locate sheet metal definition bodies for the selected parts", ["targets"]);
-        }
-
-        const allDefinitionBodiesQuery = qUnion(allDefinitionBodyQueries);
-
-        // Snapshot the current entities and attribute state before any geometry changes
-        const initialData = getInitialEntitiesAndAttributes(context, allDefinitionBodiesQuery);
-
-        // Track the definition bodies so we can find newly created bodies after the split
-        const trackedDefinitionBodies = startTracking(context, allDefinitionBodiesQuery);
+        // The effective tool query after mate-connector conversion
+        const effectiveTool = definition.tool;
 
         // Map the user's keepBothSides/keepFront choices to the opSplitPart keepType enum
         const keepType = definition.keepBothSides
                          ? SplitOperationKeepType.KEEP_ALL
                          : (definition.keepFront ? SplitOperationKeepType.KEEP_FRONT : SplitOperationKeepType.KEEP_BACK);
 
-        // Attach a flip manipulator when the user wants to keep only one side of the split
-        if (!definition.keepBothSides)
+        // Group the selected targets by SM model so each model is processed in isolation.
+        // This prevents batching targets from different models into a single opSplitPart call,
+        // which would cause attribute ID collisions and cross-model contamination in
+        // assignSMAttributesToNewOrSplitEntities.
+        const partitionResult = partitionSheetMetalParts(context, definition.targets);
+        const sheetMetalPartsMap = partitionResult.sheetMetalPartsMap;
+
+        if (size(sheetMetalPartsMap) == 0)
         {
-            addSplitSideManipulator(context, id, definition, allDefinitionBodiesQuery);
+            throw regenError("Could not locate any active sheet metal parts in the selection", ["targets"]);
         }
 
-        // Split the master surface definition bodies (not the solid SM parts)
-        opSplitPart(context, id + "splitDefinitionBodies", {
-            "targets"   : allDefinitionBodiesQuery,
-            "tool"      : definition.tool,
-            "keepTools" : definition.keepTools,
-            "keepType"  : keepType
-        });
+        // Build a combined definition-body query for the manipulator before any geometry changes.
+        // The manipulator is purely positional and does not need to be per-model.
+        if (!definition.keepBothSides)
+        {
+            var manipulatorDefinitionBodies = [];
+            for (var smModelId, partsForModel in sheetMetalPartsMap)
+            {
+                const definitionEntities = qUnion(getSMDefinitionEntities(context, qUnion(partsForModel)));
+                if (!isQueryEmpty(context, definitionEntities))
+                {
+                    manipulatorDefinitionBodies = append(manipulatorDefinitionBodies, qOwnerBody(definitionEntities));
+                }
+            }
+            if (size(manipulatorDefinitionBodies) > 0)
+            {
+                addSplitSideManipulator(context, id, definition, qUnion(manipulatorDefinitionBodies));
+            }
+        }
 
-        // Build a query covering all definition bodies that exist after the split,
-        // including any newly created ones produced by splitting
-        const postSplitBodiesQuery = qUnion([
-            allDefinitionBodiesQuery,
-            qEntityFilter(trackedDefinitionBodies, EntityType.BODY)
-        ]);
+        // Process each SM model completely independently.
+        //
+        // Isolation guarantees:
+        //   - Each model gets its own unique sub-id namespace (id + "model" + index), so
+        //     attribute IDs generated by assignSMAttributesToNewOrSplitEntities never collide
+        //     across models.
+        //   - opSplitPart targets only the definition body of the model being processed.
+        //   - updateSheetMetalGeometry receives only the entities from the model being processed.
+        //   - keepTools is forced to true during the loop so the tool survives for subsequent
+        //     models; it is deleted once, manually, after all models have been split.
+        var currentModelIndex = 0;
+        for (var smModelId, partsForModel in sheetMetalPartsMap)
+        {
+            const modelSubId = id + "model" + currentModelIndex;
+            const partsQuery = qUnion(partsForModel);
 
-        // Propagate sheet metal attributes to entities that were created by the split
-        const attributeUpdateData = assignSMAttributesToNewOrSplitEntities(context, postSplitBodiesQuery, initialData, id);
+            // Get the master surface definition body for this SM model
+            const definitionEntities = qUnion(getSMDefinitionEntities(context, partsQuery));
+            if (isQueryEmpty(context, definitionEntities))
+            {
+                currentModelIndex += 1;
+                continue;
+            }
+            const definitionBodyQuery = qOwnerBody(definitionEntities);
 
-        // Rebuild the sheet metal solid parts from the updated surface definition bodies
-        updateSheetMetalGeometry(context, id + "smUpdate", {
-            "entities"          : attributeUpdateData.modifiedEntities,
-            "deletedAttributes" : attributeUpdateData.deletedAttributes
-        });
+            // Snapshot the current entities and attribute state for this model before any geometry changes
+            const initialData = getInitialEntitiesAndAttributes(context, definitionBodyQuery);
 
-        // Remove any temporary planes that were created for mate connector tools.
-        // opSplitPart does not delete construction planes regardless of keepTools, so
-        // we always clean up our own temporary planes here.
+            // Track this definition body so newly created bodies (split results) can be found afterward
+            const trackedDefinitionBody = startTracking(context, definitionBodyQuery);
+
+            // Split the master surface definition body for this model.
+            // keepTools is always true here so the tool survives for later models in the loop.
+            // Tool deletion (if the user unchecked "Keep tools") happens after the loop.
+            opSplitPart(context, modelSubId + "split", {
+                "targets"   : definitionBodyQuery,
+                "tool"      : effectiveTool,
+                "keepTools" : true,
+                "keepType"  : keepType
+            });
+
+            // Build a query covering all definition bodies that exist after the split for this model,
+            // including any newly created bodies produced by the split operation
+            const postSplitBodiesQuery = qUnion([
+                definitionBodyQuery,
+                qEntityFilter(trackedDefinitionBody, EntityType.BODY)
+            ]);
+
+            // Propagate sheet metal attributes to entities that were created by the split.
+            // The model-scoped sub-id prevents attribute ID collisions between models.
+            const attributeUpdateData = assignSMAttributesToNewOrSplitEntities(context, postSplitBodiesQuery, initialData, modelSubId);
+
+            // Rebuild the sheet metal solid parts for this model from the updated surface definition body
+            updateSheetMetalGeometry(context, modelSubId + "smUpdate", {
+                "entities"          : attributeUpdateData.modifiedEntities,
+                "deletedAttributes" : attributeUpdateData.deletedAttributes
+            });
+
+            currentModelIndex += 1;
+        }
+
+        // Now that every model has been split, honour the user's keepTools choice.
+        // We only delete sheet-body tools; face tools and construction planes cannot be
+        // independently deleted and are already handled by the info message shown above.
+        if (!definition.keepTools)
+        {
+            const toolBodyQuery = qEntityFilter(effectiveTool, EntityType.BODY);
+            if (!isQueryEmpty(context, toolBodyQuery))
+            {
+                opDeleteBodies(context, id + "deleteTool", { "entities" : toolBodyQuery });
+            }
+        }
+
+        // Always remove temporary planar bodies that were created from mate connectors.
+        // opSplitPart does not delete construction planes regardless of keepTools, so we
+        // always clean up our own temporary planes here.
         if (temporaryPlaneQueries != [])
         {
             opDeleteBodies(context, id + "deleteTempPlanes", { "entities" : qUnion(temporaryPlaneQueries) });
