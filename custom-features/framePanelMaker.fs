@@ -100,11 +100,10 @@ function buildPanelName(prefix is string, panelDim1 is number, panelDim2 is numb
  *      swept edges in that priority order.
  *   3. Compute panel normal N = normalize(cross(dir_i, dir_j)) from the first two
  *      non-parallel sweep directions.
- *   4. Validate coplanarity by inspecting the surface geometry of every swept face of
- *      every member. For Plane faces: normal must be ∥ or ⊥ to openingNormal. For
- *      Cylinder/Torus faces: axis must be ∥ to openingNormal. Other types: sample the
- *      face-centre tangent plane. Cap faces are never consulted — they may be mitered,
- *      compound-cut, or absent entirely.
+ *   4. Validate coplanarity: every sweep direction in the sweepDirections array (already
+ *      computed in step 2 from swept edges/faces, no cap faces) must be perpendicular to
+ *      openingNormal. Uses perpendicularVectors() from the standard library — the same
+ *      tolerance as parallelVectors() used in step 3.
  *   5. Build the panel coordinate system (Z = N, X = first sweep direction). Use evBox3d
  *      in that system to derive the three alignment positions from the frame depth.
  *   6. Sort the selected members into a closed loop via a body-adjacency graph and a
@@ -228,79 +227,41 @@ export const panelMakerFeature = defineFeature(function(context is Context, id i
             return;
         }
 
-        // ── 4. Validate coplanarity using swept face surface geometry ────────────────────
+        // ── 4. Validate coplanarity using the sweep directions already computed ──────────────
         //
-        // For a frame ring swept in a common plane, every swept face must be oriented
-        // consistently with openingNormal:
-        //   - Planar swept faces must have their surface normal either parallel to
-        //     openingNormal (faces whose plane contains the sweep path — e.g. the
-        //     flat top/bottom flanges of a tube whose depth axis is openingNormal) or
-        //     perpendicular to openingNormal (faces whose plane is parallel to the sweep
-        //     path direction — e.g. the inner/outer walls).
-        //   - Cylindrical swept faces must have their cylinder axis parallel to
-        //     openingNormal (a planar arc sweep produces a cylinder whose axis = the
-        //     plane normal).
-        //   - Toroidal swept faces must have their torus axis parallel to openingNormal
-        //     (a planar arc sweep of a round tube produces a torus whose axis = the plane
-        //     normal).
-        //   - Other surface types (B-spline, etc.) are checked by sampling the tangent
-        //     plane normal at the face centre.
+        // A frame ring is coplanar when every member's sweep path lies in a single common
+        // plane. That plane has already been characterised by openingNormal (step 3). The
+        // membership condition is exactly: every sweep direction must be perpendicular to
+        // openingNormal (i.e. the direction must lie IN the panel plane).
         //
-        // All checks use evSurfaceDefinition (analytical, noise-free) or evFaceTangentPlane
-        // (sampled at UV centre) on qFrameSweptFace — no cap faces are consulted.
-        // Cap faces (qFrameStartFace / qFrameEndFace) are deliberately excluded: mitered
-        // or compound-cut caps have arbitrary orientations that convey no information about
-        // whether the sweep path is planar, and some frame configurations produce no clean
-        // planar cap face at all.
+        // Why sweep directions and NOT swept-face surface geometry:
+        //   Inspecting surface types introduces a dependency on the profile shape. A
+        //   straight round tube produces a cylindrical swept face whose axis is the sweep
+        //   direction (perpendicular to openingNormal), while an arc-swept round tube
+        //   produces a toroidal swept face whose axis equals openingNormal. Both cases are
+        //   valid coplanar rings, but the correct axis orientation is opposite in the two
+        //   cases — so any single axis check either passes one and blocks the other, or
+        //   passes both without actually validating coplanarity.
+        //
+        //   The sweep directions themselves carry exactly the information we need and are
+        //   already available in the sweepDirections array computed in step 2.  No
+        //   additional geometry queries are required, and no cap faces are involved.
+        //
+        // Why perpendicularVectors and NOT a manual dot product:
+        //   perpendicularVectors() is a standard library function (math.fs) that encapsulates
+        //   the angular tolerance consistently with every other directional comparison in
+        //   the Onshape Standard Library. Using a manual dot product would require choosing
+        //   an arbitrary threshold and risk inconsistency with the tolerance used in step 3
+        //   (parallelVectors) to find the normal in the first place.
 
-        for (var memberIndex = 0; memberIndex < memberCount; memberIndex += 1)
+        for (var directionIndex = 0; directionIndex < sweepDirectionCount; directionIndex += 1)
         {
-            for (var sweptFace in evaluateQuery(context, qFrameSweptFace(frameMemberBodies[memberIndex])))
+            if (!perpendicularVectors(sweepDirections[directionIndex], openingNormal))
             {
-                const surfaceDefinition = evSurfaceDefinition(context, { "face" : sweptFace });
-                var faceConsistentWithPanel = false;
-
-                if (surfaceDefinition is Plane)
-                {
-                    // Planar face: normal must be either parallel or perpendicular to openingNormal.
-                    // parallelVectors and perpendicularVectors use the standard library's built-in
-                    // angular tolerance — preferred over manual dot-product thresholds.
-                    faceConsistentWithPanel =
-                        parallelVectors(surfaceDefinition.normal, openingNormal) ||
-                        perpendicularVectors(surfaceDefinition.normal, openingNormal);
-                }
-                else if (surfaceDefinition is Cylinder)
-                {
-                    // Cylindrical face: axis must be parallel to openingNormal.
-                    faceConsistentWithPanel =
-                        parallelVectors(surfaceDefinition.coordSystem.zAxis, openingNormal);
-                }
-                else if (surfaceDefinition is Torus)
-                {
-                    // Toroidal face: axis must be parallel to openingNormal.
-                    faceConsistentWithPanel =
-                        parallelVectors(surfaceDefinition.coordSystem.zAxis, openingNormal);
-                }
-                else
-                {
-                    // Other surface type (spline surface, etc.): sample the face-centre tangent
-                    // plane to get a representative normal and apply the same ∥/⊥ check.
-                    const centreTangentPlane = evFaceTangentPlane(context, {
-                                "face"      : sweptFace,
-                                "parameter" : vector(0.5, 0.5)
-                            });
-                    faceConsistentWithPanel =
-                        parallelVectors(centreTangentPlane.normal, openingNormal) ||
-                        perpendicularVectors(centreTangentPlane.normal, openingNormal);
-                }
-
-                if (!faceConsistentWithPanel)
-                {
-                    reportFeatureError(context, id,
-                        "Selected frame members do not all lie in a common plane. " ~
-                        "Panel Maker requires all sweep paths to be coplanar.");
-                    return;
-                }
+                reportFeatureError(context, id,
+                    "Selected frame members do not all lie in a common plane. " ~
+                    "Panel Maker requires all sweep paths to be coplanar.");
+                return;
             }
         }
 
