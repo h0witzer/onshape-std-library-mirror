@@ -108,11 +108,9 @@ function buildPanelName(prefix is string, panelDim1 is number, panelDim2 is numb
  *      in that system to derive the three alignment positions from the frame depth.
  *   6. Sort the selected members into a closed loop via a body-adjacency graph and a
  *      Hamiltonian cycle search.
- *   7. For each consecutive pair in the loop, find the inner swept face with
- *      findInnerSweptFace(). This selects the face whose panel-plane intersection curve
- *      correctly constrains the panel opening for any profile — including L-channels, where
- *      the groove wall face (not the outer leg tip) must be used. Get the 2D constraint via
- *      getInnerFaceConstraint2D and solve for the corner position.
+ *   7. For each consecutive pair in the loop, compute the 2D boundary constraint via
+ *      computeConstraint2D() — bounding box for most members, circle arc for rolled round
+ *      tubes — and solve for the corner position.
  *   8. opPolyline -> opFillSurface -> opExtrude (+/-thickness/2 along N).
  *   9. Apply edge gap via opOffsetFace on the panel's non-cap perimeter faces.
  *  10. Name the panel body from its XY bounding box dimensions.
@@ -352,17 +350,23 @@ export const panelMakerFeature = defineFeature(function(context is Context, id i
             return;
         }
 
-        // ── 9. Compute panel boundary corners from inner swept faces ─────────────────────
+        // ── 9. Compute panel boundary corners from member bounding boxes ─────────────────────
         //
         // For each consecutive pair (A, B) in the loop, the panel corner is the intersection
-        // of their inner swept face constraint lines/curves in panel XY at Z = alignmentZ.
+        // of their boundary constraints in panel XY at Z = alignmentZ.
         //
-        // findInnerSweptFace() replaces the previous qClosestTo(qFrameSweptFace, panelCentroid)
-        // approach, which incorrectly selected the outer leg-tip face of an L-channel member
-        // (the tip of the horizontal leg is geometrically closer to the panel centroid than
-        // the groove wall) instead of the groove wall that actually constrains the panel void.
-        // findInnerSweptFace() scores by void-direction alignment of the projected face normal
-        // and breaks ties by minimum signed offset (rhs), picking the innermost face.
+        // computeConstraint2D() replaces the previous face-based approach:
+        //   - For rolled round tube members (torus swept face): circle constraint from the
+        //     inner arc of the OUTER torus face. The outer face is identified by the largest
+        //     major radius, which correctly selects the outer surface of a hollow tube and
+        //     avoids the hollow interior face being mis-selected.
+        //   - For all other members: line constraint from the inner bounding box face. The
+        //     bounding box is computed in a local coordinate system aligned with the member's
+        //     sweep direction at the junction end, giving the correct cross-section extent
+        //     perpendicular to the sweep regardless of profile shape (box tube, I-beam,
+        //     channel, angle iron). This replaces the previous scored-face heuristic, which
+        //     incorrectly selected internal hollow faces of box tubes and the wrong inner
+        //     walls of complex profiles.
 
         var cornerPoints = makeArray(memberCount);
         for (var loopStep = 0; loopStep < memberCount; loopStep += 1)
@@ -370,13 +374,9 @@ export const panelMakerFeature = defineFeature(function(context is Context, id i
             const currentMemberBody = frameMemberBodies[loopOrder[loopStep]];
             const nextMemberBody    = frameMemberBodies[loopOrder[(loopStep + 1) % memberCount]];
 
-            const innerFaceCurrent = findInnerSweptFace(context, currentMemberBody, panelCentroid, openingNormal);
-            const innerFaceNext    = findInnerSweptFace(context, nextMemberBody,    panelCentroid, openingNormal);
-
             cornerPoints[loopStep] = computeCornerPoint(context,
-                    innerFaceCurrent, currentMemberBody,
-                    innerFaceNext,    nextMemberBody,
-                    panelCSys, alignmentZ);
+                    currentMemberBody, nextMemberBody,
+                    openingNormal, panelCentroid, panelCSys, alignmentZ);
         }
 
         // ── DEBUG: Alignment and boundary construction geometry ────────────────────────────
@@ -387,26 +387,22 @@ export const panelMakerFeature = defineFeature(function(context is Context, id i
         // Color key:
         //   RED/GREEN/BLUE : Panel coordinate system — X = first sweep direction (RED),
         //                    Y (GREEN), Z = opening normal (BLUE).
-        //                    If the panel is twisted, check whether RED is pointing in an
-        //                    unexpected direction; sweepDirections[0] drives panelXAxis and
-        //                    a sign flip here will mirror the constraint RHS values.
-        //   YELLOW         : Panel centroid (coordinate system origin).
-        //   CYAN           : Inner swept face per member. The inner face determines the
-        //                    boundary constraint — if the wrong wall of the profile is
-        //                    CYAN, the corner will be computed from the wrong face.
-        //   BLACK          : Alignment front point (YELLOW = center, ORANGE = back).
-        //                    The panel sits at YELLOW for alignmentIndex 1 (centered).
-        //   ORANGE         : Alignment back point; also void-direction arrows.
-        //                    Each arrow runs from a member centroid to the panel centroid
-        //                    projected onto the panel plane.  findInnerSweptFace ranks
-        //                    candidate faces by alignment with this direction — a wrong
-        //                    arrow means a wrong face score.
+        //                    A twisted panel almost always traces to RED pointing the wrong
+        //                    way; sweepDirections[0] drives panelXAxis, a sign flip mirrors
+        //                    all constraint RHS values.
+        //   YELLOW         : Panel centroid (coordinate system origin) and alignment center.
+        //   CYAN           : Boundary constraint source per member.
+        //                    - Non-torus: bounding box rectangle projected to alignment plane.
+        //                      The inner edge (toward panel centroid) drives the GREEN line.
+        //                    - Torus (rolled round tube): outer torus face highlighted.
+        //                      The inner arc of this face drives the BLUE circle constraint.
+        //   BLACK          : Alignment front depth point (YELLOW = center, ORANGE = back).
+        //   ORANGE         : Alignment back depth point; also void-direction arrows per member.
         //   MAGENTA        : Per-member body centroids (void-direction arrow tails).
-        //   GREEN          : Constraint lines in the panel plane at Z = alignmentZ.
-        //                    One line per loop step.  Each pair of adjacent GREEN lines
-        //                    should intersect exactly at the adjacent RED corner point.
-        //                    Circle constraints (rolled tube) appear as BLUE center points.
-        //   RED (points)   : Computed corner vertices before polyline construction.
+        //   GREEN          : Constraint lines in the panel plane at Z = alignmentZ, 200mm long.
+        //                    Adjacent GREEN pairs must intersect at the adjacent RED corner point.
+        //   BLUE (point)   : Circle constraint center for rolled round tube members.
+        //   RED (points)   : Computed corner vertices. Must sit at GREEN line intersections.
 
         // Panel coordinate system axes
         debug(context, panelCSys, DebugColor.RED, DebugColor.GREEN, DebugColor.BLUE);
@@ -417,7 +413,7 @@ export const panelMakerFeature = defineFeature(function(context is Context, id i
         addDebugPoint(context, alignmentPointCenter, DebugColor.YELLOW);
         addDebugPoint(context, alignmentPointBack,   DebugColor.ORANGE);
 
-        // Per-member: centroid (MAGENTA), void-direction arrow (ORANGE), inner face (CYAN)
+        // Per-member: centroid (MAGENTA), void-direction arrow (ORANGE), constraint source (CYAN)
         for (var debugMemberIndex = 0; debugMemberIndex < memberCount; debugMemberIndex += 1)
         {
             const debugMemberBody     = frameMemberBodies[debugMemberIndex];
@@ -425,7 +421,6 @@ export const panelMakerFeature = defineFeature(function(context is Context, id i
             addDebugPoint(context, debugMemberCentroid, DebugColor.MAGENTA);
 
             // Void direction: panel-plane projection of (panelCentroid - memberCentroid).
-            // findInnerSweptFace scores candidate faces by alignment with this direction.
             const voidDelta   = panelCentroid - debugMemberCentroid;
             const voidInPlane = voidDelta - dot(voidDelta, openingNormal) * openingNormal;
             if (norm(voidInPlane) > 1e-6 * meter)
@@ -434,10 +429,74 @@ export const panelMakerFeature = defineFeature(function(context is Context, id i
                         1.5 * millimeter, DebugColor.ORANGE);
             }
 
-            // Inner swept face: the boundary constraint face selected for this member
-            addDebugEntities(context,
-                    findInnerSweptFace(context, debugMemberBody, panelCentroid, openingNormal),
-                    DebugColor.CYAN);
+            // CYAN: bounding box rectangle (non-torus) or outer torus face (rolled tube).
+            const debugSweptFaces    = qFrameSweptFace(debugMemberBody);
+            const debugTorusFaceList = evaluateQuery(context, qGeometry(debugSweptFaces, GeometryType.TORUS));
+
+            if (size(debugTorusFaceList) > 0)
+            {
+                // Rolled round tube: highlight the outer torus face (largest major radius).
+                var debugOuterTorusFace = debugTorusFaceList[0];
+                var debugOuterRadius    = evSurfaceDefinition(context, {
+                            "face" : debugTorusFaceList[0]
+                        }).radius;
+                for (var debugTorusIndex = 1; debugTorusIndex < size(debugTorusFaceList); debugTorusIndex += 1)
+                {
+                    const debugCandidateRadius = evSurfaceDefinition(context, {
+                                "face" : debugTorusFaceList[debugTorusIndex]
+                            }).radius;
+                    if (debugCandidateRadius > debugOuterRadius)
+                    {
+                        debugOuterTorusFace = debugTorusFaceList[debugTorusIndex];
+                        debugOuterRadius    = debugCandidateRadius;
+                    }
+                }
+                addDebugEntities(context, debugOuterTorusFace, DebugColor.CYAN);
+            }
+            else
+            {
+                // Non-torus member: draw the bounding box rectangle projected to alignment plane.
+                // Local CSys: X = sweep direction (param 0), Z = panel normal, Y = cross(Z, X).
+                const debugSweepDir   = getFrameSweepDirection(context, debugMemberBody, 0);
+                const debugLocalYAxis = normalize(cross(openingNormal, debugSweepDir));
+                const debugLocalCSys  = coordSystem(debugMemberCentroid, debugSweepDir, openingNormal);
+                const debugMemberBox  = evBox3d(context, {
+                            "topology" : debugMemberBody,
+                            "cSys"     : debugLocalCSys,
+                            "tight"    : true
+                        });
+
+                // Four corners of the bounding box rectangle in world space
+                // (at Z = 0 relative to the member centroid in the local CSys).
+                const debugCornerAWorld = debugMemberCentroid
+                        + debugMemberBox.minCorner[0] * debugSweepDir
+                        + debugMemberBox.minCorner[1] * debugLocalYAxis;
+                const debugCornerBWorld = debugMemberCentroid
+                        + debugMemberBox.maxCorner[0] * debugSweepDir
+                        + debugMemberBox.minCorner[1] * debugLocalYAxis;
+                const debugCornerCWorld = debugMemberCentroid
+                        + debugMemberBox.maxCorner[0] * debugSweepDir
+                        + debugMemberBox.maxCorner[1] * debugLocalYAxis;
+                const debugCornerDWorld = debugMemberCentroid
+                        + debugMemberBox.minCorner[0] * debugSweepDir
+                        + debugMemberBox.maxCorner[1] * debugLocalYAxis;
+
+                // Project each corner to the panel alignment depth (alignmentZ).
+                const debugLocalA = fromWorld(panelCSys, debugCornerAWorld);
+                const debugLocalB = fromWorld(panelCSys, debugCornerBWorld);
+                const debugLocalC = fromWorld(panelCSys, debugCornerCWorld);
+                const debugLocalD = fromWorld(panelCSys, debugCornerDWorld);
+
+                const debugProjA = toWorld(panelCSys, vector(debugLocalA[0], debugLocalA[1], alignmentZ));
+                const debugProjB = toWorld(panelCSys, vector(debugLocalB[0], debugLocalB[1], alignmentZ));
+                const debugProjC = toWorld(panelCSys, vector(debugLocalC[0], debugLocalC[1], alignmentZ));
+                const debugProjD = toWorld(panelCSys, vector(debugLocalD[0], debugLocalD[1], alignmentZ));
+
+                addDebugLine(context, debugProjA, debugProjB, DebugColor.CYAN);
+                addDebugLine(context, debugProjB, debugProjC, DebugColor.CYAN);
+                addDebugLine(context, debugProjC, debugProjD, DebugColor.CYAN);
+                addDebugLine(context, debugProjD, debugProjA, DebugColor.CYAN);
+            }
         }
 
         // Constraint lines and corner points, indexed by loop order.
@@ -449,8 +508,8 @@ export const panelMakerFeature = defineFeature(function(context is Context, id i
             // Show the constraint contributed by the current member at this loop step.
             const debugCurrentBody = frameMemberBodies[loopOrder[debugLoopStep]];
             const debugNextBody    = frameMemberBodies[loopOrder[(debugLoopStep + 1) % memberCount]];
-            const debugInnerFace   = findInnerSweptFace(context, debugCurrentBody, panelCentroid, openingNormal);
-            const debugConstraint  = getInnerFaceConstraint2D(context, debugInnerFace, debugCurrentBody, debugNextBody, panelCSys);
+            const debugConstraint  = computeConstraint2D(context, debugCurrentBody, debugNextBody,
+                    openingNormal, panelCentroid, panelCSys);
 
             if (debugConstraint.kind == "line")
             {
@@ -609,22 +668,23 @@ function getFrameSweepDirection(context is Context, memberBody is Query, pathPar
     // cross(torusAxis, radialDirection), where radialDirection is the in-plane vector from
     // the torus center to a point on the torus boundary edge at that end of the arc.
     //
-    // The torus face has exactly two boundary circle edges — one at each end of the arc.
-    // Evaluating the midpoint (parameter 0.5) of each boundary circle gives a point at the
-    // correct angular position without consulting cap faces. Cap faces are not used here
-    // because mitered or compound-cut caps have arbitrary orientations and may not exist.
+    // The boundary edge at the requested end is selected by proximity to the corresponding
+    // cap face centroid via qClosestTo. This avoids depending on the arbitrary evaluation
+    // order of qAdjacent results, which is not guaranteed to be start-to-end.
     const torusFaces = evaluateQuery(context, qGeometry(sweptFaces, GeometryType.TORUS));
     if (size(torusFaces) > 0)
     {
-        const torusDefinition    = evSurfaceDefinition(context, { "face" : torusFaces[0] });
-        const torusCenter        = torusDefinition.coordSystem.origin;
-        const torusAxis          = torusDefinition.coordSystem.zAxis;
+        const torusDefinition = evSurfaceDefinition(context, { "face" : torusFaces[0] });
+        const torusCenter     = torusDefinition.coordSystem.origin;
+        const torusAxis       = torusDefinition.coordSystem.zAxis;
 
-        const torusBoundaryEdges = evaluateQuery(context,
-                qAdjacent(torusFaces[0], AdjacencyType.EDGE, EntityType.EDGE));
-        const boundaryEdgeIndex  = (pathParameter < 0.5) ? 0 : (size(torusBoundaryEdges) - 1);
-        const referencePoint     = evEdgeTangentLine(context, {
-                    "edge"      : torusBoundaryEdges[boundaryEdgeIndex],
+        const endCapFace      = (pathParameter < 0.5) ? qFrameStartFace(memberBody) : qFrameEndFace(memberBody);
+        const endCapCentroid  = evApproximateCentroid(context, { "entities" : endCapFace });
+        const closestBoundaryEdge = qClosestTo(
+                qAdjacent(torusFaces[0], AdjacencyType.EDGE, EntityType.EDGE),
+                endCapCentroid);
+        const referencePoint  = evEdgeTangentLine(context, {
+                    "edge"      : closestBoundaryEdge,
                     "parameter" : 0.5
                 }).origin;
 
@@ -649,122 +709,6 @@ function getFrameSweepDirection(context is Context, memberBody is Query, pathPar
     reportFeatureError(context, makeId("panelMakerFeature"),
         "Could not determine sweep direction for a selected frame member.");
     return vector(1, 0, 0);
-}
-
-/**
- * Selects the swept face of a frame member that forms the panel boundary on this member's
- * side of the frame opening.
- *
- * This replaces qClosestTo(qFrameSweptFace, panelCentroid), which selects the face whose
- * surface geometry is nearest to the panel-ring centroid. For non-convex profiles such as
- * L-channels, the outer tip of the horizontal leg is geometrically nearer to the panel
- * centroid than the inner groove wall, causing the wrong face to be selected and the panel
- * boundary to terminate at the outer leg extent rather than the groove wall.
- *
- * Algorithm:
- *   1. For each planar swept face: skip faces whose normals are approximately parallel to
- *      the panel normal — they are parallel to the panel plane and their intersection with
- *      the panel plane is degenerate (the step face of an L-channel is this type of face).
- *   2. Score each remaining planar face by dot(projectedNormal, voidDirection), where
- *      voidDirection is the panel-plane projection of (panelCentroid - memberCentroid).
- *      Faces aligned with the void direction score near +1; faces opposing it score near -1.
- *   3. Among faces with equal top score, break ties by selecting the face with the smallest
- *      signed offset (rhs = dot(normal, origin) / meter). A smaller rhs means the face's
- *      plane is closer to the member's material centre in the void direction — i.e., the
- *      innermost constraining face. For an L-channel, the groove wall (rhs ≈ 2mm) beats the
- *      outer leg tip (rhs ≈ 10mm) via this tiebreaker.
- *   4. Non-planar faces (cylindrical, toroidal, etc.) are used as a fallback if no planar
- *      face with a positive void-direction score is found.
- *
- * @param context       {Context} : The active feature context.
- * @param memberBody    {Query}   : The frame member body to search.
- * @param panelCentroid {Vector}  : World-space centroid of the frame ring (with units).
- * @param openingNormal {Vector}  : Panel normal unit vector (dimensionless).
- * @returns {Query} : The swept face to use for the panel boundary constraint.
- */
-function findInnerSweptFace(context is Context, memberBody is Query, panelCentroid is Vector, openingNormal is Vector) returns Query
-{
-    const memberCentroid = evApproximateCentroid(context, { "entities" : memberBody });
-
-    // Void direction: direction from member centroid toward panel interior, projected to
-    // the panel XY plane (panel normal component removed).
-    const rawVoidVector = (panelCentroid - memberCentroid) -
-                          dot(panelCentroid - memberCentroid, openingNormal) * openingNormal;
-    const voidMagnitude  = norm(rawVoidVector);
-    // Fallback when the member centroid coincides with the panel centroid: pick any vector
-    // perpendicular to openingNormal. Guard against the degenerate case where openingNormal
-    // is parallel to (1,0,0), which would make cross(openingNormal,(1,0,0)) a zero vector.
-    const fallbackPerpendicular = (abs(dot(openingNormal, vector(1, 0, 0))) < 0.9) ?
-                                  vector(1, 0, 0) : vector(0, 1, 0);
-    const voidDirection  = (voidMagnitude > 1e-8 * meter) ?
-                           rawVoidVector / voidMagnitude :
-                           normalize(cross(openingNormal, fallbackPerpendicular));
-
-    var bestFace  = qNothing();
-    var bestScore = -2.0;
-    var bestRhs   = 1e30;
-
-    for (var sweptFace in evaluateQuery(context, qFrameSweptFace(memberBody)))
-    {
-        const surfaceDefinition = evSurfaceDefinition(context, { "face" : sweptFace });
-
-        if (surfaceDefinition is Plane)
-        {
-            // Skip faces that are parallel (or nearly parallel) to the panel plane.
-            // Their projected normal in the panel XY plane is near zero, giving no useful
-            // intersection line with the panel mid-plane.
-            if (abs(dot(surfaceDefinition.normal, openingNormal)) > 0.99)
-            {
-                continue;
-            }
-
-            // Project the face normal into the panel XY plane and normalise.
-            const normalInPanel = surfaceDefinition.normal -
-                                  dot(surfaceDefinition.normal, openingNormal) * openingNormal;
-            const normalMagnitude = norm(normalInPanel);
-            if (normalMagnitude < 1e-6)
-            {
-                continue;
-            }
-            const unitNormal = normalInPanel / normalMagnitude;
-            const score      = dot(unitNormal, voidDirection);
-
-            // rhs: signed offset of this face's plane from the world origin (dimensionless
-            // after dividing by meter). Among faces with the same projected-normal direction,
-            // the face with the smallest rhs is the innermost — it constrains the panel most.
-            const rhs = dot(surfaceDefinition.normal, surfaceDefinition.origin) / meter;
-
-            if (score > bestScore + 1e-6)
-            {
-                bestScore = score;
-                bestRhs   = rhs;
-                bestFace  = sweptFace;
-            }
-            else if (score > bestScore - 1e-6 && rhs < bestRhs)
-            {
-                bestRhs  = rhs;
-                bestFace = sweptFace;
-            }
-        }
-        else
-        {
-            // Non-planar face (cylindrical, toroidal, etc.): use as a fallback only when no
-            // planar face facing the void has been found yet.
-            if (bestScore <= 0.0)
-            {
-                bestFace = sweptFace;
-            }
-        }
-    }
-
-    // Final fallback: if nothing was selected (empty swept face set), use the original
-    // closest-to-centroid approach so the feature degrades gracefully.
-    if (isQueryEmpty(context, bestFace))
-    {
-        bestFace = qClosestTo(qFrameSweptFace(memberBody), panelCentroid);
-    }
-
-    return bestFace;
 }
 
 /**
@@ -856,96 +800,39 @@ function findHamiltonianCycleDFS(adjacencyTable is array, visitedMembers is arra
 }
 
 /**
- * Returns the tangent plane of an inner swept face at the boundary edge where that face
- * meets the cap face closest to the specified adjacent member.
- *
- * This determines which end of the inner face is the "corner end" for the panel boundary
- * computation using only standard library queries and evaluation functions:
- *   1. qClosestTo on the two cap faces of the member selects the one nearest to the
- *      adjacent member's centroid — no manual distance comparison needed.
- *   2. qAdjacent + qIntersection finds the edge shared between the inner swept face
- *      and that nearest cap face — the exact geometric corner of this face end.
- *   3. evFaceTangentPlaneAtEdge gives the tangent plane of the inner face along that
- *      corner edge, which for planar faces equals evPlane and for curved faces gives
- *      the local tangent at the correct arc end.
- *
- * @param context       {Context} : The active feature context.
- * @param innerFace     {Query}   : The inner swept face of the member at this corner.
- * @param memberBody    {Query}   : The frame member body that owns innerFace.
- * @param adjacentBody  {Query}   : The adjacent frame member at this corner.
- * @returns {Plane} : Tangent plane of innerFace at the end edge closest to adjacentBody.
- */
-function getInnerFaceCornerPlane(context is Context, innerFace is Query, memberBody is Query, adjacentBody is Query) returns Plane
-{
-    const adjacentBodyCentroid = evApproximateCentroid(context, { "entities" : adjacentBody });
-
-    // The inner swept face has two types of edges:
-    //   - Longitudinal swept-path edges: run along the length of the member (in qFrameSweptEdge).
-    //   - End edges: lie across the cross-section at each end of the sweep; these are the
-    //     intersection of the swept face with the end of the member.
-    //
-    // Subtracting the longitudinal swept edges from the face's edge set leaves only the
-    // end edges. Among those, qClosestTo selects the end edge nearest to the adjacent
-    // member — the correct junction end — without consulting cap faces.
-    //
-    // Cap faces (qFrameStartFace / qFrameEndFace) are intentionally not used here:
-    // they may be mitered, compound-cut, or otherwise absent, giving unreliable geometry.
-    const cornerEdge = qClosestTo(
-        qSubtraction(
-            qAdjacent(innerFace, AdjacencyType.EDGE, EntityType.EDGE),
-            qFrameSweptEdge(memberBody)
-        ),
-        adjacentBodyCentroid
-    );
-
-    return evFaceTangentPlaneAtEdge(context, {
-                "face"      : innerFace,
-                "edge"      : cornerEdge,
-                "parameter" : 0.5
-            });
-}
-
-/**
  * Computes the world-space corner point at the junction of two adjacent frame members,
  * placed at the chosen panel alignment depth.
  *
  * Method:
- *   1. Derive a 2D constraint for each member's inner swept face in the panel XY plane
- *      via getInnerFaceConstraint2D:
- *        - Planar/cylindrical face → line constraint from the tangent plane at the corner edge.
- *        - Toroidal face (rolled round tube) → circle constraint from the torus inner arc.
+ *   1. Derive a 2D constraint for each member via computeConstraint2D:
+ *        - Rolled round tube (torus swept face) → circle constraint from the inner arc
+ *          of the outer torus face.
+ *        - All other members → line constraint from the inner bounding box face.
  *   2. Intersect the two constraints (line-line, line-circle, or circle-circle).
  *      Circle-circle is reduced to line-circle via the radical axis.
  *   3. Reconstruct the world-space corner with toWorld at Z = alignmentZ.
  *
- * For straight (planar/cylindrical) inner faces, the constraint is a line derived from the
- * tangent plane at the corner edge — the same approach used previously.
- * For toroidal inner faces (rolled round tube members), the constraint is a circle: the arc
- * at radius (torus.radius - torus.minorRadius) from the torus axis projected to the panel
- * plane. Line-circle and circle-circle intersections are solved analytically. The correct
- * root (of the two intersection candidates) is chosen by proximity to the cap face centroid
- * at the junction end of the rolled member.
- *
- * @param context           {Context}        : The active feature context.
- * @param innerFaceCurrent  {Query}          : Inner swept face of the current member.
- * @param currentBody       {Query}          : Current frame member body.
- * @param innerFaceNext     {Query}          : Inner swept face of the next member.
- * @param nextBody          {Query}          : Next frame member body.
- * @param panelCSys         {CoordSystem}    : Panel coordinate system (Z = normal, origin = centroid).
- * @param alignmentZ        {ValueWithUnits} : Alignment depth along the panel normal from the panel origin.
+ * @param context       {Context}        : The active feature context.
+ * @param currentBody   {Query}          : Current frame member body.
+ * @param nextBody      {Query}          : Next frame member body.
+ * @param openingNormal {Vector}         : Panel normal unit vector.
+ * @param panelCentroid {Vector}         : World-space centroid of the frame ring (with units).
+ * @param panelCSys     {CoordSystem}    : Panel coordinate system (Z = normal, origin = centroid).
+ * @param alignmentZ    {ValueWithUnits} : Alignment depth along the panel normal from the panel origin.
  * @returns {Vector} : World-space corner position with meter units.
  */
-function computeCornerPoint(context is Context, innerFaceCurrent is Query, currentBody is Query, innerFaceNext is Query, nextBody is Query, panelCSys is CoordSystem, alignmentZ is ValueWithUnits) returns Vector
+function computeCornerPoint(context is Context, currentBody is Query, nextBody is Query,
+        openingNormal is Vector, panelCentroid is Vector, panelCSys is CoordSystem, alignmentZ is ValueWithUnits) returns Vector
 {
-    const constraintCurrent = getInnerFaceConstraint2D(context, innerFaceCurrent, currentBody, nextBody,    panelCSys);
-    const constraintNext    = getInnerFaceConstraint2D(context, innerFaceNext,    nextBody,    currentBody, panelCSys);
+    const constraintCurrent = computeConstraint2D(context, currentBody, nextBody, openingNormal, panelCentroid, panelCSys);
+    const constraintNext    = computeConstraint2D(context, nextBody, currentBody, openingNormal, panelCentroid, panelCSys);
 
     var cornerX is number = 0;
     var cornerY is number = 0;
 
     if (constraintCurrent.kind == "line" && constraintNext.kind == "line")
     {
-        // Two straight (or planar) members: solve the 2x2 linear system
+        // Two non-torus members: solve the 2x2 linear system
         //   nx1*x + ny1*y = rhs1
         //   nx2*x + ny2*y = rhs2
         const det = constraintCurrent.nx * constraintNext.ny - constraintCurrent.ny * constraintNext.nx;
@@ -953,7 +840,8 @@ function computeCornerPoint(context is Context, innerFaceCurrent is Query, curre
         if (parallelVectors(vector(constraintCurrent.nx, constraintCurrent.ny, 0),
                             vector(constraintNext.nx,    constraintNext.ny,    0)))
         {
-            // Parallel faces (T-junction or collinear): midpoint of the two foot-of-perpendicular projections.
+            // Parallel constraints (T-junction or collinear): midpoint of the two
+            // foot-of-perpendicular projections.
             cornerX = (constraintCurrent.rhs * constraintCurrent.nx + constraintNext.rhs * constraintNext.nx) / 2;
             cornerY = (constraintCurrent.rhs * constraintCurrent.ny + constraintNext.rhs * constraintNext.ny) / 2;
         }
@@ -965,14 +853,14 @@ function computeCornerPoint(context is Context, innerFaceCurrent is Query, curre
     }
     else
     {
-        // At least one rolled member: handle line-circle or circle-circle.
+        // At least one rolled round tube member: handle line-circle or circle-circle.
         //
         // For circle-circle, subtract the two circle equations to obtain the radical axis
         // (a line), then reduce to the line-circle case.
 
-        var lineConstraint  = { "nx" : 0, "ny" : 1, "rhs" : 0 };
-        var circleConstraint = constraintCurrent;
-        var rolledBody  = currentBody;
+        var lineConstraint      = { "nx" : 0, "ny" : 1, "rhs" : 0 };
+        var circleConstraint    = constraintCurrent;
+        var rolledBody          = currentBody;
         var adjacentBodyForRoot = nextBody;
 
         if (constraintCurrent.kind == "circle" && constraintNext.kind == "circle")
@@ -984,28 +872,29 @@ function computeCornerPoint(context is Context, innerFaceCurrent is Query, curre
             const radicalRhs = (constraintNext.cx ^ 2 - constraintCurrent.cx ^ 2
                               + constraintNext.cy ^ 2 - constraintCurrent.cy ^ 2
                               + constraintCurrent.radius ^ 2 - constraintNext.radius ^ 2) / (2 * len);
-            lineConstraint   = { "nx" : dx / len, "ny" : dy / len, "rhs" : radicalRhs };
-            circleConstraint = constraintCurrent;
-            rolledBody       = currentBody;
+            lineConstraint      = { "nx" : dx / len, "ny" : dy / len, "rhs" : radicalRhs };
+            circleConstraint    = constraintCurrent;
+            rolledBody          = currentBody;
             adjacentBodyForRoot = nextBody;
         }
         else if (constraintCurrent.kind == "circle")
         {
-            lineConstraint   = constraintNext;
-            circleConstraint = constraintCurrent;
-            rolledBody       = currentBody;
+            lineConstraint      = constraintNext;
+            circleConstraint    = constraintCurrent;
+            rolledBody          = currentBody;
             adjacentBodyForRoot = nextBody;
         }
         else
         {
-            lineConstraint   = constraintCurrent;
-            circleConstraint = constraintNext;
-            rolledBody       = nextBody;
+            lineConstraint      = constraintCurrent;
+            circleConstraint    = constraintNext;
+            rolledBody          = nextBody;
             adjacentBodyForRoot = currentBody;
         }
 
         // Line-circle intersection.
-        // Signed distance from circle center to the line (positive on the normal side):
+        // Signed distance d from circle center to the line; two candidate roots offset
+        // along the line by ±t where t = sqrt(r^2 - d^2).
         const nx = lineConstraint.nx;
         const ny = lineConstraint.ny;
         const b  = lineConstraint.rhs;
@@ -1016,7 +905,7 @@ function computeCornerPoint(context is Context, innerFaceCurrent is Query, curre
         const discriminant = r ^ 2 - d ^ 2;
         const t  = (discriminant > 0) ? sqrt(discriminant) : 0;
 
-        // Foot of perpendicular from circle center to line, then offset along the line direction (ny, -nx).
+        // Foot of perpendicular from circle center to line, then offset along the line.
         const fx = cx - nx * d;
         const fy = cy - ny * d;
         const x1 = fx + ny * t;
@@ -1024,28 +913,17 @@ function computeCornerPoint(context is Context, innerFaceCurrent is Query, curre
         const x2 = fx - ny * t;
         const y2 = fy + nx * t;
 
-        // Pick the root nearest to the junction end of the rolled member.
-        // The torus face has two boundary circle edges, one at each end of the arc.
-        // Evaluate the midpoint of each boundary circle and pick the one closer to the
-        // adjacent member centroid — no cap faces consulted.
-        const adjacentCentroid       = evApproximateCentroid(context, { "entities" : adjacentBodyForRoot });
-        const torusBoundaryEdges     = evaluateQuery(context,
-                qAdjacent(
-                    qGeometry(qFrameSweptFace(rolledBody), GeometryType.TORUS),
-                    AdjacencyType.EDGE,
-                    EntityType.EDGE));
-        const torusEdge0Sample       = evEdgeTangentLine(context, {
-                    "edge"      : torusBoundaryEdges[0],
-                    "parameter" : 0.5
-                }).origin;
-        const torusEdgeLastSample    = evEdgeTangentLine(context, {
-                    "edge"      : torusBoundaryEdges[size(torusBoundaryEdges) - 1],
-                    "parameter" : 0.5
-                }).origin;
-        const junctionCentroid       = (norm(torusEdge0Sample    - adjacentCentroid) <=
-                                        norm(torusEdgeLastSample  - adjacentCentroid)) ?
-                                       torusEdge0Sample : torusEdgeLastSample;
-        const junctionLocal = fromWorld(panelCSys, junctionCentroid);
+        // Pick the root nearest to the junction cap face of the rolled member.
+        // Cap face centroids reliably identify the junction end without consulting
+        // boundary edge evaluation order.
+        const adjacentCentroid    = evApproximateCentroid(context, { "entities" : adjacentBodyForRoot });
+        const startCapCentroid    = evApproximateCentroid(context, { "entities" : qFrameStartFace(rolledBody) });
+        const endCapCentroid      = evApproximateCentroid(context, { "entities" : qFrameEndFace(rolledBody) });
+        const distToStart         = norm(startCapCentroid - adjacentCentroid);
+        const distToEnd           = norm(endCapCentroid   - adjacentCentroid);
+        const junctionCapCentroid = (distToStart <= distToEnd) ? startCapCentroid : endCapCentroid;
+
+        const junctionLocal = fromWorld(panelCSys, junctionCapCentroid);
         const jx = junctionLocal[0] / meter;
         const jy = junctionLocal[1] / meter;
 
@@ -1059,57 +937,121 @@ function computeCornerPoint(context is Context, innerFaceCurrent is Query, curre
 }
 
 /**
- * Returns a 2D constraint map for the inner swept face of a frame member at a panel corner,
- * expressed in the panel coordinate system. Two constraint types are possible:
+ * Computes a 2D constraint for a frame member's boundary in the panel coordinate plane,
+ * representing the inner surface of the member at the corner where it meets adjacentBody.
+ *
+ * Two constraint types are returned:
  *
  *   "line"   : { "kind", "nx", "ny", "rhs" }
- *              Normal-form line equation  nx*x + ny*y = rhs.
- *              Used for planar and cylindrical (straight) inner faces.
- *              (nx, ny) is the face normal projected to the panel XY plane (unit vector).
- *              rhs is computed from the face origin projected by fromWorld.
+ *              Normal-form line equation  nx*x + ny*y = rhs  (all dimensionless, in meters).
+ *              Used for all members except rolled round tubes (torus swept face).
+ *              The constraint comes from the inner face of the member's bounding box in a
+ *              local coordinate system aligned with the member's sweep direction at the
+ *              junction end:
+ *                - Local X = sweep direction (along member, at the junction end)
+ *                - Local Y = cross(openingNormal, sweepDir)  (perp to sweep, in panel plane)
+ *                - Local Z = openingNormal
+ *              The bounding box Y face closest to the panel centroid is the inner face.
+ *              This approach is robust to hollow profiles (box tube, round tube) because
+ *              evBox3d captures the total body extent — the outer surface — regardless of
+ *              internal geometry or which individual swept face is selected.
  *
  *   "circle" : { "kind", "cx", "cy", "radius" }
- *              Circle  (x-cx)^2 + (y-cy)^2 = radius^2.
- *              Used for toroidal (rolled round tube) inner faces.
- *              Center = torus axis projected to panel XY by fromWorld.
- *              Radius = torus.radius - torus.minorRadius (inner boundary arc in the panel plane).
- *
- * All dimensionless values are expressed in meters.
+ *              Circle  (x-cx)^2 + (y-cy)^2 = radius^2  (all dimensionless, in meters).
+ *              Used for rolled round tube members (torus swept face).
+ *              The outer torus face is identified as the one with the largest major radius,
+ *              which correctly selects the outer surface of a hollow round tube over the
+ *              inner hollow surface. Center = outer torus axis projected to panel XY.
+ *              Radius = torus.radius - torus.minorRadius (inner boundary arc).
  *
  * @param context       {Context}     : The active feature context.
- * @param innerFace     {Query}       : The inner swept face of the member.
- * @param memberBody    {Query}       : The frame member body owning innerFace.
+ * @param memberBody    {Query}       : The frame member body.
  * @param adjacentBody  {Query}       : The adjacent frame member at this corner.
+ * @param openingNormal {Vector}      : Panel normal unit vector (dimensionless).
+ * @param panelCentroid {Vector}      : World-space centroid of the frame ring (with units).
  * @param panelCSys     {CoordSystem} : Panel coordinate system (Z = panel normal, origin = centroid).
  * @returns {map} : Constraint map with "kind" key equal to "line" or "circle".
  */
-function getInnerFaceConstraint2D(context is Context, innerFace is Query, memberBody is Query, adjacentBody is Query, panelCSys is CoordSystem) returns map
+function computeConstraint2D(context is Context, memberBody is Query, adjacentBody is Query,
+        openingNormal is Vector, panelCentroid is Vector, panelCSys is CoordSystem) returns map
 {
-    const surfaceDefinition = evSurfaceDefinition(context, { "face" : innerFace });
-
-    if (surfaceDefinition is Torus)
+    // ── Torus path: rolled round tube ─────────────────────────────────────────────────────
+    // For a round tube swept along an arc, the swept face is a torus. The panel boundary is
+    // the inner arc of the outer torus face at radius = major_radius - tube_radius.
+    // The outer torus face has the largest major radius; for a hollow tube this correctly
+    // selects the outer surface and not the inner bore face.
+    const sweptFaces    = qFrameSweptFace(memberBody);
+    const torusFaceList = evaluateQuery(context, qGeometry(sweptFaces, GeometryType.TORUS));
+    if (size(torusFaceList) > 0)
     {
-        // Rolled member: the inner boundary arc in the panel plane is a circle.
-        // Center = torus axis projected to panel XY via fromWorld.
-        // Radius = torus major radius minus tube minor radius (the innermost arc).
-        const torusCenterLocal = fromWorld(panelCSys, surfaceDefinition.coordSystem.origin);
+        var outerTorusFace       = torusFaceList[0];
+        var outerTorusDefinition = evSurfaceDefinition(context, { "face" : torusFaceList[0] });
+        var outerTorusRadius     = outerTorusDefinition.radius;
+        for (var torusIndex = 1; torusIndex < size(torusFaceList); torusIndex += 1)
+        {
+            const candidateDefinition = evSurfaceDefinition(context, { "face" : torusFaceList[torusIndex] });
+            if (candidateDefinition.radius > outerTorusRadius)
+            {
+                outerTorusFace       = torusFaceList[torusIndex];
+                outerTorusDefinition = candidateDefinition;
+                outerTorusRadius     = candidateDefinition.radius;
+            }
+        }
+
+        const torusCenterLocal = fromWorld(panelCSys, outerTorusDefinition.coordSystem.origin);
         return {
             "kind"   : "circle",
             "cx"     : torusCenterLocal[0] / meter,
             "cy"     : torusCenterLocal[1] / meter,
-            "radius" : (surfaceDefinition.radius - surfaceDefinition.minorRadius) / meter
+            "radius" : (outerTorusDefinition.radius - outerTorusDefinition.minorRadius) / meter
         };
     }
 
-    // Planar or cylindrical face: derive a line constraint from the corner tangent plane.
-    // fromWorld projects the plane origin to panel local coordinates.
-    // yAxis(panelCSys) provides the panel Y axis without manual cross-product recomputation.
-    const cornerPlane = getInnerFaceCornerPlane(context, innerFace, memberBody, adjacentBody);
-    const localOrigin = fromWorld(panelCSys, cornerPlane.origin);
-    const nx          = dot(cornerPlane.normal, panelCSys.xAxis);
-    const ny          = dot(cornerPlane.normal, yAxis(panelCSys));
-    const ox          = localOrigin[0] / meter;
-    const oy          = localOrigin[1] / meter;
+    // ── Bounding box path: all other members ──────────────────────────────────────────────
+    // Build a local coordinate system aligned with the member's sweep direction at the
+    // junction end (the end of the member closest to adjacentBody). The bounding box in this
+    // CSys has correct Y extents for any cross-section profile.
+    //
+    // Cap face centroids identify the junction end reliably. qFrameStartFace and
+    // qFrameEndFace are more robust than edge evaluation order for determining which end
+    // of the member is closest to the adjacent member.
+    const memberCentroid   = evApproximateCentroid(context, { "entities" : memberBody });
+    const adjacentCentroid = evApproximateCentroid(context, { "entities" : adjacentBody });
+    const startCapCentroid = evApproximateCentroid(context, { "entities" : qFrameStartFace(memberBody) });
+    const endCapCentroid   = evApproximateCentroid(context, { "entities" : qFrameEndFace(memberBody) });
+
+    const distToStart          = norm(startCapCentroid - adjacentCentroid);
+    const distToEnd            = norm(endCapCentroid   - adjacentCentroid);
+    const cornerPathParameter  = (distToStart <= distToEnd) ? 0 : 1;
+    const sweepDir             = getFrameSweepDirection(context, memberBody, cornerPathParameter);
+
+    // Local coordinate system: X = sweep direction, Z = panel normal, Y = cross(Z, X).
+    const localYAxis = normalize(cross(openingNormal, sweepDir));
+    const localCSys  = coordSystem(memberCentroid, sweepDir, openingNormal);
+
+    // Bounding box of the member in the local CSys.
+    // The corners are in local coordinates relative to memberCentroid (the localCSys origin).
+    const memberBox = evBox3d(context, {
+                "topology" : memberBody,
+                "cSys"     : localCSys,
+                "tight"    : true
+            });
+
+    // The inner Y face is the bounding box side that faces toward the panel centroid.
+    // panelLocalY is the signed Y displacement of the panel centroid from the member centroid
+    // along localYAxis. Positive → panel centroid is on the +Y side → inner face at max_y.
+    const panelLocalY = dot(panelCentroid - memberCentroid, localYAxis);
+    const innerY      = (panelLocalY > 0 * meter) ? memberBox.maxCorner[1] : memberBox.minCorner[1];
+
+    // World-space point on the constraint line: the inner Y face at the member centroid position.
+    const constraintOriginWorld = memberCentroid + innerY * localYAxis;
+
+    // Express as nx*x + ny*y = rhs in panel coordinates (all dimensionless, in meters).
+    const constraintOriginLocal = fromWorld(panelCSys, constraintOriginWorld);
+    const nx  = dot(localYAxis, panelCSys.xAxis);
+    const ny  = dot(localYAxis, yAxis(panelCSys));
+    const ox  = constraintOriginLocal[0] / meter;
+    const oy  = constraintOriginLocal[1] / meter;
     return {
         "kind" : "line",
         "nx"   : nx,
