@@ -8,24 +8,23 @@ FeatureScript 2909;
 //   body is affected, regardless of which parts were individually selected.
 //   Single-side keep uses opSplitPart's built-in keepType parameter
 //   (SplitOperationKeepType.KEEP_FRONT/KEEP_BACK), the same API as the standard Split
-//   feature (splitpart.fs:167).  No geometry math is needed for side selection.
+//   part feature (splitpart.fs:167).  No geometry math is needed for side selection.
 //
 // SCALPEL mode — calls opSplitFace scoped exclusively to the definition body wall
 //   faces that are associated with the selected solid output parts.  Parts in the same
 //   definition body that were NOT selected are completely untouched.  New split
 //   boundary edges are stamped with editable RIP joint attributes (all fields set to
 //   canBeEdited: true) so the Modify Joints panel remains live after the feature.
-//   Single-side keep uses qSplitBy(splitId, EntityType.FACE, backBody) to classify
-//   split face fragments (query.fs: "front = direction of tool surface normal").
-//   A dot product against the tool plane is retained only for the exceptional case of
-//   definition faces that were not intersected by the tool at all, for which no
-//   standard library query provides half-space classification.
+//   This mode is analogous to the "Face" mode of the standard Split feature, which
+//   also does not expose a keep-side option.  Projection options (ProjectionType)
+//   are provided for parity with the standard face split UI.
 //
 // Both modes share the same parameters and post-split SM rebuild pipeline
 // (assignSMAttributesToNewOrSplitEntities + updateSheetMetalGeometry).
 
 // Imports used in interface
 export import(path : "onshape/std/query.fs", version : "2909.0");
+export import(path : "onshape/std/projectiontype.gen.fs", version : "2909.0");
 export import(path : "onshape/std/splitoperationkeeptype.gen.fs", version : "2909.0");
 
 // Imports used internally
@@ -39,6 +38,7 @@ import(path : "onshape/std/math.fs", version : "2909.0");
 import(path : "onshape/std/sheetMetalAttribute.fs", version : "2909.0");
 import(path : "onshape/std/sheetMetalUtils.fs", version : "2909.0");
 import(path : "onshape/std/surfaceGeometry.fs", version : "2909.0");
+import(path : "onshape/std/topologyUtils.fs", version : "2909.0");
 import(path : "onshape/std/vector.fs", version : "2909.0");
 import(path : "onshape/std/geomOperations.fs", version : "2909.0");
 import(path : "onshape/std/uihint.gen.fs", version : "2909.0");
@@ -48,12 +48,15 @@ import(path : "onshape/std/uihint.gen.fs", version : "2909.0");
  *
  * CHAINSAW - Direct opSplitPart on the entire SM definition body.  Every part that
  *            shares the definition body is split (or the body becomes two new bodies).
- *            Fast and blunt: no per-part face-level scoping.
+ *            Fast and blunt: no per-part face-level scoping.  Supports keep-side via
+ *            opSplitPart's built-in keepType parameter.
  *
  * SCALPEL  - opSplitFace scoped exclusively to the definition body faces that belong
  *            to the selected solid output parts.  Parts sharing the same definition body
  *            that are NOT selected are never touched.  New split boundary edges receive
  *            editable RIP joint attributes so the Modify Joints panel stays live.
+ *            Analogous to the "Face" mode of the standard Split feature; no keep-side
+ *            option is exposed (matching standard face split behaviour).
  */
 enum ButcherMode
 {
@@ -82,7 +85,9 @@ annotation { "Feature Type Name" : "Butcher sheet metal",
 export const sheetMetalSplit = defineSheetMetalFeature(function(context is Context, id is Id, definition is map)
     precondition
     {
-        annotation { "Name" : "Split mode", "Default" : ButcherMode.SCALPEL }
+        // CHAINSAW / SCALPEL displayed as a horizontal toggle, matching how the standard
+        // Split feature presents its Part / Face mode selector (splitpart.fs:49).
+        annotation { "Name" : "Split mode", "Default" : ButcherMode.CHAINSAW, "UIHint" : UIHint.HORIZONTAL_ENUM }
         definition.splitMode is ButcherMode;
 
         // Target selection: only active sheet metal solid bodies may be split
@@ -99,13 +104,44 @@ export const sheetMetalSplit = defineSheetMetalFeature(function(context is Conte
         annotation { "Name" : "Keep tools" }
         definition.keepTools is boolean;
 
-        annotation { "Name" : "Keep both sides", "Default" : true }
-        definition.keepBothSides is boolean;
-
-        if (!definition.keepBothSides)
+        // ── Chainsaw-only: keep-side selection ───────────────────────────────────
+        // opSplitPart (chainsaw) naturally supports a keep-side concept via keepType.
+        // Scalpel mode (opSplitFace) is analogous to the standard "Face" split, which
+        // does not expose a keep-side option in its UI — so neither do we.
+        if (definition.splitMode == ButcherMode.CHAINSAW)
         {
-            annotation { "Name" : "Opposite direction", "Default" : true, "UIHint" : UIHint.OPPOSITE_DIRECTION }
-            definition.keepFront is boolean;
+            annotation { "Name" : "Keep both sides", "Default" : true }
+            definition.keepBothSides is boolean;
+
+            if (!definition.keepBothSides)
+            {
+                annotation { "Name" : "Opposite direction", "Default" : true, "UIHint" : UIHint.OPPOSITE_DIRECTION }
+                definition.keepFront is boolean;
+            }
+        }
+
+        // ── Scalpel-only: edge projection options ────────────────────────────────
+        // Parity with the standard face split feature (splitpart.fs:91-107).
+        // Controls how edge and wire body tools are projected onto the target faces.
+        if (definition.splitMode == ButcherMode.SCALPEL)
+        {
+            annotation { "Group Name" : "Edge projection options", "Collapsed By Default" : false }
+            {
+                annotation { "Name" : "Projection direction type" }
+                definition.projectionType is ProjectionType;
+
+                if (definition.projectionType == ProjectionType.DIRECTION)
+                {
+                    annotation { "Name" : "Use sketch plane direction", "Default" : true }
+                    definition.useSketchPlaneDirection is boolean;
+
+                    if (!definition.useSketchPlaneDirection)
+                    {
+                        annotation { "Name" : "Direction", "Filter" : QueryFilterCompound.ALLOWS_DIRECTION, "MaxNumberOfPicks" : 1 }
+                        definition.directionQuery is Query;
+                    }
+                }
+            }
         }
     }
     {
@@ -168,40 +204,16 @@ export const sheetMetalSplit = defineSheetMetalFeature(function(context is Conte
             }
         }
 
-        // ── Extract the tool plane (scalpel single-side only) ────────────────────
-        // Chainsaw mode uses opSplitPart's built-in keepType and never needs this.
-        // In scalpel single-side mode, the plane is used to classify un-split
-        // definition faces (faces entirely on one side that opSplitFace did not split
-        // and therefore qSplitBy does not cover).  qSplitBy handles all split fragments
-        // without geometry math; this is only the fallback for the un-split edge case.
-        var toolPlane = undefined;
-        if (definition.splitMode == ButcherMode.SCALPEL && !definition.keepBothSides)
-        {
-            toolPlane = try(extractToolPlaneForSplit(context, effectiveTool));
-            if (toolPlane == undefined)
-            {
-                throw regenError("Cannot determine the splitting plane for single-side mode", ["tool"]);
-            }
-        }
-
         // ── Snapshot the definition body state before any geometry changes ─────────
         const initialData = getInitialEntitiesAndAttributes(context, definitionBodyQuery);
         const trackedDefinitionBody = startTracking(context, definitionBodyQuery);
 
-        // ── Attach the flip manipulator for single-side mode ──────────────────────
-        if (!definition.keepBothSides)
+        // ── Attach the flip manipulator for chainsaw single-side mode ─────────────
+        // Scalpel mode has no keep-side option (analogous to standard face split),
+        // so the manipulator is only relevant when using chainsaw mode.
+        if (definition.splitMode == ButcherMode.CHAINSAW && !definition.keepBothSides)
         {
             addSplitSideManipulator(context, id, definition, definitionBodyQuery);
-        }
-
-        // ── SCALPEL only: track individual faces for single-side fragment collection ─
-        var selectedFaceTrackers = [];
-        if (definition.splitMode == ButcherMode.SCALPEL && !definition.keepBothSides)
-        {
-            for (var faceToTrack in evaluateQuery(context, selectedDefinitionFaces))
-            {
-                selectedFaceTrackers = append(selectedFaceTrackers, startTracking(context, faceToTrack));
-            }
         }
 
         // ── Execute the split ─────────────────────────────────────────────────────
@@ -231,97 +243,20 @@ export const sheetMetalSplit = defineSheetMetalFeature(function(context is Conte
             // untouched.  keepToolSurfaces: true (set inside buildOpSplitFaceDefinition
             // for body tools) so we manage deletion ourselves.
             const splitResult = opSplitFace(context, splitId,
-                                            buildOpSplitFaceDefinition(context, selectedDefinitionFaces, effectiveTool));
+                                            buildOpSplitFaceDefinition(context, selectedDefinitionFaces, effectiveTool, definition));
 
-            // In keep-both-sides mode: stamp every new split boundary edge with an
-            // editable RIP joint attribute.  All fields (including angle) are marked
-            // canBeEdited: true so the Modify Joints panel remains live and fully
-            // interactive after the feature is applied.
-            if (definition.keepBothSides)
+            // Stamp every new split boundary edge with an editable RIP joint attribute.
+            // All fields (including angle) are marked canBeEdited: true so the Modify
+            // Joints panel remains live and fully interactive after the feature is applied.
+            var ripIndex = 0;
+            for (var splitEdge in splitResult.splittingEdges)
             {
-                var ripIndex = 0;
-                for (var splitEdge in splitResult.splittingEdges)
-                {
-                    setAttribute(context, {
-                        "entities"  : splitEdge,
-                        "attribute" : createEditableRipAttribute(context, splitEdge,
-                                                                 toAttributeId(id + "rip" + ripIndex))
-                    });
-                    ripIndex += 1;
-                }
-            }
-        }
-
-        // ── Post-split: discard unwanted face fragments (scalpel single-side only) ──
-        // Chainsaw single-side is fully handled by keepType in opSplitPart above;
-        // the engine discards the unwanted body natively with no code here.
-        //
-        // For scalpel single-side we use qSplitBy to classify the fragments produced
-        // by opSplitFace without any centroid arithmetic.  qSplitBy semantics for a
-        // split by face or part (query.fs):
-        //   false = front = in the direction of the split tool's surface normal
-        //   true  = back  = opposite the tool normal
-        // These map directly to definition.keepFront: if keeping front, delete back
-        // (true); if keeping back, delete front (false).
-        if (!definition.keepBothSides && definition.splitMode == ButcherMode.SCALPEL)
-        {
-            // Phase 1 – split fragment side classification via qSplitBy.
-            // Any face fragment produced by opSplitFace that lands on the wrong side
-            // is collected here without geometry evaluation.
-            const wrongSideSplitFragments = qSplitBy(splitId, EntityType.FACE,
-                                                     definition.keepFront ? true : false);
-
-            // Phase 2 – un-split selected face classification.
-            // qSplitBy only covers faces that were actually intersected by the tool.
-            // A selected definition face that lay entirely on one side of the tool was
-            // not split and therefore does not appear in any qSplitBy result.  We use
-            // the per-face trackers (set up before the split) to locate these survivors.
-            //
-            // These un-split faces cannot be classified by any query or ev function:
-            // there is no half-space face query in the standard library, and
-            // evDistance returns only unsigned magnitude.  The signed dot product of
-            // (centroid − planeOrigin) · planeNormal is therefore the minimal, correct
-            // approach for determining which side of the plane a face centroid is on.
-            const allSplitFragmentsQ = qUnion([
-                qSplitBy(splitId, EntityType.FACE, false),
-                qSplitBy(splitId, EntityType.FACE, true)
-            ]);
-            const planeBoundary = 0 * meter;
-            var unSplitFacesToDiscard = [];
-            for (var tracker in selectedFaceTrackers)
-            {
-                for (var trackedFace in evaluateQuery(context, tracker))
-                {
-                    // Skip faces that are already in qSplitBy — they were split and
-                    // Phase 1 has already handled them.
-                    if (!isQueryEmpty(context, qIntersection([trackedFace, allSplitFragmentsQ])))
-                    {
-                        continue;
-                    }
-                    // This face was not intersected by the tool.  Classify by signed
-                    // centroid distance from the tool plane.
-                    const centroid = evApproximateCentroid(context, { "entities" : trackedFace });
-                    const signedDist = dot(centroid - toolPlane.origin, toolPlane.normal);
-                    const isOnFront = signedDist > planeBoundary;
-                    if (definition.keepFront ? !isOnFront : isOnFront)
-                    {
-                        unSplitFacesToDiscard = append(unSplitFacesToDiscard, trackedFace);
-                    }
-                }
-            }
-
-            // Phase 3 – delete everything on the wrong side in a single pass.
-            var allFacesToDiscard = evaluateQuery(context, wrongSideSplitFragments);
-            allFacesToDiscard = concatenateArrays([allFacesToDiscard, unSplitFacesToDiscard]);
-            // leaveOpen = true is required for surface (definition) bodies.
-            if (allFacesToDiscard != [])
-            {
-                opDeleteFace(context, id + "deleteDiscardedFragments", {
-                    "deleteFaces"   : qUnion(allFacesToDiscard),
-                    "includeFillet" : false,
-                    "capVoid"       : false,
-                    "leaveOpen"     : true
+                setAttribute(context, {
+                    "entities"  : splitEdge,
+                    "attribute" : createEditableRipAttribute(context, splitEdge,
+                                                             toAttributeId(id + "rip" + ripIndex))
                 });
+                ripIndex += 1;
             }
         }
 
@@ -374,7 +309,8 @@ export const sheetMetalSplit = defineSheetMetalFeature(function(context is Conte
             opDeleteBodies(context, id + "deleteTempPlanes", { "entities" : qUnion(temporaryPlaneQueries) });
         }
     },
-    { keepTools : false, keepBothSides : true, keepFront : true, splitMode : ButcherMode.SCALPEL });
+    { keepTools : false, keepBothSides : true, keepFront : true, splitMode : ButcherMode.CHAINSAW,
+      projectionType : ProjectionType.DIRECTION, useSketchPlaneDirection : true });
 
 
 // ─── Manipulator ─────────────────────────────────────────────────────────────
@@ -498,18 +434,24 @@ function collectDefinitionFacesForSelectedParts(context is Context, solidParts i
 
 /**
  * Builds the parameter map for opSplitFace, classifying the cutting tool into the correct
- * field (bodyTools, planeTools, or faceTools) that opSplitFace expects.
+ * field (bodyTools, planeTools, or faceTools) that opSplitFace expects, and threading
+ * projection options through for parity with the standard face split (splitpart.fs).
  *
  * Construction plane faces (including temporary planes created from mate connectors) are
  * placed in planeTools so they are treated as infinite extents.  Sheet body tools are
  * placed in bodyTools with keepToolSurfaces = true so we can manage their lifetime
  * ourselves (respecting the keepTools checkbox).  All other faces go to faceTools.
  *
+ * When projectionType is DIRECTION and edge or wire body tools are present, an explicit
+ * direction is resolved from useSketchPlaneDirection / directionQuery, matching the
+ * setDirectionForEdgeTools logic in splitpart.fs.
+ *
  * @param faceTargets {Query} : the definition body wall faces to split
  * @param tool {Query} : the cutting tool query (after mate-connector conversion)
+ * @param definition {map} : feature definition (reads projectionType, useSketchPlaneDirection, directionQuery)
  * @returns {map} : parameter map suitable for passing directly to opSplitFace
  */
-function buildOpSplitFaceDefinition(context is Context, faceTargets is Query, tool is Query) returns map
+function buildOpSplitFaceDefinition(context is Context, faceTargets is Query, tool is Query, definition is map) returns map
 {
     var splitDefinition = { "faceTargets" : faceTargets };
 
@@ -539,47 +481,49 @@ function buildOpSplitFaceDefinition(context is Context, faceTargets is Query, to
         }
     }
 
+    // Thread projectionType through to opSplitFace for parity with the standard face split.
+    splitDefinition["projectionType"] = definition.projectionType;
+
+    // Resolve an explicit split direction when using direction projection with edge or
+    // wire body tools.  Mirrors setDirectionForEdgeTools in splitpart.fs.
+    if (definition.projectionType == ProjectionType.DIRECTION)
+    {
+        const edgeTools     = qEntityFilter(tool, EntityType.EDGE);
+        const wireBodyTools = qBodyType(qEntityFilter(tool, EntityType.BODY), BodyType.WIRE);
+
+        if (!isQueryEmpty(context, edgeTools) || !isQueryEmpty(context, wireBodyTools))
+        {
+            var splitDirection = undefined;
+            if (definition.useSketchPlaneDirection)
+            {
+                // Use the normal of the sketch plane that owns the sketch edges.
+                const sketchPlane = try(evOwnerSketchPlane(context, {
+                    "entity" : qSketchFilter(edgeTools, SketchObject.YES)
+                }));
+                if (sketchPlane != undefined)
+                {
+                    splitDirection = sketchPlane.normal;
+                }
+            }
+            else
+            {
+                // extractDirection handles axes and planar faces; returns undefined if
+                // the query yields no usable direction.
+                splitDirection = extractDirection(context, definition.directionQuery);
+            }
+
+            if (splitDirection != undefined)
+            {
+                splitDefinition["direction"] = splitDirection;
+            }
+            else if (!definition.useSketchPlaneDirection)
+            {
+                throw regenError(ErrorStringEnum.SPLIT_SELECT_FACE_DIRECTION, ["directionQuery"]);
+            }
+        }
+    }
+
     return splitDefinition;
-}
-
-/**
- * Returns a Plane extracted from the cutting tool.
- *
- * Only used in scalpel single-side mode to classify definition body faces that were
- * NOT intersected by the tool (and are therefore not reachable via qSplitBy).  All
- * split face fragments are classified by qSplitBy without this plane; this function
- * is only the fallback for un-split faces that lay entirely on one side of the cut.
- *
- * Chainsaw single-side mode does NOT call this function — opSplitPart's built-in
- * keepType handles side selection natively.
- *
- * @param tool {Query} : the cutting tool query (after mate-connector conversion)
- * @returns {Plane} : a representative plane describing the tool's orientation
- */
-function extractToolPlaneForSplit(context is Context, tool is Query) returns Plane
-{
-    // Try as a face (covers face tools, construction planes, and mate-connector temp planes)
-    const faceQuery = qEntityFilter(tool, EntityType.FACE);
-    if (!isQueryEmpty(context, faceQuery))
-    {
-        return evFaceTangentPlane(context, {
-            "face"      : qNthElement(faceQuery, 0),
-            "parameter" : vector(0.5, 0.5)
-        });
-    }
-
-    // Try as a sheet body: sample the first face of the body
-    const bodyQuery = qEntityFilter(tool, EntityType.BODY);
-    if (!isQueryEmpty(context, bodyQuery))
-    {
-        const bodyFace = qNthElement(qOwnedByBody(bodyQuery, EntityType.FACE), 0);
-        return evFaceTangentPlane(context, {
-            "face"      : bodyFace,
-            "parameter" : vector(0.5, 0.5)
-        });
-    }
-
-    throw "Unable to extract a representative plane from the cutting tool";
 }
 
 /**
