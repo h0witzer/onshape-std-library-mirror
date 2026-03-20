@@ -111,6 +111,7 @@ export const sheetMetalSplit = defineSheetMetalFeature(function(context is Conte
             annotation { "Name" : "Entity to split with",
                          "Filter" : (EntityType.EDGE && SketchObject.YES && ConstructionObject.NO) ||
                              (EntityType.BODY && (BodyType.SHEET || BodyType.WIRE) && ModifiableEntityOnly.NO && SketchObject.NO) ||
+                             (EntityType.BODY && BodyType.SKETCH) ||
                              EntityType.FACE ||
                              BodyType.MATE_CONNECTOR,
                          "MaxNumberOfPicks" : 1 }
@@ -490,10 +491,23 @@ function buildOpSplitFaceDefinition(context is Context, faceTargets is Query, to
     // Non-construction edges (e.g. sketch edges) feed the "edgeTools" parameter of opSplitFace.
     const toolEdges  = qConstructionFilter(qEntityFilter(tool, EntityType.EDGE), ConstructionObject.NO);
 
-    if (!isQueryEmpty(context, toolBodies))
+    // Sketch bodies (BodyType.SKETCH) cannot be passed to opSplitFace as bodyTools — the engine
+    // only accepts sheet or wire bodies there.  Expand sketch bodies to their owned
+    // non-construction edges so opSplitFace receives the same individual edge geometry the
+    // user would get by selecting sketch edges one-by-one.
+    const sketchBodyTools    = qBodyType(toolBodies, BodyType.SKETCH);
+    const nonSketchBodyTools = qUnion([qBodyType(toolBodies, BodyType.SHEET), qBodyType(toolBodies, BodyType.WIRE)]);
+    const expandedSketchBodyEdges = qConstructionFilter(
+        qOwnedByBody(sketchBodyTools, EntityType.EDGE),
+        ConstructionObject.NO
+    );
+    // Merge directly-selected edges with edges expanded from any selected sketch body.
+    const allEdgeTools = qUnion([toolEdges, expandedSketchBodyEdges]);
+
+    if (!isQueryEmpty(context, nonSketchBodyTools))
     {
         // Sheet or wire body tool: preserve it so we can delete it ourselves per keepTools.
-        splitDefinition["bodyTools"]        = toolBodies;
+        splitDefinition["bodyTools"]        = nonSketchBodyTools;
         splitDefinition["keepToolSurfaces"] = true;
     }
 
@@ -514,12 +528,14 @@ function buildOpSplitFaceDefinition(context is Context, faceTargets is Query, to
         }
     }
 
-    if (!isQueryEmpty(context, toolEdges))
+    if (!isQueryEmpty(context, allEdgeTools))
     {
         // Sketch edge (and other non-construction edge) tools are projected onto the target
         // faces using the configured projection type and direction.  Without this assignment
         // opSplitFace never receives the edge geometry and reports nothing selected.
-        splitDefinition["edgeTools"] = toolEdges;
+        // When the user selects an entire sketch body, its owned non-construction edges are
+        // expanded above (expandedSketchBodyEdges) and merged here.
+        splitDefinition["edgeTools"] = allEdgeTools;
     }
 
     // Thread projectionType through to opSplitFace for parity with the standard face split.
@@ -529,20 +545,28 @@ function buildOpSplitFaceDefinition(context is Context, faceTargets is Query, to
     // wire body tools.  Mirrors setDirectionForEdgeTools in splitpart.fs.
     if (definition.projectionType == ProjectionType.DIRECTION)
     {
-        const wireBodyTools = qBodyType(toolBodies, BodyType.WIRE);
+        const wireBodyTools = qBodyType(nonSketchBodyTools, BodyType.WIRE);
 
-        if (!isQueryEmpty(context, toolEdges) || !isQueryEmpty(context, wireBodyTools))
+        if (!isQueryEmpty(context, allEdgeTools) || !isQueryEmpty(context, wireBodyTools))
         {
             var splitDirection = undefined;
             if (definition.useSketchPlaneDirection)
             {
                 // Use the normal of the sketch plane that owns the sketch edges.
-                // Guard on non-empty toolEdges: when only wire body tools are present
-                // (no sketch edges), evOwnerSketchPlane would receive an empty query.
-                if (!isQueryEmpty(context, toolEdges))
+                // Build a combined query:
+                //   - qSketchFilter on directly-selected toolEdges for individual edge picks
+                //   - expandedSketchBodyEdges passed directly (owned by a sketch body, so
+                //     evOwnerSketchPlane can resolve their plane even without SketchObject.YES)
+                // allEdgeTools is NOT filtered by SketchObject.YES here to avoid the case
+                // where edges expanded via qOwnedByBody do not carry that attribute.
+                const sketchEdgesForPlaneDetection = qUnion([
+                    qSketchFilter(toolEdges, SketchObject.YES),
+                    expandedSketchBodyEdges
+                ]);
+                if (!isQueryEmpty(context, sketchEdgesForPlaneDetection))
                 {
                     const sketchPlane = try(evOwnerSketchPlane(context, {
-                        "entity" : qSketchFilter(toolEdges, SketchObject.YES)
+                        "entity" : sketchEdgesForPlaneDetection
                     }));
                     if (sketchPlane != undefined)
                     {
