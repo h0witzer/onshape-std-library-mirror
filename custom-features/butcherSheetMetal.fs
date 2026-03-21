@@ -111,7 +111,6 @@ export const sheetMetalSplit = defineSheetMetalFeature(function(context is Conte
             annotation { "Name" : "Entity to split with",
                          "Filter" : (EntityType.EDGE && SketchObject.YES && ConstructionObject.NO) ||
                              (EntityType.BODY && (BodyType.SHEET || BodyType.WIRE) && ModifiableEntityOnly.NO && SketchObject.NO) ||
-                             (EntityType.BODY && (BodyType.SHEET || BodyType.WIRE) && ModifiableEntityOnly.NO && SketchObject.YES) ||
                              EntityType.FACE ||
                              BodyType.MATE_CONNECTOR,
                          "MaxNumberOfPicks" : 1 }
@@ -484,59 +483,39 @@ function buildOpSplitFaceDefinition(context is Context, faceTargets is Query, to
 {
     var splitDefinition = { "faceTargets" : faceTargets };
 
-    // Separate the tool query into its constituent entity types.
-    // Each type maps to a distinct opSplitFace parameter name (parity with splitpart.fs).
-    const toolBodies = qEntityFilter(tool, EntityType.BODY);
-    const toolFaces  = qEntityFilter(tool, EntityType.FACE);
-    // Non-construction edges (e.g. sketch edges) feed the "edgeTools" parameter of opSplitFace.
-    const toolEdges  = qConstructionFilter(qEntityFilter(tool, EntityType.EDGE), ConstructionObject.NO);
+    // Separate the tool query into its constituent entity types,
+    // matching the pattern in splitpart.fs performSplitFace.
+    // Non-construction edges (e.g. sketch edges) feed edgeTools.
+    const edgeTools = qConstructionFilter(qEntityFilter(tool, EntityType.EDGE), ConstructionObject.NO);
+    // Sheet and wire body tools.  Using an explicit BodyType array naturally limits this
+    // to SHEET and WIRE bodies only, which cleanly excludes mate connectors
+    // (BodyType.MATE_CONNECTOR is not in the list) — no extra filter step needed.
+    // This is preferred over qSubtraction or removeMateConnectors because it expresses
+    // the intent directly rather than filtering after the fact.
+    const bodyTools = qBodyType(qEntityFilter(tool, EntityType.BODY), [BodyType.SHEET, BodyType.WIRE]);
+    // Construction planes (and temporary planes already substituted for mate connectors) go
+    // to planeTools; regular non-construction faces go to faceTools.
+    const constructionFaces = qConstructionFilter(qEntityFilter(tool, EntityType.FACE), ConstructionObject.YES);
+    const regularFaces      = qConstructionFilter(qEntityFilter(tool, EntityType.FACE), ConstructionObject.NO);
 
-    // Sketch bodies in Onshape are BodyType.WIRE or BodyType.SHEET bodies with SketchObject.YES.
-    // They cannot be passed to opSplitFace as bodyTools — the engine only accepts non-sketch
-    // sheet or wire bodies there.  Use qSketchFilter to separate them and expand each sketch body
-    // to its owned non-construction edges so opSplitFace receives the same edge geometry the
-    // user would get by selecting sketch edges one-by-one.
-    const sketchWireSheetBodies    = qSketchFilter(toolBodies, SketchObject.YES);
-    const nonSketchWireSheetBodies = qSketchFilter(toolBodies, SketchObject.NO);
-    const expandedSketchBodyEdges = qConstructionFilter(
-        qOwnedByBody(sketchWireSheetBodies, EntityType.EDGE),
-        ConstructionObject.NO
-    );
-    // Merge directly-selected edges with edges expanded from any selected sketch body.
-    const allEdgeTools = qUnion([toolEdges, expandedSketchBodyEdges]);
-
-    if (!isQueryEmpty(context, nonSketchWireSheetBodies))
+    if (!isQueryEmpty(context, edgeTools))
     {
-        // Sheet or wire body tool: preserve it so we can delete it ourselves per keepTools.
-        splitDefinition["bodyTools"]        = nonSketchWireSheetBodies;
+        splitDefinition["edgeTools"] = edgeTools;
+    }
+
+    if (!isQueryEmpty(context, bodyTools))
+    {
+        splitDefinition["bodyTools"]        = bodyTools;
         splitDefinition["keepToolSurfaces"] = true;
     }
 
-    if (!isQueryEmpty(context, toolFaces))
+    if (!isQueryEmpty(context, constructionFaces))
     {
-        // Construction plane faces (and mate-connector temp planes from opPlane) are
-        // treated as infinite so the split extends fully across each targeted face.
-        const constructionFaces = qConstructionFilter(toolFaces, ConstructionObject.YES);
-        const regularFaces      = qConstructionFilter(toolFaces, ConstructionObject.NO);
-
-        if (!isQueryEmpty(context, constructionFaces))
-        {
-            splitDefinition["planeTools"] = constructionFaces;
-        }
-        if (!isQueryEmpty(context, regularFaces))
-        {
-            splitDefinition["faceTools"] = regularFaces;
-        }
+        splitDefinition["planeTools"] = constructionFaces;
     }
-
-    if (!isQueryEmpty(context, allEdgeTools))
+    if (!isQueryEmpty(context, regularFaces))
     {
-        // Sketch edge (and other non-construction edge) tools are projected onto the target
-        // faces using the configured projection type and direction.  Without this assignment
-        // opSplitFace never receives the edge geometry and reports nothing selected.
-        // When the user selects an entire sketch body, its owned non-construction edges are
-        // expanded above (expandedSketchBodyEdges) and merged here.
-        splitDefinition["edgeTools"] = allEdgeTools;
+        splitDefinition["faceTools"] = regularFaces;
     }
 
     // Thread projectionType through to opSplitFace for parity with the standard face split.
@@ -546,33 +525,21 @@ function buildOpSplitFaceDefinition(context is Context, faceTargets is Query, to
     // wire body tools.  Mirrors setDirectionForEdgeTools in splitpart.fs.
     if (definition.projectionType == ProjectionType.DIRECTION)
     {
-        const wireBodyTools = qBodyType(nonSketchWireSheetBodies, BodyType.WIRE);
+        const wireBodyTools = qBodyType(bodyTools, BodyType.WIRE);
 
-        if (!isQueryEmpty(context, allEdgeTools) || !isQueryEmpty(context, wireBodyTools))
+        if (!isQueryEmpty(context, edgeTools) || !isQueryEmpty(context, wireBodyTools))
         {
             var splitDirection = undefined;
             if (definition.useSketchPlaneDirection)
             {
                 // Use the normal of the sketch plane that owns the sketch edges.
-                // Build a combined query:
-                //   - qSketchFilter on directly-selected toolEdges for individual edge picks
-                //   - expandedSketchBodyEdges passed directly (owned by a sketch body, so
-                //     evOwnerSketchPlane can resolve their plane even without SketchObject.YES)
-                // allEdgeTools is NOT filtered by SketchObject.YES here to avoid the case
-                // where edges expanded via qOwnedByBody do not carry that attribute.
-                const sketchEdgesForPlaneDetection = qUnion([
-                    qSketchFilter(toolEdges, SketchObject.YES),
-                    expandedSketchBodyEdges
-                ]);
-                if (!isQueryEmpty(context, sketchEdgesForPlaneDetection))
+                // Mirrors getSketchPlaneOfEdgeTools in splitpart.fs.
+                const sketchPlane = try silent(evOwnerSketchPlane(context, {
+                    "entity" : qSketchFilter(edgeTools, SketchObject.YES)
+                }));
+                if (sketchPlane != undefined)
                 {
-                    const sketchPlane = try(evOwnerSketchPlane(context, {
-                        "entity" : sketchEdgesForPlaneDetection
-                    }));
-                    if (sketchPlane != undefined)
-                    {
-                        splitDirection = sketchPlane.normal;
-                    }
+                    splitDirection = sketchPlane.normal;
                 }
             }
             else
@@ -611,7 +578,7 @@ function buildTemporaryPlanesForMateConnectors(context is Context, id is Id, too
     var planeIndex = 0;
     for (var tool in evaluateQuery(context, tools))
     {
-        const coordinateSystem = try(evMateConnector(context, { "mateConnector" : tool }));
+        const coordinateSystem = try silent(evMateConnector(context, { "mateConnector" : tool }));
         if (coordinateSystem != undefined)
         {
             const planeId = id + "mateConnectorPlane" + unstableIdComponent(planeIndex);
