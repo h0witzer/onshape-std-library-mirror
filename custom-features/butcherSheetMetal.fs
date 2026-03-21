@@ -108,13 +108,12 @@ export const sheetMetalSplit = defineSheetMetalFeature(function(context is Conte
 
         if (definition.splitMode == ButcherMode.SCALPEL)
         {
-            annotation { "Name" : "Entity to split with",
+            annotation { "Name" : "Entities to split with",
                          "Filter" : (EntityType.EDGE && SketchObject.YES && ConstructionObject.NO) ||
                              (EntityType.BODY && (BodyType.SHEET || BodyType.WIRE) && ModifiableEntityOnly.NO && SketchObject.NO) ||
-                             (EntityType.BODY && (BodyType.SHEET || BodyType.WIRE) && ModifiableEntityOnly.NO && SketchObject.YES) ||
                              EntityType.FACE ||
-                             BodyType.MATE_CONNECTOR,
-                         "MaxNumberOfPicks" : 1 }
+                             BodyType.MATE_CONNECTOR
+                             && AllowMeshGeometry.YES }
             definition.scalpelTool is Query;
         }
 
@@ -484,27 +483,16 @@ function buildOpSplitFaceDefinition(context is Context, faceTargets is Query, to
 {
     var splitDefinition = { "faceTargets" : faceTargets };
 
-    // Separate the tool query into its constituent entity types.
-    // Non-construction edges (e.g. individually selected sketch edges) feed edgeTools directly.
-    const directEdgeTools = qConstructionFilter(qEntityFilter(tool, EntityType.EDGE), ConstructionObject.NO);
-
-    // Separate all SHEET/WIRE body tools into sketch bodies and non-sketch bodies.
-    // Sketch bodies (SketchObject.YES) cannot be passed to opSplitFace as bodyTools —
-    // expand them to their owned non-construction edges so opSplitFace receives the same
-    // edge geometry the user gets by selecting individual sketch edges.
-    // Non-sketch bodies (SketchObject.NO) are passed directly as bodyTools.
-    const allBodies       = qBodyType(qEntityFilter(tool, EntityType.BODY), [BodyType.SHEET, BodyType.WIRE]);
-    const sketchBodies    = qSketchFilter(allBodies, SketchObject.YES);
-    const nonSketchBodies = qSketchFilter(allBodies, SketchObject.NO);
-    const expandedSketchEdges = qConstructionFilter(
-        qOwnedByBody(sketchBodies, EntityType.EDGE),
-        ConstructionObject.NO
-    );
-    // Merged edge tools: directly selected edges + edges expanded from any selected sketch body.
-    const edgeTools = qUnion([directEdgeTools, expandedSketchEdges]);
-
-    // Construction planes (and temporary planes already substituted for mate connectors) go
-    // to planeTools; regular non-construction faces go to faceTools.
+    // Separate the tool query into its constituent entity types,
+    // matching the pattern in splitpart.fs performSplitFace.
+    // Onshape's filter system auto-expands any sketch body selection to its constituent
+    // non-construction edges before execution reaches here, so edgeTools captures them
+    // directly with no manual expansion needed.
+    const edgeTools = qConstructionFilter(qEntityFilter(tool, EntityType.EDGE), ConstructionObject.NO);
+    // Sheet and wire body tools (non-sketch bodies only; sketch bodies are already expanded
+    // to edges by the filter).
+    const bodyTools = qBodyType(qEntityFilter(tool, EntityType.BODY), [BodyType.SHEET, BodyType.WIRE]);
+    // Construction planes go to planeTools; regular non-construction faces go to faceTools.
     const constructionFaces = qConstructionFilter(qEntityFilter(tool, EntityType.FACE), ConstructionObject.YES);
     const regularFaces      = qConstructionFilter(qEntityFilter(tool, EntityType.FACE), ConstructionObject.NO);
 
@@ -513,10 +501,9 @@ function buildOpSplitFaceDefinition(context is Context, faceTargets is Query, to
         splitDefinition["edgeTools"] = edgeTools;
     }
 
-    if (!isQueryEmpty(context, nonSketchBodies))
+    if (!isQueryEmpty(context, bodyTools))
     {
-        // Non-sketch sheet/wire body tool: preserve so we can delete it per keepTools.
-        splitDefinition["bodyTools"]        = nonSketchBodies;
+        splitDefinition["bodyTools"]        = bodyTools;
         splitDefinition["keepToolSurfaces"] = true;
     }
 
@@ -536,7 +523,7 @@ function buildOpSplitFaceDefinition(context is Context, faceTargets is Query, to
     // wire body tools.  Mirrors setDirectionForEdgeTools in splitpart.fs.
     if (definition.projectionType == ProjectionType.DIRECTION)
     {
-        const wireBodyTools = qBodyType(nonSketchBodies, BodyType.WIRE);
+        const wireBodyTools = qBodyType(bodyTools, BodyType.WIRE);
 
         if (!isQueryEmpty(context, edgeTools) || !isQueryEmpty(context, wireBodyTools))
         {
@@ -544,16 +531,11 @@ function buildOpSplitFaceDefinition(context is Context, faceTargets is Query, to
             if (definition.useSketchPlaneDirection)
             {
                 // Use the normal of the sketch plane that owns the sketch edges.
-                // Build a combined query covering:
-                //   - directly-selected sketch edges (filtered with SketchObject.YES)
-                //   - edges expanded from selected sketch bodies (may not carry SketchObject.YES
-                //     after qOwnedByBody, but evOwnerSketchPlane resolves them by entity owner)
-                const sketchEdgesForPlaneDetection = qUnion([
-                    qSketchFilter(directEdgeTools, SketchObject.YES),
-                    expandedSketchEdges
-                ]);
+                // Mirrors getSketchPlaneOfEdgeTools in splitpart.fs.
+                // Sketch edges arrive with SketchObject.YES whether the user selected them
+                // individually or the filter auto-expanded a sketch body selection.
                 const sketchPlane = try silent(evOwnerSketchPlane(context, {
-                    "entity" : sketchEdgesForPlaneDetection
+                    "entity" : qSketchFilter(edgeTools, SketchObject.YES)
                 }));
                 if (sketchPlane != undefined)
                 {
