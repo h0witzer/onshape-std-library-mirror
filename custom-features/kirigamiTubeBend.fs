@@ -33,22 +33,28 @@ export predicate canBeKirigamiBendAttribute(value)
 }
 
 /**
- * For each selected Onshape frame body, automatically locates every apex edge
- * (the edges where a mitered cap face meets a swept tube wall face) and places one
- * Kirigami Bend Constructor instance there.
+ * For each selected Onshape frame body, automatically locates the single outer apex edge
+ * at each mitered end face and places one Kirigami Bend Constructor instance there.
+ *
+ * "Outer apex edge" is defined the same way Neil Cooke's Frame Unroll feature defines it:
+ * the edge at the outermost extent of the miter joint, found by building a local bounding
+ * box and selecting the edge that coincides with the extreme Y plane of that box.  This is
+ * the fold line at the outside of the bend (maximum bend radius).
+ *
+ * When multiple selected bodies share a miter joint, both contribute an outer apex edge at
+ * the same world-space position.  Those duplicates are collapsed to a single import so
+ * exactly one Kirigami Bend Constructor is placed per unique joint location.
  *
  * The constructor is oriented so that:
- *   - the local origin sits at the midpoint of the apex edge,
+ *   - the local origin sits at the midpoint of the outer apex edge,
  *   - the local Z axis runs along the edge tangent direction, and
- *   - the local X axis aligns with the outward normal of the adjacent frame cap face,
- *     identified via the FrameTopologyAttribute assigned by the Onshape Frame feature --
- *     the same attribute layer the cut list reads to find start/end cap faces.
+ *   - the local X axis aligns with the outward normal of the adjacent frame cap face.
  *
  * Each placed body is tagged with a KirigamiBendAttribute for downstream flat-layout export.
  * Composite frame bodies are automatically unpacked to their constituent solid segments.
  */
 annotation { "Feature Type Name" : "Kirigami Tube Bend",
-             "Feature Type Description" : "Automatically finds and processes all mitered apex edges on selected Onshape frame bodies, placing a Kirigami Bend Constructor at each one." }
+             "Feature Type Description" : "Finds the outer apex edge at every mitered joint on selected Onshape frame bodies and places one Kirigami Bend Constructor per unique joint." }
 export const kirigamiTubeBend = defineFeature(function(context is Context, id is Id, definition is map)
     precondition
     {
@@ -73,39 +79,61 @@ export const kirigamiTubeBend = defineFeature(function(context is Context, id is
         if (size(frameBodiesArray) == 0)
             throw regenError("Select at least one Onshape frame body.", ["frameBodies"]);
 
-        // Queue one KirigamiBendConstructor instance per apex edge across all selected bodies.
-        // instanceCount provides a unique name/index for every placed instance regardless of
-        // which body or edge it came from.
-        const instantiator = newInstantiator(id + "bendConstructorInstances");
-        var pendingInstances = [];
-        var instanceCount = 0;
+        // Collect exactly one outer apex edge per cap face per body.
+        // A rectangular box tube has two cap faces (one at each mitered end), so this yields
+        // at most two outer edges per body.  When two selected bodies share a miter joint each
+        // contributes its own outer edge at the same world position -- deduplication below
+        // collapses those to a single entry.
+        var allOuterEdges = [];
 
         for (var bodyIndex = 0; bodyIndex < size(frameBodiesArray); bodyIndex += 1)
         {
             const frameBody = frameBodiesArray[bodyIndex];
-            const apexEdgesOnBody = evaluateQuery(context,
-                findApexEdgesOnFrameBody(context, id, bodyIndex, frameBody));
+            const capFaceQuery = qHasAttributeWithValueMatching(
+                    qOwnedByBody(frameBody, EntityType.FACE),
+                    FRAME_ATTRIBUTE_TOPOLOGY_NAME,
+                    { "topologyType" : FrameTopologyType.CAP_FACE });
 
-            for (var edgeIndex = 0; edgeIndex < size(apexEdgesOnBody); edgeIndex += 1)
+            if (isQueryEmpty(context, capFaceQuery))
+                throw regenError("Frame body " ~ (bodyIndex + 1) ~ " has no cap faces. " ~
+                    "Ensure all selected bodies were created with the Onshape Frame feature.",
+                    ["frameBodies"]);
+
+            const capFacesArray = evaluateQuery(context, capFaceQuery);
+
+            for (var capFaceIndex = 0; capFaceIndex < size(capFacesArray); capFaceIndex += 1)
             {
-                const apexEdge = apexEdgesOnBody[edgeIndex];
-                const apexCoordSystem = buildApexCoordSystem(context, id, instanceCount, apexEdge);
-
-                // toWorld(apexCoordSystem) is the Transform that carries geometry from the
-                // constructor's local origin to the correct world-space position and orientation.
-                const instanceQuery = addInstance(instantiator, KirigamiBendConstructor::build, {
-                            "transform" : toWorld(apexCoordSystem),
-                            "name" : "bend" ~ instanceCount
-                        });
-
-                pendingInstances = append(pendingInstances, {
-                            "query" : instanceQuery,
-                            "coordSystem" : apexCoordSystem,
-                            "instanceIndex" : instanceCount
-                        });
-
-                instanceCount += 1;
+                const outerEdge = findOuterApexEdgeForCapFace(context, id, bodyIndex,
+                        frameBody, capFacesArray[capFaceIndex]);
+                allOuterEdges = append(allOuterEdges, outerEdge);
             }
+        }
+
+        // Remove coincident outer edges that arise when two selected bodies share a miter joint.
+        // Each unique world-space midpoint represents one joint and therefore one import.
+        const uniqueOuterEdges = deduplicateApexEdgesByMidpoint(context, allOuterEdges);
+
+        // Queue one KirigamiBendConstructor instance per unique outer apex edge.
+        const instantiator = newInstantiator(id + "bendConstructorInstances");
+        var pendingInstances = [];
+
+        for (var instanceIndex = 0; instanceIndex < size(uniqueOuterEdges); instanceIndex += 1)
+        {
+            const apexEdge = uniqueOuterEdges[instanceIndex];
+            const apexCoordSystem = buildApexCoordSystem(context, id, instanceIndex, apexEdge);
+
+            // toWorld(apexCoordSystem) is the Transform that carries geometry from the
+            // constructor's local origin to the correct world-space position and orientation.
+            const instanceQuery = addInstance(instantiator, KirigamiBendConstructor::build, {
+                        "transform" : toWorld(apexCoordSystem),
+                        "name" : "bend" ~ instanceIndex
+                    });
+
+            pendingInstances = append(pendingInstances, {
+                        "query" : instanceQuery,
+                        "coordSystem" : apexCoordSystem,
+                        "instanceIndex" : instanceIndex
+                    });
         }
 
         // Bring all queued instances into the context in one batched call.
@@ -128,55 +156,152 @@ export const kirigamiTubeBend = defineFeature(function(context is Context, id is
         }
     });
 
-// Automatically finds all apex edges on a single frame body.
+// Finds the single outer apex edge on one cap face of a frame body.
 //
-// An apex edge is any edge that lies on the boundary of both a frame cap face (the mitered
-// end face, FrameTopologyType.CAP_FACE) and a swept face (a tube wall face,
-// FrameTopologyType.SWEPT_FACE).  These are the fold lines where the kirigami bend geometry
-// must be placed.
+// Implements the same bounding-box outer-edge detection used by Neil Cooke's Frame Unroll
+// feature.  A local coordinate system is built from the first candidate edge's tangent
+// (X axis) and the adjacent swept face's outward normal (Z axis).  The body is evaluated in
+// that frame with evBox3d; the outer apex edge is the candidate edge that lies in a plane
+// through the extreme-Y bounding-box corner -- i.e., the edge at the outermost extent of
+// the tube in the direction perpendicular to both the fold line and the tube wall.
 //
-// Both face types are identified purely through their FrameTopologyAttribute, which the
-// Onshape Frame feature assigns during body creation -- the same attribute that qFrameStartFace,
-// qFrameEndFace, and the cut list internals read to locate cap faces on frame bodies.
+// minCorner is checked before maxCorner, matching Frame Unroll's iteration order.  Only one
+// of the two corners will coincide with a candidate edge; that edge is the outer apex edge.
 //
-// @param context   : Active context.
-// @param id        : Feature id used for error reporting.
-// @param bodyIndex : Zero-based index of this body in the selection (for error messages).
-// @param frameBody : Query resolving to a single solid frame body.
-// @returns Query   : All apex edges on this frame body.
-function findApexEdgesOnFrameBody(context is Context, id is Id, bodyIndex is number, frameBody is Query) returns Query
+// @param context    : Active context.
+// @param id         : Feature id used for error reporting.
+// @param bodyIndex  : Zero-based index of this body in the selection (for error messages).
+// @param frameBody  : Query resolving to a single solid frame body.
+// @param capFace    : Query resolving to one cap face on frameBody.
+// @returns Query    : The single outer apex edge on this cap face.
+function findOuterApexEdgeForCapFace(context is Context, id is Id, bodyIndex is number,
+    frameBody is Query, capFace is Query) returns Query
 {
-    const ownedFaces = qOwnedByBody(frameBody, EntityType.FACE);
-
-    // Retrieve cap faces and swept faces via FrameTopologyAttribute.
-    // This is the same qFrameTopology filter pattern used by qFrameStartFace / qFrameEndFace
-    // in frameUtils.fs and throughout cutlistMath.fs, frameTrim.fs, and frame.fs.
-    const capFaces = qHasAttributeWithValueMatching(ownedFaces,
-            FRAME_ATTRIBUTE_TOPOLOGY_NAME,
-            { "topologyType" : FrameTopologyType.CAP_FACE });
-
-    const sweptFaces = qHasAttributeWithValueMatching(ownedFaces,
+    // Swept faces of this body that border the cap face.  Using FrameTopologyAttribute
+    // (the same layer as qFrameStartFace / qFrameEndFace) avoids any geometry comparison.
+    const allBodySweptFaces = qHasAttributeWithValueMatching(
+            qOwnedByBody(frameBody, EntityType.FACE),
             FRAME_ATTRIBUTE_TOPOLOGY_NAME,
             { "topologyType" : FrameTopologyType.SWEPT_FACE });
 
-    if (isQueryEmpty(context, capFaces))
-        throw regenError("Frame body " ~ (bodyIndex + 1) ~ " has no cap faces. " ~
-            "Ensure all selected bodies were created with the Onshape Frame feature.",
+    const sweptFacesAdjacentToCapFace = qIntersection([
+                qAdjacent(capFace, AdjacencyType.EDGE, EntityType.FACE),
+                allBodySweptFaces
+            ]);
+
+    if (isQueryEmpty(context, sweptFacesAdjacentToCapFace))
+        throw regenError("Frame body " ~ (bodyIndex + 1) ~ " cap face has no adjacent swept (tube wall) faces. " ~
+            "Ensure the selected body is an Onshape frame member created with the Frame feature.",
             ["frameBodies"]);
 
-    // Edges that bound a cap face AND a swept face are the miter fold lines (apex edges).
-    // qAdjacent with AdjacencyType.EDGE on a face query returns the edges on the perimeter
-    // of those faces; the intersection of the two sets yields only edges shared by both types.
-    const capFaceEdges   = qAdjacent(capFaces,   AdjacencyType.EDGE, EntityType.EDGE);
-    const sweptFaceEdges = qAdjacent(sweptFaces, AdjacencyType.EDGE, EntityType.EDGE);
-    const apexEdges      = qIntersection([capFaceEdges, sweptFaceEdges]);
+    // Candidate apex edges: edges that border both the cap face and a swept face.
+    // For a rectangular box tube this yields the 4 perimeter edges of the cap face.
+    const candidateEdges = qIntersection([
+                qAdjacent(capFace,                   AdjacencyType.EDGE, EntityType.EDGE),
+                qAdjacent(sweptFacesAdjacentToCapFace, AdjacencyType.EDGE, EntityType.EDGE)
+            ]);
 
-    if (isQueryEmpty(context, apexEdges))
-        throw regenError("No apex edges found on frame body " ~ (bodyIndex + 1) ~ ". " ~
+    if (isQueryEmpty(context, candidateEdges))
+        throw regenError("No apex edges found on a cap face of frame body " ~ (bodyIndex + 1) ~ ". " ~
             "Ensure the body has a mitered end face adjacent to its tube wall faces.",
             ["frameBodies"]);
 
-    return apexEdges;
+    // Build a local coordinate system identical to the one Frame Unroll constructs:
+    //   X axis = tangent of the first candidate edge at its midpoint
+    //   Z axis = outward normal of the first adjacent swept face
+    //   Y axis = cross(Z, X)  [implicit in CoordSystem]
+    // The Y axis points across the miter face toward the outer/inner extents of the tube.
+    // NOTE: this is a helper frame solely for bounding-box analysis.  The placement coord
+    // system built by buildApexCoordSystem uses a different axis convention (cap face normal
+    // = X, edge tangent = Z) that orients the constructor geometry correctly at the joint.
+    const firstEdgeLine = evEdgeTangentLine(context, {
+                "edge" : qNthElement(candidateEdges, 0),
+                "parameter" : 0.5
+            });
+
+    const sweptFaceNormal = evFaceTangentPlane(context, {
+                "face" : qNthElement(sweptFacesAdjacentToCapFace, 0),
+                "parameter" : vector(0.5, 0.5)
+            }).normal;
+
+    const localCoordSystem = coordSystem(firstEdgeLine.origin, firstEdgeLine.direction, sweptFaceNormal);
+
+    // Bounding box of the body measured in the local coordinate system.
+    // The Y extents (minCorner.y and maxCorner.y) locate the outermost and innermost
+    // cap-face boundary edges relative to the tube wall.
+    const bodyBoundingBox = evBox3d(context, {
+                "topology" : frameBody,
+                "cSys" : localCoordSystem,
+                "tight" : true
+            });
+
+    // The outer apex edge lies in a plane at one of the bounding-box Y extremes.
+    // A plane through the bounding-box corner with normal = yAxis(localCoordSystem) is a
+    // constant-Y plane in the local frame; qCoincidesWithPlane selects the candidate edge
+    // that lies entirely in that plane.  minCorner is checked first, then maxCorner,
+    // matching the iteration order used by Frame Unroll.
+    var outerEdge = qNothing();
+
+    for (var corner in [bodyBoundingBox.minCorner, bodyBoundingBox.maxCorner])
+    {
+        const cornerPlane = plane(toWorld(localCoordSystem, corner), yAxis(localCoordSystem));
+        outerEdge = qCoincidesWithPlane(candidateEdges, cornerPlane);
+        if (!isQueryEmpty(context, outerEdge))
+            break;
+    }
+
+    if (isQueryEmpty(context, outerEdge))
+        throw regenError("Could not determine the outer apex edge on a cap face of frame body " ~
+            (bodyIndex + 1) ~ ". Ensure the body is a properly formed Onshape frame member.",
+            ["frameBodies"]);
+
+    return qNthElement(outerEdge, 0);
+}
+
+// Removes geometrically duplicate outer apex edges from the input array.
+//
+// When two selected frame bodies share a miter joint, each body contributes one outer apex
+// edge at the same world-space location.  This function retains only the first edge found
+// at each unique midpoint, ensuring exactly one Kirigami Bend Constructor is placed per
+// physical miter joint regardless of how many of the adjacent bodies are selected.
+//
+// Midpoint comparison uses tolerantEquals(Vector, Vector) from vector.fs, which applies
+// TOLERANCE.zeroLength for length vectors -- appropriate for edges that are truly coincident
+// (same miter cut) but not for edges that are merely close.
+//
+// @param context    : Active context.
+// @param outerEdges : Array of Query, one outer apex edge per cap face per selected body.
+// @returns array    : Deduplicated array of Query, one per unique joint location.
+function deduplicateApexEdgesByMidpoint(context is Context, outerEdges is array) returns array
+{
+    var uniqueEdges = [];
+    var seenMidpoints = [];
+
+    for (var edgeQuery in outerEdges)
+    {
+        const midpoint = evEdgeTangentLine(context, {
+                    "edge" : edgeQuery,
+                    "parameter" : 0.5
+                }).origin;
+
+        var isDuplicate = false;
+        for (var seenMidpoint in seenMidpoints)
+        {
+            if (tolerantEquals(midpoint, seenMidpoint))
+            {
+                isDuplicate = true;
+                break;
+            }
+        }
+
+        if (!isDuplicate)
+        {
+            uniqueEdges    = append(uniqueEdges,    edgeQuery);
+            seenMidpoints  = append(seenMidpoints,  midpoint);
+        }
+    }
+
+    return uniqueEdges;
 }
 
 // Builds a coordinate system centered on the midpoint of the given apex edge.
@@ -223,9 +348,9 @@ function buildApexCoordSystem(context is Context, id is Id, instanceIndex is num
 // FrameTopologyAttribute, using qHasAttributeWithValueMatching -- identical to the
 // qFrameTopology helper in frameUtils.fs that backs qFrameStartFace and qFrameEndFace.
 //
-// Because apex edges are only produced by findApexEdgesOnFrameBody, which already guarantees
-// that each edge borders at least one cap face, the empty-query guard here serves as a
-// safety check for unexpected topology rather than normal flow.
+// Because the apex edge is produced by findOuterApexEdgeForCapFace, which selects only
+// edges shared by a cap face and a swept face, the empty-query guard here is a safety
+// check for unexpected topology rather than normal flow.
 //
 // @param context       : Active context.
 // @param id            : Feature id used for error reporting.
