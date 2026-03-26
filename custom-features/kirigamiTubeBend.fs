@@ -3,8 +3,11 @@ import(path : "onshape/std/common.fs", version : "2909.0");
 import(path : "onshape/std/geomOperations.fs", version : "2909.0");
 import(path : "onshape/std/frameAttributes.fs", version : "2909.0");
 import(path : "onshape/std/frameUtils.fs", version : "2909.0");
-// External Part Studio: Kirigami Bend Constructor.  Provides the bend geometry that is
-// placed at each apex edge and later unfolded by the downstream flat-layout script.
+// External Part Studio: Kirigami Bend Constructor.  This is a template part studio whose
+// geometry represents the unfolded bend tab inserted at each miter joint.  One instance is
+// derived into the active studio per unique joint; the downstream flat-layout script locates
+// each instance via KirigamiBendAttribute and booleans the unfolded segments together for
+// laser-cut export.
 KirigamiBendConstructor::import(path : "1173cc57cdf5a7d688426b78", version : "d2c5a6c4ebd8f320a741122a");
 
 // Named key used when attaching KirigamiBendAttribute to instantiated bodies.
@@ -38,8 +41,10 @@ export predicate canBeKirigamiBendAttribute(value)
  * shared miter joint and places one Kirigami Bend Constructor instance there.
  *
  * A joint is eligible for a constructor only when ALL of the following hold:
- *   1. The cap face is an INTERNAL joint face (FrameTopologyAttribute.isFrameTerminus = false).
- *      Free-end terminus faces (isFrameTerminus = true) are skipped entirely.
+ *   1. The joint is SHARED: the same cap face midpoint must appear in the collected edges
+ *      of at least two selected bodies.  Free ends (cap faces with no counterpart on another
+ *      selected body) are automatically excluded because their midpoint is seen only once.
+ *      This also means the feature requires at least two bodies to be selected.
  *   2. The miter angle is non-zero: a 0-degree cut (cap face normal parallel to the tube
  *      axis) is a perpendicular butt joint that requires no kirigami geometry.
  *   3. The miter is a simple single-axis rotation: the component of the cap face normal
@@ -47,12 +52,18 @@ export predicate canBeKirigamiBendAttribute(value)
  *      normals.  Compound miters (rotation around two profile axes simultaneously) are not
  *      achievable with this flat-pattern technique and are skipped.
  *
+ * The isFrameTerminus flag is intentionally NOT used as an eligibility filter.  Terminus
+ * data reflects the frame's topology in the context of the entire frame network and can mark
+ * valid miter joints as terminus faces.  Shared-midpoint detection is the sole gate for
+ * determining whether a joint involves two selected bodies.
+ *
  * "Outer apex edge" is the Frame Unroll bounding-box edge at the extreme-Y extent of the
  * miter joint -- the fold line at maximum bend radius (the outside of the corner).
  *
- * When multiple selected bodies share a miter joint, each independently yields one outer
- * apex edge at the same world-space location.  Midpoint-based deduplication collapses those
- * to a single entry so exactly one constructor is placed per unique physical joint.
+ * Closed-ring topology (bodies forming a loop) is handled correctly: each joint midpoint
+ * appears exactly twice in the collected data (once per body at that joint), so every joint
+ * in the ring is included.  The first body in the selection order provides instance index 0,
+ * establishing the starting point of the sequence.
  *
  * The constructor is oriented so that:
  *   - the origin sits at the midpoint of the outer apex edge,
@@ -86,16 +97,18 @@ export const kirigamiTubeBend = defineFeature(function(context is Context, id is
         }
 
         const frameBodiesArray = evaluateQuery(context, definition.frameBodies);
-        if (size(frameBodiesArray) == 0)
-            throw regenError("Select at least one Onshape frame body.", ["frameBodies"]);
+        if (size(frameBodiesArray) < 2)
+            throw regenError("Select at least two touching Onshape frame bodies. " ~
+                "A single body has no shared joints with another selected body.", ["frameBodies"]);
 
         // Collect one outer apex edge per eligible cap face per body.
-        // Three filters are applied before collecting an edge:
-        //   - isFrameTerminus = false  (internal joint only, not a free end)
+        // Two geometry filters are applied before collecting an edge:
         //   - miter angle != 0         (non-perpendicular cut)
         //   - simple single-axis miter (no compound miters)
-        // After collection, midpoint deduplication removes the duplicate edge that arises
-        // when both bodies at a shared joint are selected.
+        // After collection, collectSharedApexEdges retains only those outer edges whose
+        // midpoints appear for at least two different bodies -- i.e., joints that are shared
+        // between two selected frame members.  Free ends and joints with non-selected bodies
+        // are silently discarded.  Closed rings are handled naturally.
         var allOuterEdges = [];
 
         for (var bodyIndex = 0; bodyIndex < size(frameBodiesArray); bodyIndex += 1)
@@ -110,15 +123,13 @@ export const kirigamiTubeBend = defineFeature(function(context is Context, id is
                     "Ensure all selected bodies were created with the Onshape Frame feature.",
                     ["frameBodies"]);
 
-            // Only internal joint cap faces.  Terminus (free-end) faces carry
-            // isFrameTerminus = true and are deliberately excluded.
-            const internalCapFaceQuery = qHasAttributeWithValueMatching(
+            // All cap faces on this body, regardless of isFrameTerminus.
+            // Terminus flags reflect network topology and can mark valid miter joints;
+            // shared-midpoint detection (done after the full loop) is the sole gate.
+            const allCapFaceQuery = qHasAttributeWithValueMatching(
                     qOwnedByBody(frameBody, EntityType.FACE),
                     FRAME_ATTRIBUTE_TOPOLOGY_NAME,
-                    { "topologyType" : FrameTopologyType.CAP_FACE, "isFrameTerminus" : false });
-
-            if (isQueryEmpty(context, internalCapFaceQuery))
-                continue; // Body has no joints with adjacent frame members (all free ends).
+                    { "topologyType" : FrameTopologyType.CAP_FACE });
 
             // Tube axis: the local sweep direction at this body, derived from two non-parallel
             // swept wall face normals via cross product.  No dependency on evLine or edge
@@ -133,11 +144,11 @@ export const kirigamiTubeBend = defineFeature(function(context is Context, id is
             if (tubeAxis == undefined)
                 continue; // Cannot determine tube axis (fewer than 2 non-parallel swept faces).
 
-            const internalCapFacesArray = evaluateQuery(context, internalCapFaceQuery);
+            const allCapFacesArray = evaluateQuery(context, allCapFaceQuery);
 
-            for (var capFaceIndex = 0; capFaceIndex < size(internalCapFacesArray); capFaceIndex += 1)
+            for (var capFaceIndex = 0; capFaceIndex < size(allCapFacesArray); capFaceIndex += 1)
             {
-                const capFace = internalCapFacesArray[capFaceIndex];
+                const capFace = allCapFacesArray[capFaceIndex];
                 const capFaceNormal = evFaceTangentPlane(context, {
                                 "face" : capFace,
                                 "parameter" : vector(0.5, 0.5)
@@ -162,17 +173,19 @@ export const kirigamiTubeBend = defineFeature(function(context is Context, id is
             }
         }
 
-        // Remove coincident outer edges that arise when two selected bodies share a miter joint.
-        // Each unique world-space midpoint represents one joint and therefore one import.
-        const uniqueOuterEdges = deduplicateApexEdgesByMidpoint(context, allOuterEdges);
+        // Retain only outer edges whose midpoints appear for at least two different bodies.
+        // This is the shared-joint gate: an edge seen once is a free end or a joint with a
+        // non-selected body; an edge seen twice is a joint between two selected bodies.
+        // Closed rings are handled correctly since each ring joint appears exactly twice.
+        const sharedOuterEdges = collectSharedApexEdges(context, allOuterEdges);
 
-        // Queue one KirigamiBendConstructor instance per unique outer apex edge.
+        // Queue one KirigamiBendConstructor instance per shared outer apex edge.
         const instantiator = newInstantiator(id + "bendConstructorInstances");
         var pendingInstances = [];
 
-        for (var instanceIndex = 0; instanceIndex < size(uniqueOuterEdges); instanceIndex += 1)
+        for (var instanceIndex = 0; instanceIndex < size(sharedOuterEdges); instanceIndex += 1)
         {
-            const apexEdge = uniqueOuterEdges[instanceIndex];
+            const apexEdge = sharedOuterEdges[instanceIndex];
             const apexCoordSystem = buildApexCoordSystem(context, id, instanceIndex, apexEdge);
 
             // toWorld(apexCoordSystem) is the Transform that carries geometry from the
@@ -272,6 +285,9 @@ function isCapFaceSimpleMiter(context is Context, sweptFacesArray is array,
 {
     // Component of the cap face normal in the plane perpendicular to the tube axis.
     // Referred to as the "transverse component" because it lies in the cross-section plane.
+    // This is a standard vector projection: v_perp = v - (v · axis) * axis.
+    // No standard library function exists for this specific plane-perpendicular projection;
+    // the inline form is used after confirming that ev*/q* functions do not cover this case.
     // For a simple single-axis miter this vector is parallel to exactly one swept wall face normal.
     const capFaceNormalTransverseComponent = capFaceNormal - dot(capFaceNormal, tubeAxis) * tubeAxis;
 
@@ -391,50 +407,111 @@ function findOuterApexEdgeForCapFace(context is Context, id is Id, bodyIndex is 
     return qNthElement(outerEdge, 0);
 }
 
-// Removes geometrically duplicate outer apex edges from the input array.
+// Collects only the outer apex edges whose midpoints appear for at least two different bodies.
 //
-// When two selected frame bodies share a miter joint, each body contributes one outer apex
-// edge at the same world-space location.  This function retains only the first edge found
-// at each unique midpoint, ensuring exactly one Kirigami Bend Constructor is placed per
-// physical miter joint regardless of how many of the adjacent bodies are selected.
+// This is the shared-joint gate.  After each body contributes its outer apex edges to the
+// combined array, this function:
+//   1. Pre-computes the world-space midpoint of every input edge (one evEdgeTangentLine call
+//      per edge, cached for all subsequent passes).
+//   2. Counts how many times each unique midpoint appears in the input.
+//   3. Returns the FIRST occurrence of every midpoint that appeared >= 2 times.
+//
+// An edge whose midpoint is seen exactly once belongs to a free end or to a joint with a
+// body that is not in the selection -- no constructor should be placed there.  An edge
+// whose midpoint is seen two or more times belongs to a joint shared by two selected bodies.
+//
+// Closed-ring topology (bodies forming a loop) is handled correctly: in a ring of N bodies
+// every joint appears exactly twice, so all N joints are included.  The first body in
+// frameBodiesArray contributes the first joint(s), which naturally receive the lowest
+// instance indices, establishing the selection-order starting point of the sequence.
 //
 // Midpoint comparison uses tolerantEquals(Vector, Vector) from vector.fs, which applies
 // TOLERANCE.zeroLength for length vectors -- appropriate for edges that are truly coincident
 // (same miter cut) but not for edges that are merely close.
 //
 // @param context    : Active context.
-// @param outerEdges : Array of Query, one outer apex edge per cap face per selected body.
-// @returns array    : Deduplicated array of Query, one per unique joint location.
-function deduplicateApexEdgesByMidpoint(context is Context, outerEdges is array) returns array
+// @param outerEdges : Array of Query, one outer apex edge per eligible cap face per body.
+// @returns array    : Array of Query, one per joint shared between at least two selected bodies.
+function collectSharedApexEdges(context is Context, outerEdges is array) returns array
 {
-    var uniqueEdges = [];
-    var seenMidpoints = [];
-
+    // Pre-compute all midpoints once to avoid redundant evEdgeTangentLine calls in later passes.
+    var midpoints = [];
     for (var edgeQuery in outerEdges)
     {
-        const midpoint = evEdgeTangentLine(context, {
-                    "edge" : edgeQuery,
-                    "parameter" : 0.5
-                }).origin;
+        midpoints = append(midpoints, evEdgeTangentLine(context, {
+                        "edge" : edgeQuery,
+                        "parameter" : 0.5
+                    }).origin);
+    }
 
-        var isDuplicate = false;
-        for (var seenMidpoint in seenMidpoints)
+    // Pass 1: count unique midpoints.
+    // uniqueMidpoints holds one entry per distinct world-space location;
+    // uniqueCounts holds the corresponding occurrence count.
+    var uniqueMidpoints = [];
+    var uniqueCounts    = [];
+
+    for (var edgeIndex = 0; edgeIndex < size(midpoints); edgeIndex += 1)
+    {
+        const midpoint = midpoints[edgeIndex];
+        var foundIndex = -1;
+        for (var uniqueMidpointIndex = 0; uniqueMidpointIndex < size(uniqueMidpoints); uniqueMidpointIndex += 1)
         {
-            if (tolerantEquals(midpoint, seenMidpoint))
+            if (tolerantEquals(midpoint, uniqueMidpoints[uniqueMidpointIndex]))
             {
-                isDuplicate = true;
+                foundIndex = uniqueMidpointIndex;
                 break;
             }
         }
 
-        if (!isDuplicate)
+        if (foundIndex == -1)
         {
-            uniqueEdges    = append(uniqueEdges,    edgeQuery);
-            seenMidpoints  = append(seenMidpoints,  midpoint);
+            uniqueMidpoints = append(uniqueMidpoints, midpoint);
+            uniqueCounts    = append(uniqueCounts,    1);
+        }
+        else
+        {
+            uniqueCounts[foundIndex] = uniqueCounts[foundIndex] + 1;
         }
     }
 
-    return uniqueEdges;
+    // Pass 2: emit the first occurrence of each midpoint that appeared >= 2 times.
+    // Iteration is over the pre-computed midpoints array to avoid re-evaluating evEdgeTangentLine.
+    var sharedEdges      = [];
+    var claimedMidpoints = [];
+
+    for (var edgeIndex = 0; edgeIndex < size(midpoints); edgeIndex += 1)
+    {
+        const midpoint = midpoints[edgeIndex];
+
+        // Skip if we already emitted an edge for this midpoint.
+        var alreadyClaimed = false;
+        for (var claimedMidpoint in claimedMidpoints)
+        {
+            if (tolerantEquals(midpoint, claimedMidpoint))
+            {
+                alreadyClaimed = true;
+                break;
+            }
+        }
+        if (alreadyClaimed)
+            continue;
+
+        // Look up the count and emit if shared.
+        for (var uniqueMidpointIndex = 0; uniqueMidpointIndex < size(uniqueMidpoints); uniqueMidpointIndex += 1)
+        {
+            if (tolerantEquals(midpoint, uniqueMidpoints[uniqueMidpointIndex]))
+            {
+                if (uniqueCounts[uniqueMidpointIndex] >= 2)
+                {
+                    sharedEdges      = append(sharedEdges,      outerEdges[edgeIndex]);
+                    claimedMidpoints = append(claimedMidpoints, midpoint);
+                }
+                break;
+            }
+        }
+    }
+
+    return sharedEdges;
 }
 
 // Builds a stable coordinate system centered on the midpoint of the given apex edge.
