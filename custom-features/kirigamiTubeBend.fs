@@ -18,7 +18,8 @@ const KIRIGAMI_BEND_ATTRIBUTE_NAME = "kirigamiBendData";
  * Fields:
  *   instanceIndex {number} : Zero-based counter across all apex edges of all selected bodies.
  *   apexOrigin    {Vector} : World-space midpoint of the apex edge (origin of the local frame).
- *   zAxis         {Vector} : Edge tangent direction -- local Z, runs along the fold line.
+ *   zAxis         {Vector} : Fold-line direction -- local Z, along the outer apex edge,
+ *                            derived as cross(capFaceNormal, outerWallNormal).
  *   xAxis         {Vector} : Miter cap face outward normal -- local X, perpendicular to the fold plane.
  */
 export type KirigamiBendAttribute typecheck canBeKirigamiBendAttribute;
@@ -33,28 +34,37 @@ export predicate canBeKirigamiBendAttribute(value)
 }
 
 /**
- * For each selected Onshape frame body, automatically locates the single outer apex edge
- * at each mitered end face and places one Kirigami Bend Constructor instance there.
+ * For each selected Onshape frame body, locates the single outer apex edge at every
+ * shared miter joint and places one Kirigami Bend Constructor instance there.
  *
- * "Outer apex edge" is defined the same way Neil Cooke's Frame Unroll feature defines it:
- * the edge at the outermost extent of the miter joint, found by building a local bounding
- * box and selecting the edge that coincides with the extreme Y plane of that box.  This is
- * the fold line at the outside of the bend (maximum bend radius).
+ * A joint is eligible for a constructor only when ALL of the following hold:
+ *   1. The cap face is an INTERNAL joint face (FrameTopologyAttribute.isFrameTerminus = false).
+ *      Free-end terminus faces (isFrameTerminus = true) are skipped entirely.
+ *   2. The miter angle is non-zero: a 0-degree cut (cap face normal parallel to the tube
+ *      axis) is a perpendicular butt joint that requires no kirigami geometry.
+ *   3. The miter is a simple single-axis rotation: the component of the cap face normal
+ *      perpendicular to the tube axis must be parallel to one of the tube's swept wall face
+ *      normals.  Compound miters (rotation around two profile axes simultaneously) are not
+ *      achievable with this flat-pattern technique and are skipped.
  *
- * When multiple selected bodies share a miter joint, both contribute an outer apex edge at
- * the same world-space position.  Those duplicates are collapsed to a single import so
- * exactly one Kirigami Bend Constructor is placed per unique joint location.
+ * "Outer apex edge" is the Frame Unroll bounding-box edge at the extreme-Y extent of the
+ * miter joint -- the fold line at maximum bend radius (the outside of the corner).
+ *
+ * When multiple selected bodies share a miter joint, each independently yields one outer
+ * apex edge at the same world-space location.  Midpoint-based deduplication collapses those
+ * to a single entry so exactly one constructor is placed per unique physical joint.
  *
  * The constructor is oriented so that:
- *   - the local origin sits at the midpoint of the outer apex edge,
- *   - the local Z axis runs along the edge tangent direction, and
- *   - the local X axis aligns with the outward normal of the adjacent frame cap face.
+ *   - the origin sits at the midpoint of the outer apex edge,
+ *   - the X axis is the outward normal of the miter (cap) face, and
+ *   - the Z axis is cross(capFaceNormal, outerWallNormal) -- the fold-line direction derived
+ *     entirely from stable, outward-pointing face normals, with no dependency on B-rep edge
+ *     orientation (which can flip).
  *
- * Each placed body is tagged with a KirigamiBendAttribute for downstream flat-layout export.
  * Composite frame bodies are automatically unpacked to their constituent solid segments.
  */
 annotation { "Feature Type Name" : "Kirigami Tube Bend",
-             "Feature Type Description" : "Finds the outer apex edge at every mitered joint on selected Onshape frame bodies and places one Kirigami Bend Constructor per unique joint." }
+             "Feature Type Description" : "Places one Kirigami Bend Constructor at the outer apex edge of each shared, non-zero, single-axis miter joint on the selected Onshape frame bodies." }
 export const kirigamiTubeBend = defineFeature(function(context is Context, id is Id, definition is map)
     precondition
     {
@@ -79,32 +89,75 @@ export const kirigamiTubeBend = defineFeature(function(context is Context, id is
         if (size(frameBodiesArray) == 0)
             throw regenError("Select at least one Onshape frame body.", ["frameBodies"]);
 
-        // Collect exactly one outer apex edge per cap face per body.
-        // A rectangular box tube has two cap faces (one at each mitered end), so this yields
-        // at most two outer edges per body.  When two selected bodies share a miter joint each
-        // contributes its own outer edge at the same world position -- deduplication below
-        // collapses those to a single entry.
+        // Collect one outer apex edge per eligible cap face per body.
+        // Three filters are applied before collecting an edge:
+        //   - isFrameTerminus = false  (internal joint only, not a free end)
+        //   - miter angle != 0         (non-perpendicular cut)
+        //   - simple single-axis miter (no compound miters)
+        // After collection, midpoint deduplication removes the duplicate edge that arises
+        // when both bodies at a shared joint are selected.
         var allOuterEdges = [];
 
         for (var bodyIndex = 0; bodyIndex < size(frameBodiesArray); bodyIndex += 1)
         {
             const frameBody = frameBodiesArray[bodyIndex];
-            const capFaceQuery = qHasAttributeWithValueMatching(
-                    qOwnedByBody(frameBody, EntityType.FACE),
-                    FRAME_ATTRIBUTE_TOPOLOGY_NAME,
-                    { "topologyType" : FrameTopologyType.CAP_FACE });
 
-            if (isQueryEmpty(context, capFaceQuery))
+            if (isQueryEmpty(context, qHasAttributeWithValueMatching(
+                        qOwnedByBody(frameBody, EntityType.FACE),
+                        FRAME_ATTRIBUTE_TOPOLOGY_NAME,
+                        { "topologyType" : FrameTopologyType.CAP_FACE })))
                 throw regenError("Frame body " ~ (bodyIndex + 1) ~ " has no cap faces. " ~
                     "Ensure all selected bodies were created with the Onshape Frame feature.",
                     ["frameBodies"]);
 
-            const capFacesArray = evaluateQuery(context, capFaceQuery);
+            // Only internal joint cap faces.  Terminus (free-end) faces carry
+            // isFrameTerminus = true and are deliberately excluded.
+            const internalCapFaceQuery = qHasAttributeWithValueMatching(
+                    qOwnedByBody(frameBody, EntityType.FACE),
+                    FRAME_ATTRIBUTE_TOPOLOGY_NAME,
+                    { "topologyType" : FrameTopologyType.CAP_FACE, "isFrameTerminus" : false });
 
-            for (var capFaceIndex = 0; capFaceIndex < size(capFacesArray); capFaceIndex += 1)
+            if (isQueryEmpty(context, internalCapFaceQuery))
+                continue; // Body has no joints with adjacent frame members (all free ends).
+
+            // Tube axis: the local sweep direction at this body, derived from two non-parallel
+            // swept wall face normals via cross product.  No dependency on evLine or edge
+            // B-rep orientation.  NOTE: qAdjacent does not work across bodies; all queries
+            // here stay strictly within frameBody.
+            const sweptFacesArray = evaluateQuery(context, qHasAttributeWithValueMatching(
+                        qOwnedByBody(frameBody, EntityType.FACE),
+                        FRAME_ATTRIBUTE_TOPOLOGY_NAME,
+                        { "topologyType" : FrameTopologyType.SWEPT_FACE }));
+
+            const tubeAxis = getTubeAxisFromSweptFaces(context, sweptFacesArray);
+            if (tubeAxis == undefined)
+                continue; // Cannot determine tube axis (fewer than 2 non-parallel swept faces).
+
+            const internalCapFacesArray = evaluateQuery(context, internalCapFaceQuery);
+
+            for (var capFaceIndex = 0; capFaceIndex < size(internalCapFacesArray); capFaceIndex += 1)
             {
+                const capFace = internalCapFacesArray[capFaceIndex];
+                const capFaceNormal = evFaceTangentPlane(context, {
+                                "face" : capFace,
+                                "parameter" : vector(0.5, 0.5)
+                            }).normal;
+
+                // Skip 0-degree (perpendicular) cuts: cap face normal parallel to tube axis
+                // means no miter tilt, so no kirigami geometry is needed.
+                if (parallelVectors(capFaceNormal, tubeAxis))
+                    continue;
+
+                // Skip compound miters: the projection of the cap face normal onto the plane
+                // perpendicular to the tube axis must be parallel to one of the swept wall
+                // face normals (one primary profile axis).  If it is not, the miter tilts
+                // around two profile axes simultaneously and cannot be produced by this
+                // flat-pattern technique.
+                if (!isCapFaceSimpleMiter(context, sweptFacesArray, capFaceNormal, tubeAxis))
+                    continue;
+
                 const outerEdge = findOuterApexEdgeForCapFace(context, id, bodyIndex,
-                        frameBody, capFacesArray[capFaceIndex]);
+                        frameBody, capFace);
                 allOuterEdges = append(allOuterEdges, outerEdge);
             }
         }
@@ -155,6 +208,86 @@ export const kirigamiTubeBend = defineFeature(function(context is Context, id is
                     });
         }
     });
+
+// Derives the tube sweep axis direction from the normals of two non-parallel swept wall faces.
+//
+// For a straight box tube the swept wall faces are planar, and any two adjacent (non-opposite)
+// faces have normals that are both perpendicular to the tube axis.  Their cross product is
+// therefore parallel to the tube axis.  This approach requires no evLine call on swept edges
+// and is independent of edge B-rep orientation.
+//
+// If all swept face normals are parallel (degenerate profile, or a single-face round tube)
+// the function returns undefined and the caller should skip the body.
+//
+// NOTE: The caller must ensure that sweptFacesArray contains queries for faces on a single
+// body only -- qAdjacent does not cross body boundaries, and the face normals are meaningful
+// only within the context of their own solid.
+//
+// @param context          : Active context.
+// @param sweptFacesArray  : Array of Query, each resolving to one SWEPT_FACE on the body.
+// @returns Vector (direction) or undefined if the tube axis cannot be determined.
+function getTubeAxisFromSweptFaces(context is Context, sweptFacesArray is array)
+{
+    if (size(sweptFacesArray) < 2)
+        return undefined;
+
+    const firstNormal = evFaceTangentPlane(context, {
+                "face" : sweptFacesArray[0],
+                "parameter" : vector(0.5, 0.5)
+            }).normal;
+
+    for (var faceIndex = 1; faceIndex < size(sweptFacesArray); faceIndex += 1)
+    {
+        const otherNormal = evFaceTangentPlane(context, {
+                    "face" : sweptFacesArray[faceIndex],
+                    "parameter" : vector(0.5, 0.5)
+                }).normal;
+
+        if (!parallelVectors(firstNormal, otherNormal))
+            return normalize(cross(firstNormal, otherNormal));
+    }
+
+    return undefined; // All swept face normals are parallel -- cannot determine tube axis.
+}
+
+// Returns true if the given cap face represents a simple single-axis miter.
+//
+// A simple miter is a rotation of the cut plane around exactly ONE of the tube's primary
+// cross-section axes.  For a box tube those axes are the outward normals of the swept wall
+// faces.  The test is: project the cap face normal onto the plane perpendicular to the tube
+// axis; if the resulting vector is parallel to any swept wall face normal, the miter is
+// a single-axis rotation.  If not, the cut is tilted around two profile axes simultaneously
+// (a compound miter), which cannot be produced by this flat-pattern kirigami technique.
+//
+// Pre-condition: capFaceNormal must NOT be parallel to tubeAxis (0-degree cut case must be
+// filtered before calling this function; the perpendicular projection would be near-zero).
+//
+// @param context          : Active context.
+// @param sweptFacesArray  : Array of Query for the SWEPT_FACEs of the same body as capFace.
+// @param capFaceNormal    : Outward normal of the cap face (dimensionless direction vector).
+// @param tubeAxis         : Tube sweep direction (dimensionless direction vector).
+// @returns boolean
+function isCapFaceSimpleMiter(context is Context, sweptFacesArray is array,
+    capFaceNormal is Vector, tubeAxis is Vector) returns boolean
+{
+    // Component of the cap face normal in the plane perpendicular to the tube axis.
+    // Referred to as the "transverse component" because it lies in the cross-section plane.
+    // For a simple single-axis miter this vector is parallel to exactly one swept wall face normal.
+    const capFaceNormalTransverseComponent = capFaceNormal - dot(capFaceNormal, tubeAxis) * tubeAxis;
+
+    for (var faceIndex = 0; faceIndex < size(sweptFacesArray); faceIndex += 1)
+    {
+        const sweptFaceNormal = evFaceTangentPlane(context, {
+                    "face" : sweptFacesArray[faceIndex],
+                    "parameter" : vector(0.5, 0.5)
+                }).normal;
+
+        if (parallelVectors(capFaceNormalTransverseComponent, sweptFaceNormal))
+            return true;
+    }
+
+    return false;
+}
 
 // Finds the single outer apex edge on one cap face of a frame body.
 //
@@ -304,42 +437,89 @@ function deduplicateApexEdgesByMidpoint(context is Context, outerEdges is array)
     return uniqueEdges;
 }
 
-// Builds a coordinate system centered on the midpoint of the given apex edge.
+// Builds a stable coordinate system centered on the midpoint of the given apex edge.
 //
-// The local frame is defined as:
-//   origin : world-space midpoint of the apex edge
-//   Z axis : edge tangent direction at the midpoint (runs along the fold line)
-//   X axis : outward normal of the adjacent frame cap face (the mitered end face)
+// Axis convention:
+//   origin : world-space midpoint of the outer apex edge
+//   X axis : outward normal of the adjacent cap (miter) face
+//   Z axis : cross(capFaceNormal, outerWallNormal) -- direction along the fold line
+//   Y axis : implied by the right-hand rule (cross(Z, X))
+//
+// Stability guarantee: both the X and Z axes are derived exclusively from outward face
+// normals returned by evFaceTangentPlane, which always gives the outward-pointing normal
+// for a solid face and is entirely independent of B-rep edge orientation.  The previous
+// implementation used evEdgeTangentLine.direction for the Z axis; that tangent can be
+// returned in either direction (+/-) depending on how the edge happens to be stored in the
+// B-rep, causing intermittent CSYS flips.  Replacing it with cross(capFaceNormal, outerWallNormal)
+// removes that dependency: both inputs are stable face normals, so the cross product is
+// deterministic for any given geometry.
+//
+// cross(capFaceNormal, outerWallNormal) is always perpendicular to capFaceNormal
+// (by the definition of the cross product), satisfying the coordSystem precondition that
+// xAxis and zAxis must be mutually perpendicular.
 //
 // @param context       : Active context.
 // @param id            : Feature id, passed through for error reporting in sub-calls.
 // @param instanceIndex : Global instance counter (for error messages and instance naming).
-// @param apexEdge      : Query resolving to a single apex edge on a mitered frame body.
-// @returns CoordSystem aligned to the local miter geometry at the apex edge midpoint.
+// @param apexEdge      : Query resolving to a single outer apex edge on a mitered frame body.
+// @returns CoordSystem aligned to the miter joint at the outer apex edge midpoint.
 function buildApexCoordSystem(context is Context, id is Id, instanceIndex is number, apexEdge is Query) returns CoordSystem
 {
-    // Evaluate the edge midpoint (origin) and tangent direction (Z axis).
-    const edgeMidpointLine = evEdgeTangentLine(context, {
+    // Origin: world-space midpoint of the outer apex edge.
+    const edgeMidpoint = evEdgeTangentLine(context, {
                 "edge" : apexEdge,
                 "parameter" : 0.5
-            });
-    const edgeMidpoint       = edgeMidpointLine.origin;
-    const edgeTangentDirection = edgeMidpointLine.direction;
+            }).origin;
 
-    // Identify the miter end face via FrameTopologyAttribute -- no geometric heuristics.
-    const miterFace = findCapFaceAdjacentToApexEdge(context, id, instanceIndex, apexEdge);
+    // Identify the two faces bordering the outer apex edge.
+    const miterFace    = findCapFaceAdjacentToApexEdge(context, id, instanceIndex, apexEdge);
+    const outerWallFace = findSweptFaceAdjacentToApexEdge(context, id, instanceIndex, apexEdge);
 
-    // Sample the cap face normal at the exact edge midpoint location.
-    // evFaceTangentPlaneAtEdge evaluates the normal at a specific edge parameter rather than
-    // at an arbitrary interior UV parameter of the face, keeping the frame axes consistent.
-    const miterFacePlane = evFaceTangentPlaneAtEdge(context, {
-                "edge" : apexEdge,
+    // X axis: outward normal of the miter (cap) face.
+    // For a planar face the normal is constant at any UV parameter, so (0.5, 0.5) is safe.
+    const capFaceNormal = evFaceTangentPlane(context, {
                 "face" : miterFace,
-                "parameter" : 0.5
-            });
-    const xAxisDirection = miterFacePlane.normal;
+                "parameter" : vector(0.5, 0.5)
+            }).normal;
 
-    return coordSystem(edgeMidpoint, xAxisDirection, edgeTangentDirection);
+    // Z axis: direction along the outer apex edge (the fold line).
+    // Derived from the cross product of the two outward face normals bounding that edge.
+    // cross(capFaceNormal, outerWallNormal) lies at the intersection of the two face planes
+    // (which is exactly the outer apex edge) and is determined entirely by stable face normals.
+    const outerWallNormal = evFaceTangentPlane(context, {
+                "face" : outerWallFace,
+                "parameter" : vector(0.5, 0.5)
+            }).normal;
+
+    const foldLineDirection = normalize(cross(capFaceNormal, outerWallNormal));
+
+    return coordSystem(edgeMidpoint, capFaceNormal, foldLineDirection);
+}
+
+// Finds the swept wall face (SWEPT_FACE) adjacent to a single outer apex edge.
+//
+// The outer apex edge is bounded by exactly two faces: the cap face on one side and
+// the swept (tube wall) face on the other.  This function retrieves the swept face by
+// filtering the edge's adjacent faces to those carrying a SWEPT_FACE attribute.
+//
+// @param context       : Active context.
+// @param id            : Feature id used for error reporting.
+// @param instanceIndex : Global instance counter (for error messages).
+// @param apexEdge      : Query resolving to a single outer apex edge on a mitered frame body.
+// @returns Query       : The swept wall face adjacent to the apex edge.
+function findSweptFaceAdjacentToApexEdge(context is Context, id is Id, instanceIndex is number, apexEdge is Query) returns Query
+{
+    const adjacentFaces = qAdjacent(apexEdge, AdjacencyType.EDGE, EntityType.FACE);
+    const sweptWallFaceQuery = qHasAttributeWithValueMatching(adjacentFaces,
+            FRAME_ATTRIBUTE_TOPOLOGY_NAME,
+            { "topologyType" : FrameTopologyType.SWEPT_FACE });
+
+    if (isQueryEmpty(context, sweptWallFaceQuery))
+        throw regenError("Instance " ~ (instanceIndex + 1) ~ ": outer apex edge has no adjacent swept wall face. " ~
+            "Unexpected topology -- ensure the selected body is an unmodified Onshape frame member.",
+            ["frameBodies"]);
+
+    return qNthElement(sweptWallFaceQuery, 0);
 }
 
 // Finds the frame cap face (mitered end face) adjacent to a single apex edge.
