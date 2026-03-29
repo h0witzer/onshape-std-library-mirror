@@ -217,6 +217,13 @@ export const kirigamiTubeBend = defineFeature(function(context is Context, id is
         const instantiator = newInstantiator(id + "bendConstructorInstances");
         var pendingInstances = [];
 
+        // The offset to the interior sweep line depends only on the frame profile dimensions
+        // (wall thickness).  All selected frame bodies are assumed to share the same profile,
+        // as required for a valid kirigami strip (mismatched profiles would produce incorrect
+        // geometry regardless).  Compute the offset once from the first joint and reuse the
+        // cached value for all subsequent joints to avoid redundant geometry evaluations.
+        var cachedOffsetToInteriorSweepLine = undefined;
+
         for (var instanceIndex = 0; instanceIndex < size(sharedJoints); instanceIndex += 1)
         {
             const jointData = sharedJoints[instanceIndex];
@@ -231,8 +238,10 @@ export const kirigamiTubeBend = defineFeature(function(context is Context, id is
             // Distance from the outer wall face to the nearest longitudinal sweep edge on a
             // top/bottom swept face (normal parallel to local Z).  For a hollow tube this equals
             // the wall thickness measured perpendicular to both the tube axis and the fold line.
-            const offsetToInteriorSweepLine = computeOffsetToInteriorSweepLine(context,
-                    jointData.frameBody, jointData.tubeAxis, apexCoordSystem, apexEdge);
+            // Computed only for the first joint; all subsequent joints reuse the cached value.
+            if (cachedOffsetToInteriorSweepLine == undefined)
+                cachedOffsetToInteriorSweepLine = computeOffsetToInteriorSweepLine(context,
+                        jointData.frameBody, jointData.tubeAxis, apexCoordSystem, apexEdge);
 
             // toWorld(apexCoordSystem) is the Transform that carries geometry from the
             // constructor's local origin to the correct world-space position and orientation.
@@ -242,7 +251,7 @@ export const kirigamiTubeBend = defineFeature(function(context is Context, id is
                             "boxTubeWidth"             : jointDimensions.boxTubeWidth,
                             "miterAngle"               : jointDimensions.miterAngle,
                             "bendOutsideRadius"        : definition.bendOutsideRadius,
-                            "offsetToInteriorSweepLine": offsetToInteriorSweepLine
+                            "offsetToInteriorSweepLine": cachedOffsetToInteriorSweepLine
                         },
                         "transform" : toWorld(apexCoordSystem),
                         "name" : "bend" ~ instanceIndex
@@ -256,7 +265,7 @@ export const kirigamiTubeBend = defineFeature(function(context is Context, id is
                         "boxTubeWidth"             : jointDimensions.boxTubeWidth,
                         "miterAngle"               : jointDimensions.miterAngle,
                         "bendOutsideRadius"        : definition.bendOutsideRadius,
-                        "offsetToInteriorSweepLine": offsetToInteriorSweepLine
+                        "offsetToInteriorSweepLine": cachedOffsetToInteriorSweepLine
                     });
         }
 
@@ -846,15 +855,34 @@ function computeJointDimensions(context is Context, frameBody is Query, tubeAxis
 {
     // --- Cross-section bounding box ---
     // The fold-line direction is apexCoordSystem.zAxis: cross(capFaceNormal, outerWallNormal).
-    // For a simple single-axis miter this is always perpendicular to tubeAxis, so it is a
-    // valid axis for measuring the tube cross-section without mixing in the sweep direction.
+    // For a simple single-axis miter on a standard box tube this direction is perpendicular
+    // to tubeAxis.  When the Frame feature has no reference face assigned, the outer wall
+    // face normal used to compute foldLineDirection may not be exactly perpendicular to
+    // tubeAxis, causing coordSystem to fail its perpendicularVectors precondition.
+    // Projecting foldLineDirection onto the plane perpendicular to tubeAxis removes any
+    // tubeAxis component and guarantees orthogonality.  For ideal geometry the projection
+    // is a no-op (the component to remove is zero).
     const foldLineDirection = apexCoordSystem.zAxis;
 
+    // Remove any tubeAxis component from foldLineDirection so the result is guaranteed to lie
+    // in the cross-section plane.  For standard single-axis mitered box tube geometry this
+    // component is zero and the subtraction is a no-op.
+    const foldLineProjection = foldLineDirection - dot(foldLineDirection, tubeAxis) * tubeAxis;
+
+    // Guard against the degenerate case where foldLineDirection is parallel to tubeAxis.
+    // This would make the projection a zero vector and normalize() undefined.
+    if (parallelVectors(foldLineDirection, tubeAxis))
+        throw regenError("Cannot compute joint cross-section dimensions: the fold-line " ~
+            "direction is parallel to the tube sweep axis. Verify that all selected bodies " ~
+            "are Onshape frame members with valid single-axis miter joints.", ["frameBodies"]);
+
+    const foldLineInCrossSection = normalize(foldLineProjection);
+
     // Build an evaluation frame where:
-    //   X axis = foldLineDirection  (local joint csys Z, the BoxTubeHeight direction)
-    //   Z axis = tubeAxis           (sweep direction, gives the tube length extent -- discarded)
-    //   Y axis = cross(Z, X) = cross(tubeAxis, foldLineDirection)  (BoxTubeWidth direction)
-    const crossSectionCS = coordSystem(WORLD_ORIGIN, foldLineDirection, tubeAxis);
+    //   X axis = foldLineInCrossSection  (local joint csys Z, the BoxTubeHeight direction)
+    //   Z axis = tubeAxis                (sweep direction, gives the tube length extent -- discarded)
+    //   Y axis = cross(Z, X) = cross(tubeAxis, foldLineInCrossSection)  (BoxTubeWidth direction)
+    const crossSectionCS = coordSystem(WORLD_ORIGIN, foldLineInCrossSection, tubeAxis);
 
     const crossSectionBoundingBox = evBox3d(context, {
                 "topology" : frameBody,
@@ -862,8 +890,8 @@ function computeJointDimensions(context is Context, frameBody is Query, tubeAxis
                 "tight"    : true
             });
 
-    // X extent (index 0): dimension along foldLineDirection = local joint csys Z = BoxTubeHeight.
-    // Y extent (index 1): dimension along cross(tubeAxis, foldLineDirection)  = BoxTubeWidth.
+    // X extent (index 0): dimension along foldLineInCrossSection = local joint csys Z = BoxTubeHeight.
+    // Y extent (index 1): dimension along cross(tubeAxis, foldLineInCrossSection) = BoxTubeWidth.
     const boxTubeHeight = crossSectionBoundingBox.maxCorner[0] - crossSectionBoundingBox.minCorner[0];
     const boxTubeWidth  = crossSectionBoundingBox.maxCorner[1] - crossSectionBoundingBox.minCorner[1];
 
