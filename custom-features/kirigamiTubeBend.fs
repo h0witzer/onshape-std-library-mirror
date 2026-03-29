@@ -543,13 +543,18 @@ function collectSharedApexEdges(context is Context, outerEdgeData is array, tota
         }
     }
 
-    // Cycle detection: a pure closed ring exists when every selected body has degree 2 in the
-    // joint graph (each body participates in exactly two shared joints).
     // Cycle detection: a pure closed ring exists when:
     //   a) The number of shared joints equals the number of selected bodies (N joints for N bodies).
     //   b) Every selected body has degree 2 in the joint graph (participates in exactly two
     //      shared joints).  A body with degree 0 has no neighbours in the selection (isolated),
     //      and a body with degree 1 is a chain endpoint.  Either prevents a pure cycle.
+    var bodyDegrees = makeArray(totalBodyCount, 0);
+    for (var pair in sharedEdgeBodyPairs)
+    {
+        for (var contributingBodyIndex in pair)
+            bodyDegrees[contributingBodyIndex] = bodyDegrees[contributingBodyIndex] + 1;
+    }
+
     var isPureCycle = (size(sharedEdgeQueries) == totalBodyCount);
     if (isPureCycle)
     {
