@@ -702,6 +702,28 @@ function collectSharedApexEdges(context is Context, outerEdgeData is array, tota
     return cycleOrderedJoints;
 }
 
+// Projects foldLineDirection onto the plane perpendicular to tubeAxis.
+//
+// When a frame body is created without a reference face, the outer wall face normal used
+// in buildApexCoordSystem may carry a small floating-point component along tubeAxis.
+// Because foldLineDirection = cross(capFaceNormal, outerWallNormal), that component
+// propagates into foldLineDirection.  Swept face normals are exactly perpendicular to
+// tubeAxis, so parallelVectors(sweptFaceNormal, rawFoldLine) fails when that spurious
+// component exceeds TOLERANCE.zeroAngle.  Projecting onto the cross-section plane removes
+// the component and restores the correct match.  For ideal geometry the projected component
+// is exactly zero and the operation is a no-op.
+//
+// Pre-condition: foldLineDirection must not be parallel to tubeAxis (this is guaranteed by
+// the isCapFaceSimpleMiter filter applied before any apex edge is accepted).
+//
+// @param foldLineDirection : Raw fold-line direction from apexCoordSystem.zAxis (unit vector).
+// @param tubeAxis          : Tube sweep direction (dimensionless unit vector).
+// @returns Vector (unit) : foldLineDirection with its tubeAxis component removed and re-normalized.
+function projectFoldLineOntoCrossSection(foldLineDirection is Vector, tubeAxis is Vector) returns Vector
+{
+    return normalize(foldLineDirection - dot(foldLineDirection, tubeAxis) * tubeAxis);
+}
+
 // Builds a stable coordinate system centered on the midpoint of the given apex edge.
 //
 // Axis convention:
@@ -859,24 +881,19 @@ function computeJointDimensions(context is Context, frameBody is Query, tubeAxis
     // to tubeAxis.  When the Frame feature has no reference face assigned, the outer wall
     // face normal used to compute foldLineDirection may not be exactly perpendicular to
     // tubeAxis, causing coordSystem to fail its perpendicularVectors precondition.
-    // Projecting foldLineDirection onto the plane perpendicular to tubeAxis removes any
-    // tubeAxis component and guarantees orthogonality.  For ideal geometry the projection
-    // is a no-op (the component to remove is zero).
+    // projectFoldLineOntoCrossSection removes any tubeAxis component and guarantees
+    // orthogonality.  For ideal geometry the projection is a no-op.
     const foldLineDirection = apexCoordSystem.zAxis;
 
-    // Remove any tubeAxis component from foldLineDirection so the result is guaranteed to lie
-    // in the cross-section plane.  For standard single-axis mitered box tube geometry this
-    // component is zero and the subtraction is a no-op.
-    const foldLineProjection = foldLineDirection - dot(foldLineDirection, tubeAxis) * tubeAxis;
-
     // Guard against the degenerate case where foldLineDirection is parallel to tubeAxis.
-    // This would make the projection a zero vector and normalize() undefined.
+    // projectFoldLineOntoCrossSection normalizes the projection; if foldLineDirection were
+    // parallel to tubeAxis the projected vector would be zero and normalize() undefined.
     if (parallelVectors(foldLineDirection, tubeAxis))
         throw regenError("Cannot compute joint cross-section dimensions: the fold-line " ~
             "direction is parallel to the tube sweep axis. Verify that all selected bodies " ~
             "are Onshape frame members with valid single-axis miter joints.", ["frameBodies"]);
 
-    const foldLineInCrossSection = normalize(foldLineProjection);
+    const foldLineInCrossSection = projectFoldLineOntoCrossSection(foldLineDirection, tubeAxis);
 
     // Build an evaluation frame where:
     //   X axis = foldLineInCrossSection  (local joint csys Z, the BoxTubeHeight direction)
@@ -915,12 +932,14 @@ function computeJointDimensions(context is Context, frameBody is Query, tubeAxis
 
 // Computes the perpendicular distance from the outer wall face to the nearest longitudinal
 // sweep edge that borders a swept face whose outward normal is parallel to the fold-line
-// direction (apexCoordSystem.zAxis).  These are the "top" and "bottom" faces in the local
-// joint coordinate system.
+// direction projected onto the cross-section plane (perpendicular to tubeAxis).
+// These are the "top" and "bottom" faces in the local joint coordinate system.
 //
 // Geometry:
 //   - The outer wall face is the SWEPT_FACE adjacent to the outer apex edge.
 //   - "Top/bottom faces" are swept faces where parallelVectors(faceNormal, foldLine) is true.
+//     foldLine is apexCoordSystem.zAxis projected perpendicular to tubeAxis to guarantee
+//     it lies in the cross-section plane, matching the exactly-perpendicular swept face normals.
 //   - "Longitudinal sweep edges" on those faces are edges whose tangent is parallel to tubeAxis.
 //   - Edges already shared with the outer wall face are at distance zero (outer corner edges)
 //     and are excluded; the minimum positive distance over the remaining edges is returned.
@@ -957,7 +976,13 @@ function computeOffsetToInteriorSweepLine(context is Context, frameBody is Query
     // and the outer wall face are the outer corner edges (distance = 0) and must be skipped.
     const outerWallFaceEdges = qAdjacent(outerWallFace, AdjacencyType.EDGE, EntityType.EDGE);
 
-    const foldLineDirection = apexCoordSystem.zAxis;
+    // Fold-line direction: project apexCoordSystem.zAxis onto the plane perpendicular to
+    // tubeAxis so that any floating-point tubeAxis component introduced when the frame body
+    // was created without a reference face is removed.  Swept face normals are exactly
+    // perpendicular to tubeAxis; without the projection, parallelVectors(faceNormal, foldLine)
+    // fails for all top/bottom faces and the function returns the 0-fallback.
+    // For standard box-tube geometry the projected component is zero and this is a no-op.
+    const foldLineDirection = projectFoldLineOntoCrossSection(apexCoordSystem.zAxis, tubeAxis);
 
     // All swept faces on this body.
     const allSweptFaces = evaluateQuery(context, qHasAttributeWithValueMatching(
