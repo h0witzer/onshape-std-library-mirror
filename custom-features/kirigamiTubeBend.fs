@@ -19,11 +19,23 @@ const KIRIGAMI_BEND_ATTRIBUTE_NAME = "kirigamiBendData";
  * boolean the unfolded segments together for laser-cut export.
  *
  * Fields:
- *   instanceIndex {number} : Zero-based counter across all apex edges of all selected bodies.
- *   apexOrigin    {Vector} : World-space midpoint of the apex edge (origin of the local frame).
- *   zAxis         {Vector} : Fold-line direction -- local Z, along the outer apex edge,
- *                            derived as cross(capFaceNormal, outerWallNormal).
- *   xAxis         {Vector} : Miter cap face outward normal -- local X, perpendicular to the fold plane.
+ *   instanceIndex    {number}         : Zero-based counter across all apex edges of all selected bodies.
+ *   apexOrigin       {Vector}         : World-space midpoint of the apex edge (origin of the local frame).
+ *   zAxis            {Vector}         : Fold-line direction -- local Z, along the outer apex edge,
+ *                                       derived as cross(capFaceNormal, outerWallNormal).
+ *   xAxis            {Vector}         : Miter cap face outward normal -- local X, perpendicular to the fold plane.
+ *   boxTubeHeight    {ValueWithUnits} : Cross-section bounding-box extent measured along the Z axis of the
+ *                                       local joint coordinate system (apexCoordSystem.zAxis = the fold-line
+ *                                       direction, cross(capFaceNormal, outerWallNormal)).  This is the tube
+ *                                       profile dimension that runs along the outer apex edge.
+ *   boxTubeWidth     {ValueWithUnits} : Cross-section bounding-box extent along the remaining direction
+ *                                       perpendicular to both the tube sweep axis and the fold-line axis
+ *                                       (cross(tubeAxis, foldLineDirection)).  Neither world-axis references
+ *                                       nor any world-alignment assumption are used in either dimension.
+ *   miterAngle       {ValueWithUnits} : Angle between the cap face normal and the tube sweep axis, in [0, 90]
+ *                                       degrees.  Matches the Onshape frame cut-list convention (0 = perpendicular
+ *                                       cut, 45 = 45-degree miter).
+ *   bendOutsideRadius {ValueWithUnits}: User-specified bend outside radius passed through from the feature input.
  */
 export type KirigamiBendAttribute typecheck canBeKirigamiBendAttribute;
 
@@ -34,6 +46,10 @@ export predicate canBeKirigamiBendAttribute(value)
     is3dLengthVector(value.apexOrigin);
     is3dDirection(value.zAxis);
     is3dDirection(value.xAxis);
+    isLength(value.boxTubeHeight);
+    isLength(value.boxTubeWidth);
+    isAngle(value.miterAngle);
+    isLength(value.bendOutsideRadius);
 }
 
 /**
@@ -86,6 +102,11 @@ export const kirigamiTubeBend = defineFeature(function(context is Context, id is
                      "Filter" : EntityType.BODY && (BodyType.SOLID || BodyType.COMPOSITE),
                      "Description" : "Select Onshape frame bodies created with the Frame feature" }
         definition.frameBodies is Query;
+
+        annotation { "Name" : "Bend Outside Radius",
+                     "Description" : "Outside radius of the tube bend at each miter joint, used by the downstream flat-layout script to size the kirigami geometry",
+                     "UIHint" : UIHint.REMEMBER_PREVIOUS_VALUE }
+        isLength(definition.bendOutsideRadius, NONNEGATIVE_ZERO_INCLUSIVE_LENGTH_BOUNDS);
     }
     {
         // Unpack a composite selection to its constituent solid segments, matching the
@@ -173,7 +194,9 @@ export const kirigamiTubeBend = defineFeature(function(context is Context, id is
                         frameBody, capFace);
                 allOuterEdgeData = append(allOuterEdgeData, {
                         "edgeQuery"  : outerEdge,
-                        "bodyIndex"  : bodyIndex
+                        "bodyIndex"  : bodyIndex,
+                        "frameBody"  : frameBody,
+                        "tubeAxis"   : tubeAxis
                     });
             }
         }
@@ -181,16 +204,23 @@ export const kirigamiTubeBend = defineFeature(function(context is Context, id is
         // Retain only shared joints (midpoints contributed by two distinct bodies).
         // For a pure cycle, N-1 of the N joints are returned; the closing joint is dropped
         // to leave two open ends on the linearised strip.
-        const sharedOuterEdges = collectSharedApexEdges(context, allOuterEdgeData, size(frameBodiesArray));
+        // Each entry is a data map { "edgeQuery", "bodyIndex", "frameBody", "tubeAxis" }.
+        const sharedJoints = collectSharedApexEdges(context, allOuterEdgeData, size(frameBodiesArray));
 
         // Queue one KirigamiBendConstructor instance per shared outer apex edge.
         const instantiator = newInstantiator(id + "bendConstructorInstances");
         var pendingInstances = [];
 
-        for (var instanceIndex = 0; instanceIndex < size(sharedOuterEdges); instanceIndex += 1)
+        for (var instanceIndex = 0; instanceIndex < size(sharedJoints); instanceIndex += 1)
         {
-            const apexEdge = sharedOuterEdges[instanceIndex];
+            const jointData = sharedJoints[instanceIndex];
+            const apexEdge = jointData.edgeQuery;
             const apexCoordSystem = buildApexCoordSystem(context, id, instanceIndex, apexEdge);
+            // computeJointDimensions uses apexCoordSystem.zAxis (the fold-line direction, which IS the
+            // local-csys Z) as the BoxTubeHeight axis, and apexCoordSystem.xAxis as the cap face normal
+            // for the miter angle.  No world-axis references are used.
+            const jointDimensions = computeJointDimensions(context, jointData.frameBody,
+                    jointData.tubeAxis, apexCoordSystem);
 
             // toWorld(apexCoordSystem) is the Transform that carries geometry from the
             // constructor's local origin to the correct world-space position and orientation.
@@ -200,9 +230,13 @@ export const kirigamiTubeBend = defineFeature(function(context is Context, id is
                     });
 
             pendingInstances = append(pendingInstances, {
-                        "query" : instanceQuery,
-                        "coordSystem" : apexCoordSystem,
-                        "instanceIndex" : instanceIndex
+                        "query"             : instanceQuery,
+                        "coordSystem"       : apexCoordSystem,
+                        "instanceIndex"     : instanceIndex,
+                        "boxTubeHeight"     : jointDimensions.boxTubeHeight,
+                        "boxTubeWidth"      : jointDimensions.boxTubeWidth,
+                        "miterAngle"        : jointDimensions.miterAngle,
+                        "bendOutsideRadius" : definition.bendOutsideRadius
                     });
         }
 
@@ -217,10 +251,14 @@ export const kirigamiTubeBend = defineFeature(function(context is Context, id is
                         "entities" : instance.query,
                         "name" : KIRIGAMI_BEND_ATTRIBUTE_NAME,
                         "attribute" : {
-                            "instanceIndex" : instance.instanceIndex,
-                            "apexOrigin" : apexCS.origin,
-                            "zAxis" : apexCS.zAxis,
-                            "xAxis" : apexCS.xAxis
+                            "instanceIndex"     : instance.instanceIndex,
+                            "apexOrigin"        : apexCS.origin,
+                            "zAxis"             : apexCS.zAxis,
+                            "xAxis"             : apexCS.xAxis,
+                            "boxTubeHeight"     : instance.boxTubeHeight,
+                            "boxTubeWidth"      : instance.boxTubeWidth,
+                            "miterAngle"        : instance.miterAngle,
+                            "bendOutsideRadius" : instance.bendOutsideRadius
                         } as KirigamiBendAttribute
                     });
         }
@@ -440,10 +478,12 @@ function findOuterApexEdgeForCapFace(context is Context, id is Id, bodyIndex is 
 // (same miter cut) but not for edges that are merely close.
 //
 // @param context        : Active context.
-// @param outerEdgeData  : Array of map { "edgeQuery" : Query, "bodyIndex" : number }, one
-//                         entry per eligible cap face per body.
+// @param outerEdgeData  : Array of map { "edgeQuery" : Query, "bodyIndex" : number,
+//                         "frameBody" : Query, "tubeAxis" : Vector }, one entry per eligible
+//                         cap face per body.
 // @param totalBodyCount : Total number of selected frame bodies (size of frameBodiesArray).
-// @returns array        : Array of Query, one per joint that should receive a bend constructor.
+// @returns array        : Array of data map (same schema as outerEdgeData entries), one per joint that
+//                         should receive a bend constructor.
 function collectSharedApexEdges(context is Context, outerEdgeData is array, totalBodyCount is number) returns array
 {
     // Pre-compute all midpoints once to avoid redundant evEdgeTangentLine calls in later passes.
@@ -506,8 +546,10 @@ function collectSharedApexEdges(context is Context, outerEdgeData is array, tota
 
     // Pass 2: collect shared joints (midpoints contributed by two or more distinct bodies).
     // Also build sharedEdgeBodyPairs for cycle detection and traversal.
-    var sharedEdgeQueries   = [];
-    var sharedEdgeBodyPairs = [];  // Parallel to sharedEdgeQueries: [bodyA, bodyB] per joint.
+    // sharedJointData stores the FULL outerEdgeData map for each shared joint, preserving
+    // frameBody, tubeAxis, and capFace for downstream dimension computation.
+    var sharedJointData     = [];
+    var sharedEdgeBodyPairs = [];  // Parallel to sharedJointData: [bodyA, bodyB] per joint.
     var claimedMidpoints    = [];
 
     for (var edgeIndex = 0; edgeIndex < size(outerEdgeData); edgeIndex += 1)
@@ -534,7 +576,7 @@ function collectSharedApexEdges(context is Context, outerEdgeData is array, tota
             {
                 if (size(uniqueBodyContributors[uniqueMidpointIndex]) >= 2)
                 {
-                    sharedEdgeQueries   = append(sharedEdgeQueries,   outerEdgeData[edgeIndex].edgeQuery);
+                    sharedJointData     = append(sharedJointData,     outerEdgeData[edgeIndex]);
                     sharedEdgeBodyPairs = append(sharedEdgeBodyPairs, uniqueBodyContributors[uniqueMidpointIndex]);
                     claimedMidpoints    = append(claimedMidpoints,    midpoint);
                 }
@@ -555,7 +597,7 @@ function collectSharedApexEdges(context is Context, outerEdgeData is array, tota
             bodyDegrees[contributingBodyIndex] = bodyDegrees[contributingBodyIndex] + 1;
     }
 
-    var isPureCycle = (size(sharedEdgeQueries) == totalBodyCount);
+    var isPureCycle = (size(sharedJointData) == totalBodyCount);
     if (isPureCycle)
     {
         for (var degree in bodyDegrees)
@@ -570,7 +612,7 @@ function collectSharedApexEdges(context is Context, outerEdgeData is array, tota
 
     // Open chain: return all shared joints immediately.
     if (!isPureCycle)
-        return sharedEdgeQueries;
+        return sharedJointData;
 
     // Pure cycle: traverse N-1 joints starting from body 0, dropping the final closing joint.
     //
@@ -622,7 +664,7 @@ function collectSharedApexEdges(context is Context, outerEdgeData is array, tota
                 "connectivity is inconsistent. Ensure all selected bodies form a single " ~
                 "unambiguous connected cycle.", ["frameBodies"]);
 
-        cycleOrderedJoints = append(cycleOrderedJoints, sharedEdgeQueries[selectedJointIndex]);
+        cycleOrderedJoints = append(cycleOrderedJoints, sharedJointData[selectedJointIndex]);
         previousBodyIndex  = currentBodyIndex;
         currentBodyIndex   = nextBodyIndex;
     }
@@ -744,4 +786,80 @@ function findCapFaceAdjacentToApexEdge(context is Context, id is Id, instanceInd
 
     // For a well-formed miter joint each apex edge borders exactly one cap face.
     return qNthElement(capFaceQuery, 0);
+}
+
+// Computes the three joint configuration variables stored in KirigamiBendAttribute.
+//
+// All geometry is derived from the apex coordinate system built by buildApexCoordSystem,
+// which is based exclusively on outward face normals.  No world-axis references are used.
+//
+// BoxTubeHeight
+//   The cross-section extent of the frame body measured along the Z axis of the local
+//   joint coordinate system.  apexCoordSystem.zAxis is the fold-line direction:
+//   cross(capFaceNormal, outerWallNormal).  For a simple single-axis miter this direction
+//   is always perpendicular to the tube sweep axis, making it a clean cross-section axis.
+//   Evaluated as the X extent of a bounding-box frame whose X axis = foldLineDirection
+//   and Z axis = tubeAxis.
+//
+// BoxTubeWidth
+//   The cross-section extent in the direction perpendicular to both the tube sweep axis
+//   and the fold-line direction: cross(tubeAxis, foldLineDirection).  Evaluated as the
+//   Y extent of the same bounding-box frame.
+//
+// MiterAngle
+//   Angle between the cap face normal (apexCoordSystem.xAxis) and the tube sweep axis.
+//   Clamped to [0, 90] degrees, matching the Onshape frame cut-list convention
+//   (CUTLIST_ANGLE_1 / CUTLIST_ANGLE_2 in frameUtils.fs): 0 degrees for a perpendicular
+//   cut (butt joint), 45 degrees for a 45-degree miter.
+//
+// @param context          : Active context.
+// @param frameBody        : Query resolving to a single solid frame body.
+// @param tubeAxis         : Tube sweep direction (dimensionless unit vector).
+// @param apexCoordSystem  : Coordinate system at the outer apex edge, as built by
+//                           buildApexCoordSystem.  xAxis = capFaceNormal, zAxis = foldLineDirection.
+// @returns map with keys: "boxTubeHeight" (ValueWithUnits length),
+//                         "boxTubeWidth"  (ValueWithUnits length),
+//                         "miterAngle"    (ValueWithUnits angle).
+function computeJointDimensions(context is Context, frameBody is Query, tubeAxis is Vector,
+    apexCoordSystem is CoordSystem) returns map
+{
+    // --- Cross-section bounding box ---
+    // The fold-line direction is apexCoordSystem.zAxis: cross(capFaceNormal, outerWallNormal).
+    // For a simple single-axis miter this is always perpendicular to tubeAxis, so it is a
+    // valid axis for measuring the tube cross-section without mixing in the sweep direction.
+    const foldLineDirection = apexCoordSystem.zAxis;
+
+    // Build an evaluation frame where:
+    //   X axis = foldLineDirection  (local joint csys Z, the BoxTubeHeight direction)
+    //   Z axis = tubeAxis           (sweep direction, gives the tube length extent -- discarded)
+    //   Y axis = cross(Z, X) = cross(tubeAxis, foldLineDirection)  (BoxTubeWidth direction)
+    const crossSectionCS = coordSystem(WORLD_ORIGIN, foldLineDirection, tubeAxis);
+
+    const crossSectionBoundingBox = evBox3d(context, {
+                "topology" : frameBody,
+                "cSys"     : crossSectionCS,
+                "tight"    : true
+            });
+
+    // X extent (index 0): dimension along foldLineDirection = local joint csys Z = BoxTubeHeight.
+    // Y extent (index 1): dimension along cross(tubeAxis, foldLineDirection)  = BoxTubeWidth.
+    const boxTubeHeight = crossSectionBoundingBox.maxCorner[0] - crossSectionBoundingBox.minCorner[0];
+    const boxTubeWidth  = crossSectionBoundingBox.maxCorner[1] - crossSectionBoundingBox.minCorner[1];
+
+    // --- Miter angle ---
+    // apexCoordSystem.xAxis is the outward cap face normal (set by buildApexCoordSystem).
+    // angleBetween returns the angle between the two vectors, always in [0, 180].
+    // Clamping to [0, 90] and zeroing near-zero angles matches the Onshape frame cut-list
+    // convention used by getDimensionsForStraightBeam in cutlistMath.fs.
+    var miterAngle = angleBetween(apexCoordSystem.xAxis, tubeAxis);
+    if (miterAngle > 90 * degree)
+        miterAngle = 180 * degree - miterAngle;
+    if (miterAngle < TOLERANCE.zeroAngle * degree)
+        miterAngle = 0 * degree;
+
+    return {
+        "boxTubeHeight" : boxTubeHeight,
+        "boxTubeWidth"  : boxTubeWidth,
+        "miterAngle"    : miterAngle
+    };
 }
