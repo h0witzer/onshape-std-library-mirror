@@ -197,7 +197,7 @@ export const kirigamiTubeBend = defineFeature(function(context is Context, id is
                     continue;
 
                 const outerEdge = findOuterApexEdgeForCapFace(context, id, bodyIndex,
-                        frameBody, capFace);
+                        frameBody, capFace, tubeAxis, capFaceNormal);
                 allOuterEdgeData = append(allOuterEdgeData, {
                         "edgeQuery"  : outerEdge,
                         "bodyIndex"  : bodyIndex,
@@ -364,31 +364,31 @@ function isCapFaceSimpleMiter(context is Context, sweptFacesArray is array,
 
 // Finds the single outer apex edge on one cap face of a frame body.
 //
-// A local coordinate system is built from the first candidate edge's tangent (X axis) and
-// the adjacent swept face's outward normal (Z axis).  Candidate edge midpoints are projected
-// onto the local Y axis; both the minimum-Y and maximum-Y edges are tracked.  The outer apex
-// sits at one of these two extremes.  Which extreme is determined by projecting the
-// world-space centre of the first adjacent swept face onto the local Y axis: a negative
-// projection means the tube body extends in -Y and the outer apex is at MAX local Y; a
-// positive projection means the outer apex is at MIN local Y.  The face centre is obtained
-// from the same evFaceTangentPlane call that establishes the Z axis, so no additional ev
-// calls are required.
+// Candidate edges are those shared between the cap face and any adjacent swept face.
+// For a simple single-axis miter the outer apex is the candidate edge whose midpoint
+// projects furthest along the transverse direction:
 //
-// Works correctly for box tube sections with inner and outer corner radii (typically 16 or
-// more swept faces) because the swept-face centre is always far from the outer-apex plane
-// regardless of face count.
+//   transverseDirection = normalize(capFaceNormal - dot(capFaceNormal, tubeAxis) * tubeAxis)
 //
-// @param context    : Active context.
-// @param id         : Feature id used for error reporting.
-// @param bodyIndex  : Zero-based index of this body in the selection (for error messages).
-// @param frameBody  : Query resolving to a single solid frame body.
-// @param capFace    : Query resolving to one cap face on frameBody.
-// @returns Query    : The single outer apex edge on this cap face.
+// This is the component of the cap face normal perpendicular to the tube axis, which points
+// from the tube centre toward the outer wall face for any simple miter regardless of
+// orientation or corner topology.  Using this direction instead of a coordinate system
+// derived from an adjacent swept face normal avoids arc-face sensitivity: for a corner-radius
+// box tube (typically 16 swept faces) the first adjacent swept face can be an arc face
+// whose normal at UV (0.5, 0.5) is diagonal, making any coordinate system built from it
+// give unreliable Y-projections and an incorrect face-centre sign test.
+//
+// @param context        : Active context.
+// @param id             : Feature id used for error reporting.
+// @param bodyIndex      : Zero-based index of this body in the selection (for error messages).
+// @param frameBody      : Query resolving to a single solid frame body.
+// @param capFace        : Query resolving to one cap face on frameBody.
+// @param tubeAxis       : Tube sweep direction (dimensionless unit vector).
+// @param capFaceNormal  : Outward normal of capFace (dimensionless unit vector).
+// @returns Query        : The single outer apex edge on this cap face.
 function findOuterApexEdgeForCapFace(context is Context, id is Id, bodyIndex is number,
-    frameBody is Query, capFace is Query) returns Query
+    frameBody is Query, capFace is Query, tubeAxis is Vector, capFaceNormal is Vector) returns Query
 {
-    // Swept faces of this body that border the cap face.  Using FrameTopologyAttribute
-    // (the same layer as qFrameStartFace / qFrameEndFace) avoids any geometry comparison.
     const allBodySweptFaces = qHasAttributeWithValueMatching(
             qOwnedByBody(frameBody, EntityType.FACE),
             FRAME_ATTRIBUTE_TOPOLOGY_NAME,
@@ -404,13 +404,9 @@ function findOuterApexEdgeForCapFace(context is Context, id is Id, bodyIndex is 
             "Ensure the selected body is an Onshape frame member created with the Frame feature.",
             ["frameBodies"]);
 
-    // Candidate apex edges: edges that border both the cap face and a swept face.
-    // For an idealised 4-faced box tube this yields 4 perimeter edges; for a real box
-    // tube with inner and outer corner radii there can be 12–16 or more swept faces
-    // and a correspondingly larger candidate set.  The Y-projection logic below handles
-    // any number of candidates correctly.
+    // Candidate apex edges: edges that border both the cap face and any swept face.
     const candidateEdges = qIntersection([
-                qAdjacent(capFace,                   AdjacencyType.EDGE, EntityType.EDGE),
+                qAdjacent(capFace,                     AdjacencyType.EDGE, EntityType.EDGE),
                 qAdjacent(sweptFacesAdjacentToCapFace, AdjacencyType.EDGE, EntityType.EDGE)
             ]);
 
@@ -419,66 +415,32 @@ function findOuterApexEdgeForCapFace(context is Context, id is Id, bodyIndex is 
             "Ensure the body has a mitered end face adjacent to its tube wall faces.",
             ["frameBodies"]);
 
-    // Build a local coordinate system for Y-axis projection:
-    //   X axis = tangent of the first candidate edge at its midpoint
-    //   Z axis = outward normal of the first adjacent swept face
-    //   Y axis = cross(Z, X)  [implicit in CoordSystem]
-    // The Y axis points across the miter face toward the outer/inner extents of the tube.
-    // This frame is used only for outer-edge detection and is independent of the placement
-    // coordinate system built by buildApexCoordSystem.
-    const firstEdgeLine = evEdgeTangentLine(context, {
-                "edge" : qNthElement(candidateEdges, 0),
-                "parameter" : 0.5
-            });
+    // Transverse direction: component of the cap face normal perpendicular to the tube axis.
+    // Points from the tube centre toward the outer wall face for any simple single-axis miter.
+    // Derived entirely from flat planar face normals; no arc-face normals are involved.
+    const transverseDirection = normalize(capFaceNormal - dot(capFaceNormal, tubeAxis) * tubeAxis);
 
-    // Evaluate the face plane of the first adjacent swept face.  The face spans the full
-    // tube length, so its centre is always far from the outer-apex plane in local Y.
-    const sweptFacePlane  = evFaceTangentPlane(context, {
-                "face" : qNthElement(sweptFacesAdjacentToCapFace, 0),
-                "parameter" : vector(0.5, 0.5)
-            });
-    const sweptFaceNormal = sweptFacePlane.normal;
-
-    const localCoordSystem = coordSystem(firstEdgeLine.origin, firstEdgeLine.direction, sweptFaceNormal);
-
-    // Project each candidate edge midpoint onto the local Y axis to find both extremes.
-    // The outer apex edge sits at one extreme; the inner apex and diagonal miter edges sit
-    // between them.
+    // Return the candidate edge whose midpoint projects furthest in the transverse direction.
     const candidateEdgesArray = evaluateQuery(context, candidateEdges);
-    const yDirection          = yAxis(localCoordSystem);
-    const localOrigin         = localCoordSystem.origin;
+    var maximumProjection = undefined;
+    var outerApexEdge     = candidateEdgesArray[0];
 
-    var minimumYProjection = dot(firstEdgeLine.origin - localOrigin, yDirection);
-    var maximumYProjection = minimumYProjection;
-    var minimumYEdge       = candidateEdgesArray[0];
-    var maximumYEdge       = candidateEdgesArray[0];
-
-    for (var edgeIndex = 1; edgeIndex < size(candidateEdgesArray); edgeIndex += 1)
+    for (var candidateEdge in candidateEdgesArray)
     {
         const edgeMidpoint = evEdgeTangentLine(context, {
-                    "edge"      : candidateEdgesArray[edgeIndex],
+                    "edge"      : candidateEdge,
                     "parameter" : 0.5
                 }).origin;
-        const yProjection = dot(edgeMidpoint - localOrigin, yDirection);
+        const projection = dot(edgeMidpoint, transverseDirection);
 
-        if (yProjection < minimumYProjection)
+        if (maximumProjection == undefined || projection > maximumProjection)
         {
-            minimumYProjection = yProjection;
-            minimumYEdge       = candidateEdgesArray[edgeIndex];
-        }
-        if (yProjection > maximumYProjection)
-        {
-            maximumYProjection = yProjection;
-            maximumYEdge       = candidateEdgesArray[edgeIndex];
+            maximumProjection = projection;
+            outerApexEdge     = candidateEdge;
         }
     }
 
-    // Project the swept-face centre onto Y to determine which extreme is the outer apex.
-    // A negative projection means local Y points away from the tube body (tube extends in -Y),
-    // so the outer apex is at MAX local Y.  A positive projection means the outer apex is at
-    // MIN local Y.
-    const outerWallFaceCenterY = dot(sweptFacePlane.origin - localOrigin, yDirection);
-    return (outerWallFaceCenterY < 0 * meter) ? maximumYEdge : minimumYEdge;
+    return outerApexEdge;
 }
 
 // Collects the outer apex edges representing the joints that should receive bend constructors.
