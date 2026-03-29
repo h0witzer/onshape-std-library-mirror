@@ -370,15 +370,15 @@ function isCapFaceSimpleMiter(context is Context, sweptFacesArray is array,
 
 // Finds the single outer apex edge on one cap face of a frame body.
 //
-// Implements the same bounding-box outer-edge detection used by Neil Cooke's Frame Unroll
-// feature.  A local coordinate system is built from the first candidate edge's tangent
-// (X axis) and the adjacent swept face's outward normal (Z axis).  The body is evaluated in
-// that frame with evBox3d; the outer apex edge is the candidate edge that lies in a plane
-// through the extreme-Y bounding-box corner -- i.e., the edge at the outermost extent of
-// the tube in the direction perpendicular to both the fold line and the tube wall.
-//
-// minCorner is checked before maxCorner, matching Frame Unroll's iteration order.  Only one
-// of the two corners will coincide with a candidate edge; that edge is the outer apex edge.
+// A local coordinate system is built from the first candidate edge's tangent (X axis) and
+// the adjacent swept face's outward normal (Z axis).  The outer apex edge is identified by
+// directly projecting each candidate edge midpoint onto the local Y axis and selecting the
+// edge at the minimum Y projection (the Frame Unroll convention: minCorner before maxCorner).
+// This replaces the original evBox3d(tight)+qCoincidesWithPlane approach, which forced
+// evaluation of the entire body geometry to obtain a bounding box that was only used for
+// its Y extents.  For a rectangular box tube the cost is 3 additional evEdgeTangentLine
+// calls (edge 0's midpoint is already available from the coord-system setup) vs one
+// tight body bounding box evaluation.
 //
 // @param context    : Active context.
 // @param id         : Feature id used for error reporting.
@@ -418,12 +418,12 @@ function findOuterApexEdgeForCapFace(context is Context, id is Id, bodyIndex is 
             "Ensure the body has a mitered end face adjacent to its tube wall faces.",
             ["frameBodies"]);
 
-    // Build a local coordinate system identical to the one Frame Unroll constructs:
+    // Build a local coordinate system for Y-axis projection (matching Frame Unroll's frame):
     //   X axis = tangent of the first candidate edge at its midpoint
     //   Z axis = outward normal of the first adjacent swept face
     //   Y axis = cross(Z, X)  [implicit in CoordSystem]
     // The Y axis points across the miter face toward the outer/inner extents of the tube.
-    // NOTE: this is a helper frame solely for bounding-box analysis.  The placement coord
+    // NOTE: this is a helper frame solely for outer-edge detection.  The placement coord
     // system built by buildApexCoordSystem uses a different axis convention (cap face normal
     // = X, edge tangent = Z) that orients the constructor geometry correctly at the joint.
     const firstEdgeLine = evEdgeTangentLine(context, {
@@ -438,36 +438,45 @@ function findOuterApexEdgeForCapFace(context is Context, id is Id, bodyIndex is 
 
     const localCoordSystem = coordSystem(firstEdgeLine.origin, firstEdgeLine.direction, sweptFaceNormal);
 
-    // Bounding box of the body measured in the local coordinate system.
-    // The Y extents (minCorner.y and maxCorner.y) locate the outermost and innermost
-    // cap-face boundary edges relative to the tube wall.
-    const bodyBoundingBox = evBox3d(context, {
-                "topology" : frameBody,
-                "cSys" : localCoordSystem,
-                "tight" : true
-            });
+    // Directly project each candidate edge midpoint onto the local Y axis and pick the
+    // edge at the minimum projection (matching Frame Unroll's minCorner-first convention).
+    // Replaces the previous evBox3d(tight: true) + qCoincidesWithPlane approach, which
+    // evaluated the entire body geometry to obtain a bounding box used only for its Y extents.
+    //
+    // Edge 0's midpoint is already available from firstEdgeLine -- no extra ev call needed.
+    const candidateEdgesArray = evaluateQuery(context, candidateEdges);
+    const yDirection          = yAxis(localCoordSystem);
+    const localOrigin         = localCoordSystem.origin;
 
-    // The outer apex edge lies in a plane at one of the bounding-box Y extremes.
-    // A plane through the bounding-box corner with normal = yAxis(localCoordSystem) is a
-    // constant-Y plane in the local frame; qCoincidesWithPlane selects the candidate edge
-    // that lies entirely in that plane.  minCorner is checked first, then maxCorner,
-    // matching the iteration order used by Frame Unroll.
-    var outerEdge = qNothing();
+    var minimumYProjection = dot(firstEdgeLine.origin - localOrigin, yDirection);
+    var maximumYProjection = minimumYProjection;
+    var minimumYEdge       = candidateEdgesArray[0];
+    var maximumYEdge       = candidateEdgesArray[0];
 
-    for (var corner in [bodyBoundingBox.minCorner, bodyBoundingBox.maxCorner])
+    for (var edgeIndex = 1; edgeIndex < size(candidateEdgesArray); edgeIndex += 1)
     {
-        const cornerPlane = plane(toWorld(localCoordSystem, corner), yAxis(localCoordSystem));
-        outerEdge = qCoincidesWithPlane(candidateEdges, cornerPlane);
-        if (!isQueryEmpty(context, outerEdge))
-            break;
+        const edgeMidpoint = evEdgeTangentLine(context, {
+                    "edge"      : candidateEdgesArray[edgeIndex],
+                    "parameter" : 0.5
+                }).origin;
+        const yProjection = dot(edgeMidpoint - localOrigin, yDirection);
+
+        if (yProjection < minimumYProjection)
+        {
+            minimumYProjection = yProjection;
+            minimumYEdge       = candidateEdgesArray[edgeIndex];
+        }
+        if (yProjection > maximumYProjection)
+        {
+            maximumYProjection = yProjection;
+            maximumYEdge       = candidateEdgesArray[edgeIndex];
+        }
     }
 
-    if (isQueryEmpty(context, outerEdge))
-        throw regenError("Could not determine the outer apex edge on a cap face of frame body " ~
-            (bodyIndex + 1) ~ ". Ensure the body is a properly formed Onshape frame member.",
-            ["frameBodies"]);
-
-    return qNthElement(outerEdge, 0);
+    // Prefer the minimum-Y edge (matching Frame Unroll's minCorner-first order).
+    // Fall back to the maximum-Y edge only when all projections are equal (a degenerate
+    // case that cannot arise for a well-formed rectangular tube profile).
+    return (minimumYProjection < maximumYProjection) ? minimumYEdge : maximumYEdge;
 }
 
 // Collects the outer apex edges representing the joints that should receive bend constructors.
@@ -903,6 +912,11 @@ function computeJointDimensions(context is Context, frameBody is Query, tubeAxis
 //
 // A fallback of 0 * meter is returned if no qualifying edges are found (degenerate geometry).
 //
+// Performance:
+//   qParallelPlanes replaces iterating all swept faces + evFaceTangentPlane per face.
+//   qSubtraction replaces one qIntersection query evaluation per edge.
+//   A single evaluateQuery call replaces one call per Z-parallel face.
+//
 // @param context          : Active context.
 // @param frameBody        : Query resolving to the single solid frame body.
 // @param tubeAxis         : Tube sweep direction (dimensionless unit vector).
@@ -919,72 +933,57 @@ function computeOffsetToInteriorSweepLine(context is Context, frameBody is Query
                 FRAME_ATTRIBUTE_TOPOLOGY_NAME,
                 { "topologyType" : FrameTopologyType.SWEPT_FACE }), 0);
 
-    // Pre-compute the outer wall face plane for distance measurement and edge exclusion.
+    // Pre-compute the outer wall face plane for distance measurement.
     const outerWallPlane = evFaceTangentPlane(context, {
                 "face" : outerWallFace,
                 "parameter" : vector(0.5, 0.5)
             });
 
-    // Pre-build the edge set of the outer wall face.  Edges shared between a top/bottom face
-    // and the outer wall face are the outer corner edges (distance = 0) and must be skipped.
-    const outerWallFaceEdges = qAdjacent(outerWallFace, AdjacencyType.EDGE, EntityType.EDGE);
-
     const foldLineDirection = apexCoordSystem.zAxis;
 
-    // All swept faces on this body.
-    const allSweptFaces = evaluateQuery(context, qHasAttributeWithValueMatching(
+    // qParallelPlanes finds all planar swept faces whose normal is parallel to the
+    // fold-line direction without iterating faces or calling evFaceTangentPlane per face.
+    const allSweptFacesQuery = qHasAttributeWithValueMatching(
                 qOwnedByBody(frameBody, EntityType.FACE),
                 FRAME_ATTRIBUTE_TOPOLOGY_NAME,
-                { "topologyType" : FrameTopologyType.SWEPT_FACE }));
+                { "topologyType" : FrameTopologyType.SWEPT_FACE });
+
+    const zParallelSweptFaces = qParallelPlanes(allSweptFacesQuery, foldLineDirection);
+
+    // Collect all edges of the Z-parallel faces in one batch query, then subtract the
+    // outer wall face edges in a single qSubtraction operation.  This eliminates the
+    // previous per-face evaluateQuery + per-edge qIntersection pattern.
+    const outerWallFaceEdges     = qAdjacent(outerWallFace, AdjacencyType.EDGE, EntityType.EDGE);
+    const interiorCandidateEdges = evaluateQuery(context, qSubtraction(
+                qAdjacent(zParallelSweptFaces, AdjacencyType.EDGE, EntityType.EDGE),
+                outerWallFaceEdges));
 
     var minimumPositiveDistance = undefined;
 
-    for (var sweptFace in allSweptFaces)
+    for (var candidateEdge in interiorCandidateEdges)
     {
-        const faceNormal = evFaceTangentPlane(context, {
-                    "face" : sweptFace,
-                    "parameter" : vector(0.5, 0.5)
-                }).normal;
+        // Only longitudinal sweep edges (tangent parallel to tubeAxis) represent the interior
+        // sweep lines we care about; cross-sectional and miter-cut edges are discarded here.
+        const edgeTangentLine = evEdgeTangentLine(context, {
+                    "edge"      : candidateEdge,
+                    "parameter" : 0.5
+                });
 
-        // Only process faces whose outward normal is parallel to the fold-line direction
-        // (the "top" and "bottom" faces in the local joint coordinate system).
-        if (!parallelVectors(faceNormal, foldLineDirection))
+        if (!parallelVectors(edgeTangentLine.direction, tubeAxis))
             continue;
 
-        // Iterate over the edges of this top/bottom face.
-        const faceEdges = evaluateQuery(context, qAdjacent(sweptFace, AdjacencyType.EDGE, EntityType.EDGE));
+        // Perpendicular distance from the outer wall face plane to this edge midpoint.
+        // The edge is parallel to tubeAxis which is perpendicular to the outer wall normal,
+        // so the distance is constant along the entire edge.
+        const signedDistance = dot(edgeTangentLine.origin - outerWallPlane.origin,
+                outerWallPlane.normal);
+        const distance = (signedDistance >= 0 * meter) ? signedDistance : -signedDistance;
 
-        for (var faceEdge in faceEdges)
-        {
-            // Skip edges shared with the outer wall face -- they are the outer corner edges
-            // at distance zero and do not represent interior sweep lines.
-            if (!isQueryEmpty(context, qIntersection([faceEdge, outerWallFaceEdges])))
-                continue;
-
-            // Only consider longitudinal sweep edges: edges whose tangent is parallel to
-            // the tube axis.  Cross-sectional edges (running across the tube width or along
-            // the miter cut) are not sweep lines and must be excluded.
-            const edgeTangentLine = evEdgeTangentLine(context, {
-                        "edge" : faceEdge,
-                        "parameter" : 0.5
-                    });
-
-            if (!parallelVectors(edgeTangentLine.direction, tubeAxis))
-                continue;
-
-            // Perpendicular distance from the outer wall face plane to this edge midpoint.
-            // The edge is parallel to tubeAxis which is perpendicular to the outer wall
-            // normal, so the distance is constant along the entire edge.
-            const signedDistance = dot(edgeTangentLine.origin - outerWallPlane.origin,
-                    outerWallPlane.normal);
-            const distance = (signedDistance >= 0 * meter) ? signedDistance : -signedDistance;
-
-            if (minimumPositiveDistance == undefined || distance < minimumPositiveDistance)
-                minimumPositiveDistance = distance;
-        }
+        if (minimumPositiveDistance == undefined || distance < minimumPositiveDistance)
+            minimumPositiveDistance = distance;
     }
 
-    // Fallback: return zero if no interior edge was found (e.g., degenerate profile).
+    // Fallback: return zero if no qualifying edge was found (e.g., degenerate profile).
     if (minimumPositiveDistance == undefined)
         return 0 * meter;
 
