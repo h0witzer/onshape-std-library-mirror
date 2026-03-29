@@ -20,6 +20,7 @@
 - Pay attention to the way qAdjacent works with the modern adjacency types when used
 - If you encounter a feature labeled "Under development, not for general use" in the header assume that the code is non-functional and does not represent valid featurescript development practice
 - Add clear comments above functions explaining their function and intended purpose and defining inputs and outputs, make it easy for me to read what blocks of code perform a job and what that job is, listing the fields and supported data types here is immensely helpful
+- When leaving comments, make sure the documentation remains contemporary to the current structure and function of the code. Documentation is supposed to explain what functions DO, not what they used to do or what they DON'T do.
 - Prioritize solutions to problems that apply to more than the most trivial cases, for example when working on a feature that interacts with surface geometry don't assume a planar constraint unless it's explicitly clear that the function will only be called on planar geometry when another solution exists that would generalize to cylinders and cones
 - Before working with Arrays in preconditions, look up the correct fields for implementation. isArray() is not a function that exists in the standard library
 - Validate all other precondition examples with the standard library
