@@ -93,9 +93,9 @@ export predicate canBeKirigamiBendAttribute(value)
  * The constructor is oriented so that:
  *   - the origin sits at the midpoint of the outer apex edge,
  *   - the X axis is the outward normal of the miter (cap) face, and
- *   - the Z axis is cross(capFaceNormal, outerWallNormal) -- the fold-line direction derived
- *     entirely from stable, outward-pointing face normals, with no dependency on B-rep edge
- *     orientation (which can flip).
+ *   - the Z axis is the physical tangent direction of the outer apex edge, sign-canonicalised
+ *     via world axes (+X preferred, then +Y, then +Z) so it is deterministic regardless of
+ *     B-rep edge orientation or body selection order.
  *
  * Composite frame bodies are automatically unpacked to their constituent solid segments.
  */
@@ -217,41 +217,55 @@ export const kirigamiTubeBend = defineFeature(function(context is Context, id is
         const instantiator = newInstantiator(id + "bendConstructorInstances");
         var pendingInstances = [];
 
-        // Cache offsetToInteriorSweepLine by FrameProfileAttribute so bodies that share
-        // the same frame section profile only pay the geometry evaluation cost once.
-        // FrameProfileAttribute is a string→string map of cutlist column values that is
-        // identical on every body produced from the same profile entry in the frame table.
-        var profileOffsetCache = {};
+        // Cache offsetToInteriorSweepLine per distinct FrameProfileAttribute so bodies that
+        // share the same frame section profile only pay the geometry evaluation cost once.
+        // Parallel arrays with == equality are used instead of a toString-keyed map because
+        // toString on a typed FrameProfileAttribute value does not reliably serialise the map
+        // contents, causing every lookup to miss and the expensive function to run per joint.
+        var cachedProfileAttributes = [];
+        var cachedProfileOffsets    = [];
 
         for (var instanceIndex = 0; instanceIndex < size(sharedJoints); instanceIndex += 1)
         {
             const jointData = sharedJoints[instanceIndex];
             const apexEdge = jointData.edgeQuery;
-            const apexCoordSystem = buildApexCoordSystem(context, id, instanceIndex, apexEdge,
-                    jointData.tubeAxis);
+            const apexCoordSystem = buildApexCoordSystem(context, id, instanceIndex, apexEdge);
             const jointDimensions = computeJointDimensions(context, jointData.frameBody,
                     jointData.tubeAxis, apexCoordSystem);
 
             // Look up or compute the offset to the interior sweep line.
             // All bodies with the same FrameProfileAttribute have identical cross-section
             // geometry, so this result is the same for every joint on the same profile.
-            // toString produces the same string for any two identically-valued attributes
-            // because Onshape's Frame feature populates the map keys in table-column order,
-            // making insertion order deterministic across all bodies from the same profile.
             const frameProfileAttribute = try(getFrameProfileAttribute(context, jointData.frameBody));
-            const profileCacheKey = (frameProfileAttribute != undefined) ? toString(frameProfileAttribute) : undefined;
 
             var offsetToInteriorSweepLine;
-            if (profileCacheKey != undefined && profileOffsetCache[profileCacheKey] != undefined)
+            if (frameProfileAttribute != undefined)
             {
-                offsetToInteriorSweepLine = profileOffsetCache[profileCacheKey];
+                var cachedIndex = -1;
+                for (var cacheIndex = 0; cacheIndex < size(cachedProfileAttributes); cacheIndex += 1)
+                {
+                    if (cachedProfileAttributes[cacheIndex] == frameProfileAttribute)
+                    {
+                        cachedIndex = cacheIndex;
+                        break;
+                    }
+                }
+                if (cachedIndex >= 0)
+                {
+                    offsetToInteriorSweepLine = cachedProfileOffsets[cachedIndex];
+                }
+                else
+                {
+                    offsetToInteriorSweepLine = computeOffsetToInteriorSweepLine(context,
+                            jointData.frameBody, jointData.tubeAxis, apexCoordSystem);
+                    cachedProfileAttributes = append(cachedProfileAttributes, frameProfileAttribute);
+                    cachedProfileOffsets    = append(cachedProfileOffsets,    offsetToInteriorSweepLine);
+                }
             }
             else
             {
                 offsetToInteriorSweepLine = computeOffsetToInteriorSweepLine(context,
                         jointData.frameBody, jointData.tubeAxis, apexCoordSystem);
-                if (profileCacheKey != undefined)
-                    profileOffsetCache[profileCacheKey] = offsetToInteriorSweepLine;
             }
 
             // toWorld(apexCoordSystem) is the Transform that carries geometry from the
@@ -693,42 +707,58 @@ function collectSharedApexEdges(context is Context, outerEdgeData is array, tota
 // Axis convention:
 //   origin : world-space midpoint of the outer apex edge
 //   X axis : outward normal of the adjacent cap (miter) face
-//   Z axis : cross(capFaceNormal, tubeAxis) -- fold line direction in the cross-section plane
+//   Z axis : physical tangent direction of the outer apex edge, sign-canonicalised via world
+//            axes (+X preferred, then +Y, then +Z) so it is deterministic regardless of
+//            B-rep edge orientation or which body's data carries the joint
 //   Y axis : implied by the right-hand rule (cross(Z, X))
 //
-// The fold line direction (Z) is derived from the cap face normal and the tube axis.
-// This guarantees it is perpendicular to the tube axis (required by coordSystem's precondition
-// and by the bounding-box evaluation in computeJointDimensions).  For box tubes with corner
-// radii the outer apex edge may border a cylindrical arc face; using that face's normal
-// instead of tubeAxis produces a fold line with a nonzero tube-axis component, which fails
-// the perpendicularVectors precondition.
+// Using the edge tangent as the fold line direction (Z) rather than cross(capFaceNormal,
+// tubeAxis) eliminates two sources of sign ambiguity:
+//   1. getTubeAxisFromSweptFaces returns cross(normalA, normalB), whose sign depends on query
+//      order and can flip with body selection order.
+//   2. collectSharedApexEdges picks one body's data per joint, so different selection orders
+//      cause different capFaceNormal / tubeAxis pairs to contribute, giving the opposite Z.
+// The outer apex edge lies on the planar cap face, so its tangent is always perpendicular to
+// capFaceNormal, satisfying coordSystem's perpendicularVectors(xAxis, zAxis) precondition.
 //
 // @param context       : Active context.
 // @param id            : Feature id, passed through for error reporting in sub-calls.
 // @param instanceIndex : Global instance counter (for error messages and instance naming).
 // @param apexEdge      : Query resolving to a single outer apex edge on a mitered frame body.
-// @param tubeAxis      : Tube sweep direction (dimensionless unit vector).
 // @returns CoordSystem aligned to the miter joint at the outer apex edge midpoint.
 function buildApexCoordSystem(context is Context, id is Id, instanceIndex is number,
-    apexEdge is Query, tubeAxis is Vector) returns CoordSystem
+    apexEdge is Query) returns CoordSystem
 {
-    const edgeMidpoint = evEdgeTangentLine(context, {
-                "edge" : apexEdge,
+    // A single evEdgeTangentLine call yields both the midpoint (origin) and the tangent
+    // direction (fold line / Z axis), so no extra geometry evaluation is required.
+    const apexEdgeTangentLine = evEdgeTangentLine(context, {
+                "edge"      : apexEdge,
                 "parameter" : 0.5
-            }).origin;
+            });
+    const edgeMidpoint = apexEdgeTangentLine.origin;
 
     const miterFace = findCapFaceAdjacentToApexEdge(context, id, instanceIndex, apexEdge);
 
     // X axis: outward normal of the miter (cap) face.
     const capFaceNormal = evFaceTangentPlane(context, {
-                "face" : miterFace,
+                "face"      : miterFace,
                 "parameter" : vector(0.5, 0.5)
             }).normal;
 
-    // Z axis: fold line direction.
-    // cross(capFaceNormal, tubeAxis) is perpendicular to both inputs by definition,
-    // satisfying coordSystem's perpendicularVectors(xAxis, zAxis) precondition.
-    const foldLineDirection = normalize(cross(capFaceNormal, tubeAxis));
+    // Z axis: fold line direction -- the physical tangent of the outer apex edge.
+    // Canonicalise the sign using world axes (+X preferred, then +Y, then +Z) so the
+    // direction is the same regardless of B-rep edge orientation or selection order.
+    var foldLineDirection = apexEdgeTangentLine.direction;
+    for (var worldAxis in [X_DIRECTION, Y_DIRECTION, Z_DIRECTION])
+    {
+        const worldProjection = dot(foldLineDirection, worldAxis);
+        if (abs(worldProjection) > TOLERANCE.zeroAngle)
+        {
+            if (worldProjection < 0)
+                foldLineDirection = -foldLineDirection;
+            break;
+        }
+    }
 
     return coordSystem(edgeMidpoint, capFaceNormal, foldLineDirection);
 }
@@ -794,9 +824,10 @@ function findCapFaceAdjacentToApexEdge(context is Context, id is Id, instanceInd
 function computeJointDimensions(context is Context, frameBody is Query, tubeAxis is Vector,
     apexCoordSystem is CoordSystem) returns map
 {
-    // Fold-line direction: apexCoordSystem.zAxis = cross(capFaceNormal, tubeAxis).
-    // By construction this is always perpendicular to tubeAxis, so it is a valid
-    // cross-section axis for the bounding-box evaluation below.
+    // Fold-line direction: apexCoordSystem.zAxis = the canonicalised tangent direction of the
+    // outer apex edge (see buildApexCoordSystem).  By construction (edge of a planar cap face)
+    // this is always perpendicular to tubeAxis, so it is a valid cross-section axis for the
+    // bounding-box evaluation below.
     const foldLineDirection = apexCoordSystem.zAxis;
 
     // Evaluation frame:
@@ -866,9 +897,14 @@ function computeOffsetToInteriorSweepLine(context is Context, frameBody is Query
 {
     const foldLineDirection = apexCoordSystem.zAxis;
 
-    // Transverse direction: perpendicular to both tubeAxis and foldLineDirection.
-    // This is the direction of the outer wall face normal for a single-axis miter.
-    const transverseDirection = normalize(cross(tubeAxis, foldLineDirection));
+    // Transverse direction: the component of the cap face normal perpendicular to the tube
+    // axis.  This points from the tube centre toward the outer wall face for any simple
+    // single-axis miter and is invariant to the sign of tubeAxis (flipping tubeAxis negates
+    // both dot(capFaceNormal, tubeAxis) and the subtracted term, leaving the result unchanged).
+    // Using cross(tubeAxis, foldLineDirection) would flip when tubeAxis changes sign, causing
+    // the outermost face selection to invert and returning the wrong distance.
+    const capFaceNormal       = apexCoordSystem.xAxis;
+    const transverseDirection = normalize(capFaceNormal - dot(capFaceNormal, tubeAxis) * tubeAxis);
 
     const allSweptFacesQuery = qHasAttributeWithValueMatching(
                 qOwnedByBody(frameBody, EntityType.FACE),
