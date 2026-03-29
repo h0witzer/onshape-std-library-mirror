@@ -36,6 +36,11 @@ const KIRIGAMI_BEND_ATTRIBUTE_NAME = "kirigamiBendData";
  *                                       degrees.  Matches the Onshape frame cut-list convention (0 = perpendicular
  *                                       cut, 45 = 45-degree miter).
  *   bendOutsideRadius {ValueWithUnits}: User-specified bend outside radius passed through from the feature input.
+ *   offsetToInteriorSweepLine {ValueWithUnits}: Perpendicular distance from the outer wall face to the nearest
+ *                                               longitudinal sweep edge that borders a swept face whose normal is
+ *                                               parallel to the local Z axis (the fold-line direction).  For a
+ *                                               hollow box tube this equals the wall thickness measured perpendicular
+ *                                               to both the tube sweep axis and the fold-line direction.
  */
 export type KirigamiBendAttribute typecheck canBeKirigamiBendAttribute;
 
@@ -50,6 +55,7 @@ export predicate canBeKirigamiBendAttribute(value)
     isLength(value.boxTubeWidth);
     isAngle(value.miterAngle);
     isLength(value.bendOutsideRadius);
+    isLength(value.offsetToInteriorSweepLine);
 }
 
 /**
@@ -222,27 +228,35 @@ export const kirigamiTubeBend = defineFeature(function(context is Context, id is
             const jointDimensions = computeJointDimensions(context, jointData.frameBody,
                     jointData.tubeAxis, apexCoordSystem);
 
+            // Distance from the outer wall face to the nearest longitudinal sweep edge on a
+            // top/bottom swept face (normal parallel to local Z).  For a hollow tube this equals
+            // the wall thickness measured perpendicular to both the tube axis and the fold line.
+            const offsetToInteriorSweepLine = computeOffsetToInteriorSweepLine(context,
+                    jointData.frameBody, jointData.tubeAxis, apexCoordSystem, apexEdge);
+
             // toWorld(apexCoordSystem) is the Transform that carries geometry from the
             // constructor's local origin to the correct world-space position and orientation.
             const instanceQuery = addInstance(instantiator, KirigamiBendConstructor::build, {
                         "configuration" : {
-                            "boxTubeHeight"     : jointDimensions.boxTubeHeight,
-                            "boxTubeWidth"      : jointDimensions.boxTubeWidth,
-                            "miterAngle"        : jointDimensions.miterAngle,
-                            "bendOutsideRadius" : definition.bendOutsideRadius
+                            "boxTubeHeight"            : jointDimensions.boxTubeHeight,
+                            "boxTubeWidth"             : jointDimensions.boxTubeWidth,
+                            "miterAngle"               : jointDimensions.miterAngle,
+                            "bendOutsideRadius"        : definition.bendOutsideRadius,
+                            "offsetToInteriorSweepLine": offsetToInteriorSweepLine
                         },
                         "transform" : toWorld(apexCoordSystem),
                         "name" : "bend" ~ instanceIndex
                     });
 
             pendingInstances = append(pendingInstances, {
-                        "query"             : instanceQuery,
-                        "coordSystem"       : apexCoordSystem,
-                        "instanceIndex"     : instanceIndex,
-                        "boxTubeHeight"     : jointDimensions.boxTubeHeight,
-                        "boxTubeWidth"      : jointDimensions.boxTubeWidth,
-                        "miterAngle"        : jointDimensions.miterAngle,
-                        "bendOutsideRadius" : definition.bendOutsideRadius
+                        "query"                    : instanceQuery,
+                        "coordSystem"              : apexCoordSystem,
+                        "instanceIndex"            : instanceIndex,
+                        "boxTubeHeight"            : jointDimensions.boxTubeHeight,
+                        "boxTubeWidth"             : jointDimensions.boxTubeWidth,
+                        "miterAngle"               : jointDimensions.miterAngle,
+                        "bendOutsideRadius"        : definition.bendOutsideRadius,
+                        "offsetToInteriorSweepLine": offsetToInteriorSweepLine
                     });
         }
 
@@ -257,14 +271,15 @@ export const kirigamiTubeBend = defineFeature(function(context is Context, id is
                         "entities" : instance.query,
                         "name" : KIRIGAMI_BEND_ATTRIBUTE_NAME,
                         "attribute" : {
-                            "instanceIndex"     : instance.instanceIndex,
-                            "apexOrigin"        : apexCS.origin,
-                            "zAxis"             : apexCS.zAxis,
-                            "xAxis"             : apexCS.xAxis,
-                            "boxTubeHeight"     : instance.boxTubeHeight,
-                            "boxTubeWidth"      : instance.boxTubeWidth,
-                            "miterAngle"        : instance.miterAngle,
-                            "bendOutsideRadius" : instance.bendOutsideRadius
+                            "instanceIndex"            : instance.instanceIndex,
+                            "apexOrigin"               : apexCS.origin,
+                            "zAxis"                    : apexCS.zAxis,
+                            "xAxis"                    : apexCS.xAxis,
+                            "boxTubeHeight"            : instance.boxTubeHeight,
+                            "boxTubeWidth"             : instance.boxTubeWidth,
+                            "miterAngle"               : instance.miterAngle,
+                            "bendOutsideRadius"        : instance.bendOutsideRadius,
+                            "offsetToInteriorSweepLine": instance.offsetToInteriorSweepLine
                         } as KirigamiBendAttribute
                     });
         }
@@ -868,4 +883,110 @@ function computeJointDimensions(context is Context, frameBody is Query, tubeAxis
         "boxTubeWidth"  : boxTubeWidth,
         "miterAngle"    : miterAngle
     };
+}
+
+// Computes the perpendicular distance from the outer wall face to the nearest longitudinal
+// sweep edge that borders a swept face whose outward normal is parallel to the fold-line
+// direction (apexCoordSystem.zAxis).  These are the "top" and "bottom" faces in the local
+// joint coordinate system.
+//
+// Geometry:
+//   - The outer wall face is the SWEPT_FACE adjacent to the outer apex edge.
+//   - "Top/bottom faces" are swept faces where parallelVectors(faceNormal, foldLine) is true.
+//   - "Longitudinal sweep edges" on those faces are edges whose tangent is parallel to tubeAxis.
+//   - Edges already shared with the outer wall face are at distance zero (outer corner edges)
+//     and are excluded; the minimum positive distance over the remaining edges is returned.
+//
+// For a thin-walled hollow box tube this equals the wall thickness measured in the direction
+// perpendicular to both the tube sweep axis and the fold-line direction.  For a solid bar it
+// equals the full cross-section dimension in that direction.
+//
+// A fallback of 0 * meter is returned if no qualifying edges are found (degenerate geometry).
+//
+// @param context          : Active context.
+// @param frameBody        : Query resolving to the single solid frame body.
+// @param tubeAxis         : Tube sweep direction (dimensionless unit vector).
+// @param apexCoordSystem  : Coordinate system at the outer apex edge (xAxis = cap face normal,
+//                           zAxis = fold-line direction).
+// @param apexEdge         : Query resolving to the outer apex edge on the frame body.
+// @returns ValueWithUnits (length) : Offset distance from outer wall to nearest interior sweep edge.
+function computeOffsetToInteriorSweepLine(context is Context, frameBody is Query,
+    tubeAxis is Vector, apexCoordSystem is CoordSystem, apexEdge is Query) returns ValueWithUnits
+{
+    // Outer wall face: the swept face adjacent to the apex edge.
+    const outerWallFace = qNthElement(qHasAttributeWithValueMatching(
+                qAdjacent(apexEdge, AdjacencyType.EDGE, EntityType.FACE),
+                FRAME_ATTRIBUTE_TOPOLOGY_NAME,
+                { "topologyType" : FrameTopologyType.SWEPT_FACE }), 0);
+
+    // Pre-compute the outer wall face plane for distance measurement and edge exclusion.
+    const outerWallPlane = evFaceTangentPlane(context, {
+                "face" : outerWallFace,
+                "parameter" : vector(0.5, 0.5)
+            });
+
+    // Pre-build the edge set of the outer wall face.  Edges shared between a top/bottom face
+    // and the outer wall face are the outer corner edges (distance = 0) and must be skipped.
+    const outerWallFaceEdges = qAdjacent(outerWallFace, AdjacencyType.EDGE, EntityType.EDGE);
+
+    const foldLineDirection = apexCoordSystem.zAxis;
+
+    // All swept faces on this body.
+    const allSweptFaces = evaluateQuery(context, qHasAttributeWithValueMatching(
+                qOwnedByBody(frameBody, EntityType.FACE),
+                FRAME_ATTRIBUTE_TOPOLOGY_NAME,
+                { "topologyType" : FrameTopologyType.SWEPT_FACE }));
+
+    var minimumPositiveDistance = undefined;
+
+    for (var sweptFace in allSweptFaces)
+    {
+        const faceNormal = evFaceTangentPlane(context, {
+                    "face" : sweptFace,
+                    "parameter" : vector(0.5, 0.5)
+                }).normal;
+
+        // Only process faces whose outward normal is parallel to the fold-line direction
+        // (the "top" and "bottom" faces in the local joint coordinate system).
+        if (!parallelVectors(faceNormal, foldLineDirection))
+            continue;
+
+        // Iterate over the edges of this top/bottom face.
+        const faceEdges = evaluateQuery(context, qAdjacent(sweptFace, AdjacencyType.EDGE, EntityType.EDGE));
+
+        for (var faceEdge in faceEdges)
+        {
+            // Skip edges shared with the outer wall face -- they are the outer corner edges
+            // at distance zero and do not represent interior sweep lines.
+            if (!isQueryEmpty(context, qIntersection([faceEdge, outerWallFaceEdges])))
+                continue;
+
+            // Only consider longitudinal sweep edges: edges whose tangent is parallel to
+            // the tube axis.  Cross-sectional edges (running across the tube width or along
+            // the miter cut) are not sweep lines and must be excluded.
+            const edgeTangentLine = evEdgeTangentLine(context, {
+                        "edge" : faceEdge,
+                        "parameter" : 0.5
+                    });
+
+            if (!parallelVectors(edgeTangentLine.direction, tubeAxis))
+                continue;
+
+            // Perpendicular distance from the outer wall face plane to this edge midpoint.
+            // The edge is parallel to tubeAxis which is perpendicular to the outer wall
+            // normal, so the distance is constant along the entire edge.
+            const signedDistance = dot(edgeTangentLine.origin - outerWallPlane.origin,
+                    outerWallPlane.normal);
+            const distance = (signedDistance >= 0 * meter) ? signedDistance : -signedDistance;
+
+            if (minimumPositiveDistance == undefined || distance < minimumPositiveDistance)
+                minimumPositiveDistance = distance;
+        }
+    }
+
+    // Fallback: return zero if no interior edge was found (e.g., degenerate profile).
+    if (minimumPositiveDistance == undefined)
+        return 0 * meter;
+
+    return minimumPositiveDistance;
 }
