@@ -37,10 +37,14 @@ const KIRIGAMI_BEND_ATTRIBUTE_NAME = "kirigamiBendData";
  *                                       cut, 45 = 45-degree miter).
  *   bendOutsideRadius {ValueWithUnits}: User-specified bend outside radius passed through from the feature input.
  *   offsetToInteriorSweepLine {ValueWithUnits}: Perpendicular distance from the outer wall face to the nearest
- *                                               longitudinal sweep edge that borders a swept face whose normal is
- *                                               parallel to the local Z axis (the fold-line direction).  For a
- *                                               hollow box tube this equals the wall thickness measured perpendicular
- *                                               to both the tube sweep axis and the fold-line direction.
+ *                                               longitudinal sweep edge on an INNER (cavity-surface) top/bottom
+ *                                               face whose normal is parallel to the local Z axis (the fold-line
+ *                                               direction).  Only faces on the inside of the tube are considered;
+ *                                               outer-surface top/bottom faces are excluded so that exterior corner
+ *                                               fillets do not affect the result.  For a hollow box tube without
+ *                                               corner fillets this equals the wall thickness.  For a tube with
+ *                                               interior corner fillets the value includes the fillet radius
+ *                                               (wall thickness + interior fillet radius).
  */
 export type KirigamiBendAttribute typecheck canBeKirigamiBendAttribute;
 
@@ -934,24 +938,30 @@ function computeJointDimensions(context is Context, frameBody is Query, tubeAxis
 }
 
 // Computes the perpendicular distance from the outer wall face to the nearest longitudinal
-// sweep edge that borders a swept face whose outward normal is parallel to the fold-line
-// direction projected onto the cross-section plane (perpendicular to tubeAxis).
-// These are the "top" and "bottom" faces in the local joint coordinate system.
+// sweep edge on an INNER (cavity-surface) top/bottom face.
+//
+// Only faces on the inside of the tube geometry are considered.  Outer-surface top/bottom
+// faces are excluded so that exterior corner fillet geometry (fillet-transition edges on
+// outer faces that are not shared with the outer wall face) does not influence the result.
+//
+// Inner vs. outer face classification:
+//   A face is classified as INNER if a small displacement from its center along the outward
+//   normal stays within the body's extent in the fold-line direction.  An outer face's normal
+//   points outward from the body, so the same displacement exits the body extent.  This
+//   correctly handles tubes with or without corner fillets on either surface.
 //
 // Geometry:
 //   - The outer wall face is the SWEPT_FACE adjacent to the outer apex edge.
 //   - "Top/bottom faces" are swept faces where parallelVectors(faceNormal, foldLine) is true.
-//     foldLine is apexCoordSystem.zAxis projected perpendicular to tubeAxis to guarantee
-//     it lies in the cross-section plane, matching the exactly-perpendicular swept face normals.
-//   - "Longitudinal sweep edges" on those faces are edges whose tangent is parallel to tubeAxis.
-//   - Edges already shared with the outer wall face are at distance zero (outer corner edges)
-//     and are excluded; the minimum positive distance over the remaining edges is returned.
+//     foldLine is apexCoordSystem.zAxis projected perpendicular to tubeAxis.
+//   - On each qualifying inner face, only longitudinal sweep edges (tangent parallel to
+//     tubeAxis) are considered.  Edges shared with the outer wall face are skipped.
+//   - The minimum positive distance across all qualifying edges is returned.
 //
-// For a thin-walled hollow box tube this equals the wall thickness measured in the direction
-// perpendicular to both the tube sweep axis and the fold-line direction.  For a solid bar it
-// equals the full cross-section dimension in that direction.
-//
-// A fallback of 0 * meter is returned if no qualifying edges are found (degenerate geometry).
+// For a hollow box tube without corner fillets, this equals the wall thickness.
+// For a tube with interior corner fillets, this equals the wall thickness plus the interior
+// fillet radius (the inner top/bottom face is narrower, so its nearest edge is set back).
+// For a solid (non-hollow) tube, no inner face exists and 0 * meter is returned.
 //
 // @param context          : Active context.
 // @param frameBody        : Query resolving to the single solid frame body.
@@ -976,7 +986,7 @@ function computeOffsetToInteriorSweepLine(context is Context, frameBody is Query
             });
 
     // Pre-build the edge set of the outer wall face.  Edges shared between a top/bottom face
-    // and the outer wall face are the outer corner edges (distance = 0) and must be skipped.
+    // and the outer wall face are at distance zero and must be skipped.
     const outerWallFaceEdges = qAdjacent(outerWallFace, AdjacencyType.EDGE, EntityType.EDGE);
 
     // Fold-line direction: project apexCoordSystem.zAxis onto the plane perpendicular to
@@ -986,6 +996,19 @@ function computeOffsetToInteriorSweepLine(context is Context, frameBody is Query
     // fails for all top/bottom faces and the function returns the 0-fallback.
     // For standard box-tube geometry the projected component is zero and this is a no-op.
     const foldLineDirection = projectFoldLineOntoCrossSection(apexCoordSystem.zAxis, tubeAxis);
+
+    // Body bounding box extent in the fold-line direction.  Used to distinguish inner
+    // (cavity surface) faces from outer (body surface) faces: outer top/bottom faces sit
+    // at the body's bounding-box extremes; inner top/bottom faces sit between the extremes
+    // at a distance inward equal to the wall thickness (plus any interior fillet radius).
+    const foldLineCS = coordSystem(WORLD_ORIGIN, foldLineDirection, tubeAxis);
+    const bodyExtentBox = evBox3d(context, {
+                "topology" : frameBody,
+                "cSys"     : foldLineCS,
+                "tight"    : true
+            });
+    const minExtentAlongFoldLine = bodyExtentBox.minCorner[0];
+    const maxExtentAlongFoldLine = bodyExtentBox.maxCorner[0];
 
     // All swept faces on this body.
     const allSweptFaces = evaluateQuery(context, qHasAttributeWithValueMatching(
@@ -997,17 +1020,31 @@ function computeOffsetToInteriorSweepLine(context is Context, frameBody is Query
 
     for (var sweptFace in allSweptFaces)
     {
-        const faceNormal = evFaceTangentPlane(context, {
+        const faceTangentPlane = evFaceTangentPlane(context, {
                     "face" : sweptFace,
                     "parameter" : vector(0.5, 0.5)
-                }).normal;
+                });
 
         // Only process faces whose outward normal is parallel to the fold-line direction
         // (the "top" and "bottom" faces in the local joint coordinate system).
-        if (!parallelVectors(faceNormal, foldLineDirection))
+        if (!parallelVectors(faceTangentPlane.normal, foldLineDirection))
             continue;
 
-        // Iterate over the edges of this top/bottom face.
+        // Only process INNER (cavity surface) faces.  An inner face's outward normal points
+        // into the tube cavity; displacing the face center slightly along the normal keeps
+        // the test point within the body's extent in the fold-line direction.  An outer face's
+        // normal points outward from the body; the same displacement exits the body extent.
+        // TOLERANCE.zeroLength (1e-8) is large enough to exceed floating-point noise in the
+        // bounding-box computation but far smaller than any real wall thickness.
+        const facePositionAlongFoldLine = dot(faceTangentPlane.origin, foldLineDirection);
+        const normalComponentAlongFoldLine = dot(faceTangentPlane.normal, foldLineDirection);
+        const displacedPosition = facePositionAlongFoldLine +
+                normalComponentAlongFoldLine * TOLERANCE.zeroLength * meter;
+
+        if (displacedPosition > maxExtentAlongFoldLine || displacedPosition < minExtentAlongFoldLine)
+            continue;
+
+        // Iterate over the edges of this inner top/bottom face.
         const faceEdges = evaluateQuery(context, qAdjacent(sweptFace, AdjacencyType.EDGE, EntityType.EDGE));
 
         for (var faceEdge in faceEdges)
@@ -1040,7 +1077,7 @@ function computeOffsetToInteriorSweepLine(context is Context, frameBody is Query
         }
     }
 
-    // Fallback: return zero if no interior edge was found (e.g., degenerate profile).
+    // Fallback: return zero if no qualifying edge was found (solid tube, no cavity).
     if (minimumPositiveDistance == undefined)
         return 0 * meter;
 
