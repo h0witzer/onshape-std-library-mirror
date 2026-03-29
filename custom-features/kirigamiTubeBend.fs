@@ -197,7 +197,7 @@ export const kirigamiTubeBend = defineFeature(function(context is Context, id is
                     continue;
 
                 const outerEdge = findOuterApexEdgeForCapFace(context, id, bodyIndex,
-                        frameBody, capFace);
+                        frameBody, capFace, capFaceNormal, tubeAxis);
                 allOuterEdgeData = append(allOuterEdgeData, {
                         "edgeQuery"  : outerEdge,
                         "bodyIndex"  : bodyIndex,
@@ -355,18 +355,18 @@ function getTubeAxisFromSweptFaces(context is Context, sweptFacesArray is array)
 function isCapFaceSimpleMiter(context is Context, sweptFacesArray is array,
     capFaceNormal is Vector, tubeAxis is Vector) returns boolean
 {
-    // Component of the cap face normal in the plane perpendicular to the tube axis.
-    // Referred to as the "transverse component" because it lies in the cross-section plane.
-    // This is a standard vector projection: v_perp = v - (v · axis) * axis.
-    // No standard library function exists for this specific plane-perpendicular projection;
-    // the inline form is used after confirming that ev*/q* functions do not cover this case.
-    // For a simple single-axis miter this vector is parallel to exactly one swept wall face normal.
-    const capFaceNormalTransverseComponent = capFaceNormal - dot(capFaceNormal, tubeAxis) * tubeAxis;
+    // Transverse component of the cap face normal: its projection onto the cross-section plane
+    // (perpendicular to tubeAxis).  For a simple single-axis miter this vector is parallel to
+    // exactly one swept wall face normal.  Pre-condition: capFaceNormal is not parallel to
+    // tubeAxis (ensured by the 0-degree filter at the call site).
+    const capFaceNormalTransverseComponent = projectFoldLineOntoCrossSection(capFaceNormal, tubeAxis);
 
     for (var faceIndex = 0; faceIndex < size(sweptFacesArray); faceIndex += 1)
     {
         const sweptFaceNormal = evFaceTangentPlane(context, {
                     "face" : sweptFacesArray[faceIndex],
+                    // Evaluate at the face center to obtain a representative outward normal
+                    // for each planar swept face.
                     "parameter" : vector(0.5, 0.5)
                 }).normal;
 
@@ -379,35 +379,48 @@ function isCapFaceSimpleMiter(context is Context, sweptFacesArray is array,
 
 // Finds the single outer apex edge on one cap face of a frame body.
 //
-// Implements the same bounding-box outer-edge detection used by Neil Cooke's Frame Unroll
-// feature.  A local coordinate system is built from the first candidate edge's tangent
-// (X axis) and the adjacent swept face's outward normal (Z axis).  The body is evaluated in
-// that frame with evBox3d; the outer apex edge is the candidate edge that lies in a plane
-// through the extreme-Y bounding-box corner -- i.e., the edge at the outermost extent of
-// the tube in the direction perpendicular to both the fold line and the tube wall.
+// The outer wall face is the swept face adjacent to the cap face whose outward normal is
+// parallel to AND co-directional with the transverse component of the cap face normal
+// (its projection onto the cross-section plane, perpendicular to tubeAxis).  For a simple
+// single-axis miter (already verified by isCapFaceSimpleMiter at the call site) exactly one
+// swept face satisfies this condition: the outer wall -- the face on the convex side of the bend.
 //
-// minCorner is checked before maxCorner, matching Frame Unroll's iteration order.  Only one
-// of the two corners will coincide with a candidate edge; that edge is the outer apex edge.
+// The outer apex edge is then the single edge shared between the cap face and that outer wall
+// face.  This is direct, deterministic, and requires no bounding-box calculation.
 //
-// @param context    : Active context.
-// @param id         : Feature id used for error reporting.
-// @param bodyIndex  : Zero-based index of this body in the selection (for error messages).
-// @param frameBody  : Query resolving to a single solid frame body.
-// @param capFace    : Query resolving to one cap face on frameBody.
-// @returns Query    : The single outer apex edge on this cap face.
+// The previous bounding-box approach built a local frame from qNthElement(candidateEdges, 0)
+// (X axis) and qNthElement(sweptFacesAdjacentToCapFace, 0) (Z axis), both of which are B-rep
+// order dependent.  When the first candidate edge happened to run in the fold-line direction
+// (a side edge rather than a top/bottom edge), the resulting local Y axis became parallel to
+// the tube axis instead of pointing across the cross-section, causing the bounding-box corner
+// planes to select tube-end edges instead of apex edges.
+//
+// @param context          : Active context.
+// @param id               : Feature id used for error reporting.
+// @param bodyIndex        : Zero-based index of this body in the selection (for error messages).
+// @param frameBody        : Query resolving to a single solid frame body.
+// @param capFace          : Query resolving to one cap face on frameBody.
+// @param capFaceNormal    : Outward normal of capFace (already evaluated by the caller).
+// @param tubeAxis         : Tube sweep direction (already evaluated by the caller).
+// @returns Query          : The single outer apex edge on this cap face.
 function findOuterApexEdgeForCapFace(context is Context, id is Id, bodyIndex is number,
-    frameBody is Query, capFace is Query) returns Query
+    frameBody is Query, capFace is Query, capFaceNormal is Vector, tubeAxis is Vector) returns Query
 {
-    // Swept faces of this body that border the cap face.  Using FrameTopologyAttribute
-    // (the same layer as qFrameStartFace / qFrameEndFace) avoids any geometry comparison.
-    const allBodySweptFaces = qHasAttributeWithValueMatching(
-            qOwnedByBody(frameBody, EntityType.FACE),
-            FRAME_ATTRIBUTE_TOPOLOGY_NAME,
-            { "topologyType" : FrameTopologyType.SWEPT_FACE });
+    // Transverse component of the cap face normal: its projection onto the cross-section plane
+    // (perpendicular to tubeAxis), normalized.  For a simple single-axis miter (verified by
+    // isCapFaceSimpleMiter at the call site) this is parallel to the outer wall face normal
+    // and co-directional with it (positive dot product).  Pre-condition: capFaceNormal is
+    // not parallel to tubeAxis (ensured by the 0-degree filter at the call site).
+    const transverseNormal = projectFoldLineOntoCrossSection(capFaceNormal, tubeAxis);
 
+    // Swept faces adjacent to the cap face: the tube wall faces that share a perimeter edge
+    // with the miter cut.
     const sweptFacesAdjacentToCapFace = qIntersection([
                 qAdjacent(capFace, AdjacencyType.EDGE, EntityType.FACE),
-                allBodySweptFaces
+                qHasAttributeWithValueMatching(
+                    qOwnedByBody(frameBody, EntityType.FACE),
+                    FRAME_ATTRIBUTE_TOPOLOGY_NAME,
+                    { "topologyType" : FrameTopologyType.SWEPT_FACE })
             ]);
 
     if (isQueryEmpty(context, sweptFacesAdjacentToCapFace))
@@ -415,68 +428,45 @@ function findOuterApexEdgeForCapFace(context is Context, id is Id, bodyIndex is 
             "Ensure the selected body is an Onshape frame member created with the Frame feature.",
             ["frameBodies"]);
 
-    // Candidate apex edges: edges that border both the cap face and a swept face.
-    // For a rectangular box tube this yields the 4 perimeter edges of the cap face.
-    const candidateEdges = qIntersection([
-                qAdjacent(capFace,                   AdjacencyType.EDGE, EntityType.EDGE),
-                qAdjacent(sweptFacesAdjacentToCapFace, AdjacencyType.EDGE, EntityType.EDGE)
-            ]);
-
-    if (isQueryEmpty(context, candidateEdges))
-        throw regenError("No apex edges found on a cap face of frame body " ~ (bodyIndex + 1) ~ ". " ~
-            "Ensure the body has a mitered end face adjacent to its tube wall faces.",
-            ["frameBodies"]);
-
-    // Build a local coordinate system identical to the one Frame Unroll constructs:
-    //   X axis = tangent of the first candidate edge at its midpoint
-    //   Z axis = outward normal of the first adjacent swept face
-    //   Y axis = cross(Z, X)  [implicit in CoordSystem]
-    // The Y axis points across the miter face toward the outer/inner extents of the tube.
-    // NOTE: this is a helper frame solely for bounding-box analysis.  The placement coord
-    // system built by buildApexCoordSystem uses a different axis convention (cap face normal
-    // = X, edge tangent = Z) that orients the constructor geometry correctly at the joint.
-    const firstEdgeLine = evEdgeTangentLine(context, {
-                "edge" : qNthElement(candidateEdges, 0),
-                "parameter" : 0.5
-            });
-
-    const sweptFaceNormal = evFaceTangentPlane(context, {
-                "face" : qNthElement(sweptFacesAdjacentToCapFace, 0),
-                "parameter" : vector(0.5, 0.5)
-            }).normal;
-
-    const localCoordSystem = coordSystem(firstEdgeLine.origin, firstEdgeLine.direction, sweptFaceNormal);
-
-    // Bounding box of the body measured in the local coordinate system.
-    // The Y extents (minCorner.y and maxCorner.y) locate the outermost and innermost
-    // cap-face boundary edges relative to the tube wall.
-    const bodyBoundingBox = evBox3d(context, {
-                "topology" : frameBody,
-                "cSys" : localCoordSystem,
-                "tight" : true
-            });
-
-    // The outer apex edge lies in a plane at one of the bounding-box Y extremes.
-    // A plane through the bounding-box corner with normal = yAxis(localCoordSystem) is a
-    // constant-Y plane in the local frame; qCoincidesWithPlane selects the candidate edge
-    // that lies entirely in that plane.  minCorner is checked first, then maxCorner,
-    // matching the iteration order used by Frame Unroll.
-    var outerEdge = qNothing();
-
-    for (var corner in [bodyBoundingBox.minCorner, bodyBoundingBox.maxCorner])
+    // The outer wall face normal is parallel to AND co-directional with transverseNormal.
+    // The inner wall face normal is antiparallel (same parallelVectors result, opposite sign).
+    // Top/bottom face normals are perpendicular (parallelVectors returns false).
+    // parallelVectors confirms alignment; the positive dot product ensures co-directional
+    // (outer wall) rather than antiparallel (inner wall).
+    var outerWallFace = undefined;
+    for (var sweptFace in evaluateQuery(context, sweptFacesAdjacentToCapFace))
     {
-        const cornerPlane = plane(toWorld(localCoordSystem, corner), yAxis(localCoordSystem));
-        outerEdge = qCoincidesWithPlane(candidateEdges, cornerPlane);
-        if (!isQueryEmpty(context, outerEdge))
+        const sweptFaceNormal = evFaceTangentPlane(context, {
+                    "face" : sweptFace,
+                    // Evaluate at the face center to obtain a representative outward normal
+                    // for each planar swept face.
+                    "parameter" : vector(0.5, 0.5)
+                }).normal;
+
+        if (parallelVectors(transverseNormal, sweptFaceNormal) && dot(transverseNormal, sweptFaceNormal) > 0)
+        {
+            outerWallFace = sweptFace;
             break;
+        }
     }
 
-    if (isQueryEmpty(context, outerEdge))
+    if (outerWallFace == undefined)
+        throw regenError("Could not identify the outer wall face for a cap face of frame body " ~
+            (bodyIndex + 1) ~ ". Ensure the body is a properly formed Onshape frame member with a simple single-axis miter.",
+            ["frameBodies"]);
+
+    // The outer apex edge is the single edge shared between the cap face and the outer wall face.
+    const outerApexEdge = qIntersection([
+                qAdjacent(capFace,       AdjacencyType.EDGE, EntityType.EDGE),
+                qAdjacent(outerWallFace, AdjacencyType.EDGE, EntityType.EDGE)
+            ]);
+
+    if (isQueryEmpty(context, outerApexEdge))
         throw regenError("Could not determine the outer apex edge on a cap face of frame body " ~
             (bodyIndex + 1) ~ ". Ensure the body is a properly formed Onshape frame member.",
             ["frameBodies"]);
 
-    return qNthElement(outerEdge, 0);
+    return qNthElement(outerApexEdge, 0);
 }
 
 // Collects the outer apex edges representing the joints that should receive bend constructors.
@@ -702,26 +692,26 @@ function collectSharedApexEdges(context is Context, outerEdgeData is array, tota
     return cycleOrderedJoints;
 }
 
-// Projects foldLineDirection onto the plane perpendicular to tubeAxis.
+// Projects a vector onto the plane perpendicular to a given axis, then normalizes the result.
 //
-// When a frame body is created without a reference face, the outer wall face normal used
-// in buildApexCoordSystem may carry a small floating-point component along tubeAxis.
-// Because foldLineDirection = cross(capFaceNormal, outerWallNormal), that component
-// propagates into foldLineDirection.  Swept face normals are exactly perpendicular to
-// tubeAxis, so parallelVectors(sweptFaceNormal, rawFoldLine) fails when that spurious
-// component exceeds TOLERANCE.zeroAngle.  Projecting onto the cross-section plane removes
-// the component and restores the correct match.  For ideal geometry the projected component
-// is exactly zero and the operation is a no-op.
+// Used in two related contexts:
+//   1. Fold-line projection: strips any tubeAxis component that builds up in foldLineDirection
+//      when a frame body is created without a reference face.  Without this, the fold-line
+//      direction would differ from the exactly-perpendicular swept face normals by a tiny angle,
+//      causing parallelVectors checks to fail.
+//   2. Cap-face normal transverse projection: extracts the component of the cap face normal
+//      that lies in the cross-section plane.  For a simple single-axis miter this is parallel
+//      to the outer wall face normal, used to identify which swept face is the outer wall.
 //
-// Pre-condition: foldLineDirection must not be parallel to tubeAxis (this is guaranteed by
-// the isCapFaceSimpleMiter filter applied before any apex edge is accepted).
+// Pre-condition: the input vector must not be parallel to axis (the projection would be a
+// zero vector and normalize() undefined).  The caller must guard against this case.
 //
-// @param foldLineDirection : Raw fold-line direction from apexCoordSystem.zAxis (unit vector).
-// @param tubeAxis          : Tube sweep direction (dimensionless unit vector).
-// @returns Vector (unit) : foldLineDirection with its tubeAxis component removed and re-normalized.
-function projectFoldLineOntoCrossSection(foldLineDirection is Vector, tubeAxis is Vector) returns Vector
+// @param vector    : Vector to project (does not need to be a unit vector).
+// @param axis      : Axis to project out of vector (dimensionless unit vector).
+// @returns Vector (unit) : vector with its axis component removed and re-normalized.
+function projectFoldLineOntoCrossSection(vector is Vector, axis is Vector) returns Vector
 {
-    return normalize(foldLineDirection - dot(foldLineDirection, tubeAxis) * tubeAxis);
+    return normalize(vector - dot(vector, axis) * axis);
 }
 
 // Builds a stable coordinate system centered on the midpoint of the given apex edge.
@@ -877,17 +867,15 @@ function computeJointDimensions(context is Context, frameBody is Query, tubeAxis
 {
     // --- Cross-section bounding box ---
     // The fold-line direction is apexCoordSystem.zAxis: cross(capFaceNormal, outerWallNormal).
-    // For a simple single-axis miter on a standard box tube this direction is perpendicular
-    // to tubeAxis.  When the Frame feature has no reference face assigned, the outer wall
-    // face normal used to compute foldLineDirection may not be exactly perpendicular to
-    // tubeAxis, causing coordSystem to fail its perpendicularVectors precondition.
-    // projectFoldLineOntoCrossSection removes any tubeAxis component and guarantees
-    // orthogonality.  For ideal geometry the projection is a no-op.
+    // When the Frame feature has no reference face assigned, the outer wall face normal used
+    // to build apexCoordSystem may carry a small floating-point component along tubeAxis.
+    // projectFoldLineOntoCrossSection strips that component and normalizes the result,
+    // guaranteeing orthogonality with tubeAxis.  For ideal geometry this is a no-op.
     const foldLineDirection = apexCoordSystem.zAxis;
 
-    // Guard against the degenerate case where foldLineDirection is parallel to tubeAxis.
-    // projectFoldLineOntoCrossSection normalizes the projection; if foldLineDirection were
-    // parallel to tubeAxis the projected vector would be zero and normalize() undefined.
+    // Guard: if foldLineDirection is parallel to tubeAxis the cross-section projection
+    // would produce a zero vector (normalize() undefined).  This must be checked on the
+    // raw direction before calling projectFoldLineOntoCrossSection.
     if (parallelVectors(foldLineDirection, tubeAxis))
         throw regenError("Cannot compute joint cross-section dimensions: the fold-line " ~
             "direction is parallel to the tube sweep axis. Verify that all selected bodies " ~
