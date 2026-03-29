@@ -371,14 +371,23 @@ function isCapFaceSimpleMiter(context is Context, sweptFacesArray is array,
 // Finds the single outer apex edge on one cap face of a frame body.
 //
 // A local coordinate system is built from the first candidate edge's tangent (X axis) and
-// the adjacent swept face's outward normal (Z axis).  The outer apex edge is identified by
-// directly projecting each candidate edge midpoint onto the local Y axis and selecting the
-// edge at the minimum Y projection (the Frame Unroll convention: minCorner before maxCorner).
-// This replaces the original evBox3d(tight)+qCoincidesWithPlane approach, which forced
-// evaluation of the entire body geometry to obtain a bounding box that was only used for
-// its Y extents.  For a rectangular box tube the cost is 3 additional evEdgeTangentLine
-// calls (edge 0's midpoint is already available from the coord-system setup) vs one
-// tight body bounding box evaluation.
+// the adjacent swept face's outward normal (Z axis).  Candidate edge midpoints are projected
+// onto the local Y axis and both the minimum-Y and maximum-Y edges are tracked.  The outer
+// apex is at one of the two Y extremes; which one depends on whether the local Y axis points
+// into or away from the tube body.  That direction is resolved cheaply by projecting the
+// world-space centre of the first adjacent swept face (obtained for free from the same
+// evFaceTangentPlane call used to establish Z) onto Y: a negative projection means the tube
+// body extends in -Y and the outer apex is at MAX local Y; a positive projection means the
+// tube body extends in +Y and the outer apex is at MIN local Y.
+//
+// Replaces the original evBox3d(tight)+qCoincidesWithPlane approach, which forced evaluation
+// of the entire body geometry to obtain a bounding box used only for its Y extents.  The new
+// approach spends only N-1 evEdgeTangentLine calls for the midpoint loop (edge 0 is free)
+// and one evFaceTangentPlane call that was already required, making it substantially cheaper.
+//
+// Works correctly for both the idealised 4-face box tube and real box tube sections that
+// have inner and outer corner radii (typically 16 or more swept faces total), because the
+// swept-face centre is always far from the outer-apex plane regardless of face count.
 //
 // @param context    : Active context.
 // @param id         : Feature id used for error reporting.
@@ -407,7 +416,10 @@ function findOuterApexEdgeForCapFace(context is Context, id is Id, bodyIndex is 
             ["frameBodies"]);
 
     // Candidate apex edges: edges that border both the cap face and a swept face.
-    // For a rectangular box tube this yields the 4 perimeter edges of the cap face.
+    // For an idealised 4-faced box tube this yields 4 perimeter edges; for a real box
+    // tube with inner and outer corner radii there can be 12–16 or more swept faces
+    // and a correspondingly larger candidate set.  The Y-projection logic below handles
+    // any number of candidates correctly.
     const candidateEdges = qIntersection([
                 qAdjacent(capFace,                   AdjacencyType.EDGE, EntityType.EDGE),
                 qAdjacent(sweptFacesAdjacentToCapFace, AdjacencyType.EDGE, EntityType.EDGE)
@@ -431,17 +443,22 @@ function findOuterApexEdgeForCapFace(context is Context, id is Id, bodyIndex is 
                 "parameter" : 0.5
             });
 
-    const sweptFaceNormal = evFaceTangentPlane(context, {
+    // Save both the normal and the world-space centre point of the first adjacent swept face.
+    // The centre is used below to determine which Y extreme is the outer apex without any
+    // additional ev calls.  That face spans the full tube length in the Y direction, so its
+    // centre is always far (in Y) from the outer-apex plane even on real-world box tubes with
+    // corner radii (which typically have 16 swept faces rather than the idealised 4).
+    const sweptFacePlane  = evFaceTangentPlane(context, {
                 "face" : qNthElement(sweptFacesAdjacentToCapFace, 0),
                 "parameter" : vector(0.5, 0.5)
-            }).normal;
+            });
+    const sweptFaceNormal = sweptFacePlane.normal;
 
     const localCoordSystem = coordSystem(firstEdgeLine.origin, firstEdgeLine.direction, sweptFaceNormal);
 
-    // Directly project each candidate edge midpoint onto the local Y axis and pick the
-    // edge at the minimum projection (matching Frame Unroll's minCorner-first convention).
-    // Replaces the previous evBox3d(tight: true) + qCoincidesWithPlane approach, which
-    // evaluated the entire body geometry to obtain a bounding box used only for its Y extents.
+    // Project each candidate edge midpoint onto the local Y axis, tracking both the
+    // minimum-Y and maximum-Y edges.  The outer apex edge sits at one of these two extremes;
+    // the inner apex (and diagonal miter edges) sit between them.
     //
     // Edge 0's midpoint is already available from firstEdgeLine -- no extra ev call needed.
     const candidateEdgesArray = evaluateQuery(context, candidateEdges);
@@ -473,10 +490,25 @@ function findOuterApexEdgeForCapFace(context is Context, id is Id, bodyIndex is 
         }
     }
 
-    // Prefer the minimum-Y edge (matching Frame Unroll's minCorner-first order).
-    // Fall back to the maximum-Y edge only when all projections are equal (a degenerate
-    // case that cannot arise for a well-formed rectangular tube profile).
-    return (minimumYProjection < maximumYProjection) ? minimumYEdge : maximumYEdge;
+    // Determine which Y extreme holds the outer apex edge by projecting the swept-face
+    // centre onto the local Y axis.
+    //
+    // The outer wall face (first adjacent swept face) spans the full tube length in Y.
+    // Its world-space centre therefore lies well inside the tube body, far from the
+    // outer-apex plane in local Y.  Depending on whether the local Y axis points toward
+    // or away from the tube interior from the cap face:
+    //
+    //   outerWallFaceCenterY < 0  →  local Y points away from the tube body
+    //                                 tube body extends in -Y; outer apex is at MAX local Y
+    //   outerWallFaceCenterY > 0  →  local Y points into the tube body
+    //                                 tube body extends in +Y; outer apex is at MIN local Y
+    //
+    // This replaces the previous unconditional "return minimumYEdge" which was only correct
+    // when the local Y axis happened to point into the tube (about half of all orientations).
+    // The incorrect sign caused the inner apex edge to be returned, making
+    // collectSharedApexEdges find no matching midpoint and produce no geometry.
+    const outerWallFaceCenterY = dot(sweptFacePlane.origin - localOrigin, yDirection);
+    return (outerWallFaceCenterY < 0 * meter) ? maximumYEdge : minimumYEdge;
 }
 
 // Collects the outer apex edges representing the joints that should receive bend constructors.
@@ -914,6 +946,10 @@ function computeJointDimensions(context is Context, frameBody is Query, tubeAxis
 //
 // Performance:
 //   qParallelPlanes replaces iterating all swept faces + evFaceTangentPlane per face.
+//   qParallelPlanes only matches PLANAR faces; for real box tubes with corner radii (typically
+//   16 swept faces) the cylindrical arc faces are excluded automatically -- this is correct
+//   because the original parallelVectors check on evFaceTangentPlane normals at (0.5, 0.5)
+//   also excluded them (arc-face normals at their UV centre are diagonal, not fold-aligned).
 //   qSubtraction replaces one qIntersection query evaluation per edge.
 //   A single evaluateQuery call replaces one call per Z-parallel face.
 //
@@ -977,7 +1013,7 @@ function computeOffsetToInteriorSweepLine(context is Context, frameBody is Query
         // so the distance is constant along the entire edge.
         const signedDistance = dot(edgeTangentLine.origin - outerWallPlane.origin,
                 outerWallPlane.normal);
-        const distance = (signedDistance >= 0 * meter) ? signedDistance : -signedDistance;
+        const distance = abs(signedDistance);
 
         if (minimumPositiveDistance == undefined || distance < minimumPositiveDistance)
             minimumPositiveDistance = distance;
