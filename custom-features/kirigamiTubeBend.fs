@@ -225,6 +225,12 @@ export const kirigamiTubeBend = defineFeature(function(context is Context, id is
             // toWorld(apexCoordSystem) is the Transform that carries geometry from the
             // constructor's local origin to the correct world-space position and orientation.
             const instanceQuery = addInstance(instantiator, KirigamiBendConstructor::build, {
+                        "configuration" : {
+                            "boxTubeHeight"     : jointDimensions.boxTubeHeight,
+                            "boxTubeWidth"      : jointDimensions.boxTubeWidth,
+                            "miterAngle"        : jointDimensions.miterAngle,
+                            "bendOutsideRadius" : definition.bendOutsideRadius
+                        },
                         "transform" : toWorld(apexCoordSystem),
                         "name" : "bend" ~ instanceIndex
                     });
