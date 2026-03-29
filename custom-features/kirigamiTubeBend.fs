@@ -60,10 +60,13 @@ export predicate canBeKirigamiBendAttribute(value)
  * "Outer apex edge" is the Frame Unroll bounding-box edge at the extreme-Y extent of the
  * miter joint -- the fold line at maximum bend radius (the outside of the corner).
  *
- * Closed-ring topology (bodies forming a loop) is handled correctly: each joint midpoint
- * appears exactly twice in the collected data (once per body at that joint), so every joint
- * in the ring is included.  The first body in the selection order provides instance index 0,
- * establishing the starting point of the sequence.
+ * Closed-ring topology (a pure cycle where every selected body has exactly two shared joints)
+ * is detected by inspecting each body's degree in the joint graph.  When a pure cycle is
+ * detected, a graph traversal starting from body 0 (the first body in the selection list)
+ * visits N-1 of the N joints and deliberately omits the final "closing" joint.  This leaves
+ * two open ends on the linearised chain so the flat-layout strip can be unfolded.  For an
+ * open chain (at least one body has only one shared joint) all shared joints are emitted
+ * unchanged.
  *
  * The constructor is oriented so that:
  *   - the origin sits at the midpoint of the outer apex edge,
@@ -105,11 +108,10 @@ export const kirigamiTubeBend = defineFeature(function(context is Context, id is
         // Two geometry filters are applied before collecting an edge:
         //   - miter angle != 0         (non-perpendicular cut)
         //   - simple single-axis miter (no compound miters)
-        // After collection, collectSharedApexEdges retains only those outer edges whose
-        // midpoints appear for at least two different bodies -- i.e., joints that are shared
-        // between two selected frame members.  Free ends and joints with non-selected bodies
-        // are silently discarded.  Closed rings are handled naturally.
-        var allOuterEdges = [];
+        // Each entry is stored as a map { "edgeQuery", "bodyIndex" } so that
+        // collectSharedApexEdges can build a connectivity graph, detect cycles, and
+        // break a closed ring at the correct joint.
+        var allOuterEdgeData = [];
 
         for (var bodyIndex = 0; bodyIndex < size(frameBodiesArray); bodyIndex += 1)
         {
@@ -169,15 +171,17 @@ export const kirigamiTubeBend = defineFeature(function(context is Context, id is
 
                 const outerEdge = findOuterApexEdgeForCapFace(context, id, bodyIndex,
                         frameBody, capFace);
-                allOuterEdges = append(allOuterEdges, outerEdge);
+                allOuterEdgeData = append(allOuterEdgeData, {
+                        "edgeQuery"  : outerEdge,
+                        "bodyIndex"  : bodyIndex
+                    });
             }
         }
 
-        // Retain only outer edges whose midpoints appear for at least two different bodies.
-        // This is the shared-joint gate: an edge seen once is a free end or a joint with a
-        // non-selected body; an edge seen twice is a joint between two selected bodies.
-        // Closed rings are handled correctly since each ring joint appears exactly twice.
-        const sharedOuterEdges = collectSharedApexEdges(context, allOuterEdges);
+        // Retain only shared joints (midpoints contributed by two distinct bodies).
+        // For a pure cycle, N-1 of the N joints are returned; the closing joint is dropped
+        // to leave two open ends on the linearised strip.
+        const sharedOuterEdges = collectSharedApexEdges(context, allOuterEdgeData, size(frameBodiesArray));
 
         // Queue one KirigamiBendConstructor instance per shared outer apex edge.
         const instantiator = newInstantiator(id + "bendConstructorInstances");
@@ -407,52 +411,63 @@ function findOuterApexEdgeForCapFace(context is Context, id is Id, bodyIndex is 
     return qNthElement(outerEdge, 0);
 }
 
-// Collects only the outer apex edges whose midpoints appear for at least two different bodies.
+// Collects the outer apex edges representing the joints that should receive bend constructors.
 //
-// This is the shared-joint gate.  After each body contributes its outer apex edges to the
-// combined array, this function:
-//   1. Pre-computes the world-space midpoint of every input edge (one evEdgeTangentLine call
-//      per edge, cached for all subsequent passes).
-//   2. Counts how many times each unique midpoint appears in the input.
-//   3. Returns the FIRST occurrence of every midpoint that appeared >= 2 times.
+// After each body contributes its outer apex edges (tagged with their source body index via
+// outerEdgeData), this function performs three operations:
 //
-// An edge whose midpoint is seen exactly once belongs to a free end or to a joint with a
-// body that is not in the selection -- no constructor should be placed there.  An edge
-// whose midpoint is seen two or more times belongs to a joint shared by two selected bodies.
-//
-// Closed-ring topology (bodies forming a loop) is handled correctly: in a ring of N bodies
-// every joint appears exactly twice, so all N joints are included.  The first body in
-// frameBodiesArray contributes the first joint(s), which naturally receive the lowest
-// instance indices, establishing the selection-order starting point of the sequence.
+//   1. Pre-computes the world-space midpoint of every input edge (one evEdgeTangentLine per
+//      edge, cached for all subsequent passes).
+//   2. Builds a joint graph: identifies every unique midpoint that is contributed by at least
+//      TWO DISTINCT bodies (a genuinely shared joint) and records which two body indices meet
+//      at each such joint.  Midpoints contributed by only one body are free ends and are
+//      silently discarded.
+//   3. Cycle detection and ring-breaking:
+//        - Count each selected body's degree (how many shared joints it participates in).
+//        - If every body has degree == 2, the topology is a pure closed ring.
+//        - For an open chain (at least one body has degree < 2 or the count of shared joints
+//          is less than the total body count), all shared joints are returned unchanged.
+//        - For a pure cycle of N bodies: a graph traversal starting from body 0 (the first
+//          body in the selection list) visits N-1 joints in chain order and intentionally
+//          omits the final "closing" joint that would return to body 0.  This leaves two
+//          open ends on the linearised strip so the downstream flat-layout can unfold it.
+//          The traversal direction is determined by which joint connecting body 0 appears
+//          first in sharedEdgeBodyPairs (body-index order, cap-face order within each body),
+//          making the result deterministic for any given selection order.
 //
 // Midpoint comparison uses tolerantEquals(Vector, Vector) from vector.fs, which applies
 // TOLERANCE.zeroLength for length vectors -- appropriate for edges that are truly coincident
 // (same miter cut) but not for edges that are merely close.
 //
-// @param context    : Active context.
-// @param outerEdges : Array of Query, one outer apex edge per eligible cap face per body.
-// @returns array    : Array of Query, one per joint shared between at least two selected bodies.
-function collectSharedApexEdges(context is Context, outerEdges is array) returns array
+// @param context        : Active context.
+// @param outerEdgeData  : Array of map { "edgeQuery" : Query, "bodyIndex" : number }, one
+//                         entry per eligible cap face per body.
+// @param totalBodyCount : Total number of selected frame bodies (size of frameBodiesArray).
+// @returns array        : Array of Query, one per joint that should receive a bend constructor.
+function collectSharedApexEdges(context is Context, outerEdgeData is array, totalBodyCount is number) returns array
 {
     // Pre-compute all midpoints once to avoid redundant evEdgeTangentLine calls in later passes.
     var midpoints = [];
-    for (var edgeQuery in outerEdges)
+    for (var item in outerEdgeData)
     {
         midpoints = append(midpoints, evEdgeTangentLine(context, {
-                        "edge" : edgeQuery,
+                        "edge" : item.edgeQuery,
                         "parameter" : 0.5
                     }).origin);
     }
 
-    // Pass 1: count unique midpoints.
-    // uniqueMidpoints holds one entry per distinct world-space location;
-    // uniqueCounts holds the corresponding occurrence count.
-    var uniqueMidpoints = [];
-    var uniqueCounts    = [];
+    // Pass 1: build the joint graph.
+    // For each unique world-space midpoint, track how many input edges share it and which
+    // DISTINCT body indices contributed those edges.
+    var uniqueMidpoints        = [];  // One entry per distinct world-space location.
+    var uniqueCounts           = [];  // Total edge count at each unique midpoint.
+    var uniqueBodyContributors = [];  // Array of body-index arrays, one set per unique midpoint.
 
-    for (var edgeIndex = 0; edgeIndex < size(midpoints); edgeIndex += 1)
+    for (var edgeIndex = 0; edgeIndex < size(outerEdgeData); edgeIndex += 1)
     {
-        const midpoint = midpoints[edgeIndex];
+        const midpoint  = midpoints[edgeIndex];
+        const bodyIndex = outerEdgeData[edgeIndex].bodyIndex;
+
         var foundIndex = -1;
         for (var uniqueMidpointIndex = 0; uniqueMidpointIndex < size(uniqueMidpoints); uniqueMidpointIndex += 1)
         {
@@ -465,25 +480,41 @@ function collectSharedApexEdges(context is Context, outerEdges is array) returns
 
         if (foundIndex == -1)
         {
-            uniqueMidpoints = append(uniqueMidpoints, midpoint);
-            uniqueCounts    = append(uniqueCounts,    1);
+            // New unique midpoint: record it with this body as its first contributor.
+            uniqueMidpoints        = append(uniqueMidpoints,        midpoint);
+            uniqueCounts           = append(uniqueCounts,           1);
+            uniqueBodyContributors = append(uniqueBodyContributors, [bodyIndex]);
         }
         else
         {
+            // Existing midpoint: increment count and add this body index if not already present.
             uniqueCounts[foundIndex] = uniqueCounts[foundIndex] + 1;
+
+            var bodyAlreadyPresent = false;
+            for (var presentBodyIndex in uniqueBodyContributors[foundIndex])
+            {
+                if (presentBodyIndex == bodyIndex)
+                {
+                    bodyAlreadyPresent = true;
+                    break;
+                }
+            }
+            if (!bodyAlreadyPresent)
+                uniqueBodyContributors[foundIndex] = append(uniqueBodyContributors[foundIndex], bodyIndex);
         }
     }
 
-    // Pass 2: emit the first occurrence of each midpoint that appeared >= 2 times.
-    // Iteration is over the pre-computed midpoints array to avoid re-evaluating evEdgeTangentLine.
-    var sharedEdges      = [];
-    var claimedMidpoints = [];
+    // Pass 2: collect shared joints (midpoints contributed by two or more distinct bodies).
+    // Also build sharedEdgeBodyPairs for cycle detection and traversal.
+    var sharedEdgeQueries   = [];
+    var sharedEdgeBodyPairs = [];  // Parallel to sharedEdgeQueries: [bodyA, bodyB] per joint.
+    var claimedMidpoints    = [];
 
-    for (var edgeIndex = 0; edgeIndex < size(midpoints); edgeIndex += 1)
+    for (var edgeIndex = 0; edgeIndex < size(outerEdgeData); edgeIndex += 1)
     {
         const midpoint = midpoints[edgeIndex];
 
-        // Skip if we already emitted an edge for this midpoint.
+        // Skip if already emitted for this midpoint.
         var alreadyClaimed = false;
         for (var claimedMidpoint in claimedMidpoints)
         {
@@ -496,22 +527,102 @@ function collectSharedApexEdges(context is Context, outerEdges is array) returns
         if (alreadyClaimed)
             continue;
 
-        // Look up the count and emit if shared.
+        // Locate this midpoint in the unique list and emit if it is a genuine shared joint.
         for (var uniqueMidpointIndex = 0; uniqueMidpointIndex < size(uniqueMidpoints); uniqueMidpointIndex += 1)
         {
             if (tolerantEquals(midpoint, uniqueMidpoints[uniqueMidpointIndex]))
             {
-                if (uniqueCounts[uniqueMidpointIndex] >= 2)
+                if (size(uniqueBodyContributors[uniqueMidpointIndex]) >= 2)
                 {
-                    sharedEdges      = append(sharedEdges,      outerEdges[edgeIndex]);
-                    claimedMidpoints = append(claimedMidpoints, midpoint);
+                    sharedEdgeQueries   = append(sharedEdgeQueries,   outerEdgeData[edgeIndex].edgeQuery);
+                    sharedEdgeBodyPairs = append(sharedEdgeBodyPairs, uniqueBodyContributors[uniqueMidpointIndex]);
+                    claimedMidpoints    = append(claimedMidpoints,    midpoint);
                 }
                 break;
             }
         }
     }
 
-    return sharedEdges;
+    // Cycle detection: a pure closed ring exists when every selected body has degree 2 in the
+    // joint graph (each body participates in exactly two shared joints).
+    // Cycle detection: a pure closed ring exists when:
+    //   a) The number of shared joints equals the number of selected bodies (N joints for N bodies).
+    //   b) Every selected body has degree 2 in the joint graph (participates in exactly two
+    //      shared joints).  A body with degree 0 has no neighbours in the selection (isolated),
+    //      and a body with degree 1 is a chain endpoint.  Either prevents a pure cycle.
+    var isPureCycle = (size(sharedEdgeQueries) == totalBodyCount);
+    if (isPureCycle)
+    {
+        for (var degree in bodyDegrees)
+        {
+            if (degree != 2)
+            {
+                isPureCycle = false;
+                break;
+            }
+        }
+    }
+
+    // Open chain: return all shared joints immediately.
+    if (!isPureCycle)
+        return sharedEdgeQueries;
+
+    // Pure cycle: traverse N-1 joints starting from body 0, dropping the final closing joint.
+    //
+    // At each step we advance from currentBodyIndex to the neighbour connected by a joint that
+    // has not yet been visited and does not backtrack to previousBodyIndex.  After N-1 steps
+    // the chain covers all bodies in a single open strip; the Nth joint (which would reconnect
+    // the last body to body 0) is intentionally omitted.
+    var cycleOrderedJoints = [];
+    var currentBodyIndex   = 0;
+    var previousBodyIndex  = -1;
+
+    for (var stepIndex = 0; stepIndex < totalBodyCount - 1; stepIndex += 1)
+    {
+        var nextBodyIndex      = -1;
+        var selectedJointIndex = -1;
+
+        for (var jointIndex = 0; jointIndex < size(sharedEdgeBodyPairs); jointIndex += 1)
+        {
+            const pair = sharedEdgeBodyPairs[jointIndex];
+
+            // Only process simple 2-body joints.  Multi-way intersections (T-junctions,
+            // 3-way corners) prevent isPureCycle from being true and cannot reach this path,
+            // but skip them explicitly for defensive correctness.
+            if (size(pair) < 2)
+                continue;
+
+            const pairBodyA = pair[0];
+            const pairBodyB = pair[1];
+
+            if (pairBodyA != currentBodyIndex && pairBodyB != currentBodyIndex)
+                continue; // This joint does not touch the current body.
+
+            // Identify the body on the other side of this joint.
+            var neighbourBodyIndex = pairBodyA;
+            if (pairBodyA == currentBodyIndex)
+                neighbourBodyIndex = pairBodyB;
+
+            if (neighbourBodyIndex == previousBodyIndex)
+                continue; // Do not backtrack to where we came from.
+
+            nextBodyIndex      = neighbourBodyIndex;
+            selectedJointIndex = jointIndex;
+            break;
+        }
+
+        if (selectedJointIndex == -1)
+            throw regenError("Could not complete cycle traversal at step " ~ (stepIndex + 1) ~
+                ". The selected frame bodies appear to form a closed ring but the joint " ~
+                "connectivity is inconsistent. Ensure all selected bodies form a single " ~
+                "unambiguous connected cycle.", ["frameBodies"]);
+
+        cycleOrderedJoints = append(cycleOrderedJoints, sharedEdgeQueries[selectedJointIndex]);
+        previousBodyIndex  = currentBodyIndex;
+        currentBodyIndex   = nextBodyIndex;
+    }
+
+    return cycleOrderedJoints;
 }
 
 // Builds a stable coordinate system centered on the midpoint of the given apex edge.
