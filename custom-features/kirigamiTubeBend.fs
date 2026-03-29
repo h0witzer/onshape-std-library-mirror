@@ -115,6 +115,8 @@ export const kirigamiTubeBend = defineFeature(function(context is Context, id is
         isLength(definition.bendOutsideRadius, NONNEGATIVE_ZERO_INCLUSIVE_LENGTH_BOUNDS);
     }
     {
+        println("=== KIRIGAMI TUBE BEND DIAGNOSTICS START ===");
+
         // Unpack a composite selection to its constituent solid segments, matching the
         // body-handling pattern used by the Frame Unroll feature.
         if (!isQueryEmpty(context, qBodyType(definition.frameBodies, BodyType.COMPOSITE)))
@@ -174,6 +176,8 @@ export const kirigamiTubeBend = defineFeature(function(context is Context, id is
                 continue; // Cannot determine tube axis (fewer than 2 non-parallel swept faces).
 
             const allCapFacesArray = evaluateQuery(context, allCapFaceQuery);
+            println("--- Body " ~ bodyIndex ~ ": " ~ size(allCapFacesArray) ~ " cap faces, " ~
+                    size(sweptFacesArray) ~ " swept faces, tubeAxis = " ~ tubeAxis);
 
             for (var capFaceIndex = 0; capFaceIndex < size(allCapFacesArray); capFaceIndex += 1)
             {
@@ -183,10 +187,16 @@ export const kirigamiTubeBend = defineFeature(function(context is Context, id is
                                 "parameter" : vector(0.5, 0.5)
                             }).normal;
 
+                println("  Body " ~ bodyIndex ~ " capFace " ~ capFaceIndex ~
+                        ": normal = " ~ capFaceNormal);
+
                 // Skip 0-degree (perpendicular) cuts: cap face normal parallel to tube axis
                 // means no miter tilt, so no kirigami geometry is needed.
                 if (parallelVectors(capFaceNormal, tubeAxis))
+                {
+                    println("    SKIPPED: perpendicular cut (capFaceNormal parallel to tubeAxis)");
                     continue;
+                }
 
                 // Skip compound miters: the projection of the cap face normal onto the plane
                 // perpendicular to the tube axis must be parallel to one of the swept wall
@@ -194,8 +204,12 @@ export const kirigamiTubeBend = defineFeature(function(context is Context, id is
                 // around two profile axes simultaneously and cannot be produced by this
                 // flat-pattern technique.
                 if (!isCapFaceSimpleMiter(context, sweptFacesArray, capFaceNormal, tubeAxis))
+                {
+                    println("    SKIPPED: compound miter (not single-axis)");
                     continue;
+                }
 
+                println("    ELIGIBLE: simple single-axis miter, calling findOuterApexEdgeForCapFace");
                 const outerEdge = findOuterApexEdgeForCapFace(context, id, bodyIndex,
                         frameBody, capFace);
                 allOuterEdgeData = append(allOuterEdgeData, {
@@ -207,11 +221,24 @@ export const kirigamiTubeBend = defineFeature(function(context is Context, id is
             }
         }
 
+        println("--- allOuterEdgeData: " ~ size(allOuterEdgeData) ~ " edges collected across all bodies");
+        for (var edgeDataIndex = 0; edgeDataIndex < size(allOuterEdgeData); edgeDataIndex += 1)
+        {
+            const edgeDataItem = allOuterEdgeData[edgeDataIndex];
+            const edgeMidLine = evEdgeTangentLine(context, {
+                        "edge" : edgeDataItem.edgeQuery,
+                        "parameter" : 0.5
+                    });
+            println("  edgeData[" ~ edgeDataIndex ~ "]: bodyIndex = " ~ edgeDataItem.bodyIndex ~
+                    ", midpoint = " ~ edgeMidLine.origin);
+        }
+
         // Retain only shared joints (midpoints contributed by two distinct bodies).
         // For a pure cycle, N-1 of the N joints are returned; the closing joint is dropped
         // to leave two open ends on the linearised strip.
         // Each entry is a data map { "edgeQuery", "bodyIndex", "frameBody", "tubeAxis" }.
         const sharedJoints = collectSharedApexEdges(context, allOuterEdgeData, size(frameBodiesArray));
+        println("--- sharedJoints: " ~ size(sharedJoints) ~ " joints after shared-midpoint and cycle filtering");
 
         // Queue one KirigamiBendConstructor instance per shared outer apex edge.
         const instantiator = newInstantiator(id + "bendConstructorInstances");
@@ -228,6 +255,7 @@ export const kirigamiTubeBend = defineFeature(function(context is Context, id is
         {
             const jointData = sharedJoints[instanceIndex];
             const apexEdge = jointData.edgeQuery;
+            println("=== Instance " ~ instanceIndex ~ ": body " ~ jointData.bodyIndex ~ " ===");
             const apexCoordSystem = buildApexCoordSystem(context, id, instanceIndex, apexEdge);
             // computeJointDimensions uses apexCoordSystem.zAxis (the fold-line direction, which IS the
             // local-csys Z) as the BoxTubeHeight axis, and apexCoordSystem.xAxis as the cap face normal
@@ -235,13 +263,20 @@ export const kirigamiTubeBend = defineFeature(function(context is Context, id is
             const jointDimensions = computeJointDimensions(context, jointData.frameBody,
                     jointData.tubeAxis, apexCoordSystem);
 
+            println("     jointDimensions: boxTubeHeight = " ~ jointDimensions.boxTubeHeight ~
+                    ", boxTubeWidth = " ~ jointDimensions.boxTubeWidth ~
+                    ", miterAngle = " ~ jointDimensions.miterAngle);
+
             // Distance from the outer wall face to the nearest longitudinal sweep edge on a
             // top/bottom swept face (normal parallel to local Z).  For a hollow tube this equals
             // the wall thickness measured perpendicular to both the tube axis and the fold line.
             // Computed only for the first joint; all subsequent joints reuse the cached value.
             if (cachedOffsetToInteriorSweepLine == undefined)
+            {
                 cachedOffsetToInteriorSweepLine = computeOffsetToInteriorSweepLine(context,
                         jointData.frameBody, jointData.tubeAxis, apexCoordSystem, apexEdge);
+                println("     offsetToInteriorSweepLine = " ~ cachedOffsetToInteriorSweepLine);
+            }
 
             // toWorld(apexCoordSystem) is the Transform that carries geometry from the
             // constructor's local origin to the correct world-space position and orientation.
@@ -292,6 +327,8 @@ export const kirigamiTubeBend = defineFeature(function(context is Context, id is
                         } as KirigamiBendAttribute
                     });
         }
+
+        println("=== KIRIGAMI TUBE BEND DIAGNOSTICS END: " ~ size(pendingInstances) ~ " instances placed ===");
     });
 
 // Derives the tube sweep axis direction from the normals of two non-parallel swept wall faces.
@@ -403,10 +440,19 @@ function isCapFaceSimpleMiter(context is Context, sweptFacesArray is array,
 function findOuterApexEdgeForCapFace(context is Context, id is Id, bodyIndex is number,
     frameBody is Query, capFace is Query) returns Query
 {
+    println("  >> findOuterApexEdgeForCapFace: body " ~ bodyIndex);
+
     // Miter plane of the cap face.
     const capFacePlane = evPlane(context, { "face" : capFace });
+    println("     capFacePlane.origin = " ~ capFacePlane.origin ~ ", normal = " ~ capFacePlane.normal);
 
     // Tube wall (swept) faces that share a perimeter edge with the miter cut.
+    // NOTE FOR HOLLOW BOX TUBES: qAdjacent(capFace, ...) returns ALL swept faces adjacent to
+    // the annular cap face -- both OUTER and INNER wall faces.  For a 4-sided hollow box tube
+    // this is 8 faces (4 outer + 4 inner).  This means the coordinate system built below may
+    // use an interior face normal, which would orient the bounding box search incorrectly.
+    // Compare with Neil's getFacesTouchingPlane in frameUnroll.fs which filters to only faces
+    // that are (a) planar, (b) not normal to the miter plane, and (c) intersect the miter plane.
     const wallFacesAdjacentToCapFace = qIntersection([
                 qAdjacent(capFace, AdjacencyType.EDGE, EntityType.FACE),
                 qHasAttributeWithValueMatching(
@@ -414,6 +460,24 @@ function findOuterApexEdgeForCapFace(context is Context, id is Id, bodyIndex is 
                     FRAME_ATTRIBUTE_TOPOLOGY_NAME,
                     { "topologyType" : FrameTopologyType.SWEPT_FACE })
             ]);
+
+    const wallFacesAdjacentToCapFaceArray = evaluateQuery(context, wallFacesAdjacentToCapFace);
+    println("     wallFacesAdjacentToCapFace count = " ~ size(wallFacesAdjacentToCapFaceArray));
+    println("     (For a solid box tube this should be 4; for hollow it will be 8 -- 4 outer + 4 inner)");
+
+    // Dump every adjacent wall face normal so we can see which are outer vs inner vs top/bottom.
+    for (var wallFaceIndex = 0; wallFaceIndex < size(wallFacesAdjacentToCapFaceArray); wallFaceIndex += 1)
+    {
+        const wallFaceNormalDiag = evFaceTangentPlane(context, {
+                    "face" : wallFacesAdjacentToCapFaceArray[wallFaceIndex],
+                    "parameter" : vector(0.5, 0.5)
+                }).normal;
+        const wallFaceCentroid = evApproximateCentroid(context, {
+                    "entities" : wallFacesAdjacentToCapFaceArray[wallFaceIndex]
+                });
+        println("     wallFace[" ~ wallFaceIndex ~ "]: normal = " ~ wallFaceNormalDiag ~
+                ", centroid = " ~ wallFaceCentroid);
+    }
 
     if (isQueryEmpty(context, wallFacesAdjacentToCapFace))
         throw regenError("Frame body " ~ (bodyIndex + 1) ~ " cap face has no adjacent swept (tube wall) faces. " ~
@@ -426,6 +490,21 @@ function findOuterApexEdgeForCapFace(context is Context, id is Id, bodyIndex is 
             qAdjacent(wallFacesAdjacentToCapFace, AdjacencyType.EDGE, EntityType.EDGE),
             capFacePlane);
 
+    const capFacePerimeterEdgesArray = evaluateQuery(context, capFacePerimeterEdges);
+    println("     capFacePerimeterEdges count = " ~ size(capFacePerimeterEdgesArray));
+    println("     (For a solid box tube this should be 4; for hollow it will be 8 -- 4 outer + 4 inner)");
+
+    // Dump every perimeter edge midpoint so we can identify which are outer vs inner.
+    for (var perimEdgeIndex = 0; perimEdgeIndex < size(capFacePerimeterEdgesArray); perimEdgeIndex += 1)
+    {
+        const perimEdgeLine = evEdgeTangentLine(context, {
+                    "edge" : capFacePerimeterEdgesArray[perimEdgeIndex],
+                    "parameter" : 0.5
+                });
+        println("     perimeterEdge[" ~ perimEdgeIndex ~ "]: midpoint = " ~ perimEdgeLine.origin ~
+                ", direction = " ~ perimEdgeLine.direction);
+    }
+
     if (isQueryEmpty(context, capFacePerimeterEdges))
         throw regenError("Frame body " ~ (bodyIndex + 1) ~ ": no cap face perimeter edges found in the miter plane. " ~
             "Ensure the selected body is an Onshape frame member created with the Frame feature.",
@@ -435,6 +514,11 @@ function findOuterApexEdgeForCapFace(context is Context, id is Id, bodyIndex is 
     //   xAxis = direction of one fold edge (any cap face perimeter edge)
     //   zAxis = outward normal of one adjacent wall face
     //   yAxis = cross(zAxis, xAxis) -- approximately the tube sweep direction
+    //
+    // DIAGNOSTIC NOTE: qNthElement(..., 0) picks ARBITRARILY from the perimeter edges and wall
+    // faces.  For a hollow box tube, index 0 could be an INNER edge or an INNER wall face.
+    // If the wall face normal points INWARD (toward the tube hollow), the yAxis
+    // (cross(zAxis, xAxis)) flips and the bounding box extremes swap inner/outer.
     const foldEdgeLine = evEdgeTangentLine(context, {
                 "edge" : qNthElement(capFacePerimeterEdges, 0),
                 "parameter" : 0.5
@@ -444,7 +528,18 @@ function findOuterApexEdgeForCapFace(context is Context, id is Id, bodyIndex is 
                 "parameter" : vector(0.5, 0.5)
             }).normal;
 
+    println("     CHOSEN foldEdge[0] midpoint = " ~ foldEdgeLine.origin ~
+            ", direction = " ~ foldEdgeLine.direction);
+    println("     CHOSEN wallFace[0] normal = " ~ wallFaceNormal);
+    println("     (If wallFace[0] is an INNER face of a hollow tube, the normal points INWARD)");
+    println("     (This would flip yAxis and cause the bounding-box search to find an INTERIOR edge)");
+
     const localCoordSystem = coordSystem(foldEdgeLine.origin, foldEdgeLine.direction, wallFaceNormal);
+
+    println("     localCoordSystem: origin = " ~ localCoordSystem.origin);
+    println("       xAxis (foldEdge dir) = " ~ xAxis(localCoordSystem));
+    println("       yAxis (approx sweep) = " ~ yAxis(localCoordSystem));
+    println("       zAxis (wallFace norm) = " ~ zAxis(localCoordSystem));
 
     // Bounding box of the full body in the local coordinate system.
     const bodyBoundingBox = evBox3d(context, {
@@ -453,29 +548,87 @@ function findOuterApexEdgeForCapFace(context is Context, id is Id, bodyIndex is 
                 "tight"    : true
             });
 
+    println("     bodyBoundingBox.minCorner = " ~ bodyBoundingBox.minCorner);
+    println("     bodyBoundingBox.maxCorner = " ~ bodyBoundingBox.maxCorner);
+
     // Try both extreme corners.  The outer apex edge is the cap face perimeter edge that also
     // lies in the end plane at the body's extreme extent along yAxis (the sweep direction).
     // One corner will give a non-empty result; the other lies inside the body.
     var outerEdge = undefined;
+    var cornerIndex = 0;
     for (var corner in [bodyBoundingBox.minCorner, bodyBoundingBox.maxCorner])
     {
+        const cornerLabel = (cornerIndex == 0) ? "minCorner" : "maxCorner";
         const endPlane = plane(toWorld(localCoordSystem, corner), yAxis(localCoordSystem));
 
-        outerEdge = qIntersection([
-                    qCoincidesWithPlane(
-                        qAdjacent(wallFacesAdjacentToCapFace, AdjacencyType.EDGE, EntityType.EDGE),
-                        endPlane),
-                    capFacePerimeterEdges
-                ]);
+        println("     Trying " ~ cornerLabel ~ ": endPlane.origin = " ~ endPlane.origin ~
+                ", endPlane.normal (yAxis) = " ~ endPlane.normal);
 
-        if (!isQueryEmpty(context, outerEdge))
+        // All edges of wall faces that coincide with the endPlane:
+        const wallEdgesInEndPlane = qCoincidesWithPlane(
+                qAdjacent(wallFacesAdjacentToCapFace, AdjacencyType.EDGE, EntityType.EDGE),
+                endPlane);
+        println("       wallEdgesInEndPlane count = " ~ size(evaluateQuery(context, wallEdgesInEndPlane)));
+
+        outerEdge = qIntersection([wallEdgesInEndPlane, capFacePerimeterEdges]);
+
+        const outerEdgeCount = size(evaluateQuery(context, outerEdge));
+        println("       intersection with capFacePerimeterEdges count = " ~ outerEdgeCount);
+
+        if (outerEdgeCount > 0)
+        {
+            // Dump midpoints of ALL matching edges to see if we got outer or inner
+            const outerEdgeArray = evaluateQuery(context, outerEdge);
+            for (var matchIndex = 0; matchIndex < size(outerEdgeArray); matchIndex += 1)
+            {
+                const matchLine = evEdgeTangentLine(context, {
+                            "edge" : outerEdgeArray[matchIndex],
+                            "parameter" : 0.5
+                        });
+                // Identify which faces border this edge
+                const adjacentFacesToEdge = qAdjacent(outerEdgeArray[matchIndex], AdjacencyType.EDGE, EntityType.FACE);
+                const adjacentSweptFaces = qHasAttributeWithValueMatching(adjacentFacesToEdge,
+                        FRAME_ATTRIBUTE_TOPOLOGY_NAME,
+                        { "topologyType" : FrameTopologyType.SWEPT_FACE });
+                const adjacentCapFaces = qHasAttributeWithValueMatching(adjacentFacesToEdge,
+                        FRAME_ATTRIBUTE_TOPOLOGY_NAME,
+                        { "topologyType" : FrameTopologyType.CAP_FACE });
+
+                var sweptFaceNormalStr = "NONE";
+                if (!isQueryEmpty(context, adjacentSweptFaces))
+                {
+                    sweptFaceNormalStr = "" ~ evFaceTangentPlane(context, {
+                                "face" : qNthElement(adjacentSweptFaces, 0),
+                                "parameter" : vector(0.5, 0.5)
+                            }).normal;
+                }
+
+                println("       match[" ~ matchIndex ~ "]: midpoint = " ~ matchLine.origin ~
+                        ", direction = " ~ matchLine.direction ~
+                        ", adjacent swept face normal = " ~ sweptFaceNormalStr ~
+                        ", has cap face = " ~ !isQueryEmpty(context, adjacentCapFaces));
+            }
+
+            println("     >>> SELECTED " ~ cornerLabel ~ " with " ~ outerEdgeCount ~ " matching edges");
             break;
+        }
+
+        cornerIndex = cornerIndex + 1;
     }
 
     if (outerEdge == undefined || isQueryEmpty(context, outerEdge))
         throw regenError("Could not determine the outer apex edge on a cap face of frame body " ~
             (bodyIndex + 1) ~ ". Ensure the body is a properly formed Onshape frame member.",
             ["frameBodies"]);
+
+    // Report the final selected edge
+    const finalEdgeLine = evEdgeTangentLine(context, {
+                "edge" : qNthElement(outerEdge, 0),
+                "parameter" : 0.5
+            });
+    println("     FINAL outerEdge[0]: midpoint = " ~ finalEdgeLine.origin ~
+            ", direction = " ~ finalEdgeLine.direction);
+    println("  << findOuterApexEdgeForCapFace complete");
 
     return qNthElement(outerEdge, 0);
 }
@@ -754,11 +907,15 @@ function projectFoldLineOntoCrossSection(vector is Vector, axis is Vector) retur
 // @returns CoordSystem aligned to the miter joint at the outer apex edge midpoint.
 function buildApexCoordSystem(context is Context, id is Id, instanceIndex is number, apexEdge is Query) returns CoordSystem
 {
+    println("  >> buildApexCoordSystem: instance " ~ instanceIndex);
+
     // Origin: world-space midpoint of the outer apex edge.
     const edgeMidpoint = evEdgeTangentLine(context, {
                 "edge" : apexEdge,
                 "parameter" : 0.5
             }).origin;
+
+    println("     apexEdge midpoint = " ~ edgeMidpoint);
 
     // Identify the two faces bordering the outer apex edge.
     const miterFace    = findCapFaceAdjacentToApexEdge(context, id, instanceIndex, apexEdge);
@@ -780,9 +937,19 @@ function buildApexCoordSystem(context is Context, id is Id, instanceIndex is num
                 "parameter" : vector(0.5, 0.5)
             }).normal;
 
-    const foldLineDirection = normalize(cross(capFaceNormal, outerWallNormal));
+    println("     capFaceNormal (X axis) = " ~ capFaceNormal);
+    println("     outerWallFaceNormal = " ~ outerWallNormal);
 
-    return coordSystem(edgeMidpoint, capFaceNormal, foldLineDirection);
+    const foldLineDirection = normalize(cross(capFaceNormal, outerWallNormal));
+    println("     foldLineDirection (Z axis) = " ~ foldLineDirection);
+    println("     (If this edge is actually an INTERIOR edge, the swept face normal points INWARD,");
+    println("      and the fold line direction will be wrong -- rotated 180 degrees from expected)");
+
+    const resultCS = coordSystem(edgeMidpoint, capFaceNormal, foldLineDirection);
+    println("     resultCS yAxis = " ~ yAxis(resultCS));
+    println("  << buildApexCoordSystem complete");
+
+    return resultCS;
 }
 
 // Finds the swept wall face (SWEPT_FACE) adjacent to a single outer apex edge.
@@ -803,11 +970,27 @@ function findSweptFaceAdjacentToApexEdge(context is Context, id is Id, instanceI
             FRAME_ATTRIBUTE_TOPOLOGY_NAME,
             { "topologyType" : FrameTopologyType.SWEPT_FACE });
 
+    const sweptWallFaceArray = evaluateQuery(context, sweptWallFaceQuery);
+    println("     findSweptFaceAdjacentToApexEdge: " ~ size(sweptWallFaceArray) ~
+            " swept faces adjacent to apex edge");
+    // For a solid tube this should be 1 (the outer wall). For a hollow tube, if the selected
+    // edge is an INTERIOR edge, this is STILL 1 but it is the INNER wall face.
+    // If the edge sits at the junction of inner and outer walls (corner), it could be 2.
+    for (var sweptIndex = 0; sweptIndex < size(sweptWallFaceArray); sweptIndex += 1)
+    {
+        const sweptNorm = evFaceTangentPlane(context, {
+                    "face" : sweptWallFaceArray[sweptIndex],
+                    "parameter" : vector(0.5, 0.5)
+                }).normal;
+        println("       sweptFace[" ~ sweptIndex ~ "] normal = " ~ sweptNorm);
+    }
+
     if (isQueryEmpty(context, sweptWallFaceQuery))
         throw regenError("Instance " ~ (instanceIndex + 1) ~ ": outer apex edge has no adjacent swept wall face. " ~
             "Unexpected topology -- ensure the selected body is an unmodified Onshape frame member.",
             ["frameBodies"]);
 
+    println("     CHOSEN sweptFace[0] for orientation");
     return qNthElement(sweptWallFaceQuery, 0);
 }
 
