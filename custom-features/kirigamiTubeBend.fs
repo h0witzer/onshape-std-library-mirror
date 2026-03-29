@@ -217,6 +217,12 @@ export const kirigamiTubeBend = defineFeature(function(context is Context, id is
         const instantiator = newInstantiator(id + "bendConstructorInstances");
         var pendingInstances = [];
 
+        // Cache offsetToInteriorSweepLine by FrameProfileAttribute so bodies that share
+        // the same frame section profile only pay the geometry evaluation cost once.
+        // FrameProfileAttribute is a string→string map of cutlist column values that is
+        // identical on every body produced from the same profile entry in the frame table.
+        var profileOffsetCache = {};
+
         for (var instanceIndex = 0; instanceIndex < size(sharedJoints); instanceIndex += 1)
         {
             const jointData = sharedJoints[instanceIndex];
@@ -226,11 +232,27 @@ export const kirigamiTubeBend = defineFeature(function(context is Context, id is
             const jointDimensions = computeJointDimensions(context, jointData.frameBody,
                     jointData.tubeAxis, apexCoordSystem);
 
-            // Distance from the outer wall face to the nearest longitudinal sweep edge on a
-            // top/bottom swept face (normal parallel to local Z).  For a hollow tube this equals
-            // the wall thickness measured perpendicular to both the tube axis and the fold line.
-            const offsetToInteriorSweepLine = computeOffsetToInteriorSweepLine(context,
-                    jointData.frameBody, jointData.tubeAxis, apexCoordSystem, apexEdge);
+            // Look up or compute the offset to the interior sweep line.
+            // All bodies with the same FrameProfileAttribute have identical cross-section
+            // geometry, so this result is the same for every joint on the same profile.
+            // toString produces the same string for any two identically-valued attributes
+            // because Onshape's Frame feature populates the map keys in table-column order,
+            // making insertion order deterministic across all bodies from the same profile.
+            const frameProfileAttribute = try(getFrameProfileAttribute(context, jointData.frameBody));
+            const profileCacheKey = (frameProfileAttribute != undefined) ? toString(frameProfileAttribute) : undefined;
+
+            var offsetToInteriorSweepLine;
+            if (profileCacheKey != undefined && profileOffsetCache[profileCacheKey] != undefined)
+            {
+                offsetToInteriorSweepLine = profileOffsetCache[profileCacheKey];
+            }
+            else
+            {
+                offsetToInteriorSweepLine = computeOffsetToInteriorSweepLine(context,
+                        jointData.frameBody, jointData.tubeAxis, apexCoordSystem);
+                if (profileCacheKey != undefined)
+                    profileOffsetCache[profileCacheKey] = offsetToInteriorSweepLine;
+            }
 
             // toWorld(apexCoordSystem) is the Transform that carries geometry from the
             // constructor's local origin to the correct world-space position and orientation.
@@ -838,10 +860,9 @@ function computeJointDimensions(context is Context, frameBody is Query, tubeAxis
 // @param tubeAxis         : Tube sweep direction (dimensionless unit vector).
 // @param apexCoordSystem  : Coordinate system at the outer apex edge (xAxis = cap face normal,
 //                           zAxis = fold-line direction).
-// @param apexEdge         : Query resolving to the outer apex edge on the frame body.
 // @returns ValueWithUnits (length) : Offset distance from outer wall to nearest interior sweep edge.
 function computeOffsetToInteriorSweepLine(context is Context, frameBody is Query,
-    tubeAxis is Vector, apexCoordSystem is CoordSystem, apexEdge is Query) returns ValueWithUnits
+    tubeAxis is Vector, apexCoordSystem is CoordSystem) returns ValueWithUnits
 {
     const foldLineDirection = apexCoordSystem.zAxis;
 
