@@ -1034,7 +1034,7 @@ function computeOffsetToInteriorSweepLine(context is Context, frameBody is Query
         // into the tube cavity; displacing the face center slightly along the normal keeps
         // the test point within the body's extent in the fold-line direction.  An outer face's
         // normal points outward from the body; the same displacement exits the body extent.
-        // TOLERANCE.zeroLength (1e-8) is large enough to exceed floating-point noise in the
+        // TOLERANCE.zeroLength is large enough to exceed floating-point noise in the
         // bounding-box computation but far smaller than any real wall thickness.
         const facePositionAlongFoldLine = dot(faceTangentPlane.origin, foldLineDirection);
         const normalComponentAlongFoldLine = dot(faceTangentPlane.normal, foldLineDirection);
