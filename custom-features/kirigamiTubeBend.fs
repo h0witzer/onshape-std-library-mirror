@@ -380,20 +380,29 @@ function isCapFaceSimpleMiter(context is Context, sweptFacesArray is array,
 // Finds the single outer apex edge on one cap face of a frame body.
 //
 // The outer wall face is the swept face adjacent to the cap face whose outward normal is
-// parallel to AND co-directional with the transverse component of the cap face normal
-// (its projection onto the cross-section plane, perpendicular to tubeAxis).  For a simple
-// single-axis miter (already verified by isCapFaceSimpleMiter at the call site) exactly one
-// swept face satisfies this condition: the outer wall -- the face on the convex side of the bend.
+// parallel to AND ANTI-PARALLEL (negative dot product) with the transverse component of the
+// cap face normal (its projection onto the cross-section plane, perpendicular to tubeAxis).
+//
+// Geometric proof: the cap face outward normal points AWAY from the tube body and TOWARD the
+// miter (the space where material was removed).  The miter cut removes more material from the
+// outer (convex) side -- that face's cap edge reaches farther along the tube axis toward the
+// miter plane.  The outer face normal therefore points AWAY from that removed material, i.e.,
+// OPPOSITE to the direction the cap face normal faces.  Concretely for a +X tube bending to +Y:
+//   - miter plane normal = normalize(1,1,0);  cap face normal transverse component = +Y
+//   - bottom (-Y) face cap edge reaches to x=+1; top (+Y) face cap edge reaches to x=-1
+//   - bottom face is the outer (convex) face: normal = -Y, dot(transverse=+Y, -Y) = -1 < 0
+//   - top face is the inner (concave) face:   normal = +Y, dot(transverse=+Y, +Y) = +1 > 0
 //
 // The outer apex edge is then the single edge shared between the cap face and that outer wall
 // face.  This is direct, deterministic, and requires no bounding-box calculation.
 //
-// The previous bounding-box approach built a local frame from qNthElement(candidateEdges, 0)
-// (X axis) and qNthElement(sweptFacesAdjacentToCapFace, 0) (Z axis), both of which are B-rep
-// order dependent.  When the first candidate edge happened to run in the fold-line direction
-// (a side edge rather than a top/bottom edge), the resulting local Y axis became parallel to
-// the tube axis instead of pointing across the cross-section, causing the bounding-box corner
-// planes to select tube-end edges instead of apex edges.
+// History note: the previous bounding-box approach built a local frame from
+// qNthElement(candidateEdges, 0) (X axis) and qNthElement(sweptFacesAdjacentToCapFace, 0)
+// (Z axis), both B-rep order dependent.  When the first candidate edge ran in the fold-line
+// direction the resulting Y axis became parallel to the tube axis, causing the bounding-box
+// corner planes to select tube-end edges instead of apex edges.  The first dot-product
+// attempt used `dot > 0` (co-directional), which selected the inner face for the same
+// geometric reason explained above.
 //
 // @param context          : Active context.
 // @param id               : Feature id used for error reporting.
@@ -407,10 +416,11 @@ function findOuterApexEdgeForCapFace(context is Context, id is Id, bodyIndex is 
     frameBody is Query, capFace is Query, capFaceNormal is Vector, tubeAxis is Vector) returns Query
 {
     // Transverse component of the cap face normal: its projection onto the cross-section plane
-    // (perpendicular to tubeAxis), normalized.  For a simple single-axis miter (verified by
-    // isCapFaceSimpleMiter at the call site) this is parallel to the outer wall face normal
-    // and co-directional with it (positive dot product).  Pre-condition: capFaceNormal is
-    // not parallel to tubeAxis (ensured by the 0-degree filter at the call site).
+    // (perpendicular to tubeAxis), normalized.  This vector points TOWARD the miter (the
+    // direction of the other tube), which is the INNER (concave) side of the bend.  The OUTER
+    // (convex) wall face normal therefore points in the OPPOSITE direction: anti-parallel,
+    // negative dot product.  Pre-condition: capFaceNormal is not parallel to tubeAxis
+    // (ensured by the 0-degree filter at the call site).
     const transverseNormal = projectFoldLineOntoCrossSection(capFaceNormal, tubeAxis);
 
     // Swept faces adjacent to the cap face: the tube wall faces that share a perimeter edge
@@ -428,11 +438,12 @@ function findOuterApexEdgeForCapFace(context is Context, id is Id, bodyIndex is 
             "Ensure the selected body is an Onshape frame member created with the Frame feature.",
             ["frameBodies"]);
 
-    // The outer wall face normal is parallel to AND co-directional with transverseNormal.
-    // The inner wall face normal is antiparallel (same parallelVectors result, opposite sign).
+    // The outer wall face normal is ANTI-PARALLEL to transverseNormal (negative dot product).
+    // The inner wall face normal is co-directional (positive dot product).
     // Top/bottom face normals are perpendicular (parallelVectors returns false).
-    // parallelVectors confirms alignment; the positive dot product ensures co-directional
-    // (outer wall) rather than antiparallel (inner wall).
+    // Both checks are intentional: parallelVectors uses TOLERANCE.zeroAngle to exclude
+    // nearly-perpendicular faces without hardcoding a threshold; the subsequent dot product
+    // sign distinguishes anti-parallel (outer wall) from co-directional (inner wall).
     var outerWallFace = undefined;
     for (var sweptFace in evaluateQuery(context, sweptFacesAdjacentToCapFace))
     {
@@ -443,7 +454,7 @@ function findOuterApexEdgeForCapFace(context is Context, id is Id, bodyIndex is 
                     "parameter" : vector(0.5, 0.5)
                 }).normal;
 
-        if (parallelVectors(transverseNormal, sweptFaceNormal) && dot(transverseNormal, sweptFaceNormal) > 0)
+        if (parallelVectors(transverseNormal, sweptFaceNormal) && dot(transverseNormal, sweptFaceNormal) < 0)
         {
             outerWallFace = sweptFace;
             break;
@@ -700,8 +711,9 @@ function collectSharedApexEdges(context is Context, outerEdgeData is array, tota
 //      direction would differ from the exactly-perpendicular swept face normals by a tiny angle,
 //      causing parallelVectors checks to fail.
 //   2. Cap-face normal transverse projection: extracts the component of the cap face normal
-//      that lies in the cross-section plane.  For a simple single-axis miter this is parallel
-//      to the outer wall face normal, used to identify which swept face is the outer wall.
+//      that lies in the cross-section plane.  This vector points TOWARD the miter (the inner /
+//      concave side of the bend).  The outer (convex) wall face normal is therefore ANTI-PARALLEL
+//      to it (negative dot product) -- see findOuterApexEdgeForCapFace for the geometric proof.
 //
 // Pre-condition: the input vector must not be parallel to axis (the projection would be a
 // zero vector and normalize() undefined).  The caller must guard against this case.
@@ -874,8 +886,9 @@ function computeJointDimensions(context is Context, frameBody is Query, tubeAxis
     const foldLineDirection = apexCoordSystem.zAxis;
 
     // Guard: if foldLineDirection is parallel to tubeAxis the cross-section projection
-    // would produce a zero vector (normalize() undefined).  This must be checked on the
-    // raw direction before calling projectFoldLineOntoCrossSection.
+    // would produce a zero vector (normalize() undefined).  Checked here in the caller
+    // rather than inside projectFoldLineOntoCrossSection so the error message can report
+    // the specific feature context; the function's pre-condition documents this expectation.
     if (parallelVectors(foldLineDirection, tubeAxis))
         throw regenError("Cannot compute joint cross-section dimensions: the fold-line " ~
             "direction is parallel to the tube sweep axis. Verify that all selected bodies " ~
