@@ -324,6 +324,7 @@ export const kirigamiTubeBend = defineFeature(function(context is Context, id is
         // that fills the void zone.  All bent tube section bodies are collected across every joint
         // and composited together with the input frame bodies in one closed composite at the end.
         var allBentTubeSectionBodies = [];
+        var allInstanceBodies = [];
 
         for (var instanceIndex = 0; instanceIndex < size(pendingInstances); instanceIndex += 1)
         {
@@ -442,6 +443,24 @@ export const kirigamiTubeBend = defineFeature(function(context is Context, id is
                     }
                 }
             }
+
+            // Track all bodies brought in by this instance (solid tool body plus any non-solid
+            // bodies such as mate connectors originating from the KirigamiBendConstructor part
+            // studio).  These will be deleted after all joints are processed.
+            allInstanceBodies = append(allInstanceBodies, instance.query);
+        }
+
+        // Delete all instantiated tool bodies and all cut-face mate connectors that were
+        // created during the boolean subtract step.  Both were needed only for joint
+        // processing; they must not appear in the final model.
+        const allCutFaceMateConnectors = qBodyType(qCreatedBy(id, EntityType.BODY),
+                BodyType.MATE_CONNECTOR);
+        const bodiesToDelete = qUnion(append(allInstanceBodies, allCutFaceMateConnectors));
+        if (!isQueryEmpty(context, bodiesToDelete))
+        {
+            opDeleteBodies(context, id + "cleanupToolBodiesAndMateConnectors", {
+                        "entities" : bodiesToDelete
+                    });
         }
 
         // Composite all bent tube section bodies together with the input frame bodies into a
@@ -1273,10 +1292,14 @@ function computeNeutralFiberArcLength(context is Context, id is Id, instanceInde
             }).distance;
 
     // Extract the inner cylindrical face offset outward to the neutral fiber radius.
+    // The offset is negated because evDistance returns a positive scalar regardless of
+    // direction, and the inner cylinder's outward normal points toward the bend axis (inward
+    // into the tool body).  A positive offset would push the surface further toward the axis;
+    // negating it pushes the surface away from the axis to the neutral fiber location.
     const neutralFiberSurfaceId = id + ("neutralFiberSurface" ~ instanceIndex);
     opExtractSurface(context, neutralFiberSurfaceId, {
                 "faces"  : innerCylindricalFace,
-                "offset" : neutralFiberOffset
+                "offset" : -neutralFiberOffset
             });
 
     // The arc edges on the offset surface span the full angular sweep of the bend.
