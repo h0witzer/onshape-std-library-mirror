@@ -312,6 +312,11 @@ export const kirigamiTubeBend = defineFeature(function(context is Context, id is
         // downstream flat-layout script -- are preserved after the cut operation.
         // After each subtraction, a mate connector is placed at the centroid of every planar
         // face introduced by that cut, oriented with its Z axis along the face outward normal.
+        // Each cut face is then swept along the tool arc edge to produce a bent wall body that
+        // fills the void zone.  All bent panel bodies are collected across every joint and
+        // composited together with the input frame bodies in one closed composite at the end.
+        var allBentPanelBodies = [];
+
         for (var instanceIndex = 0; instanceIndex < size(pendingInstances); instanceIndex += 1)
         {
             const instance = pendingInstances[instanceIndex];
@@ -402,18 +407,22 @@ export const kirigamiTubeBend = defineFeature(function(context is Context, id is
                             qCreatedBy(bentPanelId, EntityType.BODY));
                 }
 
-                // Union all bent panel bodies back into the primary frame body.
-                // This fills the void zone, making the frame body a single continuous solid
-                // that transitions from the straight segment into the bent region.
-                if (size(bentPanelBodies) > 0)
-                {
-                    opBoolean(context, id + ("bentPanelUnion" ~ instanceIndex), {
-                                "tools"         : qUnion(bentPanelBodies),
-                                "targets"       : primaryFrameBody,
-                                "operationType" : BooleanOperationType.UNION
-                            });
-                }
+                // Accumulate this joint's bent panel bodies for the final composite step.
+                allBentPanelBodies = concatenateArrays([allBentPanelBodies, bentPanelBodies]);
             }
+        }
+
+        // Composite all bent panel bodies together with the input frame bodies into a single
+        // closed composite part.  A closed composite consumes its constituent solid bodies so
+        // that they are presented as one unit to the downstream flat-layout script.
+        // This is done once after all joints are processed so every swept panel and every
+        // frame segment are grouped in a single composite regardless of how many joints exist.
+        if (size(allBentPanelBodies) > 0)
+        {
+            opCreateCompositePart(context, id + "bentFrameComposite", {
+                        "bodies" : qUnion(concatenateArrays([allBentPanelBodies, [definition.frameBodies]])),
+                        "closed" : true
+                    });
         }
     });
 
