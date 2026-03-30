@@ -667,29 +667,38 @@ export const kirigamiTubeBend = defineFeature(function(context is Context, id is
  *      faces that remain on the adjacent frame segments are used later as sweep profiles for
  *      straight bridge sections.
  *
- *   2. For each joint i, processing from last to first:
- *        a. Compute the inner apex origin:
- *             innerApexOrigin = apexOrigin - boxTubeWidth * outerWallNormal
- *           where outerWallNormal = normalize(cross(zAxis, xAxis)).  zAxis and xAxis are both
- *           perpendicular unit vectors by construction (zAxis = cross(capFaceNormal, outerWallNormal)),
- *           so cross(zAxis, xAxis) = outerWallNormal (confirmed by the vector triple product
- *           A x (A x B) = A(A.B) - B with A.B = 0 and |A| = 1).  The inner apex edge is
- *           at distance boxTubeWidth from the outer apex edge in the -outerWallNormal direction
- *           (toward the tube interior).
- *        b. Determine the rotation sign by projecting the downstream-body centroid offset onto
- *           outerWallNormal; negative projection means the downstream chain bends in the
- *           -outerWallNormal direction and needs a negative rotation to straighten.
- *        c. Apply combined transform:  T * R, where:
- *             R = rotationAround(innerApexLine, rotSign * 2 * miterAngle)  -- straightens the bend
- *             T = translation(neutralFiberArcLength * tubeAxis)            -- opens the flat gap
- *           R is applied first, then T.  After R the downstream segment is collinear with the
- *           upstream segment; T moves it further along the (now-aligned) tube axis to create the
- *           neutralFiberArcLength gap representing the kirigami bend zone.
+ *   2. Build a per-joint index of the KirigamiBendCutFaceAttribute-tagged cut faces that were
+ *      painted onto each frame segment body during kirigamiTubeBend.  These are the actual
+ *      gap-boundary faces on the geometry, not reconstructed estimates.
  *
- *   Processing last-to-first means the upstream body at joint i is still at its original world
- *   position when that joint is handled, so innerApexOrigin and tubeAxis read directly from the
- *   stored attribute without needing a cumulative transform tracker.  Subsequent joints drag
- *   previously straightened downstream bodies along with them exactly as in frameUnroll.fs.
+ *   3. For each joint i, processing from last to first:
+ *        a. Determine which bodies are downstream using the stored discrimination plane
+ *           (plane(apexOrigin, xAxis)).
+ *        b. Separate the joint's cut faces into upstream (on the stationary anchor-side body)
+ *           and downstream (on the body to be moved) by checking face ownership against the
+ *           downstream body set.
+ *        c. Evaluate the upstream cut face: centroid and outward normal.  The outward normal
+ *           points away from the upstream body into the gap zone (downstream direction).
+ *        d. Evaluate the downstream cut face: centroid and outward normal.  The outward normal
+ *           points away from the downstream body into the gap zone (upstream direction in the
+ *           folded state).
+ *        e. Build a source coordinate system from the downstream cut face's current position:
+ *             sourceCS = coordSystem(downstreamFaceCentroid, zAxis, downstreamFaceNormal)
+ *        f. Build a target coordinate system for where the downstream cut face should end up:
+ *             targetOrigin = upstreamFaceCentroid + neutralFiberArcLength * upstreamFaceNormal
+ *             targetCS     = coordSystem(targetOrigin, zAxis, -upstreamFaceNormal)
+ *           The target face normal is reversed relative to the upstream face normal because in
+ *           the flat strip the two gap faces are parallel and face each other across the gap.
+ *           The gap dimension is exactly neutralFiberArcLength (the flat-pattern bend zone width).
+ *        g. Apply the mate-connector-to-mate-connector transform to all downstream bodies:
+ *             T = toWorld(targetCS) * fromWorld(sourceCS)
+ *           This moves each downstream body from its current folded position to its flat-layout
+ *           position in one step, with no rotation-sign guessing and no pivot-point estimation.
+ *
+ *   Processing last-to-first means the upstream cut face at joint i has not yet been moved when
+ *   that joint is handled, so its evaluated position is still the original folded-state position.
+ *   Previously-straightened downstream bodies are dragged along with each subsequent (earlier)
+ *   joint transform, exactly as in frameUnroll.fs.
  */
 annotation { "Feature Type Name" : "Kirigami Tube Unfold",
              "Feature Type Description" : "Unfolds a composite bent tube strip produced by Kirigami Tube Bend into a flat layout for laser-cut export." }
@@ -733,67 +742,115 @@ export const kirigamiTubeUnfold = defineFeature(function(context is Context, id 
         if (!isQueryEmpty(context, bentSectionBodies))
             opDeleteBodies(context, id + "deleteBentSections", { "entities" : bentSectionBodies });
 
+        // Build a per-joint index of the KirigamiBendCutFaceAttribute-tagged cut faces that
+        // were painted onto the frame segment bodies during kirigamiTubeBend.  We collect them
+        // all up front and bucket them by instanceIndex so the main loop only needs one pass.
+        // Upstream vs. downstream assignment is deferred to the loop where the discrimination
+        // plane is available.
+        var jointCutFaces = makeArray(jointCount, []);
+        {
+            const allTaggedFaces = evaluateQuery(context,
+                    qHasAttribute(
+                        qOwnedByBody(allConstituentBodies, EntityType.FACE),
+                        KIRIGAMI_CUT_FACE_ATTRIBUTE_NAME));
+            for (var cutFace in allTaggedFaces)
+            {
+                const cutFaceAttr = getAttribute(context, {
+                            "entity" : cutFace,
+                            "name"   : KIRIGAMI_CUT_FACE_ATTRIBUTE_NAME
+                        }) as KirigamiBendCutFaceAttribute;
+                const idx = cutFaceAttr.instanceIndex;
+                jointCutFaces[idx] = append(jointCutFaces[idx], cutFace);
+            }
+        }
+
         // Process joints last-to-first so the upstream body at joint i is still at its
-        // original world position when that joint is processed.  This keeps innerApexOrigin
-        // and tubeAxis from the stored attribute correct without needing a cumulative
-        // transform tracker.  Previously-straightened downstream bodies are dragged along
-        // with each subsequent (earlier) joint transform, exactly as in frameUnroll.fs.
+        // original world position when that joint is processed.  Previously-straightened
+        // downstream bodies are dragged along with each subsequent (earlier) joint
+        // transform, exactly as in frameUnroll.fs.
         for (var i = jointCount - 1; i >= 0; i -= 1)
         {
             const joint = joints[i];
 
-            // Inner apex origin: located at the opposite side of the tube cross-section
-            // from the outer apex edge.  normalize(cross(zAxis, xAxis)) = outerWallNormal
-            // (the outward normal of the outer bent-side wall face, pointing away from the
-            // tube interior).  Subtracting boxTubeWidth * outerWallNormal moves from the
-            // outer surface to the inner surface directly across the tube profile.
-            const outerWallNormal = normalize(cross(joint.zAxis, joint.xAxis));
-            const innerApexOrigin = joint.apexOrigin - joint.boxTubeWidth * outerWallNormal;
-            const innerApexLine   = line(innerApexOrigin, joint.zAxis);
-
-            // Downstream discrimination plane: positive side = bodies to be moved.
+            // Downstream discrimination plane: bodies strictly in front of this plane
+            // (on the downstream side of the joint) are moved by this step.
             const downstreamPlane  = plane(joint.apexOrigin, joint.xAxis);
             const downstreamBodies = qInFrontOfPlane(allConstituentBodies, downstreamPlane);
 
             if (isQueryEmpty(context, downstreamBodies))
                 continue;
 
-            // Rotation sign: project the downstream centroid offset onto outerWallNormal
-            // (perpendicular to the fold axis).
-            //
-            // zAxis = cross(capFaceNormal, outerWallNormal).  By the right-hand rule, a
-            // positive rotation about zAxis sweeps capFaceNormal TOWARD outerWallNormal --
-            // that is the fold direction.  Unfolding therefore requires a NEGATIVE rotation
-            // when the downstream body is bent in the +outerWallNormal direction (positive
-            // centroid projection), and a POSITIVE rotation when it bends in the opposite
-            // direction.
-            const downstreamCentroid = evApproximateCentroid(context, {
-                        "entities" : downstreamBodies
+            // Separate the cut faces for this joint into upstream (on the stationary
+            // anchor-side body) and downstream (on the body about to be moved).
+            // Ownership is resolved against the live downstream body set so the
+            // classification is correct regardless of the stored isPrimaryBody flag.
+            var upstreamCutFaces   = [];
+            var downstreamCutFaces = [];
+            for (var cutFace in jointCutFaces[i])
+            {
+                if (isQueryEmpty(context, qIntersection([qOwnerBody(cutFace), downstreamBodies])))
+                    upstreamCutFaces   = append(upstreamCutFaces, cutFace);
+                else
+                    downstreamCutFaces = append(downstreamCutFaces, cutFace);
+            }
+
+            if (size(upstreamCutFaces) == 0 || size(downstreamCutFaces) == 0)
+                continue;
+
+            // Evaluate the upstream cut face geometry.
+            // The outward normal points away from the upstream body into the gap zone
+            // (downstream direction).  evApproximateCentroid over all coplanar upstream
+            // faces gives a stable centroid; evFaceTangentPlane on the first face gives
+            // the normal (all faces at the same joint on the same body are coplanar).
+            const upstreamFacePlane = evFaceTangentPlane(context, {
+                        "face"      : qNthElement(qUnion(upstreamCutFaces), 0),
+                        "parameter" : vector(0.5, 0.5)
                     });
-            const centroidOffset    = downstreamCentroid - joint.apexOrigin;
-            const centroidProjected = centroidOffset - dot(centroidOffset, joint.zAxis) * joint.zAxis;
+            const upstreamFaceCentroid = evApproximateCentroid(context, {
+                        "entities" : qUnion(upstreamCutFaces)
+                    });
 
-            var rotationSign = -1;
-            if (dot(centroidProjected, outerWallNormal) < 0 * meter)
-                rotationSign = 1;
+            // Evaluate the downstream cut face geometry.
+            // The outward normal points away from the downstream body into the gap zone
+            // (upstream direction in the current folded state).
+            const downstreamFacePlane = evFaceTangentPlane(context, {
+                        "face"      : qNthElement(qUnion(downstreamCutFaces), 0),
+                        "parameter" : vector(0.5, 0.5)
+                    });
+            const downstreamFaceCentroid = evApproximateCentroid(context, {
+                        "entities" : qUnion(downstreamCutFaces)
+                    });
 
-            // Gap translation: after rotation about the inner apex edge the downstream
-            // segment is collinear with the upstream segment.  Translating by
-            // neutralFiberArcLength * tubeAxis opens the flat-pattern gap representing the
-            // kirigami bend zone.  tubeAxis is stored as a downstream-pointing unit vector,
-            // so the translation always moves the downstream group in the correct direction.
-            // If neutralFiberArcLength was not measured for this joint, apply only the
-            // straightening rotation and leave the gap at zero.
-            var gapTranslation = vector(0, 0, 0) * meter;
+            // Source coordinate system: current state of the downstream body's cut face.
+            // X-axis = joint.zAxis (fold-line direction, lies in the cut-face plane).
+            // Z-axis = face outward normal (pointing toward gap zone from downstream side).
+            const sourceCS = coordSystem(downstreamFaceCentroid,
+                    joint.zAxis,
+                    downstreamFacePlane.normal);
+
+            // Target coordinate system: desired state of the downstream body's cut face
+            // after unfolding.  In the flat strip the downstream gap face is coaxial with
+            // the upstream gap face, displaced by neutralFiberArcLength along the upstream
+            // face outward normal (the flat-pattern gap dimension).  The target z-axis is
+            // the reverse of the upstream face normal because in the flat strip the two gap
+            // faces face each other -- the upstream face points downstream and the downstream
+            // face points upstream.
+            var gapOffset = vector(0, 0, 0) * meter;
             if (joint.neutralFiberArcLength != undefined)
-                gapTranslation = joint.neutralFiberArcLength * joint.tubeAxis;
+                gapOffset = joint.neutralFiberArcLength * upstreamFacePlane.normal;
 
-            // Apply rotation-then-translation in one opTransform call.
-            // FeatureScript evaluates T * R as: rotate the body, then translate by T's vector.
+            const targetCS = coordSystem(
+                    upstreamFaceCentroid + gapOffset,
+                    joint.zAxis,
+                    -upstreamFacePlane.normal);
+
+            // Apply the mate-connector-to-mate-connector transform to all downstream bodies.
+            // toWorld(targetCS) * fromWorld(sourceCS) moves each downstream body from its
+            // current folded position to the correct flat-layout position in one step -- no
+            // rotation-sign guessing, no inner-apex-edge estimation, no miter-angle arithmetic.
             opTransform(context, id + ("unfoldJoint" ~ i), {
                         "bodies"    : downstreamBodies,
-                        "transform" : transform(gapTranslation) *
-                                rotationAround(innerApexLine, rotationSign * 2 * joint.miterAngle)
+                        "transform" : toWorld(targetCS) * fromWorld(sourceCS)
                     });
         }
     });
