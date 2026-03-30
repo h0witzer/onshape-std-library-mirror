@@ -759,18 +759,23 @@ export const kirigamiTubeUnfold = defineFeature(function(context is Context, id 
                 continue;
 
             // Rotation sign: project the downstream centroid offset onto outerWallNormal
-            // (perpendicular to the fold axis).  A negative projection means the downstream
-            // chain bends in the -outerWallNormal direction and requires a negative rotation
-            // about zAxis to straighten; positive means it bends outward and needs +rotation.
+            // (perpendicular to the fold axis).
+            //
+            // zAxis = cross(capFaceNormal, outerWallNormal).  By the right-hand rule, a
+            // positive rotation about zAxis sweeps capFaceNormal TOWARD outerWallNormal --
+            // that is the fold direction.  Unfolding therefore requires a NEGATIVE rotation
+            // when the downstream body is bent in the +outerWallNormal direction (positive
+            // centroid projection), and a POSITIVE rotation when it bends in the opposite
+            // direction.
             const downstreamCentroid = evApproximateCentroid(context, {
                         "entities" : downstreamBodies
                     });
             const centroidOffset    = downstreamCentroid - joint.apexOrigin;
             const centroidProjected = centroidOffset - dot(centroidOffset, joint.zAxis) * joint.zAxis;
 
-            var rotationSign = 1;
+            var rotationSign = -1;
             if (dot(centroidProjected, outerWallNormal) < 0 * meter)
-                rotationSign = -1;
+                rotationSign = 1;
 
             // Gap translation: after rotation about the inner apex edge the downstream
             // segment is collinear with the upstream segment.  Translating by
