@@ -231,6 +231,15 @@ export const kirigamiTubeBend = defineFeature(function(context is Context, id is
         {
             const jointData = sharedJoints[instanceIndex];
             const apexEdge = jointData.edgeQuery;
+
+            // Build a query union of both frame bodies sharing this joint.  This is used later
+            // as the target set for the boolean subtraction that cuts the kirigami notch.
+            // jointData.jointBodyIndices is an array of body index values; for...in yields
+            // each value directly (not a positional index into frameBodiesArray).
+            var jointFrameBodyQueries = [];
+            for (var jointBodyIndex in jointData.jointBodyIndices)
+                jointFrameBodyQueries = append(jointFrameBodyQueries, frameBodiesArray[jointBodyIndex]);
+            const jointFrameBodyTargets = qUnion(jointFrameBodyQueries);
             const apexCoordSystem = buildApexCoordSystem(context, id, instanceIndex, apexEdge);
             // computeJointDimensions uses apexCoordSystem.zAxis (the fold-line direction, which IS the
             // local-csys Z) as the BoxTubeHeight axis, and apexCoordSystem.xAxis as the cap face normal
@@ -268,7 +277,8 @@ export const kirigamiTubeBend = defineFeature(function(context is Context, id is
                         "boxTubeWidth"             : jointDimensions.boxTubeWidth,
                         "miterAngle"               : jointDimensions.miterAngle,
                         "bendOutsideRadius"        : definition.bendOutsideRadius,
-                        "offsetToInteriorSweepLine": cachedOffsetToInteriorSweepLine
+                        "offsetToInteriorSweepLine": cachedOffsetToInteriorSweepLine,
+                        "frameBodyTargets"         : jointFrameBodyTargets
                     });
         }
 
@@ -294,6 +304,57 @@ export const kirigamiTubeBend = defineFeature(function(context is Context, id is
                             "offsetToInteriorSweepLine": instance.offsetToInteriorSweepLine
                         } as KirigamiBendAttribute
                     });
+        }
+
+        // Boolean subtract each bend constructor tool from both of its adjacent frame bodies.
+        // keepTools is true so the tool bodies -- which carry KirigamiBendAttribute for the
+        // downstream flat-layout script -- are preserved after the cut operation.
+        // After each subtraction, a mate connector is placed at the centroid of every planar
+        // face introduced by that cut, oriented with its Z axis along the face outward normal.
+        for (var instanceIndex = 0; instanceIndex < size(pendingInstances); instanceIndex += 1)
+        {
+            const instance = pendingInstances[instanceIndex];
+            const booleanCutId = id + ("booleanCut" ~ instanceIndex);
+
+            // Subtract the bend constructor from both frame bodies sharing this joint.
+            opBoolean(context, booleanCutId, {
+                        "tools"         : instance.query,
+                        "targets"       : instance.frameBodyTargets,
+                        "operationType" : BooleanOperationType.SUBTRACTION,
+                        "keepTools"     : true
+                    });
+
+            // Query the planar faces introduced on the target bodies by this boolean cut.
+            // qCreatedBy scopes the result to faces that did not exist before this opBoolean.
+            const cutPlanarFacesArray = evaluateQuery(context,
+                    qGeometry(qCreatedBy(booleanCutId, EntityType.FACE), GeometryType.PLANE));
+
+            // Place one mate connector at the centroid of each planar cut face.
+            // Z axis = face outward normal; X axis = an arbitrary perpendicular chosen
+            // consistently for the same normal direction by perpendicularVector.
+            // evApproximateCentroid is used rather than faceTangentPlane.origin: the
+            // tangent plane origin corresponds to the UV parameter (0.5, 0.5) evaluation
+            // point, which is the UV center of the face and does not necessarily coincide
+            // with the geometric centroid for non-rectangular cut faces.
+            for (var cutFaceIndex = 0; cutFaceIndex < size(cutPlanarFacesArray); cutFaceIndex += 1)
+            {
+                const cutFace = cutPlanarFacesArray[cutFaceIndex];
+                const faceTangentPlane = evFaceTangentPlane(context, {
+                            "face" : cutFace,
+                            "parameter" : vector(0.5, 0.5)
+                        });
+                const faceCentroid = evApproximateCentroid(context, { "entities" : cutFace });
+
+                const mateConnectorCS = coordSystem(faceCentroid,
+                        perpendicularVector(faceTangentPlane.normal),
+                        faceTangentPlane.normal);
+
+                opMateConnector(context,
+                        id + ("bendCutFaceMateConnector" ~ instanceIndex ~ "_" ~ cutFaceIndex), {
+                            "coordSystem" : mateConnectorCS,
+                            "owner"       : qOwnerBody(cutFace)
+                        });
+            }
         }
     });
 
@@ -518,8 +579,10 @@ function findOuterApexEdgeForCapFace(context is Context, id is Id, bodyIndex is 
 //                         "frameBody" : Query, "tubeAxis" : Vector }, one entry per eligible
 //                         cap face per body.
 // @param totalBodyCount : Total number of selected frame bodies (size of frameBodiesArray).
-// @returns array        : Array of data map (same schema as outerEdgeData entries), one per joint that
-//                         should receive a bend constructor.
+// @returns array        : Array of data map (same schema as outerEdgeData entries, plus
+//                         "jointBodyIndices" : array of two body indices for the two bodies
+//                         that share each joint), one entry per joint that should receive
+//                         a bend constructor.
 function collectSharedApexEdges(context is Context, outerEdgeData is array, totalBodyCount is number) returns array
 {
     // Pre-compute all midpoints once to avoid redundant evEdgeTangentLine calls in later passes.
@@ -612,7 +675,12 @@ function collectSharedApexEdges(context is Context, outerEdgeData is array, tota
             {
                 if (size(uniqueBodyContributors[uniqueMidpointIndex]) >= 2)
                 {
-                    sharedJointData     = append(sharedJointData,     outerEdgeData[edgeIndex]);
+                    // Embed the pair of body indices directly in the joint data map so that
+                    // the caller can identify both frame bodies at this joint without needing
+                    // a separate parallel array.
+                    var jointEntry = outerEdgeData[edgeIndex];
+                    jointEntry["jointBodyIndices"] = uniqueBodyContributors[uniqueMidpointIndex];
+                    sharedJointData     = append(sharedJointData,     jointEntry);
                     sharedEdgeBodyPairs = append(sharedEdgeBodyPairs, uniqueBodyContributors[uniqueMidpointIndex]);
                     claimedMidpoints    = append(claimedMidpoints,    midpoint);
                 }
