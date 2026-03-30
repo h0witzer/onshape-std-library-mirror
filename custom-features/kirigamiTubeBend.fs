@@ -236,10 +236,10 @@ export const kirigamiTubeBend = defineFeature(function(context is Context, id is
             // as the target set for the boolean subtraction that cuts the kirigami notch.
             // jointData.jointBodyIndices is an array of body index values; for...in yields
             // each value directly (not a positional index into frameBodiesArray).
-            var jointFrameBodyQueries = [];
-            for (var jointBodyIndex in jointData.jointBodyIndices)
-                jointFrameBodyQueries = append(jointFrameBodyQueries, frameBodiesArray[jointBodyIndex]);
-            const jointFrameBodyTargets = qUnion(jointFrameBodyQueries);
+            var jointFrameBodies = [];
+            for (var frameBodyIndex in jointData.jointBodyIndices)
+                jointFrameBodies = append(jointFrameBodies, frameBodiesArray[frameBodyIndex]);
+            const jointFrameBodyTargets = qUnion(jointFrameBodies);
             const apexCoordSystem = buildApexCoordSystem(context, id, instanceIndex, apexEdge);
             // computeJointDimensions uses apexCoordSystem.zAxis (the fold-line direction, which IS the
             // local-csys Z) as the BoxTubeHeight axis, and apexCoordSystem.xAxis as the cap face normal
@@ -273,6 +273,7 @@ export const kirigamiTubeBend = defineFeature(function(context is Context, id is
                         "query"                    : instanceQuery,
                         "coordSystem"              : apexCoordSystem,
                         "instanceIndex"            : instanceIndex,
+                        "jointBodyIndices"         : jointData.jointBodyIndices,
                         "boxTubeHeight"            : jointDimensions.boxTubeHeight,
                         "boxTubeWidth"             : jointDimensions.boxTubeWidth,
                         "miterAngle"               : jointDimensions.miterAngle,
@@ -357,6 +358,61 @@ export const kirigamiTubeBend = defineFeature(function(context is Context, id is
                             "coordSystem" : mateConnectorCS,
                             "owner"       : qOwnerBody(cutFace)
                         });
+            }
+
+            // Sweep cut faces along the tool's arc edge to fill the void zone removed by the
+            // boolean subtraction, reconstructing the tube wall geometry in the bent state.
+            //
+            // Only cut faces owned by the first frame body at this joint are used as sweep
+            // profiles.  Both frame bodies receive cut faces from the boolean subtraction, but
+            // sweeping from both would produce identical overlapping fill geometry.  Assigning
+            // the fill to jointBodyIndices[0] gives each joint a single unambiguous owner.
+            //
+            // The KirigamiBendConstructor solid carries two arc edges (inner and outer bend
+            // radius).  Both span the same angular sweep from frame body A's cut plane to
+            // frame body B's cut plane, so either is a valid path for the fill sweep.
+            const solidToolBody = qBodyType(instance.query, BodyType.SOLID);
+            const toolArcEdges = qGeometry(
+                    qOwnedByBody(solidToolBody, EntityType.EDGE),
+                    GeometryType.ARC);
+
+            if (!isQueryEmpty(context, toolArcEdges))
+            {
+                // Pick the first arc edge as the sweep path.
+                const sweepPathEdge = qNthElement(toolArcEdges, 0);
+
+                // Filter cut faces to those owned by the primary (first) frame body at this joint.
+                const primaryFrameBody = frameBodiesArray[instance.jointBodyIndices[0]];
+                const primaryFrameBodyCutFaces = evaluateQuery(context,
+                        qIntersection([
+                            qOwnedByBody(primaryFrameBody, EntityType.FACE),
+                            qUnion(cutPlanarFacesArray)
+                        ]));
+
+                // Sweep each cut face along the arc, creating one bent wall body per face.
+                var bentPanelBodies = [];
+                for (var primaryCutFaceIndex = 0; primaryCutFaceIndex < size(primaryFrameBodyCutFaces); primaryCutFaceIndex += 1)
+                {
+                    const bentPanelId = id + ("bentPanel" ~ instanceIndex ~ "_" ~ primaryCutFaceIndex);
+                    opSweep(context, bentPanelId, {
+                                "profiles" : primaryFrameBodyCutFaces[primaryCutFaceIndex],
+                                "path"     : sweepPathEdge
+                            });
+                    bentPanelBodies = append(bentPanelBodies,
+                            qCreatedBy(bentPanelId, EntityType.BODY));
+                }
+
+                // Union all bent panel bodies back into the primary frame body.
+                // This fills the void zone, making the frame body a single continuous solid
+                // that transitions from the straight segment into the bent region.
+                if (size(bentPanelBodies) > 0)
+                {
+                    opBoolean(context, id + ("bentPanelUnion" ~ instanceIndex), {
+                                "tools"         : qUnion(bentPanelBodies),
+                                "targets"       : primaryFrameBody,
+                                "operationType" : BooleanOperationType.UNION
+                            });
+                }
             }
         }
     });
