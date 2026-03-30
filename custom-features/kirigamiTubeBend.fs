@@ -449,6 +449,8 @@ export const kirigamiTubeBend = defineFeature(function(context is Context, id is
                         "coordSystem"              : apexCoordSystem,
                         "instanceIndex"            : instanceIndex,
                         "jointBodyIndices"         : jointData.jointBodyIndices,
+                        "upstreamBodyIndex"        : jointData.upstreamBodyIndex,
+                        "downstreamBodyIndex"      : jointData.downstreamBodyIndex,
                         "boxTubeHeight"            : jointDimensions.boxTubeHeight,
                         "boxTubeWidth"             : jointDimensions.boxTubeWidth,
                         "miterAngle"               : jointDimensions.miterAngle,
@@ -700,13 +702,11 @@ export const kirigamiTubeBend = defineFeature(function(context is Context, id is
                             "tubeAxis"               : instance.tubeAxis,
                             "miterAngle"             : instance.miterAngle,
                             "neutralFiberArcLength"  : collectedNeutralFiberLengths[i],
-                            // jointBodyIndices[0] is always the upstream (anchor-side) body: it is
-                            // the lower-index body that contributed its outer apex edge first in the
-                            // outerEdgeData iteration, making its cap face normal the xAxis of
-                            // apexCoordSystem.  Bodies "in front of" plane(apexOrigin, xAxis) are
-                            // therefore on the jointBodyIndices[1] (downstream) side.
-                            "upstreamSegmentIndex"   : instance.jointBodyIndices[0],
-                            "downstreamSegmentIndex" : instance.jointBodyIndices[1]
+                            // upstreamBodyIndex and downstreamBodyIndex come from the chain
+                            // traversal in collectSharedApexEdges, where the upstream body is
+                            // on the anchor side and the downstream body is on the free side.
+                            "upstreamSegmentIndex"   : instance.upstreamBodyIndex,
+                            "downstreamSegmentIndex" : instance.downstreamBodyIndex
                         });
             }
             setAttribute(context, {
@@ -1104,18 +1104,20 @@ function findOuterApexEdgeForCapFace(context is Context, id is Id, bodyIndex is 
 //      TWO DISTINCT bodies (a genuinely shared joint) and records which two body indices meet
 //      at each such joint.  Midpoints contributed by only one body are free ends and are
 //      silently discarded.
-//   3. Cycle detection and ring-breaking:
+//   3. Chain traversal (both open chains and cycles):
 //        - Count each selected body's degree (how many shared joints it participates in).
 //        - If every body has degree == 2, the topology is a pure closed ring.
-//        - For an open chain (at least one body has degree < 2 or the count of shared joints
-//          is less than the total body count), all shared joints are returned unchanged.
-//        - For a pure cycle of N bodies: a graph traversal starting from body 0 (the first
-//          body in the selection list) visits N-1 joints in chain order and intentionally
-//          omits the final "closing" joint that would return to body 0.  This leaves two
-//          open ends on the linearised strip so the downstream flat-layout can unfold it.
-//          The traversal direction is determined by which joint connecting body 0 appears
-//          first in sharedEdgeBodyPairs (body-index order, cap-face order within each body),
-//          making the result deterministic for any given selection order.
+//        - For an open chain: traversal starts from the first degree-1 body found (a chain
+//          endpoint) and walks to the other end, returning joints in anchor-to-free-end order.
+//        - For a pure cycle of N bodies: traversal starts from body 0 and visits N-1 joints
+//          in chain order, intentionally omitting the final closing joint so the result is a
+//          linear strip with two open ends.
+//        - In both cases each returned joint entry carries "upstreamBodyIndex" (the body on
+//          the anchor side of the joint) and "downstreamBodyIndex" (the body on the free side).
+//          These are set from the traversal state and are the authoritative upstream/downstream
+//          labels.  The ordering of "jointBodyIndices" must NOT be used for this purpose --
+//          that array records discovery order, which is unrelated to chain direction.
+//          Frames can be selected in any order, so body index 0 is not necessarily an endpoint.
 //
 // Midpoint comparison uses tolerantEquals(Vector, Vector) from vector.fs, which applies
 // TOLERANCE.zeroLength for length vectors -- appropriate for edges that are truly coincident
@@ -1127,9 +1129,11 @@ function findOuterApexEdgeForCapFace(context is Context, id is Id, bodyIndex is 
 //                         cap face per body.
 // @param totalBodyCount : Total number of selected frame bodies (size of frameBodiesArray).
 // @returns array        : Array of data map (same schema as outerEdgeData entries, plus
-//                         "jointBodyIndices" : array of two body indices for the two bodies
-//                         that share each joint), one entry per joint that should receive
-//                         a bend constructor.
+//                         "jointBodyIndices"    : unordered array of the two body indices that
+//                                                share the joint,
+//                         "upstreamBodyIndex"   : body on the anchor side of the joint, and
+//                         "downstreamBodyIndex" : body on the free side), one entry per joint
+//                         in chain traversal order (anchor end first, free end last).
 function collectSharedApexEdges(context is Context, outerEdgeData is array, totalBodyCount is number) returns array
 {
     // Pre-compute all midpoints once to avoid redundant evEdgeTangentLine calls in later passes.
@@ -1261,21 +1265,43 @@ function collectSharedApexEdges(context is Context, outerEdgeData is array, tota
         }
     }
 
-    // Open chain: return all shared joints immediately.
-    if (!isPureCycle)
-        return sharedJointData;
-
-    // Pure cycle: traverse N-1 joints starting from body 0, dropping the final closing joint.
+    // Open chain: traverse from the first degree-1 body (a chain endpoint) to the other end.
+    // Cycle: traverse N-1 joints from body 0, omitting the closing joint.
     //
-    // At each step we advance from currentBodyIndex to the neighbour connected by a joint that
-    // has not yet been visited and does not backtrack to previousBodyIndex.  After N-1 steps
-    // the chain covers all bodies in a single open strip; the Nth joint (which would reconnect
-    // the last body to body 0) is intentionally omitted.
-    var cycleOrderedJoints = [];
-    var currentBodyIndex   = 0;
-    var previousBodyIndex  = -1;
+    // Both paths use the same traversal loop.  The only difference is the start body and the
+    // number of steps.  Each step records the traversal-state upstream/downstream assignment
+    // directly in the joint entry -- this is what the strip-building code must use.  The
+    // ordering of jointBodyIndices is NOT meaningful for this purpose.
+    var startBodyIndex = -1;
+    if (isPureCycle)
+    {
+        // Anchor at body 0 for cycles.
+        startBodyIndex = 0;
+    }
+    else
+    {
+        // Find the first degree-1 body (chain endpoint) to anchor the traversal.
+        // Frames can be selected in any order, so body 0 is not guaranteed to be an endpoint.
+        for (var bodyIndex = 0; bodyIndex < totalBodyCount; bodyIndex += 1)
+        {
+            if (bodyDegrees[bodyIndex] == 1)
+            {
+                startBodyIndex = bodyIndex;
+                break;
+            }
+        }
+    }
 
-    for (var stepIndex = 0; stepIndex < totalBodyCount - 1; stepIndex += 1)
+    // stepCount: number of joints to collect.
+    //   Open chain of N bodies: N-1 joints, traverse all of them.
+    //   Cycle of N bodies: traverse N-1 joints, dropping the closing edge.
+    const stepCount = isPureCycle ? (totalBodyCount - 1) : size(sharedJointData);
+
+    var orderedJoints    = [];
+    var currentBodyIndex = startBodyIndex;
+    var previousBodyIndex = -1;
+
+    for (var stepIndex = 0; stepIndex < stepCount; stepIndex += 1)
     {
         var nextBodyIndex      = -1;
         var selectedJointIndex = -1;
@@ -1284,9 +1310,6 @@ function collectSharedApexEdges(context is Context, outerEdgeData is array, tota
         {
             const pair = sharedEdgeBodyPairs[jointIndex];
 
-            // Only process simple 2-body joints.  Multi-way intersections (T-junctions,
-            // 3-way corners) prevent isPureCycle from being true and cannot reach this path,
-            // but skip them explicitly for defensive correctness.
             if (size(pair) < 2)
                 continue;
 
@@ -1294,15 +1317,14 @@ function collectSharedApexEdges(context is Context, outerEdgeData is array, tota
             const pairBodyB = pair[1];
 
             if (pairBodyA != currentBodyIndex && pairBodyB != currentBodyIndex)
-                continue; // This joint does not touch the current body.
+                continue;
 
-            // Identify the body on the other side of this joint.
             var neighbourBodyIndex = pairBodyA;
             if (pairBodyA == currentBodyIndex)
                 neighbourBodyIndex = pairBodyB;
 
             if (neighbourBodyIndex == previousBodyIndex)
-                continue; // Do not backtrack to where we came from.
+                continue;
 
             nextBodyIndex      = neighbourBodyIndex;
             selectedJointIndex = jointIndex;
@@ -1310,17 +1332,28 @@ function collectSharedApexEdges(context is Context, outerEdgeData is array, tota
         }
 
         if (selectedJointIndex == -1)
-            throw regenError("Could not complete cycle traversal at step " ~ (stepIndex + 1) ~
-                ". The selected frame bodies appear to form a closed ring but the joint " ~
-                "connectivity is inconsistent. Ensure all selected bodies form a single " ~
-                "unambiguous connected cycle.", ["frameBodies"]);
+        {
+            if (isPureCycle)
+                throw regenError("Could not complete cycle traversal at step " ~ (stepIndex + 1) ~
+                    ". The selected frame bodies appear to form a closed ring but the joint " ~
+                    "connectivity is inconsistent. Ensure all selected bodies form a single " ~
+                    "unambiguous connected cycle.", ["frameBodies"]);
+            else
+                break; // Reached end of chain.
+        }
 
-        cycleOrderedJoints = append(cycleOrderedJoints, sharedJointData[selectedJointIndex]);
-        previousBodyIndex  = currentBodyIndex;
-        currentBodyIndex   = nextBodyIndex;
+        // Embed the chain-order upstream/downstream assignment.  currentBodyIndex is on the
+        // anchor side of this joint; nextBodyIndex is on the free side.
+        var jointEntry = sharedJointData[selectedJointIndex];
+        jointEntry["upstreamBodyIndex"]   = currentBodyIndex;
+        jointEntry["downstreamBodyIndex"] = nextBodyIndex;
+        orderedJoints = append(orderedJoints, jointEntry);
+
+        previousBodyIndex = currentBodyIndex;
+        currentBodyIndex  = nextBodyIndex;
     }
 
-    return cycleOrderedJoints;
+    return orderedJoints;
 }
 
 // Projects a vector onto the plane perpendicular to a given axis, then normalizes the result.
