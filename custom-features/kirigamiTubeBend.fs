@@ -1297,8 +1297,12 @@ function collectSharedApexEdges(context is Context, outerEdgeData is array, tota
     //   Cycle of N bodies: traverse N-1 joints, dropping the closing edge.
     const stepCount = isPureCycle ? (totalBodyCount - 1) : size(sharedJointData);
 
-    var orderedJoints    = [];
-    var currentBodyIndex = startBodyIndex;
+    // visitedJointFlags is parallel to sharedJointData.  A true entry means that joint was
+    // reached during the traversal and has already been added to orderedJoints.  Used after
+    // the traversal to collect any joints that belong to disconnected chain segments.
+    var visitedJointFlags = makeArray(size(sharedJointData), false);
+    var orderedJoints     = [];
+    var currentBodyIndex  = startBodyIndex;
     var previousBodyIndex = -1;
 
     for (var stepIndex = 0; stepIndex < stepCount; stepIndex += 1)
@@ -1339,8 +1343,10 @@ function collectSharedApexEdges(context is Context, outerEdgeData is array, tota
                     "connectivity is inconsistent. Ensure all selected bodies form a single " ~
                     "unambiguous connected cycle.", ["frameBodies"]);
             else
-                break; // Reached end of chain.
+                break; // Reached the far endpoint of this connected component.
         }
+
+        visitedJointFlags[selectedJointIndex] = true;
 
         // Embed the chain-order upstream/downstream assignment.  currentBodyIndex is on the
         // anchor side of this joint; nextBodyIndex is on the free side.
@@ -1351,6 +1357,25 @@ function collectSharedApexEdges(context is Context, outerEdgeData is array, tota
 
         previousBodyIndex = currentBodyIndex;
         currentBodyIndex  = nextBodyIndex;
+    }
+
+    // For non-cycle topologies, append any joints that the traversal did not reach.
+    // This covers disconnected chain segments in the selection (e.g. two separate
+    // sub-chains where one or more intermediate joints were filtered out).  These
+    // joints still need bend geometry; only their strip-order upstream/downstream
+    // assignment is missing, so it falls back to the jointBodyIndices discovery order.
+    if (!isPureCycle)
+    {
+        for (var remainingJointIndex = 0; remainingJointIndex < size(sharedJointData); remainingJointIndex += 1)
+        {
+            if (!visitedJointFlags[remainingJointIndex])
+            {
+                var remainingJointEntry = sharedJointData[remainingJointIndex];
+                remainingJointEntry["upstreamBodyIndex"]   = remainingJointEntry.jointBodyIndices[0];
+                remainingJointEntry["downstreamBodyIndex"] = remainingJointEntry.jointBodyIndices[1];
+                orderedJoints = append(orderedJoints, remainingJointEntry);
+            }
+        }
     }
 
     return orderedJoints;
