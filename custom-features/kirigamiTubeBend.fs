@@ -312,10 +312,10 @@ export const kirigamiTubeBend = defineFeature(function(context is Context, id is
         // downstream flat-layout script -- are preserved after the cut operation.
         // After each subtraction, a mate connector is placed at the centroid of every planar
         // face introduced by that cut, oriented with its Z axis along the face outward normal.
-        // Each cut face is then swept along the tool arc edge to produce a bent wall body that
-        // fills the void zone.  All bent panel bodies are collected across every joint and
-        // composited together with the input frame bodies in one closed composite at the end.
-        var allBentPanelBodies = [];
+        // Each cut face is then swept along the tool arc edge to produce a bent tube section body
+        // that fills the void zone.  All bent tube section bodies are collected across every joint
+        // and composited together with the input frame bodies in one closed composite at the end.
+        var allBentTubeSectionBodies = [];
 
         for (var instanceIndex = 0; instanceIndex < size(pendingInstances); instanceIndex += 1)
         {
@@ -394,33 +394,33 @@ export const kirigamiTubeBend = defineFeature(function(context is Context, id is
                             qUnion(cutPlanarFacesArray)
                         ]));
 
-                // Sweep each cut face along the arc, creating one bent wall body per face.
-                var bentPanelBodies = [];
-                for (var primaryCutFaceIndex = 0; primaryCutFaceIndex < size(primaryFrameBodyCutFaces); primaryCutFaceIndex += 1)
+                // Sweep each cut face along the arc, creating one bent tube section body per face.
+                var bentTubeSectionBodies = [];
+                for (var tubeCutFaceIndex = 0; tubeCutFaceIndex < size(primaryFrameBodyCutFaces); tubeCutFaceIndex += 1)
                 {
-                    const bentPanelId = id + ("bentPanel" ~ instanceIndex ~ "_" ~ primaryCutFaceIndex);
-                    opSweep(context, bentPanelId, {
-                                "profiles" : primaryFrameBodyCutFaces[primaryCutFaceIndex],
+                    const bentTubeSectionId = id + ("bentTubeSection" ~ instanceIndex ~ "_" ~ tubeCutFaceIndex);
+                    opSweep(context, bentTubeSectionId, {
+                                "profiles" : primaryFrameBodyCutFaces[tubeCutFaceIndex],
                                 "path"     : sweepPathEdge
                             });
-                    bentPanelBodies = append(bentPanelBodies,
-                            qCreatedBy(bentPanelId, EntityType.BODY));
+                    bentTubeSectionBodies = append(bentTubeSectionBodies,
+                            qCreatedBy(bentTubeSectionId, EntityType.BODY));
                 }
 
-                // Accumulate this joint's bent panel bodies for the final composite step.
-                allBentPanelBodies = concatenateArrays([allBentPanelBodies, bentPanelBodies]);
+                // Accumulate this joint's bent tube section bodies for the final composite step.
+                allBentTubeSectionBodies = concatenateArrays([allBentTubeSectionBodies, bentTubeSectionBodies]);
             }
         }
 
-        // Composite all bent panel bodies together with the input frame bodies into a single
-        // closed composite part.  A closed composite consumes its constituent solid bodies so
-        // that they are presented as one unit to the downstream flat-layout script.
-        // This is done once after all joints are processed so every swept panel and every
+        // Composite all bent tube section bodies together with the input frame bodies into a
+        // single closed composite part.  A closed composite consumes its constituent solid
+        // bodies so that they are presented as one unit to the downstream flat-layout script.
+        // This is done once after all joints are processed so every swept tube section and every
         // frame segment are grouped in a single composite regardless of how many joints exist.
-        if (size(allBentPanelBodies) > 0)
+        if (size(allBentTubeSectionBodies) > 0)
         {
-            opCreateCompositePart(context, id + "bentFrameComposite", {
-                        "bodies" : qUnion(concatenateArrays([allBentPanelBodies, [definition.frameBodies]])),
+            opCreateCompositePart(context, id + "bentTubeFrameComposite", {
+                        "bodies" : qUnion(concatenateArrays([allBentTubeSectionBodies, [definition.frameBodies]])),
                         "closed" : true
                     });
         }
