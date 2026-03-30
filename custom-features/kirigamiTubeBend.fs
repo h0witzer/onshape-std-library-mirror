@@ -44,6 +44,13 @@ const KIRIGAMI_BEND_ATTRIBUTE_NAME = "kirigamiBendData";
  *                                               faces are excluded.  For a hollow box tube without corner fillets
  *                                               this equals the wall thickness.  For a tube with interior corner
  *                                               fillets the value includes the fillet radius.
+ *   neutralFiberArcLength {ValueWithUnits}: Arc length at the neutral fiber of the bend, computed by
+ *                                          measuring the distance from the first cut-face mate connector
+ *                                          origin to the inner cylindrical face of the tool solid, offsetting
+ *                                          that face outward by that distance, and reading the length of one
+ *                                          arc edge on the resulting surface.  This is the flat-pattern
+ *                                          dimension for the bend zone.  Populated during joint processing;
+ *                                          may be undefined on attributes set before that phase.
  */
 export type KirigamiBendAttribute typecheck canBeKirigamiBendAttribute;
 
@@ -59,6 +66,7 @@ export predicate canBeKirigamiBendAttribute(value)
     isAngle(value.miterAngle);
     isLength(value.bendOutsideRadius);
     isLength(value.offsetToInteriorSweepLine);
+    value.neutralFiberArcLength == undefined || isLength(value.neutralFiberArcLength);
 }
 
 /**
@@ -231,6 +239,15 @@ export const kirigamiTubeBend = defineFeature(function(context is Context, id is
         {
             const jointData = sharedJoints[instanceIndex];
             const apexEdge = jointData.edgeQuery;
+
+            // Build a query union of both frame bodies sharing this joint.  This is used later
+            // as the target set for the boolean subtraction that cuts the kirigami notch.
+            // jointData.jointBodyIndices is an array of body index values; for...in yields
+            // each value directly (not a positional index into frameBodiesArray).
+            var jointFrameBodies = [];
+            for (var frameBodyIndex in jointData.jointBodyIndices)
+                jointFrameBodies = append(jointFrameBodies, frameBodiesArray[frameBodyIndex]);
+            const jointFrameBodyTargets = qUnion(jointFrameBodies);
             const apexCoordSystem = buildApexCoordSystem(context, id, instanceIndex, apexEdge);
             // computeJointDimensions uses apexCoordSystem.zAxis (the fold-line direction, which IS the
             // local-csys Z) as the BoxTubeHeight axis, and apexCoordSystem.xAxis as the cap face normal
@@ -264,11 +281,13 @@ export const kirigamiTubeBend = defineFeature(function(context is Context, id is
                         "query"                    : instanceQuery,
                         "coordSystem"              : apexCoordSystem,
                         "instanceIndex"            : instanceIndex,
+                        "jointBodyIndices"         : jointData.jointBodyIndices,
                         "boxTubeHeight"            : jointDimensions.boxTubeHeight,
                         "boxTubeWidth"             : jointDimensions.boxTubeWidth,
                         "miterAngle"               : jointDimensions.miterAngle,
                         "bendOutsideRadius"        : definition.bendOutsideRadius,
-                        "offsetToInteriorSweepLine": cachedOffsetToInteriorSweepLine
+                        "offsetToInteriorSweepLine": cachedOffsetToInteriorSweepLine,
+                        "frameBodyTargets"         : jointFrameBodyTargets
                     });
         }
 
@@ -293,6 +312,167 @@ export const kirigamiTubeBend = defineFeature(function(context is Context, id is
                             "bendOutsideRadius"        : instance.bendOutsideRadius,
                             "offsetToInteriorSweepLine": instance.offsetToInteriorSweepLine
                         } as KirigamiBendAttribute
+                    });
+        }
+
+        // Boolean subtract each bend constructor tool from both of its adjacent frame bodies.
+        // keepTools is true so the tool bodies -- which carry KirigamiBendAttribute for the
+        // downstream flat-layout script -- are preserved after the cut operation.
+        // After each subtraction, a mate connector is placed at the centroid of every planar
+        // face introduced by that cut, oriented with its Z axis along the face outward normal.
+        // Each cut face is then swept along the tool arc edge to produce a bent tube section body
+        // that fills the void zone.  All bent tube section bodies are collected across every joint
+        // and composited together with the input frame bodies in one closed composite at the end.
+        var allBentTubeSectionBodies = [];
+        var allInstanceBodies = [];
+
+        for (var instanceIndex = 0; instanceIndex < size(pendingInstances); instanceIndex += 1)
+        {
+            const instance = pendingInstances[instanceIndex];
+            const booleanCutId = id + ("booleanCut" ~ instanceIndex);
+
+            // Subtract the bend constructor from both frame bodies sharing this joint.
+            // The instantiator may bring in non-solid bodies (e.g. mate connectors from the
+            // KirigamiBendConstructor part studio).  opBoolean requires all tool bodies to be
+            // solid, so filter instance.query to BodyType.SOLID before passing it as tools.
+            opBoolean(context, booleanCutId, {
+                        "tools"         : qBodyType(instance.query, BodyType.SOLID),
+                        "targets"       : instance.frameBodyTargets,
+                        "operationType" : BooleanOperationType.SUBTRACTION,
+                        "keepTools"     : true
+                    });
+
+            // Query the planar faces introduced on the target bodies by this boolean cut.
+            // qCreatedBy scopes the result to faces that did not exist before this opBoolean.
+            const cutPlanarFacesArray = evaluateQuery(context,
+                    qGeometry(qCreatedBy(booleanCutId, EntityType.FACE), GeometryType.PLANE));
+
+            // Place one mate connector at the centroid of each planar cut face.
+            // Z axis = face outward normal; X axis = an arbitrary perpendicular chosen
+            // consistently for the same normal direction by perpendicularVector.
+            // evApproximateCentroid is used rather than faceTangentPlane.origin: the
+            // tangent plane origin corresponds to the UV parameter (0.5, 0.5) evaluation
+            // point, which is the UV center of the face and does not necessarily coincide
+            // with the geometric centroid for non-rectangular cut faces.
+            for (var cutFaceIndex = 0; cutFaceIndex < size(cutPlanarFacesArray); cutFaceIndex += 1)
+            {
+                const cutFace = cutPlanarFacesArray[cutFaceIndex];
+                const faceTangentPlane = evFaceTangentPlane(context, {
+                            "face" : cutFace,
+                            "parameter" : vector(0.5, 0.5)
+                        });
+                const faceCentroid = evApproximateCentroid(context, { "entities" : cutFace });
+
+                const mateConnectorCS = coordSystem(faceCentroid,
+                        perpendicularVector(faceTangentPlane.normal),
+                        faceTangentPlane.normal);
+
+                opMateConnector(context,
+                        id + ("bendCutFaceMateConnector" ~ instanceIndex ~ "_" ~ cutFaceIndex), {
+                            "coordSystem" : mateConnectorCS,
+                            "owner"       : qOwnerBody(cutFace)
+                        });
+            }
+
+            // Sweep cut faces along the tool's arc edge to fill the void zone removed by the
+            // boolean subtraction, reconstructing the tube wall geometry in the bent state.
+            //
+            // Only cut faces owned by the first frame body at this joint are used as sweep
+            // profiles.  Both frame bodies receive cut faces from the boolean subtraction, but
+            // sweeping from both would produce identical overlapping fill geometry.  Assigning
+            // the fill to jointBodyIndices[0] gives each joint a single unambiguous owner.
+            //
+            // The KirigamiBendConstructor solid carries two arc edges (inner and outer bend
+            // radius).  Both span the same angular sweep from frame body A's cut plane to
+            // frame body B's cut plane, so either is a valid path for the fill sweep.
+            const solidToolBody = qBodyType(instance.query, BodyType.SOLID);
+            const toolArcEdges = qGeometry(
+                    qOwnedByBody(solidToolBody, EntityType.EDGE),
+                    GeometryType.ARC);
+
+            if (!isQueryEmpty(context, toolArcEdges))
+            {
+                // Pick the first arc edge as the sweep path.
+                const sweepPathEdge = qNthElement(toolArcEdges, 0);
+
+                // Filter cut faces to those owned by the primary (first) frame body at this joint.
+                const primaryFrameBody = frameBodiesArray[instance.jointBodyIndices[0]];
+                const primaryFrameBodyCutFaces = evaluateQuery(context,
+                        qIntersection([
+                            qOwnedByBody(primaryFrameBody, EntityType.FACE),
+                            qUnion(cutPlanarFacesArray)
+                        ]));
+
+                // Sweep each cut face along the arc, creating one bent tube section body per face.
+                var bentTubeSectionBodies = [];
+                for (var tubeCutFaceIndex = 0; tubeCutFaceIndex < size(primaryFrameBodyCutFaces); tubeCutFaceIndex += 1)
+                {
+                    const bentTubeSectionId = id + ("bentTubeSection" ~ instanceIndex ~ "_" ~ tubeCutFaceIndex);
+                    opSweep(context, bentTubeSectionId, {
+                                "profiles" : primaryFrameBodyCutFaces[tubeCutFaceIndex],
+                                "path"     : sweepPathEdge
+                            });
+                    bentTubeSectionBodies = append(bentTubeSectionBodies,
+                            qCreatedBy(bentTubeSectionId, EntityType.BODY));
+                }
+
+                // Accumulate this joint's bent tube section bodies for the final composite step.
+                allBentTubeSectionBodies = concatenateArrays([allBentTubeSectionBodies, bentTubeSectionBodies]);
+
+                // Compute and store the neutral fiber arc length for this joint.
+                if (size(cutPlanarFacesArray) > 0)
+                {
+                    const neutralFiberArcLength = computeNeutralFiberArcLength(context,
+                            id, instanceIndex, solidToolBody);
+
+                    if (neutralFiberArcLength != undefined)
+                    {
+                        const existingBendAttribute = getAttribute(context, {
+                                    "entity" : qNthElement(solidToolBody, 0),
+                                    "name"   : KIRIGAMI_BEND_ATTRIBUTE_NAME
+                                });
+                        if (existingBendAttribute != undefined)
+                        {
+                            setAttribute(context, {
+                                        "entities"  : instance.query,
+                                        "name"      : KIRIGAMI_BEND_ATTRIBUTE_NAME,
+                                        "attribute" : mergeMaps(existingBendAttribute,
+                                                { "neutralFiberArcLength" : neutralFiberArcLength }) as KirigamiBendAttribute
+                                    });
+                        }
+                    }
+                }
+            }
+
+            // Track all bodies brought in by this instance (solid tool body plus any non-solid
+            // bodies such as mate connectors originating from the KirigamiBendConstructor part
+            // studio).  These will be deleted after all joints are processed.
+            allInstanceBodies = append(allInstanceBodies, instance.query);
+        }
+
+        // Delete all instantiated tool bodies and all cut-face mate connectors that were
+        // created during the boolean subtract step.  Both were needed only for joint
+        // processing; they must not appear in the final model.
+        const allCutFaceMateConnectors = qBodyType(qCreatedBy(id, EntityType.BODY),
+                BodyType.MATE_CONNECTOR);
+        const bodiesToDelete = qUnion(append(allInstanceBodies, allCutFaceMateConnectors));
+        if (!isQueryEmpty(context, bodiesToDelete))
+        {
+            opDeleteBodies(context, id + "cleanupToolBodiesAndMateConnectors", {
+                        "entities" : bodiesToDelete
+                    });
+        }
+
+        // Composite all bent tube section bodies together with the input frame bodies into a
+        // single closed composite part.  A closed composite consumes its constituent solid
+        // bodies so that they are presented as one unit to the downstream flat-layout script.
+        // This is done once after all joints are processed so every swept tube section and every
+        // frame segment are grouped in a single composite regardless of how many joints exist.
+        if (size(allBentTubeSectionBodies) > 0)
+        {
+            opCreateCompositePart(context, id + "bentTubeFrameComposite", {
+                        "bodies" : qUnion(concatenateArrays([allBentTubeSectionBodies, [definition.frameBodies]])),
+                        "closed" : true
                     });
         }
     });
@@ -518,8 +698,10 @@ function findOuterApexEdgeForCapFace(context is Context, id is Id, bodyIndex is 
 //                         "frameBody" : Query, "tubeAxis" : Vector }, one entry per eligible
 //                         cap face per body.
 // @param totalBodyCount : Total number of selected frame bodies (size of frameBodiesArray).
-// @returns array        : Array of data map (same schema as outerEdgeData entries), one per joint that
-//                         should receive a bend constructor.
+// @returns array        : Array of data map (same schema as outerEdgeData entries, plus
+//                         "jointBodyIndices" : array of two body indices for the two bodies
+//                         that share each joint), one entry per joint that should receive
+//                         a bend constructor.
 function collectSharedApexEdges(context is Context, outerEdgeData is array, totalBodyCount is number) returns array
 {
     // Pre-compute all midpoints once to avoid redundant evEdgeTangentLine calls in later passes.
@@ -612,7 +794,12 @@ function collectSharedApexEdges(context is Context, outerEdgeData is array, tota
             {
                 if (size(uniqueBodyContributors[uniqueMidpointIndex]) >= 2)
                 {
-                    sharedJointData     = append(sharedJointData,     outerEdgeData[edgeIndex]);
+                    // Embed the pair of body indices directly in the joint data map so that
+                    // the caller can identify both frame bodies at this joint without needing
+                    // a separate parallel array.
+                    var jointEntry = outerEdgeData[edgeIndex];
+                    jointEntry["jointBodyIndices"] = uniqueBodyContributors[uniqueMidpointIndex];
+                    sharedJointData     = append(sharedJointData,     jointEntry);
                     sharedEdgeBodyPairs = append(sharedEdgeBodyPairs, uniqueBodyContributors[uniqueMidpointIndex]);
                     claimedMidpoints    = append(claimedMidpoints,    midpoint);
                 }
@@ -1051,4 +1238,88 @@ function computeOffsetToInteriorSweepLine(context is Context, frameBody is Query
         return 0 * meter;
 
     return minimumPositiveDistance;
+}
+
+// Computes the neutral fiber arc length for one bend joint.
+//
+// The neutral fiber is located by measuring the distance from the origin of the first
+// cut-face mate connector (placed at the geometric centroid of a planar cut face during
+// the boolean subtract step) to the single cylindrical face on the tool solid.  That
+// distance is the radial offset from the inner cylinder to the neutral fiber.  The inner
+// cylindrical face is then extracted outward by that offset to produce a temporary sheet
+// body at the neutral radius, and the arc length of one of its arc edges is returned as
+// the flat-pattern dimension for this bend zone.  The temporary sheet body is deleted
+// before returning.
+//
+// Mate connectors are created with IDs of the form:
+//   id + ("bendCutFaceMateConnector" ~ instanceIndex ~ "_" ~ cutFaceIndex)
+// Only the first connector (cutFaceIndex 0) is needed because all connectors for a given
+// joint sit on the same wall cross-section and are equidistant from the inner cylinder.
+//
+// @param context       : Active context.
+// @param id            : Feature id (used to construct sub-operation IDs).
+// @param instanceIndex : Zero-based joint index (matches the ID used when the mate
+//                        connectors were created).
+// @param solidToolBody : Query resolving to the solid KirigamiBendConstructor tool body
+//                        for this joint.
+// @returns ValueWithUnits : Neutral fiber arc length, or undefined if measurement fails.
+function computeNeutralFiberArcLength(context is Context, id is Id, instanceIndex is number,
+    solidToolBody is Query)
+{
+    // Retrieve the first cut-face mate connector placed during the boolean subtract step.
+    // Its origin is the geometric centroid of that cut face, which sits on the neutral fiber.
+    const mateConnectorBody = qCreatedBy(
+            id + ("bendCutFaceMateConnector" ~ instanceIndex ~ "_" ~ 0),
+            EntityType.BODY);
+    if (isQueryEmpty(context, mateConnectorBody))
+        return undefined;
+
+    const mateConnectorOrigin = evMateConnector(context,
+            { "mateConnector" : mateConnectorBody }).origin;
+
+    // The KirigamiBendConstructor tool solid has exactly one cylindrical face: the concave
+    // inside-of-bend surface at the inner radius.
+    const innerCylindricalFace = qNthElement(
+            qGeometry(qOwnedByBody(solidToolBody, EntityType.FACE), GeometryType.CYLINDER), 0);
+    if (isQueryEmpty(context, innerCylindricalFace))
+        return undefined;
+
+    // Distance from the mate connector origin to the inner cylindrical surface is the radial
+    // offset to the neutral fiber.
+    const neutralFiberOffset = evDistance(context, {
+                "side0" : mateConnectorOrigin,
+                "side1" : innerCylindricalFace
+            }).distance;
+
+    // Extract the inner cylindrical face offset outward to the neutral fiber radius.
+    // The offset is negated because evDistance returns a positive scalar regardless of
+    // direction, and the inner cylinder's outward normal points toward the bend axis (inward
+    // into the tool body).  A positive offset would push the surface further toward the axis;
+    // negating it pushes the surface away from the axis to the neutral fiber location.
+    const neutralFiberSurfaceId = id + ("neutralFiberSurface" ~ instanceIndex);
+    opExtractSurface(context, neutralFiberSurfaceId, {
+                "faces"  : innerCylindricalFace,
+                "offset" : -neutralFiberOffset
+            });
+
+    // The arc edges on the offset surface span the full angular sweep of the bend.
+    // The length of one arc edge is the flat-pattern dimension for this bend zone.
+    const neutralFiberArcEdges = qGeometry(
+            qOwnedByBody(qCreatedBy(neutralFiberSurfaceId, EntityType.BODY), EntityType.EDGE),
+            GeometryType.ARC);
+
+    var neutralFiberArcLength = undefined;
+    if (!isQueryEmpty(context, neutralFiberArcEdges))
+    {
+        neutralFiberArcLength = evLength(context, {
+                    "entities" : qNthElement(neutralFiberArcEdges, 0)
+                });
+    }
+
+    // Remove the temporary offset surface; it was needed only for measurement.
+    opDeleteBodies(context, id + ("deleteNeutralFiberSurface" ~ instanceIndex), {
+                "entities" : qCreatedBy(neutralFiberSurfaceId, EntityType.BODY)
+            });
+
+    return neutralFiberArcLength;
 }
