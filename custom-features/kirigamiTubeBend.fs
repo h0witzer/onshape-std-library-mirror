@@ -317,8 +317,11 @@ export const kirigamiTubeBend = defineFeature(function(context is Context, id is
             const booleanCutId = id + ("booleanCut" ~ instanceIndex);
 
             // Subtract the bend constructor from both frame bodies sharing this joint.
+            // The instantiator may bring in non-solid bodies (e.g. mate connectors from the
+            // KirigamiBendConstructor part studio).  opBoolean requires all tool bodies to be
+            // solid, so filter instance.query to BodyType.SOLID before passing it as tools.
             opBoolean(context, booleanCutId, {
-                        "tools"         : instance.query,
+                        "tools"         : qBodyType(instance.query, BodyType.SOLID),
                         "targets"       : instance.frameBodyTargets,
                         "operationType" : BooleanOperationType.SUBTRACTION,
                         "keepTools"     : true
