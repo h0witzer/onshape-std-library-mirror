@@ -13,6 +13,11 @@ KirigamiBendConstructor::import(path : "1173cc57cdf5a7d688426b78", version : "e9
 // Named key used when attaching KirigamiBendAttribute to instantiated bodies.
 const KIRIGAMI_BEND_ATTRIBUTE_NAME = "kirigamiBendData";
 
+// Named key used when attaching KirigamiStripAttribute to the composite body produced by
+// kirigamiTubeBend.  The kirigamiTubeUnfold feature reads this attribute to reconstruct
+// the flat strip layout from the stored joint geometry.
+const KIRIGAMI_STRIP_ATTRIBUTE_NAME = "kirigamiStripData";
+
 /**
  * Attribute stored on each Kirigami Bend Constructor body placed by this feature.
  * A downstream flat-layout script queries these attributes to locate, orient, and
@@ -67,6 +72,42 @@ export predicate canBeKirigamiBendAttribute(value)
     isLength(value.bendOutsideRadius);
     isLength(value.offsetToInteriorSweepLine);
     value.neutralFiberArcLength == undefined || isLength(value.neutralFiberArcLength);
+}
+
+/**
+ * Attribute stored on the composite body produced by kirigamiTubeBend.
+ * kirigamiTubeUnfold reads this attribute to locate every bend joint and unfold
+ * the composite strip into a flat laser-cut layout.
+ *
+ * Fields:
+ *   joints  {array} : Ordered array of per-joint maps, one entry per shared miter joint
+ *                     processed by kirigamiTubeBend.  Elements are in ascending instanceIndex
+ *                     order so that iterating from the last element to the first is equivalent
+ *                     to reversing from the far end of the chain toward the fixed end.
+ *
+ *                     Each element is a map with the following keys:
+ *                       instanceIndex         {number}         : Zero-based joint counter.
+ *                       apexOrigin            {Vector}         : World-space midpoint of the outer
+ *                                                                apex edge (fold-line origin).
+ *                       zAxis                 {Vector}         : Fold-line direction
+ *                                                                (cross(capFaceNormal, outerWallNormal)).
+ *                       xAxis                 {Vector}         : Outward normal of the upstream body's
+ *                                                                cap face, pointing toward the downstream
+ *                                                                segment.  Used as the normal of the
+ *                                                                downstream discrimination plane.
+ *                       miterAngle            {ValueWithUnits} : Angle between cap face normal and tube
+ *                                                                sweep axis.  The total unfolding rotation
+ *                                                                at this joint is 2 * miterAngle.
+ *                       neutralFiberArcLength {ValueWithUnits} : Arc length at the bend neutral fiber,
+ *                                                                or undefined if the measurement was not
+ *                                                                available for this joint.
+ */
+export type KirigamiStripAttribute typecheck canBeKirigamiStripAttribute;
+
+export predicate canBeKirigamiStripAttribute(value)
+{
+    value is map;
+    value.joints is array;
 }
 
 /**
@@ -326,6 +367,11 @@ export const kirigamiTubeBend = defineFeature(function(context is Context, id is
         var allBentTubeSectionBodies = [];
         var allInstanceBodies = [];
 
+        // Parallel array to pendingInstances that accumulates the neutral fiber arc length for
+        // each joint.  Stored here rather than mutating the pendingInstances maps to avoid
+        // FeatureScript's pass-by-value map copy semantics.  Indexed identically to pendingInstances.
+        var collectedNeutralFiberLengths = makeArray(size(pendingInstances), undefined);
+
         for (var instanceIndex = 0; instanceIndex < size(pendingInstances); instanceIndex += 1)
         {
             const instance = pendingInstances[instanceIndex];
@@ -440,6 +486,11 @@ export const kirigamiTubeBend = defineFeature(function(context is Context, id is
                                                 { "neutralFiberArcLength" : neutralFiberArcLength }) as KirigamiBendAttribute
                                     });
                         }
+
+                        // Persist the neutral fiber arc length for this joint in the parallel
+                        // accumulator array so it can be written to KirigamiStripAttribute after
+                        // the tool bodies are deleted and the composite is created.
+                        collectedNeutralFiberLengths[instanceIndex] = neutralFiberArcLength;
                     }
                 }
             }
@@ -473,6 +524,137 @@ export const kirigamiTubeBend = defineFeature(function(context is Context, id is
             opCreateCompositePart(context, id + "bentTubeFrameComposite", {
                         "bodies" : qUnion(concatenateArrays([allBentTubeSectionBodies, [definition.frameBodies]])),
                         "closed" : true
+                    });
+
+            // Tag the composite body with KirigamiStripAttribute so that the kirigamiTubeUnfold
+            // feature can locate every bend joint and reconstruct the flat strip layout without
+            // needing the now-deleted tool bodies.  Each entry in the joints array mirrors the
+            // geometry data stored in KirigamiBendAttribute but is keyed to the composite body
+            // rather than the (deleted) bend constructor body.
+            const compositeBody = qCreatedBy(id + "bentTubeFrameComposite", EntityType.BODY);
+            var stripJoints = [];
+            for (var i = 0; i < size(pendingInstances); i += 1)
+            {
+                const instance = pendingInstances[i];
+                const apexCS = instance.coordSystem;
+                stripJoints = append(stripJoints, {
+                            "instanceIndex"         : instance.instanceIndex,
+                            "apexOrigin"            : apexCS.origin,
+                            "zAxis"                 : apexCS.zAxis,
+                            "xAxis"                 : apexCS.xAxis,
+                            "miterAngle"            : instance.miterAngle,
+                            "neutralFiberArcLength" : collectedNeutralFiberLengths[i]
+                        });
+            }
+            setAttribute(context, {
+                        "entities"  : compositeBody,
+                        "name"      : KIRIGAMI_STRIP_ATTRIBUTE_NAME,
+                        "attribute" : { "joints" : stripJoints } as KirigamiStripAttribute
+                    });
+        }
+    });
+
+/**
+ * Unfolds a composite bent tube strip produced by Kirigami Tube Bend into a flat laser-cut
+ * layout.  Reads the KirigamiStripAttribute baked into the selected composite body during
+ * the Kirigami Tube Bend feature and sequentially reverses each miter bend by rotating the
+ * downstream constituent bodies about the stored fold axis.
+ *
+ * Unfolding proceeds from the last joint to the first (reverse instanceIndex order).  At each
+ * step all constituent solid bodies currently on the downstream side of the joint's
+ * discrimination plane are rotated as a unit.  Processing last-to-first ensures that earlier
+ * joints remain undisturbed while later joints are being straightened, and that each
+ * successive rotation operates on the already-partially-unfolded downstream chain.
+ *
+ * Rotation direction is determined geometrically at runtime: the centroid of the downstream
+ * bodies is projected onto the plane perpendicular to the fold axis, and its component along
+ * the joint Y axis (cross(zAxis, xAxis)) determines the sign of the 2 * miterAngle rotation.
+ * This avoids storing an explicit signed rotation angle at fold time and correctly handles
+ * bends in any direction.
+ */
+annotation { "Feature Type Name" : "Kirigami Tube Unfold",
+             "Feature Type Description" : "Unfolds a composite bent tube strip produced by Kirigami Tube Bend into a flat layout for laser-cut export." }
+export const kirigamiTubeUnfold = defineFeature(function(context is Context, id is Id, definition is map)
+    precondition
+    {
+        annotation { "Name" : "Bent Tube Strip",
+                     "Filter" : EntityType.BODY && BodyType.COMPOSITE,
+                     "MaxNumberOfPicks" : 1,
+                     "Description" : "Select the composite body produced by Kirigami Tube Bend" }
+        definition.compositeBody is Query;
+    }
+    {
+        const compositeQuery = qNthElement(definition.compositeBody, 0);
+
+        // Read the strip attribute baked into the composite by kirigamiTubeBend.
+        const stripAttribute = getAttribute(context, {
+                    "entity" : compositeQuery,
+                    "name"   : KIRIGAMI_STRIP_ATTRIBUTE_NAME
+                });
+
+        if (!(stripAttribute is KirigamiStripAttribute))
+            throw regenError("Selected body does not contain kirigami bend strip data. " ~
+                    "Apply the Kirigami Tube Bend feature to the source frame bodies first.",
+                    ["compositeBody"]);
+
+        const joints = stripAttribute.joints;
+        const jointCount = size(joints);
+
+        if (jointCount == 0)
+            return; // No bends recorded -- nothing to unfold.
+
+        // All constituent solid bodies within the composite.  This query is re-evaluated
+        // against the current geometry after each opTransform, so qInFrontOfPlane will
+        // always reflect updated body positions during the unfolding loop.
+        const allConstituentBodies = qContainedInCompositeParts(compositeQuery);
+
+        // Process joints from last to first (descending instanceIndex).
+        // At each step the downstream discrimination plane separates the bodies that need
+        // to be rotated (downstream of joint i) from those that stay fixed (upstream).
+        for (var i = jointCount - 1; i >= 0; i -= 1)
+        {
+            const joint = joints[i];
+
+            // Fold axis: the line through apexOrigin along the fold-line direction (zAxis).
+            const foldAxis = line(joint.apexOrigin, joint.zAxis);
+
+            // Downstream discrimination plane.
+            // xAxis is the outward cap face normal of the upstream body at this joint,
+            // pointing toward the downstream segment.  Bodies in front of this plane
+            // (on the positive xAxis side) are downstream and must be rotated.
+            const downstreamPlane = plane(joint.apexOrigin, joint.xAxis);
+            const downstreamBodies = qInFrontOfPlane(allConstituentBodies, downstreamPlane);
+
+            if (isQueryEmpty(context, downstreamBodies))
+                continue;
+
+            // Determine the rotation sign from the current position of the downstream
+            // centroid relative to the fold coordinate system.
+            //
+            // The centroid offset is projected onto the plane perpendicular to the fold axis
+            // (removing any component along zAxis) and then measured along jointYAxis =
+            // cross(zAxis, xAxis).  A positive component means the downstream chain bends
+            // toward +jointYAxis and requires a positive rotation about zAxis to unfold;
+            // a negative component requires the opposite sign.
+            const downstreamCentroid = evApproximateCentroid(context, {
+                        "entities" : downstreamBodies
+                    });
+            const centroidOffset = downstreamCentroid - joint.apexOrigin;
+            const centroidProjected = centroidOffset -
+                    dot(centroidOffset, joint.zAxis) * joint.zAxis;
+            const jointYAxis = cross(joint.zAxis, joint.xAxis);
+
+            // Dimensionless sign multiplier: +1 for a positive rotation about zAxis to unfold,
+            // -1 for the opposite direction.
+            var rotationSign = 1;
+            if (dot(centroidProjected, jointYAxis) < 0 * meter)
+                rotationSign = -1;
+
+            // Rotate the downstream body group about the fold axis by 2 * miterAngle,
+            // reversing the kirigami fold at this joint.
+            opTransform(context, id + ("unfoldJoint" ~ i), {
+                        "bodies"    : downstreamBodies,
+                        "transform" : rotationAround(foldAxis, rotationSign * 2 * joint.miterAngle)
                     });
         }
     });
