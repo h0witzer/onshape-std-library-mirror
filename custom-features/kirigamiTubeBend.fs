@@ -44,6 +44,12 @@ const KIRIGAMI_BEND_ATTRIBUTE_NAME = "kirigamiBendData";
  *                                               faces are excluded.  For a hollow box tube without corner fillets
  *                                               this equals the wall thickness.  For a tube with interior corner
  *                                               fillets the value includes the fillet radius.
+ *   neutralFiberArcLength {ValueWithUnits}: Arc length at the neutral fiber of the bend, computed by offsetting
+ *                                          the inner cylindrical surface of the tool body outward to the
+ *                                          area-weighted centroid of all planar cut faces, then reading the
+ *                                          length of one arc edge on that offset surface.  This is the flat-
+ *                                          pattern dimension for the bend zone.  Populated during joint
+ *                                          processing; may be undefined on attributes set before that phase.
  */
 export type KirigamiBendAttribute typecheck canBeKirigamiBendAttribute;
 
@@ -59,6 +65,7 @@ export predicate canBeKirigamiBendAttribute(value)
     isAngle(value.miterAngle);
     isLength(value.bendOutsideRadius);
     isLength(value.offsetToInteriorSweepLine);
+    value.neutralFiberArcLength == undefined || isLength(value.neutralFiberArcLength);
 }
 
 /**
@@ -409,6 +416,92 @@ export const kirigamiTubeBend = defineFeature(function(context is Context, id is
 
                 // Accumulate this joint's bent tube section bodies for the final composite step.
                 allBentTubeSectionBodies = concatenateArrays([allBentTubeSectionBodies, bentTubeSectionBodies]);
+
+                // Compute the neutral fiber arc length for this joint and store it in the
+                // KirigamiBendAttribute on the tool body.
+                //
+                // Strategy: offset the inner cylindrical surface of the tool body outward
+                // to the area-weighted centroid of all planar cut faces, then read the arc
+                // length of the resulting surface edge.  That edge runs along the sweep
+                // direction at the neutral fiber radius and its length is the flat-pattern
+                // dimension for this bend.
+                if (size(cutPlanarFacesArray) > 0)
+                {
+                    // Identify the inner cylindrical face: the cylindrical face on the tool
+                    // solid with the smallest radius is the concave inside-of-bend surface.
+                    const toolCylindricalFaces = evaluateQuery(context,
+                            qGeometry(qOwnedByBody(solidToolBody, EntityType.FACE),
+                                    GeometryType.CYLINDER));
+                    var innerCylindricalFace = undefined;
+                    var innerCylinderRadius = undefined;
+                    for (var cylindricalFace in toolCylindricalFaces)
+                    {
+                        const surfaceDef = evSurfaceDefinition(context, { "face" : cylindricalFace });
+                        if (surfaceDef is Cylinder)
+                        {
+                            if (innerCylinderRadius == undefined || surfaceDef.radius < innerCylinderRadius)
+                            {
+                                innerCylindricalFace = cylindricalFace;
+                                innerCylinderRadius = surfaceDef.radius;
+                            }
+                        }
+                    }
+
+                    if (innerCylindricalFace != undefined)
+                    {
+                        // Distance from the approximate centroid of all cut faces to the
+                        // inner cylindrical surface = the radial offset to the neutral fiber.
+                        const allCutFacesCentroid = evApproximateCentroid(context,
+                                { "entities" : qUnion(cutPlanarFacesArray) });
+                        const neutralFiberOffset = evDistance(context, {
+                                    "side0" : allCutFacesCentroid,
+                                    "side1" : innerCylindricalFace
+                                }).distance;
+
+                        // Extract the inner cylindrical face offset outward to the neutral radius.
+                        const neutralFiberSurfaceId = id + ("neutralFiberSurface" ~ instanceIndex);
+                        opExtractSurface(context, neutralFiberSurfaceId, {
+                                    "faces"  : innerCylindricalFace,
+                                    "offset" : neutralFiberOffset
+                                });
+
+                        // The arc edges on the offset surface run along the sweep direction.
+                        // Their length equals the neutral fiber arc length for this bend.
+                        const neutralFiberSurfaceArcEdges = qGeometry(
+                                qOwnedByBody(qCreatedBy(neutralFiberSurfaceId, EntityType.BODY),
+                                        EntityType.EDGE),
+                                GeometryType.ARC);
+
+                        if (!isQueryEmpty(context, neutralFiberSurfaceArcEdges))
+                        {
+                            const neutralFiberArcLength = evLength(context, {
+                                        "entities" : qNthElement(neutralFiberSurfaceArcEdges, 0)
+                                    });
+
+                            // Update the attribute to include the neutral fiber arc length.
+                            // getAttribute returns undefined if the attribute was never set;
+                            // that should not happen in normal flow but guard defensively.
+                            const existingBendAttribute = getAttribute(context, {
+                                        "entity" : qNthElement(solidToolBody, 0),
+                                        "name"   : KIRIGAMI_BEND_ATTRIBUTE_NAME
+                                    });
+                            if (existingBendAttribute != undefined)
+                            {
+                                setAttribute(context, {
+                                            "entities"  : instance.query,
+                                            "name"      : KIRIGAMI_BEND_ATTRIBUTE_NAME,
+                                            "attribute" : mergeMaps(existingBendAttribute,
+                                                    { "neutralFiberArcLength" : neutralFiberArcLength }) as KirigamiBendAttribute
+                                        });
+                            }
+                        }
+
+                        // Remove the temporary offset surface; it was needed only for measurement.
+                        opDeleteBodies(context, id + ("deleteNeutralFiberSurface" ~ instanceIndex), {
+                                    "entities" : qCreatedBy(neutralFiberSurfaceId, EntityType.BODY)
+                                });
+                    }
+                }
             }
         }
 
