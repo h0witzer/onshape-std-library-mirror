@@ -28,6 +28,12 @@ const KIRIGAMI_CUT_FACE_ATTRIBUTE_NAME = "kirigamiBendCutFaceData";
 // since they represent bent geometry that has no meaning in the flat layout.
 const KIRIGAMI_BENT_SECTION_ATTRIBUTE_NAME = "kirigamiBentSectionData";
 
+// Named key used when tagging each frame segment body with its zero-based index in the
+// frameBodiesArray evaluated at kirigamiTubeBend execution time.  kirigamiTubeUnfold
+// uses this to locate the upstream and downstream body at each joint directly from the
+// stored KirigamiStripAttribute segment indices, with no spatial queries at all.
+const KIRIGAMI_SEGMENT_ATTRIBUTE_NAME = "kirigamiSegmentData";
+
 /**
  * Attribute stored on each Kirigami Bend Constructor body placed by this feature.
  * A downstream flat-layout script queries these attributes to locate, orient, and
@@ -122,6 +128,18 @@ export predicate canBeKirigamiBendAttribute(value)
  *                       neutralFiberArcLength {ValueWithUnits} : Arc length at the bend neutral fiber,
  *                                                                or undefined if the measurement was not
  *                                                                available for this joint.
+ *                       upstreamSegmentIndex  {number}         : segmentIndex of the anchor-side frame
+ *                                                                segment body at this joint.  Matches the
+ *                                                                KirigamiSegmentAttribute.segmentIndex value
+ *                                                                of the body that contributes the upstream
+ *                                                                cut face (the body that does not move when
+ *                                                                this joint is unfolded).
+ *                       downstreamSegmentIndex {number}        : segmentIndex of the downstream frame
+ *                                                                segment body at this joint.  Matches the
+ *                                                                KirigamiSegmentAttribute.segmentIndex of
+ *                                                                the body that moves when this joint is
+ *                                                                unfolded and forms the bridge between this
+ *                                                                joint and the next joint downstream.
  */
 export type KirigamiStripAttribute typecheck canBeKirigamiStripAttribute;
 
@@ -169,6 +187,29 @@ export predicate canBeKirigamiBentSectionAttribute(value)
 {
     value is map;
     value.instanceIndex is number;
+}
+
+/**
+ * Attribute painted onto each frame segment body during kirigamiTubeBend immediately
+ * after the frameBodiesArray is evaluated.  Survives opCreateCompositePart and remains
+ * on the constituent bodies of the resulting composite.
+ *
+ * kirigamiTubeUnfold reads the upstreamSegmentIndex and downstreamSegmentIndex fields
+ * stored in each KirigamiStripAttribute joint entry and queries for constituent bodies
+ * by matching segmentIndex -- no spatial queries are required.
+ *
+ * Fields:
+ *   segmentIndex {number} : Zero-based index of this body in the frameBodiesArray
+ *                           evaluated when kirigamiTubeBend ran.  Matches the values
+ *                           stored in KirigamiStripAttribute joint entries as
+ *                           upstreamSegmentIndex and downstreamSegmentIndex.
+ */
+export type KirigamiSegmentAttribute typecheck canBeKirigamiSegmentAttribute;
+
+export predicate canBeKirigamiSegmentAttribute(value)
+{
+    value is map;
+    value.segmentIndex is number;
 }
 
 /**
@@ -243,6 +284,21 @@ export const kirigamiTubeBend = defineFeature(function(context is Context, id is
         if (size(frameBodiesArray) < 2)
             throw regenError("Select at least two touching Onshape frame bodies. " ~
                 "A single body has no shared joints with another selected body.", ["frameBodies"]);
+
+        // Tag each frame segment body with its zero-based index in frameBodiesArray.
+        // This attribute persists through opCreateCompositePart and into the constituent bodies
+        // of the resulting composite.  kirigamiTubeUnfold reads the upstreamSegmentIndex and
+        // downstreamSegmentIndex values stored per joint in KirigamiStripAttribute and queries
+        // for the matching constituent bodies using qHasAttributeWithValueMatching -- no spatial
+        // queries are needed in the unfold script.
+        for (var segmentIdx = 0; segmentIdx < size(frameBodiesArray); segmentIdx += 1)
+        {
+            setAttribute(context, {
+                        "entities"  : frameBodiesArray[segmentIdx],
+                        "name"      : KIRIGAMI_SEGMENT_ATTRIBUTE_NAME,
+                        "attribute" : { "segmentIndex" : segmentIdx } as KirigamiSegmentAttribute
+                    });
+        }
 
         // Collect one outer apex edge per eligible cap face per body.
         // Two geometry filters are applied before collecting an edge:
@@ -636,14 +692,21 @@ export const kirigamiTubeBend = defineFeature(function(context is Context, id is
                 const instance = pendingInstances[i];
                 const apexCS = instance.coordSystem;
                 stripJoints = append(stripJoints, {
-                            "instanceIndex"         : instance.instanceIndex,
-                            "apexOrigin"            : apexCS.origin,
-                            "zAxis"                 : apexCS.zAxis,
-                            "xAxis"                 : apexCS.xAxis,
-                            "boxTubeWidth"          : instance.boxTubeWidth,
-                            "tubeAxis"              : instance.tubeAxis,
-                            "miterAngle"            : instance.miterAngle,
-                            "neutralFiberArcLength" : collectedNeutralFiberLengths[i]
+                            "instanceIndex"          : instance.instanceIndex,
+                            "apexOrigin"             : apexCS.origin,
+                            "zAxis"                  : apexCS.zAxis,
+                            "xAxis"                  : apexCS.xAxis,
+                            "boxTubeWidth"           : instance.boxTubeWidth,
+                            "tubeAxis"               : instance.tubeAxis,
+                            "miterAngle"             : instance.miterAngle,
+                            "neutralFiberArcLength"  : collectedNeutralFiberLengths[i],
+                            // jointBodyIndices[0] is always the upstream (anchor-side) body: it is
+                            // the lower-index body that contributed its outer apex edge first in the
+                            // outerEdgeData iteration, making its cap face normal the xAxis of
+                            // apexCoordSystem.  Bodies "in front of" plane(apexOrigin, xAxis) are
+                            // therefore on the jointBodyIndices[1] (downstream) side.
+                            "upstreamSegmentIndex"   : instance.jointBodyIndices[0],
+                            "downstreamSegmentIndex" : instance.jointBodyIndices[1]
                         });
             }
             setAttribute(context, {
@@ -662,34 +725,26 @@ export const kirigamiTubeBend = defineFeature(function(context is Context, id is
  *
  * Algorithm:
  *
- * Phase 1 -- Pre-computation (runs before any geometry transforms):
- *
  *   1. Delete all arc-swept bent tube section bodies (tagged KirigamiBentSectionAttribute).
  *      These solids have no meaningful shape in the flat layout; the KirigamiBendCutFaceAttribute
  *      faces that remain on the adjacent frame segments are used later as sweep profiles for
  *      straight bridge sections.
  *
- *   2. For each joint, classify its KirigamiBendCutFaceAttribute-tagged cut faces as upstream
- *      (anchor-side body) or downstream (the body that will be moved) using qInFrontOfPlane
- *      against the stored apexOrigin + xAxis discrimination plane.  Record the upstream body
- *      owner per joint in upstreamBodyOwnerPerJoint[].
- *
- *   All classification is done while the geometry is still at its original folded positions so
- *   that qInFrontOfPlane returns reliable results.  Frames that double back (U-shapes, S-shapes,
- *   loops) would cause qInFrontOfPlane to mis-classify bodies if called after earlier transform
- *   steps have moved them, so separating this phase is essential.
- *
- * Phase 2 -- Transform loop (last-to-first):
+ *   2. Pre-compute one upstream-body query and one downstream-body query per joint by reading
+ *      the upstreamSegmentIndex and downstreamSegmentIndex values baked into each joint entry
+ *      of KirigamiStripAttribute during kirigamiTubeBend.  Each body is found via
+ *      qHasAttributeWithValueMatching against KIRIGAMI_SEGMENT_ATTRIBUTE_NAME.  No spatial
+ *      queries are used -- the classification is fully determined by attributes stored before
+ *      any geometry existed in its bent state.
  *
  *   3. For each joint i, processing from last to first:
- *        a. Build the anchor set: the union of upstreamBodyOwnerPerJoint[j] for j = 0..i.
- *           These bodies must not move at this step.  Using body-owner exclusion instead of
- *           qInFrontOfPlane ensures that previously moved bodies are always included in the
- *           downstream set even if they now lie spatially behind joint i's original plane.
- *        b. downstreamBodies = allConstituentBodies minus anchorSet.
+ *        a. Build the anchor set: the union of upstreamBodyPerJoint[j] for j = 0..i.
+ *           These bodies must not move at this step.
+ *           downstreamBodies = allConstituentBodies minus anchorSet.
+ *        b. Find the upstream and downstream cut faces for this joint by querying
+ *           KIRIGAMI_CUT_FACE_ATTRIBUTE_NAME faces owned by the upstream/downstream body
+ *           and filtered to instanceIndex == i.
  *        c. Evaluate the upstream and downstream cut face centroids and outward normals.
- *           These are always at original folded positions (upstream body never moves; downstream
- *           body is in the anchor set for all steps j > i and therefore has not been touched yet).
  *        d. Build source and target coordinate systems:
  *             sourceCS = coordSystem(downstreamFaceCentroid, zAxis, downstreamFaceNormal)
  *             targetCS = coordSystem(upstreamFaceCentroid + neutralFiberArcLength*upstreamFaceNormal,
@@ -698,6 +753,12 @@ export const kirigamiTubeBend = defineFeature(function(context is Context, id is
  *           The gap dimension is exactly neutralFiberArcLength.
  *        e. opTransform(downstreamBodies, toWorld(targetCS) * fromWorld(sourceCS)).
  *           Previously moved bodies (further downstream) are automatically dragged along.
+ *
+ *   Processing last-to-first means the upstream body at joint i is still at its original world
+ *   position when that joint is processed.  The upstream body is always in the anchor set and
+ *   never moves.  The downstream body (bridge segment to the next joint) is the upstream body
+ *   for joint i+1 and is therefore in the anchor set for all steps j > i, so it has not been
+ *   touched when step i runs.  Both cut face evaluations always read from original geometry.
  */
 annotation { "Feature Type Name" : "Kirigami Tube Unfold",
              "Feature Type Description" : "Unfolds a composite bent tube strip produced by Kirigami Tube Bend into a flat layout for laser-cut export." }
@@ -741,98 +802,52 @@ export const kirigamiTubeUnfold = defineFeature(function(context is Context, id 
         if (!isQueryEmpty(context, bentSectionBodies))
             opDeleteBodies(context, id + "deleteBentSections", { "entities" : bentSectionBodies });
 
-        // PRE-COMPUTATION PHASE -- must complete before any opTransform calls.
-        //
-        // Classify each KirigamiBendCutFaceAttribute-tagged cut face as belonging to the
-        // upstream (anchor-side) or downstream body at its joint, and record which body is
-        // the upstream owner at each joint.  All bodies are still at their original folded
-        // positions at this point, so qInFrontOfPlane gives reliable results.
-        //
-        // Separating this phase from the transform loop is essential for frames that double
-        // back (U-shapes, S-shapes, loops).  In those cases, after a downstream body has
-        // been moved by a higher-index joint step, it may lie geometrically behind the
-        // plane of a lower-index joint.  Performing the classification here -- before any
-        // transforms -- guarantees that the upstream/downstream assignment and the
-        // upstreamBodyOwnerPerJoint array are always based on the original geometry.
-        var upstreamCutFacesPerJoint   = makeArray(jointCount, []);
-        var downstreamCutFacesPerJoint = makeArray(jointCount, []);
-        var upstreamBodyOwnerPerJoint  = makeArray(jointCount, qNothing());
+        // Pre-compute one upstream-body query and one downstream-body query per joint by
+        // reading the baked segment indices from KirigamiStripAttribute.  This is done once
+        // before the transform loop so every body lookup in the loop is a simple attribute
+        // query -- no spatial queries (qInFrontOfPlane) are needed anywhere in the unfold.
+        var upstreamBodyPerJoint   = makeArray(jointCount, qNothing());
+        var downstreamBodyPerJoint = makeArray(jointCount, qNothing());
+        for (var idx = 0; idx < jointCount; idx += 1)
         {
-            // Bucket all tagged faces by instanceIndex.
-            var allJointCutFaces = makeArray(jointCount, []);
-            const allTaggedFaces = evaluateQuery(context,
-                    qHasAttribute(
-                        qOwnedByBody(allConstituentBodies, EntityType.FACE),
-                        KIRIGAMI_CUT_FACE_ATTRIBUTE_NAME));
-            for (var cutFace in allTaggedFaces)
-            {
-                const cutFaceAttr = getAttribute(context, {
-                            "entity" : cutFace,
-                            "name"   : KIRIGAMI_CUT_FACE_ATTRIBUTE_NAME
-                        }) as KirigamiBendCutFaceAttribute;
-                allJointCutFaces[cutFaceAttr.instanceIndex] =
-                        append(allJointCutFaces[cutFaceAttr.instanceIndex], cutFace);
-            }
-
-            // For each joint, use qInFrontOfPlane at the original folded position to
-            // split its cut faces into upstream (anchor-side) and downstream.
-            for (var idx = 0; idx < jointCount; idx += 1)
-            {
-                const joint = joints[idx];
-                const downstreamBodiesAtIdx = qInFrontOfPlane(allConstituentBodies,
-                        plane(joint.apexOrigin, joint.xAxis));
-
-                for (var cutFace in allJointCutFaces[idx])
-                {
-                    if (isQueryEmpty(context,
-                            qIntersection([qOwnerBody(cutFace), downstreamBodiesAtIdx])))
-                        upstreamCutFacesPerJoint[idx] =
-                                append(upstreamCutFacesPerJoint[idx], cutFace);
-                    else
-                        downstreamCutFacesPerJoint[idx] =
-                                append(downstreamCutFacesPerJoint[idx], cutFace);
-                }
-
-                // Cache the upstream body owner so the transform loop can build the
-                // anchor set without any spatial queries.
-                if (size(upstreamCutFacesPerJoint[idx]) > 0)
-                    upstreamBodyOwnerPerJoint[idx] =
-                            qOwnerBody(upstreamCutFacesPerJoint[idx][0]);
-            }
+            const joint = joints[idx];
+            upstreamBodyPerJoint[idx] = qHasAttributeWithValueMatching(allConstituentBodies,
+                    KIRIGAMI_SEGMENT_ATTRIBUTE_NAME, { "segmentIndex" : joint.upstreamSegmentIndex });
+            downstreamBodyPerJoint[idx] = qHasAttributeWithValueMatching(allConstituentBodies,
+                    KIRIGAMI_SEGMENT_ATTRIBUTE_NAME, { "segmentIndex" : joint.downstreamSegmentIndex });
         }
 
-        // TRANSFORM LOOP -- process joints last-to-first.
-        //
-        // At each joint i the bodies to move are all constituent bodies EXCEPT those
-        // that own an upstream cut face at any joint j <= i (the "anchor chain" from
-        // the fixed end of the strip up to and including joint i's upstream body).
-        //
-        // This topological selection replaces qInFrontOfPlane so that the doubling-back
-        // case is handled correctly: after a previous (higher-index) step has moved bodies
-        // to new positions, the anchor-chain exclusion still selects exactly the right set
-        // of bodies to carry forward regardless of where they now sit in world space.
-        //
-        // Why the face evaluations are always at original positions:
-        //   The upstream cut faces at joint i belong to a body that is in the anchor set
-        //   for step i, so that body is never moved by any step.
-        //   The downstream cut faces at joint i belong to the body directly downstream of
-        //   joint i, which is the upstream body at joint i+1 and therefore in the anchor
-        //   set for all steps i+1..jointCount-1.  It has not been touched when step i runs.
+        // Process joints last-to-first.
+        // At each joint i the anchor set = upstreamBodyPerJoint[0..i].  The downstream set =
+        // allConstituentBodies minus the anchor set.  This works for any frame topology
+        // (doubling-back, U-shapes, S-shapes) because body identity comes from baked attributes,
+        // not from where bodies currently sit in world space.
         for (var i = jointCount - 1; i >= 0; i -= 1)
         {
             const joint = joints[i];
 
-            const upstreamCutFaces   = upstreamCutFacesPerJoint[i];
-            const downstreamCutFaces = downstreamCutFacesPerJoint[i];
+            // Upstream cut faces: faces on the anchor-side body tagged for this joint.
+            // A body participates in multiple joints (e.g. the bridge segment between joint i
+            // and joint i+1), so filtering by instanceIndex isolates the correct pair of faces.
+            const upstreamCutFacesQuery = qHasAttributeWithValueMatching(
+                    qOwnedByBody(upstreamBodyPerJoint[i], EntityType.FACE),
+                    KIRIGAMI_CUT_FACE_ATTRIBUTE_NAME,
+                    { "instanceIndex" : i });
 
-            if (size(upstreamCutFaces) == 0 || size(downstreamCutFaces) == 0)
+            const downstreamCutFacesQuery = qHasAttributeWithValueMatching(
+                    qOwnedByBody(downstreamBodyPerJoint[i], EntityType.FACE),
+                    KIRIGAMI_CUT_FACE_ATTRIBUTE_NAME,
+                    { "instanceIndex" : i });
+
+            if (isQueryEmpty(context, upstreamCutFacesQuery) ||
+                    isQueryEmpty(context, downstreamCutFacesQuery))
                 continue;
 
             // Build the anchor set: bodies that must NOT be moved at this step.
-            // This is the union of upstream body owners for joints 0 through i.
+            // This is the union of the upstream body at every joint j from 0 through i.
             var anchorBodyQueries = [];
             for (var j = 0; j <= i; j += 1)
-                anchorBodyQueries = append(anchorBodyQueries, upstreamBodyOwnerPerJoint[j]);
+                anchorBodyQueries = append(anchorBodyQueries, upstreamBodyPerJoint[j]);
             const downstreamBodies = qSubtraction(allConstituentBodies,
                     qUnion(anchorBodyQueries));
 
@@ -842,36 +857,35 @@ export const kirigamiTubeUnfold = defineFeature(function(context is Context, id 
             // Evaluate the upstream cut face geometry.
             // The outward normal points away from the upstream body into the gap zone.
             const upstreamFacePlane = evFaceTangentPlane(context, {
-                        "face"      : qNthElement(qUnion(upstreamCutFaces), 0),
+                        "face"      : qNthElement(upstreamCutFacesQuery, 0),
                         "parameter" : vector(0.5, 0.5)
                     });
             const upstreamFaceCentroid = evApproximateCentroid(context, {
-                        "entities" : qUnion(upstreamCutFaces)
+                        "entities" : upstreamCutFacesQuery
                     });
 
             // Evaluate the downstream cut face geometry.
             // The outward normal points away from the downstream body into the gap zone.
             const downstreamFacePlane = evFaceTangentPlane(context, {
-                        "face"      : qNthElement(qUnion(downstreamCutFaces), 0),
+                        "face"      : qNthElement(downstreamCutFacesQuery, 0),
                         "parameter" : vector(0.5, 0.5)
                     });
             const downstreamFaceCentroid = evApproximateCentroid(context, {
-                        "entities" : qUnion(downstreamCutFaces)
+                        "entities" : downstreamCutFacesQuery
                     });
 
             // Source coordinate system: current state of the downstream body's cut face.
             // X-axis = joint.zAxis (fold-line direction, lies in the cut-face plane).
-            // Z-axis = face outward normal (pointing toward gap zone from downstream side).
+            // Z-axis = face outward normal (pointing toward the gap zone from the downstream side).
             const sourceCS = coordSystem(downstreamFaceCentroid,
                     joint.zAxis,
                     downstreamFacePlane.normal);
 
-            // Target coordinate system: desired state of the downstream body's cut face
-            // after unfolding.  In the flat strip the downstream gap face is coaxial with
-            // the upstream gap face, displaced by neutralFiberArcLength along the upstream
-            // face outward normal (the flat-pattern gap dimension).  The target z-axis is
-            // the reverse of the upstream face normal because in the flat strip the two gap
-            // faces face each other.
+            // Target coordinate system: where the downstream cut face lands after unfolding.
+            // In the flat strip the downstream gap face is coaxial with the upstream gap face,
+            // offset by neutralFiberArcLength along the upstream face outward normal.
+            // The target z-axis is reversed relative to the upstream normal because in the flat
+            // strip the two gap faces face each other across the bend zone gap.
             var gapOffset = vector(0, 0, 0) * meter;
             if (joint.neutralFiberArcLength != undefined)
                 gapOffset = joint.neutralFiberArcLength * upstreamFacePlane.normal;
@@ -882,6 +896,8 @@ export const kirigamiTubeUnfold = defineFeature(function(context is Context, id 
                     -upstreamFacePlane.normal);
 
             // Apply the mate-connector-to-mate-connector transform to all downstream bodies.
+            // toWorld(targetCS) * fromWorld(sourceCS) moves each downstream body from its
+            // current position to the correct flat-layout position in one step.
             opTransform(context, id + ("unfoldJoint" ~ i), {
                         "bodies"    : downstreamBodies,
                         "transform" : toWorld(targetCS) * fromWorld(sourceCS)
