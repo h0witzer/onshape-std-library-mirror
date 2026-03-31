@@ -738,9 +738,13 @@ export const kirigamiTubeBend = defineFeature(function(context is Context, id is
  *      any geometry existed in its bent state.
  *
  *   3. For each joint i, processing from last to first:
- *        a. Build the anchor set: the union of upstreamBodyPerJoint[j] for j = 0..i.
- *           These bodies must not move at this step.
- *           downstreamBodies = allConstituentBodies minus anchorSet.
+ *        a. Compute the downstream body set by walking the chain forward from joint i's
+ *           downstreamSegmentIndex: find each subsequent joint whose upstreamSegmentIndex
+ *           equals the current segment and follow it to the next downstreamSegmentIndex,
+ *           repeating until no further joint exists.  Only bodies in this chain segment are
+ *           included, so disconnected sub-chains (e.g. when tangent perpendicular joints
+ *           between collinear frame segments are filtered out) are never accidentally moved
+ *           by a transform that belongs to a different sub-chain.
  *        b. Find the upstream and downstream cut faces for this joint by querying
  *           KIRIGAMI_CUT_FACE_ATTRIBUTE_NAME faces owned by the upstream/downstream body
  *           and filtered to instanceIndex == i.
@@ -752,13 +756,14 @@ export const kirigamiTubeBend = defineFeature(function(context is Context, id is
  *           The target normal is reversed because the two gap faces face each other across the gap.
  *           The gap dimension is exactly neutralFiberArcLength.
  *        e. opTransform(downstreamBodies, toWorld(targetCS) * fromWorld(sourceCS)).
- *           Previously moved bodies (further downstream) are automatically dragged along.
+ *           Previously moved bodies (further downstream in the same sub-chain) are automatically
+ *           dragged along because they are included in the downstream set.
  *
  *   Processing last-to-first means the upstream body at joint i is still at its original world
- *   position when that joint is processed.  The upstream body is always in the anchor set and
- *   never moves.  The downstream body (bridge segment to the next joint) is the upstream body
- *   for joint i+1 and is therefore in the anchor set for all steps j > i, so it has not been
- *   touched when step i runs.  Both cut face evaluations always read from original geometry.
+ *   position when that joint is processed.  The upstream body is never included in any sub-chain's
+ *   downstream set.  The downstream body (bridge segment to the next joint) is the upstream body
+ *   for joint i+1 and therefore has not been touched when step i runs.  Both cut face evaluations
+ *   always read from original geometry.
  */
 annotation { "Feature Type Name" : "Kirigami Tube Unfold",
              "Feature Type Description" : "Unfolds a composite bent tube strip produced by Kirigami Tube Bend into a flat layout for laser-cut export." }
@@ -817,11 +822,21 @@ export const kirigamiTubeUnfold = defineFeature(function(context is Context, id 
                     KIRIGAMI_SEGMENT_ATTRIBUTE_NAME, { "segmentIndex" : joint.downstreamSegmentIndex });
         }
 
+        // Pre-build a lookup from each joint's upstreamSegmentIndex to its position in the
+        // joints array.  Used by the chain-walking downstream-body computation to find the
+        // next joint in a sub-chain in O(1) rather than scanning the full array each time.
+        // String keys are used because FeatureScript map lookup requires stable key types.
+        var upstreamSegmentToJointIndex = {};
+        for (var idx = 0; idx < jointCount; idx += 1)
+            upstreamSegmentToJointIndex["" ~ joints[idx].upstreamSegmentIndex] = idx;
+
         // Process joints last-to-first.
-        // At each joint i the anchor set = upstreamBodyPerJoint[0..i].  The downstream set =
-        // allConstituentBodies minus the anchor set.  This works for any frame topology
-        // (doubling-back, U-shapes, S-shapes) because body identity comes from baked attributes,
-        // not from where bodies currently sit in world space.
+        // For each joint i the downstream body set is built by walking the joint chain
+        // forward from joint i's downstream segment: visit each segment reachable through
+        // subsequent joints whose upstreamSegmentIndex matches the current segment.  This
+        // scopes each transform to its own connected sub-chain and prevents bodies from
+        // disconnected sub-chains (caused by filtered tangent or perpendicular joints between
+        // collinear frame segments) from being accidentally moved by an unrelated transform.
         for (var i = jointCount - 1; i >= 0; i -= 1)
         {
             const joint = joints[i];
@@ -843,13 +858,32 @@ export const kirigamiTubeUnfold = defineFeature(function(context is Context, id 
                     isQueryEmpty(context, downstreamCutFacesQuery))
                 continue;
 
-            // Build the anchor set: bodies that must NOT be moved at this step.
-            // This is the union of the upstream body at every joint j from 0 through i.
-            var anchorBodyQueries = [];
-            for (var j = 0; j <= i; j += 1)
-                anchorBodyQueries = append(anchorBodyQueries, upstreamBodyPerJoint[j]);
-            const downstreamBodies = qSubtraction(allConstituentBodies,
-                    qUnion(anchorBodyQueries));
+            // Build the downstream body set by walking the joint chain forward from joint i's
+            // downstream segment.  Starting at joints[i].downstreamSegmentIndex, append the
+            // matching body query, then use upstreamSegmentToJointIndex to find the next joint
+            // in this sub-chain (if any) and continue from its downstream segment.
+            // Stop when no further joint claims the current segment as its upstream.
+            //
+            // This correctly scopes the transform to the current sub-chain regardless of
+            // whether the full strip is a single connected chain or multiple disconnected
+            // sub-chains separated by filtered joints.
+            var downstreamBodyQueryList = [];
+            var currentSegmentIndex = joint.downstreamSegmentIndex;
+            while (currentSegmentIndex != -1)
+            {
+                downstreamBodyQueryList = append(downstreamBodyQueryList,
+                        qHasAttributeWithValueMatching(allConstituentBodies,
+                                KIRIGAMI_SEGMENT_ATTRIBUTE_NAME,
+                                { "segmentIndex" : currentSegmentIndex }));
+
+                // Follow the chain to the next joint in this sub-chain, if one exists.
+                const nextJointIndex = upstreamSegmentToJointIndex["" ~ currentSegmentIndex];
+                if (nextJointIndex != undefined)
+                    currentSegmentIndex = joints[nextJointIndex].downstreamSegmentIndex;
+                else
+                    currentSegmentIndex = -1;
+            }
+            const downstreamBodies = qUnion(downstreamBodyQueryList);
 
             if (isQueryEmpty(context, downstreamBodies))
                 continue;
