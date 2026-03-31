@@ -3,6 +3,9 @@ import(path : "onshape/std/common.fs", version : "2909.0");
 import(path : "onshape/std/geomOperations.fs", version : "2909.0");
 import(path : "onshape/std/frameAttributes.fs", version : "2909.0");
 import(path : "onshape/std/frameUtils.fs", version : "2909.0");
+// modifiedFormedUtils.fs: Amalgam form-body attribute helpers (FORM_BODY_POSITIVE_PART /
+// FORM_BODY_NEGATIVE_PART) used to query Amalgam-tagged pip bodies from the constructor.
+amalgamForm::import(path : "5418313fd7f629d9c7f1ac10", version : "b97acafda22e3375bf349519");
 // External Part Studio: Kirigami Bend Constructor.  This is a template part studio whose
 // geometry represents the unfolded bend tab inserted at each miter joint.  One instance is
 // derived into the active studio per unique joint; the downstream flat-layout script locates
@@ -33,6 +36,13 @@ const KIRIGAMI_BENT_SECTION_ATTRIBUTE_NAME = "kirigamiBentSectionData";
 // uses this to locate the upstream and downstream body at each joint directly from the
 // stored KirigamiStripAttribute segment indices, with no spatial queries at all.
 const KIRIGAMI_SEGMENT_ATTRIBUTE_NAME = "kirigamiSegmentData";
+
+// Alignment pip bodies are identified via the Amalgam form-body attribute system:
+//   FORM_BODY_NEGATIVE_PART  ("negativePart") : pip subtraction body -- subtracted from BOTH
+//                             frame bodies to cut the pocket into each miter face.
+//   FORM_BODY_POSITIVE_PART  ("positivePart") : pip union body -- merged into the UPSTREAM
+//                             frame body only to add the pip post to one miter face per joint.
+// Tag these bodies in the KirigamiBendConstructor part studio using the Amalgam Tag feature.
 
 /**
  * Attribute stored on each Kirigami Bend Constructor body placed by this feature.
@@ -429,7 +439,14 @@ export const kirigamiTubeBend = defineFeature(function(context is Context, id is
                             "boxTubeWidth"             : jointDimensions.boxTubeWidth,
                             "miterAngle"               : jointDimensions.miterAngle,
                             "bendOutsideRadius"        : definition.bendOutsideRadius,
-                            "offsetToInteriorSweepLine": cachedOffsetToInteriorSweepLine
+                            "offsetToInteriorSweepLine": cachedOffsetToInteriorSweepLine,
+                            // tubeWallThickness drives the pip alignment geometry dimensions in
+                            // the KirigamiBendConstructor studio.  For a simple hollow box tube
+                            // without corner fillets the offset to the interior sweep line equals
+                            // the wall thickness exactly.  For tubes with interior fillets it is
+                            // slightly larger (wall thickness + interior fillet radius), which is
+                            // a safe upper bound for sizing pip geometry.
+                            "tubeWallThickness"        : cachedOffsetToInteriorSweepLine
                         },
                         "transform" : toWorld(apexCoordSystem),
                         "name" : "bend" ~ instanceIndex
@@ -506,12 +523,29 @@ export const kirigamiTubeBend = defineFeature(function(context is Context, id is
             const instance = pendingInstances[instanceIndex];
             const booleanCutId = id + ("booleanCut" ~ instanceIndex);
 
+            // Identify any pip alignment bodies contributed by this constructor instance.
+            // Bodies tagged with FORM_BODY_NEGATIVE_PART via the Amalgam Tag feature in the
+            // KirigamiBendConstructor studio are the pip subtraction tools (pocket geometry).
+            // Bodies tagged with FORM_BODY_POSITIVE_PART are the pip union tools (post geometry).
+            // Both categories are excluded from the kirigami notch subtraction and from the
+            // arc-edge sweep so that their geometry is applied independently with the correct
+            // per-body scopes.
+            const pipSubtractionBodiesForInstance = qBodyType(
+                    amalgamForm::qBodiesWithFormAttribute(instance.query, amalgamForm::FORM_BODY_NEGATIVE_PART),
+                    BodyType.SOLID);
+            const pipUnionBodiesForInstance = qBodyType(
+                    amalgamForm::qBodiesWithFormAttribute(instance.query, amalgamForm::FORM_BODY_POSITIVE_PART),
+                    BodyType.SOLID);
+            const allPipBodies = qUnion([pipSubtractionBodiesForInstance, pipUnionBodiesForInstance]);
+
             // Subtract the bend constructor from both frame bodies sharing this joint.
             // The instantiator may bring in non-solid bodies (e.g. mate connectors from the
             // KirigamiBendConstructor part studio).  opBoolean requires all tool bodies to be
             // solid, so filter instance.query to BodyType.SOLID before passing it as tools.
+            // Pip-tagged bodies are excluded here; they are applied after the arc sweep with
+            // their own scopes.
             opBoolean(context, booleanCutId, {
-                        "tools"         : qBodyType(instance.query, BodyType.SOLID),
+                        "tools"         : qSubtraction(qBodyType(instance.query, BodyType.SOLID), allPipBodies),
                         "targets"       : instance.frameBodyTargets,
                         "operationType" : BooleanOperationType.SUBTRACTION,
                         "keepTools"     : true
@@ -577,7 +611,9 @@ export const kirigamiTubeBend = defineFeature(function(context is Context, id is
             // The KirigamiBendConstructor solid carries two arc edges (inner and outer bend
             // radius).  Both span the same angular sweep from frame body A's cut plane to
             // frame body B's cut plane, so either is a valid path for the fill sweep.
-            const solidToolBody = qBodyType(instance.query, BodyType.SOLID);
+            // Pip bodies are excluded from solidToolBody so that arc-edge lookups and the
+            // neutral fiber measurement only see the main kirigami tool solid.
+            const solidToolBody = qSubtraction(qBodyType(instance.query, BodyType.SOLID), allPipBodies);
             const toolArcEdges = qGeometry(
                     qOwnedByBody(solidToolBody, EntityType.EDGE),
                     GeometryType.ARC);
@@ -649,6 +685,39 @@ export const kirigamiTubeBend = defineFeature(function(context is Context, id is
                         collectedNeutralFiberLengths[instanceIndex] = neutralFiberArcLength;
                     }
                 }
+            }
+
+            // Apply pip alignment geometry for this joint.
+            //
+            // Pip subtraction: cut the alignment pocket into BOTH frame bodies sharing this
+            // joint.  Both miter faces receive a matching recess so that the pip post seats
+            // correctly when the tube is assembled in the bent configuration.
+            //
+            // Pip union: merge the alignment post into the UPSTREAM (anchor-side) frame body
+            // only.  One post per joint protrudes from the upstream miter face toward the
+            // downstream body's pocket, providing positional alignment across the joint.
+            //
+            // These operations are performed after the arc sweep so that the swept bent-tube
+            // section bodies are generated from clean, unmodified miter-face profiles.
+            if (!isQueryEmpty(context, pipSubtractionBodiesForInstance))
+            {
+                opBoolean(context, id + ("pipSubtraction" ~ instanceIndex), {
+                            "tools"         : pipSubtractionBodiesForInstance,
+                            "targets"       : instance.frameBodyTargets,
+                            "operationType" : BooleanOperationType.SUBTRACTION,
+                            "keepTools"     : false
+                        });
+            }
+
+            if (!isQueryEmpty(context, pipUnionBodiesForInstance))
+            {
+                // Place the upstream frame body first in the union query so that the merged
+                // body inherits the frame body's identity (name, color, attributes).
+                opBoolean(context, id + ("pipUnion" ~ instanceIndex), {
+                            "tools"         : qUnion([frameBodiesArray[instance.upstreamBodyIndex],
+                                                      pipUnionBodiesForInstance]),
+                            "operationType" : BooleanOperationType.UNION
+                        });
             }
 
             // Track all bodies brought in by this instance (solid tool body plus any non-solid
