@@ -5,8 +5,9 @@ import(path : "onshape/std/frameAttributes.fs", version : "2909.0");
 import(path : "onshape/std/frameUtils.fs", version : "2909.0");
 // modifiedFormedUtils.fs: Amalgam form-body attribute helpers (FORM_BODY_POSITIVE_PART /
 // FORM_BODY_NEGATIVE_PART) used to query Amalgam-tagged pip bodies from the constructor.
-// Version hash matches the import used in custom-features/amalgamate/amalgamate.fs.
-amalgamForm::import(path : "5418313fd7f629d9c7f1ac10", version : "b97acafda22e3375bf349519");
+// Path format: "documentId/workspaceId/elementId".  Version hash matches the import used
+// in custom-features/amalgamate/amalgamate.fs.
+amalgamForm::import(path : "0e895d7eacdacb4177ac69da/4555c000085f6a9d0b49c726/5418313fd7f629d9c7f1ac10", version : "b97acafda22e3375bf349519");
 // External Part Studio: Kirigami Bend Constructor.  This is a template part studio whose
 // geometry represents the unfolded bend tab inserted at each miter joint.  One instance is
 // derived into the active studio per unique joint; the downstream flat-layout script locates
@@ -408,12 +409,13 @@ export const kirigamiTubeBend = defineFeature(function(context is Context, id is
         const instantiator = newInstantiator(id + "bendConstructorInstances");
         var pendingInstances = [];
 
-        // The offset to the interior sweep line depends only on the frame profile dimensions
-        // (wall thickness).  All selected frame bodies are assumed to share the same profile,
-        // as required for a valid kirigami strip (mismatched profiles would produce incorrect
-        // geometry regardless).  Compute the offset once from the first joint and reuse the
-        // cached value for all subsequent joints to avoid redundant geometry evaluations.
+        // The offset to the interior sweep line and the true wall thickness both depend only
+        // on the frame profile dimensions.  All selected frame bodies are assumed to share the
+        // same profile, as required for a valid kirigami strip (mismatched profiles would
+        // produce incorrect geometry regardless).  Compute both values once from the first
+        // joint and reuse the cached values for all subsequent joints.
         var cachedOffsetToInteriorSweepLine = undefined;
+        var cachedTubeWallThickness = undefined;
 
         for (var instanceIndex = 0; instanceIndex < size(sharedJoints); instanceIndex += 1)
         {
@@ -440,8 +442,16 @@ export const kirigamiTubeBend = defineFeature(function(context is Context, id is
             // the wall thickness measured perpendicular to both the tube axis and the fold line.
             // Computed only for the first joint; all subsequent joints reuse the cached value.
             if (cachedOffsetToInteriorSweepLine == undefined)
+            {
                 cachedOffsetToInteriorSweepLine = computeOffsetToInteriorSweepLine(context,
                         jointData.frameBody, jointData.tubeAxis, apexCoordSystem, apexEdge);
+                // True wall thickness: perpendicular face-to-face distance between the outer
+                // planar swept wall face and its parallel inner planar swept wall face.
+                // Using direct face-to-face measurement (evDistance) rather than the
+                // edge-based offset avoids fillet inflation from interior corner fillets.
+                cachedTubeWallThickness = computeTubeWallThickness(context,
+                        jointData.frameBody, apexEdge);
+            }
 
             // toWorld(apexCoordSystem) is the Transform that carries geometry from the
             // constructor's local origin to the correct world-space position and orientation.
@@ -452,13 +462,11 @@ export const kirigamiTubeBend = defineFeature(function(context is Context, id is
                             "miterAngle"               : jointDimensions.miterAngle,
                             "bendOutsideRadius"        : definition.bendOutsideRadius,
                             "offsetToInteriorSweepLine": cachedOffsetToInteriorSweepLine,
-                            // tubeWallThickness: user-requested configuration variable name that
-                            // drives pip alignment geometry dimensions in the constructor studio.
-                            // Supplied from cachedOffsetToInteriorSweepLine, which equals the
-                            // actual wall thickness for simple hollow box tubes (no corner fillets)
-                            // and equals wall thickness + interior fillet radius for tubes with
-                            // interior fillets -- a safe upper bound for sizing pip geometry.
-                            "tubeWallThickness"        : cachedOffsetToInteriorSweepLine
+                            // tubeWallThickness: perpendicular distance between the outer planar
+                            // swept wall face and its parallel inner planar swept wall face,
+                            // measured face-to-face via evDistance.  This is the true tube wall
+                            // thickness, unaffected by interior or exterior corner fillets.
+                            "tubeWallThickness"        : cachedTubeWallThickness
                         },
                         "transform" : toWorld(apexCoordSystem),
                         "name" : "bend" ~ instanceIndex
@@ -1935,6 +1943,85 @@ function computeOffsetToInteriorSweepLine(context is Context, frameBody is Query
         return 0 * meter;
 
     return minimumPositiveDistance;
+}
+
+// Computes the true wall thickness of a hollow box tube profile as the perpendicular
+// face-to-face distance between the outer planar swept wall face and its parallel interior
+// (cavity-surface) planar swept wall face.
+//
+// Unlike computeOffsetToInteriorSweepLine, which walks to the nearest longitudinal edge on
+// an interior top/bottom face and therefore picks up interior fillet radii, this function
+// measures directly between the two planar wall faces in the bend direction.  Interior and
+// exterior corner fillets have no effect on the measurement because they are cylindrical
+// faces that are excluded by the qGeometry(PLANE) filter; the planar faces they connect are
+// the correct wall surfaces regardless of how many fillets are present.
+//
+// The outer wall face is the SWEPT_FACE adjacent to the apex edge.  The inner parallel face
+// is the SWEPT_FACE whose outward normal is anti-parallel to the outer wall normal and whose
+// normal points toward the body centroid (interior classification by centroid dot product).
+//
+// Returns 0 * meter for solid tubes or profiles with no matching interior face.
+//
+// @param context   : Active context.
+// @param frameBody : Query resolving to the single solid frame body.
+// @param apexEdge  : Query resolving to the outer apex edge on the frame body.
+// @returns ValueWithUnits (length) : True perpendicular wall thickness.
+function computeTubeWallThickness(context is Context, frameBody is Query,
+    apexEdge is Query) returns ValueWithUnits
+{
+    // Outer wall face: the SWEPT_FACE adjacent to the apex edge.
+    const outerWallFace = qNthElement(qHasAttributeWithValueMatching(
+                qAdjacent(apexEdge, AdjacencyType.EDGE, EntityType.FACE),
+                FRAME_ATTRIBUTE_TOPOLOGY_NAME,
+                { "topologyType" : FrameTopologyType.SWEPT_FACE }), 0);
+
+    if (isQueryEmpty(context, outerWallFace))
+        return 0 * meter;
+
+    const outerWallNormal = evFaceTangentPlane(context, {
+                "face" : outerWallFace,
+                "parameter" : vector(0.5, 0.5)
+            }).normal;
+
+    // Body centroid for interior/exterior face classification.
+    const bodyCentroid = evApproximateCentroid(context, { "entities" : frameBody });
+
+    // Search all planar swept faces for the inner wall face: the one whose outward normal
+    // is anti-parallel to the outer wall normal and points toward the body centroid.
+    const allPlanarSweptFaces = evaluateQuery(context, qHasAttributeWithValueMatching(
+                qOwnedByBody(frameBody, EntityType.FACE),
+                FRAME_ATTRIBUTE_TOPOLOGY_NAME,
+                { "topologyType" : FrameTopologyType.SWEPT_FACE })
+            ->qGeometry(GeometryType.PLANE));
+
+    for (var sweptFace in allPlanarSweptFaces)
+    {
+        const faceTangentPlane = evFaceTangentPlane(context, {
+                    "face" : sweptFace,
+                    "parameter" : vector(0.5, 0.5)
+                });
+
+        // Must be parallel to (and therefore anti-parallel with) the outer wall normal.
+        if (!parallelVectors(faceTangentPlane.normal, outerWallNormal))
+            continue;
+
+        // Interior face: outward normal points toward the body centroid.
+        // No FeatureScript standard library query identifies faces by their orientation
+        // relative to a body centroid; this dot-product test is the same approach used by
+        // computeOffsetToInteriorSweepLine and is the established pattern in this file.
+        if (dot(faceTangentPlane.normal, bodyCentroid - faceTangentPlane.origin) <= 0 * meter)
+            continue;
+
+        // Face-to-face perpendicular distance between the two parallel planar wall faces.
+        // Because both faces are planar and parallel, evDistance returns the true wall
+        // thickness with no influence from corner fillet geometry.
+        return evDistance(context, {
+                    "side0" : outerWallFace,
+                    "side1" : sweptFace
+                }).distance;
+    }
+
+    return 0 * meter; // Solid tube or no matching inner face found.
 }
 
 // Computes the neutral fiber arc length for one bend joint.
