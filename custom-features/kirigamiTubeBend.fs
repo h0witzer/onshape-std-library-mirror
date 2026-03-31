@@ -567,18 +567,20 @@ export const kirigamiTubeBend = defineFeature(function(context is Context, id is
             }
 
             // Replace the flat planar miter cut faces on both adjacent frame bodies with the
-            // actual zigzag miter geometry from the constructor surface body.
+            // actual miter geometry from the constructor surface body.
             //
             // The surface body is part of the instantiated KirigamiBendConstructor and is
-            // deleted along with the solid tool body in the cleanup pass below, so this block
-            // must run here -- inside the per-instance loop -- before that deletion step.
+            // deleted in the cleanup pass below, so this block must run here -- inside the
+            // per-instance loop -- before that deletion step.
             //
-            // The sheet body list is evaluated explicitly (materialised to a concrete array)
-            // before building the template face query.  Passing a lazy qBodyType chain directly
-            // to qOwnedByBody can resolve to only a subset of the surface's faces, producing the
-            // REPLACE_FACE_SHEET_SMALL error because the template no longer spans the full miter
-            // cross-section.  The explicit loop + qUnion guarantees every face of every sheet
-            // body in the constructor instance is included in the template.
+            // opReplaceFace is called once per individual cut face rather than passing all
+            // cut faces in a single batch.  When multiple disconnected tube-wall faces are
+            // batched into one replaceFaces query the kernel evaluates their combined outer
+            // boundary against the template surface extent; even though the constructor
+            // surface covers every individual wall face, the combined envelope can exceed
+            // the surface and cause REPLACE_FACE_SHEET_SMALL.  The explicit Replace Face
+            // feature in Onshape Studio works because it processes one face at a time --
+            // this loop replicates that behaviour programmatically.
             const constructorSheetBodies = evaluateQuery(context, qBodyType(instance.query, BodyType.SHEET));
             if (size(constructorSheetBodies) > 0 && size(cutPlanarFacesArray) > 0)
             {
@@ -592,35 +594,39 @@ export const kirigamiTubeBend = defineFeature(function(context is Context, id is
 
                 const allCutFacesQuery = qUnion(cutPlanarFacesArray);
 
-                // Upstream (primary) frame body cut faces: owned by jointBodyIndices[0].
-                const primaryBodyMiterFaces = qIntersection([
-                        qOwnedByBody(frameBodiesArray[instance.jointBodyIndices[0]], EntityType.FACE),
-                        allCutFacesQuery
-                    ]);
+                // Collect the cut faces belonging to each frame body as concrete arrays so
+                // we can iterate over them one face at a time.
+                const primaryBodyMiterFacesArray = evaluateQuery(context,
+                        qIntersection([
+                            qOwnedByBody(frameBodiesArray[instance.jointBodyIndices[0]], EntityType.FACE),
+                            allCutFacesQuery
+                        ]));
 
-                // Downstream (secondary) frame body cut faces: owned by jointBodyIndices[1].
-                const secondaryBodyMiterFaces = qIntersection([
-                        qOwnedByBody(frameBodiesArray[instance.jointBodyIndices[1]], EntityType.FACE),
-                        allCutFacesQuery
-                    ]);
+                const secondaryBodyMiterFacesArray = evaluateQuery(context,
+                        qIntersection([
+                            qOwnedByBody(frameBodiesArray[instance.jointBodyIndices[1]], EntityType.FACE),
+                            allCutFacesQuery
+                        ]));
 
-                if (!isQueryEmpty(context, primaryBodyMiterFaces))
+                for (var primaryFaceIndex = 0; primaryFaceIndex < size(primaryBodyMiterFacesArray); primaryFaceIndex += 1)
                 {
                     try
                     {
-                        opReplaceFace(context, id + ("replaceMiterFacePrimary" ~ instanceIndex), {
-                                    "replaceFaces" : primaryBodyMiterFaces,
+                        opReplaceFace(context,
+                                id + ("replaceMiterFacePrimary" ~ instanceIndex ~ "_" ~ primaryFaceIndex), {
+                                    "replaceFaces" : primaryBodyMiterFacesArray[primaryFaceIndex],
                                     "templateFace" : constructorSurfaceFaces
                                 });
                     }
                 }
 
-                if (!isQueryEmpty(context, secondaryBodyMiterFaces))
+                for (var secondaryFaceIndex = 0; secondaryFaceIndex < size(secondaryBodyMiterFacesArray); secondaryFaceIndex += 1)
                 {
                     try
                     {
-                        opReplaceFace(context, id + ("replaceMiterFaceSecondary" ~ instanceIndex), {
-                                    "replaceFaces" : secondaryBodyMiterFaces,
+                        opReplaceFace(context,
+                                id + ("replaceMiterFaceSecondary" ~ instanceIndex ~ "_" ~ secondaryFaceIndex), {
+                                    "replaceFaces" : secondaryBodyMiterFacesArray[secondaryFaceIndex],
                                     "templateFace" : constructorSurfaceFaces
                                 });
                     }
