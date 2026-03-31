@@ -14,7 +14,7 @@ amalgamForm::import(path : "0e895d7eacdacb4177ac69da/4555c000085f6a9d0b49c726/54
 // derived into the active studio per unique joint; the downstream flat-layout script locates
 // each instance via KirigamiBendAttribute and booleans the unfolded segments together for
 // laser-cut export.
-KirigamiBendConstructor::import(path : "1173cc57cdf5a7d688426b78", version : "7138e03b7df5ca370c2596d8");
+KirigamiBendConstructor::import(path : "1173cc57cdf5a7d688426b78", version : "07ea5d098423341c5a3a9498");
 
 // Named key used when attaching KirigamiBendAttribute to instantiated bodies.
 const KIRIGAMI_BEND_ATTRIBUTE_NAME = "kirigamiBendData";
@@ -39,12 +39,6 @@ const KIRIGAMI_BENT_SECTION_ATTRIBUTE_NAME = "kirigamiBentSectionData";
 // uses this to locate the upstream and downstream body at each joint directly from the
 // stored KirigamiStripAttribute segment indices, with no spatial queries at all.
 const KIRIGAMI_SEGMENT_ATTRIBUTE_NAME = "kirigamiSegmentData";
-
-// Named key placed on every flat-layout solid produced by kirigamiTubeUnfold after it
-// has been relocated to the world-origin-aligned strip layout.  Subsequent calls to
-// kirigamiTubeUnfold in the same Part Studio query all tagged bodies to find the
-// combined occupied bounding box and stack the new strip in world Y above it.
-const KIRIGAMI_FLAT_LAYOUT_ATTRIBUTE_NAME = "kirigamiFlatLayoutData";
 
 // Alignment pip bodies are identified via the Amalgam form-body attribute system.
 // The KirigamiBendConstructor part studio uses the Amalgam Tag feature to label every
@@ -1110,119 +1104,19 @@ export const kirigamiTubeUnfold = defineFeature(function(context is Context, id 
                     qCreatedBy(bridgeExtrudeId, EntityType.BODY));
         }
 
-        // Build the flat body query before the union so that after opBoolean the same
-        // query resolves to the single surviving merged body, providing a stable handle
-        // to the flat strip result without relying on qCreatedBy behavior across a union.
-        // When no bridge bodies exist (degenerate case where every tool solid lacked arc
-        // edges), this resolves directly to the remaining constituent frame segment bodies.
-        const allFlatBodiesQuery = size(allBridgeBodies) > 0
-                ? qUnion(append(allBridgeBodies, qContainedInCompositeParts(compositeQuery)))
-                : qContainedInCompositeParts(compositeQuery);
-
         // Boolean union all bridge bodies with the remaining unfolded frame segment bodies
         // to produce a single continuous flat-layout solid.  Each bridge body shares coplanar
         // face boundaries with both its upstream and downstream frame segment neighbours, so
         // the union is geometrically clean with no interference or gaps between adjacent bodies.
         if (size(allBridgeBodies) > 0)
         {
+            // append(allBridgeBodies, ...) adds the single constituent-bodies Query as the
+            // last element, giving concatenateArrays a uniform array of Query values that
+            // qUnion can flatten into a single multi-body query for the boolean operation.
             opBoolean(context, id + "unionBridgesWithSegments", {
-                        "tools"         : allFlatBodiesQuery,
+                        "tools"         : qUnion(append(allBridgeBodies,
+                                                 qContainedInCompositeParts(compositeQuery))),
                         "operationType" : BooleanOperationType.UNION
-                    });
-        }
-
-        // -----------------------------------------------------------------------
-        // Flat-layout placement
-        // -----------------------------------------------------------------------
-        // Relocate the unfolded strip to the world origin, aligned along world X,
-        // and stack it in world Y above any strips produced by earlier
-        // kirigamiTubeUnfold features in the same Part Studio.
-        //
-        // Coordinate system convention for the flat strip:
-        //   X = joints[0].tubeAxis    (strip runs along this after all bends are reversed)
-        //   Z = joints[0].zAxis       (fold-line direction; the strip is flat in the XY plane)
-        //   Y = cross(Z, X)           (tube cross-section width direction; used for stacking)
-        //
-        // Every placed strip is tagged KIRIGAMI_FLAT_LAYOUT_ATTRIBUTE_NAME so that
-        // subsequent kirigamiTubeUnfold calls can locate all previously placed strips,
-        // evaluate their combined world bounding box, and place the new strip directly
-        // above them with a proportional separation gap.
-        // -----------------------------------------------------------------------
-        if (!isQueryEmpty(context, allFlatBodiesQuery) && jointCount > 0)
-        {
-            // The strip runs along the anchor body's tube axis after all bends are reversed.
-            // joints[0] is the first (anchor-side) joint; its tubeAxis is the direction
-            // the full flattened strip aligns with.
-            const stripAxis    = normalize(joints[0].tubeAxis);
-            const foldLineAxis = normalize(joints[0].zAxis);
-
-            // Evaluate the strip's bounding box expressed in the strip's local coordinate
-            // system (X = stripAxis, Y = cross(foldLineAxis, stripAxis), Z = foldLineAxis).
-            // Anchoring the cSys at WORLD_ORIGIN means the min/max corners returned are
-            // local coordinate offsets from WORLD_ORIGIN along the local axes.
-            const stripLocalCS = coordSystem(WORLD_ORIGIN, stripAxis, foldLineAxis);
-            const localBBox = evBox3d(context, {
-                        "topology" : allFlatBodiesQuery,
-                        "cSys"     : stripLocalCS,
-                        "tight"    : true
-                    });
-
-            // widthAxis = the Y axis of stripLocalCS = cross(foldLineAxis, stripAxis).
-            // This is the tube cross-section direction perpendicular to both the strip axis
-            // and the fold-line; this is the stacking direction in world Y after placement.
-            const widthAxis = normalize(cross(foldLineAxis, stripAxis));
-
-            // World-space position of the bounding box minimum corner in the strip's
-            // current (unaligned) orientation.  Used to anchor the source placement CS.
-            const worldMinCorner = WORLD_ORIGIN
-                    + localBBox.minCorner[0] * stripAxis
-                    + localBBox.minCorner[1] * widthAxis
-                    + localBBox.minCorner[2] * foldLineAxis;
-
-            // Find the stacking Y offset.  Query all solid bodies already tagged as
-            // flat-layout results by previous kirigamiTubeUnfold features in this Part Studio.
-            // The current strip has not been tagged yet, so it will not pollute this query.
-            const previousFlatStrips = qHasAttribute(
-                    qAllSolidBodies(), KIRIGAMI_FLAT_LAYOUT_ATTRIBUTE_NAME);
-            var stackingY = 0 * meter;
-            if (!isQueryEmpty(context, previousFlatStrips))
-            {
-                const previousBBox = evBox3d(context, {
-                            "topology" : previousFlatStrips,
-                            "tight"    : true
-                        });
-                // Separate this strip from the previous group by 10% of its own Y extent
-                // (tube cross-section size), with a minimum gap of 5 mm to ensure strips
-                // are always clearly separated even for very thin profiles.
-                const stripWidthExtent = localBBox.maxCorner[1] - localBBox.minCorner[1];
-                stackingY = previousBBox.maxCorner[1]
-                        + max(stripWidthExtent * 0.1, 5 * millimeter);
-            }
-
-            // Source placement coordinate system: anchored at the strip's current bounding
-            // box minimum corner, with X = stripAxis and Z = foldLineAxis.
-            const sourcePlacementCS = coordSystem(worldMinCorner, stripAxis, foldLineAxis);
-
-            // Target placement coordinate system: strip minimum corner at world
-            // (X = 0, Y = stackingY, Z = 0), strip axis aligned to world X,
-            // fold-line direction aligned to world Z.
-            const targetPlacementCS = coordSystem(
-                    stackingY * Y_DIRECTION,
-                    X_DIRECTION,
-                    Z_DIRECTION);
-
-            // Apply the alignment + stacking transform in a single opTransform.
-            opTransform(context, id + "flatLayoutPlacement", {
-                        "bodies"    : allFlatBodiesQuery,
-                        "transform" : toWorld(targetPlacementCS) * fromWorld(sourcePlacementCS)
-                    });
-
-            // Tag the placed strip so subsequent kirigamiTubeUnfold features can find it
-            // when computing their own stacking Y offset.
-            setAttribute(context, {
-                        "entities"  : allFlatBodiesQuery,
-                        "name"      : KIRIGAMI_FLAT_LAYOUT_ATTRIBUTE_NAME,
-                        "attribute" : { "isPlaced" : true }
                     });
         }
     });
