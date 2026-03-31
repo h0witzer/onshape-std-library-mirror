@@ -3,11 +3,11 @@ import(path : "onshape/std/common.fs", version : "2909.0");
 import(path : "onshape/std/geomOperations.fs", version : "2909.0");
 import(path : "onshape/std/frameAttributes.fs", version : "2909.0");
 import(path : "onshape/std/frameUtils.fs", version : "2909.0");
-// amalgamForm (modifiedFormedUtils.fs): Amalgam form-body attribute helpers
-// (FORM_BODY_POSITIVE_PART / FORM_BODY_NEGATIVE_PART) used to query Amalgam-tagged pip
-// bodies from the constructor.  Imported under the alias "amalgamForm".
-// Path format: "documentId/workspaceId/elementId".  Version hash matches the import used
-// in custom-features/amalgamate/amalgamate.fs.
+// amalgamForm: Amalgam form-body attribute helpers (FORM_BODY_POSITIVE_PART /
+// FORM_BODY_NEGATIVE_PART) used to query Amalgam-tagged pip bodies from the constructor.
+// "modifiedFormedUtils.fs" is the descriptive source name; the actual import is identified
+// by the Onshape document/workspace/element path below.  Imported under the alias "amalgamForm".
+// Version hash matches the import used in custom-features/amalgamate/amalgamate.fs.
 amalgamForm::import(path : "0e895d7eacdacb4177ac69da/4555c000085f6a9d0b49c726/5418313fd7f629d9c7f1ac10", version : "b97acafda22e3375bf349519");
 // External Part Studio: Kirigami Bend Constructor.  This is a template part studio whose
 // geometry represents the unfolded bend tab inserted at each miter joint.  One instance is
@@ -293,16 +293,12 @@ export const kirigamiTubeBend = defineFeature(function(context is Context, id is
         isLength(definition.bendOutsideRadius, NONNEGATIVE_ZERO_INCLUSIVE_LENGTH_BOUNDS);
     }
     {
-        // Unpack a composite selection to its constituent solid segments, matching the
-        // body-handling pattern used by the Frame Unroll feature.
-        if (!isQueryEmpty(context, qBodyType(definition.frameBodies, BodyType.COMPOSITE)))
-        {
-            if (evaluateQueryCount(context, definition.frameBodies) > 1)
-                throw regenError("When selecting a composite body, only one composite may be selected at a time. " ~
-                    "To process multiple segments, select their individual solid bodies or a single composite.", ["frameBodies"]);
-
-            definition.frameBodies = qContainedInCompositeParts(qNthElement(definition.frameBodies, 0));
-        }
+        // Expand any composite bodies in the selection to their constituent solid segments.
+        // Frames created with "merge tangent segments" produce a composite body containing
+        // all segment solids; qFlattenedCompositeParts handles any number of composites,
+        // mixed composite + individual solid selections, and is a no-op when no composites
+        // are present (the query resolves identically to the original solid-only selection).
+        definition.frameBodies = qFlattenedCompositeParts(definition.frameBodies);
 
         const frameBodiesArray = evaluateQuery(context, definition.frameBodies);
         if (size(frameBodiesArray) < 2)
@@ -1985,7 +1981,7 @@ function computeTubeWallThickness(context is Context, frameBody is Query,
 
     const outerWallTangentPlane = evFaceTangentPlane(context, {
                 "face" : outerWallFace,
-                // vector(0.5, 0.5) is the normalized parametric center of the face,
+                // vector(0.5, 0.5) is the parametric center (UV = 0.5, 0.5) of the face,
                 // giving a stable evaluation point well away from trimmed edges.
                 "parameter" : vector(0.5, 0.5)
             });
