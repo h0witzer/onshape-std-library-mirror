@@ -566,60 +566,6 @@ export const kirigamiTubeBend = defineFeature(function(context is Context, id is
                         });
             }
 
-            // Replace the flat planar miter cut faces on both adjacent frame bodies with the
-            // actual miter interface geometry from the constructor surface body.  The surface
-            // body is instantiated at the same joint location and orientation as the solid tool
-            // body (via toWorld(apexCoordSystem)), so its faces define the correct replacement
-            // geometry for each side of the miter joint.
-            //
-            // The upstream (primary) cut faces and downstream (secondary) cut faces are
-            // separated by body ownership and replaced independently so that each frame body
-            // receives its own opReplaceFace call with the same constructor surface template.
-            const constructorSurfaceBody = qBodyType(instance.query, BodyType.SHEET);
-            if (!isQueryEmpty(context, constructorSurfaceBody) && size(cutPlanarFacesArray) > 0)
-            {
-                const constructorSurfaceFaces = qOwnedByBody(constructorSurfaceBody, EntityType.FACE);
-                const allCutFacesQuery = qUnion(cutPlanarFacesArray);
-
-                // Upstream (primary) frame body cut faces: owned by jointBodyIndices[0].
-                const primaryBodyMiterFaces = qIntersection([
-                        qOwnedByBody(frameBodiesArray[instance.jointBodyIndices[0]], EntityType.FACE),
-                        allCutFacesQuery
-                    ]);
-
-                // Downstream (secondary) frame body cut faces: owned by jointBodyIndices[1].
-                const secondaryBodyMiterFaces = qIntersection([
-                        qOwnedByBody(frameBodiesArray[instance.jointBodyIndices[1]], EntityType.FACE),
-                        allCutFacesQuery
-                    ]);
-
-                if (!isQueryEmpty(context, primaryBodyMiterFaces))
-                {
-                    // try without silent: if opReplaceFace cannot reconcile the surface geometry
-                    // with the solid body topology the error is still reported to the regeneration
-                    // notices, but the feature continues rather than aborting entirely.
-                    try
-                    {
-                        opReplaceFace(context, id + ("replaceMiterFacePrimary" ~ instanceIndex), {
-                                    "replaceFaces" : primaryBodyMiterFaces,
-                                    "templateFace" : constructorSurfaceFaces
-                                });
-                    }
-                }
-
-                if (!isQueryEmpty(context, secondaryBodyMiterFaces))
-                {
-                    // Same error-reporting intent as the primary replacement above.
-                    try
-                    {
-                        opReplaceFace(context, id + ("replaceMiterFaceSecondary" ~ instanceIndex), {
-                                    "replaceFaces" : secondaryBodyMiterFaces,
-                                    "templateFace" : constructorSurfaceFaces
-                                });
-                    }
-                }
-            }
-
             // Sweep cut faces along the tool's arc edge to fill the void zone removed by the
             // boolean subtraction, reconstructing the tube wall geometry in the bent state.
             //
