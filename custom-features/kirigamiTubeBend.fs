@@ -38,12 +38,23 @@ const KIRIGAMI_BENT_SECTION_ATTRIBUTE_NAME = "kirigamiBentSectionData";
 // stored KirigamiStripAttribute segment indices, with no spatial queries at all.
 const KIRIGAMI_SEGMENT_ATTRIBUTE_NAME = "kirigamiSegmentData";
 
-// Alignment pip bodies are identified via the Amalgam form-body attribute system:
-//   FORM_BODY_NEGATIVE_PART  ("negativePart") : pip subtraction body -- subtracted from BOTH
-//                             frame bodies to cut the pocket into each miter face.
-//   FORM_BODY_POSITIVE_PART  ("positivePart") : pip union body -- merged into the UPSTREAM
-//                             frame body only to add the pip post to one miter face per joint.
-// Tag these bodies in the KirigamiBendConstructor part studio using the Amalgam Tag feature.
+// Alignment pip bodies are identified via the Amalgam form-body attribute system.
+// The KirigamiBendConstructor part studio uses the Amalgam Tag feature to label every
+// solid body with one of three roles:
+//
+//   FORM_BODY_NEW_PART      ("newPart")      : main kirigami notch tool solid.  Subtracted from
+//                                              both frame bodies to cut the corner notch, then
+//                                              used as the arc-sweep path source.  Kept after
+//                                              the cut (keepTools=true) and deleted at cleanup.
+//   FORM_BODY_NEGATIVE_PART ("negativePart") : pip subtraction body -- subtracted from BOTH
+//                                              frame bodies to cut the pocket into each miter face.
+//   FORM_BODY_POSITIVE_PART ("positivePart") : pip union body -- merged into the UPSTREAM
+//                                              frame body only to add the pip post to one
+//                                              miter face per joint.
+//
+// Constructors that do not carry Amalgam tags on the main tool solid (older versions without
+// pip geometry) fall back to using all solid bodies minus any pip-tagged bodies as the
+// kirigami notch tool, preserving backward compatibility.
 
 /**
  * Attribute stored on each Kirigami Bend Constructor body placed by this feature.
@@ -441,12 +452,12 @@ export const kirigamiTubeBend = defineFeature(function(context is Context, id is
                             "miterAngle"               : jointDimensions.miterAngle,
                             "bendOutsideRadius"        : definition.bendOutsideRadius,
                             "offsetToInteriorSweepLine": cachedOffsetToInteriorSweepLine,
-                            // tubeWallThickness drives the pip alignment geometry dimensions in
-                            // the KirigamiBendConstructor studio.  For a simple hollow box tube
-                            // without corner fillets the offset to the interior sweep line equals
-                            // the wall thickness exactly.  For tubes with interior fillets it is
-                            // slightly larger (wall thickness + interior fillet radius), which is
-                            // a safe upper bound for sizing pip geometry.
+                            // tubeWallThickness: user-requested configuration variable name that
+                            // drives pip alignment geometry dimensions in the constructor studio.
+                            // Supplied from cachedOffsetToInteriorSweepLine, which equals the
+                            // actual wall thickness for simple hollow box tubes (no corner fillets)
+                            // and equals wall thickness + interior fillet radius for tubes with
+                            // interior fillets -- a safe upper bound for sizing pip geometry.
                             "tubeWallThickness"        : cachedOffsetToInteriorSweepLine
                         },
                         "transform" : toWorld(apexCoordSystem),
@@ -524,13 +535,11 @@ export const kirigamiTubeBend = defineFeature(function(context is Context, id is
             const instance = pendingInstances[instanceIndex];
             const booleanCutId = id + ("booleanCut" ~ instanceIndex);
 
-            // Identify any pip alignment bodies contributed by this constructor instance.
-            // Bodies tagged with FORM_BODY_NEGATIVE_PART via the Amalgam Tag feature in the
-            // KirigamiBendConstructor studio are the pip subtraction tools (pocket geometry).
-            // Bodies tagged with FORM_BODY_POSITIVE_PART are the pip union tools (post geometry).
-            // Both categories are excluded from the kirigami notch subtraction and from the
-            // arc-edge sweep so that their geometry is applied independently with the correct
-            // per-body scopes.
+            // Identify constructor bodies by Amalgam form attribute role.
+            // FORM_BODY_NEW_PART     : main kirigami notch tool (subtract + arc sweep).
+            // FORM_BODY_NEGATIVE_PART: pip pocket/subtraction body.
+            // FORM_BODY_POSITIVE_PART: pip post/union body.
+            // Pip bodies are handled separately after the arc sweep with joint-specific scopes.
             const pipSubtractionBodiesForInstance = qBodyType(
                     amalgamForm::qBodiesWithFormAttribute(instance.query, amalgamForm::FORM_BODY_NEGATIVE_PART),
                     BodyType.SOLID);
@@ -539,14 +548,22 @@ export const kirigamiTubeBend = defineFeature(function(context is Context, id is
                     BodyType.SOLID);
             const allPipBodies = qUnion([pipSubtractionBodiesForInstance, pipUnionBodiesForInstance]);
 
-            // Subtract the bend constructor from both frame bodies sharing this joint.
+            // Main kirigami notch tool: explicitly the FORM_BODY_NEW_PART tagged solid when the
+            // constructor uses full Amalgam tagging.  Falls back to all-solid-bodies-minus-pip-bodies
+            // for older constructors that do not tag the main tool solid.
+            var kirigamiNotchToolBodies = qBodyType(
+                    amalgamForm::qBodiesWithFormAttribute(instance.query, amalgamForm::FORM_BODY_NEW_PART),
+                    BodyType.SOLID);
+            if (isQueryEmpty(context, kirigamiNotchToolBodies))
+                kirigamiNotchToolBodies = qSubtraction(qBodyType(instance.query, BodyType.SOLID), allPipBodies);
+
+            // Subtract the bend constructor notch tool from both frame bodies sharing this joint.
             // The instantiator may bring in non-solid bodies (e.g. mate connectors from the
-            // KirigamiBendConstructor part studio).  opBoolean requires all tool bodies to be
-            // solid, so filter instance.query to BodyType.SOLID before passing it as tools.
-            // Pip-tagged bodies are excluded here; they are applied after the arc sweep with
-            // their own scopes.
+            // KirigamiBendConstructor part studio).  kirigamiNotchToolBodies is already solid-
+            // filtered and scoped to the Amalgam-tagged notch tool, so no further filtering
+            // is needed here.
             opBoolean(context, booleanCutId, {
-                        "tools"         : qSubtraction(qBodyType(instance.query, BodyType.SOLID), allPipBodies),
+                        "tools"         : kirigamiNotchToolBodies,
                         "targets"       : instance.frameBodyTargets,
                         "operationType" : BooleanOperationType.SUBTRACTION,
                         "keepTools"     : true
@@ -612,9 +629,9 @@ export const kirigamiTubeBend = defineFeature(function(context is Context, id is
             // The KirigamiBendConstructor solid carries two arc edges (inner and outer bend
             // radius).  Both span the same angular sweep from frame body A's cut plane to
             // frame body B's cut plane, so either is a valid path for the fill sweep.
-            // Pip bodies are excluded from solidToolBody so that arc-edge lookups and the
-            // neutral fiber measurement only see the main kirigami tool solid.
-            const solidToolBody = qSubtraction(qBodyType(instance.query, BodyType.SOLID), allPipBodies);
+            // kirigamiNotchToolBodies scopes the arc-edge and neutral fiber queries to the
+            // main notch tool only, excluding pip bodies.
+            const solidToolBody = kirigamiNotchToolBodies;
             const toolArcEdges = qGeometry(
                     qOwnedByBody(solidToolBody, EntityType.EDGE),
                     GeometryType.ARC);
