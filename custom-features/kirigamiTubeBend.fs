@@ -8,7 +8,7 @@ import(path : "onshape/std/frameUtils.fs", version : "2909.0");
 // derived into the active studio per unique joint; the downstream flat-layout script locates
 // each instance via KirigamiBendAttribute and booleans the unfolded segments together for
 // laser-cut export.
-KirigamiBendConstructor::import(path : "1173cc57cdf5a7d688426b78", version : "34f8062d4f497af3fe072b39");
+KirigamiBendConstructor::import(path : "1173cc57cdf5a7d688426b78", version : "7138e03b7df5ca370c2596d8");
 
 // Named key used when attaching KirigamiBendAttribute to instantiated bodies.
 const KIRIGAMI_BEND_ATTRIBUTE_NAME = "kirigamiBendData";
