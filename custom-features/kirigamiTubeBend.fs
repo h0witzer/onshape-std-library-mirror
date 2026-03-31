@@ -566,6 +566,67 @@ export const kirigamiTubeBend = defineFeature(function(context is Context, id is
                         });
             }
 
+            // Replace the flat planar miter cut faces on both adjacent frame bodies with the
+            // actual zigzag miter geometry from the constructor surface body.
+            //
+            // The surface body is part of the instantiated KirigamiBendConstructor and is
+            // deleted along with the solid tool body in the cleanup pass below, so this block
+            // must run here -- inside the per-instance loop -- before that deletion step.
+            //
+            // The sheet body list is evaluated explicitly (materialised to a concrete array)
+            // before building the template face query.  Passing a lazy qBodyType chain directly
+            // to qOwnedByBody can resolve to only a subset of the surface's faces, producing the
+            // REPLACE_FACE_SHEET_SMALL error because the template no longer spans the full miter
+            // cross-section.  The explicit loop + qUnion guarantees every face of every sheet
+            // body in the constructor instance is included in the template.
+            const constructorSheetBodies = evaluateQuery(context, qBodyType(instance.query, BodyType.SHEET));
+            if (size(constructorSheetBodies) > 0 && size(cutPlanarFacesArray) > 0)
+            {
+                var surfaceFaceQueryParts = [];
+                for (var sheetBody in constructorSheetBodies)
+                {
+                    surfaceFaceQueryParts = append(surfaceFaceQueryParts,
+                            qOwnedByBody(sheetBody, EntityType.FACE));
+                }
+                const constructorSurfaceFaces = qUnion(surfaceFaceQueryParts);
+
+                const allCutFacesQuery = qUnion(cutPlanarFacesArray);
+
+                // Upstream (primary) frame body cut faces: owned by jointBodyIndices[0].
+                const primaryBodyMiterFaces = qIntersection([
+                        qOwnedByBody(frameBodiesArray[instance.jointBodyIndices[0]], EntityType.FACE),
+                        allCutFacesQuery
+                    ]);
+
+                // Downstream (secondary) frame body cut faces: owned by jointBodyIndices[1].
+                const secondaryBodyMiterFaces = qIntersection([
+                        qOwnedByBody(frameBodiesArray[instance.jointBodyIndices[1]], EntityType.FACE),
+                        allCutFacesQuery
+                    ]);
+
+                if (!isQueryEmpty(context, primaryBodyMiterFaces))
+                {
+                    try
+                    {
+                        opReplaceFace(context, id + ("replaceMiterFacePrimary" ~ instanceIndex), {
+                                    "replaceFaces" : primaryBodyMiterFaces,
+                                    "templateFace" : constructorSurfaceFaces
+                                });
+                    }
+                }
+
+                if (!isQueryEmpty(context, secondaryBodyMiterFaces))
+                {
+                    try
+                    {
+                        opReplaceFace(context, id + ("replaceMiterFaceSecondary" ~ instanceIndex), {
+                                    "replaceFaces" : secondaryBodyMiterFaces,
+                                    "templateFace" : constructorSurfaceFaces
+                                });
+                    }
+                }
+            }
+
             // Sweep cut faces along the tool's arc edge to fill the void zone removed by the
             // boolean subtraction, reconstructing the tube wall geometry in the bent state.
             //
