@@ -764,6 +764,19 @@ export const kirigamiTubeBend = defineFeature(function(context is Context, id is
  *   downstream set.  The downstream body (bridge segment to the next joint) is the upstream body
  *   for joint i+1 and therefore has not been touched when step i runs.  Both cut face evaluations
  *   always read from original geometry.
+ *
+ *   4. For each joint i, processing first-to-last (all bodies now at final flat-layout positions):
+ *        a. Query all upstream cut faces for this joint (faces on the anchor-side body tagged
+ *           with instanceIndex == i via KIRIGAMI_CUT_FACE_ATTRIBUTE_NAME).
+ *        b. Evaluate the outward normal of the first upstream cut face.
+ *        c. opExtrude the upstream cut faces by neutralFiberArcLength along that outward normal.
+ *           This creates a new bridge body that spans the gap exactly -- its start face is
+ *           coplanar with the upstream anchor face and its end face is coplanar with the
+ *           downstream body's now-repositioned cut face.
+ *        d. Collect the new bridge body.
+ *
+ *   5. opBoolean(UNION) all bridge bodies together with all remaining constituent frame segment
+ *      bodies to produce a single continuous flat-layout solid.
  */
 annotation { "Feature Type Name" : "Kirigami Tube Unfold",
              "Feature Type Description" : "Unfolds a composite bent tube strip produced by Kirigami Tube Bend into a flat layout for laser-cut export." }
@@ -935,6 +948,82 @@ export const kirigamiTubeUnfold = defineFeature(function(context is Context, id 
             opTransform(context, id + ("unfoldJoint" ~ i), {
                         "bodies"    : downstreamBodies,
                         "transform" : toWorld(targetCS) * fromWorld(sourceCS)
+                    });
+        }
+
+        // Create straight bridge segments to fill the flat-layout gaps at each joint.
+        //
+        // After all opTransform calls above have completed, each upstream cut face (anchor side)
+        // faces its downstream counterpart across a gap of exactly neutralFiberArcLength.
+        // The upstream cut faces are the correct profiles for a straight extrude: extruding
+        // them by neutralFiberArcLength along the upstream face outward normal produces a new
+        // solid body that exactly spans the gap, replacing the arc-swept bent section that was
+        // deleted at the start of this feature.
+        //
+        // This pass runs first-to-last because all bodies are already in their final flat-layout
+        // positions and no ordering dependency exists between joints.
+        var allBridgeBodies = [];
+        for (var bridgeIndex = 0; bridgeIndex < jointCount; bridgeIndex += 1)
+        {
+            const bridgeJoint = joints[bridgeIndex];
+            if (bridgeJoint.neutralFiberArcLength == undefined)
+                continue; // neutralFiberArcLength is only undefined when the tool solid had no arc
+                          // edges (e.g. a degenerate bend constructor import).  Skipping such joints
+                          // leaves the gap open rather than extruding a zero-depth bridge.
+
+            // Select all cut faces on the upstream (anchor-side) body tagged for this joint.
+            // The body ownership filter confines the query to the upstream body only, so no
+            // isPrimaryBody filter is needed.  The upstream body did not move during unfolding,
+            // so these faces remain at their original gap-boundary positions and are the correct
+            // profiles for the bridge extrude.
+            const upstreamBridgeFaces = qHasAttributeWithValueMatching(
+                    qOwnedByBody(upstreamBodyPerJoint[bridgeIndex], EntityType.FACE),
+                    KIRIGAMI_CUT_FACE_ATTRIBUTE_NAME,
+                    { "instanceIndex" : bridgeIndex });
+
+            if (isQueryEmpty(context, upstreamBridgeFaces))
+                continue;
+
+            // All upstream cut faces at a given joint are coplanar (same miter cut plane),
+            // so evaluating the outward normal from the first face gives the correct extrude
+            // direction for the entire set.  evFaceTangentPlane always returns the outward
+            // normal for a face on a closed solid body (pointing away from the material); for
+            // a cut face produced by the kirigami boolean subtraction this means the normal
+            // points into the gap zone, i.e. toward the downstream body -- exactly the correct
+            // extrude direction.
+            const upstreamBridgeFaceNormal = evFaceTangentPlane(context, {
+                        "face"      : qNthElement(upstreamBridgeFaces, 0),
+                        "parameter" : vector(0.5, 0.5)
+                    }).normal;
+
+            // Extrude all upstream cut faces by neutralFiberArcLength along the outward normal.
+            // The resulting solid body spans exactly the gap introduced by the unfold transform,
+            // with its far face coplanar with the downstream body's now-repositioned cut face.
+            const bridgeExtrudeId = id + ("bridgeExtrude" ~ bridgeIndex);
+            opExtrude(context, bridgeExtrudeId, {
+                        "entities"  : upstreamBridgeFaces,
+                        "direction" : upstreamBridgeFaceNormal,
+                        "endBound"  : BoundingType.BLIND,
+                        "endDepth"  : bridgeJoint.neutralFiberArcLength
+                    });
+
+            allBridgeBodies = append(allBridgeBodies,
+                    qCreatedBy(bridgeExtrudeId, EntityType.BODY));
+        }
+
+        // Boolean union all bridge bodies with the remaining unfolded frame segment bodies
+        // to produce a single continuous flat-layout solid.  Each bridge body shares coplanar
+        // face boundaries with both its upstream and downstream frame segment neighbours, so
+        // the union is geometrically clean with no interference or gaps between adjacent bodies.
+        if (size(allBridgeBodies) > 0)
+        {
+            // append(allBridgeBodies, ...) adds the single constituent-bodies Query as the
+            // last element, giving concatenateArrays a uniform array of Query values that
+            // qUnion can flatten into a single multi-body query for the boolean operation.
+            opBoolean(context, id + "unionBridgesWithSegments", {
+                        "tools"         : qUnion(append(allBridgeBodies,
+                                                 qContainedInCompositeParts(compositeQuery))),
+                        "operationType" : BooleanOperationType.UNION
                     });
         }
     });
