@@ -3,8 +3,9 @@ import(path : "onshape/std/common.fs", version : "2909.0");
 import(path : "onshape/std/geomOperations.fs", version : "2909.0");
 import(path : "onshape/std/frameAttributes.fs", version : "2909.0");
 import(path : "onshape/std/frameUtils.fs", version : "2909.0");
-// modifiedFormedUtils.fs: Amalgam form-body attribute helpers (FORM_BODY_POSITIVE_PART /
-// FORM_BODY_NEGATIVE_PART) used to query Amalgam-tagged pip bodies from the constructor.
+// amalgamForm (modifiedFormedUtils.fs): Amalgam form-body attribute helpers
+// (FORM_BODY_POSITIVE_PART / FORM_BODY_NEGATIVE_PART) used to query Amalgam-tagged pip
+// bodies from the constructor.  Imported under the alias "amalgamForm".
 // Path format: "documentId/workspaceId/elementId".  Version hash matches the import used
 // in custom-features/amalgamate/amalgamate.fs.
 amalgamForm::import(path : "0e895d7eacdacb4177ac69da/4555c000085f6a9d0b49c726/5418313fd7f629d9c7f1ac10", version : "b97acafda22e3375bf349519");
@@ -1946,21 +1947,25 @@ function computeOffsetToInteriorSweepLine(context is Context, frameBody is Query
 }
 
 // Computes the true wall thickness of a hollow box tube profile as the perpendicular
-// face-to-face distance between the outer planar swept wall face and its parallel interior
-// (cavity-surface) planar swept wall face.
+// face-to-face distance between the outer planar swept wall face and the nearest parallel
+// planar swept wall face on the same body.
 //
-// Unlike computeOffsetToInteriorSweepLine, which walks to the nearest longitudinal edge on
-// an interior top/bottom face and therefore picks up interior fillet radii, this function
-// measures directly between the two planar wall faces in the bend direction.  Interior and
-// exterior corner fillets have no effect on the measurement because they are cylindrical
-// faces that are excluded by the qGeometry(PLANE) filter; the planar faces they connect are
-// the correct wall surfaces regardless of how many fillets are present.
+// Strategy:
+//   1. Identify the outer wall face (the SWEPT_FACE adjacent to the apex edge).
+//   2. Collect every planar SWEPT_FACE on the body whose normal is parallel (or anti-parallel)
+//      to the outer wall normal into a query union, then subtract the outer wall face itself
+//      to leave only candidate inner / opposite-outer faces.
+//   3. Apply qClosestTo(candidates, outerWallFaceCenter) to select the single nearest face.
+//      The inner wall face directly behind the outer wall is always the closest candidate
+//      (distance = wall thickness t); the opposite inner face is W - t away and the opposite
+//      outer face is W away, so qClosestTo unambiguously picks the correct face regardless
+//      of iteration order, symmetric geometry, or centroid position.
+//   4. Return evDistance between the outer face and the selected inner face.
 //
-// The outer wall face is the SWEPT_FACE adjacent to the apex edge.  The inner parallel face
-// is the SWEPT_FACE whose outward normal is anti-parallel to the outer wall normal and whose
-// normal points toward the body centroid (interior classification by centroid dot product).
+// Corner fillets (interior or exterior) are cylindrical faces excluded by the qGeometry(PLANE)
+// filter and have no influence on the result.
 //
-// Returns 0 * meter for solid tubes or profiles with no matching interior face.
+// Returns 0 * meter for solid tubes or profiles with no matching parallel face.
 //
 // @param context   : Active context.
 // @param frameBody : Query resolving to the single solid frame body.
@@ -1978,22 +1983,29 @@ function computeTubeWallThickness(context is Context, frameBody is Query,
     if (isQueryEmpty(context, outerWallFace))
         return 0 * meter;
 
-    const outerWallNormal = evFaceTangentPlane(context, {
+    const outerWallTangentPlane = evFaceTangentPlane(context, {
                 "face" : outerWallFace,
+                // vector(0.5, 0.5) is the normalized parametric center of the face,
+                // giving a stable evaluation point well away from trimmed edges.
                 "parameter" : vector(0.5, 0.5)
-            }).normal;
+            });
+    const outerWallNormal = outerWallTangentPlane.normal;
+    const outerWallFaceCenter = outerWallTangentPlane.origin;
 
-    // Body centroid for interior/exterior face classification.
-    const bodyCentroid = evApproximateCentroid(context, { "entities" : frameBody });
-
-    // Search all planar swept faces for the inner wall face: the one whose outward normal
-    // is anti-parallel to the outer wall normal and points toward the body centroid.
+    // Build a list of all planar SWEPT_FACEs whose normals are parallel (or anti-parallel)
+    // to the outer wall normal.  parallelVectors matches both orientations so this captures
+    // the inner wall face on the same side, the inner face on the opposite side, and both
+    // opposite outer faces.
     const allPlanarSweptFaces = evaluateQuery(context, qHasAttributeWithValueMatching(
                 qOwnedByBody(frameBody, EntityType.FACE),
                 FRAME_ATTRIBUTE_TOPOLOGY_NAME,
                 { "topologyType" : FrameTopologyType.SWEPT_FACE })
             ->qGeometry(GeometryType.PLANE));
 
+    var parallelFaceQueryList = [];
+    // Iterate all planar SWEPT_FACEs and retain those whose normals are parallel (or
+    // anti-parallel) to the outer wall normal — these are the candidate same-side inner,
+    // opposite-side inner, and opposite outer wall faces.
     for (var sweptFace in allPlanarSweptFaces)
     {
         const faceTangentPlane = evFaceTangentPlane(context, {
@@ -2001,27 +2013,27 @@ function computeTubeWallThickness(context is Context, frameBody is Query,
                     "parameter" : vector(0.5, 0.5)
                 });
 
-        // Must be parallel to (and therefore anti-parallel with) the outer wall normal.
-        if (!parallelVectors(faceTangentPlane.normal, outerWallNormal))
-            continue;
-
-        // Interior face: outward normal points toward the body centroid.
-        // No FeatureScript standard library query identifies faces by their orientation
-        // relative to a body centroid; this dot-product test is the same approach used by
-        // computeOffsetToInteriorSweepLine and is the established pattern in this file.
-        if (dot(faceTangentPlane.normal, bodyCentroid - faceTangentPlane.origin) <= 0 * meter)
-            continue;
-
-        // Face-to-face perpendicular distance between the two parallel planar wall faces.
-        // Because both faces are planar and parallel, evDistance returns the true wall
-        // thickness with no influence from corner fillet geometry.
-        return evDistance(context, {
-                    "side0" : outerWallFace,
-                    "side1" : sweptFace
-                }).distance;
+        if (parallelVectors(faceTangentPlane.normal, outerWallNormal))
+            parallelFaceQueryList = append(parallelFaceQueryList, sweptFace);
     }
 
-    return 0 * meter; // Solid tube or no matching inner face found.
+    if (size(parallelFaceQueryList) == 0)
+        return 0 * meter;
+
+    // Remove the outer wall face itself, leaving only the candidate parallel faces.
+    const candidateInnerFaces = qSubtraction(qUnion(parallelFaceQueryList), outerWallFace);
+    if (isQueryEmpty(context, candidateInnerFaces))
+        return 0 * meter;
+
+    // qClosestTo selects the single parallel face nearest to the outer wall face center.
+    // For a hollow box tube this is always the inner wall face on the same side (at distance t),
+    // never the opposite inner face (at distance W - t) or opposite outer face (at distance W).
+    const nearestInnerFace = qClosestTo(candidateInnerFaces, outerWallFaceCenter);
+
+    return evDistance(context, {
+                "side0" : outerWallFace,
+                "side1" : nearestInnerFace
+            }).distance;
 }
 
 // Computes the neutral fiber arc length for one bend joint.
