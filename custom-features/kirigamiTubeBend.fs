@@ -414,6 +414,11 @@ export const kirigamiTubeBend = defineFeature(function(context is Context, id is
         var cachedOffsetToInteriorSweepLine = undefined;
         var cachedTubeWallThickness = undefined;
 
+        // Set to true if any joint in this selection has a miter angle exceeding 45 degrees.
+        // Laser cutters typically cannot cut a bevel steeper than 45 degrees; joints over
+        // this threshold will be flagged with a single warning at the end of the loop.
+        var anyMiterAngleExceedsLimit = false;
+
         for (var instanceIndex = 0; instanceIndex < size(sharedJoints); instanceIndex += 1)
         {
             const jointData = sharedJoints[instanceIndex];
@@ -433,6 +438,10 @@ export const kirigamiTubeBend = defineFeature(function(context is Context, id is
             // for the miter angle.  No world-axis references are used.
             const jointDimensions = computeJointDimensions(context, jointData.frameBody,
                     jointData.tubeAxis, apexCoordSystem);
+
+            // Flag any joint whose miter angle exceeds the 45-degree laser-cut bevel limit.
+            if (jointDimensions.miterAngle > 45 * degree)
+                anyMiterAngleExceedsLimit = true;
 
             // Distance from the outer wall face to the nearest longitudinal sweep edge on a
             // top/bottom swept face (normal parallel to local Z).  For a hollow tube this equals
@@ -494,6 +503,13 @@ export const kirigamiTubeBend = defineFeature(function(context is Context, id is
                         "frameBodyTargets"         : jointFrameBodyTargets
                     });
         }
+
+        // Warn once if any joint in the selection has a miter angle greater than 45 degrees.
+        // Laser cutters typically cannot produce a bevel cut steeper than 45 degrees, so the
+        // unfolded flat layout from kirigamiTubeUnfold may require additional cleanup operations
+        // (e.g. manual trimming or secondary machining) before the part is manufacturable.
+        if (anyMiterAngleExceedsLimit)
+            reportFeatureWarning(context, id, "One or more joints have a miter angle greater than 45 degrees. Laser cutters typically cannot cut bevels steeper than 45 degrees. The unfolded flat layout may require additional cleanup operations to be manufacturable.");
 
         // Bring all queued instances into the context in one batched call.
         instantiate(context, instantiator);
