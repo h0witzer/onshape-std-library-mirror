@@ -3,6 +3,12 @@ import(path : "onshape/std/common.fs", version : "2909.0");
 import(path : "onshape/std/geomOperations.fs", version : "2909.0");
 import(path : "onshape/std/frameAttributes.fs", version : "2909.0");
 import(path : "onshape/std/frameUtils.fs", version : "2909.0");
+// amalgamForm: Amalgam form-body attribute helpers (FORM_BODY_POSITIVE_PART /
+// FORM_BODY_NEGATIVE_PART) used to query Amalgam-tagged pip bodies from the constructor.
+// "modifiedFormedUtils.fs" is the descriptive source name; the actual import is identified
+// by the Onshape document/workspace/element path below.  Imported under the alias "amalgamForm".
+// Version hash matches the import used in custom-features/amalgamate/amalgamate.fs.
+amalgamForm::import(path : "0e895d7eacdacb4177ac69da/4555c000085f6a9d0b49c726/5418313fd7f629d9c7f1ac10", version : "b97acafda22e3375bf349519");
 // External Part Studio: Kirigami Bend Constructor.  This is a template part studio whose
 // geometry represents the unfolded bend tab inserted at each miter joint.  One instance is
 // derived into the active studio per unique joint; the downstream flat-layout script locates
@@ -33,6 +39,30 @@ const KIRIGAMI_BENT_SECTION_ATTRIBUTE_NAME = "kirigamiBentSectionData";
 // uses this to locate the upstream and downstream body at each joint directly from the
 // stored KirigamiStripAttribute segment indices, with no spatial queries at all.
 const KIRIGAMI_SEGMENT_ATTRIBUTE_NAME = "kirigamiSegmentData";
+
+// Named key placed on every flat-layout solid produced by kirigamiTubeUnfold after it
+// has been relocated to the world-origin-aligned strip layout.  Subsequent calls to
+// kirigamiTubeUnfold in the same Part Studio query all tagged bodies to find the
+// combined occupied bounding box and stack the new strip in world Y above it.
+const KIRIGAMI_FLAT_LAYOUT_ATTRIBUTE_NAME = "kirigamiFlatLayoutData";
+
+// Alignment pip bodies are identified via the Amalgam form-body attribute system.
+// The KirigamiBendConstructor part studio uses the Amalgam Tag feature to label every
+// solid body with one of three roles:
+//
+//   FORM_BODY_NEW_PART      ("newPart")      : main kirigami notch tool solid.  Subtracted from
+//                                              both frame bodies to cut the corner notch, then
+//                                              used as the arc-sweep path source.  Kept after
+//                                              the cut (keepTools=true) and deleted at cleanup.
+//   FORM_BODY_NEGATIVE_PART ("negativePart") : pip subtraction body -- subtracted from BOTH
+//                                              frame bodies to cut the pocket into each miter face.
+//   FORM_BODY_POSITIVE_PART ("positivePart") : pip union body -- merged into the UPSTREAM
+//                                              frame body only to add the pip post to one
+//                                              miter face per joint.
+//
+// Constructors that do not carry Amalgam tags on the main tool solid (older versions without
+// pip geometry) fall back to using all solid bodies minus any pip-tagged bodies as the
+// kirigami notch tool, preserving backward compatibility.
 
 /**
  * Attribute stored on each Kirigami Bend Constructor body placed by this feature.
@@ -269,16 +299,12 @@ export const kirigamiTubeBend = defineFeature(function(context is Context, id is
         isLength(definition.bendOutsideRadius, NONNEGATIVE_ZERO_INCLUSIVE_LENGTH_BOUNDS);
     }
     {
-        // Unpack a composite selection to its constituent solid segments, matching the
-        // body-handling pattern used by the Frame Unroll feature.
-        if (!isQueryEmpty(context, qBodyType(definition.frameBodies, BodyType.COMPOSITE)))
-        {
-            if (evaluateQueryCount(context, definition.frameBodies) > 1)
-                throw regenError("When selecting a composite body, only one composite may be selected at a time. " ~
-                    "To process multiple segments, select their individual solid bodies or a single composite.", ["frameBodies"]);
-
-            definition.frameBodies = qContainedInCompositeParts(qNthElement(definition.frameBodies, 0));
-        }
+        // Expand any composite bodies in the selection to their constituent solid segments.
+        // Frames created with "merge tangent segments" produce a composite body containing
+        // all segment solids; qFlattenedCompositeParts handles any number of composites,
+        // mixed composite + individual solid selections, and is a no-op when no composites
+        // are present (the query resolves identically to the original solid-only selection).
+        definition.frameBodies = qFlattenedCompositeParts(definition.frameBodies);
 
         const frameBodiesArray = evaluateQuery(context, definition.frameBodies);
         if (size(frameBodiesArray) < 2)
@@ -386,12 +412,13 @@ export const kirigamiTubeBend = defineFeature(function(context is Context, id is
         const instantiator = newInstantiator(id + "bendConstructorInstances");
         var pendingInstances = [];
 
-        // The offset to the interior sweep line depends only on the frame profile dimensions
-        // (wall thickness).  All selected frame bodies are assumed to share the same profile,
-        // as required for a valid kirigami strip (mismatched profiles would produce incorrect
-        // geometry regardless).  Compute the offset once from the first joint and reuse the
-        // cached value for all subsequent joints to avoid redundant geometry evaluations.
+        // The offset to the interior sweep line and the true wall thickness both depend only
+        // on the frame profile dimensions.  All selected frame bodies are assumed to share the
+        // same profile, as required for a valid kirigami strip (mismatched profiles would
+        // produce incorrect geometry regardless).  Compute both values once from the first
+        // joint and reuse the cached values for all subsequent joints.
         var cachedOffsetToInteriorSweepLine = undefined;
+        var cachedTubeWallThickness = undefined;
 
         for (var instanceIndex = 0; instanceIndex < size(sharedJoints); instanceIndex += 1)
         {
@@ -418,8 +445,16 @@ export const kirigamiTubeBend = defineFeature(function(context is Context, id is
             // the wall thickness measured perpendicular to both the tube axis and the fold line.
             // Computed only for the first joint; all subsequent joints reuse the cached value.
             if (cachedOffsetToInteriorSweepLine == undefined)
+            {
                 cachedOffsetToInteriorSweepLine = computeOffsetToInteriorSweepLine(context,
                         jointData.frameBody, jointData.tubeAxis, apexCoordSystem, apexEdge);
+                // True wall thickness: perpendicular face-to-face distance between the outer
+                // planar swept wall face and its parallel inner planar swept wall face.
+                // Using direct face-to-face measurement (evDistance) rather than the
+                // edge-based offset avoids fillet inflation from interior corner fillets.
+                cachedTubeWallThickness = computeTubeWallThickness(context,
+                        jointData.frameBody, apexEdge);
+            }
 
             // toWorld(apexCoordSystem) is the Transform that carries geometry from the
             // constructor's local origin to the correct world-space position and orientation.
@@ -429,7 +464,12 @@ export const kirigamiTubeBend = defineFeature(function(context is Context, id is
                             "boxTubeWidth"             : jointDimensions.boxTubeWidth,
                             "miterAngle"               : jointDimensions.miterAngle,
                             "bendOutsideRadius"        : definition.bendOutsideRadius,
-                            "offsetToInteriorSweepLine": cachedOffsetToInteriorSweepLine
+                            "offsetToInteriorSweepLine": cachedOffsetToInteriorSweepLine,
+                            // tubeWallThickness: perpendicular distance between the outer planar
+                            // swept wall face and its parallel inner planar swept wall face,
+                            // measured face-to-face via evDistance.  This is the true tube wall
+                            // thickness, unaffected by interior or exterior corner fillets.
+                            "tubeWallThickness"        : cachedTubeWallThickness
                         },
                         "transform" : toWorld(apexCoordSystem),
                         "name" : "bend" ~ instanceIndex
@@ -506,12 +546,35 @@ export const kirigamiTubeBend = defineFeature(function(context is Context, id is
             const instance = pendingInstances[instanceIndex];
             const booleanCutId = id + ("booleanCut" ~ instanceIndex);
 
-            // Subtract the bend constructor from both frame bodies sharing this joint.
+            // Identify constructor bodies by Amalgam form attribute role.
+            // FORM_BODY_NEW_PART     : main kirigami notch tool (subtract + arc sweep).
+            // FORM_BODY_NEGATIVE_PART: pip pocket/subtraction body.
+            // FORM_BODY_POSITIVE_PART: pip post/union body.
+            // Pip bodies are handled separately after the arc sweep with joint-specific scopes.
+            const pipSubtractionBodiesForInstance = qBodyType(
+                    amalgamForm::qBodiesWithFormAttribute(instance.query, amalgamForm::FORM_BODY_NEGATIVE_PART),
+                    BodyType.SOLID);
+            const pipUnionBodiesForInstance = qBodyType(
+                    amalgamForm::qBodiesWithFormAttribute(instance.query, amalgamForm::FORM_BODY_POSITIVE_PART),
+                    BodyType.SOLID);
+            const allPipBodies = qUnion([pipSubtractionBodiesForInstance, pipUnionBodiesForInstance]);
+
+            // Main kirigami notch tool: explicitly the FORM_BODY_NEW_PART tagged solid when the
+            // constructor uses full Amalgam tagging.  Falls back to all-solid-bodies-minus-pip-bodies
+            // for older constructors that do not tag the main tool solid.
+            var kirigamiNotchToolBodies = qBodyType(
+                    amalgamForm::qBodiesWithFormAttribute(instance.query, amalgamForm::FORM_BODY_NEW_PART),
+                    BodyType.SOLID);
+            if (isQueryEmpty(context, kirigamiNotchToolBodies))
+                kirigamiNotchToolBodies = qSubtraction(qBodyType(instance.query, BodyType.SOLID), allPipBodies);
+
+            // Subtract the bend constructor notch tool from both frame bodies sharing this joint.
             // The instantiator may bring in non-solid bodies (e.g. mate connectors from the
-            // KirigamiBendConstructor part studio).  opBoolean requires all tool bodies to be
-            // solid, so filter instance.query to BodyType.SOLID before passing it as tools.
+            // KirigamiBendConstructor part studio).  kirigamiNotchToolBodies is already solid-
+            // filtered and scoped to the Amalgam-tagged notch tool, so no further filtering
+            // is needed here.
             opBoolean(context, booleanCutId, {
-                        "tools"         : qBodyType(instance.query, BodyType.SOLID),
+                        "tools"         : kirigamiNotchToolBodies,
                         "targets"       : instance.frameBodyTargets,
                         "operationType" : BooleanOperationType.SUBTRACTION,
                         "keepTools"     : true
@@ -577,7 +640,9 @@ export const kirigamiTubeBend = defineFeature(function(context is Context, id is
             // The KirigamiBendConstructor solid carries two arc edges (inner and outer bend
             // radius).  Both span the same angular sweep from frame body A's cut plane to
             // frame body B's cut plane, so either is a valid path for the fill sweep.
-            const solidToolBody = qBodyType(instance.query, BodyType.SOLID);
+            // kirigamiNotchToolBodies scopes the arc-edge and neutral fiber queries to the
+            // main notch tool only, excluding pip bodies.
+            const solidToolBody = kirigamiNotchToolBodies;
             const toolArcEdges = qGeometry(
                     qOwnedByBody(solidToolBody, EntityType.EDGE),
                     GeometryType.ARC);
@@ -649,6 +714,40 @@ export const kirigamiTubeBend = defineFeature(function(context is Context, id is
                         collectedNeutralFiberLengths[instanceIndex] = neutralFiberArcLength;
                     }
                 }
+            }
+
+            // Apply pip alignment geometry for this joint.
+            //
+            // Pip subtraction: cut the alignment pocket into BOTH frame bodies sharing this
+            // joint.  Both miter faces receive a matching recess so that the pip post seats
+            // correctly when the tube is assembled in the bent configuration.
+            //
+            // Pip union: merge the alignment post into the UPSTREAM (anchor-side) frame body
+            // only.  One post per joint protrudes from the upstream miter face toward the
+            // downstream body's pocket, providing positional alignment across the joint.
+            //
+            // These operations are performed after the arc sweep so that the swept bent-tube
+            // section bodies are generated from clean, unmodified miter-face profiles.
+            if (!isQueryEmpty(context, pipSubtractionBodiesForInstance))
+            {
+                opBoolean(context, id + ("pipSubtraction" ~ instanceIndex), {
+                            "tools"         : pipSubtractionBodiesForInstance,
+                            "targets"       : instance.frameBodyTargets,
+                            "operationType" : BooleanOperationType.SUBTRACTION,
+                            "keepTools"     : false
+                        });
+            }
+
+            if (!isQueryEmpty(context, pipUnionBodiesForInstance))
+            {
+                // Place the upstream frame body first in the union query so that the merged
+                // body inherits the frame body's identity (name, color, attributes).
+                opBoolean(context, id + ("pipUnion" ~ instanceIndex), {
+                            "tools"         : qUnion([frameBodiesArray[instance.upstreamBodyIndex],
+                                                      pipUnionBodiesForInstance]),
+                            "targets"       : frameBodiesArray[instance.upstreamBodyIndex],
+                            "operationType" : BooleanOperationType.UNION
+                        });
             }
 
             // Track all bodies brought in by this instance (solid tool body plus any non-solid
@@ -1011,19 +1110,119 @@ export const kirigamiTubeUnfold = defineFeature(function(context is Context, id 
                     qCreatedBy(bridgeExtrudeId, EntityType.BODY));
         }
 
+        // Build the flat body query before the union so that after opBoolean the same
+        // query resolves to the single surviving merged body, providing a stable handle
+        // to the flat strip result without relying on qCreatedBy behavior across a union.
+        // When no bridge bodies exist (degenerate case where every tool solid lacked arc
+        // edges), this resolves directly to the remaining constituent frame segment bodies.
+        const allFlatBodiesQuery = size(allBridgeBodies) > 0
+                ? qUnion(append(allBridgeBodies, qContainedInCompositeParts(compositeQuery)))
+                : qContainedInCompositeParts(compositeQuery);
+
         // Boolean union all bridge bodies with the remaining unfolded frame segment bodies
         // to produce a single continuous flat-layout solid.  Each bridge body shares coplanar
         // face boundaries with both its upstream and downstream frame segment neighbours, so
         // the union is geometrically clean with no interference or gaps between adjacent bodies.
         if (size(allBridgeBodies) > 0)
         {
-            // append(allBridgeBodies, ...) adds the single constituent-bodies Query as the
-            // last element, giving concatenateArrays a uniform array of Query values that
-            // qUnion can flatten into a single multi-body query for the boolean operation.
             opBoolean(context, id + "unionBridgesWithSegments", {
-                        "tools"         : qUnion(append(allBridgeBodies,
-                                                 qContainedInCompositeParts(compositeQuery))),
+                        "tools"         : allFlatBodiesQuery,
                         "operationType" : BooleanOperationType.UNION
+                    });
+        }
+
+        // -----------------------------------------------------------------------
+        // Flat-layout placement
+        // -----------------------------------------------------------------------
+        // Relocate the unfolded strip to the world origin, aligned along world X,
+        // and stack it in world Y above any strips produced by earlier
+        // kirigamiTubeUnfold features in the same Part Studio.
+        //
+        // Coordinate system convention for the flat strip:
+        //   X = joints[0].tubeAxis    (strip runs along this after all bends are reversed)
+        //   Z = joints[0].zAxis       (fold-line direction; the strip is flat in the XY plane)
+        //   Y = cross(Z, X)           (tube cross-section width direction; used for stacking)
+        //
+        // Every placed strip is tagged KIRIGAMI_FLAT_LAYOUT_ATTRIBUTE_NAME so that
+        // subsequent kirigamiTubeUnfold calls can locate all previously placed strips,
+        // evaluate their combined world bounding box, and place the new strip directly
+        // above them with a proportional separation gap.
+        // -----------------------------------------------------------------------
+        if (!isQueryEmpty(context, allFlatBodiesQuery) && jointCount > 0)
+        {
+            // The strip runs along the anchor body's tube axis after all bends are reversed.
+            // joints[0] is the first (anchor-side) joint; its tubeAxis is the direction
+            // the full flattened strip aligns with.
+            const stripAxis    = normalize(joints[0].tubeAxis);
+            const foldLineAxis = normalize(joints[0].zAxis);
+
+            // Evaluate the strip's bounding box expressed in the strip's local coordinate
+            // system (X = stripAxis, Y = cross(foldLineAxis, stripAxis), Z = foldLineAxis).
+            // Anchoring the cSys at WORLD_ORIGIN means the min/max corners returned are
+            // local coordinate offsets from WORLD_ORIGIN along the local axes.
+            const stripLocalCS = coordSystem(WORLD_ORIGIN, stripAxis, foldLineAxis);
+            const localBBox = evBox3d(context, {
+                        "topology" : allFlatBodiesQuery,
+                        "cSys"     : stripLocalCS,
+                        "tight"    : true
+                    });
+
+            // widthAxis = the Y axis of stripLocalCS = cross(foldLineAxis, stripAxis).
+            // This is the tube cross-section direction perpendicular to both the strip axis
+            // and the fold-line; this is the stacking direction in world Y after placement.
+            const widthAxis = normalize(cross(foldLineAxis, stripAxis));
+
+            // World-space position of the bounding box minimum corner in the strip's
+            // current (unaligned) orientation.  Used to anchor the source placement CS.
+            const worldMinCorner = WORLD_ORIGIN
+                    + localBBox.minCorner[0] * stripAxis
+                    + localBBox.minCorner[1] * widthAxis
+                    + localBBox.minCorner[2] * foldLineAxis;
+
+            // Find the stacking Y offset.  Query all solid bodies already tagged as
+            // flat-layout results by previous kirigamiTubeUnfold features in this Part Studio.
+            // The current strip has not been tagged yet, so it will not pollute this query.
+            const previousFlatStrips = qHasAttribute(
+                    qAllSolidBodies(), KIRIGAMI_FLAT_LAYOUT_ATTRIBUTE_NAME);
+            var stackingY = 0 * meter;
+            if (!isQueryEmpty(context, previousFlatStrips))
+            {
+                const previousBBox = evBox3d(context, {
+                            "topology" : previousFlatStrips,
+                            "tight"    : true
+                        });
+                // Separate this strip from the previous group by 10% of its own Y extent
+                // (tube cross-section size), with a minimum gap of 5 mm to ensure strips
+                // are always clearly separated even for very thin profiles.
+                const stripWidthExtent = localBBox.maxCorner[1] - localBBox.minCorner[1];
+                stackingY = previousBBox.maxCorner[1]
+                        + max(stripWidthExtent * 0.1, 5 * millimeter);
+            }
+
+            // Source placement coordinate system: anchored at the strip's current bounding
+            // box minimum corner, with X = stripAxis and Z = foldLineAxis.
+            const sourcePlacementCS = coordSystem(worldMinCorner, stripAxis, foldLineAxis);
+
+            // Target placement coordinate system: strip minimum corner at world
+            // (X = 0, Y = stackingY, Z = 0), strip axis aligned to world X,
+            // fold-line direction aligned to world Z.
+            const targetPlacementCS = coordSystem(
+                    stackingY * Y_DIRECTION,
+                    X_DIRECTION,
+                    Z_DIRECTION);
+
+            // Apply the alignment + stacking transform in a single opTransform.
+            opTransform(context, id + "flatLayoutPlacement", {
+                        "bodies"    : allFlatBodiesQuery,
+                        "transform" : toWorld(targetPlacementCS) * fromWorld(sourcePlacementCS)
+                    });
+
+            // Tag the placed strip so subsequent kirigamiTubeUnfold features can find it
+            // when computing their own stacking Y offset.
+            setAttribute(context, {
+                        "entities"  : allFlatBodiesQuery,
+                        "name"      : KIRIGAMI_FLAT_LAYOUT_ATTRIBUTE_NAME,
+                        "attribute" : { "isPlaced" : true }
                     });
         }
     });
@@ -1847,6 +2046,96 @@ function computeOffsetToInteriorSweepLine(context is Context, frameBody is Query
         return 0 * meter;
 
     return minimumPositiveDistance;
+}
+
+// Computes the true wall thickness of a hollow box tube profile as the perpendicular
+// face-to-face distance between the outer planar swept wall face and the nearest parallel
+// planar swept wall face on the same body.
+//
+// Strategy:
+//   1. Identify the outer wall face (the SWEPT_FACE adjacent to the apex edge).
+//   2. Collect every planar SWEPT_FACE on the body whose normal is parallel (or anti-parallel)
+//      to the outer wall normal into a query union, then subtract the outer wall face itself
+//      to leave only candidate inner / opposite-outer faces.
+//   3. Apply qClosestTo(candidates, outerWallFaceCenter) to select the single nearest face.
+//      The inner wall face directly behind the outer wall is always the closest candidate
+//      (distance = wall thickness t); the opposite inner face is W - t away and the opposite
+//      outer face is W away, so qClosestTo unambiguously picks the correct face regardless
+//      of iteration order, symmetric geometry, or centroid position.
+//   4. Return evDistance between the outer face and the selected inner face.
+//
+// Corner fillets (interior or exterior) are cylindrical faces excluded by the qGeometry(PLANE)
+// filter and have no influence on the result.
+//
+// Returns 0 * meter for solid tubes or profiles with no matching parallel face.
+//
+// @param context   : Active context.
+// @param frameBody : Query resolving to the single solid frame body.
+// @param apexEdge  : Query resolving to the outer apex edge on the frame body.
+// @returns ValueWithUnits (length) : True perpendicular wall thickness.
+function computeTubeWallThickness(context is Context, frameBody is Query,
+    apexEdge is Query) returns ValueWithUnits
+{
+    // Outer wall face: the SWEPT_FACE adjacent to the apex edge.
+    const outerWallFace = qNthElement(qHasAttributeWithValueMatching(
+                qAdjacent(apexEdge, AdjacencyType.EDGE, EntityType.FACE),
+                FRAME_ATTRIBUTE_TOPOLOGY_NAME,
+                { "topologyType" : FrameTopologyType.SWEPT_FACE }), 0);
+
+    if (isQueryEmpty(context, outerWallFace))
+        return 0 * meter;
+
+    const outerWallTangentPlane = evFaceTangentPlane(context, {
+                "face" : outerWallFace,
+                // vector(0.5, 0.5) is the parametric center (UV = 0.5, 0.5) of the face,
+                // giving a stable evaluation point well away from trimmed edges.
+                "parameter" : vector(0.5, 0.5)
+            });
+    const outerWallNormal = outerWallTangentPlane.normal;
+    const outerWallFaceCenter = outerWallTangentPlane.origin;
+
+    // Build a list of all planar SWEPT_FACEs whose normals are parallel (or anti-parallel)
+    // to the outer wall normal.  parallelVectors matches both orientations so this captures
+    // the inner wall face on the same side, the inner face on the opposite side, and both
+    // opposite outer faces.
+    const allPlanarSweptFaces = evaluateQuery(context, qHasAttributeWithValueMatching(
+                qOwnedByBody(frameBody, EntityType.FACE),
+                FRAME_ATTRIBUTE_TOPOLOGY_NAME,
+                { "topologyType" : FrameTopologyType.SWEPT_FACE })
+            ->qGeometry(GeometryType.PLANE));
+
+    var parallelFaceQueryList = [];
+    // Iterate all planar SWEPT_FACEs and retain those whose normals are parallel (or
+    // anti-parallel) to the outer wall normal — these are the candidate same-side inner,
+    // opposite-side inner, and opposite outer wall faces.
+    for (var sweptFace in allPlanarSweptFaces)
+    {
+        const faceTangentPlane = evFaceTangentPlane(context, {
+                    "face" : sweptFace,
+                    "parameter" : vector(0.5, 0.5)
+                });
+
+        if (parallelVectors(faceTangentPlane.normal, outerWallNormal))
+            parallelFaceQueryList = append(parallelFaceQueryList, sweptFace);
+    }
+
+    if (size(parallelFaceQueryList) == 0)
+        return 0 * meter;
+
+    // Remove the outer wall face itself, leaving only the candidate parallel faces.
+    const candidateInnerFaces = qSubtraction(qUnion(parallelFaceQueryList), outerWallFace);
+    if (isQueryEmpty(context, candidateInnerFaces))
+        return 0 * meter;
+
+    // qClosestTo selects the single parallel face nearest to the outer wall face center.
+    // For a hollow box tube this is always the inner wall face on the same side (at distance t),
+    // never the opposite inner face (at distance W - t) or opposite outer face (at distance W).
+    const nearestInnerFace = qClosestTo(candidateInnerFaces, outerWallFaceCenter);
+
+    return evDistance(context, {
+                "side0" : outerWallFace,
+                "side1" : nearestInnerFace
+            }).distance;
 }
 
 // Computes the neutral fiber arc length for one bend joint.
