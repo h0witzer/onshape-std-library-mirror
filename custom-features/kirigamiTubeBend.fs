@@ -128,18 +128,17 @@ export predicate canBeKirigamiBendAttribute(value)
  *                       neutralFiberArcLength {ValueWithUnits} : Arc length at the bend neutral fiber,
  *                                                                or undefined if the measurement was not
  *                                                                available for this joint.
- *                       upstreamSegmentIndex  {number}         : segmentIndex of the anchor-side frame
- *                                                                segment body at this joint.  Matches the
- *                                                                KirigamiSegmentAttribute.segmentIndex value
- *                                                                of the body that contributes the upstream
- *                                                                cut face (the body that does not move when
- *                                                                this joint is unfolded).
- *                       downstreamSegmentIndex {number}        : segmentIndex of the downstream frame
- *                                                                segment body at this joint.  Matches the
- *                                                                KirigamiSegmentAttribute.segmentIndex of
- *                                                                the body that moves when this joint is
- *                                                                unfolded and forms the bridge between this
- *                                                                joint and the next joint downstream.
+ *                       upstreamIsPrimaryBody {boolean}        : True when the anchor-side (upstream) body
+ *                                                                at this joint is the jointBodyIndices[0]
+ *                                                                body -- i.e. the body whose cut faces carry
+ *                                                                KirigamiBendCutFaceAttribute.isPrimaryBody
+ *                                                                = true for this instanceIndex.  False when
+ *                                                                the upstream body is jointBodyIndices[1]
+ *                                                                (isPrimaryBody = false).  kirigamiTubeUnfold
+ *                                                                uses this flag to derive the upstream and
+ *                                                                downstream bodies entirely from cut-face
+ *                                                                attribute queries -- no raw segment indices
+ *                                                                are stored or read.
  */
 export type KirigamiStripAttribute typecheck canBeKirigamiStripAttribute;
 
@@ -158,9 +157,12 @@ export predicate canBeKirigamiStripAttribute(value)
  *
  * Fields:
  *   instanceIndex {number}  : Zero-based joint index that produced this cut face.
- *   isPrimaryBody {boolean} : True when this face belongs to the upstream (jointBodyIndices[0])
- *                             frame body at the joint; false when it belongs to the downstream
- *                             (jointBodyIndices[1]) body.
+ *   isPrimaryBody {boolean} : True when this face belongs to the jointBodyIndices[0] frame body
+ *                             at this joint (the first body discovered to share the outer apex edge
+ *                             midpoint during collectSharedApexEdges).  False when it belongs to
+ *                             jointBodyIndices[1].  The KirigamiStripAttribute.joints[instanceIndex]
+ *                             .upstreamIsPrimaryBody flag indicates whether the isPrimaryBody=true
+ *                             body is also the anchor (upstream) body for unfolding purposes.
  */
 export type KirigamiBendCutFaceAttribute typecheck canBeKirigamiBendCutFaceAttribute;
 
@@ -194,15 +196,14 @@ export predicate canBeKirigamiBentSectionAttribute(value)
  * after the frameBodiesArray is evaluated.  Survives opCreateCompositePart and remains
  * on the constituent bodies of the resulting composite.
  *
- * kirigamiTubeUnfold reads the upstreamSegmentIndex and downstreamSegmentIndex fields
- * stored in each KirigamiStripAttribute joint entry and queries for constituent bodies
- * by matching segmentIndex -- no spatial queries are required.
+ * This attribute is informational / debug only.  kirigamiTubeUnfold derives upstream and
+ * downstream body identity entirely from KirigamiBendCutFaceAttribute queries keyed on
+ * instanceIndex and isPrimaryBody, making it robust to body-count changes between the
+ * fold and unfold steps.
  *
  * Fields:
  *   segmentIndex {number} : Zero-based index of this body in the frameBodiesArray
- *                           evaluated when kirigamiTubeBend ran.  Matches the values
- *                           stored in KirigamiStripAttribute joint entries as
- *                           upstreamSegmentIndex and downstreamSegmentIndex.
+ *                           evaluated when kirigamiTubeBend ran.
  */
 export type KirigamiSegmentAttribute typecheck canBeKirigamiSegmentAttribute;
 
@@ -287,10 +288,9 @@ export const kirigamiTubeBend = defineFeature(function(context is Context, id is
 
         // Tag each frame segment body with its zero-based index in frameBodiesArray.
         // This attribute persists through opCreateCompositePart and into the constituent bodies
-        // of the resulting composite.  kirigamiTubeUnfold reads the upstreamSegmentIndex and
-        // downstreamSegmentIndex values stored per joint in KirigamiStripAttribute and queries
-        // for the matching constituent bodies using qHasAttributeWithValueMatching -- no spatial
-        // queries are needed in the unfold script.
+        // of the resulting composite.  It is retained for informational / debug purposes;
+        // kirigamiTubeUnfold no longer reads it for body identity -- body lookup is now
+        // driven entirely by KirigamiBendCutFaceAttribute.isPrimaryBody queries.
         for (var segmentIdx = 0; segmentIdx < size(frameBodiesArray); segmentIdx += 1)
         {
             setAttribute(context, {
@@ -702,11 +702,12 @@ export const kirigamiTubeBend = defineFeature(function(context is Context, id is
                             "tubeAxis"               : instance.tubeAxis,
                             "miterAngle"             : instance.miterAngle,
                             "neutralFiberArcLength"  : collectedNeutralFiberLengths[i],
-                            // upstreamBodyIndex and downstreamBodyIndex come from the chain
-                            // traversal in collectSharedApexEdges, where the upstream body is
-                            // on the anchor side and the downstream body is on the free side.
-                            "upstreamSegmentIndex"   : instance.upstreamBodyIndex,
-                            "downstreamSegmentIndex" : instance.downstreamBodyIndex
+                            // upstreamIsPrimaryBody: true when the anchor (upstream) body for this
+                            // joint is jointBodyIndices[0] -- the body whose cut faces carry
+                            // isPrimaryBody=true in KirigamiBendCutFaceAttribute.  kirigamiTubeUnfold
+                            // uses this flag to derive upstream/downstream bodies from cut-face
+                            // attribute queries rather than from raw segment indices.
+                            "upstreamIsPrimaryBody"  : (instance.upstreamBodyIndex == instance.jointBodyIndices[0])
                         });
             }
             setAttribute(context, {
@@ -730,21 +731,21 @@ export const kirigamiTubeBend = defineFeature(function(context is Context, id is
  *      faces that remain on the adjacent frame segments are used later as sweep profiles for
  *      straight bridge sections.
  *
- *   2. Pre-compute one upstream-body query and one downstream-body query per joint by reading
- *      the upstreamSegmentIndex and downstreamSegmentIndex values baked into each joint entry
- *      of KirigamiStripAttribute during kirigamiTubeBend.  Each body is found via
- *      qHasAttributeWithValueMatching against KIRIGAMI_SEGMENT_ATTRIBUTE_NAME.  No spatial
- *      queries are used -- the classification is fully determined by attributes stored before
- *      any geometry existed in its bent state.
+ *   2. Pre-compute one upstream-body query and one downstream-body query per joint by
+ *      querying KirigamiBendCutFaceAttribute faces with { instanceIndex, isPrimaryBody }
+ *      matching the upstreamIsPrimaryBody flag baked into each joint entry of
+ *      KirigamiStripAttribute.  qOwnerBody of the matched faces gives the body.  No raw
+ *      segment indices are read -- the classification is stable across any body-count
+ *      changes that occur between the fold and unfold steps.
  *
  *   3. For each joint i, processing from last to first:
- *        a. Compute the downstream body set by walking the chain forward from joint i's
- *           downstreamSegmentIndex: find each subsequent joint whose upstreamSegmentIndex
- *           equals the current segment and follow it to the next downstreamSegmentIndex,
- *           repeating until no further joint exists.  Only bodies in this chain segment are
- *           included, so disconnected sub-chains (e.g. when tangent perpendicular joints
- *           between collinear frame segments are filtered out) are never accidentally moved
- *           by a transform that belongs to a different sub-chain.
+ *        a. Compute the downstream body set by walking the pre-built joint chain forward
+ *           from joint i: starting with joint i's downstream body, follow
+ *           nextJointIndexFromJoint[i] (built by qIntersection comparisons of body
+ *           queries -- no segment indices) until the chain ends.  Only bodies in this
+ *           connected sub-chain are included, so disconnected sub-chains (e.g. when tangent
+ *           perpendicular joints between collinear frame segments are filtered out) are never
+ *           accidentally moved by a transform that belongs to a different sub-chain.
  *        b. Find the upstream and downstream cut faces for this joint by querying
  *           KIRIGAMI_CUT_FACE_ATTRIBUTE_NAME faces owned by the upstream/downstream body
  *           and filtered to instanceIndex == i.
@@ -807,81 +808,114 @@ export const kirigamiTubeUnfold = defineFeature(function(context is Context, id 
         if (!isQueryEmpty(context, bentSectionBodies))
             opDeleteBodies(context, id + "deleteBentSections", { "entities" : bentSectionBodies });
 
-        // Pre-compute one upstream-body query and one downstream-body query per joint by
-        // reading the baked segment indices from KirigamiStripAttribute.  This is done once
-        // before the transform loop so every body lookup in the loop is a simple attribute
-        // query -- no spatial queries (qInFrontOfPlane) are needed anywhere in the unfold.
-        var upstreamBodyPerJoint   = makeArray(jointCount, qNothing());
-        var downstreamBodyPerJoint = makeArray(jointCount, qNothing());
+        // All cut-face-tagged faces across the remaining constituent bodies.  Computed
+        // after bent section deletion so only the relevant frame segment faces are included.
+        const allCutFaces = qHasAttribute(
+                qOwnedByBody(allConstituentBodies, EntityType.FACE),
+                KIRIGAMI_CUT_FACE_ATTRIBUTE_NAME);
+
+        // Per-joint: upstream and downstream cut-face queries and body queries derived
+        // entirely from KirigamiBendCutFaceAttribute.isPrimaryBody and the
+        // upstreamIsPrimaryBody flag baked into each joint entry.
+        //
+        // upstreamIsPrimaryBody = true  →  anchor body is the isPrimaryBody=true body.
+        // upstreamIsPrimaryBody = false →  anchor body is the isPrimaryBody=false body.
+        //
+        // No KirigamiSegmentAttribute reads.  Body identity is stable across any body-count
+        // changes that occur between the fold and unfold steps.
+        var upstreamCutFacesPerJoint   = makeArray(jointCount, qNothing());
+        var downstreamCutFacesPerJoint = makeArray(jointCount, qNothing());
+        var upstreamBodyPerJoint       = makeArray(jointCount, qNothing());
+        var downstreamBodyPerJoint     = makeArray(jointCount, qNothing());
+
         for (var idx = 0; idx < jointCount; idx += 1)
         {
             const joint = joints[idx];
-            upstreamBodyPerJoint[idx] = qHasAttributeWithValueMatching(allConstituentBodies,
-                    KIRIGAMI_SEGMENT_ATTRIBUTE_NAME, { "segmentIndex" : joint.upstreamSegmentIndex });
-            downstreamBodyPerJoint[idx] = qHasAttributeWithValueMatching(allConstituentBodies,
-                    KIRIGAMI_SEGMENT_ATTRIBUTE_NAME, { "segmentIndex" : joint.downstreamSegmentIndex });
+            const downstreamIsPrimaryBody = !joint.upstreamIsPrimaryBody;
+            upstreamCutFacesPerJoint[idx] = qHasAttributeWithValueMatching(allCutFaces,
+                    KIRIGAMI_CUT_FACE_ATTRIBUTE_NAME,
+                    { "instanceIndex" : idx, "isPrimaryBody" : joint.upstreamIsPrimaryBody });
+            downstreamCutFacesPerJoint[idx] = qHasAttributeWithValueMatching(allCutFaces,
+                    KIRIGAMI_CUT_FACE_ATTRIBUTE_NAME,
+                    { "instanceIndex" : idx, "isPrimaryBody" : downstreamIsPrimaryBody });
+            upstreamBodyPerJoint[idx]   = qOwnerBody(upstreamCutFacesPerJoint[idx]);
+            downstreamBodyPerJoint[idx] = qOwnerBody(downstreamCutFacesPerJoint[idx]);
         }
 
-        // Pre-build a lookup from each joint's upstreamSegmentIndex to its position in the
-        // joints array.  Used by the chain-walking downstream-body computation to find the
-        // next joint in a sub-chain in O(1) rather than scanning the full array each time.
-        // String keys are used because FeatureScript map lookup requires stable key types.
-        var upstreamSegmentToJointIndex = {};
-        for (var idx = 0; idx < jointCount; idx += 1)
-            upstreamSegmentToJointIndex["" ~ joints[idx].upstreamSegmentIndex] = idx;
+        // Pre-build joint chain connectivity in O(n).
+        // nextJointIndexFromJoint[i] is the index of the joint whose upstream body is the same
+        // as joint i's downstream body, or -1 if no such joint exists.
+        //
+        // For each joint j, the upstream body is examined: if it also owns cut faces tagged for
+        // a DIFFERENT joint index i (as that joint's downstream body), then joint j follows joint
+        // i in the chain, so nextJointIndexFromJoint[i] = j.
+        //
+        // Invariant: a bridge body (one that is both the downstream body at joint i and the
+        // upstream body at joint j) always carries cut faces for exactly two joint indices -- one
+        // as downstream body at joint i and one as upstream body at joint j.  The anchor body and
+        // free-end terminal body carry cut faces for only one joint index, so they contribute no
+        // chain successor link.  The first face with instanceIndex != j identifies joint i.
+        //
+        // No segment indices are needed.  qIntersection is not required -- the successor is
+        // determined purely by reading KirigamiBendCutFaceAttribute.instanceIndex values on the
+        // upstream body's cut faces.  Each body is upstream for at most one joint (guaranteed by
+        // the chain traversal in collectSharedApexEdges), so there is no redundancy across joints.
+        var nextJointIndexFromJoint = makeArray(jointCount, -1);
+        for (var j = 0; j < jointCount; j += 1)
+        {
+            const upstreamBodyCutFaces = evaluateQuery(context,
+                    qHasAttribute(
+                            qOwnedByBody(upstreamBodyPerJoint[j], EntityType.FACE),
+                            KIRIGAMI_CUT_FACE_ATTRIBUTE_NAME));
+            for (var cutFaceEntity in upstreamBodyCutFaces)
+            {
+                const cutFaceAttr = getAttribute(context, {
+                            "entity" : cutFaceEntity,
+                            "name"   : KIRIGAMI_CUT_FACE_ATTRIBUTE_NAME
+                        });
+                if (cutFaceAttr != undefined && cutFaceAttr.instanceIndex != j)
+                {
+                    // This cut face belongs to the joint for which the upstream body of j is
+                    // the DOWNSTREAM body -- so joint j follows that joint in the chain.
+                    nextJointIndexFromJoint[cutFaceAttr.instanceIndex] = j;
+                    break;
+                }
+            }
+        }
 
         // Process joints last-to-first.
-        // For each joint i the downstream body set is built by walking the joint chain
-        // forward from joint i's downstream segment: visit each segment reachable through
-        // subsequent joints whose upstreamSegmentIndex matches the current segment.  This
-        // scopes each transform to its own connected sub-chain and prevents bodies from
-        // disconnected sub-chains (caused by filtered tangent or perpendicular joints between
-        // collinear frame segments) from being accidentally moved by an unrelated transform.
+        // For each joint i the downstream body set is built by following the pre-built
+        // nextJointIndexFromJoint chain from joint i's own downstream body forward.
+        // This scopes each transform to its own connected sub-chain and prevents bodies from
+        // disconnected sub-chains from being accidentally moved by an unrelated transform.
         for (var i = jointCount - 1; i >= 0; i -= 1)
         {
             const joint = joints[i];
 
-            // Upstream cut faces: faces on the anchor-side body tagged for this joint.
+            // Upstream and downstream cut faces come from the pre-computed per-joint arrays.
             // A body participates in multiple joints (e.g. the bridge segment between joint i
-            // and joint i+1), so filtering by instanceIndex isolates the correct pair of faces.
-            const upstreamCutFacesQuery = qHasAttributeWithValueMatching(
-                    qOwnedByBody(upstreamBodyPerJoint[i], EntityType.FACE),
-                    KIRIGAMI_CUT_FACE_ATTRIBUTE_NAME,
-                    { "instanceIndex" : i });
-
-            const downstreamCutFacesQuery = qHasAttributeWithValueMatching(
-                    qOwnedByBody(downstreamBodyPerJoint[i], EntityType.FACE),
-                    KIRIGAMI_CUT_FACE_ATTRIBUTE_NAME,
-                    { "instanceIndex" : i });
+            // and joint i+1), so the instanceIndex dimension of the query isolates the correct
+            // pair of faces.
+            const upstreamCutFacesQuery   = upstreamCutFacesPerJoint[i];
+            const downstreamCutFacesQuery = downstreamCutFacesPerJoint[i];
 
             if (isQueryEmpty(context, upstreamCutFacesQuery) ||
                     isQueryEmpty(context, downstreamCutFacesQuery))
                 continue;
 
-            // Build the downstream body set by walking the joint chain forward from joint i's
-            // downstream segment.  Starting at joints[i].downstreamSegmentIndex, append the
-            // matching body query, then use upstreamSegmentToJointIndex to find the next joint
-            // in this sub-chain (if any) and continue from its downstream segment.
-            // Stop when no further joint claims the current segment as its upstream.
-            //
-            // This correctly scopes the transform to the current sub-chain regardless of
-            // whether the full strip is a single connected chain or multiple disconnected
-            // sub-chains separated by filtered joints.
-            var downstreamBodyQueryList = [];
-            var currentSegmentIndex = joint.downstreamSegmentIndex;
-            while (currentSegmentIndex != -1)
+            // Build the downstream body set by following the pre-built joint chain forward.
+            // Start with joint i's own downstream body, then walk through subsequent joints
+            // via nextJointIndexFromJoint until the chain ends.
+            // chainStepsRemaining guards against infinite loops in case of malformed
+            // connectivity data; a valid strip has at most jointCount bodies downstream.
+            var downstreamBodyQueryList = [downstreamBodyPerJoint[i]];
+            var nextJoint = nextJointIndexFromJoint[i];
+            var chainStepsRemaining = jointCount;
+            while (nextJoint != -1 && chainStepsRemaining > 0)
             {
-                downstreamBodyQueryList = append(downstreamBodyQueryList,
-                        qHasAttributeWithValueMatching(allConstituentBodies,
-                                KIRIGAMI_SEGMENT_ATTRIBUTE_NAME,
-                                { "segmentIndex" : currentSegmentIndex }));
-
-                // Follow the chain to the next joint in this sub-chain, if one exists.
-                const nextJointIndex = upstreamSegmentToJointIndex["" ~ currentSegmentIndex];
-                if (nextJointIndex != undefined)
-                    currentSegmentIndex = joints[nextJointIndex].downstreamSegmentIndex;
-                else
-                    currentSegmentIndex = -1;
+                downstreamBodyQueryList = append(downstreamBodyQueryList, downstreamBodyPerJoint[nextJoint]);
+                nextJoint = nextJointIndexFromJoint[nextJoint];
+                chainStepsRemaining -= 1;
             }
             const downstreamBodies = qUnion(downstreamBodyQueryList);
 
