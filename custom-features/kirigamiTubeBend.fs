@@ -5,6 +5,7 @@ import(path : "onshape/std/frameAttributes.fs", version : "2909.0");
 import(path : "onshape/std/frameUtils.fs", version : "2909.0");
 // modifiedFormedUtils.fs: Amalgam form-body attribute helpers (FORM_BODY_POSITIVE_PART /
 // FORM_BODY_NEGATIVE_PART) used to query Amalgam-tagged pip bodies from the constructor.
+// Version hash matches the import used in custom-features/amalgamate/amalgamate.fs.
 amalgamForm::import(path : "5418313fd7f629d9c7f1ac10", version : "b97acafda22e3375bf349519");
 // External Part Studio: Kirigami Bend Constructor.  This is a template part studio whose
 // geometry represents the unfolded bend tab inserted at each miter joint.  One instance is
@@ -716,6 +717,7 @@ export const kirigamiTubeBend = defineFeature(function(context is Context, id is
                 opBoolean(context, id + ("pipUnion" ~ instanceIndex), {
                             "tools"         : qUnion([frameBodiesArray[instance.upstreamBodyIndex],
                                                       pipUnionBodiesForInstance]),
+                            "targets"       : frameBodiesArray[instance.upstreamBodyIndex],
                             "operationType" : BooleanOperationType.UNION
                         });
             }
