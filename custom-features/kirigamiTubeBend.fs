@@ -8,7 +8,7 @@ import(path : "onshape/std/frameUtils.fs", version : "2909.0");
 // derived into the active studio per unique joint; the downstream flat-layout script locates
 // each instance via KirigamiBendAttribute and booleans the unfolded segments together for
 // laser-cut export.
-KirigamiBendConstructor::import(path : "1173cc57cdf5a7d688426b78", version : "e932c34342b55c79ca83a38e");
+KirigamiBendConstructor::import(path : "1173cc57cdf5a7d688426b78", version : "421946e261624f1b440edf24");
 
 // Named key used when attaching KirigamiBendAttribute to instantiated bodies.
 const KIRIGAMI_BEND_ATTRIBUTE_NAME = "kirigamiBendData";
@@ -29,10 +29,9 @@ const KIRIGAMI_CUT_FACE_ATTRIBUTE_NAME = "kirigamiBendCutFaceData";
 const KIRIGAMI_BENT_SECTION_ATTRIBUTE_NAME = "kirigamiBentSectionData";
 
 // Named key used when tagging each frame segment body with its zero-based index in the
-// frameBodiesArray evaluated at kirigamiTubeBend execution time.  This attribute is stored
-// for reference and debugging; kirigamiTubeUnfold no longer uses it to identify upstream
-// and downstream bodies (it uses KirigamiBendCutFaceAttribute.isPrimaryBody instead, which
-// is a face-level attribute that survives opBoolean merges of frame segments).
+// frameBodiesArray evaluated at kirigamiTubeBend execution time.  kirigamiTubeUnfold
+// uses this to locate the upstream and downstream body at each joint directly from the
+// stored KirigamiStripAttribute segment indices, with no spatial queries at all.
 const KIRIGAMI_SEGMENT_ATTRIBUTE_NAME = "kirigamiSegmentData";
 
 /**
@@ -130,17 +129,17 @@ export predicate canBeKirigamiBendAttribute(value)
  *                                                                or undefined if the measurement was not
  *                                                                available for this joint.
  *                       upstreamSegmentIndex  {number}         : segmentIndex of the anchor-side frame
- *                                                                segment body at this joint, recorded for
- *                                                                reference and debugging.  No longer read
- *                                                                by kirigamiTubeUnfold, which derives body
- *                                                                identity directly from the isPrimaryBody
- *                                                                flag on KirigamiBendCutFaceAttribute faces
- *                                                                (face-level attributes survive opBoolean
- *                                                                merges; body-level attributes do not).
+ *                                                                segment body at this joint.  Matches the
+ *                                                                KirigamiSegmentAttribute.segmentIndex value
+ *                                                                of the body that contributes the upstream
+ *                                                                cut face (the body that does not move when
+ *                                                                this joint is unfolded).
  *                       downstreamSegmentIndex {number}        : segmentIndex of the downstream frame
- *                                                                segment body at this joint, recorded for
- *                                                                reference and debugging.  See note on
- *                                                                upstreamSegmentIndex above.
+ *                                                                segment body at this joint.  Matches the
+ *                                                                KirigamiSegmentAttribute.segmentIndex of
+ *                                                                the body that moves when this joint is
+ *                                                                unfolded and forms the bridge between this
+ *                                                                joint and the next joint downstream.
  */
 export type KirigamiStripAttribute typecheck canBeKirigamiStripAttribute;
 
@@ -195,15 +194,15 @@ export predicate canBeKirigamiBentSectionAttribute(value)
  * after the frameBodiesArray is evaluated.  Survives opCreateCompositePart and remains
  * on the constituent bodies of the resulting composite.
  *
- * Stored for reference and debugging only.  kirigamiTubeUnfold no longer reads
- * segmentIndex to locate upstream/downstream bodies -- it uses the isPrimaryBody flag
- * on KirigamiBendCutFaceAttribute faces instead, which is a face-level attribute that
- * survives opBoolean merges of frame segments (body-level attributes may be lost or
- * ambiguous after a merge).
+ * kirigamiTubeUnfold reads the upstreamSegmentIndex and downstreamSegmentIndex fields
+ * stored in each KirigamiStripAttribute joint entry and queries for constituent bodies
+ * by matching segmentIndex -- no spatial queries are required.
  *
  * Fields:
  *   segmentIndex {number} : Zero-based index of this body in the frameBodiesArray
- *                           evaluated when kirigamiTubeBend ran.
+ *                           evaluated when kirigamiTubeBend ran.  Matches the values
+ *                           stored in KirigamiStripAttribute joint entries as
+ *                           upstreamSegmentIndex and downstreamSegmentIndex.
  */
 export type KirigamiSegmentAttribute typecheck canBeKirigamiSegmentAttribute;
 
@@ -731,28 +730,20 @@ export const kirigamiTubeBend = defineFeature(function(context is Context, id is
  *      faces that remain on the adjacent frame segments are used later as sweep profiles for
  *      straight bridge sections.
  *
- *   2. Pre-compute upstream and downstream body queries per joint by locating the bodies that
- *      own KirigamiBendCutFaceAttribute faces tagged isPrimaryBody=true (upstream) and
- *      isPrimaryBody=false (downstream) for each joint instanceIndex.  This approach does NOT
- *      use KirigamiSegmentAttribute (body-level) -- face-level attributes survive opBoolean
- *      merges of frame segments applied between fold and unfold, so even merged bodies still
- *      expose correctly tagged cut faces and the unfold continues to function.
+ *   2. Pre-compute one upstream-body query and one downstream-body query per joint by reading
+ *      the upstreamSegmentIndex and downstreamSegmentIndex values baked into each joint entry
+ *      of KirigamiStripAttribute during kirigamiTubeBend.  Each body is found via
+ *      qHasAttributeWithValueMatching against KIRIGAMI_SEGMENT_ATTRIBUTE_NAME.  No spatial
+ *      queries are used -- the classification is fully determined by attributes stored before
+ *      any geometry existed in its bent state.
  *
- *   3. Assign connected-component IDs: two joints belong to the same component when they share
- *      at least one constituent body (upstream of one == upstream/downstream of another, etc.).
- *      Disconnected chain segments appended by the fallback traversal path form separate
- *      components.  Pre-compute, per joint, the union of all bodies in its component
- *      (componentBodySet).
- *
- *   4. For each joint i, processing from last to first:
- *        a. Build the component-scoped anchor set: the union of upstreamBodyPerJoint[j] for
- *           all j <= i that belong to the same component as joint i.
- *           downstreamBodies = componentBodySet[i] minus anchorSet.
- *           Bodies from other disconnected components are excluded from both sets, preventing
- *           them from being incorrectly moved or pinned at this step.
- *        b. Find the upstream and downstream cut faces by querying KirigamiBendCutFaceAttribute
- *           across all constituent faces with instanceIndex == i and the appropriate isPrimaryBody
- *           flag.  Body identity is not needed -- the face attributes carry the classification.
+ *   3. For each joint i, processing from last to first:
+ *        a. Build the anchor set: the union of upstreamBodyPerJoint[j] for j = 0..i.
+ *           These bodies must not move at this step.
+ *           downstreamBodies = allConstituentBodies minus anchorSet.
+ *        b. Find the upstream and downstream cut faces for this joint by querying
+ *           KIRIGAMI_CUT_FACE_ATTRIBUTE_NAME faces owned by the upstream/downstream body
+ *           and filtered to instanceIndex == i.
  *        c. Evaluate the upstream and downstream cut face centroids and outward normals.
  *        d. Build source and target coordinate systems:
  *             sourceCS = coordSystem(downstreamFaceCentroid, zAxis, downstreamFaceNormal)
@@ -811,111 +802,53 @@ export const kirigamiTubeUnfold = defineFeature(function(context is Context, id 
         if (!isQueryEmpty(context, bentSectionBodies))
             opDeleteBodies(context, id + "deleteBentSections", { "entities" : bentSectionBodies });
 
-        // Pre-compute upstream and downstream body queries per joint from the isPrimaryBody flag
-        // painted on each cut face during kirigamiTubeBend.  Face-level attributes survive
-        // opBoolean merges of frame segments, so this approach remains correct even when the
-        // user merges frame bodies between fold and unfold.  KirigamiSegmentAttribute (body-level)
-        // is intentionally not used here: after a boolean merge the merged body retains at most
-        // one segmentIndex, making the other body's joint lookups silently resolve to nothing.
-        const allConstituentFaces = qOwnedByBody(allConstituentBodies, EntityType.FACE);
+        // Pre-compute one upstream-body query and one downstream-body query per joint by
+        // reading the baked segment indices from KirigamiStripAttribute.  This is done once
+        // before the transform loop so every body lookup in the loop is a simple attribute
+        // query -- no spatial queries (qInFrontOfPlane) are needed anywhere in the unfold.
         var upstreamBodyPerJoint   = makeArray(jointCount, qNothing());
         var downstreamBodyPerJoint = makeArray(jointCount, qNothing());
         for (var idx = 0; idx < jointCount; idx += 1)
         {
-            upstreamBodyPerJoint[idx] = qOwnerBody(qHasAttributeWithValueMatching(
-                    allConstituentFaces, KIRIGAMI_CUT_FACE_ATTRIBUTE_NAME,
-                    { "instanceIndex" : idx, "isPrimaryBody" : true }));
-            downstreamBodyPerJoint[idx] = qOwnerBody(qHasAttributeWithValueMatching(
-                    allConstituentFaces, KIRIGAMI_CUT_FACE_ATTRIBUTE_NAME,
-                    { "instanceIndex" : idx, "isPrimaryBody" : false }));
-        }
-
-        // Assign each joint a connected-component ID.  Two joints belong to the same component
-        // when they share at least one constituent body (any pairing of their upstream/downstream
-        // bodies resolves to the same entity via qIntersection).  Disconnected chain segments
-        // appended by the fallback traversal path in collectSharedApexEdges form separate
-        // components and must not interfere with each other's anchor or downstream sets.
-        var jointComponentId = makeArray(jointCount, -1);
-        var nextComponentId  = 0;
-        for (var idx = 0; idx < jointCount; idx += 1)
-        {
-            var assignedComponent = -1;
-            for (var prevIdx = 0; prevIdx < idx && assignedComponent == -1; prevIdx += 1)
-            {
-                // Four overlap tests cover all body-pairing permutations between this joint and
-                // a previously classified joint.  qIntersection of two single-body queries
-                // returns that body when they resolve to the same entity, or nothing otherwise.
-                if (!isQueryEmpty(context, qIntersection([upstreamBodyPerJoint[idx],  downstreamBodyPerJoint[prevIdx]])) ||
-                    !isQueryEmpty(context, qIntersection([downstreamBodyPerJoint[idx], upstreamBodyPerJoint[prevIdx]])) ||
-                    !isQueryEmpty(context, qIntersection([upstreamBodyPerJoint[idx],   upstreamBodyPerJoint[prevIdx]])) ||
-                    !isQueryEmpty(context, qIntersection([downstreamBodyPerJoint[idx], downstreamBodyPerJoint[prevIdx]])))
-                {
-                    assignedComponent = jointComponentId[prevIdx];
-                }
-            }
-            if (assignedComponent == -1)
-            {
-                jointComponentId[idx] = nextComponentId;
-                nextComponentId       += 1;
-            }
-            else
-            {
-                jointComponentId[idx] = assignedComponent;
-            }
-        }
-
-        // Pre-compute, per joint, the union of all constituent bodies that belong to the same
-        // connected component as that joint.  The unfold at each step operates only within this
-        // component-scoped body set so that disconnected segment bodies are never moved or held
-        // as anchors during another component's transforms.
-        var componentBodySetPerJoint = makeArray(jointCount, qNothing());
-        for (var idx = 0; idx < jointCount; idx += 1)
-        {
-            var componentBodyQueries = [];
-            for (var jdx = 0; jdx < jointCount; jdx += 1)
-            {
-                if (jointComponentId[jdx] == jointComponentId[idx])
-                {
-                    componentBodyQueries = append(componentBodyQueries, upstreamBodyPerJoint[jdx]);
-                    componentBodyQueries = append(componentBodyQueries, downstreamBodyPerJoint[jdx]);
-                }
-            }
-            componentBodySetPerJoint[idx] = qUnion(componentBodyQueries);
+            const joint = joints[idx];
+            upstreamBodyPerJoint[idx] = qHasAttributeWithValueMatching(allConstituentBodies,
+                    KIRIGAMI_SEGMENT_ATTRIBUTE_NAME, { "segmentIndex" : joint.upstreamSegmentIndex });
+            downstreamBodyPerJoint[idx] = qHasAttributeWithValueMatching(allConstituentBodies,
+                    KIRIGAMI_SEGMENT_ATTRIBUTE_NAME, { "segmentIndex" : joint.downstreamSegmentIndex });
         }
 
         // Process joints last-to-first.
-        // At each joint i the anchor set = upstream bodies of joints j <= i that share the same
-        // connected component as joint i.  The downstream set = all bodies in that component
-        // minus the anchor set.  Scoping both sets to the component prevents bodies from
-        // disconnected chain segments from being dragged along by this step's transform.
+        // At each joint i the anchor set = upstreamBodyPerJoint[0..i].  The downstream set =
+        // allConstituentBodies minus the anchor set.  This works for any frame topology
+        // (doubling-back, U-shapes, S-shapes) because body identity comes from baked attributes,
+        // not from where bodies currently sit in world space.
         for (var i = jointCount - 1; i >= 0; i -= 1)
         {
             const joint = joints[i];
 
-            // Upstream cut faces: isPrimaryBody=true faces tagged for this joint index.
-            // The face attribute persists through opBoolean merges of the owning frame body.
+            // Upstream cut faces: faces on the anchor-side body tagged for this joint.
+            // A body participates in multiple joints (e.g. the bridge segment between joint i
+            // and joint i+1), so filtering by instanceIndex isolates the correct pair of faces.
             const upstreamCutFacesQuery = qHasAttributeWithValueMatching(
-                    allConstituentFaces, KIRIGAMI_CUT_FACE_ATTRIBUTE_NAME,
-                    { "instanceIndex" : i, "isPrimaryBody" : true });
+                    qOwnedByBody(upstreamBodyPerJoint[i], EntityType.FACE),
+                    KIRIGAMI_CUT_FACE_ATTRIBUTE_NAME,
+                    { "instanceIndex" : i });
 
-            // Downstream cut faces: isPrimaryBody=false faces tagged for this joint index.
             const downstreamCutFacesQuery = qHasAttributeWithValueMatching(
-                    allConstituentFaces, KIRIGAMI_CUT_FACE_ATTRIBUTE_NAME,
-                    { "instanceIndex" : i, "isPrimaryBody" : false });
+                    qOwnedByBody(downstreamBodyPerJoint[i], EntityType.FACE),
+                    KIRIGAMI_CUT_FACE_ATTRIBUTE_NAME,
+                    { "instanceIndex" : i });
 
             if (isQueryEmpty(context, upstreamCutFacesQuery) ||
                     isQueryEmpty(context, downstreamCutFacesQuery))
                 continue;
 
-            // Build the component-scoped anchor set: upstream bodies for joints j <= i in the
-            // same component as joint i.  Only these bodies are held fixed at this step.
+            // Build the anchor set: bodies that must NOT be moved at this step.
+            // This is the union of the upstream body at every joint j from 0 through i.
             var anchorBodyQueries = [];
             for (var j = 0; j <= i; j += 1)
-            {
-                if (jointComponentId[j] == jointComponentId[i])
-                    anchorBodyQueries = append(anchorBodyQueries, upstreamBodyPerJoint[j]);
-            }
-            const downstreamBodies = qSubtraction(componentBodySetPerJoint[i],
+                anchorBodyQueries = append(anchorBodyQueries, upstreamBodyPerJoint[j]);
+            const downstreamBodies = qSubtraction(allConstituentBodies,
                     qUnion(anchorBodyQueries));
 
             if (isQueryEmpty(context, downstreamBodies))
