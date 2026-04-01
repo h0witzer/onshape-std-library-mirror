@@ -187,20 +187,45 @@ export const mateConnectorPatternOnCurve = defineFeature(function(context is Con
 
             // When a path offset is requested, use buildFacePathOffsetWire to build a true offset wire.
             // This delegates corner mitering and trimming to the kernel, matching the behaviour of the
-            // standard "Offset curve" feature. A face selection is required for this to work because
-            // the offset operation needs a surface to project onto.
+            // standard "Offset curve" feature.
+            // When a face was explicitly selected, use it directly as the offset surface target.
+            // When only edges were selected, infer the containing face by finding the face that is
+            // adjacent to every selected edge (the intersection of each edge's adjacent faces).
             if (definition.useFaceNormalOffset && definition.faceNormalOffset > 0 * meter)
             {
-                if (size(selectedFaces) == 0)
+                var offsetTargetFace is Query = qNothing();
+                if (size(selectedFaces) > 0)
                 {
-                    throw regenError("\"Offset from path\" requires a face selection, not just edges. Select a face or disable the offset.", ["pathFace"]);
+                    // Face was explicitly selected — use it as-is.
+                    offsetTargetFace = qEntityFilter(definition.pathFace, EntityType.FACE);
+                }
+                else
+                {
+                    // Infer the containing face from the selected edges: find the face that
+                    // is adjacent to ALL of the selected edges (the common bounding face).
+                    const edgeList = evaluateQuery(context, activePathEdges);
+                    if (size(edgeList) > 0)
+                    {
+                        var commonFaces = qAdjacent(edgeList[0], AdjacencyType.FACE, EntityType.FACE);
+                        for (var edgeIndex = 1; edgeIndex < size(edgeList); edgeIndex += 1)
+                        {
+                            const nextEdgeFaces = qAdjacent(edgeList[edgeIndex], AdjacencyType.FACE, EntityType.FACE);
+                            commonFaces = qIntersection([commonFaces, nextEdgeFaces]);
+                        }
+                        offsetTargetFace = commonFaces;
+                    }
+
+                    if (isQueryEmpty(context, offsetTargetFace))
+                    {
+                        throw regenError("Unable to infer a containing face from the selected edges for the offset. Ensure the edges all lie on the same face, or select the face explicitly.", ["pathFace"]);
+                    }
                 }
 
                 const offsetResult = buildFacePathOffsetWire(
                     context,
                     id + "offsetWire",
                     activePathEdges,
-                    definition.pathFace,
+                    offsetTargetFace,
                     definition.faceNormalOffset,
                     definition.faceNormalOffsetFlip
                 );
@@ -508,7 +533,9 @@ function computeMateConnectorParameters(totalPathLength is ValueWithUnits, effec
  *   context {Context}                  - The active context
  *   wireOperationId {Id}               - A unique sub-ID for the offset wire operation
  *   sourceEdges {Query}                - The face boundary edges to offset from
- *   targetFace {Query}                 - The face that the edges lie on
+ *   targetFace {Query}                 - The face that the edges lie on, used by the kernel
+ *                                       as the offset surface. May be explicitly user-selected
+ *                                       or inferred automatically from the source edges.
  *   offsetDistance {ValueWithUnits}    - The offset distance (must be positive)
  *   flipDirection {boolean}            - When true the offset is in the opposite lateral direction
  *
