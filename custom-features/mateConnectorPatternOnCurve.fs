@@ -145,7 +145,7 @@ export const mateConnectorPatternOnCurve = defineFeature(function(context is Con
         // ----------------------------------------------------------------
         // Resolve path edges and any face-specific data based on selection mode
         // ----------------------------------------------------------------
-        var activePathEdges is Query;
+        var activePathEdges is Query = qNothing();
         var faceNormalDirection = undefined; // Only set when FACE mode with offset enabled
 
         if (definition.pathSelectionMode == PathSelectionMode.FACE)
