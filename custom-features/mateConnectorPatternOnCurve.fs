@@ -8,6 +8,7 @@ FeatureScript 2909;
 
 import(path : "onshape/std/common.fs", version : "2909.0");
 import(path : "onshape/std/queryVariable.fs", version : "2909.0");
+import(path : "onshape/std/offsetcurvetype.gen.fs", version : "2909.0");
 
 // Import spacing utilities for EQUAL / DISTANCE / BESTFIT curve pattern logic
 // (same module used by onlyTabs.fs and sheetMetalStitchCutBend.fs)
@@ -191,9 +192,9 @@ export const mateConnectorPatternOnCurve = defineFeature(function(context is Con
                 }
             }
 
-            // When a path offset is requested, use buildFacePathOffsetWire (defined in spacingUtils)
-            // to build a true offset wire. This delegates corner mitering and trimming to the kernel,
-            // matching the behaviour of the standard "Offset curve" feature.
+            // When a path offset is requested, use buildFacePathOffsetWire to build a true offset wire.
+            // This delegates corner mitering and trimming to the kernel, matching the behaviour of the
+            // standard "Offset curve" feature.
             if (definition.useFaceNormalOffset && definition.faceNormalOffset > 0 * meter)
             {
                 const offsetResult = buildFacePathOffsetWire(
@@ -500,6 +501,56 @@ function computeMateConnectorParameters(totalPathLength is ValueWithUnits, effec
     }
 
     return normalizedParameters;
+}
+
+/**
+ * Creates a true offset wire from a set of face boundary edges using the kernel
+ * opOffsetCurveOnFace operation. Corner mitering and wire trimming are handled by
+ * the kernel, producing the same result as the standard "Offset curve" feature.
+ *
+ * This helper is defined here so the feature is self-contained. The same function
+ * is also exported from spacingUtils.fs for use by other features once spacingUtils
+ * is next published.
+ *
+ * Parameters:
+ *   context {Context}                  - The active context
+ *   wireOperationId {Id}               - A unique sub-ID for the offset wire operation
+ *   sourceEdges {Query}                - The face boundary edges to offset from
+ *   targetFace {Query}                 - The face that the edges lie on
+ *   offsetDistance {ValueWithUnits}    - The offset distance (must be positive)
+ *   flipDirection {boolean}            - When true the offset is in the opposite lateral direction
+ *
+ * Returns:
+ *   {map} - A map with fields:
+ *       offsetWireBody  {Query} - The created wire body (delete after sampling)
+ *       offsetWireEdges {Query} - Edges of the first wire body, ready for constructPath
+ */
+function buildFacePathOffsetWire(context is Context, wireOperationId is Id, sourceEdges is Query, targetFace is Query, offsetDistance is ValueWithUnits, flipDirection is boolean) returns map
+{
+    try
+    {
+        @opOffsetCurveOnFace(context, wireOperationId, {
+                    "edges"             : sourceEdges,
+                    "oppositeDirection" : flipDirection,
+                    "imprint"           : false,
+                    "extend"            : false,
+                    "distance"          : offsetDistance,
+                    "offsetType"        : OffsetCurveType.EUCLIDEAN,
+                    "targets"           : targetFace,
+                    "roundedCorners"    : false
+                });
+    }
+
+    const wireBodies = evaluateQuery(context, qCreatedBy(wireOperationId, EntityType.BODY));
+    if (size(wireBodies) == 0)
+    {
+        throw regenError("Unable to build offset path. The offset distance may be too large for the selected geometry. Reduce the offset distance or disable the offset.", ["faceNormalOffset"]);
+    }
+
+    return {
+        "offsetWireBody"  : qCreatedBy(wireOperationId, EntityType.BODY),
+        "offsetWireEdges" : qOwnedByBody(wireBodies[0], EntityType.EDGE)
+    };
 }
 
 /**
