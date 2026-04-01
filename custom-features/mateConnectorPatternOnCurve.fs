@@ -7,6 +7,7 @@ FeatureScript 2909;
 
 import(path : "onshape/std/common.fs", version : "2909.0");
 import(path : "onshape/std/queryVariable.fs", version : "2909.0");
+import(path : "onshape/std/offsetcurvetype.gen.fs", version : "2909.0");
 
 // Import spacing utilities for EQUAL / DISTANCE / BESTFIT curve pattern logic
 // (same module used by onlyTabs.fs and sheetMetalStitchCutBend.fs)
@@ -147,7 +148,11 @@ export const mateConnectorPatternOnCurve = defineFeature(function(context is Con
         // Resolve path edges and any face-specific data based on selection mode
         // ----------------------------------------------------------------
         var activePathEdges is Query = qNothing();
-        var faceNormalDirection = undefined; // Only set when FACE mode with offset enabled
+
+        // When FACE mode with path offset is enabled, holds the query for the temporary offset wire
+        // body created by @opOffsetCurveOnFace. The body is deleted after tangent lines are extracted
+        // so it does not appear in the final qCreatedBy result used for query variable registration.
+        var offsetWireBody is Query = qNothing();
 
         if (definition.pathSelectionMode == PathSelectionMode.FACE)
         {
@@ -161,19 +166,40 @@ export const mateConnectorPatternOnCurve = defineFeature(function(context is Con
                 throw regenError("The selected face has no boundary edges.", ["pathFace"]);
             }
 
-            // Compute the face plane normal for the per-connector lateral offset direction.
-            // The lateral offset shifts each connector in-plane perpendicular to the curve tangent
-            // (offset curve behavior), so only the face normal is stored here; the actual offset
-            // direction is computed per-connector in the placement loop below.
-            // evPlane will fail on non-planar faces (cylinders, spheres, etc.); wrap with a clear error.
+            // When a path offset is requested, use @opOffsetCurveOnFace to build a true offset wire
+            // from the face boundary edges. This delegates corner mitering and trimming to the kernel,
+            // matching the behaviour of the standard "Offset curve" feature and avoiding the per-edge
+            // tangent-direction problem that causes connectors to be pushed past miter corners.
             if (definition.useFaceNormalOffset && definition.faceNormalOffset > 0 * meter)
             {
-                const facePlane = try(evPlane(context, { "face" : definition.pathFace }));
-                if (facePlane == undefined)
+                const offsetWireId = id + "offsetWire";
+                try
                 {
-                    throw regenError("Path offset requires a planar face. Select a planar face or disable the offset.", ["pathFace"]);
+                    @opOffsetCurveOnFace(context, offsetWireId, {
+                                "edges"             : activePathEdges,
+                                "oppositeDirection" : definition.faceNormalOffsetFlip,
+                                "imprint"           : false,
+                                "extend"            : false,
+                                "distance"          : definition.faceNormalOffset,
+                                "offsetType"        : OffsetCurveType.EUCLIDEAN,
+                                "targets"           : definition.pathFace,
+                                "roundedCorners"    : false
+                            });
                 }
-                faceNormalDirection = facePlane.normal;
+
+                const offsetWireBodies = evaluateQuery(context, qCreatedBy(offsetWireId, EntityType.BODY));
+                if (size(offsetWireBodies) == 0)
+                {
+                    throw regenError("Unable to create offset path at the specified distance. Reduce the offset distance or disable the offset.", ["faceNormalOffset"]);
+                }
+
+                // Replace activePathEdges with the offset wire's edges so that all downstream
+                // path construction, length computation, and tangent sampling operate on the
+                // correctly mitered offset curve rather than the original face boundary.
+                // Only the primary wire body is used; multiple bodies can result when offset
+                // distance exceeds the inradius of a concave boundary region.
+                offsetWireBody = qCreatedBy(offsetWireId, EntityType.BODY);
+                activePathEdges = qOwnedByBody(offsetWireBodies[0], EntityType.EDGE);
             }
         }
         else
@@ -259,6 +285,13 @@ export const mateConnectorPatternOnCurve = defineFeature(function(context is Con
         const tangentEvaluation = evPathTangentLines(context, path, normalizedParameters);
         const tangentLines = tangentEvaluation.tangentLines;
 
+        // If an offset wire was created to compute the path, delete it now before any further
+        // qCreatedBy queries so it does not pollute the mate connector query variable output.
+        if (!isQueryEmpty(context, offsetWireBody))
+        {
+            opDeleteBodies(context, id + "deleteOffsetWire", { "entities" : offsetWireBody });
+        }
+
         // Resolve global reference orientation axes if applicable
         var globalReferenceXAxis = undefined;
         var globalReferenceZAxis = undefined;
@@ -279,18 +312,10 @@ export const mateConnectorPatternOnCurve = defineFeature(function(context is Con
             const tangentLine = tangentLines[connectorIndex];
             var connectorCoordinateSystem;
 
-            // Apply face path offset if in FACE mode with offset enabled.
-            // The offset is a true curve offset: it shifts the connector origin perpendicular
-            // to the path tangent within the face plane, rather than lifting off the face surface.
-            var connectorOrigin = tangentLine.origin;
-            if (faceNormalDirection != undefined)
-            {
-                // Compute the in-plane direction perpendicular to the path tangent at this position.
-                // cross(faceNormal, tangent) points to the left of the path when viewed from the face normal.
-                const lateralDirection = normalize(cross(faceNormalDirection, tangentLine.direction));
-                const offsetDirection = definition.faceNormalOffsetFlip ? -lateralDirection : lateralDirection;
-                connectorOrigin = connectorOrigin + definition.faceNormalOffset * offsetDirection;
-            }
+            // The connector origin is taken directly from the tangent evaluation.
+            // When a path offset was requested, this is already a point on the offset wire
+            // (properly mitered/trimmed by @opOffsetCurveOnFace), so no further translation is needed.
+            const connectorOrigin = tangentLine.origin;
 
             if (definition.alignmentMode == MateConnectorAlignmentMode.PATH_TANGENT)
             {
