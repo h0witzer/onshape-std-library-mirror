@@ -1,8 +1,9 @@
 FeatureScript 2909;
 // Mate Connector Pattern on Curve
 // Creates a pattern of mate connectors along a curve using flexible spacing options
-// from the centralized spacingUtils module. Supports path-tangent and global-reference
-// orientation modes, and can wrap all created connectors as a named query variable.
+// from the centralized spacingUtils module. Supports both direct edge selection and
+// face-boundary selection modes, path-tangent and global-reference orientation modes,
+// and can wrap all created connectors as a named query variable.
 
 import(path : "onshape/std/common.fs", version : "2909.0");
 import(path : "onshape/std/queryVariable.fs", version : "2909.0");
@@ -18,6 +19,21 @@ const NORMALIZED_PARAMETER_TOLERANCE = 1e-9;
 // ============================================================================
 // ENUMS
 // ============================================================================
+
+/**
+ * Selects how the curve path is provided to the feature.
+ * @value EDGES : The user picks one or more connected edges directly.
+ * @value FACE  : The user picks a single face; the feature uses that face's
+ *               boundary edges as the path and optionally offsets connector
+ *               origins along the face normal.
+ */
+export enum PathSelectionMode
+{
+    annotation { "Name" : "Edges" }
+    EDGES,
+    annotation { "Name" : "Face" }
+    FACE
+}
 
 /**
  * Controls how the orientation of each mate connector is derived.
@@ -44,11 +60,42 @@ annotation { "Feature Type Name" : "Mate Connector Pattern on Curve",
 export const mateConnectorPatternOnCurve = defineFeature(function(context is Context, id is Id, definition is map)
     precondition
     {
-        // Curve path selection - accepts one or more connected edges forming a continuous path
-        annotation { "Name" : "Path edges",
-                    "Filter" : EntityType.EDGE,
-                    "UIHint" : UIHint.SHOW_CREATE_SELECTION }
-        definition.pathEdges is Query;
+        // Path source selection - toggle between direct edge picking and face-boundary mode
+        annotation { "Name" : "Path source",
+                    "UIHint" : [UIHint.HORIZONTAL_ENUM, UIHint.REMEMBER_PREVIOUS_VALUE] }
+        definition.pathSelectionMode is PathSelectionMode;
+
+        if (definition.pathSelectionMode == PathSelectionMode.EDGES)
+        {
+            // EDGES mode: user picks one or more connected edges forming a continuous path
+            annotation { "Name" : "Path edges",
+                        "Filter" : EntityType.EDGE,
+                        "UIHint" : UIHint.SHOW_CREATE_SELECTION }
+            definition.pathEdges is Query;
+        }
+        else
+        {
+            // FACE mode: user picks one face; its boundary edges become the path
+            annotation { "Name" : "Face",
+                        "Description" : "Select a face. The feature will pattern mate connectors along the boundary edges of this face.",
+                        "Filter" : EntityType.FACE,
+                        "MaxNumberOfPicks" : 1 }
+            definition.pathFace is Query;
+
+            // Face normal offset - shifts all connector origins along the face normal
+            annotation { "Name" : "Offset from face" }
+            definition.useFaceNormalOffset is boolean;
+
+            if (definition.useFaceNormalOffset)
+            {
+                annotation { "Name" : "Offset distance",
+                            "UIHint" : UIHint.REMEMBER_PREVIOUS_VALUE }
+                isLength(definition.faceNormalOffset, NONNEGATIVE_ZERO_DEFAULT_LENGTH_BOUNDS);
+
+                annotation { "Name" : "Flip direction", "UIHint" : UIHint.OPPOSITE_DIRECTION }
+                definition.faceNormalOffsetFlip is boolean;
+            }
+        }
 
         // Spacing configuration - uses centralized spacing predicate from spacingUtils
         // Provides EQUAL, DISTANCE, and BESTFIT spacing types with offset support
@@ -95,19 +142,62 @@ export const mateConnectorPatternOnCurve = defineFeature(function(context is Con
         }
     }
     {
-        // Build a continuous path from the selected edges
-        const path = try(constructPath(context, definition.pathEdges));
+        // ----------------------------------------------------------------
+        // Resolve path edges and any face-specific data based on selection mode
+        // ----------------------------------------------------------------
+        var activePathEdges is Query;
+        var faceNormalDirection = undefined; // Only set when FACE mode with offset enabled
+
+        if (definition.pathSelectionMode == PathSelectionMode.FACE)
+        {
+            // Get all edges that border the selected face (outer boundary + any hole loops).
+            // constructPath will attempt to order them into a single continuous path;
+            // if the face has multiple disconnected loops the path build will fail with a clear error below.
+            activePathEdges = qAdjacent(definition.pathFace, AdjacencyType.EDGE, EntityType.EDGE);
+
+            if (size(evaluateQuery(context, activePathEdges)) == 0)
+            {
+                throw regenError("The selected face has no boundary edges.", ["pathFace"]);
+            }
+
+            // Compute the face normal for the offset direction if the user asked for it.
+            // evPlane will fail on non-planar faces (cylinders, spheres, etc.); wrap with a clear error.
+            if (definition.useFaceNormalOffset && definition.faceNormalOffset > 0 * meter)
+            {
+                const facePlane = try(evPlane(context, { "face" : definition.pathFace }));
+                if (facePlane == undefined)
+                {
+                    throw regenError("Face normal offset requires a planar face. Select a planar face or disable the offset.", ["pathFace"]);
+                }
+                const rawNormal = facePlane.normal;
+                faceNormalDirection = definition.faceNormalOffsetFlip ? -rawNormal : rawNormal;
+            }
+        }
+        else
+        {
+            activePathEdges = definition.pathEdges;
+        }
+
+        // Build a continuous path from the resolved edges
+        const path = try(constructPath(context, activePathEdges));
         if (path == undefined)
         {
-            throw regenError("Unable to build a continuous path from the selected edges. Ensure all edges are connected.", ["pathEdges"]);
+            if (definition.pathSelectionMode == PathSelectionMode.FACE)
+            {
+                throw regenError("Unable to build a continuous path from the face boundary edges. The face boundary may have multiple disconnected loops.", ["pathFace"]);
+            }
+            else
+            {
+                throw regenError("Unable to build a continuous path from the selected edges. Ensure all edges are connected.", ["pathEdges"]);
+            }
         }
 
         const totalPathLength = evPathLength(context, path);
 
         // computeCurvePatternSpacing expects definition.edges for its length query,
-        // so bridge pathEdges into that field before calling it
+        // so bridge activePathEdges into that field before calling it
         var spacingDefinition = definition;
-        spacingDefinition.edges = definition.pathEdges;
+        spacingDefinition.edges = activePathEdges;
         spacingDefinition = computeCurvePatternSpacing(context, id, spacingDefinition);
 
         const instanceCount = spacingDefinition.instanceCount;
@@ -185,11 +275,18 @@ export const mateConnectorPatternOnCurve = defineFeature(function(context is Con
             const tangentLine = tangentLines[connectorIndex];
             var connectorCoordinateSystem;
 
+            // Apply face normal offset if in FACE mode with offset enabled
+            var connectorOrigin = tangentLine.origin;
+            if (faceNormalDirection != undefined)
+            {
+                connectorOrigin = connectorOrigin + definition.faceNormalOffset * faceNormalDirection;
+            }
+
             if (definition.alignmentMode == MateConnectorAlignmentMode.PATH_TANGENT)
             {
                 // Z-axis follows curve tangent; X-axis is an arbitrary perpendicular to that tangent
                 connectorCoordinateSystem = coordSystem(
-                    tangentLine.origin,
+                    connectorOrigin,
                     perpendicularVector(tangentLine.direction),
                     tangentLine.direction
                 );
@@ -198,7 +295,7 @@ export const mateConnectorPatternOnCurve = defineFeature(function(context is Con
             {
                 // Global reference mode: orientation from reference entity, origin at path position
                 connectorCoordinateSystem = coordSystem(
-                    tangentLine.origin,
+                    connectorOrigin,
                     globalReferenceXAxis,
                     globalReferenceZAxis
                 );
