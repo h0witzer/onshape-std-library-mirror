@@ -82,8 +82,9 @@ export const mateConnectorPatternOnCurve = defineFeature(function(context is Con
                         "MaxNumberOfPicks" : 1 }
             definition.pathFace is Query;
 
-            // Face normal offset - shifts all connector origins along the face normal
-            annotation { "Name" : "Offset from face" }
+            // Face path offset - shifts connector origins laterally within the face plane,
+            // perpendicular to the curve tangent at each position (offset curve behavior)
+            annotation { "Name" : "Offset from path" }
             definition.useFaceNormalOffset is boolean;
 
             if (definition.useFaceNormalOffset)
@@ -160,17 +161,19 @@ export const mateConnectorPatternOnCurve = defineFeature(function(context is Con
                 throw regenError("The selected face has no boundary edges.", ["pathFace"]);
             }
 
-            // Compute the face normal for the offset direction if the user asked for it.
+            // Compute the face plane normal for the per-connector lateral offset direction.
+            // The lateral offset shifts each connector in-plane perpendicular to the curve tangent
+            // (offset curve behavior), so only the face normal is stored here; the actual offset
+            // direction is computed per-connector in the placement loop below.
             // evPlane will fail on non-planar faces (cylinders, spheres, etc.); wrap with a clear error.
             if (definition.useFaceNormalOffset && definition.faceNormalOffset > 0 * meter)
             {
                 const facePlane = try(evPlane(context, { "face" : definition.pathFace }));
                 if (facePlane == undefined)
                 {
-                    throw regenError("Face normal offset requires a planar face. Select a planar face or disable the offset.", ["pathFace"]);
+                    throw regenError("Path offset requires a planar face. Select a planar face or disable the offset.", ["pathFace"]);
                 }
-                const rawNormal = facePlane.normal;
-                faceNormalDirection = definition.faceNormalOffsetFlip ? -rawNormal : rawNormal;
+                faceNormalDirection = facePlane.normal;
             }
         }
         else
@@ -243,7 +246,8 @@ export const mateConnectorPatternOnCurve = defineFeature(function(context is Con
             startOffset,
             endOffset,
             instanceCount,
-            definition
+            definition,
+            path.closed
         );
 
         if (size(normalizedParameters) == 0)
@@ -275,11 +279,17 @@ export const mateConnectorPatternOnCurve = defineFeature(function(context is Con
             const tangentLine = tangentLines[connectorIndex];
             var connectorCoordinateSystem;
 
-            // Apply face normal offset if in FACE mode with offset enabled
+            // Apply face path offset if in FACE mode with offset enabled.
+            // The offset is a true curve offset: it shifts the connector origin perpendicular
+            // to the path tangent within the face plane, rather than lifting off the face surface.
             var connectorOrigin = tangentLine.origin;
             if (faceNormalDirection != undefined)
             {
-                connectorOrigin = connectorOrigin + definition.faceNormalOffset * faceNormalDirection;
+                // Compute the in-plane direction perpendicular to the path tangent at this position.
+                // cross(faceNormal, tangent) points to the left of the path when viewed from the face normal.
+                const lateralDirection = normalize(cross(faceNormalDirection, tangentLine.direction));
+                const offsetDirection = definition.faceNormalOffsetFlip ? -lateralDirection : lateralDirection;
+                connectorOrigin = connectorOrigin + definition.faceNormalOffset * offsetDirection;
             }
 
             if (definition.alignmentMode == MateConnectorAlignmentMode.PATH_TANGENT)
@@ -351,11 +361,12 @@ export const mateConnectorPatternOnCurve = defineFeature(function(context is Con
  *   endOffset {ValueWithUnits}           - Physical distance offset from the path end
  *   instanceCount {number}               - Number of mate connectors to place
  *   definition {map}                     - Feature definition with spacingType, endMode, distance
+ *   pathIsClosed {boolean}               - Whether the path forms a closed loop
  *
  * Returns:
  *   {array} - Array of normalized parameters in [0, 1] range, one per connector position
  */
-function computeMateConnectorParameters(totalPathLength is ValueWithUnits, effectivePathLength is ValueWithUnits, startOffset is ValueWithUnits, endOffset is ValueWithUnits, instanceCount is number, definition is map) returns array
+function computeMateConnectorParameters(totalPathLength is ValueWithUnits, effectivePathLength is ValueWithUnits, startOffset is ValueWithUnits, endOffset is ValueWithUnits, instanceCount is number, definition is map, pathIsClosed is boolean) returns array
 {
     var normalizedParameters = [];
     const startNormalized = startOffset / totalPathLength;
@@ -398,6 +409,25 @@ function computeMateConnectorParameters(totalPathLength is ValueWithUnits, effec
                     normalizedParameters = append(normalizedParameters,
                         startNormalized + pitchNormalized * instanceIndex);
                 }
+
+                // On a closed loop the last parameter (≈ startNormalized + 1.0) maps to the
+                // same 3D point as the first, producing a duplicate connector. Respace: distribute
+                // all instanceCount connectors with equal pitch across the full effective loop so
+                // no two endpoints coincide.
+                if (pathIsClosed && size(normalizedParameters) >= 2)
+                {
+                    const lastParam = normalizedParameters[size(normalizedParameters) - 1];
+                    if (lastParam >= 1.0 - NORMALIZED_PARAMETER_TOLERANCE)
+                    {
+                        normalizedParameters = [];
+                        const loopPitchNormalized = (effectivePathLength / instanceCount) / totalPathLength;
+                        for (var instanceIndex = 0; instanceIndex < instanceCount; instanceIndex += 1)
+                        {
+                            normalizedParameters = append(normalizedParameters,
+                                startNormalized + loopPitchNormalized * instanceIndex);
+                        }
+                    }
+                }
             }
         }
     }
@@ -417,6 +447,17 @@ function computeMateConnectorParameters(totalPathLength is ValueWithUnits, effec
             }
 
             normalizedParameters = append(normalizedParameters, parameterAtInstance);
+        }
+
+        // On a closed loop the last placed instance may land back at the path start (param ≥ 1.0),
+        // duplicating the first connector. Drop it.
+        if (pathIsClosed && size(normalizedParameters) >= 2)
+        {
+            const lastParam = normalizedParameters[size(normalizedParameters) - 1];
+            if (lastParam >= 1.0 - NORMALIZED_PARAMETER_TOLERANCE)
+            {
+                normalizedParameters = subArray(normalizedParameters, 0, size(normalizedParameters) - 1);
+            }
         }
     }
 
