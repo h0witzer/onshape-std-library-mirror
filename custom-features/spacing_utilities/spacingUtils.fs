@@ -46,6 +46,24 @@ export enum CurvePatternEndMode
 }
 
 /**
+ * Constrains the instance count computed by BESTFIT spacing to be even, odd, or unconstrained.
+ * Applied after the initial round/ceil so the actual pitch deviates as little as possible
+ * while satisfying the parity requirement.
+ * @value ANY  : No parity constraint; use the count produced by round/ceil
+ * @value EVEN : Force the count to the nearest even number
+ * @value ODD  : Force the count to the nearest odd number
+ */
+export enum BestFitCountParity
+{
+    annotation { "Name" : "Any" }
+    ANY,
+    annotation { "Name" : "Even" }
+    EVEN,
+    annotation { "Name" : "Odd" }
+    ODD,
+}
+
+/**
  * Predicate for curve pattern spacing configuration.
  * Defines the UI fields and validation for spacing type, distance, instance count, and best-fit parameters.
  * 
@@ -58,6 +76,7 @@ export enum CurvePatternEndMode
  *      @field actualPitch {ValueWithUnits} : Read-only actual pitch for BESTFIT spacing
  *      @field actualCount {number} : Read-only computed instance count for BESTFIT spacing
  *      @field doPitchCeiling {boolean} : Whether to round up (ceiling) the instance count for BESTFIT
+ *      @field bestFitCountParity {BestFitCountParity} : Whether to force the BESTFIT count to be even, odd, or unconstrained
  */
 export predicate curvePatternSpacingPredicate(definition is map)
 {
@@ -101,6 +120,10 @@ export predicate curvePatternSpacingPredicate(definition is map)
 
         annotation { "Name" : "Pitch ceiling", "Default" : false }
         definition.doPitchCeiling is boolean;
+
+        annotation { "Name" : "Count parity",
+                    "UIHint" : [UIHint.HORIZONTAL_ENUM, UIHint.REMEMBER_PREVIOUS_VALUE] }
+        definition.bestFitCountParity is BestFitCountParity;
     }
 
     // Offset controls for EQUAL and BESTFIT modes
@@ -148,6 +171,7 @@ export predicate curvePatternSpacingPredicate(definition is map)
  *      @field instanceCount {number} : Input/output instance count
  *      @field targetPitch {ValueWithUnits} : Target pitch for best-fit spacing
  *      @field doPitchCeiling {boolean} : Whether to use ceiling for rounding
+ *      @field bestFitCountParity {BestFitCountParity} : Whether to force the BESTFIT count to be even, odd, or unconstrained
  *      @field useOffsets {boolean} : Whether to use offsets
  *      @field twoOffsets {boolean} : Whether to use two different offsets (false = equal offsets)
  *      @field offset {ValueWithUnits} : Single offset for equal offset mode
@@ -217,6 +241,10 @@ export function computeCurvePatternSpacing(context is Context, id is Id, definit
             integerComputedInstanceNumber = round(computedInstanceNumber);
         }
 
+        // Apply even/odd parity constraint by finding the nearest compliant count.
+        // The count is never allowed to fall below 1.
+        integerComputedInstanceNumber = applyBestFitCountParity(integerComputedInstanceNumber, definition.bestFitCountParity);
+
         definition.instanceCount = integerComputedInstanceNumber;
 
         const actualPitch = effectiveLength / (integerComputedInstanceNumber - corrector);
@@ -268,6 +296,7 @@ export enum CircularPatternSpacingType
  *      @field actualPitch {ValueWithUnits} : Read-only actual pitch for BESTFIT spacing
  *      @field actualCount {number} : Read-only computed instance count for BESTFIT spacing
  *      @field doPitchCeiling {boolean} : Whether to round up (ceiling) the instance count for BESTFIT
+ *      @field bestFitCountParity {BestFitCountParity} : Whether to force the BESTFIT count to be even, odd, or unconstrained
  */
 export predicate circularPatternSpacingPredicate(definition is map)
 {
@@ -311,6 +340,10 @@ export predicate circularPatternSpacingPredicate(definition is map)
 
         annotation { "Name" : "Pitch ceiling", "Default" : false }
         definition.doPitchCeiling is boolean;
+
+        annotation { "Name" : "Count parity",
+                    "UIHint" : [UIHint.HORIZONTAL_ENUM, UIHint.REMEMBER_PREVIOUS_VALUE] }
+        definition.bestFitCountParity is BestFitCountParity;
     }
 }
 
@@ -332,6 +365,7 @@ export predicate circularPatternSpacingPredicate(definition is map)
  *      @field useReferencePoint {boolean} : Whether to use custom reference point
  *      @field referencePoint {Query} : Custom reference point vertex
  *      @field doPitchCeiling {boolean} : Whether to use ceiling for rounding
+ *      @field bestFitCountParity {BestFitCountParity} : Whether to force the BESTFIT count to be even, odd, or unconstrained
  * 
  * @returns {map} : Updated definition with computed spacing parameters
  */
@@ -367,6 +401,11 @@ export function computeCircularPatternSpacing(context is Context, id is Id, defi
         {
             integerComputedInstanceNumber = round(computedInstanceNumber);
         }
+
+        // Apply even/odd parity constraint by finding the nearest compliant count.
+        // The count is never allowed to fall below 1.
+        integerComputedInstanceNumber = applyBestFitCountParity(integerComputedInstanceNumber, definition.bestFitCountParity);
+
         definition.instanceCount = integerComputedInstanceNumber;
 
         const actualPitch = circumference / (integerComputedInstanceNumber - corrector);
@@ -388,6 +427,41 @@ export function computeCircularPatternSpacing(context is Context, id is Id, defi
 // ============================================================================
 // DOMAIN CALCULATION UTILITIES
 // ============================================================================
+
+/**
+ * Adjusts an integer instance count so that it satisfies the requested parity constraint
+ * (ANY, EVEN, or ODD). The adjusted count stays as close as possible to the original
+ * value and is never reduced below 1.
+ *
+ * Parameters:
+ *   count   {number}              - The initial integer instance count (from round or ceil)
+ *   parity  {BestFitCountParity}  - The desired parity constraint
+ *
+ * Returns:
+ *   {number} - The adjusted integer count satisfying the parity constraint
+ */
+function applyBestFitCountParity(count is number, parity is BestFitCountParity) returns number
+{
+    if (parity == BestFitCountParity.ANY)
+    {
+        return max(1, count);
+    }
+
+    const isEvenRequired = (parity == BestFitCountParity.EVEN);
+    const countIsEven = (count % 2 == 0);
+
+    if ((isEvenRequired && countIsEven) || (!isEvenRequired && !countIsEven))
+    {
+        // Already satisfies the parity requirement
+        return max(1, count);
+    }
+
+    // Nudge by ±1 and return whichever candidate is larger (stays closer to the raw value
+    // while biasing toward more instances rather than fewer — consistent with doPitchCeiling behaviour).
+    const candidatePlus = count + 1;
+    const candidateMinus = count - 1;
+    return max(1, candidatePlus > candidateMinus ? candidatePlus : candidateMinus);
+}
 
 /**
  * Calculates normalized domains for equal spacing distribution.
