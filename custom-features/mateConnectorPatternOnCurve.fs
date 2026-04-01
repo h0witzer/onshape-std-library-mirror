@@ -41,6 +41,10 @@ export enum PathSelectionMode
  * Controls how the orientation of each mate connector is derived.
  * @value PATH_TANGENT : Each connector's Z-axis follows the curve tangent at its position;
  *        X-axis is an arbitrary perpendicular computed from that tangent.
+ * @value FACE_NORMAL : Each connector's Z-axis points along the face normal of the face the
+ *        path belongs to. When multiple faces are selected each group independently uses its
+ *        own face normal, so connectors on different faces (e.g. faces of a cube) each align
+ *        to their own face. Falls back to PATH_TANGENT when the face is non-planar or unknown.
  * @value GLOBAL_REFERENCE : All connectors share the orientation of a user-specified
  *        reference entity (mate connector or planar face), placed at each path position.
  */
@@ -48,6 +52,8 @@ export enum MateConnectorAlignmentMode
 {
     annotation { "Name" : "Path tangent" }
     PATH_TANGENT,
+    annotation { "Name" : "Face normal" }
+    FACE_NORMAL,
     annotation { "Name" : "Global reference" }
     GLOBAL_REFERENCE
 }
@@ -149,181 +155,8 @@ export const mateConnectorPatternOnCurve = defineFeature(function(context is Con
     }
     {
         // ----------------------------------------------------------------
-        // Resolve path edges and any face-specific data based on selection mode
+        // Resolve global reference orientation axes up-front (used across all groups)
         // ----------------------------------------------------------------
-        var activePathEdges is Query = qNothing();
-
-        // When FACE mode with path offset is enabled, holds the query for the temporary offset wire
-        // body created by buildFacePathOffsetWire. The body is deleted after tangent lines are extracted
-        // so it does not appear in the final qCreatedBy result used for query variable registration.
-        var offsetWireBody is Query = qNothing();
-
-        if (definition.pathSelectionMode == PathSelectionMode.FACE)
-        {
-            // Determine whether the user selected a face (full-boundary mode) or edges (subset mode)
-            // by inspecting what was actually put in the unified pathFace picker.
-            const selectedFaces = evaluateQuery(context, qEntityFilter(definition.pathFace, EntityType.FACE));
-            const selectedEdges = evaluateQuery(context, qEntityFilter(definition.pathFace, EntityType.EDGE));
-
-            if (size(selectedFaces) > 0)
-            {
-                // Full boundary mode: collect every edge that borders the selected face.
-                activePathEdges = qAdjacent(definition.pathFace, AdjacencyType.EDGE, EntityType.EDGE);
-
-                if (isQueryEmpty(context, activePathEdges))
-                {
-                    throw regenError("The selected face has no boundary edges.", ["pathFace"]);
-                }
-            }
-            else if (size(selectedEdges) > 0)
-            {
-                // Edge subset mode: use exactly the edges the user selected.
-                activePathEdges = qEntityFilter(definition.pathFace, EntityType.EDGE);
-            }
-            else
-            {
-                throw regenError("Select a face or one or more connected edges to define the path.", ["pathFace"]);
-            }
-
-            // When a path offset is requested, use buildFacePathOffsetWire to build a true offset wire.
-            // This delegates corner mitering and trimming to the kernel, matching the behaviour of the
-            // standard "Offset curve" feature.
-            // When a face was explicitly selected, use it directly as the offset surface target.
-            // When only edges were selected, infer the containing face by finding the face that is
-            // adjacent to every selected edge (the intersection of each edge's adjacent faces).
-            if (definition.useFaceNormalOffset && definition.faceNormalOffset > 0 * meter)
-            {
-                var offsetTargetFace is Query = qNothing();
-                if (size(selectedFaces) > 0)
-                {
-                    // Face was explicitly selected — use it as-is.
-                    offsetTargetFace = qEntityFilter(definition.pathFace, EntityType.FACE);
-                }
-                else
-                {
-                    // Infer the containing face from the selected edges: find the face that
-                    // is adjacent to ALL of the selected edges (the common bounding face).
-                    const edgeList = evaluateQuery(context, activePathEdges);
-                    if (size(edgeList) > 0)
-                    {
-                        var commonFaces = qAdjacent(edgeList[0], AdjacencyType.FACE, EntityType.FACE);
-                        for (var edgeIndex = 1; edgeIndex < size(edgeList); edgeIndex += 1)
-                        {
-                            const nextEdgeFaces = qAdjacent(edgeList[edgeIndex], AdjacencyType.FACE, EntityType.FACE);
-                            commonFaces = qIntersection([commonFaces, nextEdgeFaces]);
-                        }
-                        offsetTargetFace = commonFaces;
-                    }
-
-                    if (isQueryEmpty(context, offsetTargetFace))
-                    {
-                        throw regenError("Unable to infer a containing face from the selected edges for the offset. Ensure the edges all lie on the same face, or select the face explicitly.", ["pathFace"]);
-                    }
-                }
-
-                const offsetResult = buildFacePathOffsetWire(
-                    context,
-                    id + "offsetWire",
-                    activePathEdges,
-                    offsetTargetFace,
-                    definition.faceNormalOffset,
-                    definition.faceNormalOffsetFlip
-                );
-                offsetWireBody = offsetResult.offsetWireBody;
-                activePathEdges = offsetResult.offsetWireEdges;
-            }
-        }
-        else
-        {
-            activePathEdges = definition.pathEdges;
-        }
-
-        // Build a continuous path from the resolved edges
-        const path = try(constructPath(context, activePathEdges));
-        if (path == undefined)
-        {
-            if (definition.pathSelectionMode == PathSelectionMode.FACE)
-            {
-                throw regenError("Unable to build a continuous path from the selected face or edges. Ensure all selected edges are connected and form a single chain.", ["pathFace"]);
-            }
-            else
-            {
-                throw regenError("Unable to build a continuous path from the selected edges. Ensure all edges are connected.", ["pathEdges"]);
-            }
-        }
-
-        const totalPathLength = evPathLength(context, path);
-
-        // computeCurvePatternSpacing expects definition.edges for its length query,
-        // so bridge activePathEdges into that field before calling it
-        var spacingDefinition = definition;
-        spacingDefinition.edges = activePathEdges;
-        spacingDefinition = computeCurvePatternSpacing(context, id, spacingDefinition);
-
-        const instanceCount = spacingDefinition.instanceCount;
-
-        // Resolve start and end offsets from the spacing definition
-        var startOffset = 0 * meter;
-        var endOffset = 0 * meter;
-
-        if (definition.useOffsets == true)
-        {
-            if (!definition.twoOffsets)
-            {
-                startOffset = definition.offset;
-                endOffset = definition.offset;
-            }
-            else
-            {
-                if (!definition.oppositeDirection)
-                {
-                    startOffset = definition.offset1;
-                    endOffset = definition.offset2;
-                }
-                else
-                {
-                    // Flipped: swap which offset applies to which end
-                    startOffset = definition.offset2;
-                    endOffset = definition.offset1;
-                }
-            }
-        }
-
-        // Validate that offsets leave a positive effective length
-        const effectivePathLength = totalPathLength - startOffset - endOffset;
-        if (effectivePathLength <= 0 * meter)
-        {
-            throw regenError("The specified offsets exceed the total path length.", ["useOffsets"]);
-        }
-
-        // Compute normalized arc-length parameters (0 to 1) for each connector position
-        const normalizedParameters = computeMateConnectorParameters(
-            totalPathLength,
-            effectivePathLength,
-            startOffset,
-            endOffset,
-            instanceCount,
-            definition,
-            path.closed
-        );
-
-        if (size(normalizedParameters) == 0)
-        {
-            throw regenError("No mate connectors can be placed with the specified spacing parameters. Adjust spacing, instance count, or offsets.");
-        }
-
-        // Evaluate tangent lines at each computed position along the path
-        const tangentEvaluation = evPathTangentLines(context, path, normalizedParameters);
-        const tangentLines = tangentEvaluation.tangentLines;
-
-        // If an offset wire was created to compute the path, delete it now before any further
-        // qCreatedBy queries so it does not pollute the mate connector query variable output.
-        if (!isQueryEmpty(context, offsetWireBody))
-        {
-            opDeleteBodies(context, id + "deleteOffsetWire", { "entities" : offsetWireBody });
-        }
-
-        // Resolve global reference orientation axes if applicable
         var globalReferenceXAxis = undefined;
         var globalReferenceZAxis = undefined;
 
@@ -337,40 +170,303 @@ export const mateConnectorPatternOnCurve = defineFeature(function(context is Con
         // Determine owner body query - qNothing() if none is specified
         const ownerBodyQuery = definition.specifyOwnerBody ? definition.ownerBody : qNothing();
 
-        // Create one mate connector at each computed position
-        for (var connectorIndex = 0; connectorIndex < size(tangentLines); connectorIndex += 1)
+        // ----------------------------------------------------------------
+        // Collect pattern groups.
+        // Each group is a map with:
+        //   edges     {Query} - edges forming this group's path
+        //   faceQuery {Query} - the face this group belongs to, or qNothing() when unknown
+        //
+        // FACE mode, face(s) selected : one group per selected face (full boundary)
+        // FACE mode, edges selected   : one group per connected-edge component
+        // CURVE mode                  : single group from the user's edge selection
+        // ----------------------------------------------------------------
+        var patternGroups = [];
+
+        if (definition.pathSelectionMode == PathSelectionMode.FACE)
         {
-            const tangentLine = tangentLines[connectorIndex];
-            var connectorCoordinateSystem;
+            const selectedFaces = evaluateQuery(context, qEntityFilter(definition.pathFace, EntityType.FACE));
+            const selectedEdges = evaluateQuery(context, qEntityFilter(definition.pathFace, EntityType.EDGE));
 
-            // The connector origin is taken directly from the tangent evaluation.
-            // When a path offset was requested, this is already a point on the offset wire
-            // (properly mitered/trimmed by @opOffsetCurveOnFace), so no further translation is needed.
-            const connectorOrigin = tangentLine.origin;
-
-            if (definition.alignmentMode == MateConnectorAlignmentMode.PATH_TANGENT)
+            if (size(selectedFaces) > 0)
             {
-                // Z-axis follows curve tangent; X-axis is an arbitrary perpendicular to that tangent
-                connectorCoordinateSystem = coordSystem(
-                    connectorOrigin,
-                    perpendicularVector(tangentLine.direction),
-                    tangentLine.direction
-                );
+                // Full boundary mode: one group per selected face
+                for (var faceIndex = 0; faceIndex < size(selectedFaces); faceIndex += 1)
+                {
+                    const face = selectedFaces[faceIndex];
+                    const boundaryEdges = qAdjacent(face, AdjacencyType.EDGE, EntityType.EDGE);
+                    if (!isQueryEmpty(context, boundaryEdges))
+                    {
+                        patternGroups = append(patternGroups, { "edges" : boundaryEdges, "faceQuery" : face });
+                    }
+                }
+
+                if (size(patternGroups) == 0)
+                {
+                    throw regenError("The selected face has no boundary edges.", ["pathFace"]);
+                }
+            }
+            else if (size(selectedEdges) > 0)
+            {
+                // Edge subset mode: split by connectivity, one group per connected component
+                const allSelectedEdgesQuery = qEntityFilter(definition.pathFace, EntityType.EDGE);
+                const edgeComponents = connectedComponents(context, allSelectedEdgesQuery, AdjacencyType.VERTEX);
+
+                for (var componentIndex = 0; componentIndex < size(edgeComponents); componentIndex += 1)
+                {
+                    patternGroups = append(patternGroups,
+                        { "edges" : qUnion(edgeComponents[componentIndex]), "faceQuery" : qNothing() });
+                }
             }
             else
             {
-                // Global reference mode: orientation from reference entity, origin at path position
-                connectorCoordinateSystem = coordSystem(
-                    connectorOrigin,
-                    globalReferenceXAxis,
-                    globalReferenceZAxis
-                );
+                throw regenError("Select a face or one or more connected edges to define the path.", ["pathFace"]);
             }
 
-            opMateConnector(context, id + "mateConnector" + connectorIndex, {
-                        "coordSystem" : connectorCoordinateSystem,
-                        "owner" : ownerBodyQuery
+            if (size(patternGroups) > 1)
+            {
+                reportFeatureInfo(context, id,
+                    size(patternGroups) ~ " separate patterns will be created, one per face or connected edge group.");
+            }
+        }
+        else
+        {
+            // CURVE mode: single group, no associated face
+            patternGroups = [{ "edges" : definition.pathEdges, "faceQuery" : qNothing() }];
+        }
+
+        // ----------------------------------------------------------------
+        // Phase 1: Evaluate paths, compute tangent lines, resolve face normals.
+        // All offset wire bodies are collected and deleted before connector creation
+        // so they do not appear in qCreatedBy results used by the query variable.
+        // ----------------------------------------------------------------
+        var evaluatedGroups = [];
+        var offsetWireBodies = [];
+
+        for (var groupIndex = 0; groupIndex < size(patternGroups); groupIndex += 1)
+        {
+            const group = patternGroups[groupIndex];
+            var activePathEdges is Query = group.edges;
+            var groupFaceQuery is Query = group.faceQuery;
+
+            // For edge-only groups, infer the containing face when it is needed for:
+            //   (a) offset wire computation, or (b) FACE_NORMAL orientation.
+            const needsFaceInference = isQueryEmpty(context, groupFaceQuery) &&
+                (definition.pathSelectionMode == PathSelectionMode.FACE &&
+                    ((definition.useFaceNormalOffset && definition.faceNormalOffset > 0 * meter) ||
+                        definition.alignmentMode == MateConnectorAlignmentMode.FACE_NORMAL));
+
+            if (needsFaceInference)
+            {
+                const inferredFace = inferFaceFromEdges(context, activePathEdges);
+                groupFaceQuery = qNthElement(inferredFace, 0);
+            }
+
+            // Apply path offset when requested in FACE mode
+            if (definition.pathSelectionMode == PathSelectionMode.FACE &&
+                definition.useFaceNormalOffset && definition.faceNormalOffset > 0 * meter)
+            {
+                if (isQueryEmpty(context, groupFaceQuery))
+                {
+                    throw regenError("Unable to infer a containing face from the selected edges for the offset. Ensure the edges all lie on the same face, or select the face explicitly.", ["pathFace"]);
+                }
+
+                const offsetWireId = id + ("offsetWire" ~ groupIndex);
+                const offsetResult = buildFacePathOffsetWire(
+                    context,
+                    offsetWireId,
+                    activePathEdges,
+                    groupFaceQuery,
+                    definition.faceNormalOffset,
+                    definition.faceNormalOffsetFlip
+                );
+                offsetWireBodies = append(offsetWireBodies, offsetResult.offsetWireBody);
+                activePathEdges = offsetResult.offsetWireEdges;
+            }
+
+            // Build a continuous path from the resolved edges
+            const path = try(constructPath(context, activePathEdges));
+            if (path == undefined)
+            {
+                if (definition.pathSelectionMode == PathSelectionMode.FACE)
+                {
+                    if (size(patternGroups) > 1)
+                    {
+                        throw regenError("Unable to build a continuous path from group " ~ (groupIndex + 1) ~
+                            ". Ensure all edges in the group are connected and form a single chain.", ["pathFace"]);
+                    }
+                    else
+                    {
+                        throw regenError("Unable to build a continuous path from the selected face or edges. Ensure all selected edges are connected and form a single chain.", ["pathFace"]);
+                    }
+                }
+                else
+                {
+                    throw regenError("Unable to build a continuous path from the selected edges. Ensure all edges are connected.", ["pathEdges"]);
+                }
+            }
+
+            const totalPathLength = evPathLength(context, path);
+
+            // computeCurvePatternSpacing expects definition.edges for its length query,
+            // so bridge activePathEdges into that field before calling it.
+            // Each group uses its own scoped sub-id to avoid operation ID conflicts.
+            var spacingDefinition = definition;
+            spacingDefinition.edges = activePathEdges;
+            spacingDefinition = computeCurvePatternSpacing(context, id + ("g" ~ groupIndex), spacingDefinition);
+
+            const instanceCount = spacingDefinition.instanceCount;
+
+            // Resolve start and end offsets from the spacing definition
+            var startOffset = 0 * meter;
+            var endOffset = 0 * meter;
+
+            if (definition.useOffsets == true)
+            {
+                if (!definition.twoOffsets)
+                {
+                    startOffset = definition.offset;
+                    endOffset = definition.offset;
+                }
+                else
+                {
+                    if (!definition.oppositeDirection)
+                    {
+                        startOffset = definition.offset1;
+                        endOffset = definition.offset2;
+                    }
+                    else
+                    {
+                        // Flipped: swap which offset applies to which end
+                        startOffset = definition.offset2;
+                        endOffset = definition.offset1;
+                    }
+                }
+            }
+
+            // Validate that offsets leave a positive effective length
+            const effectivePathLength = totalPathLength - startOffset - endOffset;
+            if (effectivePathLength <= 0 * meter)
+            {
+                throw regenError("The specified offsets exceed the total path length.", ["useOffsets"]);
+            }
+
+            // Compute normalized arc-length parameters (0 to 1) for each connector position
+            const normalizedParameters = computeMateConnectorParameters(
+                totalPathLength,
+                effectivePathLength,
+                startOffset,
+                endOffset,
+                instanceCount,
+                definition,
+                path.closed
+            );
+
+            if (size(normalizedParameters) == 0)
+            {
+                throw regenError("No mate connectors can be placed with the specified spacing parameters. Adjust spacing, instance count, or offsets.");
+            }
+
+            // Evaluate tangent lines at each computed position along the path
+            const tangentEvaluation = evPathTangentLines(context, path, normalizedParameters);
+
+            // Resolve face-normal orientation axes for this group.
+            // Used when alignmentMode == FACE_NORMAL and a planar face is available.
+            var groupFaceNormalZAxis = undefined;
+            var groupFaceNormalXAxis = undefined;
+
+            if (definition.alignmentMode == MateConnectorAlignmentMode.FACE_NORMAL &&
+                !isQueryEmpty(context, groupFaceQuery))
+            {
+                const facePlane = try(evPlane(context, { "face" : qNthElement(groupFaceQuery, 0) }));
+                if (facePlane != undefined)
+                {
+                    groupFaceNormalZAxis = facePlane.normal;
+                    groupFaceNormalXAxis = facePlane.x;
+                }
+            }
+
+            evaluatedGroups = append(evaluatedGroups, {
+                        "tangentLines"    : tangentEvaluation.tangentLines,
+                        "faceNormalZAxis" : groupFaceNormalZAxis,
+                        "faceNormalXAxis" : groupFaceNormalXAxis
                     });
+        }
+
+        // Delete all temporary offset wire bodies before creating mate connectors
+        // so they do not pollute the qCreatedBy result used for query variable registration.
+        for (var wireIndex = 0; wireIndex < size(offsetWireBodies); wireIndex += 1)
+        {
+            if (!isQueryEmpty(context, offsetWireBodies[wireIndex]))
+            {
+                opDeleteBodies(context, id + ("deleteOffsetWire" ~ wireIndex),
+                    { "entities" : offsetWireBodies[wireIndex] });
+            }
+        }
+
+        // ----------------------------------------------------------------
+        // Phase 2: Create mate connectors from all evaluated groups.
+        // A flat counter across groups ensures every opMateConnector call
+        // receives a unique sub-id regardless of which group it belongs to.
+        // ----------------------------------------------------------------
+        var totalConnectorCount = 0;
+
+        for (var groupIndex = 0; groupIndex < size(evaluatedGroups); groupIndex += 1)
+        {
+            const evaluatedGroup = evaluatedGroups[groupIndex];
+            const tangentLines = evaluatedGroup.tangentLines;
+            const groupFaceNormalZAxis = evaluatedGroup.faceNormalZAxis;
+            const groupFaceNormalXAxis = evaluatedGroup.faceNormalXAxis;
+
+            for (var connectorIndex = 0; connectorIndex < size(tangentLines); connectorIndex += 1)
+            {
+                const tangentLine = tangentLines[connectorIndex];
+
+                // The connector origin is taken directly from the tangent evaluation.
+                // When a path offset was requested, this is already a point on the offset wire
+                // (properly mitered/trimmed by @opOffsetCurveOnFace), so no further translation is needed.
+                const connectorOrigin = tangentLine.origin;
+
+                var connectorCoordinateSystem;
+
+                if (definition.alignmentMode == MateConnectorAlignmentMode.PATH_TANGENT ||
+                    (definition.alignmentMode == MateConnectorAlignmentMode.FACE_NORMAL &&
+                        groupFaceNormalZAxis == undefined))
+                {
+                    // Z-axis follows the curve tangent; X-axis is an arbitrary perpendicular.
+                    // FACE_NORMAL falls back here when the face is non-planar or could not be inferred.
+                    connectorCoordinateSystem = coordSystem(
+                        connectorOrigin,
+                        perpendicularVector(tangentLine.direction),
+                        tangentLine.direction
+                    );
+                }
+                else if (definition.alignmentMode == MateConnectorAlignmentMode.FACE_NORMAL)
+                {
+                    // Z-axis = face normal, X-axis = face X direction.
+                    // Each group independently derives its face normal, so connectors on
+                    // different faces of a solid (e.g. a cube) each align to their own face.
+                    connectorCoordinateSystem = coordSystem(
+                        connectorOrigin,
+                        groupFaceNormalXAxis,
+                        groupFaceNormalZAxis
+                    );
+                }
+                else
+                {
+                    // GLOBAL_REFERENCE: all connectors share the orientation of the reference entity.
+                    connectorCoordinateSystem = coordSystem(
+                        connectorOrigin,
+                        globalReferenceXAxis,
+                        globalReferenceZAxis
+                    );
+                }
+
+                opMateConnector(context, id + "mateConnector" + totalConnectorCount, {
+                            "coordSystem" : connectorCoordinateSystem,
+                            "owner" : ownerBodyQuery
+                        });
+                totalConnectorCount += 1;
+            }
         }
 
         // Register created mate connectors as a named query variable if requested
@@ -521,6 +617,40 @@ function computeMateConnectorParameters(totalPathLength is ValueWithUnits, effec
 }
 
 /**
+ * Finds the face that is adjacent to every edge in the provided query by intersecting
+ * the adjacent-face sets of all edges. Returns the common face query, or qNothing() if
+ * the edges do not all lie on the same face (or the edge list is empty).
+ *
+ * Used to infer the containing face for offset computation and FACE_NORMAL orientation
+ * when only edges have been selected and no explicit face is available.
+ *
+ * Parameters:
+ *   context {Context} - The active context
+ *   edges   {Query}   - The edges to inspect (must all lie on the same face to succeed)
+ *
+ * Returns:
+ *   {Query} - A query resolving to the shared face, or qNothing() when inference fails
+ */
+function inferFaceFromEdges(context is Context, edges is Query) returns Query
+{
+    const edgeList = evaluateQuery(context, edges);
+    if (size(edgeList) == 0)
+    {
+        return qNothing();
+    }
+
+    // AdjacencyType.EDGE finds the faces that bound an edge (the correct adjacency for edge->face queries)
+    var commonFaces = qAdjacent(edgeList[0], AdjacencyType.EDGE, EntityType.FACE);
+    for (var edgeIndex = 1; edgeIndex < size(edgeList); edgeIndex += 1)
+    {
+        const adjacentToThisEdge = qAdjacent(edgeList[edgeIndex], AdjacencyType.EDGE, EntityType.FACE);
+        commonFaces = qIntersection([commonFaces, adjacentToThisEdge]);
+    }
+
+    return commonFaces;
+}
+
+/**
  * Creates a true offset wire from a set of face boundary edges using the kernel
  * opOffsetCurveOnFace operation. Corner mitering and wire trimming are handled by
  * the kernel, producing the same result as the standard "Offset curve" feature.
@@ -534,8 +664,9 @@ function computeMateConnectorParameters(totalPathLength is ValueWithUnits, effec
  *   wireOperationId {Id}               - A unique sub-ID for the offset wire operation
  *   sourceEdges {Query}                - The face boundary edges to offset from
  *   targetFace {Query}                 - The face that the edges lie on, used by the kernel
- *                                       as the offset surface. May be explicitly user-selected
- *                                       or inferred automatically from the source edges.
+ *                                       as the offset surface. Supply the face directly or pass
+ *                                       the result of inferFaceFromEdges when the face must be
+ *                                       derived automatically from the source edges.
  *   offsetDistance {ValueWithUnits}    - The offset distance (must be positive)
  *   flipDirection {boolean}            - When true the offset is in the opposite lateral direction
  *
