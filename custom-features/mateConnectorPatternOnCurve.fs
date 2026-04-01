@@ -1,13 +1,13 @@
 FeatureScript 2909;
 // Mate Connector Pattern on Curve
 // Creates a pattern of mate connectors along a curve using flexible spacing options
-// from the centralized spacingUtils module. Supports both direct edge selection and
-// face-boundary selection modes, path-tangent and global-reference orientation modes,
-// and can wrap all created connectors as a named query variable.
+// from the centralized spacingUtils module. Supports free-form curve selection (CURVE mode)
+// and face-boundary selection with optional edge sub-selection (FACE mode), path-tangent
+// and global-reference orientation modes, and can wrap all created connectors as a named
+// query variable.
 
 import(path : "onshape/std/common.fs", version : "2909.0");
 import(path : "onshape/std/queryVariable.fs", version : "2909.0");
-import(path : "onshape/std/offsetcurvetype.gen.fs", version : "2909.0");
 
 // Import spacing utilities for EQUAL / DISTANCE / BESTFIT curve pattern logic
 // (same module used by onlyTabs.fs and sheetMetalStitchCutBend.fs)
@@ -23,15 +23,15 @@ const NORMALIZED_PARAMETER_TOLERANCE = 1e-9;
 
 /**
  * Selects how the curve path is provided to the feature.
- * @value EDGES : The user picks one or more connected edges directly.
- * @value FACE  : The user picks a single face; the feature uses that face's
- *               boundary edges as the path and optionally offsets connector
- *               origins along the face normal.
+ * @value CURVE : The user picks one or more connected edges forming a free-form continuous curve.
+ * @value FACE  : The user picks a single face; the feature uses that face's boundary edges
+ *               (or a user-specified subset of them) as the path, and optionally offsets
+ *               connector origins inward/outward along the face surface.
  */
 export enum PathSelectionMode
 {
-    annotation { "Name" : "Edges" }
-    EDGES,
+    annotation { "Name" : "Curve" }
+    CURVE,
     annotation { "Name" : "Face" }
     FACE
 }
@@ -66,22 +66,36 @@ export const mateConnectorPatternOnCurve = defineFeature(function(context is Con
                     "UIHint" : [UIHint.HORIZONTAL_ENUM, UIHint.REMEMBER_PREVIOUS_VALUE] }
         definition.pathSelectionMode is PathSelectionMode;
 
-        if (definition.pathSelectionMode == PathSelectionMode.EDGES)
+        if (definition.pathSelectionMode == PathSelectionMode.CURVE)
         {
-            // EDGES mode: user picks one or more connected edges forming a continuous path
-            annotation { "Name" : "Path edges",
+            // CURVE mode: user picks one or more connected edges forming a continuous free-form curve
+            annotation { "Name" : "Path curve",
                         "Filter" : EntityType.EDGE,
                         "UIHint" : UIHint.SHOW_CREATE_SELECTION }
             definition.pathEdges is Query;
         }
         else
         {
-            // FACE mode: user picks one face; its boundary edges become the path
+            // FACE mode: user picks one face; its boundary edges become the path by default
             annotation { "Name" : "Face",
                         "Description" : "Select a face. The feature will pattern mate connectors along the boundary edges of this face.",
                         "Filter" : EntityType.FACE,
                         "MaxNumberOfPicks" : 1 }
             definition.pathFace is Query;
+
+            // Optional edge sub-selection: instead of using all boundary edges, pattern along
+            // a chosen subset of edges on the face (e.g. three sides of a rectangle).
+            annotation { "Name" : "Use edge subset" }
+            definition.useFaceEdgeSubset is boolean;
+
+            if (definition.useFaceEdgeSubset)
+            {
+                annotation { "Name" : "Face edges",
+                            "Description" : "Select the specific edges on the face to pattern along. All selected edges must be connected.",
+                            "Filter" : EntityType.EDGE && ConstructionObject.NO,
+                            "UIHint" : UIHint.SHOW_CREATE_SELECTION }
+                definition.faceSubsetEdges is Query;
+            }
 
             // Face path offset - shifts connector origins laterally within the face plane,
             // perpendicular to the curve tangent at each position (offset curve behavior)
@@ -150,56 +164,48 @@ export const mateConnectorPatternOnCurve = defineFeature(function(context is Con
         var activePathEdges is Query = qNothing();
 
         // When FACE mode with path offset is enabled, holds the query for the temporary offset wire
-        // body created by @opOffsetCurveOnFace. The body is deleted after tangent lines are extracted
+        // body created by buildFacePathOffsetWire. The body is deleted after tangent lines are extracted
         // so it does not appear in the final qCreatedBy result used for query variable registration.
         var offsetWireBody is Query = qNothing();
 
         if (definition.pathSelectionMode == PathSelectionMode.FACE)
         {
-            // Get all edges that border the selected face (outer boundary + any hole loops).
-            // constructPath will attempt to order them into a single continuous path;
-            // if the face has multiple disconnected loops the path build will fail with a clear error below.
-            activePathEdges = qAdjacent(definition.pathFace, AdjacencyType.EDGE, EntityType.EDGE);
-
-            if (size(evaluateQuery(context, activePathEdges)) == 0)
+            if (definition.useFaceEdgeSubset)
             {
-                throw regenError("The selected face has no boundary edges.", ["pathFace"]);
+                // Subset mode: use only the user-chosen edges on this face.
+                activePathEdges = definition.faceSubsetEdges;
+
+                if (isQueryEmpty(context, activePathEdges))
+                {
+                    throw regenError("No face edges are selected. Select one or more connected edges on the face.", ["faceSubsetEdges"]);
+                }
+            }
+            else
+            {
+                // Full boundary mode: collect every edge that borders the selected face.
+                activePathEdges = qAdjacent(definition.pathFace, AdjacencyType.EDGE, EntityType.EDGE);
+
+                if (isQueryEmpty(context, activePathEdges))
+                {
+                    throw regenError("The selected face has no boundary edges.", ["pathFace"]);
+                }
             }
 
-            // When a path offset is requested, use @opOffsetCurveOnFace to build a true offset wire
-            // from the face boundary edges. This delegates corner mitering and trimming to the kernel,
-            // matching the behaviour of the standard "Offset curve" feature and avoiding the per-edge
-            // tangent-direction problem that causes connectors to be pushed past miter corners.
+            // When a path offset is requested, use buildFacePathOffsetWire (defined in spacingUtils)
+            // to build a true offset wire. This delegates corner mitering and trimming to the kernel,
+            // matching the behaviour of the standard "Offset curve" feature.
             if (definition.useFaceNormalOffset && definition.faceNormalOffset > 0 * meter)
             {
-                const offsetWireId = id + "offsetWire";
-                try
-                {
-                    @opOffsetCurveOnFace(context, offsetWireId, {
-                                "edges"             : activePathEdges,
-                                "oppositeDirection" : definition.faceNormalOffsetFlip,
-                                "imprint"           : false,
-                                "extend"            : false,
-                                "distance"          : definition.faceNormalOffset,
-                                "offsetType"        : OffsetCurveType.EUCLIDEAN,
-                                "targets"           : definition.pathFace,
-                                "roundedCorners"    : false
-                            });
-                }
-
-                const offsetWireBodies = evaluateQuery(context, qCreatedBy(offsetWireId, EntityType.BODY));
-                if (size(offsetWireBodies) == 0)
-                {
-                    throw regenError("Unable to create offset path at the specified distance. Reduce the offset distance or disable the offset.", ["faceNormalOffset"]);
-                }
-
-                // Replace activePathEdges with the offset wire's edges so that all downstream
-                // path construction, length computation, and tangent sampling operate on the
-                // correctly mitered offset curve rather than the original face boundary.
-                // Only the primary wire body is used; multiple bodies can result when offset
-                // distance exceeds the inradius of a concave boundary region.
-                offsetWireBody = qCreatedBy(offsetWireId, EntityType.BODY);
-                activePathEdges = qOwnedByBody(offsetWireBodies[0], EntityType.EDGE);
+                const offsetResult = buildFacePathOffsetWire(
+                    context,
+                    id + "offsetWire",
+                    activePathEdges,
+                    definition.pathFace,
+                    definition.faceNormalOffset,
+                    definition.faceNormalOffsetFlip
+                );
+                offsetWireBody = offsetResult.offsetWireBody;
+                activePathEdges = offsetResult.offsetWireEdges;
             }
         }
         else
@@ -213,7 +219,14 @@ export const mateConnectorPatternOnCurve = defineFeature(function(context is Con
         {
             if (definition.pathSelectionMode == PathSelectionMode.FACE)
             {
-                throw regenError("Unable to build a continuous path from the face boundary edges. The face boundary may have multiple disconnected loops.", ["pathFace"]);
+                if (definition.useFaceEdgeSubset)
+                {
+                    throw regenError("Unable to build a continuous path from the selected face edges. Ensure all selected edges are connected.", ["faceSubsetEdges"]);
+                }
+                else
+                {
+                    throw regenError("Unable to build a continuous path from the face boundary edges. The face boundary may have multiple disconnected loops.", ["pathFace"]);
+                }
             }
             else
             {
