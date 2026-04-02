@@ -8,6 +8,7 @@ FeatureScript 2909;
 
 import(path : "onshape/std/common.fs", version : "2909.0");
 import(path : "onshape/std/queryVariable.fs", version : "2909.0");
+import(path : "onshape/std/offsetCurveOnFace.fs", version : "2909.0");
 
 // Import spacing utilities for EQUAL / DISTANCE / BESTFIT curve pattern logic
 // (same module used by onlyTabs.fs and sheetMetalStitchCutBend.fs)
@@ -248,20 +249,7 @@ export const mateConnectorPatternOnCurve = defineFeature(function(context is Con
         {
             const group = patternGroups[groupIndex];
             var activePathEdges is Query = group.edges;
-            var groupFaceQuery is Query = group.faceQuery;
-
-            // For edge-only groups, infer the containing face when it is needed for:
-            //   (a) offset wire computation, or (b) FACE_NORMAL orientation.
-            const needsFaceInference = isQueryEmpty(context, groupFaceQuery) &&
-                (definition.pathSelectionMode == PathSelectionMode.FACE &&
-                    ((definition.useFaceNormalOffset && definition.faceNormalOffset > 0 * meter) ||
-                        definition.alignmentMode == MateConnectorAlignmentMode.FACE_NORMAL));
-
-            if (needsFaceInference)
-            {
-                const inferredFace = inferFaceFromEdges(context, activePathEdges);
-                groupFaceQuery = qNthElement(inferredFace, 0);
-            }
+            const groupFaceQuery is Query = group.faceQuery;
 
             // Build a path from the source edges to validate connectivity early and to use as
             // the base path when no offset is applied.
@@ -291,10 +279,10 @@ export const mateConnectorPatternOnCurve = defineFeature(function(context is Con
             var finalPath = sourcePath;
 
             // Apply path offset when requested in FACE mode.
-            // Calls the standard library offsetCurveOnFace feature function directly, passing
-            // the source edges and the user's flip boolean. targets is left as qNothing() so
-            // the kernel infers the offset surface from the edge topology — the same way the
-            // built-in "Offset Curve" feature works when no targets are explicitly specified.
+            // Calls the standard library offsetCurveOnFace feature function directly.
+            // When a face was explicitly selected, groupFaceQuery is passed as targets so
+            // the kernel knows which surface to project onto. For edge-only selections
+            // groupFaceQuery is qNothing() and the kernel infers the surface from the edges.
             if (definition.pathSelectionMode == PathSelectionMode.FACE &&
                 definition.useFaceNormalOffset && definition.faceNormalOffset > 0 * meter)
             {
@@ -303,6 +291,7 @@ export const mateConnectorPatternOnCurve = defineFeature(function(context is Con
                     context,
                     offsetWireId,
                     activePathEdges,
+                    groupFaceQuery,
                     definition.faceNormalOffset,
                     definition.faceNormalOffsetFlip
                 );
@@ -642,64 +631,48 @@ function computeMateConnectorParameters(totalPathLength is ValueWithUnits, effec
 }
 
 /**
- * Finds the face that is adjacent to every edge in the provided query by intersecting
- * the adjacent-face sets of all edges. Returns the common face query, or qNothing() if
- * the edges do not all lie on the same face (or the edge list is empty).
+ * Evaluates the tangent plane of the face closest to the given 3D position.
  *
- * Used to infer the containing face for offset computation and FACE_NORMAL orientation
- * when only edges have been selected and no explicit face is available.
- *
- * Parameters:
- *   context {Context} - The active context
- *   edges   {Query}   - The edges to inspect (must all lie on the same face to succeed)
- *
- * Returns:
- *   {Query} - A query resolving to the shared face, or qNothing() when inference fails
- */
-function inferFaceFromEdges(context is Context, edges is Query) returns Query
-{
-    const edgeList = evaluateQuery(context, edges);
-    if (size(edgeList) == 0)
-    {
-        return qNothing();
-    }
-
-    // AdjacencyType.EDGE finds the faces that bound an edge (the correct adjacency for edge->face queries)
-    var commonFaces = qAdjacent(edgeList[0], AdjacencyType.EDGE, EntityType.FACE);
-    for (var edgeIndex = 1; edgeIndex < size(edgeList); edgeIndex += 1)
-    {
-        const adjacentToThisEdge = qAdjacent(edgeList[edgeIndex], AdjacencyType.EDGE, EntityType.FACE);
-        commonFaces = qIntersection([commonFaces, adjacentToThisEdge]);
-    }
-
-    return commonFaces;
-}
-
-/**
- * Evaluates the tangent plane of a face at the surface point closest to the given 3D position.
- * Uses evDistance to project the position onto the face and obtain its UV parameter, then
- * evFaceTangentPlane to read the local tangent plane at that UV. This works correctly for
- * planar, cylindrical, conical, and any other analytic or spline surface type.
+ * When faceQuery is non-empty (e.g., the user explicitly selected a face), the search
+ * is restricted to that face set. When faceQuery is empty (edge-only selection with no
+ * associated face), the search falls back to all solid-body faces in the context using
+ * qClosestTo — a spatial proximity metric that does not require topological connectivity.
+ * This correctly handles offset wire positions which are new bodies with no topological
+ * link to the original part faces.
  *
  * Parameters:
  *   context   {Context} - The active context
- *   faceQuery {Query}   - The face to evaluate (only the first result is used)
- *   point     {Vector}  - The 3D world-space position to project onto the face
+ *   faceQuery {Query}   - Candidate faces to search (or qNothing() to search all solid faces)
+ *   point     {Vector}  - The 3D world-space position to find the closest face to
  *
  * Returns:
  *   {Plane} - Tangent plane at the closest face point: normal = local face normal,
  *             x = surface parameterization X direction at that point.
- *             Returns undefined when projection or tangent plane evaluation fails.
+ *             Returns undefined when no face is found or evaluation fails.
  */
 function evaluateFaceNormalAtPoint(context is Context, faceQuery is Query, point is Vector) returns Plane
 {
-    const face = qNthElement(faceQuery, 0);
+    // Pick the candidate face set: the explicitly provided face query when available,
+    // otherwise all non-construction faces owned by solid bodies.
+    var candidateFaces is Query = faceQuery;
+    if (isQueryEmpty(context, candidateFaces))
+    {
+        candidateFaces = qOwnedByBody(qBodyType(qEverything(EntityType.BODY), BodyType.SOLID), EntityType.FACE);
+    }
 
-    // Project the 3D position onto the face surface to obtain its UV parameter.
-    // When side0 is a face, evDistance returns the UV parameter of the closest face point
-    // in distResult.sides[0].parameter — exactly the form evFaceTangentPlane expects.
+    // qClosestTo finds the spatially nearest face to the point without requiring
+    // any topological connection between the point and the face.
+    const closestFace = qClosestTo(candidateFaces, point);
+    if (isQueryEmpty(context, closestFace))
+    {
+        return undefined;
+    }
+
+    // Project the point onto the closest face to obtain its UV parameter, then read
+    // the local tangent plane at that UV. This works for planar, cylindrical, conical,
+    // and all other analytic or spline surface types.
     const distResult = try(evDistance(context, {
-                "side0" : face,
+                "side0" : closestFace,
                 "side1" : point
             }));
     if (distResult == undefined)
@@ -708,7 +681,7 @@ function evaluateFaceNormalAtPoint(context is Context, faceQuery is Query, point
     }
 
     return try(evFaceTangentPlane(context, {
-                "face"      : face,
+                "face"      : closestFace,
                 "parameter" : distResult.sides[0].parameter
             }));
 }
@@ -722,6 +695,9 @@ function evaluateFaceNormalAtPoint(context is Context, faceQuery is Query, point
  *   context {Context}               - The active context
  *   wireOperationId {Id}            - A unique sub-ID for the offset wire operation
  *   sourceEdges {Query}             - The face boundary edges to offset from
+ *   targetFace {Query}              - The face to use as the offset surface. Pass the
+ *                                    explicitly selected face when available, or qNothing()
+ *                                    to let the kernel infer from the edge topology.
  *   offsetDistance {ValueWithUnits} - The offset distance (must be positive)
  *   flipDirection {boolean}         - Passed as oppositeDirection to the standard feature
  *
@@ -730,16 +706,17 @@ function evaluateFaceNormalAtPoint(context is Context, faceQuery is Query, point
  *       offsetWireBody  {Query} - The created wire body (delete after sampling)
  *       offsetWireEdges {Query} - Edges of the first wire body, ready for constructPath
  */
-function buildFacePathOffsetWire(context is Context, wireOperationId is Id, sourceEdges is Query, offsetDistance is ValueWithUnits, flipDirection is boolean) returns map
+function buildFacePathOffsetWire(context is Context, wireOperationId is Id, sourceEdges is Query, targetFace is Query, offsetDistance is ValueWithUnits, flipDirection is boolean) returns map
 {
     // Call the standard library offsetCurveOnFace feature function directly.
-    // targets is left as qNothing() (the standard default) so the kernel infers
-    // the offset surface from the input edges, exactly as the built-in feature does.
+    // Passing targetFace as targets tells the kernel which surface to project onto;
+    // qNothing() (when no face was explicitly selected) lets it infer from the edges.
     offsetCurveOnFace(context, wireOperationId, {
                 "edges"              : sourceEdges,
                 "distance"           : offsetDistance,
                 "oppositeDirection"  : flipDirection,
-                "offsetType"         : OffsetCurveType.EUCLIDEAN
+                "offsetType"         : OffsetCurveType.EUCLIDEAN,
+                "targets"            : targetFace
             });
 
     const wireBodies = evaluateQuery(context, qCreatedBy(wireOperationId, EntityType.BODY));
