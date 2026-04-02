@@ -8,7 +8,6 @@ FeatureScript 2909;
 
 import(path : "onshape/std/common.fs", version : "2909.0");
 import(path : "onshape/std/queryVariable.fs", version : "2909.0");
-import(path : "onshape/std/offsetcurvetype.gen.fs", version : "2909.0");
 
 // Import spacing utilities for EQUAL / DISTANCE / BESTFIT curve pattern logic
 // (same module used by onlyTabs.fs and sheetMetalStitchCutBend.fs)
@@ -264,10 +263,8 @@ export const mateConnectorPatternOnCurve = defineFeature(function(context is Con
                 groupFaceQuery = qNthElement(inferredFace, 0);
             }
 
-            // Build a path from the source edges early to obtain a consistent edge traversal
-            // order. This path-ordered query is passed to the offset operation below so that
-            // @opOffsetCurveOnFace always sees edges in the same sequence regardless of how
-            // the user selected them, making the offset direction stable across selections.
+            // Build a path from the source edges to validate connectivity early and to use as
+            // the base path when no offset is applied.
             const sourcePath = try(constructPath(context, activePathEdges));
             if (sourcePath == undefined)
             {
@@ -294,25 +291,18 @@ export const mateConnectorPatternOnCurve = defineFeature(function(context is Con
             var finalPath = sourcePath;
 
             // Apply path offset when requested in FACE mode.
-            // The source edges and the user's flip boolean are passed directly to
-            // @opOffsetCurveOnFace, matching exactly how the standard "Offset Curve" feature
-            // (offsetCurveOnFace.fs) calls the kernel. No geometry-derived direction computation
-            // is performed; stability comes from the kernel treating the same edge query the
-            // same way every regen, just as the standard feature does.
+            // Calls the standard library offsetCurveOnFace feature function directly, passing
+            // the source edges and the user's flip boolean. targets is left as qNothing() so
+            // the kernel infers the offset surface from the edge topology — the same way the
+            // built-in "Offset Curve" feature works when no targets are explicitly specified.
             if (definition.pathSelectionMode == PathSelectionMode.FACE &&
                 definition.useFaceNormalOffset && definition.faceNormalOffset > 0 * meter)
             {
-                if (isQueryEmpty(context, groupFaceQuery))
-                {
-                    throw regenError("Unable to infer a containing face from the selected edges for the offset. Ensure the edges all lie on the same face, or select the face explicitly.", ["pathFace"]);
-                }
-
                 const offsetWireId = id + ("offsetWire" ~ groupIndex);
                 const offsetResult = buildFacePathOffsetWire(
                     context,
                     offsetWireId,
                     activePathEdges,
-                    groupFaceQuery,
                     definition.faceNormalOffset,
                     definition.faceNormalOffsetFlip
                 );
@@ -724,44 +714,33 @@ function evaluateFaceNormalAtPoint(context is Context, faceQuery is Query, point
 }
 
 /**
- * opOffsetCurveOnFace operation. Corner mitering and wire trimming are handled by
- * the kernel, producing the same result as the standard "Offset curve" feature.
- *
- * This helper is defined here so the feature is self-contained. The same function
- * is also exported from spacingUtils.fs for use by other features once spacingUtils
- * is next published.
+ * Calls the standard `offsetCurveOnFace` feature function to produce an offset wire body
+ * from the given edges. This is the same function called by the built-in "Offset Curve"
+ * feature, so the result is identical to what that feature produces for the same inputs.
  *
  * Parameters:
- *   context {Context}                  - The active context
- *   wireOperationId {Id}               - A unique sub-ID for the offset wire operation
- *   sourceEdges {Query}                - The face boundary edges to offset from
- *   targetFace {Query}                 - The face that the edges lie on, used by the kernel
- *                                       as the offset surface. Supply the face directly or pass
- *                                       the result of inferFaceFromEdges when the face must be
- *                                       derived automatically from the source edges.
- *   offsetDistance {ValueWithUnits}    - The offset distance (must be positive)
- *   flipDirection {boolean}            - When true the offset is in the opposite lateral direction
+ *   context {Context}               - The active context
+ *   wireOperationId {Id}            - A unique sub-ID for the offset wire operation
+ *   sourceEdges {Query}             - The face boundary edges to offset from
+ *   offsetDistance {ValueWithUnits} - The offset distance (must be positive)
+ *   flipDirection {boolean}         - Passed as oppositeDirection to the standard feature
  *
  * Returns:
  *   {map} - A map with fields:
  *       offsetWireBody  {Query} - The created wire body (delete after sampling)
  *       offsetWireEdges {Query} - Edges of the first wire body, ready for constructPath
  */
-function buildFacePathOffsetWire(context is Context, wireOperationId is Id, sourceEdges is Query, targetFace is Query, offsetDistance is ValueWithUnits, flipDirection is boolean) returns map
+function buildFacePathOffsetWire(context is Context, wireOperationId is Id, sourceEdges is Query, offsetDistance is ValueWithUnits, flipDirection is boolean) returns map
 {
-    try
-    {
-        @opOffsetCurveOnFace(context, wireOperationId, {
-                    "edges"             : sourceEdges,
-                    "oppositeDirection" : flipDirection,
-                    "imprint"           : false,
-                    "extend"            : false,
-                    "distance"          : offsetDistance,
-                    "offsetType"        : OffsetCurveType.EUCLIDEAN,
-                    "targets"           : targetFace,
-                    "roundedCorners"    : false
-                });
-    }
+    // Call the standard library offsetCurveOnFace feature function directly.
+    // targets is left as qNothing() (the standard default) so the kernel infers
+    // the offset surface from the input edges, exactly as the built-in feature does.
+    offsetCurveOnFace(context, wireOperationId, {
+                "edges"              : sourceEdges,
+                "distance"           : offsetDistance,
+                "oppositeDirection"  : flipDirection,
+                "offsetType"         : OffsetCurveType.EUCLIDEAN
+            });
 
     const wireBodies = evaluateQuery(context, qCreatedBy(wireOperationId, EntityType.BODY));
     if (size(wireBodies) == 0)
