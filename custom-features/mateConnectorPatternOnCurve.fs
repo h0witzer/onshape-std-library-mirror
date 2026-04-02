@@ -12,7 +12,7 @@ import(path : "onshape/std/offsetCurveOnFace.fs", version : "2909.0");
 
 // Import spacing utilities for EQUAL / DISTANCE / BESTFIT curve pattern logic
 // (same module used by onlyTabs.fs and sheetMetalStitchCutBend.fs)
-export import(path : "c51f6558b7346f455a634ff5/e0f6c1184369b6128ab4c86d/8ce820287d75ed2e92412d90", version : "15454a8a3cd2d962a10c4f29"); // spacingUtils.fs
+export import(path : "c51f6558b7346f455a634ff5/0557c32c4fd52100d8f288b8/8ce820287d75ed2e92412d90", version : "12af7586d1c73aeacaba1581"); // spacingUtils.fs
 
 // Tolerance for normalized path parameter comparisons (0.0 to 1.0 range).
 // Prevents floating-point precision errors from excluding connectors positioned exactly at the end of the effective zone.
@@ -65,9 +65,9 @@ export enum MateConnectorAlignmentMode
 // FEATURE DEFINITION
 // ============================================================================
 
-annotation { "Feature Type Name" : "Mate Connector Pattern on Curve",
-        "Feature Type Description" : "Creates a pattern of mate connectors along a curve with flexible spacing and alignment options. Output can be wrapped as a query variable.",
-        "Feature Name Template" : "Mate Connector Pattern#featureName" }
+annotation { "Feature Type Name" : "The Hole Shebang",
+        "Feature Type Description" : "Creates a pattern of mate connectors along a curve with flexible spacing and alignment options. Output can be wrapped as a query variable. Does not create holes.",
+        "Feature Name Template" : "The Hole Shebang#featureName" }
 export const mateConnectorPatternOnCurve = defineFeature(function(context is Context, id is Id, definition is map)
     precondition
     {
