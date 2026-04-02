@@ -1,9 +1,15 @@
-// Waffle It slices a selected body into a grid of extruded rectangles to prepare geometry for laser cutting.
+// Waffle It slices a selected body into extruded slabs to prepare geometry for laser cutting.
+// Two slicing modes are supported:
+//   - Waffle mode  : Slices along both the X and Y axes of the reference frame, producing an
+//                    interlocking grid of cross-slotted pieces (classic waffle construction).
+//   - Pancake mode : Slices along only the X axis of the reference frame, producing a stack
+//                    of parallel slabs with no cross-slots.
 // Inputs:
-//  - selectedBody : Body query to slice
-//  - planeSpacing : Distance between slicing planes along the X and Y axes of the reference frame
-//  - matThick : Material thickness that controls extrusion depth
-//  - defRefFrame : Boolean to select a mate connector as the slicing reference frame
+//  - selectedBody  : Body query to slice
+//  - slicingMode   : WaffleSlicingMode enum – WAFFLE for 2-directional, PANCAKE for 1-directional
+//  - planeSpacing  : Distance between slicing planes along the X (and Y in Waffle mode) axes
+//  - matThick      : Material thickness that controls extrusion depth
+//  - defRefFrame   : Boolean to select a mate connector as the slicing reference frame
 //  - referenceFrame : Mate connector query when defRefFrame is true, defines the placement of the slicing grid
 //  - outputSheetMetal : Boolean to output results as sheet metal bodies
 //  - deleteInputBody : Boolean to delete the input body after the waffling operation is completed
@@ -20,12 +26,24 @@ import(path : "onshape/std/attributes.fs", version : "2815.0");
 import(path : "onshape/std/primitives.fs", version : "2815.0");
 import(path : "onshape/std/fillSurface.fs", version : "2815.0");
 
+// Slicing mode: WAFFLE generates an interlocking 2-directional grid; PANCAKE generates parallel slabs in 1 direction.
+export enum WaffleSlicingMode
+{
+    annotation { "Name" : "Waffle" }
+    WAFFLE,
+    annotation { "Name" : "Pancake" }
+    PANCAKE
+}
+
 annotation { "Feature Type Name" : "Waffle It" }
 export const sheetMetalStart = defineSheetMetalFeature(function(context is Context, id is Id, definition is map)
     precondition
     {
         annotation { "Name" : "Body", "Filter" : EntityType.BODY, "MaxNumberOfPicks" : 1 }
         definition.selectedBody is Query;
+
+        annotation { "Name" : "Slicing Mode", "UIHint" : UIHint.HORIZONTAL_ENUM }
+        definition.slicingMode is WaffleSlicingMode;
 
         annotation { "Name" : "Plane Spacing" }
         isLength(definition.planeSpacing, LENGTH_BOUNDS);
@@ -86,7 +104,7 @@ export const sheetMetalStart = defineSheetMetalFeature(function(context is Conte
 
         var referenceFrameToWorldTransform = toWorld(referenceFrame);
 
-        // Build slice sets for X and Y orientations
+        // Build the X-axis slice set, used by both Waffle and Pancake modes
         const xSliceSetDefinition = {
             "featureIdPrefix" : id,
             "setLabel" : "X",
@@ -98,24 +116,31 @@ export const sheetMetalStart = defineSheetMetalFeature(function(context is Conte
             "worldBoundingBox" : worldBoundingBox,
             "targetBody" : definition.selectedBody
         };
-        
-        const ySliceSetDefinition = {
-            "featureIdPrefix" : id,
-            "setLabel" : "Y",
-            "normalVector" : vector([0, 1, 0]),
-            "upVector" : vector([0, 0, 1]),
-            "planeSpacing" : definition.planeSpacing,
-            "referenceFrameToWorldTransform" : referenceFrameToWorldTransform,
-            "materialThickness" : definition.matThick,
-            "worldBoundingBox" : worldBoundingBox,
-            "targetBody" : definition.selectedBody
-        };
-        
+
         var xSliceResult = generateSliceSet(context, xSliceSetDefinition);
-        var ySliceResult = generateSliceSet(context, ySliceSetDefinition);
+
+        // In Waffle mode also build a Y-axis slice set to produce the interlocking cross-slotted grid.
+        // In Pancake mode only the single X-axis set is needed.
+        var sliceSets = [xSliceResult];
+
+        if (definition.slicingMode == WaffleSlicingMode.WAFFLE)
+        {
+            const ySliceSetDefinition = {
+                "featureIdPrefix" : id,
+                "setLabel" : "Y",
+                "normalVector" : vector([0, 1, 0]),
+                "upVector" : vector([0, 0, 1]),
+                "planeSpacing" : definition.planeSpacing,
+                "referenceFrameToWorldTransform" : referenceFrameToWorldTransform,
+                "materialThickness" : definition.matThick,
+                "worldBoundingBox" : worldBoundingBox,
+                "targetBody" : definition.selectedBody
+            };
+            var ySliceResult = generateSliceSet(context, ySliceSetDefinition);
+            sliceSets = [xSliceResult, ySliceResult];
+        }
 
         // Intersect each sheet with the target solid to retain only in-bounds material before generating cross-slot geometry.
-        const sliceSets = [xSliceResult, ySliceResult];
         const trimmedSliceSets = trimSliceSetsToSolid(context, id, sliceSets, definition.selectedBody);
 
         // Generate cross-slot geometry
