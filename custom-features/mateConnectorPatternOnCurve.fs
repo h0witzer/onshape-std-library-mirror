@@ -452,13 +452,13 @@ export const mateConnectorPatternOnCurve = defineFeature(function(context is Con
         if (definition.skipInstances)
         {
             const totalSlots = size(allConnectorPoints);
-            addManipulators(context, id, { "points" : {
+            addManipulators(context, id, { "points" : togglePointsManipulator({
                                 "points" : allConnectorPoints,
                                 "selectedIndices" : mapArray(
                                     filter(definition.skippedInstances,
                                         instance => instance.index >= 1 && instance.index <= totalSlots),
                                     instance => instance.index - 1),
-                                "manipulatorType" : ManipulatorType.TOGGLE_POINTS } as Manipulator });
+                                "suppressedIndices" : [] }) });
         }
 
         // Pre-build a map keyed by string(index) for O(1) skip lookups.
