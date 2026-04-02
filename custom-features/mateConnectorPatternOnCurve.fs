@@ -486,7 +486,7 @@ export const mateConnectorPatternOnCurve = defineFeature(function(context is Con
                 globalInstanceSlot += 1;
 
                 // Skip this position when its slot index is listed in skippedInstances
-                if (definition.skipInstances && skipSet[globalInstanceSlot ~ ""])
+                if (definition.skipInstances && skipSet[globalInstanceSlot ~ ""] == true)
                 {
                     continue;
                 }
