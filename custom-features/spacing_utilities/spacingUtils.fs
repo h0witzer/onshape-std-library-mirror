@@ -10,6 +10,7 @@ import(path : "onshape/std/feature.fs", version : "2856.0");
 import(path : "onshape/std/valueBounds.fs", version : "2856.0");
 import(path : "onshape/std/math.fs", version : "2856.0");
 import(path : "onshape/std/patternUtils.fs", version : "2856.0");
+import(path : "onshape/std/offsetcurvetype.gen.fs", version : "2856.0");
 
 // ============================================================================
 // CURVE PATTERN SPACING UTILITIES
@@ -45,6 +46,24 @@ export enum CurvePatternEndMode
 }
 
 /**
+ * Constrains the instance count computed by BESTFIT spacing to be even, odd, or unconstrained.
+ * Applied after the initial round/ceil so the actual pitch deviates as little as possible
+ * while satisfying the parity requirement.
+ * @value ANY  : No parity constraint; use the count produced by round/ceil
+ * @value EVEN : Force the count to the nearest even number
+ * @value ODD  : Force the count to the nearest odd number
+ */
+export enum BestFitCountParity
+{
+    annotation { "Name" : "Any" }
+    ANY,
+    annotation { "Name" : "Even" }
+    EVEN,
+    annotation { "Name" : "Odd" }
+    ODD,
+}
+
+/**
  * Predicate for curve pattern spacing configuration.
  * Defines the UI fields and validation for spacing type, distance, instance count, and best-fit parameters.
  * 
@@ -57,6 +76,7 @@ export enum CurvePatternEndMode
  *      @field actualPitch {ValueWithUnits} : Read-only actual pitch for BESTFIT spacing
  *      @field actualCount {number} : Read-only computed instance count for BESTFIT spacing
  *      @field doPitchCeiling {boolean} : Whether to round up (ceiling) the instance count for BESTFIT
+ *      @field bestFitCountParity {BestFitCountParity} : Whether to force the BESTFIT count to be even, odd, or unconstrained
  */
 export predicate curvePatternSpacingPredicate(definition is map)
 {
@@ -100,6 +120,10 @@ export predicate curvePatternSpacingPredicate(definition is map)
 
         annotation { "Name" : "Pitch ceiling", "Default" : false }
         definition.doPitchCeiling is boolean;
+
+        annotation { "Name" : "Count parity",
+                    "UIHint" : [UIHint.HORIZONTAL_ENUM, UIHint.REMEMBER_PREVIOUS_VALUE] }
+        definition.bestFitCountParity is BestFitCountParity;
     }
 
     // Offset controls for EQUAL and BESTFIT modes
@@ -147,6 +171,7 @@ export predicate curvePatternSpacingPredicate(definition is map)
  *      @field instanceCount {number} : Input/output instance count
  *      @field targetPitch {ValueWithUnits} : Target pitch for best-fit spacing
  *      @field doPitchCeiling {boolean} : Whether to use ceiling for rounding
+ *      @field bestFitCountParity {BestFitCountParity} : Whether to force the BESTFIT count to be even, odd, or unconstrained
  *      @field useOffsets {boolean} : Whether to use offsets
  *      @field twoOffsets {boolean} : Whether to use two different offsets (false = equal offsets)
  *      @field offset {ValueWithUnits} : Single offset for equal offset mode
@@ -216,6 +241,10 @@ export function computeCurvePatternSpacing(context is Context, id is Id, definit
             integerComputedInstanceNumber = round(computedInstanceNumber);
         }
 
+        // Apply even/odd parity constraint by finding the nearest compliant count.
+        // The count is never allowed to fall below 1.
+        integerComputedInstanceNumber = applyBestFitCountParity(integerComputedInstanceNumber, definition.bestFitCountParity);
+
         definition.instanceCount = integerComputedInstanceNumber;
 
         const actualPitch = effectiveLength / (integerComputedInstanceNumber - corrector);
@@ -267,6 +296,7 @@ export enum CircularPatternSpacingType
  *      @field actualPitch {ValueWithUnits} : Read-only actual pitch for BESTFIT spacing
  *      @field actualCount {number} : Read-only computed instance count for BESTFIT spacing
  *      @field doPitchCeiling {boolean} : Whether to round up (ceiling) the instance count for BESTFIT
+ *      @field bestFitCountParity {BestFitCountParity} : Whether to force the BESTFIT count to be even, odd, or unconstrained
  */
 export predicate circularPatternSpacingPredicate(definition is map)
 {
@@ -310,6 +340,10 @@ export predicate circularPatternSpacingPredicate(definition is map)
 
         annotation { "Name" : "Pitch ceiling", "Default" : false }
         definition.doPitchCeiling is boolean;
+
+        annotation { "Name" : "Count parity",
+                    "UIHint" : [UIHint.HORIZONTAL_ENUM, UIHint.REMEMBER_PREVIOUS_VALUE] }
+        definition.bestFitCountParity is BestFitCountParity;
     }
 }
 
@@ -331,6 +365,7 @@ export predicate circularPatternSpacingPredicate(definition is map)
  *      @field useReferencePoint {boolean} : Whether to use custom reference point
  *      @field referencePoint {Query} : Custom reference point vertex
  *      @field doPitchCeiling {boolean} : Whether to use ceiling for rounding
+ *      @field bestFitCountParity {BestFitCountParity} : Whether to force the BESTFIT count to be even, odd, or unconstrained
  * 
  * @returns {map} : Updated definition with computed spacing parameters
  */
@@ -366,6 +401,11 @@ export function computeCircularPatternSpacing(context is Context, id is Id, defi
         {
             integerComputedInstanceNumber = round(computedInstanceNumber);
         }
+
+        // Apply even/odd parity constraint by finding the nearest compliant count.
+        // The count is never allowed to fall below 1.
+        integerComputedInstanceNumber = applyBestFitCountParity(integerComputedInstanceNumber, definition.bestFitCountParity);
+
         definition.instanceCount = integerComputedInstanceNumber;
 
         const actualPitch = circumference / (integerComputedInstanceNumber - corrector);
@@ -387,6 +427,41 @@ export function computeCircularPatternSpacing(context is Context, id is Id, defi
 // ============================================================================
 // DOMAIN CALCULATION UTILITIES
 // ============================================================================
+
+/**
+ * Adjusts an integer instance count so that it satisfies the requested parity constraint
+ * (ANY, EVEN, or ODD). The adjusted count stays as close as possible to the original
+ * value and is never reduced below 1.
+ *
+ * Parameters:
+ *   count   {number}              - The initial integer instance count (from round or ceil)
+ *   parity  {BestFitCountParity}  - The desired parity constraint
+ *
+ * Returns:
+ *   {number} - The adjusted integer count satisfying the parity constraint
+ */
+function applyBestFitCountParity(count is number, parity is BestFitCountParity) returns number
+{
+    if (parity == BestFitCountParity.ANY)
+    {
+        return max(1, count);
+    }
+
+    const isEvenRequired = (parity == BestFitCountParity.EVEN);
+    const countIsEven = (count % 2 == 0);
+
+    if ((isEvenRequired && countIsEven) || (!isEvenRequired && !countIsEven))
+    {
+        // Already satisfies the parity requirement
+        return max(1, count);
+    }
+
+    // Nudge by ±1 and return whichever candidate is larger (stays closer to the raw value
+    // while biasing toward more instances rather than fewer — consistent with doPitchCeiling behaviour).
+    const candidatePlus = count + 1;
+    const candidateMinus = count - 1;
+    return max(1, candidatePlus > candidateMinus ? candidatePlus : candidateMinus);
+}
 
 /**
  * Calculates normalized domains for equal spacing distribution.
@@ -548,4 +623,63 @@ export function validateDomainsNoOverlap(domains is array, tolerance is number) 
 function isFeaturePattern(patternType) returns boolean
 {
     return patternType == PatternType.FEATURE;
+}
+
+// ============================================================================
+// FACE PATH OFFSET UTILITIES
+// ============================================================================
+
+/**
+ * Creates a true offset wire from a set of face boundary edges using the kernel
+ * opOffsetCurveOnFace operation. Corner mitering and wire trimming are handled by
+ * the kernel, producing the same result as the standard "Offset curve" feature.
+ *
+ * This utility is provided here so that any feature needing to pattern or sample
+ * along an inset/outset of a face boundary can reuse the same tested logic rather
+ * than re-implementing the per-edge cross-product approach (which breaks at corners).
+ *
+ * @param context {Context} : The active context
+ * @param id {Id} : A unique sub-ID for the offset wire operation (e.g. id + "offsetWire")
+ * @param sourceEdges {Query} : The face boundary edges to offset from
+ * @param targetFace {Query} : The face that the edges lie on; used by the kernel as the
+ *                             offset surface so the wire stays on-face
+ * @param distance {ValueWithUnits} : The offset distance (must be positive)
+ * @param flipDirection {boolean} : When true the offset is applied in the opposite lateral direction
+ *
+ * @returns {map} : A map with the following fields:
+ *      @field offsetWireBody {Query} : The created wire body (delete this after you are done sampling it)
+ *      @field offsetWireEdges {Query} : The edges owned by the first wire body, ready to be
+ *                                       passed to constructPath / evPathTangentLines
+ */
+export function buildFacePathOffsetWire(context is Context, id is Id, sourceEdges is Query, targetFace is Query, distance is ValueWithUnits, flipDirection is boolean) returns map
+{
+    // Delegate to the kernel. The try block ensures a graceful error when the offset
+    // distance is too large (e.g. larger than the inradius of a corner) rather than
+    // propagating a raw kernel exception.
+    try
+    {
+        @opOffsetCurveOnFace(context, id, {
+                    "edges"             : sourceEdges,
+                    "oppositeDirection" : flipDirection,
+                    "imprint"           : false,
+                    "extend"            : false,
+                    "distance"          : distance,
+                    "offsetType"        : OffsetCurveType.EUCLIDEAN,
+                    "targets"           : targetFace,
+                    "roundedCorners"    : false
+                });
+    }
+
+    const wireBodies = evaluateQuery(context, qCreatedBy(id, EntityType.BODY));
+    if (size(wireBodies) == 0)
+    {
+        throw regenError("Unable to build offset path. The offset distance may be too large for the selected geometry. Reduce the offset distance or disable the offset.");
+    }
+
+    // When the offset splits into multiple disjoint wire bodies (can happen for concave regions),
+    // only the first body is used; callers that need all bodies can read qCreatedBy(id, EntityType.BODY).
+    return {
+        "offsetWireBody"  : qCreatedBy(id, EntityType.BODY),
+        "offsetWireEdges" : qOwnedByBody(wireBodies[0], EntityType.EDGE)
+    };
 }
