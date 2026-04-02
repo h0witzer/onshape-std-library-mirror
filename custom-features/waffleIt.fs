@@ -24,7 +24,6 @@ import(path : "onshape/std/evaluate.fs", version : "2815.0");
 import(path : "onshape/std/topologyUtils.fs", version : "2815.0");
 import(path : "onshape/std/attributes.fs", version : "2815.0");
 import(path : "onshape/std/primitives.fs", version : "2815.0");
-import(path : "onshape/std/fillSurface.fs", version : "2815.0");
 
 // Slicing mode: WAFFLE generates an interlocking 2-directional grid; PANCAKE generates parallel slabs in 1 direction.
 export enum WaffleSlicingMode
@@ -178,20 +177,22 @@ export const sheetMetalStart = defineSheetMetalFeature(function(context is Conte
 
     }, {});
 
-// Generate a set of slice bodies by creating planes at regular intervals along a normal direction,
-// intersecting each plane with a bounding box to get the slice profile, and extruding to create bodies.
-// Supports arbitrary slice orientations for future curve-based slicing features.
+// Generate a set of slice bodies by creating a slab for each plane interval that covers the target body,
+// trimming each slab to the target solid in a subsequent step.
+// Each slab is built directly in the reference frame coordinate system (fCuboid at world origin,
+// then opTransform to the correct position and orientation) to avoid opFillSurface and world-aligned
+// bounding box body artifacts.
 // Inputs:
 //  - context : Execution context
 //  - sliceSetDefinition : Map containing:
 //      - featureIdPrefix : Base id for naming geometry
 //      - setLabel : String label for this set (e.g., "X", "Y")
-//      - normalVector : Normal vector for the slicing planes in reference frame coordinates
-//      - upVector : Up vector for orienting the slices in reference frame coordinates
+//      - normalVector : Normal vector for the slicing planes in reference frame coordinates (dimensionless)
+//      - upVector : Up vector for orienting the slices in reference frame coordinates (dimensionless)
 //      - planeSpacing : Distance between consecutive slices
 //      - referenceFrameToWorldTransform : Transform from reference frame to world coordinates
-//      - materialThickness : Extrusion depth for the slices
-//      - worldBoundingBox : World-aligned bounding box of the target body
+//      - materialThickness : Slab thickness (matching the stock thickness)
+//      - worldBoundingBox : World-aligned bounding box of the target body (used for depth extent and slab sizing)
 // Returns: map containing { slicePlanes, sliceIds, setLabel, normalVector, upVector }
 export function generateSliceSet(context is Context, sliceSetDefinition is map) returns map
 {
@@ -244,17 +245,14 @@ export function generateSliceSet(context is Context, sliceSetDefinition is map) 
         }
     }
     
-    // Create a world-aligned bounding box body to intersect with (ensures properly sized slices)
-    const boundingBoxId = featureIdPrefix + setLabel + "BoundingBox";
-    
-    // Create axis-aligned box directly in world coordinates
-    fCuboid(context, boundingBoxId, {
-                "corner1" : worldBoundingBox.minCorner,
-                "corner2" : worldBoundingBox.maxCorner
-            });
-    
-    const boundingBoxBody = qCreatedBy(boundingBoxId, EntityType.BODY);
-    
+    // Compute a slab half-extent large enough to cover the full bounding box in any in-plane direction.
+    // Using the diagonal ensures coverage regardless of how the reference frame is oriented relative to world.
+    const bigExtent = norm(worldBoundingBox.maxCorner - worldBoundingBox.minCorner);
+
+    // Pre-compute the rotation-only part of the reference frame transform once for all slices in this set.
+    // The translation component is applied per-slice via slicePlane.origin.
+    const referenceFrameLinear = referenceFrameToWorldTransform.linear;
+
     // Calculate which plane indices are needed to cover the bounding box along the normal direction
     const firstPlaneIndex = ceil(minDepth / planeSpacing);
     const lastPlaneIndex = floor(maxDepth / planeSpacing);
@@ -268,25 +266,18 @@ export function generateSliceSet(context is Context, sliceSetDefinition is map) 
         // Position slice plane at correct depth along normal, centered on bounding box
         const sliceOrigin = boxCenter + (normalVector * (planeDepth - dot(boxCenter, normalVector)));
         
-        // Create the plane and transform it to world coordinates
-        // Use the input upVector for plane orientation
+        // Transform the plane to world coordinates
         const localPlane = plane(sliceOrigin, normalVector, upVector);
         const slicePlane = referenceFrameToWorldTransform * localPlane;
         
         const sliceId = featureIdPrefix + setLabel + planeCounter;
-        const extrusionDirectionWorld = referenceFrameToWorldTransform.linear * normalVector;
-        
-        generateSliceSheet(context, sliceId, slicePlane, boundingBoxBody, extrusionDirectionWorld, materialThickness);
+
+        generateSliceSheet(context, sliceId, slicePlane, referenceFrameLinear, normalVector, materialThickness, bigExtent);
         
         slicePlanes = append(slicePlanes, slicePlane);
         sliceIds = append(sliceIds, sliceId);
         planeCounter += 1;
     }
-    
-    // Clean up the bounding box body after all slices are generated
-    opDeleteBodies(context, featureIdPrefix + setLabel + "cleanupBoundingBox", {
-                "entities" : boundingBoxBody
-            });
     
     return {
         "slicePlanes" : slicePlanes,
@@ -343,11 +334,11 @@ export function trimSliceSetsToSolid(context is Context, featureIdPrefix is Id, 
             
             if (!isQueryEmpty(context, sliceBody))
             {
-                // Verify START/END caps still exist using cap entity queries
-                const startCapQuery = qCapEntity(sliceId + "extrudeSlice", CapType.START, EntityType.FACE);
-                const endCapQuery = qCapEntity(sliceId + "extrudeSlice", CapType.END, EntityType.FACE);
-                const remainingStartCaps = evaluateQuery(context, startCapQuery);
-                const remainingEndCaps = evaluateQuery(context, endCapQuery);
+                // Verify START/END cap faces survived the boolean trim.
+                // Attributes are preserved through boolean operations, so this is more robust than qCapEntity.
+                const sliceBodyFaces = qOwnedByBody(sliceBody, EntityType.FACE);
+                const remainingStartCaps = evaluateQuery(context, qHasAttribute(sliceBodyFaces, "laserItStartCap"));
+                const remainingEndCaps = evaluateQuery(context, qHasAttribute(sliceBodyFaces, "laserItEndCap"));
                 
                 // Delete body if we don't have at least one face of each cap type
                 if (size(remainingStartCaps) == 0 || size(remainingEndCaps) == 0)
@@ -558,98 +549,63 @@ export function generateSlotsForSliceSets(context is Context, featureIdPrefix is
     }
 }
 
-// Generate a single slice body by intersecting a construction plane with the bounding box to create
-// a closed profile curve, filling the curve to create a surface, and extruding to the material thickness.
-// The resulting slice body has START and END cap faces tagged with attributes for later processing.
+// Generate a single slice body in the correct position and orientation by constructing a rectangular
+// slab at the world origin (thin in the normal direction, large in both in-plane directions) and
+// then transforming it to the slice plane position.
+// This avoids opFillSurface and world-aligned bounding box bodies entirely, operating entirely in
+// the reference frame coordinate system.
+// Cap faces (the two flat faces perpendicular to the normal) are tagged with laserItStartCap and
+// laserItEndCap attributes for use by downstream trim, normalize, and sheet metal steps.
 // Inputs:
-//  - sliceId : Unique Id prefix for all operations in this function
-//  - slicePlane : Plane definition representing the slice location and orientation
-//  - boundingBoxBody : Query for the bounding box body to intersect with
-//  - extrusionDirection : Direction vector for the slice thickening (perpendicular to slice plane)
-//  - materialThickness : Extrusion depth matching the stock thickness
-// Returns: none
-export function generateSliceSheet(context is Context, sliceId is Id, slicePlane is Plane, boundingBoxBody is Query, extrusionDirection is Vector, materialThickness is ValueWithUnits)
+//  - sliceId               : Unique Id prefix for all operations in this function
+//  - slicePlane            : Plane definition representing the slice location in world coordinates
+//  - referenceFrameLinear  : Rotation-only (3x3) part of the reference frame to world transform;
+//                            orients the slab so its thin axis aligns with the slice normal in world space
+//  - normalVector          : Slice normal in reference frame local coordinates (dimensionless)
+//  - materialThickness     : Slab thickness
+//  - bigExtent             : Half-extent in both in-plane directions; must be large enough to cover the target body
+// Returns: none (creates body under sliceId + "extrudeSlice" for compatibility with all downstream queries)
+export function generateSliceSheet(context is Context, sliceId is Id, slicePlane is Plane, referenceFrameLinear is Matrix, normalVector is Vector, materialThickness is ValueWithUnits, bigExtent is ValueWithUnits)
 {
-    // Create a construction plane at the slice location
-    // Planes are infinite, so size parameters are just for UI visualization
-    opPlane(context, sliceId + "plane", {
-                "plane" : slicePlane
+    // Create a slab at the world origin, axis-aligned to world axes.
+    // The slab is materialThickness thick along world X and extends bigExtent in world Y and Z.
+    // World X corresponds to the reference frame normal direction once the transform is applied.
+    // The body id uses "extrudeSlice" to keep compatibility with all downstream qCreatedBy queries.
+    fCuboid(context, sliceId + "extrudeSlice", {
+                "corner1" : vector([-materialThickness / 2, -bigExtent, -bigExtent]),
+                "corner2" : vector([materialThickness / 2, bigExtent, bigExtent])
             });
-    
-    const constructionPlane = qCreatedBy(sliceId + "plane", EntityType.BODY);
-    const planeFace = qOwnedByBody(constructionPlane, EntityType.FACE);
-    
-    // Get all faces from the bounding box body
-    const boundingBoxFaces = qOwnedByBody(boundingBoxBody, EntityType.FACE);
-    
-    // Create intersection curves where the plane intersects the bounding box
-    try
-    {
-        opIntersectFaces(context, sliceId + "intersect", {
-                    "tools" : planeFace,
-                    "targets" : boundingBoxFaces
-                });
-    }
-    catch
-    {
-        // No intersection found - clean up and skip this slice
-        opDeleteBodies(context, sliceId + "cleanupPlane", {
-                    "entities" : constructionPlane
-                });
-        return;
-    }
-    
-    const intersectionCurveBodies = qCreatedBy(sliceId + "intersect", EntityType.BODY);
-    
-    // Check if any intersection curves were created
-    if (isQueryEmpty(context, intersectionCurveBodies))
-    {
-        opDeleteBodies(context, sliceId + "cleanupPlane2", {
-                    "entities" : constructionPlane
-                });
-        return;
-    }
-    
-    // The intersection creates wire bodies - opFillSurface needs edges from those wire bodies
-    // that form closed loops (which plane-box intersections produce)
-    opFillSurface(context, sliceId + "fillSurface", {
-                "edgesG0" : qOwnedByBody(intersectionCurveBodies, EntityType.EDGE)
+
+    const slabBody = qCreatedBy(sliceId + "extrudeSlice", EntityType.BODY);
+
+    // Transform the slab from world-origin/world-aligned to the correct position and orientation.
+    // referenceFrameLinear rotates world X to point along the slice normal in world space.
+    // slicePlane.origin (already in world coordinates) translates to the correct depth along the normal.
+    opTransform(context, sliceId + "slabTransform", {
+                "bodies" : slabBody,
+                "transform" : transform(referenceFrameLinear, slicePlane.origin)
             });
-    
-    const filledSurface = qCreatedBy(sliceId + "fillSurface", EntityType.FACE);
-    const filledSurfaceBody = qCreatedBy(sliceId + "fillSurface", EntityType.BODY);
-    
-    // Extrude the filled surface to create the slice body
-    opExtrude(context, sliceId + "extrudeSlice", {
-                "entities" : filledSurface,
-                "direction" : extrusionDirection,
-                "endBound" : BoundingType.BLIND,
-                "endDepth" : materialThickness / 2,
-                "startBound" : BoundingType.BLIND,
-                "startDepth" : materialThickness / 2
-            });
-    
-    const sliceBody = qCreatedBy(sliceId + "extrudeSlice", EntityType.BODY);
-    
-    // Tag the START cap face with an attribute
-    const startCapFace = qCapEntity(sliceId + "extrudeSlice", CapType.START, EntityType.FACE);
+
+    // Identify the two cap faces: the ones whose normals are parallel to the slice normal in world space.
+    // These are the only faces of the slab that are perpendicular to the normal direction.
+    const normalWorldDirection = referenceFrameLinear * normalVector;
+    const slabFaces = qOwnedByBody(slabBody, EntityType.FACE);
+    const capFaces = qFacesParallelToDirection(slabFaces, normalWorldDirection);
+
+    // Tag the START cap (furthest in the +normal direction) and END cap (furthest in the -normal direction).
+    // Attributes survive boolean operations, making them robust for downstream trimming and processing.
+    const startCapFace = qFarthestAlong(capFaces, normalWorldDirection);
     setAttribute(context, {
                 "entities" : startCapFace,
                 "name" : "laserItStartCap",
                 "attribute" : true
             });
-    
-    // Tag the END cap face with an attribute
-    const endCapFace = qCapEntity(sliceId + "extrudeSlice", CapType.END, EntityType.FACE);
+
+    const endCapFace = qFarthestAlong(capFaces, -normalWorldDirection);
     setAttribute(context, {
                 "entities" : endCapFace,
                 "name" : "laserItEndCap",
                 "attribute" : true
-            });
-    
-    // Clean up temporary geometry including the filled surface body
-    opDeleteBodies(context, sliceId + "cleanupTemp", {
-                "entities" : qUnion([constructionPlane, intersectionCurveBodies, filledSurfaceBody])
             });
 }
 
