@@ -438,12 +438,12 @@ export const mateConnectorPatternOnCurve = defineFeature(function(context is Con
                     // evDistance projects the origin onto the face to get a UV parameter, then
                     // evFaceTangentPlane reads the surface normal at that UV. This works correctly
                     // for planar, cylindrical, conical, and all other surface types.
-                    // Falls back to PATH_TANGENT when no face is available or evaluation fails.
-                    var localFaceNormalPlane = undefined;
-                    if (!isQueryEmpty(context, groupFaceQuery))
-                    {
-                        localFaceNormalPlane = evaluateFaceNormalAtPoint(context, groupFaceQuery, connectorOrigin);
-                    }
+                    // evaluateFaceNormalAtPoint handles an empty groupFaceQuery by falling back
+                    // to qClosestTo across all solid faces, so no guard is needed — the fallback
+                    // correctly resolves face normals for edge-only selections where no explicit
+                    // face was provided by the user.
+                    // Falls back to PATH_TANGENT when face normal evaluation fails entirely.
+                    const localFaceNormalPlane = evaluateFaceNormalAtPoint(context, groupFaceQuery, connectorOrigin);
 
                     if (localFaceNormalPlane != undefined)
                     {
@@ -709,14 +709,21 @@ function evaluateFaceNormalAtPoint(context is Context, faceQuery is Query, point
 function buildFacePathOffsetWire(context is Context, wireOperationId is Id, sourceEdges is Query, targetFace is Query, offsetDistance is ValueWithUnits, flipDirection is boolean) returns map
 {
     // Call the standard library offsetCurveOnFace feature function directly.
-    // Passing targetFace as targets tells the kernel which surface to project onto;
-    // qNothing() (when no face was explicitly selected) lets it infer from the edges.
+    // The kernel operation @opOffsetCurveOnFace requires a non-empty targets set to determine
+    // which surface to project the offset onto — this mirrors how the built-in Offset Curve
+    // feature always requires an explicit face selection.
+    // When an explicit face was provided by the user (FACE mode, face selected), pass it directly.
+    // When only edges were selected (no associated face), derive the projection surface from the
+    // topology of the source edges via qAdjacent so the kernel has the surface context it needs.
+    const resolvedTargets = isQueryEmpty(context, targetFace) ?
+        qAdjacent(sourceEdges, AdjacencyType.EDGE, EntityType.FACE) :
+        targetFace;
     offsetCurveOnFace(context, wireOperationId, {
                 "edges"              : sourceEdges,
                 "distance"           : offsetDistance,
                 "oppositeDirection"  : flipDirection,
                 "offsetType"         : OffsetCurveType.EUCLIDEAN,
-                "targets"            : targetFace
+                "targets"            : resolvedTargets
             });
 
     const wireBodies = evaluateQuery(context, qCreatedBy(wireOperationId, EntityType.BODY));
