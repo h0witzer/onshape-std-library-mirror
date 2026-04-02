@@ -67,7 +67,8 @@ export enum MateConnectorAlignmentMode
 
 annotation { "Feature Type Name" : "The Hole Shebang",
         "Feature Type Description" : "Creates a pattern of mate connectors along a curve with flexible spacing and alignment options. Output can be wrapped as a query variable. Does not create holes.",
-        "Feature Name Template" : "The Hole Shebang#featureName" }
+        "Feature Name Template" : "The Hole Shebang#featureName",
+        "Manipulator Change Function" : "mateConnectorPatternOnCurvePointChange" }
 export const mateConnectorPatternOnCurve = defineFeature(function(context is Context, id is Id, definition is map)
     precondition
     {
@@ -429,6 +430,37 @@ export const mateConnectorPatternOnCurve = defineFeature(function(context is Con
         // stable even when some are omitted.
         // ----------------------------------------------------------------
 
+        // Flatten all connector origin points into a single 0-based array for use by
+        // the TOGGLE_POINTS manipulator. This must mirror the same traversal order used
+        // during connector creation so that manipulator index i corresponds to slot (i + 1).
+        var allConnectorPoints = [];
+        for (var groupIndex = 0; groupIndex < size(evaluatedGroups); groupIndex += 1)
+        {
+            const tangentLines = evaluatedGroups[groupIndex].tangentLines;
+            for (var connectorIndex = 0; connectorIndex < size(tangentLines); connectorIndex += 1)
+            {
+                allConnectorPoints = append(allConnectorPoints, tangentLines[connectorIndex].origin);
+            }
+        }
+
+        // Register the TOGGLE_POINTS manipulator so the user can click connector positions
+        // in the viewport to toggle them on or off. The manipulator indices are 0-based;
+        // our stored skippedInstances use 1-based indices, so we subtract 1 when mapping to
+        // the manipulator and add 1 when reading back in mateConnectorPatternOnCurvePointChange.
+        // Out-of-range entries (stored index outside [1, totalSlots]) are excluded from
+        // selectedIndices — they persist in skippedInstances from manual input only.
+        if (definition.skipInstances)
+        {
+            const totalSlots = size(allConnectorPoints);
+            addManipulators(context, id, { "points" : {
+                                "points" : allConnectorPoints,
+                                "selectedIndices" : mapArray(
+                                    filter(definition.skippedInstances,
+                                        instance => instance.index >= 1 && instance.index <= totalSlots),
+                                    instance => instance.index - 1),
+                                "manipulatorType" : ManipulatorType.TOGGLE_POINTS } as Manipulator });
+        }
+
         // Pre-build a map keyed by string(index) for O(1) skip lookups.
         // Built once here so the inner loop does a single map access per slot.
         var skipSet = {};
@@ -454,7 +486,7 @@ export const mateConnectorPatternOnCurve = defineFeature(function(context is Con
                 globalInstanceSlot += 1;
 
                 // Skip this position when its slot index is listed in skippedInstances
-                if (definition.skipInstances && skipSet[globalInstanceSlot ~ ""] == true)
+                if (definition.skipInstances && skipSet[globalInstanceSlot ~ ""])
                 {
                     continue;
                 }
@@ -817,4 +849,50 @@ function resolveGlobalReferenceOrientation(context is Context, referenceOrientat
 
     throw regenError("Could not resolve a reference orientation. Select a mate connector or a planar face.",
         ["referenceOrientation"]);
+}
+
+/**
+ * @internal
+ * Manipulator change function for the mateConnectorPatternOnCurve feature.
+ * Called by the Onshape kernel when the user clicks a TOGGLE_POINTS manipulator point
+ * in the 3D viewport to toggle a connector position on or off.
+ *
+ * The manipulator operates with 0-based indices into the allConnectorPoints array.
+ * skippedInstances stores 1-based slot indices, so we add 1 when converting back.
+ * Out-of-range entries from the previous skippedInstances (indices beyond the current
+ * total connector count) are preserved so they can re-apply if the count increases again.
+ *
+ * Parameters:
+ *   context         {Context} - The active context
+ *   definition      {map}     - The current feature definition
+ *   newManipulators {map}     - Updated manipulator state from the viewport interaction
+ *
+ * Returns:
+ *   {map} - Updated feature definition with skippedInstances reflecting the new selection
+ */
+export function mateConnectorPatternOnCurvePointChange(context is Context, definition is map, newManipulators is map) returns map
+{
+    // Convert the manipulator's 0-based selectedIndices back to 1-based skippedInstances entries.
+    // Merge with any previously stored entries that are outside the current viewport range
+    // (index > number of manipulator points) so manual out-of-range entries survive a
+    // temporary reduction in connector count.
+    const newInRangeInstances = mapArray(newManipulators["points"].selectedIndices,
+        index => { "index" : index + 1 });
+
+    // Entries whose 1-based index exceeds the total number of points shown to the manipulator
+    // are "out of range" — the manipulator has no point for them so they are not in selectedIndices.
+    // Preserve them by merging them back in so they re-activate if the count later increases.
+    // The `instance.index < 1` guard is defensive: precondition bounds prevent values below 1
+    // from normal UI entry, but hand-edited definitions could theoretically contain them.
+    const totalManipulatorPoints = size(newManipulators["points"].points);
+    const outOfRangeInstances = filter(definition.skippedInstances,
+        instance => instance.index > totalManipulatorPoints || instance.index < 1);
+
+    // Merge in-range (from manipulator) and out-of-range (preserved) entries and sort by index
+    // so the array stays ordered and consistent with how the UI displays them.
+    definition.skippedInstances = sort(
+        concatenateArrays(newInRangeInstances, outOfRangeInstances),
+        (a, b) => a.index - b.index);
+
+    return definition;
 }
