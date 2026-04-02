@@ -249,10 +249,6 @@ export function generateSliceSet(context is Context, sliceSetDefinition is map) 
     // Using the diagonal ensures coverage regardless of how the reference frame is oriented relative to world.
     const bigExtent = norm(worldBoundingBox.maxCorner - worldBoundingBox.minCorner);
 
-    // Pre-compute the rotation-only part of the reference frame transform once for all slices in this set.
-    // The translation component is applied per-slice via slicePlane.origin.
-    const referenceFrameLinear = referenceFrameToWorldTransform.linear;
-
     // Calculate which plane indices are needed to cover the bounding box along the normal direction
     const firstPlaneIndex = ceil(minDepth / planeSpacing);
     const lastPlaneIndex = floor(maxDepth / planeSpacing);
@@ -272,7 +268,8 @@ export function generateSliceSet(context is Context, sliceSetDefinition is map) 
         
         const sliceId = featureIdPrefix + setLabel + planeCounter;
 
-        generateSliceSheet(context, sliceId, slicePlane, referenceFrameLinear, normalVector, materialThickness, bigExtent);
+        // slicePlane already carries the world-space normal and tangent directions needed to orient the slab.
+        generateSliceSheet(context, sliceId, slicePlane, materialThickness, bigExtent);
         
         slicePlanes = append(slicePlanes, slicePlane);
         sliceIds = append(sliceIds, sliceId);
@@ -550,27 +547,27 @@ export function generateSlotsForSliceSets(context is Context, featureIdPrefix is
 }
 
 // Generate a single slice body in the correct position and orientation by constructing a rectangular
-// slab at the world origin (thin in the normal direction, large in both in-plane directions) and
-// then transforming it to the slice plane position.
-// This avoids opFillSurface and world-aligned bounding box bodies entirely, operating entirely in
-// the reference frame coordinate system.
+// slab at the world origin (thin along world X, large in world Y and Z) and then transforming it to
+// the slice plane position and orientation.
+// This avoids opFillSurface and world-aligned bounding box bodies entirely.
+// The slab rotation is derived directly from slicePlane.normal (thin axis) and slicePlane.x (tangent),
+// ensuring correct orientation for any slice direction (X-set, Y-set, or arbitrary custom orientations).
 // Cap faces (the two flat faces perpendicular to the normal) are tagged with laserItStartCap and
 // laserItEndCap attributes for use by downstream trim, normalize, and sheet metal steps.
 // Inputs:
-//  - sliceId               : Unique Id prefix for all operations in this function
-//  - slicePlane            : Plane definition representing the slice location in world coordinates
-//  - referenceFrameLinear  : Rotation-only (3x3) part of the reference frame to world transform;
-//                            orients the slab so its thin axis aligns with the slice normal in world space
-//  - normalVector          : Slice normal in reference frame local coordinates (dimensionless)
-//  - materialThickness     : Slab thickness
-//  - bigExtent             : Half-extent in both in-plane directions; must be large enough to cover the target body
+//  - sliceId           : Unique Id prefix for all operations in this function
+//  - slicePlane        : Plane definition representing the slice location in world coordinates;
+//                        slicePlane.normal is the world-space thin-axis direction and
+//                        slicePlane.x is the world-space in-plane tangent direction
+//  - materialThickness : Slab thickness
+//  - bigExtent         : Half-extent in both in-plane directions; must be large enough to cover the target body
 // Returns: none (creates body under sliceId + "extrudeSlice" for compatibility with all downstream queries)
-export function generateSliceSheet(context is Context, sliceId is Id, slicePlane is Plane, referenceFrameLinear is Matrix, normalVector is Vector, materialThickness is ValueWithUnits, bigExtent is ValueWithUnits)
+export function generateSliceSheet(context is Context, sliceId is Id, slicePlane is Plane, materialThickness is ValueWithUnits, bigExtent is ValueWithUnits)
 {
-    // Create a slab at the world origin, axis-aligned to world axes.
-    // The slab is materialThickness thick along world X and extends bigExtent in world Y and Z.
-    // World X corresponds to the reference frame normal direction once the transform is applied.
-    // The body id uses "extrudeSlice" to keep compatibility with all downstream qCreatedBy queries.
+    // Create a slab at the world origin, thin along world X and extending bigExtent in world Y and Z.
+    // The slab's local X axis (thin axis) will be rotated to align with slicePlane.normal by the
+    // transform below, so the in-world result is always correctly oriented for any slice direction.
+    // The body id uses "extrudeSlice" to preserve compatibility with all downstream qCreatedBy queries.
     fCuboid(context, sliceId + "extrudeSlice", {
                 "corner1" : vector([-materialThickness / 2, -bigExtent, -bigExtent]),
                 "corner2" : vector([materialThickness / 2, bigExtent, bigExtent])
@@ -578,30 +575,40 @@ export function generateSliceSheet(context is Context, sliceId is Id, slicePlane
 
     const slabBody = qCreatedBy(sliceId + "extrudeSlice", EntityType.BODY);
 
-    // Transform the slab from world-origin/world-aligned to the correct position and orientation.
-    // referenceFrameLinear rotates world X to point along the slice normal in world space.
-    // slicePlane.origin (already in world coordinates) translates to the correct depth along the normal.
+    // Build a rotation matrix whose COLUMNS are slicePlane.normal, slicePlane.x, and their cross product.
+    // This maps slab local X [1,0,0] → slicePlane.normal, Y → slicePlane.x, Z → binormal.
+    // Using slicePlane directly (rather than referenceFrameLinear * normalVector) ensures correctness
+    // for all slice sets: for X-set slicePlane.normal = world-ref-X, for Y-set it = world-ref-Y, etc.
+    const sliceNormalWorld = slicePlane.normal;
+    const sliceTangentWorld = slicePlane.x;
+    const sliceBinormalWorld = cross(sliceNormalWorld, sliceTangentWorld);
+
+    const slabRotation = matrix([
+                [sliceNormalWorld[0], sliceTangentWorld[0], sliceBinormalWorld[0]],
+                [sliceNormalWorld[1], sliceTangentWorld[1], sliceBinormalWorld[1]],
+                [sliceNormalWorld[2], sliceTangentWorld[2], sliceBinormalWorld[2]]
+            ]);
+
     opTransform(context, sliceId + "slabTransform", {
                 "bodies" : slabBody,
-                "transform" : transform(referenceFrameLinear, slicePlane.origin)
+                "transform" : transform(slabRotation, slicePlane.origin)
             });
 
-    // Identify the two cap faces: the ones whose normals are parallel to the slice normal in world space.
-    // These are the only faces of the slab that are perpendicular to the normal direction.
-    const normalWorldDirection = referenceFrameLinear * normalVector;
+    // Identify the two cap faces: those whose normals are parallel to sliceNormalWorld (the slice thin axis).
+    // After the opTransform above these are the only faces with normals in the ±sliceNormalWorld direction.
     const slabFaces = qOwnedByBody(slabBody, EntityType.FACE);
-    const capFaces = qFacesParallelToDirection(slabFaces, normalWorldDirection);
+    const capFaces = qFacesParallelToDirection(slabFaces, sliceNormalWorld);
 
     // Tag the START cap (furthest in the +normal direction) and END cap (furthest in the -normal direction).
     // Attributes survive boolean operations, making them robust for downstream trimming and processing.
-    const startCapFace = qFarthestAlong(capFaces, normalWorldDirection);
+    const startCapFace = qFarthestAlong(capFaces, sliceNormalWorld);
     setAttribute(context, {
                 "entities" : startCapFace,
                 "name" : "laserItStartCap",
                 "attribute" : true
             });
 
-    const endCapFace = qFarthestAlong(capFaces, -normalWorldDirection);
+    const endCapFace = qFarthestAlong(capFaces, -sliceNormalWorld);
     setAttribute(context, {
                 "entities" : endCapFace,
                 "name" : "laserItEndCap",
