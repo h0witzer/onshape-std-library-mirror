@@ -155,6 +155,27 @@ export const mateConnectorPatternOnCurve = defineFeature(function(context is Con
                         "Default" : "mateConnectorPattern" }
             definition.queryVariableName is string;
         }
+
+        // Skip instances - allows individual connectors to be excluded from placement
+        // by their 1-based slot index in the full (unskipped) ordered sequence.
+        annotation { "Name" : "Skip instances" }
+        definition.skipInstances is boolean;
+
+        if (definition.skipInstances)
+        {
+            annotation { "Name" : "Instances to skip",
+                        "Item name" : "instance",
+                        "Item label template" : "#index",
+                        "Show labels only" : true,
+                        "UIHint" : [UIHint.INITIAL_FOCUS, UIHint.PREVENT_ARRAY_REORDER, UIHint.ALLOW_ARRAY_FOCUS] }
+            definition.skippedInstances is array;
+
+            for (var instance in definition.skippedInstances)
+            {
+                annotation { "Name" : "Index" }
+                isInteger(instance.index, { (unitless) : [1, 1, 1e5] } as IntegerBoundSpec);
+            }
+        }
     }
     {
         // ----------------------------------------------------------------
@@ -403,8 +424,24 @@ export const mateConnectorPatternOnCurve = defineFeature(function(context is Con
         // Phase 2: Create mate connectors from all evaluated groups.
         // A flat counter across groups ensures every opMateConnector call
         // receives a unique sub-id regardless of which group it belongs to.
+        // globalInstanceSlot is a 1-based index over all candidate positions
+        // (including skipped ones) so the user-facing instance numbers are
+        // stable even when some are omitted.
         // ----------------------------------------------------------------
+
+        // Pre-build a map keyed by string(index) for O(1) skip lookups.
+        // Built once here so the inner loop does a single map access per slot.
+        var skipSet = {};
+        if (definition.skipInstances)
+        {
+            for (var skippedInstance in definition.skippedInstances)
+            {
+                skipSet[skippedInstance.index ~ ""] = true;
+            }
+        }
+
         var totalConnectorCount = 0;
+        var globalInstanceSlot = 0;
 
         for (var groupIndex = 0; groupIndex < size(evaluatedGroups); groupIndex += 1)
         {
@@ -414,6 +451,14 @@ export const mateConnectorPatternOnCurve = defineFeature(function(context is Con
 
             for (var connectorIndex = 0; connectorIndex < size(tangentLines); connectorIndex += 1)
             {
+                globalInstanceSlot += 1;
+
+                // Skip this position when its slot index is listed in skippedInstances
+                if (definition.skipInstances && skipSet[globalInstanceSlot ~ ""] == true)
+                {
+                    continue;
+                }
+
                 const tangentLine = tangentLines[connectorIndex];
 
                 // The connector origin is taken directly from the tangent evaluation.
