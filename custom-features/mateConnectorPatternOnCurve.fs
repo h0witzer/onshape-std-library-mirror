@@ -107,7 +107,7 @@ export const mateConnectorPatternOnCurve = defineFeature(function(context is Con
                             "UIHint" : UIHint.REMEMBER_PREVIOUS_VALUE }
                 isLength(definition.faceNormalOffset, NONNEGATIVE_ZERO_DEFAULT_LENGTH_BOUNDS);
 
-                annotation { "Name" : "Offset outward", "UIHint" : UIHint.OPPOSITE_DIRECTION }
+                annotation { "Name" : "Flip direction", "UIHint" : UIHint.OPPOSITE_DIRECTION }
                 definition.faceNormalOffsetFlip is boolean;
             }
         }
@@ -294,10 +294,11 @@ export const mateConnectorPatternOnCurve = defineFeature(function(context is Con
             var finalPath = sourcePath;
 
             // Apply path offset when requested in FACE mode.
-            // Passes path-ordered edges for a stable evaluation sequence and derives the
-            // oppositeDirection flag from face geometry (centroid-based inward/outward test)
-            // so faceNormalOffsetFlip=false always offsets toward the face interior,
-            // independent of user selection order or edge evaluation order.
+            // The source edges and the user's flip boolean are passed directly to
+            // @opOffsetCurveOnFace, matching exactly how the standard "Offset Curve" feature
+            // (offsetCurveOnFace.fs) calls the kernel. No geometry-derived direction computation
+            // is performed; stability comes from the kernel treating the same edge query the
+            // same way every regen, just as the standard feature does.
             if (definition.pathSelectionMode == PathSelectionMode.FACE &&
                 definition.useFaceNormalOffset && definition.faceNormalOffset > 0 * meter)
             {
@@ -307,19 +308,13 @@ export const mateConnectorPatternOnCurve = defineFeature(function(context is Con
                 }
 
                 const offsetWireId = id + ("offsetWire" ~ groupIndex);
-                const stableOppositeDirection = computeStableOffsetDirection(
-                    context,
-                    sourcePath,
-                    groupFaceQuery,
-                    definition.faceNormalOffsetFlip
-                );
                 const offsetResult = buildFacePathOffsetWire(
                     context,
                     offsetWireId,
-                    qUnion(sourcePath.edges),
+                    activePathEdges,
                     groupFaceQuery,
                     definition.faceNormalOffset,
-                    stableOppositeDirection
+                    definition.faceNormalOffsetFlip
                 );
                 offsetWireBodies = append(offsetWireBodies, offsetResult.offsetWireBody);
                 activePathEdges = offsetResult.offsetWireEdges;
@@ -726,89 +721,6 @@ function evaluateFaceNormalAtPoint(context is Context, faceQuery is Query, point
                 "face"      : face,
                 "parameter" : distResult.sides[0].parameter
             }));
-}
-
-/**
- * Computes the `oppositeDirection` flag for @opOffsetCurveOnFace in a way that is stable
- * regardless of edge selection order. The direction is derived from face geometry:
- *   - The face-oriented tangent of the first path edge (keeping the face interior to the left)
- *     is used to determine what @opOffsetCurveOnFace treats as its "default" offset direction.
- *   - The face centroid is used as a reference to classify that default as inward or outward.
- *   - The returned flag is set so that faceNormalOffsetFlip=false always offsets TOWARD the
- *     face interior and faceNormalOffsetFlip=true always offsets AWAY from it, independent
- *     of how edges were selected or how the kernel orders edge evaluation.
- *
- * Parameters:
- *   context     {Context} - The active context
- *   sourcePath  {Path}    - Path built from the source boundary edges (provides consistent
- *                           edge ordering and the first edge for direction reference)
- *   faceQuery   {Query}   - The face the edges lie on
- *   flipToward  {boolean} - User preference: false = offset toward face interior (inward),
- *                           true = offset away from face interior (outward)
- *
- * Returns:
- *   {boolean} - The oppositeDirection flag to pass to @opOffsetCurveOnFace
- */
-function computeStableOffsetDirection(context is Context, sourcePath is Path, faceQuery is Query, flipToward is boolean) returns boolean
-{
-    const face = qNthElement(faceQuery, 0);
-    const firstEdge = sourcePath.edges[0];
-
-    // Evaluate the face tangent plane at the midpoint of the first path edge.
-    // usingFaceOrientation=true: the x-axis of the returned plane is the edge tangent direction
-    // when traversed so that the face interior is to the LEFT (standard face orientation).
-    const faceTangentAtFirstEdge = try(evFaceTangentPlaneAtEdge(context, {
-                "edge"                    : firstEdge,
-                "face"                    : face,
-                "parameter"               : 0.5,
-                "arcLengthParameterization" : true,
-                "usingFaceOrientation"    : true
-            }));
-    if (faceTangentAtFirstEdge == undefined)
-    {
-        // Cannot determine direction from face geometry; pass the flag through unchanged.
-        return flipToward;
-    }
-
-    // "Left" direction when walking in the face-oriented edge tangent with face normal as up:
-    //   leftDir = cross(faceNormal, faceOrientedEdgeTangent)
-    // This points toward the face interior (face is kept to the left by convention).
-    // @opOffsetCurveOnFace with oppositeDirection=false offsets in this direction by default.
-    const faceOrientedEdgeTangent = faceTangentAtFirstEdge.x;
-    const faceNormal = faceTangentAtFirstEdge.normal;
-    const kernelDefaultOffsetDir = cross(faceNormal, faceOrientedEdgeTangent);
-
-    // Use the face bounding-box centroid as an approximate interior reference point.
-    const faceBox = try(evBox3d(context, { "topology" : face, "tight" : true }));
-    if (faceBox == undefined)
-    {
-        return flipToward;
-    }
-    const faceCentroid = box3dCenter(faceBox);
-
-    // Project the centroid-to-edge-midpoint vector onto the face tangent plane to get
-    // a purely in-plane inward direction (toward the centroid from the edge midpoint).
-    const edgeMidPoint = faceTangentAtFirstEdge.origin;
-    const toCentroid = faceCentroid - edgeMidPoint;
-
-    // Remove the face-normal component to stay in the tangent plane.
-    const inPlaneToCentroid = toCentroid - dot(toCentroid, faceNormal) * faceNormal;
-
-    if (norm(inPlaneToCentroid) < 1e-6 * meter)
-    {
-        // Centroid is essentially on the edge; cannot classify direction.
-        return flipToward;
-    }
-    const inwardDir = normalize(inPlaneToCentroid);
-
-    // Is the kernel's default offset direction (oppositeDirection=false) going inward?
-    const kernelDefaultIsInward = dot(kernelDefaultOffsetDir, inwardDir) > 0;
-
-    // flipToward=false → want inward; flipToward=true → want outward (NOT inward).
-    const wantInward = !flipToward;
-
-    // Flip the kernel's default only when the desired direction differs from it.
-    return wantInward != kernelDefaultIsInward;
 }
 
 /**
