@@ -41,10 +41,13 @@ export enum PathSelectionMode
  * Controls how the orientation of each mate connector is derived.
  * @value PATH_TANGENT : Each connector's Z-axis follows the curve tangent at its position;
  *        X-axis is an arbitrary perpendicular computed from that tangent.
- * @value FACE_NORMAL : Each connector's Z-axis points along the face normal of the face the
- *        path belongs to. When multiple faces are selected each group independently uses its
- *        own face normal, so connectors on different faces (e.g. faces of a cube) each align
- *        to their own face. Falls back to PATH_TANGENT when the face is non-planar or unknown.
+ * @value FACE_NORMAL : Each connector's Z-axis follows the local face normal at the connector's
+ *        exact position on the surface. The normal is evaluated via surface projection so it is
+ *        correct for planar, cylindrical, conical, and any other curved surface. When multiple
+ *        faces are selected each group independently evaluates its own face, so connectors on
+ *        different faces (e.g. six faces of a cube, or a cylinder and its end caps) each align
+ *        to their own local surface normal. Falls back to PATH_TANGENT when the face cannot be
+ *        determined or surface projection fails.
  * @value GLOBAL_REFERENCE : All connectors share the orientation of a user-specified
  *        reference entity (mate connector or planar face), placed at each path position.
  */
@@ -104,7 +107,7 @@ export const mateConnectorPatternOnCurve = defineFeature(function(context is Con
                             "UIHint" : UIHint.REMEMBER_PREVIOUS_VALUE }
                 isLength(definition.faceNormalOffset, NONNEGATIVE_ZERO_DEFAULT_LENGTH_BOUNDS);
 
-                annotation { "Name" : "Flip direction", "UIHint" : UIHint.OPPOSITE_DIRECTION }
+                annotation { "Name" : "Offset outward", "UIHint" : UIHint.OPPOSITE_DIRECTION }
                 definition.faceNormalOffsetFlip is boolean;
             }
         }
@@ -261,31 +264,12 @@ export const mateConnectorPatternOnCurve = defineFeature(function(context is Con
                 groupFaceQuery = qNthElement(inferredFace, 0);
             }
 
-            // Apply path offset when requested in FACE mode
-            if (definition.pathSelectionMode == PathSelectionMode.FACE &&
-                definition.useFaceNormalOffset && definition.faceNormalOffset > 0 * meter)
-            {
-                if (isQueryEmpty(context, groupFaceQuery))
-                {
-                    throw regenError("Unable to infer a containing face from the selected edges for the offset. Ensure the edges all lie on the same face, or select the face explicitly.", ["pathFace"]);
-                }
-
-                const offsetWireId = id + ("offsetWire" ~ groupIndex);
-                const offsetResult = buildFacePathOffsetWire(
-                    context,
-                    offsetWireId,
-                    activePathEdges,
-                    groupFaceQuery,
-                    definition.faceNormalOffset,
-                    definition.faceNormalOffsetFlip
-                );
-                offsetWireBodies = append(offsetWireBodies, offsetResult.offsetWireBody);
-                activePathEdges = offsetResult.offsetWireEdges;
-            }
-
-            // Build a continuous path from the resolved edges
-            const path = try(constructPath(context, activePathEdges));
-            if (path == undefined)
+            // Build a path from the source edges early to obtain a consistent edge traversal
+            // order. This path-ordered query is passed to the offset operation below so that
+            // @opOffsetCurveOnFace always sees edges in the same sequence regardless of how
+            // the user selected them, making the offset direction stable across selections.
+            const sourcePath = try(constructPath(context, activePathEdges));
+            if (sourcePath == undefined)
             {
                 if (definition.pathSelectionMode == PathSelectionMode.FACE)
                 {
@@ -305,7 +289,58 @@ export const mateConnectorPatternOnCurve = defineFeature(function(context is Con
                 }
             }
 
-            const totalPathLength = evPathLength(context, path);
+            // finalPath starts as the source path and is replaced with the offset wire path
+            // when an offset is applied.
+            var finalPath = sourcePath;
+
+            // Apply path offset when requested in FACE mode.
+            // Passes path-ordered edges for a stable evaluation sequence and derives the
+            // oppositeDirection flag from face geometry (centroid-based inward/outward test)
+            // so faceNormalOffsetFlip=false always offsets toward the face interior,
+            // independent of user selection order or edge evaluation order.
+            if (definition.pathSelectionMode == PathSelectionMode.FACE &&
+                definition.useFaceNormalOffset && definition.faceNormalOffset > 0 * meter)
+            {
+                if (isQueryEmpty(context, groupFaceQuery))
+                {
+                    throw regenError("Unable to infer a containing face from the selected edges for the offset. Ensure the edges all lie on the same face, or select the face explicitly.", ["pathFace"]);
+                }
+
+                const offsetWireId = id + ("offsetWire" ~ groupIndex);
+                const stableOppositeDirection = computeStableOffsetDirection(
+                    context,
+                    sourcePath,
+                    groupFaceQuery,
+                    definition.faceNormalOffsetFlip
+                );
+                const offsetResult = buildFacePathOffsetWire(
+                    context,
+                    offsetWireId,
+                    qUnion(sourcePath.edges),
+                    groupFaceQuery,
+                    definition.faceNormalOffset,
+                    stableOppositeDirection
+                );
+                offsetWireBodies = append(offsetWireBodies, offsetResult.offsetWireBody);
+                activePathEdges = offsetResult.offsetWireEdges;
+
+                // Build path from the offset wire edges for spacing and tangent evaluation
+                finalPath = try(constructPath(context, activePathEdges));
+                if (finalPath == undefined)
+                {
+                    if (size(patternGroups) > 1)
+                    {
+                        throw regenError("Unable to build a continuous path from the offset wire in group " ~ (groupIndex + 1) ~
+                            ". The offset distance may be too large for this geometry.", ["faceNormalOffset"]);
+                    }
+                    else
+                    {
+                        throw regenError("Unable to build a continuous path from the offset wire. The offset distance may be too large for this geometry.", ["faceNormalOffset"]);
+                    }
+                }
+            }
+
+            const totalPathLength = evPathLength(context, finalPath);
 
             // computeCurvePatternSpacing expects definition.edges for its length query,
             // so bridge activePathEdges into that field before calling it.
@@ -358,7 +393,7 @@ export const mateConnectorPatternOnCurve = defineFeature(function(context is Con
                 endOffset,
                 instanceCount,
                 definition,
-                path.closed
+                finalPath.closed
             );
 
             if (size(normalizedParameters) == 0)
@@ -367,28 +402,15 @@ export const mateConnectorPatternOnCurve = defineFeature(function(context is Con
             }
 
             // Evaluate tangent lines at each computed position along the path
-            const tangentEvaluation = evPathTangentLines(context, path, normalizedParameters);
+            const tangentEvaluation = evPathTangentLines(context, finalPath, normalizedParameters);
 
-            // Resolve face-normal orientation axes for this group.
-            // Used when alignmentMode == FACE_NORMAL and a planar face is available.
-            var groupFaceNormalZAxis = undefined;
-            var groupFaceNormalXAxis = undefined;
-
-            if (definition.alignmentMode == MateConnectorAlignmentMode.FACE_NORMAL &&
-                !isQueryEmpty(context, groupFaceQuery))
-            {
-                const facePlane = try(evPlane(context, { "face" : qNthElement(groupFaceQuery, 0) }));
-                if (facePlane != undefined)
-                {
-                    groupFaceNormalZAxis = facePlane.normal;
-                    groupFaceNormalXAxis = facePlane.x;
-                }
-            }
-
+            // Store the face query so Phase 2 can evaluate the local face normal at each
+            // connector position individually. This handles curved surfaces (cylinders, cones,
+            // splines) correctly because the normal is queried per-point rather than once
+            // for the whole group.
             evaluatedGroups = append(evaluatedGroups, {
-                        "tangentLines"    : tangentEvaluation.tangentLines,
-                        "faceNormalZAxis" : groupFaceNormalZAxis,
-                        "faceNormalXAxis" : groupFaceNormalXAxis
+                        "tangentLines" : tangentEvaluation.tangentLines,
+                        "faceQuery"    : groupFaceQuery
                     });
         }
 
@@ -414,8 +436,7 @@ export const mateConnectorPatternOnCurve = defineFeature(function(context is Con
         {
             const evaluatedGroup = evaluatedGroups[groupIndex];
             const tangentLines = evaluatedGroup.tangentLines;
-            const groupFaceNormalZAxis = evaluatedGroup.faceNormalZAxis;
-            const groupFaceNormalXAxis = evaluatedGroup.faceNormalXAxis;
+            const groupFaceQuery = evaluatedGroup.faceQuery;
 
             for (var connectorIndex = 0; connectorIndex < size(tangentLines); connectorIndex += 1)
             {
@@ -428,12 +449,9 @@ export const mateConnectorPatternOnCurve = defineFeature(function(context is Con
 
                 var connectorCoordinateSystem;
 
-                if (definition.alignmentMode == MateConnectorAlignmentMode.PATH_TANGENT ||
-                    (definition.alignmentMode == MateConnectorAlignmentMode.FACE_NORMAL &&
-                        groupFaceNormalZAxis == undefined))
+                if (definition.alignmentMode == MateConnectorAlignmentMode.PATH_TANGENT)
                 {
                     // Z-axis follows the curve tangent; X-axis is an arbitrary perpendicular.
-                    // FACE_NORMAL falls back here when the face is non-planar or could not be inferred.
                     connectorCoordinateSystem = coordSystem(
                         connectorOrigin,
                         perpendicularVector(tangentLine.direction),
@@ -442,14 +460,36 @@ export const mateConnectorPatternOnCurve = defineFeature(function(context is Con
                 }
                 else if (definition.alignmentMode == MateConnectorAlignmentMode.FACE_NORMAL)
                 {
-                    // Z-axis = face normal, X-axis = face X direction.
-                    // Each group independently derives its face normal, so connectors on
-                    // different faces of a solid (e.g. a cube) each align to their own face.
-                    connectorCoordinateSystem = coordSystem(
-                        connectorOrigin,
-                        groupFaceNormalXAxis,
-                        groupFaceNormalZAxis
-                    );
+                    // Evaluate the local face normal at this specific connector position.
+                    // evDistance projects the origin onto the face to get a UV parameter, then
+                    // evFaceTangentPlane reads the surface normal at that UV. This works correctly
+                    // for planar, cylindrical, conical, and all other surface types.
+                    // Falls back to PATH_TANGENT when no face is available or evaluation fails.
+                    var localFaceNormalPlane = undefined;
+                    if (!isQueryEmpty(context, groupFaceQuery))
+                    {
+                        localFaceNormalPlane = evaluateFaceNormalAtPoint(context, groupFaceQuery, connectorOrigin);
+                    }
+
+                    if (localFaceNormalPlane != undefined)
+                    {
+                        // Z-axis = local face normal, X-axis = surface parameterization X direction.
+                        // Each connector independently aligns to its own position on the surface.
+                        connectorCoordinateSystem = coordSystem(
+                            connectorOrigin,
+                            localFaceNormalPlane.x,
+                            localFaceNormalPlane.normal
+                        );
+                    }
+                    else
+                    {
+                        // Fallback: no face available or face normal evaluation failed.
+                        connectorCoordinateSystem = coordSystem(
+                            connectorOrigin,
+                            perpendicularVector(tangentLine.direction),
+                            tangentLine.direction
+                        );
+                    }
                 }
                 else
                 {
@@ -651,7 +691,127 @@ function inferFaceFromEdges(context is Context, edges is Query) returns Query
 }
 
 /**
- * Creates a true offset wire from a set of face boundary edges using the kernel
+ * Evaluates the tangent plane of a face at the surface point closest to the given 3D position.
+ * Uses evDistance to project the position onto the face and obtain its UV parameter, then
+ * evFaceTangentPlane to read the local tangent plane at that UV. This works correctly for
+ * planar, cylindrical, conical, and any other analytic or spline surface type.
+ *
+ * Parameters:
+ *   context   {Context} - The active context
+ *   faceQuery {Query}   - The face to evaluate (only the first result is used)
+ *   point     {Vector}  - The 3D world-space position to project onto the face
+ *
+ * Returns:
+ *   {Plane} - Tangent plane at the closest face point: normal = local face normal,
+ *             x = surface parameterization X direction at that point.
+ *             Returns undefined when projection or tangent plane evaluation fails.
+ */
+function evaluateFaceNormalAtPoint(context is Context, faceQuery is Query, point is Vector) returns Plane
+{
+    const face = qNthElement(faceQuery, 0);
+
+    // Project the 3D position onto the face surface to obtain its UV parameter.
+    // When side0 is a face, evDistance returns the UV parameter of the closest face point
+    // in distResult.sides[0].parameter — exactly the form evFaceTangentPlane expects.
+    const distResult = try(evDistance(context, {
+                "side0" : face,
+                "side1" : point
+            }));
+    if (distResult == undefined)
+    {
+        return undefined;
+    }
+
+    return try(evFaceTangentPlane(context, {
+                "face"      : face,
+                "parameter" : distResult.sides[0].parameter
+            }));
+}
+
+/**
+ * Computes the `oppositeDirection` flag for @opOffsetCurveOnFace in a way that is stable
+ * regardless of edge selection order. The direction is derived from face geometry:
+ *   - The face-oriented tangent of the first path edge (keeping the face interior to the left)
+ *     is used to determine what @opOffsetCurveOnFace treats as its "default" offset direction.
+ *   - The face centroid is used as a reference to classify that default as inward or outward.
+ *   - The returned flag is set so that faceNormalOffsetFlip=false always offsets TOWARD the
+ *     face interior and faceNormalOffsetFlip=true always offsets AWAY from it, independent
+ *     of how edges were selected or how the kernel orders edge evaluation.
+ *
+ * Parameters:
+ *   context     {Context} - The active context
+ *   sourcePath  {Path}    - Path built from the source boundary edges (provides consistent
+ *                           edge ordering and the first edge for direction reference)
+ *   faceQuery   {Query}   - The face the edges lie on
+ *   flipToward  {boolean} - User preference: false = offset toward face interior (inward),
+ *                           true = offset away from face interior (outward)
+ *
+ * Returns:
+ *   {boolean} - The oppositeDirection flag to pass to @opOffsetCurveOnFace
+ */
+function computeStableOffsetDirection(context is Context, sourcePath is Path, faceQuery is Query, flipToward is boolean) returns boolean
+{
+    const face = qNthElement(faceQuery, 0);
+    const firstEdge = sourcePath.edges[0];
+
+    // Evaluate the face tangent plane at the midpoint of the first path edge.
+    // usingFaceOrientation=true: the x-axis of the returned plane is the edge tangent direction
+    // when traversed so that the face interior is to the LEFT (standard face orientation).
+    const faceTangentAtFirstEdge = try(evFaceTangentPlaneAtEdge(context, {
+                "edge"                    : firstEdge,
+                "face"                    : face,
+                "parameter"               : 0.5,
+                "arcLengthParameterization" : true,
+                "usingFaceOrientation"    : true
+            }));
+    if (faceTangentAtFirstEdge == undefined)
+    {
+        // Cannot determine direction from face geometry; pass the flag through unchanged.
+        return flipToward;
+    }
+
+    // "Left" direction when walking in the face-oriented edge tangent with face normal as up:
+    //   leftDir = cross(faceNormal, faceOrientedEdgeTangent)
+    // This points toward the face interior (face is kept to the left by convention).
+    // @opOffsetCurveOnFace with oppositeDirection=false offsets in this direction by default.
+    const faceOrientedEdgeTangent = faceTangentAtFirstEdge.x;
+    const faceNormal = faceTangentAtFirstEdge.normal;
+    const kernelDefaultOffsetDir = cross(faceNormal, faceOrientedEdgeTangent);
+
+    // Use the face bounding-box centroid as an approximate interior reference point.
+    const faceBox = try(evBox3d(context, { "topology" : face, "tight" : true }));
+    if (faceBox == undefined)
+    {
+        return flipToward;
+    }
+    const faceCentroid = box3dCenter(faceBox);
+
+    // Project the centroid-to-edge-midpoint vector onto the face tangent plane to get
+    // a purely in-plane inward direction (toward the centroid from the edge midpoint).
+    const edgeMidPoint = faceTangentAtFirstEdge.origin;
+    const toCentroid = faceCentroid - edgeMidPoint;
+
+    // Remove the face-normal component to stay in the tangent plane.
+    const inPlaneToCentroid = toCentroid - dot(toCentroid, faceNormal) * faceNormal;
+
+    if (norm(inPlaneToCentroid) < 1e-6 * meter)
+    {
+        // Centroid is essentially on the edge; cannot classify direction.
+        return flipToward;
+    }
+    const inwardDir = normalize(inPlaneToCentroid);
+
+    // Is the kernel's default offset direction (oppositeDirection=false) going inward?
+    const kernelDefaultIsInward = dot(kernelDefaultOffsetDir, inwardDir) > 0;
+
+    // flipToward=false → want inward; flipToward=true → want outward (NOT inward).
+    const wantInward = !flipToward;
+
+    // Flip the kernel's default only when the desired direction differs from it.
+    return wantInward != kernelDefaultIsInward;
+}
+
+/**
  * opOffsetCurveOnFace operation. Corner mitering and wire trimming are handled by
  * the kernel, producing the same result as the standard "Offset curve" feature.
  *
