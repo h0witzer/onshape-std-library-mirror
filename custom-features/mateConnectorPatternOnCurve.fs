@@ -12,7 +12,7 @@ import(path : "onshape/std/offsetCurveOnFace.fs", version : "2909.0");
 
 // Import spacing utilities for EQUAL / DISTANCE / BESTFIT curve pattern logic
 // (same module used by onlyTabs.fs and sheetMetalStitchCutBend.fs)
-export import(path : "c51f6558b7346f455a634ff5/cf14633de6fca78124306ce9/8ce820287d75ed2e92412d90", version : "cf26b6d26aa41f8853237904"); // spacingUtils.fs
+export import(path : "c51f6558b7346f455a634ff5/e0f6c1184369b6128ab4c86d/8ce820287d75ed2e92412d90", version : "15454a8a3cd2d962a10c4f29"); // spacingUtils.fs
 
 // Tolerance for normalized path parameter comparisons (0.0 to 1.0 range).
 // Prevents floating-point precision errors from excluding connectors positioned exactly at the end of the effective zone.
@@ -722,7 +722,7 @@ function buildFacePathOffsetWire(context is Context, wireOperationId is Id, sour
                 "edges"              : sourceEdges,
                 "distance"           : offsetDistance,
                 "oppositeDirection"  : flipDirection,
-                "offsetType"         : OffsetCurveType.EUCLIDEAN,
+                "offsetType"         : OffsetCurveType.GEODESIC,
                 "targets"            : resolvedTargets
             });
 
