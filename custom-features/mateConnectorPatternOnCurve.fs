@@ -8,7 +8,7 @@ FeatureScript 2909;
 
 import(path : "onshape/std/common.fs", version : "2909.0");
 import(path : "onshape/std/queryVariable.fs", version : "2909.0");
-import(path : "onshape/std/offsetcurvetype.gen.fs", version : "2909.0");
+import(path : "onshape/std/offsetCurveOnFace.fs", version : "2909.0");
 
 // Import spacing utilities for EQUAL / DISTANCE / BESTFIT curve pattern logic
 // (same module used by onlyTabs.fs and sheetMetalStitchCutBend.fs)
@@ -301,11 +301,11 @@ export const mateConnectorPatternOnCurve = defineFeature(function(context is Con
             var finalPath = sourcePath;
 
             // Apply path offset when requested in FACE mode.
-            // Calls @opOffsetCurveOnFace directly with GEODESIC distance to produce a wire
-            // that accurately follows the surface. When a face was explicitly selected,
-            // groupFaceQuery is passed as targets so the kernel knows which surface to project
-            // onto. For edge-only selections groupFaceQuery is qNothing() and the kernel
-            // infers the surface from the edges.
+            // Calls the standard library offsetCurveOnFace feature function directly with
+            // GEODESIC offset type so the wire accurately follows the surface curvature.
+            // When a face was explicitly selected, groupFaceQuery is passed as targets so
+            // the kernel knows which surface to project onto. For edge-only selections
+            // groupFaceQuery is qNothing() and the kernel infers the surface from the edges.
             if (definition.pathSelectionMode == PathSelectionMode.FACE &&
                 definition.useFaceNormalOffset && definition.faceNormalOffset > 0 * meter)
             {
@@ -765,14 +765,10 @@ function evaluateFaceNormalAtPoint(context is Context, faceQuery is Query, point
 }
 
 /**
- * Produces an offset wire body from the given edges by calling @opOffsetCurveOnFace
- * directly with geodesic distance, matching the kernel path taken by the native
- * Offset Curve feature. Using the kernel op directly (rather than the defineFeature
- * wrapper) avoids feature-wrapper side-effects that were causing placement instability.
- *
- * Offset type is hard-coded to GEODESIC so the wire accurately follows the surface
- * geometry regardless of curvature — the same mode the native Offset Curve feature
- * uses by default.
+ * Calls the standard `offsetCurveOnFace` feature function to produce an offset wire body
+ * from the given edges. Offset type is hard-coded to GEODESIC so the wire accurately
+ * follows the surface geometry regardless of curvature — the same mode the native
+ * Offset Curve feature uses by default.
  *
  * Parameters:
  *   context {Context}               - The active context
@@ -782,7 +778,7 @@ function evaluateFaceNormalAtPoint(context is Context, faceQuery is Query, point
  *                                    explicitly selected face when available, or qNothing()
  *                                    to let the kernel infer from the edge topology.
  *   offsetDistance {ValueWithUnits} - The offset distance (must be positive)
- *   flipDirection {boolean}         - When true, offsets in the opposite lateral direction
+ *   flipDirection {boolean}         - Passed as oppositeDirection to the standard feature
  *
  * Returns:
  *   {map} - A map with fields:
@@ -791,27 +787,24 @@ function evaluateFaceNormalAtPoint(context is Context, faceQuery is Query, point
  */
 function buildFacePathOffsetWire(context is Context, wireOperationId is Id, sourceEdges is Query, targetFace is Query, offsetDistance is ValueWithUnits, flipDirection is boolean) returns map
 {
-    // @opOffsetCurveOnFace requires a non-empty targets set to determine which surface to
-    // project the offset onto. When an explicit face was provided by the user (FACE mode,
-    // face selected), pass it directly. When only edges were selected (no associated face),
-    // derive the projection surface from the topology of the source edges via qAdjacent so
-    // the kernel has the surface context it needs.
+    // The offsetCurveOnFace feature requires a non-empty targets set to determine which
+    // surface to project the offset onto. When an explicit face was provided by the user
+    // (FACE mode, face selected), pass it directly. When only edges were selected (no
+    // associated face), derive the projection surface from the topology of the source
+    // edges via qAdjacent so the kernel has the surface context it needs.
     const resolvedTargets = isQueryEmpty(context, targetFace) ?
         qAdjacent(sourceEdges, AdjacencyType.EDGE, EntityType.FACE) :
         targetFace;
 
-    // Call the kernel op directly with GEODESIC offset type.
-    // imprint=false and extend=false keep the result as a plain wire body that matches
-    // the source edge footprint, which is what constructPath expects.
-    @opOffsetCurveOnFace(context, wireOperationId, {
-                "edges"            : sourceEdges,
-                "oppositeDirection": flipDirection,
-                "imprint"          : false,
-                "extend"           : false,
-                "distance"         : offsetDistance,
-                "offsetType"       : OffsetCurveType.GEODESIC,
-                "targets"          : resolvedTargets,
-                "roundedCorners"   : false
+    // Use the standard library feature wrapper so the result is produced through the same
+    // code path as the native Offset Curve feature. offsetType is forced to GEODESIC so the
+    // wire follows the surface accurately regardless of curvature.
+    offsetCurveOnFace(context, wireOperationId, {
+                "edges"             : sourceEdges,
+                "distance"          : offsetDistance,
+                "oppositeDirection" : flipDirection,
+                "offsetType"        : OffsetCurveType.GEODESIC,
+                "targets"           : resolvedTargets
             });
 
     const wireBodies = evaluateQuery(context, qCreatedBy(wireOperationId, EntityType.BODY));
