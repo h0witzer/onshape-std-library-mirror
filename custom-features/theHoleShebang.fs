@@ -110,6 +110,13 @@ export const mateConnectorPatternOnCurve = defineFeature(function(context is Con
 
                 annotation { "Name" : "Flip direction", "UIHint" : UIHint.OPPOSITE_DIRECTION }
                 definition.faceNormalOffsetFlip is boolean;
+
+                // Offset type: GEODESIC measures distance along the surface; EUCLIDEAN measures
+                // straight-line (world-space) distance. Geodesic is correct for most curved surfaces
+                // but can fail on highly curved or discontinuous geometry where Euclidean is more stable.
+                annotation { "Name" : "Offset type",
+                            "UIHint" : [UIHint.SHOW_LABEL, UIHint.REMEMBER_PREVIOUS_VALUE] }
+                definition.offsetCurveType is OffsetCurveType;
             }
         }
 
@@ -315,7 +322,8 @@ export const mateConnectorPatternOnCurve = defineFeature(function(context is Con
                     activePathEdges,
                     groupFaceQuery,
                     definition.faceNormalOffset,
-                    definition.faceNormalOffsetFlip
+                    definition.faceNormalOffsetFlip,
+                    definition.offsetCurveType
                 );
                 offsetWireBodies = append(offsetWireBodies, offsetResult.offsetWireBody);
                 activePathEdges = offsetResult.offsetWireEdges;
@@ -777,13 +785,17 @@ function evaluateFaceNormalAtPoint(context is Context, faceQuery is Query, point
  *                                    to let the kernel infer from the edge topology.
  *   offsetDistance {ValueWithUnits} - The offset distance (must be positive)
  *   flipDirection {boolean}         - Passed as oppositeDirection to the standard feature
+ *   offsetType {OffsetCurveType}    - GEODESIC measures distance along the surface; EUCLIDEAN
+ *                                    measures straight-line world-space distance. GEODESIC is
+ *                                    correct for most curved surfaces; EUCLIDEAN is more stable
+ *                                    on highly curved or geometrically discontinuous surfaces.
  *
  * Returns:
  *   {map} - A map with fields:
  *       offsetWireBody  {Query} - The created wire body (delete after sampling)
  *       offsetWireEdges {Query} - Edges of the first wire body, ready for constructPath
  */
-function buildFacePathOffsetWire(context is Context, wireOperationId is Id, sourceEdges is Query, targetFace is Query, offsetDistance is ValueWithUnits, flipDirection is boolean) returns map
+function buildFacePathOffsetWire(context is Context, wireOperationId is Id, sourceEdges is Query, targetFace is Query, offsetDistance is ValueWithUnits, flipDirection is boolean, offsetType is OffsetCurveType) returns map
 {
     // Call the standard library offsetCurveOnFace feature function directly.
     // The kernel operation @opOffsetCurveOnFace requires a non-empty targets set to determine
@@ -799,7 +811,7 @@ function buildFacePathOffsetWire(context is Context, wireOperationId is Id, sour
                 "edges"              : sourceEdges,
                 "distance"           : offsetDistance,
                 "oppositeDirection"  : flipDirection,
-                "offsetType"         : OffsetCurveType.GEODESIC,
+                "offsetType"         : offsetType,
                 "targets"            : resolvedTargets
             });
 
