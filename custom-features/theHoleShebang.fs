@@ -8,7 +8,7 @@ FeatureScript 2909;
 
 import(path : "onshape/std/common.fs", version : "2909.0");
 import(path : "onshape/std/queryVariable.fs", version : "2909.0");
-import(path : "onshape/std/offsetCurveOnFace.fs", version : "2909.0");
+export import(path : "onshape/std/offsetCurveOnFace.fs", version : "2909.0");
 
 // Import spacing utilities for EQUAL / DISTANCE / BESTFIT curve pattern logic
 // (same module used by onlyTabs.fs and sheetMetalStitchCutBend.fs)
