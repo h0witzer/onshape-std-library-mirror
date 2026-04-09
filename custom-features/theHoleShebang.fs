@@ -199,7 +199,15 @@ export const mateConnectorPatternOnCurve = defineFeature(function(context is Con
             globalReferenceZAxis = resolvedOrientation.zAxis;
         }
 
-        // Determine owner body query - qNothing() if none is specified
+        // Validate and resolve owner body query.
+        // verifyNonemptyQuery ensures the selected body actually resolves before any connectors are
+        // created. Without this guard, an unresolvable owner query would silently produce connectors
+        // that Onshape treats as orphaned-but-owned, which breaks the assembly-level hide control.
+        if (definition.specifyOwnerBody)
+        {
+            verifyNonemptyQuery(context, definition, "ownerBody",
+                ErrorStringEnum.MATECONNECTOR_OWNER_PART_NOT_RESOLVED);
+        }
         const ownerBodyQuery = definition.specifyOwnerBody ? definition.ownerBody : qNothing();
 
         // ----------------------------------------------------------------
