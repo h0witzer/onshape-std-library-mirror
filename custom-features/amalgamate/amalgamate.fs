@@ -98,6 +98,10 @@ export const amalgamate = defineFeature(function(context is Context, id is Id, d
 
         performFormBooleans(context, id, subtractionSolids, unionSolids, allFormedBodies, definition.createNewBodies);
 
+        // Report the number of instantiated locations to the user for auditing purposes.
+        const instanceCount = size(evaluateQuery(context, definition.locations));
+        reportFeatureInfo(context, id, toString(instanceCount) ~ (instanceCount == 1 ? " instance spawned." : " instances spawned."));
+
         // Retrieve the feature name from the source Part Studio context.
         // Call buildFunction to get the source context, then getVariable to retrieve the name.
         // This works because variables are stored in the Part Studio context.
