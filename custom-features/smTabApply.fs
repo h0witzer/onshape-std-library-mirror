@@ -466,11 +466,16 @@ export const smTabApply = defineSheetMetalFeature(function(context is Context, i
         // ------------------------------------------------------------------
         // Phase 8 — Local subtraction (wall-scoped cuts).
         // Surface-to-surface boolean with allowSheets: true.  The surface tool
-        // bodies cut directly against the SM master surface (smBodiesAffected).
-        // Targeting the SM master surface body is correct here because the user
-        // cannot select the invisible master surface — it is resolved automatically
-        // from the unionScope selection through getSMDefinitionEntities + qOwnerBody.
-        // opBoolean SUBTRACTION consumes the tool bodies.
+        // bodies cut directly against the SM master surface.
+        //
+        // trackedSMBodies (not smBodiesAffected) is used as targets here.
+        // smBodiesAffected is a lazy query that re-evaluates qOwnerBody on the
+        // raw SM definition face references from unionWallDefinitionEntities.
+        // After Phase 7's opBoolean UNION merges the tab surface into the SM
+        // master body, those face transient IDs may change, causing
+        // smBodiesAffected to resolve to nothing and triggering
+        // CANNOT_RESOLVE_ENTITIES.  trackedSMBodies was built with startTracking
+        // before Phase 7 and correctly follows the SM body through the merge.
         // ------------------------------------------------------------------
         if (!isQueryEmpty(context, localSubtractBodies))
         {
@@ -478,7 +483,7 @@ export const smTabApply = defineSheetMetalFeature(function(context is Context, i
                     toString(size(evaluateQuery(context, localSubtractBodies))) ~ " tool bodies.");
             opBoolean(context, id + "localSubtract", {
                         "tools"         : localSubtractBodies,
-                        "targets"       : smBodiesAffected,
+                        "targets"       : trackedSMBodies,
                         "operationType" : BooleanOperationType.SUBTRACTION,
                         "allowSheets"   : true
                     });
