@@ -329,8 +329,7 @@ export const smTabApply = defineSheetMetalFeature(function(context is Context, i
                 opBoolean(context, id + "outerSubtract", {
                             "tools"         : thickenedOuterSubtractSolids,
                             "targets"       : outerScopeTargets,
-                            "operationType" : BooleanOperationType.SUBTRACTION,
-                            "targetsAndToolsNeedGrouping" : true
+                            "operationType" : BooleanOperationType.SUBTRACTION
                         });
             }
         }
