@@ -210,57 +210,74 @@ export const smTabApply = defineSheetMetalFeature(function(context is Context, i
         // surface boolean operations (allowSheets: true), matching the standard
         // sheetMetalTab approach.  Outer subtract bodies are thickened because
         // their scope may include plain solid bodies that require solid tools.
+        //
+        // The full SM wall thickness is applied in BOTH normal directions so
+        // the resulting solid always penetrates through the wall regardless of
+        // which way the surface normal points in the tool Part Studio.
         // ------------------------------------------------------------------
         var thickenedOuterSubtractSolids = qNothing();
         if (!isQueryEmpty(context, outerSubtractBodies))
         {
             const unionSMModelBody = qOwnerBody(qUnion(unionWallDefinitionEntities));
             const modelParameters  = getModelParameters(context, unionSMModelBody);
+            const totalThickness   = modelParameters.frontThickness + modelParameters.backThickness;
             const thickenedOuterId = id + "thickenOuterSubtractSurfaces";
             opThicken(context, thickenedOuterId, {
                         "entities"   : outerSubtractBodies,
-                        "thickness1" : modelParameters.frontThickness,
-                        "thickness2" : modelParameters.backThickness
+                        "thickness1" : totalThickness,
+                        "thickness2" : totalThickness
                     });
             thickenedOuterSubtractSolids = qCreatedBy(thickenedOuterId, EntityType.BODY)->qBodyType(BodyType.SOLID);
         }
 
         // ------------------------------------------------------------------
         // Phase 6 — Track SM model state before boolean operations.
+        //
+        // persistentUnionDefinitionEntities mirrors the unionEntityPersistantQuery
+        // pattern in sheetMetalTab.fs — it is built from the SM definition faces
+        // (not the SM body) with startTracking so updateSheetMetalGeometry (Phase
+        // 11) correctly identifies the modified region after the boolean operations.
         // ------------------------------------------------------------------
         const smBodiesAffected = qOwnerBody(qUnion(unionWallDefinitionEntities));
         const initialData      = getInitialEntitiesAndAttributes(context, smBodiesAffected);
         const trackedSMBodies  = qUnion([startTracking(context, smBodiesAffected), smBodiesAffected]);
         const associateChanges = startTracking(context, qOwnedByBody(smBodiesAffected, EntityType.FACE));
 
-        // ------------------------------------------------------------------
-        // Phase 7 — Union the tab surface bodies into the SM wall.
-        // Surface-to-surface boolean with allowSheets: true, mirroring the
-        // standard sheetMetalTab feature.  No prior thickening is needed.
-        // ------------------------------------------------------------------
-        const tabUnionDefinitionEntities = qUnion(getSMDefinitionEntities(context, definition.unionScope));
-        const tabUnionBodies             = evaluateQuery(context, qOwnerBody(tabUnionDefinitionEntities));
+        const unionDefinitionEntitiesQuery    = qUnion(unionWallDefinitionEntities);
+        const persistentUnionDefinitionEntities = qUnion([unionDefinitionEntitiesQuery, startTracking(context, unionDefinitionEntitiesQuery)]);
 
+        // ------------------------------------------------------------------
+        // Phase 7 — Union the tab surface bodies into the SM master surface.
+        //
+        // smBodiesAffected is the SM master surface body (the invisible model body
+        // that the user cannot select directly).  It is derived from the user's
+        // unionScope selection via getSMDefinitionEntities + qOwnerBody.
+        //
+        // The standard sheetMetalTab feature passes only "tools" for UNION
+        // (no "targets" field) and includes the wall body alongside the tab
+        // surface so that all bodies are merged into a single sheet body.
+        // ------------------------------------------------------------------
         opBoolean(context, id + "unionTabToWall", {
-                    "tools"         : qUnion([qUnion(tabUnionBodies), unionSurfaceBodies]),
-                    "targets"       : qUnion(tabUnionBodies),
+                    "tools"         : qUnion([smBodiesAffected, unionSurfaceBodies]),
                     "operationType" : BooleanOperationType.UNION,
                     "allowSheets"   : true
                 });
 
         // ------------------------------------------------------------------
         // Phase 8 — Local subtraction (wall-scoped cuts).
-        // Surface-to-surface boolean with allowSheets: true.  The surface tools
-        // cut directly against the SM sheet wall geometry with no thickening.
+        // Surface-to-surface boolean with allowSheets: true.  The surface tool
+        // bodies cut directly against the SM master surface (smBodiesAffected).
+        // Targeting the SM master surface body is correct here because the user
+        // cannot select the invisible master surface — it is resolved automatically
+        // from the unionScope selection through getSMDefinitionEntities + qOwnerBody.
         // opBoolean SUBTRACTION consumes the tool bodies.
         // ------------------------------------------------------------------
         if (!isQueryEmpty(context, localSubtractBodies))
         {
             opBoolean(context, id + "localSubtract", {
                         "tools"         : localSubtractBodies,
-                        "targets"       : qUnion(tabUnionBodies),
+                        "targets"       : smBodiesAffected,
                         "operationType" : BooleanOperationType.SUBTRACTION,
-                        "targetsAndToolsNeedGrouping" : true,
                         "allowSheets"   : true
                     });
         }
@@ -335,10 +352,13 @@ export const smTabApply = defineSheetMetalFeature(function(context is Context, i
 
         // ------------------------------------------------------------------
         // Phase 11 — Update the sheet metal model to recognise the new geometry.
+        // persistentUnionDefinitionEntities mirrors the unionEntityPersistantQuery
+        // pattern in sheetMetalTab.fs — passing the SM definition entities (faces)
+        // with tracking, not the SM body, drives the correct SM attribute update.
         // ------------------------------------------------------------------
         const toUpdate = assignSMAttributesToNewOrSplitEntities(context, trackedSMBodies, initialData, id);
         updateSheetMetalGeometry(context, id, {
-                    "entities"           : qUnion([toUpdate.modifiedEntities, qUnion(tabUnionBodies)]),
+                    "entities"           : qUnion([toUpdate.modifiedEntities, persistentUnionDefinitionEntities]),
                     "deletedAttributes"  : toUpdate.deletedAttributes,
                     "associatedChanges"  : associateChanges
                 });
