@@ -192,6 +192,15 @@ export const smTabApply = defineSheetMetalFeature(function(context is Context, i
             throw regenError("The tool Part Studio contains no bodies tagged as union surfaces. Run SM Tab Tag in the tool Part Studio.", ["formPartStudio"]);
         }
 
+        // Diagnostic: report role-tagged body counts so the console shows what
+        // was found after instantiation.  Zero counts here means the instantiator
+        // did not carry the attribute over from the tool Part Studio.
+        println("SM Tab Apply — Phase 3 role query results:");
+        println("  union surface bodies:  " ~ toString(size(evaluateQuery(context, unionSurfaceBodies))));
+        println("  local subtract bodies: " ~ toString(size(evaluateQuery(context, localSubtractBodies))));
+        println("  outer subtract bodies: " ~ toString(size(evaluateQuery(context, outerSubtractBodies))));
+        println("  csys connector bodies: " ~ toString(size(evaluateQuery(context, csysConnectorBodies))));
+
         // ------------------------------------------------------------------
         // Phase 4 — Resolve SM definition entities from the union scope wall.
         // These are used for SM state tracking (Phase 6) and the union target
@@ -202,6 +211,60 @@ export const smTabApply = defineSheetMetalFeature(function(context is Context, i
         if (unionWallDefinitionEntities == undefined || unionWallDefinitionEntities == [])
         {
             throw regenError("Could not resolve sheet metal definition entities from union scope.", ["unionScope"]);
+        }
+
+        println("SM Tab Apply — Phase 4 SM definition entity count: " ~ toString(size(unionWallDefinitionEntities)));
+
+        // ------------------------------------------------------------------
+        // Phase 4.5 — Snap union and local subtract surface bodies to the SM
+        // definition plane (midplane of the rendered SM wall).
+        //
+        // This replicates the moveTabsToPlane step in sheetMetalTab.fs, which
+        // snaps derived tab bodies to the SM definition midplane before the
+        // UNION boolean.  Bodies derived from the tool Part Studio are positioned
+        // by the placement mate connector transform.  If the user's mate connector
+        // is on the THICKENED FACE of the SM model (which is the visible surface
+        // in the viewport) rather than the SM definition midplane, the derived
+        // bodies will be offset by ±thickness/2 and the UNION/SUBTRACTION booleans
+        // will silently no-op because the bodies never touch the master surface.
+        //
+        // For each union/local-subtract body:
+        //   1. Evaluate evPlane on the body face and on the closest SM definition face.
+        //   2. If normals antiparallel, call opFlipOrientation (consistent with the
+        //      onlyTabs.fs heuristic — no mirrorAcross planar assumption).
+        //   3. Translate along the SM wall normal by the perpendicular distance
+        //      between the two planes to achieve exact coincidence.
+        // ------------------------------------------------------------------
+        var smDefinitionFacePlanes = [];
+        for (var smFace in unionWallDefinitionEntities)
+        {
+            var definitionFacePlane = undefined;
+            try
+            {
+                definitionFacePlane = evPlane(context, { "face" : smFace });
+            }
+            catch
+            {
+                // SM wall face not planar — should not occur; skip.
+            }
+            if (definitionFacePlane != undefined)
+            {
+                smDefinitionFacePlanes = append(smDefinitionFacePlanes, definitionFacePlane);
+            }
+        }
+        println("SM Tab Apply — Phase 4.5 SM definition face planes found: " ~ toString(size(smDefinitionFacePlanes)));
+
+        if (size(smDefinitionFacePlanes) > 0)
+        {
+            snapBodiesToNearestDefinitionPlane(context, id + "snapUnionBodies", unionSurfaceBodies, smDefinitionFacePlanes);
+            if (!isQueryEmpty(context, localSubtractBodies))
+            {
+                snapBodiesToNearestDefinitionPlane(context, id + "snapLocalSubtractBodies", localSubtractBodies, smDefinitionFacePlanes);
+            }
+        }
+        else
+        {
+            println("SM Tab Apply — Phase 4.5 WARNING: no planar SM definition faces found; bodies NOT snapped to midplane.");
         }
 
         // ------------------------------------------------------------------
@@ -389,11 +452,16 @@ export const smTabApply = defineSheetMetalFeature(function(context is Context, i
         // (no "targets" field) and includes the wall body alongside the tab
         // surface so that all bodies are merged into a single sheet body.
         // ------------------------------------------------------------------
+        println("SM Tab Apply — Phase 7: attempting UNION of " ~
+                toString(size(evaluateQuery(context, unionSurfaceBodies))) ~
+                " union bodies with SM master surface body count " ~
+                toString(size(evaluateQuery(context, smBodiesAffected))));
         opBoolean(context, id + "unionTabToWall", {
                     "tools"         : qUnion([smBodiesAffected, unionSurfaceBodies]),
                     "operationType" : BooleanOperationType.UNION,
                     "allowSheets"   : true
                 });
+        println("SM Tab Apply — Phase 7: UNION completed.");
 
         // ------------------------------------------------------------------
         // Phase 8 — Local subtraction (wall-scoped cuts).
@@ -406,12 +474,19 @@ export const smTabApply = defineSheetMetalFeature(function(context is Context, i
         // ------------------------------------------------------------------
         if (!isQueryEmpty(context, localSubtractBodies))
         {
+            println("SM Tab Apply — Phase 8: attempting local SUBTRACTION with " ~
+                    toString(size(evaluateQuery(context, localSubtractBodies))) ~ " tool bodies.");
             opBoolean(context, id + "localSubtract", {
                         "tools"         : localSubtractBodies,
                         "targets"       : smBodiesAffected,
                         "operationType" : BooleanOperationType.SUBTRACTION,
                         "allowSheets"   : true
                     });
+            println("SM Tab Apply — Phase 8: local SUBTRACTION completed.");
+        }
+        else
+        {
+            println("SM Tab Apply — Phase 8: no local subtract bodies; skipping.");
         }
 
         // ------------------------------------------------------------------
@@ -577,4 +652,84 @@ function applyOrientationOverrides(placementCSys is CoordSystem, flipDirection i
     // MateConnectorAxisType.PLUS_X is the default; no adjustment needed.
 
     return coordSystem(placementCSys.origin, xAxis, zAxis);
+}
+
+/**
+ * Snap each surface body in the given query to be exactly coplanar with its nearest SM
+ * definition face plane.  This replicates the moveTabsToPlane step in sheetMetalTab.fs,
+ * which the standard sheetMetalTab feature uses to ensure that derived tab bodies are
+ * coincident with the SM definition midplane before the UNION boolean.
+ *
+ * Bodies placed at the thickened face (the visible surface, which is ±thickness/2 from
+ * the SM definition midplane) would otherwise be offset and the opBoolean UNION would
+ * silently no-op because the surfaces never touch the master surface body.
+ *
+ * Algorithm per body:
+ *   1. Evaluate evPlane on the body's face and find the nearest SM definition face plane
+ *      by Euclidean distance between the two face origins.
+ *   2. If normals are antiparallel (dot < 0), call opFlipOrientation to reverse the
+ *      surface direction before translating.  This is the same heuristic used in
+ *      booleanOneTabGroup in onlyTabs.fs and avoids the mirrorAcross planar assumption
+ *      used by the standard sheetMetalTab applyPlaneToPlaneTransform.
+ *   3. Translate along the SM wall's normal direction by the perpendicular distance
+ *      between the two planes (dot(wallOrigin - bodyOrigin, wallNormal) * wallNormal)
+ *      to achieve exact geometric coincidence.
+ *
+ * @param context               {Context}
+ * @param id                    {Id}
+ * @param bodies                {Query}   Surface bodies to snap; each must be planar.
+ * @param smDefinitionFacePlanes {array}  Array of Plane values from SM definition faces.
+ */
+function snapBodiesToNearestDefinitionPlane(context is Context, id is Id, bodies is Query, smDefinitionFacePlanes is array)
+{
+    const bodyArray = evaluateQuery(context, bodies);
+    for (var bodyIndex = 0; bodyIndex < size(bodyArray); bodyIndex += 1)
+    {
+        const currentBody = bodyArray[bodyIndex];
+
+        var bodyFacePlane = undefined;
+        try
+        {
+            bodyFacePlane = evPlane(context, { "face" : qOwnedByBody(currentBody, EntityType.FACE) });
+        }
+        catch
+        {
+            println("SM Tab Apply — snapBodiesToNearestDefinitionPlane: body index " ~
+                    toString(bodyIndex) ~ " is non-planar; skipping snap.");
+            continue;
+        }
+
+        // Find the SM definition face plane whose origin is nearest to this body's face origin.
+        var nearestDefinitionPlane = smDefinitionFacePlanes[0];
+        var nearestDistance = norm(smDefinitionFacePlanes[0].origin - bodyFacePlane.origin);
+        for (var candidatePlane in smDefinitionFacePlanes)
+        {
+            const distanceToCandidate = norm(candidatePlane.origin - bodyFacePlane.origin);
+            if (distanceToCandidate < nearestDistance)
+            {
+                nearestDistance = distanceToCandidate;
+                nearestDefinitionPlane = candidatePlane;
+            }
+        }
+
+        // Correct surface normal direction before computing the snap translation so
+        // opBoolean UNION sees parallel normals between the union body and the SM wall.
+        if (dot(bodyFacePlane.normal, nearestDefinitionPlane.normal) < 0)
+        {
+            opFlipOrientation(context, id + "flip" + unstableIdComponent(bodyIndex), {
+                        "bodies" : currentBody
+                    });
+        }
+
+        // Compute the perpendicular distance from the body's plane origin to the SM
+        // definition plane along the SM wall normal, then translate to achieve coincidence.
+        const snapTranslationVector = dot(nearestDefinitionPlane.origin - bodyFacePlane.origin,
+                nearestDefinitionPlane.normal) * nearestDefinitionPlane.normal;
+        println("SM Tab Apply — snapBodiesToNearestDefinitionPlane: body " ~
+                toString(bodyIndex) ~ " snap translation = " ~ toString(snapTranslationVector));
+        opTransform(context, id + "snap" + unstableIdComponent(bodyIndex), {
+                    "bodies"    : currentBody,
+                    "transform" : transform(snapTranslationVector)
+                });
+    }
 }
