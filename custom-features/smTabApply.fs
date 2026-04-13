@@ -442,19 +442,70 @@ export const smTabApply = defineSheetMetalFeature(function(context is Context, i
         const persistentUnionDefinitionEntities = qUnion([unionDefinitionEntitiesQuery, startTracking(context, unionDefinitionEntitiesQuery)]);
 
         // ------------------------------------------------------------------
+        // Phase 6.5 — Pre-subtract union surface bodies from the SM master
+        // surface to establish edge-adjacent geometry before the UNION.
+        //
+        // The standard booleanOneTabGroup in sheetMetalTab.fs ALWAYS calls
+        // subtractTab before its tools-only UNION.  subtractTab cuts the tab's
+        // footprint out of the SM wall so the two surfaces are edge-adjacent
+        // when the UNION runs.  Without that step, a tools-only UNION of the
+        // SM master surface body (a complex 3D sheet in the folded state) with
+        // a flat tab that OVERLAPS the SM wall throws BOOLEAN_INVALID — the
+        // boolean kernel cannot resolve which surface owns the shared region.
+        //
+        // We replicate the pre-subtraction here with a simpler surface-to-
+        // surface path:
+        //   1. opPattern creates a throw-away copy of the union surface bodies.
+        //   2. opBoolean SUBTRACTION (try silent) removes the overlapping
+        //      region from the SM master surface, consuming the copies.
+        //   3. If the subtraction failed silently, the copies are deleted
+        //      explicitly so they do not linger as orphan sheet bodies.
+        //
+        // After Phase 6.5 the SM master surface has a slot matching the tab's
+        // overlap footprint.  Phase 7's tools-only UNION then merges two
+        // edge-adjacent sheet bodies — always a valid operation for the kernel.
+        // ------------------------------------------------------------------
+        opPattern(context, id + "copyUnionForSlot", {
+                    "entities"      : unionSurfaceBodies,
+                    "transforms"    : [identityTransform()],
+                    "instanceNames" : ["slot"]
+                });
+        const unionSlotCopies = qCreatedBy(id + "copyUnionForSlot", EntityType.BODY);
+        try silent
+        {
+            opBoolean(context, id + "preSubtractUnion", {
+                        "tools"         : unionSlotCopies,
+                        "targets"       : smBodiesAffected,
+                        "operationType" : BooleanOperationType.SUBTRACTION,
+                        "allowSheets"   : true
+                    });
+        }
+        // If the subtraction succeeded, unionSlotCopies were consumed by the boolean.
+        // If it was caught silently (e.g. tab doesn't overlap SM wall), the copies still
+        // exist; delete them so they don't appear as orphan surface bodies in the context.
+        if (!isQueryEmpty(context, unionSlotCopies))
+        {
+            try silent(opDeleteBodies(context, id + "cleanupSlotCopies", {
+                            "entities" : unionSlotCopies
+                        }));
+        }
+
+        // ------------------------------------------------------------------
         // Phase 7 — Union the tab surface bodies into the SM master surface.
         //
         // Both smBodiesAffected and unionSurfaceBodies are passed as "tools"
         // with no "targets", mirroring booleanOneTabGroup in sheetMetalTab.fs.
-        // A targets-based UNION requires the tool and target sheets to share a
-        // boundary edge; coplanar-but-disconnected sheets throw BOOLEAN_BAD_INPUT.
-        // The tools-only form has no such constraint.
+        //
+        // Phase 6.5 has already cut the tab footprint out of the SM wall so
+        // the two bodies are now edge-adjacent.  The tools-only UNION merges
+        // edge-adjacent sheets, which is always a valid operation.
         //
         // try silent suppresses the default opBoolean error output so we can
-        // provide a cleaner SHEET_METAL_TAB_FAILS_MERGE error via the catch block.
+        // provide a cleaner SHEET_METAL_TAB_FAILS_MERGE error via the catch
+        // block if the UNION still fails for a genuine geometry reason.
         // After the try-catch, getFeatureStatus detects the BOOLEAN_UNION_NO_OP
-        // case (tab coplanar with SM face but no shared boundary edge) so the
-        // feature never silently claims success without producing a change.
+        // case (tab coplanar with SM face but no shared boundary edge after snap)
+        // so the feature never silently claims success without a geometry change.
         // ------------------------------------------------------------------
         println("SM Tab Apply — Phase 7: attempting UNION of " ~
                 toString(size(evaluateQuery(context, unionSurfaceBodies))) ~
