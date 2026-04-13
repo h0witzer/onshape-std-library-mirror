@@ -450,9 +450,11 @@ export const smTabApply = defineSheetMetalFeature(function(context is Context, i
         // boundary edge; coplanar-but-disconnected sheets throw BOOLEAN_BAD_INPUT.
         // The tools-only form has no such constraint.
         //
-        // try silent matches the standard tab pattern: no-ops and geometry
-        // failures are swallowed here; updateSheetMetalGeometry in Phase 11
-        // will surface a meaningful error if nothing actually merged.
+        // try silent suppresses the default opBoolean error output so we can
+        // provide a cleaner SHEET_METAL_TAB_FAILS_MERGE error via the catch block.
+        // After the try-catch, getFeatureStatus detects the BOOLEAN_UNION_NO_OP
+        // case (tab coplanar with SM face but no shared boundary edge) so the
+        // feature never silently claims success without producing a change.
         // ------------------------------------------------------------------
         println("SM Tab Apply — Phase 7: attempting UNION of " ~
                 toString(size(evaluateQuery(context, unionSurfaceBodies))) ~
@@ -466,7 +468,24 @@ export const smTabApply = defineSheetMetalFeature(function(context is Context, i
                         "allowSheets"   : true
                     });
         }
-        println("SM Tab Apply — Phase 7: UNION completed.");
+        catch
+        {
+            // Genuine geometry failure (not a simple no-op): the tab surface
+            // could not be merged into the SM definition body.
+            throw regenError(ErrorStringEnum.SHEET_METAL_TAB_FAILS_MERGE, ["unionScope"]);
+        }
+        const unionBooleanStatus = getFeatureStatus(context, id + "unionTabToWall");
+        if (unionBooleanStatus.statusEnum == ErrorStringEnum.BOOLEAN_UNION_NO_OP)
+        {
+            // The UNION completed without error but produced no geometry change.
+            // This means the tab body and SM definition body do not share a
+            // boundary edge after snapping.  The most common cause: the mate
+            // connector was placed on the wall face instead of at the fold-line
+            // edge, so the tab body sits entirely inside the SM wall boundary.
+            println("SM Tab Apply — Phase 7: UNION was a no-op — tab body does not share a boundary edge with the SM definition face. Verify that the mate connector is positioned at the fold-line edge.");
+            throw regenError(ErrorStringEnum.SHEET_METAL_TAB_FAILS_MERGE, ["unionScope"]);
+        }
+        println("SM Tab Apply — Phase 7: UNION completed (bodies merged).");
 
         // ------------------------------------------------------------------
         // Phase 8 — Local subtraction (wall-scoped cuts).
