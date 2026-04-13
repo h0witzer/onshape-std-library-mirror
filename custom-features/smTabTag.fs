@@ -81,7 +81,7 @@ export const smTabTag = defineFeature(function(context is Context, id is Id, def
         // ------------------------------------------------------------------
         annotation {
                     "Name" : "Union surface bodies",
-                    "Description" : "Planar surface bodies that define the tab footprint. smTabApply thickens these to match the target SM model.",
+                    "Description" : "Planar surface bodies that define the tab footprint. smTabApply.fs thickens these to match the target SM model.",
                     "Filter" : EntityType.BODY && BodyType.SHEET
                 }
         definition.unionSurfaceBodies is Query;
@@ -101,7 +101,7 @@ export const smTabTag = defineFeature(function(context is Context, id is Id, def
         // ------------------------------------------------------------------
         annotation {
                     "Name" : "Outer subtraction bodies",
-                    "Description" : "Solid bodies for general subtraction applied across the full subtraction scope in smTabApply.",
+                    "Description" : "Solid bodies for general subtraction applied across the full subtraction scope in smTabApply.fs.",
                     "Filter" : EntityType.BODY && BodyType.SOLID
                 }
         definition.outerSubtractBodies is Query;

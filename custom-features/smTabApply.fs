@@ -31,7 +31,6 @@ import(path : "onshape/std/evaluate.fs", version : "2909.0");
 import(path : "onshape/std/feature.fs", version : "2909.0");
 import(path : "onshape/std/geomOperations.fs", version : "2909.0");
 import(path : "onshape/std/instantiator.fs", version : "2909.0");
-import(path : "onshape/std/math.fs", version : "2909.0");
 import(path : "onshape/std/query.fs", version : "2909.0");
 import(path : "onshape/std/sheetMetalAttribute.fs", version : "2909.0");
 import(path : "onshape/std/sheetMetalUtils.fs", version : "2909.0");
@@ -259,17 +258,17 @@ export const smTabApply = defineSheetMetalFeature(function(context is Context, i
         // ------------------------------------------------------------------
         if (!isQueryEmpty(context, outerSubtractBodies) && !isQueryEmpty(context, definition.outerSubtractionScope))
         {
-            var outerSubtractTools = outerSubtractBodies;
-
             // Apply offset to outer subtraction tools when a nonzero offset is requested.
-            if (definition.outerSubtractionOffset > TOLERANCE.zeroLength * meter)
+            // opOffsetFace modifies the tool bodies in place; outerSubtractBodies continues
+            // to reference the same bodies with their updated geometry.
+            if (definition.outerSubtractionOffset > 0 * meter)
             {
-                const offsetToolId = id + "offsetOuterSubtractTools";
-                opOffsetFace(context, offsetToolId, {
+                opOffsetFace(context, id + "offsetOuterSubtractTools", {
                             "moveFaces" : qOwnedByBody(outerSubtractBodies, EntityType.FACE),
                             "offsetDistance" : definition.outerSubtractionOffset
                         });
             }
+            var outerSubtractTools = outerSubtractBodies;
 
             // Resolve outer scope: separate SM definition entities from plain solid bodies.
             const outerScopeDefinitionEntities = try silent(getSMDefinitionEntities(context, definition.outerSubtractionScope));
