@@ -682,6 +682,10 @@ function applyOrientationOverrides(placementCSys is CoordSystem, flipDirection i
  */
 function snapBodiesToNearestDefinitionPlane(context is Context, id is Id, bodies is Query, smDefinitionFacePlanes is array)
 {
+    if (size(smDefinitionFacePlanes) == 0)
+    {
+        return;
+    }
     const bodyArray = evaluateQuery(context, bodies);
     for (var bodyIndex = 0; bodyIndex < size(bodyArray); bodyIndex += 1)
     {
