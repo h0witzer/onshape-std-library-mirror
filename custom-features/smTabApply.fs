@@ -614,6 +614,24 @@ export const smTabApply = defineSheetMetalFeature(function(context is Context, i
                 println("SM Tab Apply — Phase 7 diag D: evCollision failed (bodies may have no geometric relationship)");
             }
 
+            // E — body type (SHEET vs SOLID) for every union body and every SM master body.
+            // BOOLEAN_INVALID is expected when smBodiesAffected resolves to a 3D solid rather
+            // than the SM definition surface body; a SOLID here confirms that root cause.
+            for (var unionBodyIndex = 0; unionBodyIndex < size(unionBodiesForDiag); unionBodyIndex += 1)
+            {
+                const unionBodyIsSheet = !isQueryEmpty(context, qBodyType(unionBodiesForDiag[unionBodyIndex], BodyType.SHEET));
+                const unionEdgeCount   = size(evaluateQuery(context, qOwnedByBody(unionBodiesForDiag[unionBodyIndex], EntityType.EDGE)));
+                println("SM Tab Apply — Phase 7 diag E: union body " ~ toString(unionBodyIndex) ~
+                        " BodyType = " ~ (unionBodyIsSheet ? "SHEET" : "SOLID_OR_WIRE") ~
+                        "  edge count = " ~ toString(unionEdgeCount));
+            }
+            for (var smBodyIndex = 0; smBodyIndex < size(smBodiesForDiag); smBodyIndex += 1)
+            {
+                const smBodyIsSheet = !isQueryEmpty(context, qBodyType(smBodiesForDiag[smBodyIndex], BodyType.SHEET));
+                println("SM Tab Apply — Phase 7 diag E: SM master body " ~ toString(smBodyIndex) ~
+                        " BodyType = " ~ (smBodyIsSheet ? "SHEET" : "SOLID_OR_WIRE"));
+            }
+
             throw regenError(ErrorStringEnum.SHEET_METAL_TAB_FAILS_MERGE, ["unionScope"]);
         }
         const unionBooleanStatus = getFeatureStatus(context, id + "unionTabToWall");
@@ -627,6 +645,16 @@ export const smTabApply = defineSheetMetalFeature(function(context is Context, i
             throw regenError(ErrorStringEnum.SHEET_METAL_TAB_FAILS_MERGE, ["unionScope"]);
         }
         println("SM Tab Apply — Phase 7: UNION completed successfully.");
+
+        // Post-UNION entity-count diagnostics: if Phase 8 throws CANNOT_RESOLVE_ENTITIES
+        // these counts pinpoint whether the targets (trackedSMBodies) or the tools
+        // (localSubtractBodies) went missing after the UNION boolean.
+        println("SM Tab Apply — Phase 7 post-UNION: trackedSMBodies count = " ~
+                toString(size(evaluateQuery(context, trackedSMBodies))));
+        println("SM Tab Apply — Phase 7 post-UNION: localSubtractBodies count = " ~
+                toString(size(evaluateQuery(context, localSubtractBodies))));
+        println("SM Tab Apply — Phase 7 post-UNION: qCreatedBy(unionTabToWall) body count = " ~
+                toString(size(evaluateQuery(context, qCreatedBy(id + "unionTabToWall", EntityType.BODY)))));
 
         // ------------------------------------------------------------------
         // Phase 8 — Local subtraction (wall-scoped cuts).
