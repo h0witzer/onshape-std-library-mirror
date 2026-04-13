@@ -448,28 +448,46 @@ export const smTabApply = defineSheetMetalFeature(function(context is Context, i
         // that the user cannot select directly).  It is derived from the user's
         // unionScope selection via getSMDefinitionEntities + qOwnerBody.
         //
-        // IMPORTANT: smBodiesAffected must be passed as "targets", NOT "tools".
-        // When all bodies are passed as "tools" with no "targets", opBoolean UNION
-        // consumes every tool body and creates a brand-new merged body whose
-        // identity is unrelated to the original SM definition body.
-        // startTracking cannot reliably follow a body through such a destructive
-        // merge, so trackedSMBodies resolves to nothing afterward — causing
-        // CANNOT_RESOLVE_ENTITIES in Phase 8 and "wrong body" in Phase 11.
-        // With "targets", only the tool bodies (unionSurfaceBodies) are consumed;
-        // the target body (smBodiesAffected) preserves its identity and SM
-        // attributes throughout the operation.
+        // We mirror the tools-only UNION form used by the standard sheetMetalTab
+        // (booleanOneTabGroup, sheetMetalTab.fs ~line 562).  Both smBodiesAffected
+        // and unionSurfaceBodies are passed as "tools" with no "targets".
+        //
+        // A targets-based UNION requires the tool and target sheets to share at
+        // least one boundary edge; if they are merely coplanar but disconnected it
+        // throws BOOLEAN_BAD_INPUT.  The tools-only form has no such constraint and
+        // is the correct form for SM definition surface merging.
+        //
+        // startTracking (set up before this call at line ~438) reliably follows the
+        // SM definition body through the tools-only merge, so trackedSMBodies
+        // resolves to the new merged body for use by Phases 8 and 11.
+        //
+        // The try silent wrapper + BOOLEAN_UNION_NO_OP guard matches the standard
+        // tab's error handling: if the UNION is a no-op (tab already merged) we
+        // skip it cleanly; any other failure is re-thrown so the user sees it.
         // ------------------------------------------------------------------
         println("SM Tab Apply — Phase 7: attempting UNION of " ~
                 toString(size(evaluateQuery(context, unionSurfaceBodies))) ~
                 " union bodies with SM master surface body count " ~
                 toString(size(evaluateQuery(context, smBodiesAffected))));
-        opBoolean(context, id + "unionTabToWall", {
-                    "tools"         : unionSurfaceBodies,
-                    "targets"       : smBodiesAffected,
-                    "operationType" : BooleanOperationType.UNION,
-                    "allowSheets"   : true
-                });
-        println("SM Tab Apply — Phase 7: UNION completed.");
+        var unionStatus = { "statusEnum" : ErrorStringEnum.NO_ERROR };
+        try silent
+        {
+            opBoolean(context, id + "unionTabToWall", {
+                        "tools"         : qUnion([smBodiesAffected, unionSurfaceBodies]),
+                        "operationType" : BooleanOperationType.UNION,
+                        "allowSheets"   : true
+                    });
+        }
+        catch (error)
+        {
+            unionStatus = error;
+        }
+        if (unionStatus.statusEnum != ErrorStringEnum.BOOLEAN_UNION_NO_OP &&
+            unionStatus.statusEnum != ErrorStringEnum.NO_ERROR)
+        {
+            throw regenError(unionStatus.statusEnum, ["unionScope"]);
+        }
+        println("SM Tab Apply — Phase 7: UNION completed (status: " ~ toString(unionStatus.statusEnum) ~ ").");
 
         // ------------------------------------------------------------------
         // Phase 8 — Local subtraction (wall-scoped cuts).
