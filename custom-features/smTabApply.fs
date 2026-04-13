@@ -453,48 +453,24 @@ export const smTabApply = defineSheetMetalFeature(function(context is Context, i
         // pre-trimmed to edge-adjacency) with the SM wall.  onlyTabs.fs
         // booleanOneTabGroup uses this flag for exactly the same reason.
         //
-        // try silent suppresses the default opBoolean error output so we can
-        // provide a cleaner SHEET_METAL_TAB_FAILS_MERGE error via the catch
-        // block if the UNION fails for a genuine geometry reason.
+        // try (not silent) lets opBoolean log its native error to the console
+        // while we still catch and add geometry diagnostics before re-throwing
+        // the SHEET_METAL_TAB_FAILS_MERGE error.
         // After the try-catch, getFeatureStatus detects the BOOLEAN_UNION_NO_OP
         // case (tab body entirely within SM wall boundary) so the feature never
         // silently claims success without producing a geometry change.
         // ------------------------------------------------------------------
 
-        // Pre-union diagnostics: report face normals to help diagnose orientation mismatches.
+        // Pre-union diagnostics: report body counts so the log always confirms
+        // both sides have bodies before the attempt is made.
         const unionBodiesForDiag = evaluateQuery(context, unionSurfaceBodies);
         const smBodiesForDiag    = evaluateQuery(context, smBodiesAffected);
         println("SM Tab Apply — Phase 7: attempting UNION of " ~
                 toString(size(unionBodiesForDiag)) ~
                 " union bodies with SM master surface body count " ~
                 toString(size(smBodiesForDiag)));
-        for (var unionBodyIndex = 0; unionBodyIndex < size(unionBodiesForDiag); unionBodyIndex += 1)
-        {
-            var unionFacePlane = undefined;
-            try
-            {
-                unionFacePlane = evPlane(context, {
-                            "face" : qOwnedByBody(unionBodiesForDiag[unionBodyIndex], EntityType.FACE)
-                        });
-            }
-            catch
-            {
-                println("SM Tab Apply — Phase 7: union body " ~ toString(unionBodyIndex) ~ " face is non-planar");
-            }
-            if (unionFacePlane != undefined)
-            {
-                println("SM Tab Apply — Phase 7: union body " ~ toString(unionBodyIndex) ~
-                        " face normal = " ~ toString(unionFacePlane.normal));
-            }
-        }
-        for (var smBodyIndex = 0; smBodyIndex < size(smBodiesForDiag); smBodyIndex += 1)
-        {
-            const smFaceArray = evaluateQuery(context, qOwnedByBody(smBodiesForDiag[smBodyIndex], EntityType.FACE));
-            println("SM Tab Apply — Phase 7: SM master body " ~ toString(smBodyIndex) ~
-                    " face count = " ~ toString(size(smFaceArray)));
-        }
 
-        try silent
+        try
         {
             opBoolean(context, id + "unionTabToWall", {
                         "tools"            : qUnion([smBodiesAffected, unionSurfaceBodies]),
@@ -505,11 +481,139 @@ export const smTabApply = defineSheetMetalFeature(function(context is Context, i
         }
         catch
         {
-            // Genuine geometry failure: the tab surface could not be merged
-            // into the SM definition body.  This should not occur when the
-            // tab surface overlaps the SM wall because recomputeMatches: true
-            // allows the kernel to resolve surface ownership in that case.
-            println("SM Tab Apply — Phase 7: UNION threw an exception — check that the union surface body is coplanar with and overlaps or is edge-adjacent to the SM definition face.");
+            // ------------------------------------------------------------------
+            // UNION failed — run geometry diagnostics before re-throwing so the
+            // console shows exactly what went wrong.
+            //
+            // Checks performed:
+            //   A. Per-face tangent planes (normal + origin) for every union body
+            //      face — identifies orientation issues.
+            //   B. Per-face tangent planes for every SM master body face —
+            //      confirms which definition faces are present and their normals.
+            //   C. Signed coplanarity distance — for each union face, the
+            //      perpendicular distance from the face center to each SM
+            //      definition plane.  Should be ~0 if Phase 4.5 snapping worked.
+            //   D. evCollision contact check — reports whether the union body
+            //      and SM master body have any geometric contact at all (NONE
+            //      means they are completely separate, TOUCHING means edge-
+            //      adjacent, INTERFERING means overlapping volume which should
+            //      not occur for surfaces).
+            // ------------------------------------------------------------------
+
+            // A — union body face tangent planes
+            for (var unionBodyIndex = 0; unionBodyIndex < size(unionBodiesForDiag); unionBodyIndex += 1)
+            {
+                const unionFaceArray = evaluateQuery(context, qOwnedByBody(unionBodiesForDiag[unionBodyIndex], EntityType.FACE));
+                println("SM Tab Apply — Phase 7 diag A: union body " ~ toString(unionBodyIndex) ~
+                        " has " ~ toString(size(unionFaceArray)) ~ " face(s)");
+                for (var faceIndex = 0; faceIndex < size(unionFaceArray); faceIndex += 1)
+                {
+                    var faceTangentPlane = undefined;
+                    try
+                    {
+                        faceTangentPlane = evFaceTangentPlane(context, {
+                                    "face"      : unionFaceArray[faceIndex],
+                                    "parameter" : vector(0.5, 0.5)
+                                });
+                    }
+                    catch
+                    {
+                        println("SM Tab Apply — Phase 7 diag A: union body " ~ toString(unionBodyIndex) ~
+                                " face " ~ toString(faceIndex) ~ " evFaceTangentPlane failed (non-planar or degenerate)");
+                    }
+                    if (faceTangentPlane != undefined)
+                    {
+                        println("SM Tab Apply — Phase 7 diag A: union body " ~ toString(unionBodyIndex) ~
+                                " face " ~ toString(faceIndex) ~
+                                " normal = " ~ toString(faceTangentPlane.normal) ~
+                                " origin = " ~ toString(faceTangentPlane.origin));
+                    }
+                }
+            }
+
+            // B — SM master body face tangent planes
+            for (var smBodyIndex = 0; smBodyIndex < size(smBodiesForDiag); smBodyIndex += 1)
+            {
+                const smFaceArray = evaluateQuery(context, qOwnedByBody(smBodiesForDiag[smBodyIndex], EntityType.FACE));
+                println("SM Tab Apply — Phase 7 diag B: SM master body " ~ toString(smBodyIndex) ~
+                        " has " ~ toString(size(smFaceArray)) ~ " face(s)");
+                for (var faceIndex = 0; faceIndex < size(smFaceArray); faceIndex += 1)
+                {
+                    var faceTangentPlane = undefined;
+                    try
+                    {
+                        faceTangentPlane = evFaceTangentPlane(context, {
+                                    "face"      : smFaceArray[faceIndex],
+                                    "parameter" : vector(0.5, 0.5)
+                                });
+                    }
+                    catch
+                    {
+                        println("SM Tab Apply — Phase 7 diag B: SM master body " ~ toString(smBodyIndex) ~
+                                " face " ~ toString(faceIndex) ~ " evFaceTangentPlane failed");
+                    }
+                    if (faceTangentPlane != undefined)
+                    {
+                        println("SM Tab Apply — Phase 7 diag B: SM master body " ~ toString(smBodyIndex) ~
+                                " face " ~ toString(faceIndex) ~
+                                " normal = " ~ toString(faceTangentPlane.normal) ~
+                                " origin = " ~ toString(faceTangentPlane.origin));
+                    }
+                }
+            }
+
+            // C — coplanarity: signed distance from each union face center to each SM definition plane
+            for (var unionBodyIndex = 0; unionBodyIndex < size(unionBodiesForDiag); unionBodyIndex += 1)
+            {
+                const unionFaceArray = evaluateQuery(context, qOwnedByBody(unionBodiesForDiag[unionBodyIndex], EntityType.FACE));
+                for (var unionFaceIndex = 0; unionFaceIndex < size(unionFaceArray); unionFaceIndex += 1)
+                {
+                    var unionCenter = undefined;
+                    try
+                    {
+                        unionCenter = evFaceTangentPlane(context, {
+                                    "face"      : unionFaceArray[unionFaceIndex],
+                                    "parameter" : vector(0.5, 0.5)
+                                });
+                    }
+                    catch { }
+                    if (unionCenter != undefined)
+                    {
+                        for (var planeIndex = 0; planeIndex < size(smDefinitionFacePlanes); planeIndex += 1)
+                        {
+                            const smPlane = smDefinitionFacePlanes[planeIndex];
+                            const offsetVector = unionCenter.origin - smPlane.origin;
+                            const signedDistance = dot(offsetVector, smPlane.normal);
+                            println("SM Tab Apply — Phase 7 diag C: union body " ~ toString(unionBodyIndex) ~
+                                    " face " ~ toString(unionFaceIndex) ~
+                                    " signed distance to SM definition plane " ~ toString(planeIndex) ~
+                                    " = " ~ toString(signedDistance) ~ " m" ~
+                                    " (normal dot = " ~ toString(dot(unionCenter.normal, smPlane.normal)) ~ ")");
+                        }
+                    }
+                }
+            }
+
+            // D — evCollision contact check between union bodies and SM master faces
+            try
+            {
+                const contactResults = evCollision(context, {
+                            "tools"   : unionSurfaceBodies,
+                            "targets" : smBodiesAffected
+                        });
+                println("SM Tab Apply — Phase 7 diag D: evCollision returned " ~
+                        toString(size(contactResults)) ~ " result(s)");
+                for (var contactIndex = 0; contactIndex < size(contactResults); contactIndex += 1)
+                {
+                    println("SM Tab Apply — Phase 7 diag D: contact " ~ toString(contactIndex) ~
+                            " type = " ~ toString(contactResults[contactIndex]['type']));
+                }
+            }
+            catch
+            {
+                println("SM Tab Apply — Phase 7 diag D: evCollision failed (bodies may have no geometric relationship)");
+            }
+
             throw regenError(ErrorStringEnum.SHEET_METAL_TAB_FAILS_MERGE, ["unionScope"]);
         }
         const unionBooleanStatus = getFeatureStatus(context, id + "unionTabToWall");
