@@ -448,16 +448,24 @@ export const smTabApply = defineSheetMetalFeature(function(context is Context, i
         // that the user cannot select directly).  It is derived from the user's
         // unionScope selection via getSMDefinitionEntities + qOwnerBody.
         //
-        // The standard sheetMetalTab feature passes only "tools" for UNION
-        // (no "targets" field) and includes the wall body alongside the tab
-        // surface so that all bodies are merged into a single sheet body.
+        // IMPORTANT: smBodiesAffected must be passed as "targets", NOT "tools".
+        // When all bodies are passed as "tools" with no "targets", opBoolean UNION
+        // consumes every tool body and creates a brand-new merged body whose
+        // identity is unrelated to the original SM definition body.
+        // startTracking cannot reliably follow a body through such a destructive
+        // merge, so trackedSMBodies resolves to nothing afterward — causing
+        // CANNOT_RESOLVE_ENTITIES in Phase 8 and "wrong body" in Phase 11.
+        // With "targets", only the tool bodies (unionSurfaceBodies) are consumed;
+        // the target body (smBodiesAffected) preserves its identity and SM
+        // attributes throughout the operation.
         // ------------------------------------------------------------------
         println("SM Tab Apply — Phase 7: attempting UNION of " ~
                 toString(size(evaluateQuery(context, unionSurfaceBodies))) ~
                 " union bodies with SM master surface body count " ~
                 toString(size(evaluateQuery(context, smBodiesAffected))));
         opBoolean(context, id + "unionTabToWall", {
-                    "tools"         : qUnion([smBodiesAffected, unionSurfaceBodies]),
+                    "tools"         : unionSurfaceBodies,
+                    "targets"       : smBodiesAffected,
                     "operationType" : BooleanOperationType.UNION,
                     "allowSheets"   : true
                 });
