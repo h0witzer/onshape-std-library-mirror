@@ -485,7 +485,7 @@ export const smTabApply = defineSheetMetalFeature(function(context is Context, i
         // but sufficient to give the UNION kernel a classifiable intersection
         // region and eliminate the T-junction ambiguity.
         // ------------------------------------------------------------------
-        const abutCheckCollisions = try silent(evCollision(context, {
+        const abutCheckCollisions = try(evCollision(context, {
                     "tools"   : unionSurfaceBodies,
                     "targets" : smBodiesAffected
                 }));
@@ -536,9 +536,23 @@ export const smTabApply = defineSheetMetalFeature(function(context is Context, i
                             dot(towardSMFaceCentroid, abutSMDefinitionPlane.normal) * abutSMDefinitionPlane.normal;
                     const inPlaneMagnitude = norm(inPlaneDirection);
 
+                    // The in-plane magnitude guard prevents a divide-by-zero nudge when the
+                    // tab centroid is already coincident with the SM face centroid in-plane
+                    // (degenerate case: tab placed exactly at the SM face center but abutting
+                    // a boundary edge).  1e-9 m is well below any real SM part dimension,
+                    // so a smaller magnitude reliably indicates a degenerate centroid pair
+                    // rather than a legitimately small offset.
                     if (inPlaneMagnitude > 1e-9 * meter)
                     {
-                        const nudgeAmount = 1e-6 * meter;  // 1 μm — imperceptible to user
+                        // 1 μm (1e-6 m) is chosen as the nudge magnitude because:
+                        //   • It is several orders of magnitude larger than the SM kernel's
+                        //     geometric tolerance (~1e-8 m), ensuring the overlap strip is
+                        //     detected as an interior intersection and not collapsed as noise.
+                        //   • It is several orders of magnitude smaller than any visible
+                        //     sheet metal dimension (typical SM wall thickness ~0.5–6 mm),
+                        //     so the resulting geometry change is sub-micron and imperceptible
+                        //     in the rendered 3D model or flat pattern.
+                        const nudgeAmount = 1e-6 * meter;  // 1 μm
                         const nudgeVector = (nudgeAmount / inPlaneMagnitude) * inPlaneDirection;
                         println("SM Tab Apply — Phase 4.6: all contacts are ABUT_NO_CLASS; applying " ~
                                 toString(nudgeAmount) ~ " in-plane nudge toward SM face interior.");
