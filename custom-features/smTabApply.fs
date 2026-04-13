@@ -206,28 +206,160 @@ export const smTabApply = defineSheetMetalFeature(function(context is Context, i
 
         // ------------------------------------------------------------------
         // Phase 5 — Thicken outer subtract surface bodies into solids.
-        // Union and local subtract bodies remain as surfaces for surface-to-
-        // surface boolean operations (allowSheets: true), matching the standard
-        // sheetMetalTab approach.  Outer subtract bodies are thickened because
-        // their scope may include plain solid bodies that require solid tools.
         //
-        // The full SM wall thickness is applied in BOTH normal directions so
-        // the resulting solid always penetrates through the wall regardless of
-        // which way the surface normal points in the tool Part Studio.
+        // Orientation is corrected with opFlipOrientation before thickening,
+        // using the same face-tangent-plane heuristic as booleanOneTabGroup in
+        // onlyTabs.fs.  evFaceTangentPlane at (0.5, 0.5) is used instead of
+        // evPlane so the heuristic works for cylindrical, conical, and other
+        // non-planar SM wall geometries — not just planar faces.
+        //
+        // Algorithm per outer subtract body:
+        //   1. Pre-evaluate evFaceTangentPlane on every outer scope SM definition
+        //      face to collect (center origin, normal, model params) tuples.
+        //   2. For each face of the outer subtract body, find the closest outer
+        //      scope SM face by Euclidean distance between face center points.
+        //   3. If the dot product of the subtract face's normal and the closest
+        //      wall face's normal is negative, call opFlipOrientation on the
+        //      surface body to reverse its outward direction.
+        //   4. Thicken with that SM wall's frontThickness / backThickness.
+        //      Because orientation was corrected in step 3, thickness1 (positive
+        //      normal direction) reliably corresponds to the SM wall's front face.
+        //
+        // Union and local subtract bodies remain as raw surfaces (allowSheets: true).
         // ------------------------------------------------------------------
+
+        // Resolve outer scope SM definition faces once here so Phase 9 can
+        // reuse the result without a second getSMDefinitionEntities call.
+        var outerScopeDefinitionFaces = [];
+        if (!isQueryEmpty(context, definition.outerSubtractionScope))
+        {
+            try
+            {
+                outerScopeDefinitionFaces = getSMDefinitionEntities(context, definition.outerSubtractionScope);
+            }
+            catch
+            {
+                // Outer scope contains no SM definition entities (solid-only scope).
+            }
+        }
+
         var thickenedOuterSubtractSolids = qNothing();
         if (!isQueryEmpty(context, outerSubtractBodies))
         {
-            const unionSMModelBody = qOwnerBody(qUnion(unionWallDefinitionEntities));
-            const modelParameters  = getModelParameters(context, unionSMModelBody);
-            const totalThickness   = modelParameters.frontThickness + modelParameters.backThickness;
-            const thickenedOuterId = id + "thickenOuterSubtractSurfaces";
-            opThicken(context, thickenedOuterId, {
-                        "entities"   : outerSubtractBodies,
-                        "thickness1" : totalThickness,
-                        "thickness2" : totalThickness
-                    });
-            thickenedOuterSubtractSolids = qCreatedBy(thickenedOuterId, EntityType.BODY)->qBodyType(BodyType.SOLID);
+            // Pre-evaluate tangent planes for all outer scope SM definition faces.
+            var outerScopeFaceData = [];
+            for (var smFace in outerScopeDefinitionFaces)
+            {
+                var wallTangent = undefined;
+                try
+                {
+                    wallTangent = evFaceTangentPlane(context, {
+                                "face"      : smFace,
+                                "parameter" : vector(0.5, 0.5)
+                            });
+                }
+                catch
+                {
+                    // Skip faces that cannot be evaluated.
+                }
+
+                if (wallTangent != undefined)
+                {
+                    var wallModelParams = undefined;
+                    try
+                    {
+                        wallModelParams = getModelParameters(context, qOwnerBody(smFace));
+                    }
+                    catch
+                    {
+                        // Face may not belong to an active SM model.
+                    }
+                    outerScopeFaceData = append(outerScopeFaceData, {
+                                "origin"      : wallTangent.origin,
+                                "normal"      : wallTangent.normal,
+                                "modelParams" : wallModelParams
+                            });
+                }
+            }
+
+            // Fallback model parameters from the union scope wall when no outer
+            // scope SM face data is available (e.g. solid-only outer scope).
+            const unionSMBody    = qOwnerBody(qUnion(unionWallDefinitionEntities));
+            const fallbackParams = getModelParameters(context, unionSMBody);
+
+            const outerSubtractBodyArray = evaluateQuery(context, outerSubtractBodies);
+            for (var bodyIndex = 0; bodyIndex < size(outerSubtractBodyArray); bodyIndex += 1)
+            {
+                const currentBody = outerSubtractBodyArray[bodyIndex];
+
+                // For each face of this outer subtract surface body, find the
+                // closest outer scope SM definition face by Euclidean distance
+                // between face center points.  Track the overall closest pair
+                // (subtract face center, wall face center) to make a single flip
+                // decision for the whole body.
+                var closestDistOverall    = undefined;
+                var closestWallNormal     = undefined;
+                var closestSubtractNormal = undefined;
+                var bodyTargetParams      = fallbackParams;
+
+                for (var subtractFace in evaluateQuery(context, qOwnedByBody(currentBody, EntityType.FACE)))
+                {
+                    var subtractTangent = undefined;
+                    try
+                    {
+                        subtractTangent = evFaceTangentPlane(context, {
+                                    "face"      : subtractFace,
+                                    "parameter" : vector(0.5, 0.5)
+                                });
+                    }
+                    catch
+                    {
+                        // Skip non-evaluable faces.
+                    }
+
+                    if (subtractTangent != undefined)
+                    {
+                        for (var wallFaceData in outerScopeFaceData)
+                        {
+                            const distToWall = norm(subtractTangent.origin - wallFaceData.origin);
+                            if (closestDistOverall is undefined || distToWall < closestDistOverall)
+                            {
+                                closestDistOverall    = distToWall;
+                                closestWallNormal     = wallFaceData.normal;
+                                closestSubtractNormal = subtractTangent.normal;
+                                if (wallFaceData.modelParams != undefined)
+                                {
+                                    bodyTargetParams = wallFaceData.modelParams;
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Flip the surface body's orientation before thickening when its
+                // face normal points away from the matched SM wall's inward normal.
+                // opFlipOrientation reverses the surface direction so opThicken
+                // places material on the correct side — the non-planar-safe
+                // alternative to mirrorAcross used in the standard sheetMetalTab.
+                if (closestWallNormal != undefined && closestSubtractNormal != undefined &&
+                    dot(closestSubtractNormal, closestWallNormal) < 0)
+                {
+                    opFlipOrientation(context, id + "flipOuterSubtract" + unstableIdComponent(bodyIndex), {
+                                "bodies" : currentBody
+                            });
+                }
+
+                // Thicken with the matched SM wall's front/back gauge thickness.
+                const thickenId = id + "thickenOuterSubtract" + unstableIdComponent(bodyIndex);
+                opThicken(context, thickenId, {
+                            "entities"   : currentBody,
+                            "thickness1" : bodyTargetParams.frontThickness,
+                            "thickness2" : bodyTargetParams.backThickness
+                        });
+                const currentThickened = qCreatedBy(thickenId, EntityType.BODY)->qBodyType(BodyType.SOLID);
+
+                thickenedOuterSubtractSolids = qUnion([thickenedOuterSubtractSolids, currentThickened]);
+            }
         }
 
         // ------------------------------------------------------------------
@@ -300,23 +432,12 @@ export const smTabApply = defineSheetMetalFeature(function(context is Context, i
                         });
             }
 
-            // Resolve outer scope: separate SM definition entities from plain solid bodies.
-            // getSMDefinitionEntities may throw for non-SM selections; a non-SM outer scope
-            // is valid (plain solids only), so we catch the error and proceed with an empty array.
-            var outerScopeDefinitionEntities = [];
-            try
-            {
-                outerScopeDefinitionEntities = getSMDefinitionEntities(context, definition.outerSubtractionScope);
-            }
-            catch
-            {
-                // Outer subtraction scope contains no SM definition entities; solid targets will
-                // still be resolved below via qActiveSheetMetalFilter.
-            }
+            // Build outer scope target query from the SM definition faces already resolved
+            // in Phase 5 (outerScopeDefinitionFaces) and any plain solid bodies.
             var outerScopeTargets = qNothing();
-            if (outerScopeDefinitionEntities != undefined && outerScopeDefinitionEntities != [])
+            if (outerScopeDefinitionFaces != undefined && outerScopeDefinitionFaces != [])
             {
-                outerScopeTargets = qUnion([outerScopeTargets, qOwnerBody(qUnion(outerScopeDefinitionEntities))]);
+                outerScopeTargets = qUnion([outerScopeTargets, qOwnerBody(qUnion(outerScopeDefinitionFaces))]);
             }
             const outerScopeSolids = qActiveSheetMetalFilter(qBodyType(definition.outerSubtractionScope, BodyType.SOLID), ActiveSheetMetal.NO);
             if (!isQueryEmpty(context, outerScopeSolids))
