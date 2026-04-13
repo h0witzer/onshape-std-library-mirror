@@ -35,6 +35,7 @@ import(path : "onshape/std/instantiator.fs", version : "2909.0");
 import(path : "onshape/std/query.fs", version : "2909.0");
 import(path : "onshape/std/sheetMetalAttribute.fs", version : "2909.0");
 import(path : "onshape/std/sheetMetalUtils.fs", version : "2909.0");
+import(path : "onshape/std/string.fs", version : "2909.0");
 import(path : "onshape/std/valueBounds.fs", version : "2909.0");
 import(path : "onshape/std/transform.fs", version : "2909.0");
 import(path : "onshape/std/units.fs", version : "2909.0");
@@ -159,13 +160,8 @@ export const smTabApply = defineSheetMetalFeature(function(context is Context, i
             placementCSys = applyOrientationOverrides(placementCSys, definition.flipDirection, definition.secondaryAxisType);
 
             const instanceBodies = addInstance(instantiator, definition.formPartStudio, {
-                        "transform"    : toWorld(placementCSys),
-                        "identity"     : location,
-                        "mateConnector" : qHasAttributeWithValueMatching(
-                                qEverything(EntityType.BODY)->qBodyType(BodyType.MATE_CONNECTOR),
-                                SM_TAB_BODY_ATTRIBUTE_NAME,
-                                { "role" : "smTabCsysMateConnector" }
-                            )
+                        "transform" : toWorld(placementCSys),
+                        "identity"  : location
                     });
             allInstantiatedBodies = qUnion([allInstantiatedBodies, instanceBodies]);
         }
@@ -216,24 +212,28 @@ export const smTabApply = defineSheetMetalFeature(function(context is Context, i
         println("SM Tab Apply — Phase 4 SM definition entity count: " ~ toString(size(unionWallDefinitionEntities)));
 
         // ------------------------------------------------------------------
-        // Phase 4.5 — Snap union and local subtract surface bodies to the SM
-        // definition plane (midplane of the rendered SM wall).
+        // Phase 4.5 — Snap union and local subtract surface bodies onto the SM
+        // definition face.
         //
-        // This replicates the moveTabsToPlane step in sheetMetalTab.fs, which
-        // snaps derived tab bodies to the SM definition midplane before the
-        // UNION boolean.  Bodies derived from the tool Part Studio are positioned
-        // by the placement mate connector transform.  If the user's mate connector
-        // is on the THICKENED FACE of the SM model (which is the visible surface
-        // in the viewport) rather than the SM definition midplane, the derived
-        // bodies will be offset by ±thickness/2 and the UNION/SUBTRACTION booleans
-        // will silently no-op because the bodies never touch the master surface.
+        // The SM definition (master surface) is coincident with either the inner
+        // or the outer face of the rendered SM wall — never a midplane.
+        // getSMDefinitionEntities returns faces that live on exactly one of those
+        // two physical surfaces.
+        //
+        // Derived bodies are positioned by the placement transform (toWorld of the
+        // user's mate connector).  If the mate connector was placed on the OPPOSITE
+        // face from the SM definition face, the derived bodies will be offset by
+        // the full wall thickness and the UNION/SUBTRACTION booleans will silently
+        // no-op because the bodies never touch the master surface.
         //
         // For each union/local-subtract body:
-        //   1. Evaluate evPlane on the body face and on the closest SM definition face.
-        //   2. If normals antiparallel, call opFlipOrientation (consistent with the
-        //      onlyTabs.fs heuristic — no mirrorAcross planar assumption).
-        //   3. Translate along the SM wall normal by the perpendicular distance
-        //      between the two planes to achieve exact coincidence.
+        //   1. Evaluate evPlane on the body face and on each SM definition face.
+        //   2. Find the nearest SM definition face by Euclidean origin distance.
+        //   3. If normals antiparallel, call opFlipOrientation (same heuristic as
+        //      onlyTabs.fs booleanOneTabGroup — works for any surface geometry).
+        //   4. Translate along the SM wall normal by the perpendicular distance
+        //      between the two planes so the body is exactly coplanar with the
+        //      SM definition face before any boolean operation.
         // ------------------------------------------------------------------
         var smDefinitionFacePlanes = [];
         for (var smFace in unionWallDefinitionEntities)
@@ -264,7 +264,7 @@ export const smTabApply = defineSheetMetalFeature(function(context is Context, i
         }
         else
         {
-            println("SM Tab Apply — Phase 4.5 WARNING: no planar SM definition faces found; bodies NOT snapped to midplane.");
+            println("SM Tab Apply — Phase 4.5 WARNING: no planar SM definition faces found; bodies NOT snapped to SM definition face.");
         }
 
         // ------------------------------------------------------------------
@@ -656,13 +656,13 @@ function applyOrientationOverrides(placementCSys is CoordSystem, flipDirection i
 
 /**
  * Snap each surface body in the given query to be exactly coplanar with its nearest SM
- * definition face plane.  This replicates the moveTabsToPlane step in sheetMetalTab.fs,
- * which the standard sheetMetalTab feature uses to ensure that derived tab bodies are
- * coincident with the SM definition midplane before the UNION boolean.
+ * definition face.
  *
- * Bodies placed at the thickened face (the visible surface, which is ±thickness/2 from
- * the SM definition midplane) would otherwise be offset and the opBoolean UNION would
- * silently no-op because the surfaces never touch the master surface body.
+ * The SM definition (master surface) is coincident with either the inner or the outer
+ * face of the rendered SM wall — never a midplane.  If derived tab bodies are placed on
+ * the opposite face from where the SM definition lives, they will be offset by the full
+ * wall thickness and the opBoolean UNION/SUBTRACTION will silently no-op because the
+ * surfaces never touch the master surface body.
  *
  * Algorithm per body:
  *   1. Evaluate evPlane on the body's face and find the nearest SM definition face plane
@@ -673,11 +673,11 @@ function applyOrientationOverrides(placementCSys is CoordSystem, flipDirection i
  *      used by the standard sheetMetalTab applyPlaneToPlaneTransform.
  *   3. Translate along the SM wall's normal direction by the perpendicular distance
  *      between the two planes (dot(wallOrigin - bodyOrigin, wallNormal) * wallNormal)
- *      to achieve exact geometric coincidence.
+ *      to achieve exact geometric coincidence with the SM definition face.
  *
- * @param context               {Context}
- * @param id                    {Id}
- * @param bodies                {Query}   Surface bodies to snap; each must be planar.
+ * @param context                {Context}
+ * @param id                     {Id}
+ * @param bodies                 {Query}  Surface bodies to snap; each must be planar.
  * @param smDefinitionFacePlanes {array}  Array of Plane values from SM definition faces.
  */
 function snapBodiesToNearestDefinitionPlane(context is Context, id is Id, bodies is Query, smDefinitionFacePlanes is array)
