@@ -39,13 +39,13 @@ export const SM_TAB_BODY_ATTRIBUTE_NAME = "smTabBodyAttribute";
 export const SM_TAB_ROLE_UNION_SURFACE = "smTabUnionSurface";
 
 /**
- * Role written into the attribute map for solid bodies used as localised subtraction tools
+ * Role written into the attribute map for surface bodies used as localised subtraction tools
  * (slots, relief cuts, passthroughs) applied only to the merged SM wall.
  */
 export const SM_TAB_ROLE_LOCAL_SUBTRACT = "smTabLocalSubtractBody";
 
 /**
- * Role written into the attribute map for solid bodies used as general outer subtraction tools
+ * Role written into the attribute map for surface bodies used as general outer subtraction tools
  * applied across the broader subtraction scope specified in smTabApply.fs.
  */
 export const SM_TAB_ROLE_OUTER_SUBTRACT = "smTabOuterSubtractBody";
@@ -150,7 +150,7 @@ export const smTabTag = defineFeature(function(context is Context, id is Id, def
             validateUnionSurfaces(context, id, definition.unionSurfaceBodies);
         }
 
-        // Subtraction bodies must be solid, non-consumed.
+        // Subtraction bodies must be sheet (surface) bodies, non-consumed.
         if (hasLocalSubtract)
         {
             validateSubtractBodies(context, id, definition.localSubtractBodies, "localSubtractBodies");

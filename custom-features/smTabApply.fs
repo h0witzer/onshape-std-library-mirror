@@ -107,7 +107,7 @@ export const smTabApply = defineSheetMetalFeature(function(context is Context, i
         // ------------------------------------------------------------------
         annotation {
                     "Name" : "Union scope",
-                    "Description" : "Sheet metal wall definition faces to merge the thickened tab surface into.",
+                    "Description" : "Sheet metal wall definition faces to merge the tab surface into.",
                     "Filter" : SheetMetalDefinitionEntityType.FACE && AllowFlattenedGeometry.YES && ModifiableEntityOnly.YES
                 }
         definition.unionScope is Query;
@@ -284,7 +284,18 @@ export const smTabApply = defineSheetMetalFeature(function(context is Context, i
             }
 
             // Resolve outer scope: separate SM definition entities from plain solid bodies.
-            const outerScopeDefinitionEntities = try silent(getSMDefinitionEntities(context, definition.outerSubtractionScope));
+            // getSMDefinitionEntities may throw for non-SM selections; a non-SM outer scope
+            // is valid (plain solids only), so we catch the error and proceed with an empty array.
+            var outerScopeDefinitionEntities = [];
+            try
+            {
+                outerScopeDefinitionEntities = getSMDefinitionEntities(context, definition.outerSubtractionScope);
+            }
+            catch
+            {
+                // Outer subtraction scope contains no SM definition entities; solid targets will
+                // still be resolved below via qActiveSheetMetalFilter.
+            }
             var outerScopeTargets = qNothing();
             if (outerScopeDefinitionEntities != undefined && outerScopeDefinitionEntities != [])
             {
@@ -335,8 +346,11 @@ export const smTabApply = defineSheetMetalFeature(function(context is Context, i
         // ------------------------------------------------------------------
         // Phase 12 — Resolve feature name from the tool Part Studio variable.
         // ------------------------------------------------------------------
+        // Retrieve the feature name from the source Part Studio context.
+        // The variable may not exist if the user left the name blank in smTabTag.fs.
+        // An explicit catch handles that case without suppressing unexpected error details.
         var resolvedFeatureName = "";
-        try silent
+        try
         {
             var sourceConfig = {};
             if (definition.formPartStudio.configuration != undefined)
@@ -349,6 +363,11 @@ export const smTabApply = defineSheetMetalFeature(function(context is Context, i
             {
                 resolvedFeatureName = FEATURE_NAME_SEPARATOR ~ retrievedName;
             }
+        }
+        catch
+        {
+            // SM_TAB_FEATURE_NAME_VAR was not set in the tool Part Studio (user left name blank).
+            // Feature name template will display as "SM Tab Apply" with no suffix.
         }
         setFeatureComputedParameter(context, id, { "name" : "featureName", "value" : resolvedFeatureName });
 
