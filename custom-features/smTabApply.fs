@@ -428,17 +428,39 @@ export const smTabApply = defineSheetMetalFeature(function(context is Context, i
         // ------------------------------------------------------------------
         // Phase 6 — Track SM model state before boolean operations.
         //
-        // persistentUnionDefinitionEntities mirrors the unionEntityPersistantQuery
-        // pattern in sheetMetalTab.fs — it is built from the SM definition faces
-        // (not the SM body) with startTracking so updateSheetMetalGeometry (Phase
-        // 11) correctly identifies the modified region after the boolean operations.
+        // Two complementary tracking mechanisms:
+        //
+        // (a) smBodiesAffected / trackedSMBodies — body-level tracking.
+        //     The SM definition body is evaluated to a CONCRETE entity reference
+        //     before startTracking is called.  This mirrors the standard library
+        //     pattern in sheetMetalTab.fs and onlyTabs.fs exactly:
+        //       unionBodies = evaluateQuery(context, qOwnerBody(unionEntityQuery))
+        //       sheetMetalBodiesQuery = qUnion([startTracking(...), qUnion(unionBodies)])
+        //     Using a lazy derived query (qOwnerBody wrapped in qUnion) instead of
+        //     evaluated concrete entities causes startTracking to produce a
+        //     zero-result query after opBoolean UNION restructures the SM definition
+        //     body's face topology, because the body entity is recreated internally
+        //     even though qCreatedBy returns 0.
+        //
+        // (b) persistentUnionDefinitionEntities — face-level tracking.
+        //     Tracks the SM definition FACES (not the body) through all boolean
+        //     operations.  This is the unionEntityPersistantQuery pattern from
+        //     sheetMetalTab.fs and is used by updateSheetMetalGeometry (Phase 11).
+        //     Because it tracks faces rather than the body container, it survives
+        //     body-level restructuring reliably.
+        //
+        // After the UNION (Phase 7), smBodyPostUnion is derived from (b) via
+        // qOwnerBody(persistentUnionDefinitionEntities).  This is used as the
+        // Phase 8 subtraction target and the Phase 11 attribute-assignment scope,
+        // giving a guaranteed-live body reference even if body-level tracking (a)
+        // returned 0.
         // ------------------------------------------------------------------
-        const smBodiesAffected = qOwnerBody(qUnion(unionWallDefinitionEntities));
+        const smBodiesAffected = qUnion(evaluateQuery(context, qOwnerBody(qUnion(unionWallDefinitionEntities))));
         const initialData      = getInitialEntitiesAndAttributes(context, smBodiesAffected);
         const trackedSMBodies  = qUnion([startTracking(context, smBodiesAffected), smBodiesAffected]);
         const associateChanges = startTracking(context, qOwnedByBody(smBodiesAffected, EntityType.FACE));
 
-        const unionDefinitionEntitiesQuery    = qUnion(unionWallDefinitionEntities);
+        const unionDefinitionEntitiesQuery      = qUnion(unionWallDefinitionEntities);
         const persistentUnionDefinitionEntities = qUnion([unionDefinitionEntitiesQuery, startTracking(context, unionDefinitionEntitiesQuery)]);
 
         // ------------------------------------------------------------------
@@ -646,11 +668,21 @@ export const smTabApply = defineSheetMetalFeature(function(context is Context, i
         }
         println("SM Tab Apply — Phase 7: UNION completed successfully.");
 
-        // Post-UNION entity-count diagnostics: if Phase 8 throws CANNOT_RESOLVE_ENTITIES
-        // these counts pinpoint whether the targets (trackedSMBodies) or the tools
-        // (localSubtractBodies) went missing after the UNION boolean.
+        // Post-UNION: derive the SM definition body from the persistent face-tracking
+        // query.  persistentUnionDefinitionEntities tracks the SM definition FACES
+        // (not the body) through all operations, so qOwnerBody of the tracked faces
+        // gives a live, guaranteed-correct SM body reference even when body-level
+        // tracking (trackedSMBodies) returns 0 after the UNION restructures the
+        // SM definition body's entity topology.
+        const smBodyPostUnion = qOwnerBody(persistentUnionDefinitionEntities);
+
+        // Post-UNION entity-count diagnostics.
+        // trackedSMBodies = 0 means body-level startTracking lost the entity after UNION.
+        // smBodyPostUnion must be non-zero for Phase 8 and Phase 11 to succeed.
         println("SM Tab Apply — Phase 7 post-UNION: trackedSMBodies count = " ~
                 toString(size(evaluateQuery(context, trackedSMBodies))));
+        println("SM Tab Apply — Phase 7 post-UNION: smBodyPostUnion count = " ~
+                toString(size(evaluateQuery(context, smBodyPostUnion))));
         println("SM Tab Apply — Phase 7 post-UNION: localSubtractBodies count = " ~
                 toString(size(evaluateQuery(context, localSubtractBodies))));
         println("SM Tab Apply — Phase 7 post-UNION: qCreatedBy(unionTabToWall) body count = " ~
@@ -661,14 +693,9 @@ export const smTabApply = defineSheetMetalFeature(function(context is Context, i
         // Surface-to-surface boolean with allowSheets: true.  The surface tool
         // bodies cut directly against the SM master surface.
         //
-        // trackedSMBodies (not smBodiesAffected) is used as targets here.
-        // smBodiesAffected is a lazy query that re-evaluates qOwnerBody on the
-        // raw SM definition face references from unionWallDefinitionEntities.
-        // After Phase 7's opBoolean UNION merges the tab surface into the SM
-        // master body, those face transient IDs may change, causing
-        // smBodiesAffected to resolve to nothing and triggering
-        // CANNOT_RESOLVE_ENTITIES.  trackedSMBodies was built with startTracking
-        // before Phase 7 and correctly follows the SM body through the merge.
+        // smBodyPostUnion is used as the target — it is derived from the
+        // persistentUnionDefinitionEntities face tracking and is guaranteed to
+        // resolve to the live SM definition body after the Phase 7 UNION.
         // ------------------------------------------------------------------
         if (!isQueryEmpty(context, localSubtractBodies))
         {
@@ -676,7 +703,7 @@ export const smTabApply = defineSheetMetalFeature(function(context is Context, i
                     toString(size(evaluateQuery(context, localSubtractBodies))) ~ " tool bodies.");
             opBoolean(context, id + "localSubtract", {
                         "tools"         : localSubtractBodies,
-                        "targets"       : trackedSMBodies,
+                        "targets"       : smBodyPostUnion,
                         "operationType" : BooleanOperationType.SUBTRACTION,
                         "allowSheets"   : true
                     });
@@ -745,11 +772,19 @@ export const smTabApply = defineSheetMetalFeature(function(context is Context, i
 
         // ------------------------------------------------------------------
         // Phase 11 — Update the sheet metal model to recognise the new geometry.
-        // persistentUnionDefinitionEntities mirrors the unionEntityPersistantQuery
-        // pattern in sheetMetalTab.fs — passing the SM definition entities (faces)
-        // with tracking, not the SM body, drives the correct SM attribute update.
+        //
+        // assignSMAttributesToNewOrSplitEntities uses smBodyPostUnion (derived from
+        // persistentUnionDefinitionEntities face tracking) rather than trackedSMBodies
+        // (body-level tracking).  Body-level startTracking resolves to 0 after the
+        // Phase 7 opBoolean UNION restructures the SM definition body's face topology;
+        // smBodyPostUnion is guaranteed to resolve correctly because it is derived via
+        // qOwnerBody from the working face-level tracking query.
+        //
+        // This mirrors the sheetMetalTab.fs pattern:
+        //   assignSMAttributesToNewOrSplitEntities(context, sheetMetalBodiesQuery, ...)
+        //   updateSheetMetalGeometry(..., entities: qUnion([toUpdate, unionEntityPersistantQuery]))
         // ------------------------------------------------------------------
-        const toUpdate = assignSMAttributesToNewOrSplitEntities(context, trackedSMBodies, initialData, id);
+        const toUpdate = assignSMAttributesToNewOrSplitEntities(context, smBodyPostUnion, initialData, id);
         updateSheetMetalGeometry(context, id, {
                     "entities"           : qUnion([toUpdate.modifiedEntities, persistentUnionDefinitionEntities]),
                     "deletedAttributes"  : toUpdate.deletedAttributes,
