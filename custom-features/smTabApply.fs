@@ -9,16 +9,17 @@ FeatureScript 2909;
 //      tool Part Studio — it is always read from the target SM model at apply-time.
 //   2. At each placement location the instantiator derives the tool Part Studio at the
 //      requested coordinate system (driven by a mate connector or sketch vertex).
-//   3. Bodies tagged with role "smTabUnionSurface" are thickened using frontThickness +
-//      backThickness from the target SM model's getModelParameters, then merged into the
-//      selected SM wall faces via the standard sheetMetalTab approach.
-//   4. Bodies tagged with role "smTabLocalSubtractBody" are subtracted from the merged
-//      SM wall only.
-//   5. Bodies tagged with role "smTabOuterSubtractBody" are subtracted across the user-
-//      defined outer subtraction scope (other SM faces or solid bodies).
+//   3. ALL tagged surface bodies are thickened using frontThickness + backThickness from
+//      the target SM model's getModelParameters before any boolean operation is performed.
+//   4. Bodies tagged with role "smTabUnionSurface" are merged into the selected SM wall faces
+//      via the standard sheetMetalTab approach.
+//   5. Bodies tagged with role "smTabLocalSubtractBody" (thickened) are subtracted from the
+//      merged SM wall only.
+//   6. Bodies tagged with role "smTabOuterSubtractBody" (thickened) are subtracted across
+//      the user-defined outer subtraction scope (other SM faces or solid bodies).
 //
 // Forward-compatibility note
-//   Because union geometry is kept as pure surface bodies with no embedded thickness, a
+//   Because ALL geometry is kept as pure surface bodies with no embedded thickness, a
 //   future opWrap path for non-planar SM walls can be added to this script without any
 //   changes to the tag Part Studio contract.
 
@@ -207,17 +208,43 @@ export const smTabApply = defineSheetMetalFeature(function(context is Context, i
         const totalThickness = modelParameters.frontThickness + modelParameters.backThickness;
 
         // ------------------------------------------------------------------
-        // Phase 5 — Thicken union surface bodies into solid tab tools.
-        // Thicken evenly in both normal directions by half the total thickness
-        // on each side, matching the SM wall's neutral surface position.
+        // Phase 5 — Thicken ALL tagged surface bodies into solids.
+        // All three roles (union, local subtract, outer subtract) are surface bodies.
+        // Each set is thickened separately so the resulting solid queries stay distinct.
+        // frontThickness drives the positive-normal direction; backThickness drives the
+        // negative-normal direction, matching the SM wall's neutral surface position.
         // ------------------------------------------------------------------
-        const thickenedTabId = id + "thickenTabSurfaces";
-        opThicken(context, thickenedTabId, {
+        const thickenedUnionId = id + "thickenUnionSurfaces";
+        opThicken(context, thickenedUnionId, {
                     "entities"   : unionSurfaceBodies,
                     "thickness1" : modelParameters.frontThickness,
                     "thickness2" : modelParameters.backThickness
                 });
-        const thickenedTabSolids = qCreatedBy(thickenedTabId, EntityType.BODY)->qBodyType(BodyType.SOLID);
+        const thickenedUnionSolids = qCreatedBy(thickenedUnionId, EntityType.BODY)->qBodyType(BodyType.SOLID);
+
+        var thickenedLocalSubtractSolids = qNothing();
+        if (!isQueryEmpty(context, localSubtractBodies))
+        {
+            const thickenedLocalId = id + "thickenLocalSubtractSurfaces";
+            opThicken(context, thickenedLocalId, {
+                        "entities"   : localSubtractBodies,
+                        "thickness1" : modelParameters.frontThickness,
+                        "thickness2" : modelParameters.backThickness
+                    });
+            thickenedLocalSubtractSolids = qCreatedBy(thickenedLocalId, EntityType.BODY)->qBodyType(BodyType.SOLID);
+        }
+
+        var thickenedOuterSubtractSolids = qNothing();
+        if (!isQueryEmpty(context, outerSubtractBodies))
+        {
+            const thickenedOuterId = id + "thickenOuterSubtractSurfaces";
+            opThicken(context, thickenedOuterId, {
+                        "entities"   : outerSubtractBodies,
+                        "thickness1" : modelParameters.frontThickness,
+                        "thickness2" : modelParameters.backThickness
+                    });
+            thickenedOuterSubtractSolids = qCreatedBy(thickenedOuterId, EntityType.BODY)->qBodyType(BodyType.SOLID);
+        }
 
         // ------------------------------------------------------------------
         // Phase 6 — Track SM model state before boolean operations.
@@ -228,25 +255,27 @@ export const smTabApply = defineSheetMetalFeature(function(context is Context, i
         const associateChanges = startTracking(context, qOwnedByBody(smBodiesAffected, EntityType.FACE));
 
         // ------------------------------------------------------------------
-        // Phase 7 — Union the thickened tab solids into the SM wall.
+        // Phase 7 — Union the thickened union solids into the SM wall.
         // Mirrors the approach used by the standard sheetMetalTab feature.
         // ------------------------------------------------------------------
         const tabUnionDefinitionEntities = qUnion(getSMDefinitionEntities(context, definition.unionScope));
         const tabUnionBodies             = evaluateQuery(context, qOwnerBody(tabUnionDefinitionEntities));
 
         opBoolean(context, id + "unionTabToWall", {
-                    "tools"         : qUnion([qUnion(tabUnionBodies), thickenedTabSolids]),
+                    "tools"         : qUnion([qUnion(tabUnionBodies), thickenedUnionSolids]),
                     "targets"       : qUnion(tabUnionBodies),
                     "operationType" : BooleanOperationType.UNION
                 });
 
         // ------------------------------------------------------------------
         // Phase 8 — Local subtraction (wall-scoped cuts).
+        // Thickened local subtract solids cut the merged SM wall.
+        // opBoolean SUBTRACTION consumes the tool bodies.
         // ------------------------------------------------------------------
-        if (!isQueryEmpty(context, localSubtractBodies))
+        if (!isQueryEmpty(context, thickenedLocalSubtractSolids))
         {
             opBoolean(context, id + "localSubtract", {
-                        "tools"         : localSubtractBodies,
+                        "tools"         : thickenedLocalSubtractSolids,
                         "targets"       : qUnion(tabUnionBodies),
                         "operationType" : BooleanOperationType.SUBTRACTION,
                         "targetsAndToolsNeedGrouping" : true
@@ -255,20 +284,23 @@ export const smTabApply = defineSheetMetalFeature(function(context is Context, i
 
         // ------------------------------------------------------------------
         // Phase 9 — Outer subtraction (broader scope cuts).
+        // Thickened outer subtract solids cut across the user-defined scope.
+        // An optional opOffsetFace expands/contracts the thickened solids before
+        // cutting, which is the correct place for offset on a solid tool.
+        // opBoolean SUBTRACTION consumes the tool bodies.
         // ------------------------------------------------------------------
-        if (!isQueryEmpty(context, outerSubtractBodies) && !isQueryEmpty(context, definition.outerSubtractionScope))
+        if (!isQueryEmpty(context, thickenedOuterSubtractSolids) && !isQueryEmpty(context, definition.outerSubtractionScope))
         {
-            // Apply offset to outer subtraction tools when a nonzero offset is requested.
-            // opOffsetFace modifies the tool bodies in place; outerSubtractBodies continues
-            // to reference the same bodies with their updated geometry.
+            // Apply offset to the thickened outer subtraction solids when requested.
+            // Offsetting after thickening keeps the operation on solid geometry, which is
+            // the correct target for opOffsetFace when resizing a cut envelope.
             if (definition.outerSubtractionOffset > 0 * meter)
             {
                 opOffsetFace(context, id + "offsetOuterSubtractTools", {
-                            "moveFaces" : qOwnedByBody(outerSubtractBodies, EntityType.FACE),
+                            "moveFaces" : qOwnedByBody(thickenedOuterSubtractSolids, EntityType.FACE),
                             "offsetDistance" : definition.outerSubtractionOffset
                         });
             }
-            var outerSubtractTools = outerSubtractBodies;
 
             // Resolve outer scope: separate SM definition entities from plain solid bodies.
             const outerScopeDefinitionEntities = try silent(getSMDefinitionEntities(context, definition.outerSubtractionScope));
@@ -286,7 +318,7 @@ export const smTabApply = defineSheetMetalFeature(function(context is Context, i
             if (!isQueryEmpty(context, outerScopeTargets))
             {
                 opBoolean(context, id + "outerSubtract", {
-                            "tools"         : outerSubtractTools,
+                            "tools"         : thickenedOuterSubtractSolids,
                             "targets"       : outerScopeTargets,
                             "operationType" : BooleanOperationType.SUBTRACTION,
                             "targetsAndToolsNeedGrouping" : true
@@ -295,13 +327,11 @@ export const smTabApply = defineSheetMetalFeature(function(context is Context, i
         }
 
         // ------------------------------------------------------------------
-        // Phase 10 — Clean up helper bodies (csys connector, surfaces, etc.)
+        // Phase 10 — Clean up original surface bodies and the csys connector.
+        // All thickened solids were consumed by the boolean operations above, so
+        // only the original surface bodies and the placement connector remain.
         // ------------------------------------------------------------------
-        const bodiesToDelete = qUnion([
-                    csysConnectorBodies,
-                    unionSurfaceBodies,            // already thickened; originals can go
-                    qSubtraction(allInstantiatedBodies, qUnion([thickenedTabSolids, localSubtractBodies, outerSubtractBodies]))
-                ]);
+        const bodiesToDelete = qUnion([csysConnectorBodies, unionSurfaceBodies, localSubtractBodies, outerSubtractBodies]);
         if (!isQueryEmpty(context, bodiesToDelete))
         {
             opDeleteBodies(context, id + "cleanupBodies", { "entities" : bodiesToDelete });

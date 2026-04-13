@@ -1,15 +1,14 @@
 FeatureScript 2909;
 // SM Tab Tag — Tag Part Studio setup feature for Sheet Metal Tab Apply.
-// Marks surface bodies (union geometry), solid subtraction tool bodies, and an optional
+// Marks surface bodies (union geometry), surface subtraction tool bodies, and an optional
 // placement origin mate connector so that smTabApply.fs can instantiate, thicken, and merge
 // them into a target sheet metal model without any thickness knowledge in the tag Part Studio.
 //
 // Design intent
+//   - All tag bodies (union, local subtract, outer subtract) are surface bodies.  smTabApply.fs
+//     thickens every tagged surface using the target model's getModelParameters at apply-time.
 //   - Union surfaces must be planar sheet bodies.  opThicken + SM wall matching is performed
-//     entirely by smTabApply.fs using the target model's getModelParameters at apply-time.
-//   - Subtraction bodies are split into two roles:
-//       * localSubtract  – cuts scoped to the merged wall only (slots, reliefs, passthroughs).
-//       * outerSubtract  – cuts applied across the broader SM / non-SM subtraction scope.
+//     entirely by smTabApply.fs.
 //   - Keeping thickness out of this Part Studio enables a future opWrap path for non-planar
 //     SM walls; the tag contract does not need to change when that path is added.
 
@@ -87,22 +86,24 @@ export const smTabTag = defineFeature(function(context is Context, id is Id, def
         definition.unionSurfaceBodies is Query;
 
         // ------------------------------------------------------------------
-        // Local subtraction solids — cuts scoped to the merged SM wall only.
+        // Local subtraction surfaces — cuts scoped to the merged SM wall only.
+        // smTabApply.fs thickens these using the target model parameters before cutting.
         // ------------------------------------------------------------------
         annotation {
                     "Name" : "Local subtraction bodies",
-                    "Description" : "Solid bodies for localised cuts on the merged wall (slots, relief cuts, passthroughs).",
-                    "Filter" : EntityType.BODY && BodyType.SOLID
+                    "Description" : "Surface bodies for localised cuts on the merged wall (slots, relief cuts, passthroughs). smTabApply.fs thickens these to match the target SM model.",
+                    "Filter" : EntityType.BODY && BodyType.SHEET
                 }
         definition.localSubtractBodies is Query;
 
         // ------------------------------------------------------------------
-        // Outer subtraction solids — broader subtraction scope.
+        // Outer subtraction surfaces — broader subtraction scope.
+        // smTabApply.fs thickens these using the target model parameters before cutting.
         // ------------------------------------------------------------------
         annotation {
                     "Name" : "Outer subtraction bodies",
-                    "Description" : "Solid bodies for general subtraction applied across the full subtraction scope in smTabApply.fs.",
-                    "Filter" : EntityType.BODY && BodyType.SOLID
+                    "Description" : "Surface bodies for general subtraction applied across the full subtraction scope in smTabApply.fs. smTabApply.fs thickens these to match the target SM model.",
+                    "Filter" : EntityType.BODY && BodyType.SHEET
                 }
         definition.outerSubtractBodies is Query;
 
@@ -282,19 +283,21 @@ function validateUnionSurfaces(context is Context, id is Id, unionSurfaces is Qu
 }
 
 /**
- * Verify that all bodies in subtractBodies are solid and not consumed.
+ * Verify that all bodies in subtractBodies are surface (sheet) bodies and not consumed.
+ * smTabApply.fs thickens these at apply-time using the target SM model parameters,
+ * keeping thickness out of the tool Part Studio entirely.
  *
  * @param context          {Context}
  * @param id               {Id}      Feature id used for error reporting.
- * @param subtractBodies   {Query}   Bodies to validate; must all be BodyType.SOLID.
+ * @param subtractBodies   {Query}   Bodies to validate; must all be BodyType.SHEET.
  * @param parameterName    {string}  Precondition parameter name for error highlighting.
  */
 function validateSubtractBodies(context is Context, id is Id, subtractBodies is Query, parameterName is string)
 {
-    const nonSolidBodies = qSubtraction(subtractBodies, qBodyType(subtractBodies, BodyType.SOLID));
-    if (!isQueryEmpty(context, nonSolidBodies))
+    const nonSheetBodies = qSubtraction(subtractBodies, qBodyType(subtractBodies, BodyType.SHEET));
+    if (!isQueryEmpty(context, nonSheetBodies))
     {
-        throw regenError("Subtraction tool bodies must be solid bodies.", [parameterName], nonSolidBodies);
+        throw regenError("Subtraction tool bodies must be surface (sheet) bodies, not solid bodies.", [parameterName], nonSheetBodies);
     }
 
     const consumedBodies = qConsumed(subtractBodies, Consumed.YES);
