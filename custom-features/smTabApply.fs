@@ -464,6 +464,101 @@ export const smTabApply = defineSheetMetalFeature(function(context is Context, i
         const persistentUnionDefinitionEntities = qUnion([unionDefinitionEntitiesQuery, startTracking(context, unionDefinitionEntitiesQuery)]);
 
         // ------------------------------------------------------------------
+        // Phase 4.6 — ABUT nudge: correct tab surfaces that only touch the
+        // SM definition face boundary with no interior area overlap.
+        //
+        // Root cause: when the tab surface's attachment edge is exactly
+        // coincident with the SM definition face's outer boundary edge AND
+        // that edge is also shared by an adjacent SM face (e.g. the front
+        // wall of a box-channel), the UNION kernel classifies the contact as
+        // ABUT_NO_CLASS — a T-junction it cannot resolve — and throws
+        // BOOLEAN_INVALID.
+        //
+        // Detection: evCollision between unionSurfaceBodies and smBodiesAffected
+        // before the UNION.  When every result is ABUT_NO_CLASS or NONE the tab
+        // has zero interior area overlap with the SM definition face.
+        //
+        // Fix: translate the union (and local subtract) surface bodies by 1 μm
+        // toward the SM definition face centroid, projected strictly in-plane
+        // (the normal component is stripped out so the snap-to-plane result is
+        // preserved).  The 1 μm overlap strip is geometrically imperceptible
+        // but sufficient to give the UNION kernel a classifiable intersection
+        // region and eliminate the T-junction ambiguity.
+        // ------------------------------------------------------------------
+        const abutCheckCollisions = try silent(evCollision(context, {
+                    "tools"   : unionSurfaceBodies,
+                    "targets" : smBodiesAffected
+                }));
+        if (abutCheckCollisions is array && size(abutCheckCollisions) > 0)
+        {
+            var abutOnlyContacts = true;
+            for (var abutCollision in abutCheckCollisions)
+            {
+                if (abutCollision['type'] != ClashType.ABUT_NO_CLASS &&
+                    abutCollision['type'] != ClashType.NONE)
+                {
+                    abutOnlyContacts = false;
+                    break;
+                }
+            }
+
+            if (abutOnlyContacts)
+            {
+                // All contacts are boundary-only (ABUT_NO_CLASS / NONE).
+                // Compute the in-plane direction from the tab face centroid to the
+                // SM definition face centroid and nudge by 1 μm in that direction.
+                var tabBodyFaceOrigin = undefined;
+                const abutCheckUnionBodyArray = evaluateQuery(context, unionSurfaceBodies);
+                if (size(abutCheckUnionBodyArray) > 0)
+                {
+                    const abutCheckTabFaceArray = evaluateQuery(context, qOwnedByBody(abutCheckUnionBodyArray[0], EntityType.FACE));
+                    if (size(abutCheckTabFaceArray) > 0)
+                    {
+                        try
+                        {
+                            const abutCheckTangent = evFaceTangentPlane(context, {
+                                        "face"      : abutCheckTabFaceArray[0],
+                                        "parameter" : vector(0.5, 0.5)
+                                    });
+                            tabBodyFaceOrigin = abutCheckTangent.origin;
+                        }
+                        catch { }
+                    }
+                }
+
+                if (tabBodyFaceOrigin != undefined && size(smDefinitionFacePlanes) > 0)
+                {
+                    const abutSMDefinitionPlane = smDefinitionFacePlanes[0];
+                    const towardSMFaceCentroid  = abutSMDefinitionPlane.origin - tabBodyFaceOrigin;
+                    // Strip the normal component so the nudge stays in-plane and
+                    // does not undo the snap-to-SM-definition-face translation.
+                    const inPlaneDirection = towardSMFaceCentroid -
+                            dot(towardSMFaceCentroid, abutSMDefinitionPlane.normal) * abutSMDefinitionPlane.normal;
+                    const inPlaneMagnitude = norm(inPlaneDirection);
+
+                    if (inPlaneMagnitude > 1e-9 * meter)
+                    {
+                        const nudgeAmount = 1e-6 * meter;  // 1 μm — imperceptible to user
+                        const nudgeVector = (nudgeAmount / inPlaneMagnitude) * inPlaneDirection;
+                        println("SM Tab Apply — Phase 4.6: all contacts are ABUT_NO_CLASS; applying " ~
+                                toString(nudgeAmount) ~ " in-plane nudge toward SM face interior.");
+                        opTransform(context, id + "nudgeUnionBodies", {
+                                    "bodies"    : unionSurfaceBodies,
+                                    "transform" : transform(nudgeVector)
+                                });
+                        if (!isQueryEmpty(context, localSubtractBodies))
+                        {
+                            opTransform(context, id + "nudgeLocalSubtractBodies", {
+                                        "bodies"    : localSubtractBodies,
+                                        "transform" : transform(nudgeVector)
+                                    });
+                        }
+                    }
+                }
+            }
+        }
+
+        // ------------------------------------------------------------------
         // Phase 7 — Union the tab surface bodies into the SM master surface.
         //
         // Both smBodiesAffected and unionSurfaceBodies are passed as "tools"
