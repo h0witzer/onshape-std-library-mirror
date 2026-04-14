@@ -423,8 +423,11 @@ export const smTabApply = defineSheetMetalFeature(function(context is Context, i
                 const currentThickened = qCreatedBy(thickenId, EntityType.BODY)->qBodyType(BodyType.SOLID);
 
                 thickenedOuterSubtractSolids = qUnion([thickenedOuterSubtractSolids, currentThickened]);
+                println("SM Tab Apply — Phase 5: outer subtract body " ~ toString(bodyIndex) ~ " thickened successfully.");
             }
         }
+        println("SM Tab Apply — Phase 5: thickenedOuterSubtractSolids count = " ~
+                toString(size(evaluateQuery(context, thickenedOuterSubtractSolids))));
 
         // ------------------------------------------------------------------
         // Phase 6 — Track SM model state before boolean operations.
@@ -842,7 +845,17 @@ export const smTabApply = defineSheetMetalFeature(function(context is Context, i
         // An optional opOffsetFace expands/contracts the thickened solids before
         // cutting (offsetting a solid is the correct operation here).
         // opBoolean SUBTRACTION consumes the tool bodies.
+        //
+        // smBodyPostUnion is explicitly excluded from the outer scope targets.
+        // The outer subtract solid is expanded by the clearance offset, so the
+        // union SM wall is never a valid cut target — the clearance guarantees
+        // the tool clears the union surface.  Including the union body would
+        // produce unexpected cuts into the freshly-merged SM wall.
         // ------------------------------------------------------------------
+        println("SM Tab Apply — Phase 9: thickenedOuterSubtractSolids count = " ~
+                toString(size(evaluateQuery(context, thickenedOuterSubtractSolids))) ~
+                ", outerSubtractionScope empty = " ~
+                toString(isQueryEmpty(context, definition.outerSubtractionScope)));
         if (!isQueryEmpty(context, thickenedOuterSubtractSolids) && !isQueryEmpty(context, definition.outerSubtractionScope))
         {
             // Apply offset to the thickened outer subtraction solids when requested.
@@ -867,6 +880,16 @@ export const smTabApply = defineSheetMetalFeature(function(context is Context, i
                 outerScopeTargets = qUnion([outerScopeTargets, outerScopeSolids]);
             }
 
+            // Explicitly exclude the union SM body so the outer subtraction only
+            // cuts the user-defined outer scope.  The outer subtract solid is
+            // expanded by the clearance offset, which ensures it clears the union
+            // surface plane — including smBodyPostUnion as a target would
+            // incorrectly cut into the freshly-merged SM wall.
+            outerScopeTargets = qSubtraction(outerScopeTargets, smBodyPostUnion);
+
+            println("SM Tab Apply — Phase 9: outer scope targets count = " ~
+                    toString(size(evaluateQuery(context, outerScopeTargets))));
+
             if (!isQueryEmpty(context, outerScopeTargets))
             {
                 opBoolean(context, id + "outerSubtract", {
@@ -874,6 +897,11 @@ export const smTabApply = defineSheetMetalFeature(function(context is Context, i
                             "targets"       : outerScopeTargets,
                             "operationType" : BooleanOperationType.SUBTRACTION
                         });
+                println("SM Tab Apply — Phase 9: outer SUBTRACTION completed.");
+            }
+            else
+            {
+                println("SM Tab Apply — Phase 9: outer scope targets empty after union-body exclusion; skipping SUBTRACTION.");
             }
         }
 
