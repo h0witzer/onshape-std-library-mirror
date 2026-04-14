@@ -140,13 +140,13 @@ When developing sheet metal features, verify:
 
 ---
 
-### 4. opBoolean UNION with SM Definition Bodies Requires Exact Coplanarity
+### 4. opBoolean UNION with SM Definition Bodies Requires Exact Coincidence
 
 **Issue**: `opBoolean UNION` with `allowSheets: true` throws `BOOLEAN_INVALID` or silently no-ops even when a tab surface body appears to be on the correct face.
 
 **Root Cause**: The SM definition (master surface) body lives on exactly one face of the rendered 3D wall — either the inner or the outer face, never the midplane. If a derived tab body is positioned on the *opposite* face from the SM definition face, it is offset by the full wall thickness and the UNION kernel cannot merge two surfaces that are not geometrically coincident.
 
-**Solution**: Before any `opBoolean UNION`, snap every union surface body onto the SM definition plane:
+**For planar SM walls** — align via rigid translation:
 
 1. Call `getSMDefinitionEntities` on the union scope to get the definition faces.
 2. Evaluate `evPlane` on each definition face to collect their planes.
@@ -164,9 +164,16 @@ opTransform(context, snapId, {
         });
 ```
 
-**Why `evFaceTangentPlane` over `evPlane` for orientation detection**: `evFaceTangentPlane(context, { "face": face, "parameter": vector(0.5, 0.5) })` works for any surface geometry (planar, cylindrical, conical). `evPlane` throws on non-planar faces. Use `evFaceTangentPlane` whenever the code must generalise beyond guaranteed-planar SM walls.
+**For non-planar SM walls** (cylindrical, conical, freeform) — rigid translation onto the definition surface is insufficient because the definition geometry is curved. Alternative approaches include:
 
-**Impact**: Without the snap step, the UNION silently no-ops or throws, and the tab is never merged into the SM wall.
+- **`opWrap`**: Project the tab surface bodies onto the curved SM definition face. Suitable when the tab geometry can be wrapped conformally onto the target surface.
+- **Surface offsetting**: Use `opOffsetFace` or surface-based operations to bring the tab body into contact with the definition surface before the boolean.
+
+The `smTabApply.fs` implementation uses the planar snap approach. The tag Part Studio contract is topology-agnostic, so non-planar support can be added without changes to the tagging side.
+
+**Use `evFaceTangentPlane` for orientation detection** when the SM wall may not be planar: `evFaceTangentPlane(context, { "face": face, "parameter": vector(0.5, 0.5) })` evaluates for any surface geometry (planar, cylindrical, conical). `evPlane` throws on non-planar faces.
+
+**Impact**: Without coincidence between the tab surface and the SM definition face, the UNION silently no-ops or throws, and the tab is never merged into the SM wall.
 
 ---
 
@@ -290,15 +297,12 @@ If `copyPropertiesAndAttributes` is `true`, the copies would be found by role-at
 
 1. **Tag Part Studio** (`smTabTag.fs`): Authors mark bodies with role attributes via a custom attribute (`smTabBodyAttribute`). Roles are: `smTabUnionSurface` (merge into SM wall), `smTabLocalSubtractBody` (cut the SM wall), `smTabOuterSubtractBody` (cut outer scope parts). All bodies remain as pure surface bodies — thickness is never embedded.
 
-2. **Apply** (`smTabApply.fs`): At regeneration time, the feature:
-   - Instantiates the tag Part Studio at each placement location.
-   - Snaps union/local-subtract bodies onto the SM definition face (Phase 4.5).
-   - Thickens outer subtract bodies using `getModelParameters` from the target SM wall (Phase 5) — thickness is always read from the live model.
-   - Runs deRip for rip joint resolution per location (Phase 6.5).
-   - Runs `opBoolean UNION allowSheets: true` per location to merge the tab into the SM wall (Phase 7).
-   - Runs `opBoolean SUBTRACTION allowSheets: true` per location for local cuts (Phase 8).
-   - Runs `createBooleanToolsForFace` + `opBoolean localizedInFaces` for SM outer scope subtraction, and `opBoolean SUBTRACTION` for solid outer scope (Phase 9).
-   - Calls `assignSMAttributesToNewOrSplitEntities` + `updateSheetMetalGeometry` to finalize SM state (Phase 11).
+2. **Apply** (`smTabApply.fs`): At regeneration time, the feature runs in numbered phases:
+   - **Phase 5** — Snaps union/local-subtract bodies onto the SM definition face (planar translation + optional flip).
+   - **Phase 7** — Thickens outer subtract bodies using `getModelParameters` from the target SM wall — thickness is always read from the live model.
+   - **Phase 9** (per-location loop) — Runs deRip for rip joint resolution, `opBoolean UNION allowSheets: true` to merge the tab into the SM wall, and `opBoolean SUBTRACTION allowSheets: true` for local cuts. Each location is isolated so a failure at one location does not block others.
+   - **Phase 10** — Runs `createBooleanToolsForFace` + `opBoolean localizedInFaces` for SM outer scope subtraction, and `opBoolean SUBTRACTION` for solid outer scope.
+   - **Phase 12** — Calls `assignSMAttributesToNewOrSplitEntities` + `updateSheetMetalGeometry` to finalize SM state.
 
 **Why surface-only in the tag Part Studio**: Keeping all tab bodies as surfaces means the tag Part Studio is completely gauge-agnostic. Swapping to a different material thickness requires no changes in the tool Part Studio — the apply feature reads the correct thickness at the moment of feature regeneration.
 
