@@ -307,11 +307,11 @@ export const smTabApply = defineSheetMetalFeature(function(context is Context, i
         if (isQueryEmpty(context, outerSubtractBodies) && !isQueryEmpty(context, definition.outerSubtractionScope))
         {
             const unionBodyArrayForCopy = evaluateQuery(context, unionSurfaceBodies);
-            for (var copyIndex = 0; copyIndex < size(unionBodyArrayForCopy); copyIndex += 1)
+            for (var unionBodyCopyIndex = 0; unionBodyCopyIndex < size(unionBodyArrayForCopy); unionBodyCopyIndex += 1)
             {
-                const copyId = id + "copyUnionForOuterSubtract" + unstableIdComponent(copyIndex);
+                const copyId = id + "copyUnionForOuterSubtract" + unstableIdComponent(unionBodyCopyIndex);
                 opPattern(context, copyId, {
-                            "entities"                    : unionBodyArrayForCopy[copyIndex],
+                            "entities"                    : unionBodyArrayForCopy[unionBodyCopyIndex],
                             "transforms"                  : [identityTransform()],
                             "instanceNames"               : ["implied"],
                             "copyPropertiesAndAttributes" : false
@@ -409,9 +409,9 @@ export const smTabApply = defineSheetMetalFeature(function(context is Context, i
             const fallbackParams = getModelParameters(context, unionSMBody);
 
             const outerSubtractBodyArray = evaluateQuery(context, outerSubtractBodies);
-            for (var bodyIndex = 0; bodyIndex < size(outerSubtractBodyArray); bodyIndex += 1)
+            for (var outerSubtractBodyIndex = 0; outerSubtractBodyIndex < size(outerSubtractBodyArray); outerSubtractBodyIndex += 1)
             {
-                const currentBody = outerSubtractBodyArray[bodyIndex];
+                const currentBody = outerSubtractBodyArray[outerSubtractBodyIndex];
 
                 // For each face of this outer subtract surface body, find the
                 // closest outer scope SM definition face by Euclidean distance
@@ -465,13 +465,13 @@ export const smTabApply = defineSheetMetalFeature(function(context is Context, i
                 if (closestWallNormal != undefined && closestSubtractNormal != undefined &&
                     dot(closestSubtractNormal, closestWallNormal) < 0)
                 {
-                    opFlipOrientation(context, id + "flipOuterSubtract" + unstableIdComponent(bodyIndex), {
+                    opFlipOrientation(context, id + "flipOuterSubtract" + unstableIdComponent(outerSubtractBodyIndex), {
                                 "bodies" : currentBody
                             });
                 }
 
                 // Thicken with the matched SM wall's front/back gauge thickness.
-                const thickenId = id + "thickenOuterSubtract" + unstableIdComponent(bodyIndex);
+                const thickenId = id + "thickenOuterSubtract" + unstableIdComponent(outerSubtractBodyIndex);
                 opThicken(context, thickenId, {
                             "entities"   : currentBody,
                             "thickness1" : bodyTargetParams.frontThickness,
@@ -480,7 +480,7 @@ export const smTabApply = defineSheetMetalFeature(function(context is Context, i
                 const currentThickened = qCreatedBy(thickenId, EntityType.BODY)->qBodyType(BodyType.SOLID);
 
                 thickenedOuterSubtractSolids = qUnion([thickenedOuterSubtractSolids, currentThickened]);
-                println("SM Tab Apply — Phase 5: outer subtract body " ~ toString(bodyIndex) ~ " thickened successfully.");
+                println("SM Tab Apply — Phase 5: outer subtract body " ~ toString(outerSubtractBodyIndex) ~ " thickened successfully.");
             }
         }
         else if (!isQueryEmpty(context, impliedOuterSubtractBodies))
@@ -493,10 +493,10 @@ export const smTabApply = defineSheetMetalFeature(function(context is Context, i
             const unionModelParamsImplied  = getModelParameters(context, unionSMBodyForImplied);
 
             const impliedBodyArray = evaluateQuery(context, impliedOuterSubtractBodies);
-            for (var impliedIndex = 0; impliedIndex < size(impliedBodyArray); impliedIndex += 1)
+            for (var impliedOuterSubtractBodyIndex = 0; impliedOuterSubtractBodyIndex < size(impliedBodyArray); impliedOuterSubtractBodyIndex += 1)
             {
-                const currentImplied = impliedBodyArray[impliedIndex];
-                const impliedThickenId = id + "thickenImpliedOuterSubtract" + unstableIdComponent(impliedIndex);
+                const currentImplied = impliedBodyArray[impliedOuterSubtractBodyIndex];
+                const impliedThickenId = id + "thickenImpliedOuterSubtract" + unstableIdComponent(impliedOuterSubtractBodyIndex);
                 opThicken(context, impliedThickenId, {
                             "entities"   : currentImplied,
                             "thickness1" : unionModelParamsImplied.frontThickness,
@@ -504,7 +504,7 @@ export const smTabApply = defineSheetMetalFeature(function(context is Context, i
                         });
                 const impliedThickened = qCreatedBy(impliedThickenId, EntityType.BODY)->qBodyType(BodyType.SOLID);
                 thickenedOuterSubtractSolids = qUnion([thickenedOuterSubtractSolids, impliedThickened]);
-                println("SM Tab Apply — Phase 5: implied outer subtract body " ~ toString(impliedIndex) ~
+                println("SM Tab Apply — Phase 5: implied outer subtract body " ~ toString(impliedOuterSubtractBodyIndex) ~
                         " thickened from union surface copy.");
             }
         }
@@ -605,15 +605,15 @@ export const smTabApply = defineSheetMetalFeature(function(context is Context, i
 
         var smBodyPostUnion = qOwnerBody(persistentUnionDefinitionEntities);
 
-        for (var locationIndex = 0; locationIndex < size(locationBodySets); locationIndex += 1)
+        for (var placementLocationIndex = 0; placementLocationIndex < size(locationBodySets); placementLocationIndex += 1)
         {
-            const locationBodies = locationBodySets[locationIndex];
+            const locationBodies = locationBodySets[placementLocationIndex];
             const locationUnionBodies        = qHasAttributeWithValueMatching(locationBodies, SM_TAB_BODY_ATTRIBUTE_NAME, { "role" : SM_TAB_ROLE_UNION_SURFACE });
             const locationLocalSubtractBodies = qHasAttributeWithValueMatching(locationBodies, SM_TAB_BODY_ATTRIBUTE_NAME, { "role" : SM_TAB_ROLE_LOCAL_SUBTRACT });
 
             if (isQueryEmpty(context, locationUnionBodies))
             {
-                println("SM Tab Apply — location " ~ toString(locationIndex) ~ ": no union surface bodies; skipping.");
+                println("SM Tab Apply — location " ~ toString(placementLocationIndex) ~ ": no union surface bodies; skipping.");
                 continue;
             }
 
@@ -631,12 +631,12 @@ export const smTabApply = defineSheetMetalFeature(function(context is Context, i
             {
                 const smModelParams = getModelParameters(context, qOwnerBody(persistentUnionDefinitionEntities));
 
-                opThicken(context, id + "thickenForDeRip" + unstableIdComponent(locationIndex), {
+                opThicken(context, id + "thickenForDeRip" + unstableIdComponent(placementLocationIndex), {
                             "entities"   : qOwnedByBody(locationUnionBodies, EntityType.FACE),
                             "thickness1" : smModelParams.frontThickness,
                             "thickness2" : smModelParams.backThickness
                         });
-                const thickenedTabBody = qCreatedBy(id + "thickenForDeRip" + unstableIdComponent(locationIndex), EntityType.BODY);
+                const thickenedTabBody = qCreatedBy(id + "thickenForDeRip" + unstableIdComponent(placementLocationIndex), EntityType.BODY);
 
                 if (size(deripCorrespondingPartEntityQueries) > 0)
                 {
@@ -659,7 +659,7 @@ export const smTabApply = defineSheetMetalFeature(function(context is Context, i
                     }
                 }
 
-                opDeleteBodies(context, id + "deleteThickenedDeRip" + unstableIdComponent(locationIndex), { "entities" : thickenedTabBody });
+                opDeleteBodies(context, id + "deleteThickenedDeRip" + unstableIdComponent(placementLocationIndex), { "entities" : thickenedTabBody });
             }
             catch
             {
@@ -668,9 +668,9 @@ export const smTabApply = defineSheetMetalFeature(function(context is Context, i
 
             if (size(locationDeripEdgeCandidates) > 0)
             {
-                println("SM Tab Apply — location " ~ toString(locationIndex) ~
+                println("SM Tab Apply — location " ~ toString(placementLocationIndex) ~
                         " Phase 6.5: deRipping " ~ toString(size(locationDeripEdgeCandidates)) ~ " edge candidate(s).");
-                deripEdges(context, id + "deripRipJoints" + unstableIdComponent(locationIndex), qUnion(locationDeripEdgeCandidates));
+                deripEdges(context, id + "deripRipJoints" + unstableIdComponent(placementLocationIndex), qUnion(locationDeripEdgeCandidates));
             }
 
             // ------------------------------------------------------------------
@@ -682,9 +682,9 @@ export const smTabApply = defineSheetMetalFeature(function(context is Context, i
             // ------------------------------------------------------------------
             const locationUnionBodiesForDiag = evaluateQuery(context, locationUnionBodies);
             const smBodiesForDiag            = evaluateQuery(context, qOwnerBody(persistentUnionDefinitionEntities));
-            const unionOpId                  = id + "unionTabToWall" + unstableIdComponent(locationIndex);
+            const unionOpId                  = id + "unionTabToWall" + unstableIdComponent(placementLocationIndex);
 
-            println("SM Tab Apply — location " ~ toString(locationIndex) ~
+            println("SM Tab Apply — location " ~ toString(placementLocationIndex) ~
                     " Phase 7: attempting UNION of " ~
                     toString(size(locationUnionBodiesForDiag)) ~
                     " union bodies with SM master surface body count " ~
@@ -850,20 +850,20 @@ export const smTabApply = defineSheetMetalFeature(function(context is Context, i
             const unionBooleanStatus = getFeatureStatus(context, unionOpId);
             if (unionBooleanStatus.statusEnum == ErrorStringEnum.BOOLEAN_UNION_NO_OP)
             {
-                println("SM Tab Apply — location " ~ toString(locationIndex) ~
+                println("SM Tab Apply — location " ~ toString(placementLocationIndex) ~
                         " Phase 7: UNION was a no-op — tab body has no shared boundary with the SM definition face.");
                 throw regenError(ErrorStringEnum.SHEET_METAL_TAB_FAILS_MERGE, ["unionScope"]);
             }
-            println("SM Tab Apply — location " ~ toString(locationIndex) ~ " Phase 7: UNION completed successfully.");
+            println("SM Tab Apply — location " ~ toString(placementLocationIndex) ~ " Phase 7: UNION completed successfully.");
 
             // Update smBodyPostUnion after this location's UNION so Phase 8 (local subtract)
             // and Phase 11 (updateSheetMetalGeometry) target the live post-UNION SM body.
             smBodyPostUnion = qOwnerBody(persistentUnionDefinitionEntities);
 
-            println("SM Tab Apply — location " ~ toString(locationIndex) ~
+            println("SM Tab Apply — location " ~ toString(placementLocationIndex) ~
                     " Phase 7 post-UNION: smBodyPostUnion count = " ~
                     toString(size(evaluateQuery(context, smBodyPostUnion))));
-            println("SM Tab Apply — location " ~ toString(locationIndex) ~
+            println("SM Tab Apply — location " ~ toString(placementLocationIndex) ~
                     " Phase 7 post-UNION: localSubtractBodies count = " ~
                     toString(size(evaluateQuery(context, locationLocalSubtractBodies))));
 
@@ -875,16 +875,16 @@ export const smTabApply = defineSheetMetalFeature(function(context is Context, i
             // ------------------------------------------------------------------
             if (!isQueryEmpty(context, locationLocalSubtractBodies))
             {
-                println("SM Tab Apply — location " ~ toString(locationIndex) ~
+                println("SM Tab Apply — location " ~ toString(placementLocationIndex) ~
                         " Phase 8: attempting local SUBTRACTION with " ~
                         toString(size(evaluateQuery(context, locationLocalSubtractBodies))) ~ " tool bodies.");
-                opBoolean(context, id + "localSubtract" + unstableIdComponent(locationIndex), {
+                opBoolean(context, id + "localSubtract" + unstableIdComponent(placementLocationIndex), {
                             "tools"         : locationLocalSubtractBodies,
                             "targets"       : smBodyPostUnion,
                             "operationType" : BooleanOperationType.SUBTRACTION,
                             "allowSheets"   : true
                         });
-                println("SM Tab Apply — location " ~ toString(locationIndex) ~ " Phase 8: local SUBTRACTION completed.");
+                println("SM Tab Apply — location " ~ toString(placementLocationIndex) ~ " Phase 8: local SUBTRACTION completed.");
             }
         }
 
@@ -940,10 +940,10 @@ export const smTabApply = defineSheetMetalFeature(function(context is Context, i
                     toString(size(freshOuterScopeDefinitionFaces)));
             if (size(freshOuterScopeDefinitionFaces) > 0)
             {
-                var smFaceIndex = 0;
+                var outerScopeSMFaceIndex = 0;
                 for (var smFace in freshOuterScopeDefinitionFaces)
                 {
-                    const faceSubId = id + "outerSubtractSM" + unstableIdComponent(smFaceIndex);
+                    const faceSubId = id + "outerSubtractSM" + unstableIdComponent(outerScopeSMFaceIndex);
                     const targetModelParameters = try silent(getModelParameters(context, qOwnerBody(smFace)));
                     if (targetModelParameters != undefined)
                     {
@@ -959,7 +959,7 @@ export const smTabApply = defineSheetMetalFeature(function(context is Context, i
                                     });
                         }
                     }
-                    smFaceIndex += 1;
+                    outerScopeSMFaceIndex += 1;
                 }
                 println("SM Tab Apply — Phase 9: SM face outer SUBTRACTION completed.");
             }
@@ -1154,9 +1154,9 @@ function snapBodiesToNearestDefinitionPlane(context is Context, id is Id, bodies
         return;
     }
     const bodyArray = evaluateQuery(context, bodies);
-    for (var bodyIndex = 0; bodyIndex < size(bodyArray); bodyIndex += 1)
+    for (var snapBodyIndex = 0; snapBodyIndex < size(bodyArray); snapBodyIndex += 1)
     {
-        const currentBody = bodyArray[bodyIndex];
+        const currentBody = bodyArray[snapBodyIndex];
 
         var bodyFacePlane = undefined;
         try
@@ -1166,7 +1166,7 @@ function snapBodiesToNearestDefinitionPlane(context is Context, id is Id, bodies
         catch
         {
             println("SM Tab Apply — snapBodiesToNearestDefinitionPlane: body index " ~
-                    toString(bodyIndex) ~ " is non-planar; skipping snap.");
+                    toString(snapBodyIndex) ~ " is non-planar; skipping snap.");
             continue;
         }
 
@@ -1187,7 +1187,7 @@ function snapBodiesToNearestDefinitionPlane(context is Context, id is Id, bodies
         // opBoolean UNION sees parallel normals between the union body and the SM wall.
         if (dot(bodyFacePlane.normal, nearestDefinitionPlane.normal) < 0)
         {
-            opFlipOrientation(context, id + "flip" + unstableIdComponent(bodyIndex), {
+            opFlipOrientation(context, id + "flip" + unstableIdComponent(snapBodyIndex), {
                         "bodies" : currentBody
                     });
         }
@@ -1197,8 +1197,8 @@ function snapBodiesToNearestDefinitionPlane(context is Context, id is Id, bodies
         const snapTranslationVector = dot(nearestDefinitionPlane.origin - bodyFacePlane.origin,
                 nearestDefinitionPlane.normal) * nearestDefinitionPlane.normal;
         println("SM Tab Apply — snapBodiesToNearestDefinitionPlane: body " ~
-                toString(bodyIndex) ~ " snap translation = " ~ toString(snapTranslationVector));
-        opTransform(context, id + "snap" + unstableIdComponent(bodyIndex), {
+                toString(snapBodyIndex) ~ " snap translation = " ~ toString(snapTranslationVector));
+        opTransform(context, id + "snap" + unstableIdComponent(snapBodyIndex), {
                     "bodies"    : currentBody,
                     "transform" : transform(snapTranslationVector)
                 });
