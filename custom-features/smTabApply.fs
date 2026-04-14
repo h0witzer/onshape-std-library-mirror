@@ -601,9 +601,11 @@ export const smTabApply = defineSheetMetalFeature(function(context is Context, i
 
         // Pre-union diagnostics: report body counts so the log always confirms
         // both sides have bodies before the attempt is made.
-        // smBodiesForDiag uses the lazy query so it reflects the post-deRip state.
+        // persistentUnionDefinitionEntities carries startTracking so it survives
+        // the deRip topology restructuring that invalidates the plain
+        // unionDefinitionEntitiesQuery entity references.
         const unionBodiesForDiag = evaluateQuery(context, unionSurfaceBodies);
-        const smBodiesForDiag    = evaluateQuery(context, qOwnerBody(unionDefinitionEntitiesQuery));
+        const smBodiesForDiag    = evaluateQuery(context, qOwnerBody(persistentUnionDefinitionEntities));
         println("SM Tab Apply — Phase 7: attempting UNION of " ~
                 toString(size(unionBodiesForDiag)) ~
                 " union bodies with SM master surface body count " ~
@@ -612,7 +614,7 @@ export const smTabApply = defineSheetMetalFeature(function(context is Context, i
         try
         {
             opBoolean(context, id + "unionTabToWall", {
-                        "tools"         : qUnion([qOwnerBody(unionDefinitionEntitiesQuery), unionSurfaceBodies]),
+                        "tools"         : qUnion([qOwnerBody(persistentUnionDefinitionEntities), unionSurfaceBodies]),
                         "operationType" : BooleanOperationType.UNION,
                         "allowSheets"   : true
                     });
