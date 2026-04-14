@@ -15,8 +15,12 @@ FeatureScript 2909;
 //   4. Bodies tagged with role "smTabLocalSubtractBody" cut the merged SM wall using a
 //      surface-to-surface opBoolean SUBTRACTION (allowSheets: true).  No thickening needed.
 //   5. Bodies tagged with role "smTabOuterSubtractBody" are thickened using getModelParameters
-//      from the target SM wall and then subtracted across the user-defined outer scope.
-//      Thickening is required here because outer scope targets may include solid bodies.
+//      from the target SM wall and then subtracted across the user-defined outer scope using
+//      the smSubtractTab + solidSubtractTab pattern from sheetMetalTab.fs:
+//        - SM definition face targets: createBooleanToolsForFace per face + opBoolean with
+//          localizedInFaces: true, allowSheets: true.  Targets individual faces, not the SM
+//          body, so no body-level exclusion of the union scope is needed.
+//        - Non-SM solid targets: opBoolean SUBTRACTION with allowSheets: true.
 //
 // Forward-compatibility note
 //   Because ALL geometry is kept as pure surface bodies with no embedded thickness, a
@@ -35,6 +39,7 @@ import(path : "onshape/std/instantiator.fs", version : "2909.0");
 import(path : "onshape/std/moveFace.fs", version : "2909.0");
 import(path : "onshape/std/query.fs", version : "2909.0");
 import(path : "onshape/std/sheetMetalAttribute.fs", version : "2909.0");
+import(path : "onshape/std/sheetMetalTab.fs", version : "2909.0");
 import(path : "onshape/std/sheetMetalUtils.fs", version : "2909.0");
 import(path : "onshape/std/string.fs", version : "2909.0");
 import(path : "onshape/std/valueBounds.fs", version : "2909.0");
@@ -841,16 +846,22 @@ export const smTabApply = defineSheetMetalFeature(function(context is Context, i
 
         // ------------------------------------------------------------------
         // Phase 9 — Outer subtraction (broader scope cuts).
-        // Thickened outer subtract solids cut across the user-defined scope.
-        // An optional opOffsetFace expands/contracts the thickened solids before
-        // cutting (offsetting a solid is the correct operation here).
-        // opBoolean SUBTRACTION consumes the tool bodies.
+        // Follows the smSubtractTab + solidSubtractTab pattern from sheetMetalTab.fs.
         //
-        // smBodyPostUnion is explicitly excluded from the outer scope targets.
-        // The outer subtract solid is expanded by the clearance offset, so the
-        // union SM wall is never a valid cut target — the clearance guarantees
-        // the tool clears the union surface.  Including the union body would
-        // produce unexpected cuts into the freshly-merged SM wall.
+        // SM definition face targets are subtracted individually using
+        // createBooleanToolsForFace + opBoolean with localizedInFaces: true.
+        // This avoids the body-level exclusion problem: when the outer scope and
+        // union scope share the same SM body, targeting individual definition
+        // faces rather than qOwnerBody(face) means smBodyPostUnion never needs
+        // to be excluded — the operation works at face granularity, not body
+        // granularity, exactly like the standard sheetMetalTab feature.
+        //
+        // Non-SM solid targets use a standard opBoolean SUBTRACTION with
+        // allowSheets: true (solidSubtractTab pattern).
+        //
+        // thickenedOuterSubtractSolids are NOT consumed by the SM face path
+        // (createBooleanToolsForFace creates outline bodies as the actual tools)
+        // so they must be deleted explicitly in Phase 10.
         // ------------------------------------------------------------------
         println("SM Tab Apply — Phase 9: thickenedOuterSubtractSolids count = " ~
                 toString(size(evaluateQuery(context, thickenedOuterSubtractSolids))) ~
@@ -858,7 +869,7 @@ export const smTabApply = defineSheetMetalFeature(function(context is Context, i
                 toString(isQueryEmpty(context, definition.outerSubtractionScope)));
         if (!isQueryEmpty(context, thickenedOuterSubtractSolids) && !isQueryEmpty(context, definition.outerSubtractionScope))
         {
-            // Apply offset to the thickened outer subtraction solids when requested.
+            // Apply offset to expand/contract the thickened solids before cutting.
             if (definition.outerSubtractionOffset > 0 * meter)
             {
                 opOffsetFace(context, id + "offsetOuterSubtractTools", {
@@ -867,41 +878,49 @@ export const smTabApply = defineSheetMetalFeature(function(context is Context, i
                         });
             }
 
-            // Build outer scope target query from the SM definition faces already resolved
-            // in Phase 5 (outerScopeDefinitionFaces) and any plain solid bodies.
-            var outerScopeTargets = qNothing();
-            if (outerScopeDefinitionFaces != undefined && outerScopeDefinitionFaces != [])
+            // SM definition face targets — mirrors smSubtractTab in sheetMetalTab.fs:
+            // iterate per definition face, build localized outline tool, subtract.
+            if (outerScopeDefinitionFaces != undefined && size(outerScopeDefinitionFaces) > 0)
             {
-                outerScopeTargets = qUnion([outerScopeTargets, qOwnerBody(qUnion(outerScopeDefinitionFaces))]);
+                println("SM Tab Apply — Phase 9: SM definition face outer subtract target count = " ~
+                        toString(size(outerScopeDefinitionFaces)));
+                var smFaceIndex = 0;
+                for (var smFace in outerScopeDefinitionFaces)
+                {
+                    const faceSubId = id + "outerSubtractSM" + unstableIdComponent(smFaceIndex);
+                    const targetModelParameters = try silent(getModelParameters(context, qOwnerBody(smFace)));
+                    if (targetModelParameters != undefined)
+                    {
+                        const tool = createBooleanToolsForFace(context, faceSubId + "tool", smFace, thickenedOuterSubtractSolids, targetModelParameters);
+                        if (tool != undefined)
+                        {
+                            opBoolean(context, faceSubId + "subtract", {
+                                        "tools"            : qCreatedBy(faceSubId + "tool", EntityType.FACE),
+                                        "targets"          : smFace,
+                                        "operationType"    : BooleanOperationType.SUBTRACTION,
+                                        "localizedInFaces" : true,
+                                        "allowSheets"      : true
+                                    });
+                        }
+                    }
+                    smFaceIndex += 1;
+                }
+                println("SM Tab Apply — Phase 9: SM face outer SUBTRACTION completed.");
             }
+
+            // Non-SM solid targets — mirrors solidSubtractTab in sheetMetalTab.fs.
             const outerScopeSolids = qActiveSheetMetalFilter(qBodyType(definition.outerSubtractionScope, BodyType.SOLID), ActiveSheetMetal.NO);
             if (!isQueryEmpty(context, outerScopeSolids))
             {
-                outerScopeTargets = qUnion([outerScopeTargets, outerScopeSolids]);
-            }
-
-            // Explicitly exclude the union SM body so the outer subtraction only
-            // cuts the user-defined outer scope.  The outer subtract solid is
-            // expanded by the clearance offset, which ensures it clears the union
-            // surface plane — including smBodyPostUnion as a target would
-            // incorrectly cut into the freshly-merged SM wall.
-            outerScopeTargets = qSubtraction(outerScopeTargets, smBodyPostUnion);
-
-            println("SM Tab Apply — Phase 9: outer scope targets count = " ~
-                    toString(size(evaluateQuery(context, outerScopeTargets))));
-
-            if (!isQueryEmpty(context, outerScopeTargets))
-            {
-                opBoolean(context, id + "outerSubtract", {
-                            "tools"         : thickenedOuterSubtractSolids,
-                            "targets"       : outerScopeTargets,
-                            "operationType" : BooleanOperationType.SUBTRACTION
-                        });
-                println("SM Tab Apply — Phase 9: outer SUBTRACTION completed.");
-            }
-            else
-            {
-                println("SM Tab Apply — Phase 9: outer scope targets empty after union-body exclusion; skipping SUBTRACTION.");
+                println("SM Tab Apply — Phase 9: solid outer subtract target count = " ~
+                        toString(size(evaluateQuery(context, outerScopeSolids))));
+                try silent(opBoolean(context, id + "outerSubtractSolid", {
+                                "tools"         : thickenedOuterSubtractSolids,
+                                "targets"       : outerScopeSolids,
+                                "operationType" : BooleanOperationType.SUBTRACTION,
+                                "allowSheets"   : true
+                            }));
+                println("SM Tab Apply — Phase 9: solid outer SUBTRACTION completed.");
             }
         }
 
@@ -909,15 +928,22 @@ export const smTabApply = defineSheetMetalFeature(function(context is Context, i
         // Phase 10 — Clean up original surface bodies and the csys connector.
         // - unionSurfaceBodies: consumed by the UNION boolean above.
         // - localSubtractBodies: consumed by the local SUBTRACTION boolean above.
-        // - outerSubtractBodies: originals were thickened into solids that were
-        //   consumed by the outer SUBTRACTION boolean.  The original surfaces
-        //   still exist and need explicit deletion.
+        // - outerSubtractBodies: originals were thickened into solids; the
+        //   original surfaces still exist and need explicit deletion.
+        // - thickenedOuterSubtractSolids: NOT consumed by the SM face path
+        //   (createBooleanToolsForFace builds outline tools, not consuming the
+        //   thickened body).  They may be consumed by the solid path when solid
+        //   outer scope targets exist; try silent handles both cases.
         // - csysConnectorBodies: placement helper, no longer needed.
         // ------------------------------------------------------------------
         const bodiesToDelete = qUnion([csysConnectorBodies, unionSurfaceBodies, localSubtractBodies, outerSubtractBodies]);
         if (!isQueryEmpty(context, bodiesToDelete))
         {
             opDeleteBodies(context, id + "cleanupBodies", { "entities" : bodiesToDelete });
+        }
+        if (!isQueryEmpty(context, thickenedOuterSubtractSolids))
+        {
+            try silent(opDeleteBodies(context, id + "cleanupThickenedSolids", { "entities" : thickenedOuterSubtractSolids }));
         }
 
         // ------------------------------------------------------------------
