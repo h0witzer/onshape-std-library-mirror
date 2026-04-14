@@ -563,7 +563,12 @@ function processTabAtLocation(context is Context, locationId is Id, locationBodi
     const locationUnionBodies        = qHasAttributeWithValueMatching(locationBodies, SM_TAB_BODY_ATTRIBUTE_NAME, { "role" : SM_TAB_ROLE_UNION_SURFACE });
     const locationLocalSubtractBodies = qHasAttributeWithValueMatching(locationBodies, SM_TAB_BODY_ATTRIBUTE_NAME, { "role" : SM_TAB_ROLE_LOCAL_SUBTRACT });
 
-    // DeRip any rip joints that would block the union; non-fatal on failure.
+    // Thicken the union surface to find which rip joints the tab abuts.
+    // The thickening and collision detection are non-fatal: if they fail, deRip is skipped.
+    // The deRip call itself IS fatal: if any candidate edge is not a rip joint (e.g. a bend joint),
+    // deripEdges returns false and the feature throws.  This matches sheetMetalTab.fs behavior and
+    // prevents the tab from being merged across a bend boundary, which would leave the SM definition
+    // model in an inconsistent state and cause updateSheetMetalGeometry to obliterate the context.
     var deripEdgeCandidates = [];
     try
     {
@@ -603,7 +608,10 @@ function processTabAtLocation(context is Context, locationId is Id, locationBodi
     }
 
     if (size(deripEdgeCandidates) > 0)
-        deripEdges(context, locationId + "deripRipJoints", qUnion(deripEdgeCandidates));
+    {
+        if (!deripEdges(context, locationId + "deripRipJoints", qUnion(deripEdgeCandidates)))
+            throw regenError(ErrorStringEnum.SHEET_METAL_TAB_NO_BEND, ["unionScope"]);
+    }
 
     // Union the tab surface into the live SM body.
     const unionOpId = locationId + "unionTabToWall";
