@@ -464,9 +464,18 @@ export const smTabApply = defineSheetMetalFeature(function(context is Context, i
                 // both operations the shared parents id.flipOuterSubtract and
                 // id.thickenOuterSubtract, and the two parents would be interleaved
                 // across loop iterations — a non-contiguous parent-ID violation.
-                // Grouping as id.*N.flip and id.*N.thicken keeps each body's operations
-                // under its own unique parent, eliminating the interleaving.
-                const outerBodySubId = id + unstableIdComponent(outerSubtractBodyIndex);
+                // Grouping as id.outerSubtractBody.*N.flip and
+                // id.outerSubtractBody.*N.thicken keeps each body's operations under
+                // its own unique parent.
+                //
+                // The intermediate "outerSubtractBody" string is required to prevent
+                // a namespace collision with the per-location loop below, which uses
+                // id + unstableIdComponent(placementLocationIndex) (i.e. id.*N) as
+                // its own prefix.  Without it, Phase 5 body 0 and body 1 would both
+                // consume id.*0 and id.*1, then the per-location loop would revisit
+                // id.*0 for location 0 — making parent id.*0 non-contiguous and
+                // causing opThicken in Phase 6.5 to throw a history-ordering error.
+                const outerBodySubId = id + "outerSubtractBody" + unstableIdComponent(outerSubtractBodyIndex);
 
                 // Flip the surface body's orientation before thickening when its
                 // face normal points away from the matched SM wall's inward normal.
