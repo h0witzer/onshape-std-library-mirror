@@ -846,18 +846,13 @@ export const smTabApply = defineSheetMetalFeature(function(context is Context, i
 
         // ------------------------------------------------------------------
         // Phase 9 — Outer subtraction (broader scope cuts).
-        // Follows the smSubtractTab + solidSubtractTab pattern from sheetMetalTab.fs.
-        //
-        // SM definition face targets are subtracted individually using
-        // createBooleanToolsForFace + opBoolean with localizedInFaces: true.
-        // This avoids the body-level exclusion problem: when the outer scope and
-        // union scope share the same SM body, targeting individual definition
-        // faces rather than qOwnerBody(face) means smBodyPostUnion never needs
-        // to be excluded — the operation works at face granularity, not body
-        // granularity, exactly like the standard sheetMetalTab feature.
-        //
-        // Non-SM solid targets use a standard opBoolean SUBTRACTION with
-        // allowSheets: true (solidSubtractTab pattern).
+        // Mirrors sheetMetalTab.fs subtractTab exactly:
+        //   separateSheetMetalQueries  →  getSMDefinitionEntities (fresh, called HERE
+        //   after Phase 7 union/derip, not the early outerScopeDefinitionFaces which
+        //   holds stale transient entity IDs)  →  createBooleanToolsForFace per face
+        //   + opBoolean localizedInFaces (smSubtractTab pattern).
+        //   separateSheetMetalQueries.nonSheetMetalQueries  →  opBoolean SUBTRACTION
+        //   (solidSubtractTab pattern).
         //
         // thickenedOuterSubtractSolids are NOT consumed by the SM face path
         // (createBooleanToolsForFace creates outline bodies as the actual tools)
@@ -878,14 +873,31 @@ export const smTabApply = defineSheetMetalFeature(function(context is Context, i
                         });
             }
 
-            // SM definition face targets — mirrors smSubtractTab in sheetMetalTab.fs:
-            // iterate per definition face, build localized outline tool, subtract.
-            if (outerScopeDefinitionFaces != undefined && size(outerScopeDefinitionFaces) > 0)
+            // Split the outer scope into active-SM and non-SM parts — same split
+            // that sheetMetalTab.fs performs at the top of subtractTab via
+            // separateSheetMetalQueries.
+            const separatedOuterScope = separateSheetMetalQueries(context, definition.outerSubtractionScope);
+
+            // SM definition face targets.
+            // Call getSMDefinitionEntities FRESH here (after Phase 7 union + Phase 6.5
+            // deripping have mutated the SM body topology) rather than reusing the early
+            // outerScopeDefinitionFaces array whose transient entity IDs may be stale.
+            // Build the face query the same way subtractTab does (line 504 of sheetMetalTab.fs).
+            const outerScopeSMFacesQuery = qUnion([
+                        qOwnedByBody(qEntityFilter(separatedOuterScope.sheetMetalQueries, EntityType.BODY), EntityType.FACE),
+                        qEntityFilter(separatedOuterScope.sheetMetalQueries, EntityType.FACE)
+                    ]);
+            var freshOuterScopeDefinitionFaces = try silent(getSMDefinitionEntities(context, outerScopeSMFacesQuery, EntityType.FACE));
+            if (freshOuterScopeDefinitionFaces is undefined)
             {
-                println("SM Tab Apply — Phase 9: SM definition face outer subtract target count = " ~
-                        toString(size(outerScopeDefinitionFaces)));
+                freshOuterScopeDefinitionFaces = [];
+            }
+            println("SM Tab Apply — Phase 9: fresh SM definition face count = " ~
+                    toString(size(freshOuterScopeDefinitionFaces)));
+            if (size(freshOuterScopeDefinitionFaces) > 0)
+            {
                 var smFaceIndex = 0;
-                for (var smFace in outerScopeDefinitionFaces)
+                for (var smFace in freshOuterScopeDefinitionFaces)
                 {
                     const faceSubId = id + "outerSubtractSM" + unstableIdComponent(smFaceIndex);
                     const targetModelParameters = try silent(getModelParameters(context, qOwnerBody(smFace)));
@@ -909,14 +921,13 @@ export const smTabApply = defineSheetMetalFeature(function(context is Context, i
             }
 
             // Non-SM solid targets — mirrors solidSubtractTab in sheetMetalTab.fs.
-            const outerScopeSolids = qActiveSheetMetalFilter(qBodyType(definition.outerSubtractionScope, BodyType.SOLID), ActiveSheetMetal.NO);
-            if (!isQueryEmpty(context, outerScopeSolids))
+            if (!isQueryEmpty(context, separatedOuterScope.nonSheetMetalQueries))
             {
                 println("SM Tab Apply — Phase 9: solid outer subtract target count = " ~
-                        toString(size(evaluateQuery(context, outerScopeSolids))));
+                        toString(size(evaluateQuery(context, separatedOuterScope.nonSheetMetalQueries))));
                 try silent(opBoolean(context, id + "outerSubtractSolid", {
                                 "tools"         : thickenedOuterSubtractSolids,
-                                "targets"       : outerScopeSolids,
+                                "targets"       : separatedOuterScope.nonSheetMetalQueries,
                                 "operationType" : BooleanOperationType.SUBTRACTION,
                                 "allowSheets"   : true
                             }));
