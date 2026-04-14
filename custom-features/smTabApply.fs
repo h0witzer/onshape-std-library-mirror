@@ -490,6 +490,31 @@ function thickenOuterSubtractSurfaces(context is Context, id is Id, outerSubtrac
 }
 
 /**
+ * Called when opBoolean UNION fails (throws or returns NO_OP) for a single placement location.
+ * Checks whether the tab surface centroid lies inside an existing union definition face, which
+ * indicates the placement mate connector is inverted (the tab is overlapping existing sheet metal
+ * instead of being adjacent to it).  Throws a descriptive error in that case; otherwise throws
+ * the generic merge-failure error.
+ *
+ * @param locationUnionBodies               {Query} Union surface bodies for this location.
+ * @param persistentUnionDefinitionEntities {Query} Tracked union definition face entities.
+ */
+function throwUnionFailureError(context is Context, locationUnionBodies is Query, persistentUnionDefinitionEntities is Query)
+{
+    // Approximate centroid of the tab surface face(s) at this location.
+    const tabCentroid = try silent(evApproximateCentroid(context, {
+                "entities" : qOwnedByBody(locationUnionBodies, EntityType.FACE)
+            }));
+
+    // If the centroid lands inside an existing union definition face the tab is coplanar with and
+    // contained by the wall — the classic symptom of an inverted placement mate connector.
+    if (tabCentroid != undefined && !isQueryEmpty(context, qContainsPoint(persistentUnionDefinitionEntities, tabCentroid)))
+        throw regenError("Tab placement at this location completely overlaps existing sheet metal. Check that the placement mate connector is not inverted.", ["locations"]);
+
+    throw regenError(ErrorStringEnum.SHEET_METAL_TAB_FAILS_MERGE, ["unionScope"]);
+}
+
+/**
  * Performs deRip, union, and local subtract for a single placement location.
  * DeRip is attempted first; failures are non-fatal and processing continues without it.
  * Returns the live SM body query after the union operation (qOwnerBody of the persistent definition entities).
@@ -558,11 +583,11 @@ function processTabAtLocation(context is Context, locationId is Id, locationBodi
     }
     catch
     {
-        throw regenError(ErrorStringEnum.SHEET_METAL_TAB_FAILS_MERGE, ["unionScope"]);
+        throwUnionFailureError(context, locationUnionBodies, persistentUnionDefinitionEntities);
     }
 
     if (getFeatureStatus(context, unionOpId).statusEnum == ErrorStringEnum.BOOLEAN_UNION_NO_OP)
-        throw regenError(ErrorStringEnum.SHEET_METAL_TAB_FAILS_MERGE, ["unionScope"]);
+        throwUnionFailureError(context, locationUnionBodies, persistentUnionDefinitionEntities);
 
     const smBodyPostUnion = qOwnerBody(persistentUnionDefinitionEntities);
 
