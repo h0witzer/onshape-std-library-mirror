@@ -457,6 +457,17 @@ export const smTabApply = defineSheetMetalFeature(function(context is Context, i
                     }
                 }
 
+                // Group this body's flip and thicken under a single per-body sub-ID
+                // so all children of the same parent ID are contiguous in operation
+                // history.  Using id + "flipOuterSubtract" + unstableIdComponent(N)
+                // and id + "thickenOuterSubtract" + unstableIdComponent(N) would give
+                // both operations the shared parents id.flipOuterSubtract and
+                // id.thickenOuterSubtract, and the two parents would be interleaved
+                // across loop iterations — a non-contiguous parent-ID violation.
+                // Grouping as id.*N.flip and id.*N.thicken keeps each body's operations
+                // under its own unique parent, eliminating the interleaving.
+                const outerBodySubId = id + unstableIdComponent(outerSubtractBodyIndex);
+
                 // Flip the surface body's orientation before thickening when its
                 // face normal points away from the matched SM wall's inward normal.
                 // opFlipOrientation reverses the surface direction so opThicken
@@ -465,13 +476,13 @@ export const smTabApply = defineSheetMetalFeature(function(context is Context, i
                 if (closestWallNormal != undefined && closestSubtractNormal != undefined &&
                     dot(closestSubtractNormal, closestWallNormal) < 0)
                 {
-                    opFlipOrientation(context, id + "flipOuterSubtract" + unstableIdComponent(outerSubtractBodyIndex), {
+                    opFlipOrientation(context, outerBodySubId + "flip", {
                                 "bodies" : currentBody
                             });
                 }
 
                 // Thicken with the matched SM wall's front/back gauge thickness.
-                const thickenId = id + "thickenOuterSubtract" + unstableIdComponent(outerSubtractBodyIndex);
+                const thickenId = outerBodySubId + "thicken";
                 opThicken(context, thickenId, {
                             "entities"   : currentBody,
                             "thickness1" : bodyTargetParams.frontThickness,
@@ -617,6 +628,14 @@ export const smTabApply = defineSheetMetalFeature(function(context is Context, i
                 continue;
             }
 
+            // Per-location namespace ID: all operation IDs within this iteration
+            // are formed as locationId + "string" so their parent IDs are unique
+            // to this loop iteration.  Using id + "string" + unstableIdComponent(N)
+            // instead would give all iterations the same parent id.string, causing
+            // Onshape to report non-contiguous parent-ID errors when another string's
+            // parent appears between two iterations of the same string parent.
+            const locationId = id + unstableIdComponent(placementLocationIndex);
+
             // ------------------------------------------------------------------
             // Phase 6.5 — Per-location pre-union rip joint resolution.
             //
@@ -631,12 +650,12 @@ export const smTabApply = defineSheetMetalFeature(function(context is Context, i
             {
                 const smModelParams = getModelParameters(context, qOwnerBody(persistentUnionDefinitionEntities));
 
-                opThicken(context, id + "thickenForDeRip" + unstableIdComponent(placementLocationIndex), {
+                opThicken(context, locationId + "thickenForDeRip", {
                             "entities"   : qOwnedByBody(locationUnionBodies, EntityType.FACE),
                             "thickness1" : smModelParams.frontThickness,
                             "thickness2" : smModelParams.backThickness
                         });
-                const thickenedTabBody = qCreatedBy(id + "thickenForDeRip" + unstableIdComponent(placementLocationIndex), EntityType.BODY);
+                const thickenedTabBody = qCreatedBy(locationId + "thickenForDeRip", EntityType.BODY);
 
                 if (size(deripCorrespondingPartEntityQueries) > 0)
                 {
@@ -659,7 +678,7 @@ export const smTabApply = defineSheetMetalFeature(function(context is Context, i
                     }
                 }
 
-                opDeleteBodies(context, id + "deleteThickenedDeRip" + unstableIdComponent(placementLocationIndex), { "entities" : thickenedTabBody });
+                opDeleteBodies(context, locationId + "deleteThickenedDeRip", { "entities" : thickenedTabBody });
             }
             catch
             {
@@ -670,7 +689,7 @@ export const smTabApply = defineSheetMetalFeature(function(context is Context, i
             {
                 println("SM Tab Apply — location " ~ toString(placementLocationIndex) ~
                         " Phase 6.5: deRipping " ~ toString(size(locationDeripEdgeCandidates)) ~ " edge candidate(s).");
-                deripEdges(context, id + "deripRipJoints" + unstableIdComponent(placementLocationIndex), qUnion(locationDeripEdgeCandidates));
+                deripEdges(context, locationId + "deripRipJoints", qUnion(locationDeripEdgeCandidates));
             }
 
             // ------------------------------------------------------------------
@@ -682,7 +701,7 @@ export const smTabApply = defineSheetMetalFeature(function(context is Context, i
             // ------------------------------------------------------------------
             const locationUnionBodiesForDiag = evaluateQuery(context, locationUnionBodies);
             const smBodiesForDiag            = evaluateQuery(context, qOwnerBody(persistentUnionDefinitionEntities));
-            const unionOpId                  = id + "unionTabToWall" + unstableIdComponent(placementLocationIndex);
+            const unionOpId                  = locationId + "unionTabToWall";
 
             println("SM Tab Apply — location " ~ toString(placementLocationIndex) ~
                     " Phase 7: attempting UNION of " ~
@@ -878,7 +897,7 @@ export const smTabApply = defineSheetMetalFeature(function(context is Context, i
                 println("SM Tab Apply — location " ~ toString(placementLocationIndex) ~
                         " Phase 8: attempting local SUBTRACTION with " ~
                         toString(size(evaluateQuery(context, locationLocalSubtractBodies))) ~ " tool bodies.");
-                opBoolean(context, id + "localSubtract" + unstableIdComponent(placementLocationIndex), {
+                opBoolean(context, locationId + "localSubtract", {
                             "tools"         : locationLocalSubtractBodies,
                             "targets"       : smBodyPostUnion,
                             "operationType" : BooleanOperationType.SUBTRACTION,
