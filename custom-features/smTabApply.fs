@@ -33,11 +33,6 @@ const SM_TAB_FEATURE_NAME_VAR      = "smTabFeatureName";
 
 const FEATURE_NAME_SEPARATOR = " - ";
 
-// Distance used by retryUnionWithMicroShift to nudge a tab surface body into the SM wall face.
-// 1 µm is far below any sheet metal manufacturing tolerance (~0.5 mm) but well above the
-// boolean kernel's numerical precision floor, giving the UNION enough overlapping area to succeed.
-const EDGE_ADJACENT_MICRO_SHIFT_DISTANCE = 1e-6 * meter;
-
 // ---------------------------------------------------------------------------
 // Feature definition
 // ---------------------------------------------------------------------------
@@ -552,11 +547,8 @@ function processTabAtLocation(context is Context, locationId is Id, locationBodi
         deripEdges(context, locationId + "deripRipJoints", qUnion(deripEdgeCandidates));
 
     // Union the tab surface into the live SM body.
-    // Use try silent so that a failed first attempt does not surface error status before the
-    // micro-shift retry path has had a chance to recover.
     const unionOpId = locationId + "unionTabToWall";
-    var unionRetried = false;
-    try silent
+    try
     {
         opBoolean(context, unionOpId, {
                     "tools"         : qUnion([qOwnerBody(persistentUnionDefinitionEntities), locationUnionBodies]),
@@ -566,20 +558,10 @@ function processTabAtLocation(context is Context, locationId is Id, locationBodi
     }
     catch
     {
-        // Union threw. The boolean kernel requires at least a small overlapping area to merge
-        // two coplanar surface bodies; a shared boundary edge alone is sometimes insufficient.
-        // This commonly occurs when the tab surface's boundary edge is exactly coincident with
-        // the SM wall's boundary edge (edge-adjacent placement). Apply a sub-tolerance
-        // micro-shift toward the wall face interior to create a minimal overlap and retry.
-        const retryOpId = locationId + "unionTabToWallRetry";
-        if (!retryUnionWithMicroShift(context, retryOpId, locationUnionBodies, persistentUnionDefinitionEntities))
-            throw regenError(ErrorStringEnum.SHEET_METAL_TAB_FAILS_MERGE, ["unionScope"]);
-        if (getFeatureStatus(context, retryOpId).statusEnum == ErrorStringEnum.BOOLEAN_UNION_NO_OP)
-            throw regenError(ErrorStringEnum.SHEET_METAL_TAB_FAILS_MERGE, ["unionScope"]);
-        unionRetried = true;
+        throw regenError(ErrorStringEnum.SHEET_METAL_TAB_FAILS_MERGE, ["unionScope"]);
     }
 
-    if (!unionRetried && getFeatureStatus(context, unionOpId).statusEnum == ErrorStringEnum.BOOLEAN_UNION_NO_OP)
+    if (getFeatureStatus(context, unionOpId).statusEnum == ErrorStringEnum.BOOLEAN_UNION_NO_OP)
         throw regenError(ErrorStringEnum.SHEET_METAL_TAB_FAILS_MERGE, ["unionScope"]);
 
     const smBodyPostUnion = qOwnerBody(persistentUnionDefinitionEntities);
@@ -596,72 +578,6 @@ function processTabAtLocation(context is Context, locationId is Id, locationBodi
     }
 
     return smBodyPostUnion;
-}
-
-/**
- * Recovers from a failed UNION by applying a sub-tolerance micro-shift to each union surface body
- * in the direction toward the SM definition face centroid, projected into the wall plane. This
- * creates a minimal overlapping area between the tab surface and the SM wall face that the boolean
- * kernel needs to merge two coplanar surface bodies. Returns true if the retry union succeeded and
- * was not a no-op.
- *
- * @param retryOpId                         {Id}    Unique operation namespace for the retry boolean.
- * @param locationUnionBodies               {Query} Tab surface bodies to shift and union.
- * @param persistentUnionDefinitionEntities {Query} SM definition entities tracking the wall face.
- */
-function retryUnionWithMicroShift(context is Context, retryOpId is Id, locationUnionBodies is Query, persistentUnionDefinitionEntities is Query) returns boolean
-{
-    // Compute the SM definition face centroid as an approximate "inward" target direction.
-    const wallCentroid = try silent(evApproximateCentroid(context, { "entities" : persistentUnionDefinitionEntities }));
-    if (wallCentroid == undefined)
-        return false;
-
-    // Shift each union surface body by 1 µm toward the wall face centroid in the wall plane.
-    // This is far below any manufacturing tolerance but above the boolean kernel's precision floor.
-    const bodyArray = evaluateQuery(context, locationUnionBodies);
-    for (var bodyIndex = 0; bodyIndex < size(bodyArray); bodyIndex += 1)
-    {
-        const tabBody = bodyArray[bodyIndex];
-        const tabFacePlane = try silent(evPlane(context, { "face" : qOwnedByBody(tabBody, EntityType.FACE) }));
-        if (tabFacePlane == undefined)
-            continue;
-
-        // Project the wall-centroid direction into the wall plane to stay coplanar after shift.
-        const toWall = wallCentroid - tabFacePlane.origin;
-        const toWallInPlane = toWall - dot(toWall, tabFacePlane.normal) * tabFacePlane.normal;
-        // Treat in-plane vectors shorter than the kernel's zero-length tolerance as degenerate
-        // (the tab centroid is essentially at the wall centroid) and skip the shift.
-        if (norm(toWallInPlane) < TOLERANCE.zeroLength * meter)
-            continue;
-
-        const shiftVectorTowardWall = normalize(toWallInPlane) * EDGE_ADJACENT_MICRO_SHIFT_DISTANCE;
-        try
-        {
-            opTransform(context, retryOpId + "microShift" + unstableIdComponent(bodyIndex), {
-                        "bodies"    : tabBody,
-                        "transform" : transform(shiftVectorTowardWall)
-                    });
-        }
-        catch
-        {
-            // Shift failed for this body; skip it and allow the retry to proceed with
-            // whatever bodies were successfully shifted.
-        }
-    }
-
-    try
-    {
-        opBoolean(context, retryOpId, {
-                    "tools"         : qUnion([qOwnerBody(persistentUnionDefinitionEntities), locationUnionBodies]),
-                    "operationType" : BooleanOperationType.UNION,
-                    "allowSheets"   : true
-                });
-    }
-    catch
-    {
-        return false;
-    }
-    return getFeatureStatus(context, retryOpId).statusEnum != ErrorStringEnum.BOOLEAN_UNION_NO_OP;
 }
 
 /**
