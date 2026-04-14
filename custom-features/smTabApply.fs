@@ -1183,11 +1183,20 @@ function snapBodiesToNearestDefinitionPlane(context is Context, id is Id, bodies
             }
         }
 
+        // Group the flip and snap operations under a single per-body sub-ID so that
+        // all children of the same parent ID are contiguous in the operation history.
+        // Using id + "flip" + unstableIdComponent(N) and id + "snap" + unstableIdComponent(N)
+        // as sibling suffixes causes Onshape to report a non-contiguous parent-ID error
+        // because flip.*0, snap.*0, flip.*1, snap.*1 interleaves two parent trees.
+        // Grouping as id.*N.flip and id.*N.snap keeps each body's operations under its
+        // own unique parent, eliminating the interleaving.
+        const bodySubId = id + unstableIdComponent(snapBodyIndex);
+
         // Correct surface normal direction before computing the snap translation so
         // opBoolean UNION sees parallel normals between the union body and the SM wall.
         if (dot(bodyFacePlane.normal, nearestDefinitionPlane.normal) < 0)
         {
-            opFlipOrientation(context, id + "flip" + unstableIdComponent(snapBodyIndex), {
+            opFlipOrientation(context, bodySubId + "flip", {
                         "bodies" : currentBody
                     });
         }
@@ -1198,7 +1207,7 @@ function snapBodiesToNearestDefinitionPlane(context is Context, id is Id, bodies
                 nearestDefinitionPlane.normal) * nearestDefinitionPlane.normal;
         println("SM Tab Apply — snapBodiesToNearestDefinitionPlane: body " ~
                 toString(snapBodyIndex) ~ " snap translation = " ~ toString(snapTranslationVector));
-        opTransform(context, id + "snap" + unstableIdComponent(snapBodyIndex), {
+        opTransform(context, bodySubId + "snap", {
                     "bodies"    : currentBody,
                     "transform" : transform(snapTranslationVector)
                 });
