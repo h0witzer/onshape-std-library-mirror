@@ -146,12 +146,17 @@ export const smTabApply = defineSheetMetalFeature(function(context is Context, i
         // Outer subtraction pass across the user-defined scope.
         applyOuterSubtraction(context, id, thickenedOuterSubtractSolids, definition.outerSubtractionScope, definition.outerSubtractionOffset);
 
-        // Delete all instantiated bodies. Those consumed by boolean operations are silently skipped.
-        // This covers tagged bodies of every role plus any other geometry that was imported
-        // (curves, solids, construction bodies) regardless of tag status.
-        try silent(opDeleteBodies(context, id + "cleanup", { "entities" : instantiated.allBodies }));
-        // Delete derived bodies created within this feature (implied outer subtract copies and thickened solids).
-        try silent(opDeleteBodies(context, id + "cleanupDerived", { "entities" : qUnion([impliedOuterSubtractBodies, thickenedOuterSubtractSolids]) }));
+        // Delete all instantiated bodies that were not consumed by boolean operations.
+        // qCreatedBy is a persistent query that still resolves consumed bodies; opDeleteBodies
+        // fails if any consumed entity is in the list, so filter them out first.
+        const survivingInstantiatedBodies = qConsumed(instantiated.allBodies, Consumed.NO);
+        if (!isQueryEmpty(context, survivingInstantiatedBodies))
+            opDeleteBodies(context, id + "cleanup", { "entities" : survivingInstantiatedBodies });
+        // Delete locally-derived bodies (implied outer subtract copies and thickened solids) using
+        // the same consumed-body guard.
+        const survivingDerivedBodies = qConsumed(qUnion([impliedOuterSubtractBodies, thickenedOuterSubtractSolids]), Consumed.NO);
+        if (!isQueryEmpty(context, survivingDerivedBodies))
+            opDeleteBodies(context, id + "cleanupDerived", { "entities" : survivingDerivedBodies });
 
         // Update SM model geometry.
         const toUpdate = assignSMAttributesToNewOrSplitEntities(context, smBodyPostUnion, initialData, id);
