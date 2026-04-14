@@ -491,25 +491,59 @@ function thickenOuterSubtractSurfaces(context is Context, id is Id, outerSubtrac
 
 /**
  * Called when opBoolean UNION fails (throws or returns NO_OP) for a single placement location.
- * Checks whether the tab surface centroid lies inside an existing union definition face, which
- * indicates the placement mate connector is inverted (the tab is overlapping existing sheet metal
- * instead of being adjacent to it).  Throws a descriptive error in that case; otherwise throws
- * the generic merge-failure error.
+ * Mirrors the thicken + evCollision diagnostic used by reportBooleanIssues / identifyEdgesForDeripping
+ * in sheetMetalTab.fs.  The tab surface is thickened to a solid using the SM model parameters, then
+ * evCollision is run against the live 3D part wall faces.  ClashType.TOOL_IN_TARGET means the
+ * thickened tab solid is fully enclosed inside the existing wall — the definitive signature of an
+ * inverted placement mate connector.  Falls through to SHEET_METAL_TAB_FAILS_MERGE for any other
+ * failure mode.
  *
+ * @param locationId                        {Id}    Unique operation namespace for temporary diagnostic ops.
  * @param locationUnionBodies               {Query} Union surface bodies for this location.
  * @param persistentUnionDefinitionEntities {Query} Tracked union definition face entities.
  */
-function throwUnionFailureError(context is Context, locationUnionBodies is Query, persistentUnionDefinitionEntities is Query)
+function throwUnionFailureError(context is Context, locationId is Id, locationUnionBodies is Query, persistentUnionDefinitionEntities is Query)
 {
-    // Approximate centroid of the tab surface face(s) at this location.
-    const tabCentroid = try silent(evApproximateCentroid(context, {
-                "entities" : qOwnedByBody(locationUnionBodies, EntityType.FACE)
-            }));
+    // Thicken the tab surface and check against the 3D part wall faces, exactly as SM Tab does in
+    // reportBooleanIssues and identifyEdgesForDeripping.  TOOL_IN_TARGET means the solid is fully
+    // inside the existing wall — inverted placement.
+    var overlapsExistingMetal = false;
+    try
+    {
+        const smModelParams = getModelParameters(context, qOwnerBody(persistentUnionDefinitionEntities));
+        opThicken(context, locationId + "thickenForOverlapDiag", {
+                    "entities"   : qOwnedByBody(locationUnionBodies, EntityType.FACE),
+                    "thickness1" : smModelParams.frontThickness,
+                    "thickness2" : smModelParams.backThickness
+                });
+        const thickenedDiagBody = qCreatedBy(locationId + "thickenForOverlapDiag", EntityType.BODY);
 
-    // If the centroid lands inside an existing union definition face the tab is coplanar with and
-    // contained by the wall — the classic symptom of an inverted placement mate connector.
-    if (tabCentroid != undefined && !isQueryEmpty(context, qContainsPoint(persistentUnionDefinitionEntities, tabCentroid)))
-        throw regenError("Tab placement at this location completely overlaps existing sheet metal. Check that the placement mate connector is not inverted.", ["locations"]);
+        const partWallFaces = try silent(getSMCorrespondingInPart(context, persistentUnionDefinitionEntities, EntityType.FACE));
+        if (!isQueryEmpty(context, partWallFaces))
+        {
+            const collisions = try silent(evCollision(context, {
+                        "tools"   : qOwnedByBody(thickenedDiagBody, EntityType.FACE),
+                        "targets" : partWallFaces
+                    }));
+            if (collisions != undefined)
+            {
+                for (var collision in collisions)
+                {
+                    if (collision["type"] == ClashType.TOOL_IN_TARGET)
+                        overlapsExistingMetal = true;
+                }
+            }
+        }
+
+        opDeleteBodies(context, locationId + "deleteOverlapDiag", { "entities" : thickenedDiagBody });
+    }
+    catch
+    {
+        // Thickening or collision detection failed; proceed to generic error below.
+    }
+
+    if (overlapsExistingMetal)
+        throw regenError("One or more tab placement locations completely overlap existing sheet metal. The union will have no effect. Check that the placement mate connector is not inverted.", ["locations"]);
 
     throw regenError(ErrorStringEnum.SHEET_METAL_TAB_FAILS_MERGE, ["unionScope"]);
 }
@@ -583,11 +617,11 @@ function processTabAtLocation(context is Context, locationId is Id, locationBodi
     }
     catch
     {
-        throwUnionFailureError(context, locationUnionBodies, persistentUnionDefinitionEntities);
+        throwUnionFailureError(context, locationId, locationUnionBodies, persistentUnionDefinitionEntities);
     }
 
     if (getFeatureStatus(context, unionOpId).statusEnum == ErrorStringEnum.BOOLEAN_UNION_NO_OP)
-        throwUnionFailureError(context, locationUnionBodies, persistentUnionDefinitionEntities);
+        throwUnionFailureError(context, locationId, locationUnionBodies, persistentUnionDefinitionEntities);
 
     const smBodyPostUnion = qOwnerBody(persistentUnionDefinitionEntities);
 
