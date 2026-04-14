@@ -465,82 +465,131 @@ export const smTabApply = defineSheetMetalFeature(function(context is Context, i
         const persistentUnionDefinitionEntities = qUnion([unionDefinitionEntitiesQuery, startTracking(context, unionDefinitionEntitiesQuery)]);
 
         // ------------------------------------------------------------------
-        // Phase 6.5 — Pre-union rip joint resolution.
+        // Phase 6.5 — Pre-union rip joint resolution following the standard
+        // sheetMetalTab approach.
         //
-        // When a tab surface body's free boundary edge is coincident with a rip
-        // joint edge in the SM master surface, opBoolean UNION fails with
-        // BOOLEAN_INVALID.  The SM master surface treats each wall panel as a
-        // separate surface body; the rip is the free boundary edge where two
-        // adjacent wall panels meet.  Because the tab and the SM wall only share
-        // that boundary edge (no interior area overlap), the kernel cannot
-        // determine how to merge them.
+        // The standard sheetMetalTab feature (sheetMetalTab.fs, booleanOneTabGroup
+        // → subtractTab → identifyEdgesForDeripping) resolves rip joints by:
+        //   1. Thickening the tab into a solid using the SM wall's gauge parameters.
+        //   2. Getting the SM PART faces/edges corresponding to joint entities
+        //      adjacent to the union wall definition faces (via getSMCorrespondingInPart).
+        //   3. Running evCollision between the solid tab FACES and those part entities.
+        //   4. For contacts that are NOT ABUT_NO_CLASS: collecting the SM definition
+        //      edges for each collision target via getSMDefinitionEntities.
+        //   5. Calling deripEdges on the collected candidates.
         //
-        // The standard sheetMetalTab feature resolves this by calling
-        // deripEdges() before the union (via subtractTab in booleanOneTabGroup),
-        // which extends the SM definition face through the rip so the tab edge
-        // lands in the interior of the extended SM face, allowing the UNION to
-        // succeed.  We do the same here.
+        // We replicate this exactly, using a TEMPORARY thickened solid that is deleted
+        // immediately after deRip candidate identification.  The actual UNION in
+        // Phase 7 remains surface-to-surface (allowSheets: true).
         //
-        // Detection: evCollision between the tab surface body and the SM master
-        // surface.  ABUT_NO_CLASS contacts signal that the tab's free boundary
-        // edge is coincident with an SM definition face boundary edge.  Each
-        // such contact's target face is queried for adjacent edges carrying
-        // SMJointType.RIP — those are the edges to deRip.
-        //
-        // Only rip edges identified via this targeted evCollision check are
-        // deRipped, so rip joints the tab is not bridging are left untouched.
+        // The Phase 7 UNION target is qOwnerBody(unionDefinitionEntitiesQuery) — a
+        // lazy query that re-evaluates after deRip and correctly finds the post-deRip
+        // SM definition body, regardless of any body-entity restructuring caused by
+        // the deRip operation.
         // ------------------------------------------------------------------
-        var ripEdgesToDeRip = [];
+        var deripEdgeCandidates = [];
         try
         {
-            const ripDetectionCollisions = evCollision(context, {
-                        "tools"   : unionSurfaceBodies,
-                        "targets" : smBodiesAffected
+            // Get SM model parameters for thickening the union surface body.
+            const smModelParams = getModelParameters(context, qOwnerBody(unionDefinitionEntitiesQuery));
+
+            // Temporarily thicken the union surface into a solid.  When the tab
+            // bridges a rip joint, this solid extends across the joint and will
+            // produce non-ABUT_NO_CLASS contacts with the SM part faces on the
+            // far side of the rip, mirroring the solid-body collision in subtractTab.
+            opThicken(context, id + "thickenForDeRip", {
+                        "entities"   : qOwnedByBody(unionSurfaceBodies, EntityType.FACE),
+                        "thickness1" : smModelParams.frontThickness,
+                        "thickness2" : smModelParams.backThickness
                     });
-            for (var ripContact in ripDetectionCollisions)
+            const thickenedTabBody = qCreatedBy(id + "thickenForDeRip", EntityType.BODY);
+
+            // Build the set of SM PART entities corresponding to joint entities
+            // adjacent to the union wall definition faces.
+            // This mirrors getCorrespondingJointEntitiesInPart in sheetMetalTab.fs:
+            //   non-TANGENT joints → corresponding FACE in the part
+            //   TANGENT joints     → corresponding EDGE in the part
+            const adjacentDefinitionEdges = evaluateQuery(context,
+                    qEdgeTopologyFilter(
+                        qAdjacent(unionDefinitionEntitiesQuery, AdjacencyType.EDGE, EntityType.EDGE),
+                        EdgeTopology.TWO_SIDED));
+            var correspondingPartEntityQueries = [];
+            for (var adjEdge in adjacentDefinitionEdges)
             {
-                if (ripContact["type"] == ClashType.ABUT_NO_CLASS)
+                const jointAttributes = getSmObjectTypeAttributes(context, adjEdge, SMObjectType.JOINT);
+                if (size(jointAttributes) == 0 ||
+                    jointAttributes[0].jointType == undefined ||
+                    jointAttributes[0].jointType.value != SMJointType.TANGENT)
                 {
-                    // The tab free boundary edge is coincident with an SM definition
-                    // face boundary.  Check every edge of that face for a RIP attribute.
-                    for (var candidateEdge in evaluateQuery(context,
-                            qAdjacent(ripContact.target, AdjacencyType.EDGE, EntityType.EDGE)))
+                    // Non-tangent joints (rip, bend, etc.) — corresponding FACE in the SM part.
+                    const partFace = try silent(getSMCorrespondingInPart(context, adjEdge, EntityType.FACE));
+                    if (!isQueryEmpty(context, partFace))
+                        correspondingPartEntityQueries = append(correspondingPartEntityQueries, partFace);
+                }
+                else
+                {
+                    // Tangent joints — corresponding EDGE in the SM part.
+                    const partEdge = try silent(getSMCorrespondingInPart(context, adjEdge, EntityType.EDGE));
+                    if (!isQueryEmpty(context, partEdge))
+                        correspondingPartEntityQueries = append(correspondingPartEntityQueries, partEdge);
+                }
+            }
+
+            // Identify deRip candidates via collision between the solid tab faces and
+            // SM part entities adjacent to the union wall.
+            // This mirrors identifyEdgesForDeripping in sheetMetalTab.fs.
+            if (size(correspondingPartEntityQueries) > 0)
+            {
+                const deripCollisions = try silent(evCollision(context, {
+                            "tools"   : qOwnedByBody(thickenedTabBody, EntityType.FACE),
+                            "targets" : qUnion(correspondingPartEntityQueries)
+                        }));
+                if (deripCollisions != undefined)
+                {
+                    for (var collision in deripCollisions)
                     {
-                        const ripJointAttribute = try(getJointAttribute(context, candidateEdge));
-                        if (ripJointAttribute != undefined &&
-                            ripJointAttribute.jointType != undefined &&
-                            ripJointAttribute.jointType.value == SMJointType.RIP &&
-                            !isIn(candidateEdge, ripEdgesToDeRip))
+                        if (collision["type"] != ClashType.ABUT_NO_CLASS)
                         {
-                            ripEdgesToDeRip = append(ripEdgesToDeRip, candidateEdge);
+                            const definitionEdges = try silent(
+                                    getSMDefinitionEntities(context, collision.target, EntityType.EDGE));
+                            if (definitionEdges != undefined && definitionEdges != [])
+                                deripEdgeCandidates = concatenateArrays([deripEdgeCandidates, definitionEdges]);
                         }
                     }
                 }
             }
+
+            // Delete the temporary solid — it was only needed for collision detection.
+            opDeleteBodies(context, id + "deleteThickenedDeRip", { "entities" : thickenedTabBody });
         }
         catch
         {
-            // evCollision failure is non-fatal; proceed without deRip and let
-            // Phase 7 opBoolean produce its own error if the UNION fails.
+            // Temporary thickening or collision detection failed — proceed without deRip.
+            // Phase 7 UNION will report its own error if a rip joint remains unresolved.
         }
 
-        if (size(ripEdgesToDeRip) > 0)
+        if (size(deripEdgeCandidates) > 0)
         {
-            println("SM Tab Apply — Phase 6.5: resolving " ~ toString(size(ripEdgesToDeRip)) ~
-                    " rip joint edge(s) adjacent to the union target wall.");
-            deripEdges(context, id + "deripRipJoints", qUnion(ripEdgesToDeRip));
+            println("SM Tab Apply — Phase 6.5: deRipping " ~ toString(size(deripEdgeCandidates)) ~
+                    " SM definition edge candidate(s) via standard sheetMetalTab approach.");
+            deripEdges(context, id + "deripRipJoints", qUnion(deripEdgeCandidates));
         }
 
         // ------------------------------------------------------------------
         // Phase 7 — Union the tab surface bodies into the SM master surface.
         //
-        // Both trackedSMBodies and unionSurfaceBodies are passed as "tools"
-        // with no "targets", mirroring booleanOneTabGroup in onlyTabs.fs.
+        // qOwnerBody(unionDefinitionEntitiesQuery) and unionSurfaceBodies are
+        // passed as "tools" with no "targets", mirroring booleanOneTabGroup in
+        // sheetMetalTab.fs (wallBodies = qOwnerBody(coincidentGrouping.walls)).
         //
-        // trackedSMBodies is used instead of the raw smBodiesAffected to
-        // ensure the correct post-deRip SM body entity is referenced; the
-        // startTracking component of the query follows the SM definition body
-        // through any topology changes made by the Phase 6.5 deRip operation.
+        // qOwnerBody(unionDefinitionEntitiesQuery) is a LAZY query — it
+        // re-evaluates against the current topology at the time opBoolean is
+        // called (after Phase 6.5 deRip).  This matches the standard library
+        // pattern in booleanOneTabGroup where wallBodies is a lazy derived query
+        // that finds the post-deRip SM definition body.  Using trackedSMBodies
+        // (startTracking-based) was incorrect because the startTracking was set
+        // up before deRip; if deRip restructures the SM definition body entity,
+        // startTracking resolves to 0 and the UNION runs with no SM target.
         //
         // try (not silent) lets opBoolean log its native error to the console
         // while we still catch and add geometry diagnostics before re-throwing
@@ -552,8 +601,9 @@ export const smTabApply = defineSheetMetalFeature(function(context is Context, i
 
         // Pre-union diagnostics: report body counts so the log always confirms
         // both sides have bodies before the attempt is made.
+        // smBodiesForDiag uses the lazy query so it reflects the post-deRip state.
         const unionBodiesForDiag = evaluateQuery(context, unionSurfaceBodies);
-        const smBodiesForDiag    = evaluateQuery(context, smBodiesAffected);
+        const smBodiesForDiag    = evaluateQuery(context, qOwnerBody(unionDefinitionEntitiesQuery));
         println("SM Tab Apply — Phase 7: attempting UNION of " ~
                 toString(size(unionBodiesForDiag)) ~
                 " union bodies with SM master surface body count " ~
@@ -562,7 +612,7 @@ export const smTabApply = defineSheetMetalFeature(function(context is Context, i
         try
         {
             opBoolean(context, id + "unionTabToWall", {
-                        "tools"         : qUnion([trackedSMBodies, unionSurfaceBodies]),
+                        "tools"         : qUnion([qOwnerBody(unionDefinitionEntitiesQuery), unionSurfaceBodies]),
                         "operationType" : BooleanOperationType.UNION,
                         "allowSheets"   : true
                     });
