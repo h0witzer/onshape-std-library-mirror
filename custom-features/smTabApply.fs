@@ -97,7 +97,6 @@ export const smTabApply = defineSheetMetalFeature(function(context is Context, i
         const unionSurfaceBodies  = qHasAttributeWithValueMatching(instantiated.allBodies, SM_TAB_BODY_ATTRIBUTE_NAME, { "role" : SM_TAB_ROLE_UNION_SURFACE });
         const localSubtractBodies = qHasAttributeWithValueMatching(instantiated.allBodies, SM_TAB_BODY_ATTRIBUTE_NAME, { "role" : SM_TAB_ROLE_LOCAL_SUBTRACT });
         const outerSubtractBodies = qHasAttributeWithValueMatching(instantiated.allBodies, SM_TAB_BODY_ATTRIBUTE_NAME, { "role" : SM_TAB_ROLE_OUTER_SUBTRACT });
-        const csysConnectorBodies = qHasAttributeWithValueMatching(instantiated.allBodies, SM_TAB_BODY_ATTRIBUTE_NAME, { "role" : "smTabCsysMateConnector" });
 
         if (isQueryEmpty(context, unionSurfaceBodies))
             throw regenError("The tool Part Studio contains no bodies tagged as union surfaces. Run SM Tab Tag in the tool Part Studio.", ["formPartStudio"]);
@@ -147,12 +146,12 @@ export const smTabApply = defineSheetMetalFeature(function(context is Context, i
         // Outer subtraction pass across the user-defined scope.
         applyOuterSubtraction(context, id, thickenedOuterSubtractSolids, definition.outerSubtractionScope, definition.outerSubtractionOffset);
 
-        // Delete source bodies consumed by or no longer needed after boolean operations.
-        const bodiesToDelete = qUnion([csysConnectorBodies, unionSurfaceBodies, localSubtractBodies, outerSubtractBodies, impliedOuterSubtractBodies]);
-        if (!isQueryEmpty(context, bodiesToDelete))
-            opDeleteBodies(context, id + "cleanupBodies", { "entities" : bodiesToDelete });
-        if (!isQueryEmpty(context, thickenedOuterSubtractSolids))
-            try silent(opDeleteBodies(context, id + "cleanupThickenedSolids", { "entities" : thickenedOuterSubtractSolids }));
+        // Delete all instantiated bodies. Those consumed by boolean operations are silently skipped.
+        // This covers tagged bodies of every role plus any other geometry that was imported
+        // (curves, solids, construction bodies) regardless of tag status.
+        try silent(opDeleteBodies(context, id + "cleanup", { "entities" : instantiated.allBodies }));
+        // Delete derived bodies created within this feature (implied outer subtract copies and thickened solids).
+        try silent(opDeleteBodies(context, id + "cleanupDerived", { "entities" : qUnion([impliedOuterSubtractBodies, thickenedOuterSubtractSolids]) }));
 
         // Update SM model geometry.
         const toUpdate = assignSMAttributesToNewOrSplitEntities(context, smBodyPostUnion, initialData, id);
@@ -193,9 +192,14 @@ function instantiateToolBodies(context is Context, id is Id, definition is map) 
         var placementCSys = resolveLocationCSys(context, location);
         placementCSys = applyOrientationOverrides(placementCSys, definition.flipDirection, definition.secondaryAxisType);
 
+        // partQuery scoped to tagged bodies so that: (a) sketch-object-flagged surfaces
+        // created directly from sketch regions are imported (the default SketchObject.NO
+        // filter was dropping them silently), and (b) any untagged helper geometry in the
+        // tool Part Studio is not imported.
         const instanceBodies = addInstance(instantiator, definition.formPartStudio, {
                     "transform" : toWorld(placementCSys),
-                    "identity"  : location
+                    "identity"  : location,
+                    "partQuery" : qHasAttribute(qEverything(EntityType.BODY), SM_TAB_BODY_ATTRIBUTE_NAME)
                 });
         allBodies = qUnion([allBodies, instanceBodies]);
         locationBodySets = append(locationBodySets, instanceBodies);
@@ -357,6 +361,7 @@ function buildImpliedOuterSubtractBodies(context is Context, id is Id, outerSubt
  * Evaluates SM wall face origins, normals, and model parameters for the outer subtraction scope.
  * Used to match each outer subtract surface body to its nearest SM wall for orientation and gauge.
  * Returns an array of maps with fields: origin, normal, modelParams.
+ * modelParams may be undefined when getModelParameters fails for a given face.
  */
 function collectOuterScopeFaceData(context is Context, outerSubtractionScope is Query) returns array
 {
@@ -684,7 +689,9 @@ function resolveTabFeatureName(context is Context, definition is map) returns st
 {
     try
     {
-        var sourceConfig = definition.formPartStudio.configuration != undefined ? definition.formPartStudio.configuration : {};
+        var sourceConfig = {};
+        if (definition.formPartStudio.configuration != undefined)
+            sourceConfig = definition.formPartStudio.configuration;
         const sourceContext = definition.formPartStudio.buildFunction(sourceConfig);
         const retrievedName = getVariable(sourceContext, SM_TAB_FEATURE_NAME_VAR);
         if (retrievedName != undefined && retrievedName is string && retrievedName != "")
