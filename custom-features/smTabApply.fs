@@ -9,6 +9,8 @@ FeatureScript 2909;
 //      tool Part Studio — it is always read from the target SM model at apply-time.
 //   2. At each placement location the instantiator derives the tool Part Studio at the
 //      requested coordinate system (driven by a mate connector or sketch vertex).
+//      Multiple locations are supported; Phases 6.5/7/8 execute per location so a
+//      geometry failure at one location does not block others.
 //   3. Bodies tagged with role "smTabUnionSurface" are merged into the selected SM wall faces
 //      using a surface-to-surface opBoolean UNION (allowSheets: true), mirroring the approach
 //      used by the standard sheetMetalTab feature.  No thickening is performed for union.
@@ -16,11 +18,11 @@ FeatureScript 2909;
 //      surface-to-surface opBoolean SUBTRACTION (allowSheets: true).  No thickening needed.
 //   5. Bodies tagged with role "smTabOuterSubtractBody" are thickened using getModelParameters
 //      from the target SM wall and then subtracted across the user-defined outer scope using
-//      the smSubtractTab + solidSubtractTab pattern from sheetMetalTab.fs:
-//        - SM definition face targets: createBooleanToolsForFace per face + opBoolean with
-//          localizedInFaces: true, allowSheets: true.  Targets individual faces, not the SM
-//          body, so no body-level exclusion of the union scope is needed.
-//        - Non-SM solid targets: opBoolean SUBTRACTION with allowSheets: true.
+//      the smSubtractTab + solidSubtractTab pattern from sheetMetalTab.fs.
+//      If no outer subtraction bodies are tagged but an outer subtraction scope is defined,
+//      copies of the union surface bodies are used as implied outer subtraction geometry so
+//      the tab footprint itself generates clearances without requiring a dedicated outer
+//      subtraction tool in the tag Part Studio.
 //
 // Forward-compatibility note
 //   Because ALL geometry is kept as pure surface bodies with no embedded thickness, a
@@ -160,6 +162,12 @@ export const smTabApply = defineSheetMetalFeature(function(context is Context, i
         const instantiator = newInstantiator(id + "instantiate");
         var allInstantiatedBodies = qNothing();
 
+        // Per-location body set queries — resolved after instantiate().
+        // Each entry is the query returned by addInstance for one placement location.
+        // Phases 7 and 8 process union and local subtract bodies per location so that
+        // a boolean failure at one location does not prevent other locations from merging.
+        var locationBodySets = [];
+
         for (var location in evaluateQuery(context, definition.locations))
         {
             var placementCSys = resolveLocationCSys(context, location);
@@ -170,6 +178,7 @@ export const smTabApply = defineSheetMetalFeature(function(context is Context, i
                         "identity"  : location
                     });
             allInstantiatedBodies = qUnion([allInstantiatedBodies, instanceBodies]);
+            locationBodySets = append(locationBodySets, instanceBodies);
         }
 
         try
@@ -271,6 +280,47 @@ export const smTabApply = defineSheetMetalFeature(function(context is Context, i
         else
         {
             println("SM Tab Apply — Phase 4.5 WARNING: no planar SM definition faces found; bodies NOT snapped to SM definition face.");
+        }
+
+        // ------------------------------------------------------------------
+        // Phase 4.6 — Implied outer subtraction bodies.
+        //
+        // When no outer subtraction surface bodies were tagged in the tool Part
+        // Studio (outerSubtractBodies is empty) but an outer subtraction scope is
+        // defined, copy the already-snapped union surface bodies and use the copies
+        // as implied outer subtraction geometry.  This ensures clearances are cut
+        // from the outer scope even when the user has not explicitly tagged a
+        // separate outer subtraction tool — the tab footprint itself acts as the
+        // clearance cutter.
+        //
+        // opPattern with an identity transform creates geometry-exact copies.
+        // copyPropertiesAndAttributes : false is intentional — the copies must not
+        // carry the SM_TAB_ROLE_UNION_SURFACE attribute, as that would include them
+        // in unionSurfaceBodies (which is scoped to allInstantiatedBodies and would
+        // not resolve them) and could cause confusion in Phase 7 UNION.
+        //
+        // The copies are oriented correctly because Phase 4.5 has already snapped
+        // and flipped the source union surface bodies; no additional orientation
+        // correction is needed before Phase 5 thickening.
+        // ------------------------------------------------------------------
+        var impliedOuterSubtractBodies = qNothing();
+        if (isQueryEmpty(context, outerSubtractBodies) && !isQueryEmpty(context, definition.outerSubtractionScope))
+        {
+            const unionBodyArrayForCopy = evaluateQuery(context, unionSurfaceBodies);
+            for (var copyIndex = 0; copyIndex < size(unionBodyArrayForCopy); copyIndex += 1)
+            {
+                const copyId = id + "copyUnionForOuterSubtract" + unstableIdComponent(copyIndex);
+                opPattern(context, copyId, {
+                            "entities"                    : unionBodyArrayForCopy[copyIndex],
+                            "transforms"                  : [identityTransform()],
+                            "instanceNames"               : ["implied"],
+                            "copyPropertiesAndAttributes" : false
+                        });
+                impliedOuterSubtractBodies = qUnion([impliedOuterSubtractBodies, qCreatedBy(copyId, EntityType.BODY)]);
+            }
+            println("SM Tab Apply — Phase 4.6: created " ~
+                    toString(size(evaluateQuery(context, impliedOuterSubtractBodies))) ~
+                    " implied outer subtract body copies from union surface bodies.");
         }
 
         // ------------------------------------------------------------------
@@ -433,6 +483,31 @@ export const smTabApply = defineSheetMetalFeature(function(context is Context, i
                 println("SM Tab Apply — Phase 5: outer subtract body " ~ toString(bodyIndex) ~ " thickened successfully.");
             }
         }
+        else if (!isQueryEmpty(context, impliedOuterSubtractBodies))
+        {
+            // No tagged outer subtraction bodies — use the implied copies of union surface bodies.
+            // These copies were made from already-snapped bodies in Phase 4.6, so no orientation
+            // correction is needed: Phase 4.5 already aligned their normals with the SM wall.
+            // Thicken using the union scope wall's gauge parameters.
+            const unionSMBodyForImplied    = qOwnerBody(qUnion(unionWallDefinitionEntities));
+            const unionModelParamsImplied  = getModelParameters(context, unionSMBodyForImplied);
+
+            const impliedBodyArray = evaluateQuery(context, impliedOuterSubtractBodies);
+            for (var impliedIndex = 0; impliedIndex < size(impliedBodyArray); impliedIndex += 1)
+            {
+                const currentImplied = impliedBodyArray[impliedIndex];
+                const impliedThickenId = id + "thickenImpliedOuterSubtract" + unstableIdComponent(impliedIndex);
+                opThicken(context, impliedThickenId, {
+                            "entities"   : currentImplied,
+                            "thickness1" : unionModelParamsImplied.frontThickness,
+                            "thickness2" : unionModelParamsImplied.backThickness
+                        });
+                const impliedThickened = qCreatedBy(impliedThickenId, EntityType.BODY)->qBodyType(BodyType.SOLID);
+                thickenedOuterSubtractSolids = qUnion([thickenedOuterSubtractSolids, impliedThickened]);
+                println("SM Tab Apply — Phase 5: implied outer subtract body " ~ toString(impliedIndex) ~
+                        " thickened from union surface copy.");
+            }
+        }
         println("SM Tab Apply — Phase 5: thickenedOuterSubtractSolids count = " ~
                 toString(size(evaluateQuery(context, thickenedOuterSubtractSolids))));
 
@@ -475,375 +550,342 @@ export const smTabApply = defineSheetMetalFeature(function(context is Context, i
         const persistentUnionDefinitionEntities = qUnion([unionDefinitionEntitiesQuery, startTracking(context, unionDefinitionEntitiesQuery)]);
 
         // ------------------------------------------------------------------
-        // Phase 6.5 — Pre-union rip joint resolution following the standard
-        // sheetMetalTab approach.
+        // Phases 6.5 / 7 / 8 — Per-location deRip, UNION, and local subtract.
         //
-        // The standard sheetMetalTab feature (sheetMetalTab.fs, booleanOneTabGroup
-        // → subtractTab → identifyEdgesForDeripping) resolves rip joints by:
-        //   1. Thickening the tab into a solid using the SM wall's gauge parameters.
-        //   2. Getting the SM PART faces/edges corresponding to joint entities
-        //      adjacent to the union wall definition faces (via getSMCorrespondingInPart).
-        //   3. Running evCollision between the solid tab FACES and those part entities.
-        //   4. For contacts that are NOT ABUT_NO_CLASS: collecting the SM definition
-        //      edges for each collision target via getSMDefinitionEntities.
-        //   5. Calling deripEdges on the collected candidates.
+        // Processing each placement location independently prevents a geometry
+        // failure at one location from blocking all other locations.  With a
+        // single batch opBoolean for all locations, a single bad instance causes
+        // the entire feature to fail.
         //
-        // We replicate this exactly, using a TEMPORARY thickened solid that is deleted
-        // immediately after deRip candidate identification.  The actual UNION in
-        // Phase 7 remains surface-to-surface (allowSheets: true).
+        // Phase 6.5 (deRip): scoped to each location's union surface bodies so
+        //   the thickened solid used for collision detection matches exactly the
+        //   tab geometry at that location.  The SM definition faces adjacent to
+        //   the union scope wall are computed once (they do not change per location).
         //
-        // The Phase 7 UNION target is qOwnerBody(unionDefinitionEntitiesQuery) — a
-        // lazy query that re-evaluates after deRip and correctly finds the post-deRip
-        // SM definition body, regardless of any body-entity restructuring caused by
-        // the deRip operation.
+        // Phase 7 (UNION): each location's union surface bodies are merged into
+        //   the SM master surface in a separate opBoolean UNION call.
+        //   qOwnerBody(persistentUnionDefinitionEntities) re-evaluates after every
+        //   deRip and UNION, so subsequent iterations always target the live SM body.
+        //
+        // Phase 8 (local subtract): each location's local subtract bodies cut the
+        //   SM master surface immediately after that location's UNION, ensuring the
+        //   cuts are applied to already-merged geometry.
+        //
+        // smBodyPostUnion is initialised before the loop to a valid SM body query
+        // and updated after every successful per-location UNION.  If no UNIONs are
+        // performed (locationBodySets is empty) the feature would have already
+        // thrown above; smBodyPostUnion is guaranteed to be valid for Phases 9-11.
         // ------------------------------------------------------------------
-        var deripEdgeCandidates = [];
-        try
+
+        // Pre-compute adjacency data for deRip collision detection once — this is
+        // based on the union scope wall edges, which are the same for all locations.
+        const adjacentDefinitionEdges = evaluateQuery(context,
+                qEdgeTopologyFilter(
+                    qAdjacent(unionDefinitionEntitiesQuery, AdjacencyType.EDGE, EntityType.EDGE),
+                    EdgeTopology.TWO_SIDED));
+        var deripCorrespondingPartEntityQueries = [];
+        for (var adjEdge in adjacentDefinitionEdges)
         {
-            // Get SM model parameters for thickening the union surface body.
-            const smModelParams = getModelParameters(context, qOwnerBody(unionDefinitionEntitiesQuery));
-
-            // Temporarily thicken the union surface into a solid.  When the tab
-            // bridges a rip joint, this solid extends across the joint and will
-            // produce non-ABUT_NO_CLASS contacts with the SM part faces on the
-            // far side of the rip, mirroring the solid-body collision in subtractTab.
-            opThicken(context, id + "thickenForDeRip", {
-                        "entities"   : qOwnedByBody(unionSurfaceBodies, EntityType.FACE),
-                        "thickness1" : smModelParams.frontThickness,
-                        "thickness2" : smModelParams.backThickness
-                    });
-            const thickenedTabBody = qCreatedBy(id + "thickenForDeRip", EntityType.BODY);
-
-            // Build the set of SM PART entities corresponding to joint entities
-            // adjacent to the union wall definition faces.
-            // This mirrors getCorrespondingJointEntitiesInPart in sheetMetalTab.fs:
-            //   non-TANGENT joints → corresponding FACE in the part
-            //   TANGENT joints     → corresponding EDGE in the part
-            const adjacentDefinitionEdges = evaluateQuery(context,
-                    qEdgeTopologyFilter(
-                        qAdjacent(unionDefinitionEntitiesQuery, AdjacencyType.EDGE, EntityType.EDGE),
-                        EdgeTopology.TWO_SIDED));
-            var correspondingPartEntityQueries = [];
-            for (var adjEdge in adjacentDefinitionEdges)
+            const jointAttributes = getSmObjectTypeAttributes(context, adjEdge, SMObjectType.JOINT);
+            if (size(jointAttributes) == 0 ||
+                jointAttributes[0].jointType == undefined ||
+                jointAttributes[0].jointType.value != SMJointType.TANGENT)
             {
-                const jointAttributes = getSmObjectTypeAttributes(context, adjEdge, SMObjectType.JOINT);
-                if (size(jointAttributes) == 0 ||
-                    jointAttributes[0].jointType == undefined ||
-                    jointAttributes[0].jointType.value != SMJointType.TANGENT)
-                {
-                    // Non-tangent joints (rip, bend, etc.) — corresponding FACE in the SM part.
-                    const partFace = try silent(getSMCorrespondingInPart(context, adjEdge, EntityType.FACE));
-                    if (!isQueryEmpty(context, partFace))
-                        correspondingPartEntityQueries = append(correspondingPartEntityQueries, partFace);
-                }
-                else
-                {
-                    // Tangent joints — corresponding EDGE in the SM part.
-                    const partEdge = try silent(getSMCorrespondingInPart(context, adjEdge, EntityType.EDGE));
-                    if (!isQueryEmpty(context, partEdge))
-                        correspondingPartEntityQueries = append(correspondingPartEntityQueries, partEdge);
-                }
+                const partFace = try silent(getSMCorrespondingInPart(context, adjEdge, EntityType.FACE));
+                if (!isQueryEmpty(context, partFace))
+                    deripCorrespondingPartEntityQueries = append(deripCorrespondingPartEntityQueries, partFace);
+            }
+            else
+            {
+                const partEdge = try silent(getSMCorrespondingInPart(context, adjEdge, EntityType.EDGE));
+                if (!isQueryEmpty(context, partEdge))
+                    deripCorrespondingPartEntityQueries = append(deripCorrespondingPartEntityQueries, partEdge);
+            }
+        }
+
+        var smBodyPostUnion = qOwnerBody(persistentUnionDefinitionEntities);
+
+        for (var locationIndex = 0; locationIndex < size(locationBodySets); locationIndex += 1)
+        {
+            const locationBodies = locationBodySets[locationIndex];
+            const locationUnionBodies        = qHasAttributeWithValueMatching(locationBodies, SM_TAB_BODY_ATTRIBUTE_NAME, { "role" : SM_TAB_ROLE_UNION_SURFACE });
+            const locationLocalSubtractBodies = qHasAttributeWithValueMatching(locationBodies, SM_TAB_BODY_ATTRIBUTE_NAME, { "role" : SM_TAB_ROLE_LOCAL_SUBTRACT });
+
+            if (isQueryEmpty(context, locationUnionBodies))
+            {
+                println("SM Tab Apply — location " ~ toString(locationIndex) ~ ": no union surface bodies; skipping.");
+                continue;
             }
 
-            // Identify deRip candidates via collision between the solid tab faces and
-            // SM part entities adjacent to the union wall.
-            // This mirrors identifyEdgesForDeripping in sheetMetalTab.fs.
-            if (size(correspondingPartEntityQueries) > 0)
-            {
-                const deripCollisions = try silent(evCollision(context, {
-                            "tools"   : qOwnedByBody(thickenedTabBody, EntityType.FACE),
-                            "targets" : qUnion(correspondingPartEntityQueries)
-                        }));
-                if (deripCollisions != undefined)
-                {
-                    for (var collision in deripCollisions)
-                    {
-                        if (collision["type"] != ClashType.ABUT_NO_CLASS)
-                        {
-                            const definitionEdges = try silent(
-                                    getSMDefinitionEntities(context, collision.target, EntityType.EDGE));
-                            if (definitionEdges != undefined && definitionEdges != [])
-                                deripEdgeCandidates = concatenateArrays([deripEdgeCandidates, definitionEdges]);
-                        }
-                    }
-                }
-            }
-
-            // Delete the temporary solid — it was only needed for collision detection.
-            opDeleteBodies(context, id + "deleteThickenedDeRip", { "entities" : thickenedTabBody });
-        }
-        catch
-        {
-            // Temporary thickening or collision detection failed — proceed without deRip.
-            // Phase 7 UNION will report its own error if a rip joint remains unresolved.
-        }
-
-        if (size(deripEdgeCandidates) > 0)
-        {
-            println("SM Tab Apply — Phase 6.5: deRipping " ~ toString(size(deripEdgeCandidates)) ~
-                    " SM definition edge candidate(s) via standard sheetMetalTab approach.");
-            deripEdges(context, id + "deripRipJoints", qUnion(deripEdgeCandidates));
-        }
-
-        // ------------------------------------------------------------------
-        // Phase 7 — Union the tab surface bodies into the SM master surface.
-        //
-        // qOwnerBody(unionDefinitionEntitiesQuery) and unionSurfaceBodies are
-        // passed as "tools" with no "targets", mirroring booleanOneTabGroup in
-        // sheetMetalTab.fs (wallBodies = qOwnerBody(coincidentGrouping.walls)).
-        //
-        // qOwnerBody(unionDefinitionEntitiesQuery) is a LAZY query — it
-        // re-evaluates against the current topology at the time opBoolean is
-        // called (after Phase 6.5 deRip).  This matches the standard library
-        // pattern in booleanOneTabGroup where wallBodies is a lazy derived query
-        // that finds the post-deRip SM definition body.  Using trackedSMBodies
-        // (startTracking-based) was incorrect because the startTracking was set
-        // up before deRip; if deRip restructures the SM definition body entity,
-        // startTracking resolves to 0 and the UNION runs with no SM target.
-        //
-        // try (not silent) lets opBoolean log its native error to the console
-        // while we still catch and add geometry diagnostics before re-throwing
-        // the SHEET_METAL_TAB_FAILS_MERGE error.
-        // After the try-catch, getFeatureStatus detects the BOOLEAN_UNION_NO_OP
-        // case (tab body entirely within SM wall boundary) so the feature never
-        // silently claims success without producing a geometry change.
-        // ------------------------------------------------------------------
-
-        // Pre-union diagnostics: report body counts so the log always confirms
-        // both sides have bodies before the attempt is made.
-        // persistentUnionDefinitionEntities carries startTracking so it survives
-        // the deRip topology restructuring that invalidates the plain
-        // unionDefinitionEntitiesQuery entity references.
-        const unionBodiesForDiag = evaluateQuery(context, unionSurfaceBodies);
-        const smBodiesForDiag    = evaluateQuery(context, qOwnerBody(persistentUnionDefinitionEntities));
-        println("SM Tab Apply — Phase 7: attempting UNION of " ~
-                toString(size(unionBodiesForDiag)) ~
-                " union bodies with SM master surface body count " ~
-                toString(size(smBodiesForDiag)));
-
-        try
-        {
-            opBoolean(context, id + "unionTabToWall", {
-                        "tools"         : qUnion([qOwnerBody(persistentUnionDefinitionEntities), unionSurfaceBodies]),
-                        "operationType" : BooleanOperationType.UNION,
-                        "allowSheets"   : true
-                    });
-        }
-        catch
-        {
             // ------------------------------------------------------------------
-            // UNION failed — run geometry diagnostics before re-throwing so the
-            // console shows exactly what went wrong.
+            // Phase 6.5 — Per-location pre-union rip joint resolution.
             //
-            // Checks performed:
-            //   A. Per-face tangent planes (normal + origin) for every union body
-            //      face — identifies orientation issues.
-            //   B. Per-face tangent planes for every SM master body face —
-            //      confirms which definition faces are present and their normals.
-            //   C. Signed coplanarity distance — for each union face, the
-            //      perpendicular distance from the face center to each SM
-            //      definition plane.  Should be ~0 if Phase 4.5 snapping worked.
-            //   D. evCollision contact check — reports whether the union body
-            //      and SM master body have any geometric contact at all (NONE
-            //      means they are completely separate, TOUCHING means edge-
-            //      adjacent, INTERFERING means overlapping volume which should
-            //      not occur for surfaces).
+            // Thicken only this location's union surface bodies for the collision
+            // solid. Using location-scoped bodies avoids spurious deRip candidates
+            // generated when multiple location instances overlap different rip joints
+            // simultaneously, which can cause deripEdges to fail or process stale
+            // duplicate edge references.
             // ------------------------------------------------------------------
-
-            // A — union body face tangent planes
-            for (var unionBodyIndex = 0; unionBodyIndex < size(unionBodiesForDiag); unionBodyIndex += 1)
-            {
-                const unionFaceArray = evaluateQuery(context, qOwnedByBody(unionBodiesForDiag[unionBodyIndex], EntityType.FACE));
-                println("SM Tab Apply — Phase 7 diag A: union body " ~ toString(unionBodyIndex) ~
-                        " has " ~ toString(size(unionFaceArray)) ~ " face(s)");
-                for (var faceIndex = 0; faceIndex < size(unionFaceArray); faceIndex += 1)
-                {
-                    var faceTangentPlane = undefined;
-                    try
-                    {
-                        faceTangentPlane = evFaceTangentPlane(context, {
-                                    "face"      : unionFaceArray[faceIndex],
-                                    "parameter" : vector(0.5, 0.5)
-                                });
-                    }
-                    catch
-                    {
-                        println("SM Tab Apply — Phase 7 diag A: union body " ~ toString(unionBodyIndex) ~
-                                " face " ~ toString(faceIndex) ~ " evFaceTangentPlane failed (non-planar or degenerate)");
-                    }
-                    if (faceTangentPlane != undefined)
-                    {
-                        println("SM Tab Apply — Phase 7 diag A: union body " ~ toString(unionBodyIndex) ~
-                                " face " ~ toString(faceIndex) ~
-                                " normal = " ~ toString(faceTangentPlane.normal) ~
-                                " origin = " ~ toString(faceTangentPlane.origin));
-                    }
-                }
-            }
-
-            // B — SM master body face tangent planes
-            for (var smBodyIndex = 0; smBodyIndex < size(smBodiesForDiag); smBodyIndex += 1)
-            {
-                const smFaceArray = evaluateQuery(context, qOwnedByBody(smBodiesForDiag[smBodyIndex], EntityType.FACE));
-                println("SM Tab Apply — Phase 7 diag B: SM master body " ~ toString(smBodyIndex) ~
-                        " has " ~ toString(size(smFaceArray)) ~ " face(s)");
-                for (var faceIndex = 0; faceIndex < size(smFaceArray); faceIndex += 1)
-                {
-                    var faceTangentPlane = undefined;
-                    try
-                    {
-                        faceTangentPlane = evFaceTangentPlane(context, {
-                                    "face"      : smFaceArray[faceIndex],
-                                    "parameter" : vector(0.5, 0.5)
-                                });
-                    }
-                    catch
-                    {
-                        println("SM Tab Apply — Phase 7 diag B: SM master body " ~ toString(smBodyIndex) ~
-                                " face " ~ toString(faceIndex) ~ " evFaceTangentPlane failed");
-                    }
-                    if (faceTangentPlane != undefined)
-                    {
-                        println("SM Tab Apply — Phase 7 diag B: SM master body " ~ toString(smBodyIndex) ~
-                                " face " ~ toString(faceIndex) ~
-                                " normal = " ~ toString(faceTangentPlane.normal) ~
-                                " origin = " ~ toString(faceTangentPlane.origin));
-                    }
-                }
-            }
-
-            // C — coplanarity: signed distance from each union face center to each SM definition plane
-            for (var unionBodyIndex = 0; unionBodyIndex < size(unionBodiesForDiag); unionBodyIndex += 1)
-            {
-                const unionFaceArray = evaluateQuery(context, qOwnedByBody(unionBodiesForDiag[unionBodyIndex], EntityType.FACE));
-                for (var unionFaceIndex = 0; unionFaceIndex < size(unionFaceArray); unionFaceIndex += 1)
-                {
-                    var unionCenter = undefined;
-                    try
-                    {
-                        unionCenter = evFaceTangentPlane(context, {
-                                    "face"      : unionFaceArray[unionFaceIndex],
-                                    "parameter" : vector(0.5, 0.5)
-                                });
-                    }
-                    catch
-                    {
-                        println("SM Tab Apply — Phase 7 diag C: union body " ~ toString(unionBodyIndex) ~
-                                " face " ~ toString(unionFaceIndex) ~ " evFaceTangentPlane failed (non-planar or degenerate)");
-                    }
-                    if (unionCenter != undefined)
-                    {
-                        for (var planeIndex = 0; planeIndex < size(smDefinitionFacePlanes); planeIndex += 1)
-                        {
-                            const smPlane = smDefinitionFacePlanes[planeIndex];
-                            const offsetVector = unionCenter.origin - smPlane.origin;
-                            const signedDistance = dot(offsetVector, smPlane.normal);
-                            println("SM Tab Apply — Phase 7 diag C: union body " ~ toString(unionBodyIndex) ~
-                                    " face " ~ toString(unionFaceIndex) ~
-                                    " signed distance to SM definition plane " ~ toString(planeIndex) ~
-                                    " = " ~ toString(signedDistance) ~ " m" ~
-                                    " (normal dot = " ~ toString(dot(unionCenter.normal, smPlane.normal)) ~ ")");
-                        }
-                    }
-                }
-            }
-
-            // D — evCollision contact check between union bodies and SM master faces
+            var locationDeripEdgeCandidates = [];
             try
             {
-                const contactResults = evCollision(context, {
-                            "tools"   : unionSurfaceBodies,
-                            "targets" : smBodiesAffected
+                const smModelParams = getModelParameters(context, qOwnerBody(persistentUnionDefinitionEntities));
+
+                opThicken(context, id + "thickenForDeRip" + unstableIdComponent(locationIndex), {
+                            "entities"   : qOwnedByBody(locationUnionBodies, EntityType.FACE),
+                            "thickness1" : smModelParams.frontThickness,
+                            "thickness2" : smModelParams.backThickness
                         });
-                println("SM Tab Apply — Phase 7 diag D: evCollision returned " ~
-                        toString(size(contactResults)) ~ " result(s)");
-                for (var contactIndex = 0; contactIndex < size(contactResults); contactIndex += 1)
+                const thickenedTabBody = qCreatedBy(id + "thickenForDeRip" + unstableIdComponent(locationIndex), EntityType.BODY);
+
+                if (size(deripCorrespondingPartEntityQueries) > 0)
                 {
-                    println("SM Tab Apply — Phase 7 diag D: contact " ~ toString(contactIndex) ~
-                            " type = " ~ toString(contactResults[contactIndex]['type']));
+                    const deripCollisions = try silent(evCollision(context, {
+                                "tools"   : qOwnedByBody(thickenedTabBody, EntityType.FACE),
+                                "targets" : qUnion(deripCorrespondingPartEntityQueries)
+                            }));
+                    if (deripCollisions != undefined)
+                    {
+                        for (var collision in deripCollisions)
+                        {
+                            if (collision["type"] != ClashType.ABUT_NO_CLASS)
+                            {
+                                const definitionEdges = try silent(
+                                        getSMDefinitionEntities(context, collision.target, EntityType.EDGE));
+                                if (definitionEdges != undefined && definitionEdges != [])
+                                    locationDeripEdgeCandidates = concatenateArrays([locationDeripEdgeCandidates, definitionEdges]);
+                            }
+                        }
+                    }
                 }
+
+                opDeleteBodies(context, id + "deleteThickenedDeRip" + unstableIdComponent(locationIndex), { "entities" : thickenedTabBody });
             }
             catch
             {
-                println("SM Tab Apply — Phase 7 diag D: evCollision failed (bodies may have no geometric relationship)");
+                // Temporary thickening or collision detection failed — proceed without deRip for this location.
             }
 
-            // E — body type (SHEET vs SOLID) for every union body and every SM master body.
-            // BOOLEAN_INVALID is expected when smBodiesAffected resolves to a 3D solid rather
-            // than the SM definition surface body; a SOLID here confirms that root cause.
-            for (var unionBodyIndex = 0; unionBodyIndex < size(unionBodiesForDiag); unionBodyIndex += 1)
+            if (size(locationDeripEdgeCandidates) > 0)
             {
-                const unionBodyIsSheet = !isQueryEmpty(context, qBodyType(unionBodiesForDiag[unionBodyIndex], BodyType.SHEET));
-                const unionEdgeCount   = size(evaluateQuery(context, qOwnedByBody(unionBodiesForDiag[unionBodyIndex], EntityType.EDGE)));
-                println("SM Tab Apply — Phase 7 diag E: union body " ~ toString(unionBodyIndex) ~
-                        " BodyType = " ~ (unionBodyIsSheet ? "SHEET" : "SOLID_OR_WIRE") ~
-                        "  edge count = " ~ toString(unionEdgeCount));
+                println("SM Tab Apply — location " ~ toString(locationIndex) ~
+                        " Phase 6.5: deRipping " ~ toString(size(locationDeripEdgeCandidates)) ~ " edge candidate(s).");
+                deripEdges(context, id + "deripRipJoints" + unstableIdComponent(locationIndex), qUnion(locationDeripEdgeCandidates));
             }
-            for (var smBodyIndex = 0; smBodyIndex < size(smBodiesForDiag); smBodyIndex += 1)
+
+            // ------------------------------------------------------------------
+            // Phase 7 — Union this location's tab surface bodies into the SM master.
+            //
+            // qOwnerBody(persistentUnionDefinitionEntities) is re-evaluated here
+            // after any deRip that may have restructured the SM definition body
+            // topology, giving a guaranteed-live target.
+            // ------------------------------------------------------------------
+            const locationUnionBodiesForDiag = evaluateQuery(context, locationUnionBodies);
+            const smBodiesForDiag            = evaluateQuery(context, qOwnerBody(persistentUnionDefinitionEntities));
+            const unionOpId                  = id + "unionTabToWall" + unstableIdComponent(locationIndex);
+
+            println("SM Tab Apply — location " ~ toString(locationIndex) ~
+                    " Phase 7: attempting UNION of " ~
+                    toString(size(locationUnionBodiesForDiag)) ~
+                    " union bodies with SM master surface body count " ~
+                    toString(size(smBodiesForDiag)));
+
+            try
             {
-                const smBodyIsSheet = !isQueryEmpty(context, qBodyType(smBodiesForDiag[smBodyIndex], BodyType.SHEET));
-                println("SM Tab Apply — Phase 7 diag E: SM master body " ~ toString(smBodyIndex) ~
-                        " BodyType = " ~ (smBodyIsSheet ? "SHEET" : "SOLID_OR_WIRE"));
+                opBoolean(context, unionOpId, {
+                            "tools"         : qUnion([qOwnerBody(persistentUnionDefinitionEntities), locationUnionBodies]),
+                            "operationType" : BooleanOperationType.UNION,
+                            "allowSheets"   : true
+                        });
+            }
+            catch
+            {
+                // ------------------------------------------------------------------
+                // UNION failed — run geometry diagnostics before re-throwing.
+                //
+                //   A. Per-face tangent planes for every union body face.
+                //   B. Per-face tangent planes for every SM master body face.
+                //   C. Signed coplanarity distance from each union face to each SM plane.
+                //   D. evCollision contact check between union bodies and SM master.
+                //   E. Body type (SHEET vs SOLID) for union and SM master bodies.
+                // ------------------------------------------------------------------
+
+                // A
+                for (var unionBodyIndex = 0; unionBodyIndex < size(locationUnionBodiesForDiag); unionBodyIndex += 1)
+                {
+                    const unionFaceArray = evaluateQuery(context, qOwnedByBody(locationUnionBodiesForDiag[unionBodyIndex], EntityType.FACE));
+                    println("SM Tab Apply — Phase 7 diag A: union body " ~ toString(unionBodyIndex) ~
+                            " has " ~ toString(size(unionFaceArray)) ~ " face(s)");
+                    for (var faceIndex = 0; faceIndex < size(unionFaceArray); faceIndex += 1)
+                    {
+                        var faceTangentPlane = undefined;
+                        try
+                        {
+                            faceTangentPlane = evFaceTangentPlane(context, {
+                                        "face"      : unionFaceArray[faceIndex],
+                                        "parameter" : vector(0.5, 0.5)
+                                    });
+                        }
+                        catch
+                        {
+                            println("SM Tab Apply — Phase 7 diag A: union body " ~ toString(unionBodyIndex) ~
+                                    " face " ~ toString(faceIndex) ~ " evFaceTangentPlane failed (non-planar or degenerate)");
+                        }
+                        if (faceTangentPlane != undefined)
+                        {
+                            println("SM Tab Apply — Phase 7 diag A: union body " ~ toString(unionBodyIndex) ~
+                                    " face " ~ toString(faceIndex) ~
+                                    " normal = " ~ toString(faceTangentPlane.normal) ~
+                                    " origin = " ~ toString(faceTangentPlane.origin));
+                        }
+                    }
+                }
+
+                // B
+                for (var smBodyIndex = 0; smBodyIndex < size(smBodiesForDiag); smBodyIndex += 1)
+                {
+                    const smFaceArray = evaluateQuery(context, qOwnedByBody(smBodiesForDiag[smBodyIndex], EntityType.FACE));
+                    println("SM Tab Apply — Phase 7 diag B: SM master body " ~ toString(smBodyIndex) ~
+                            " has " ~ toString(size(smFaceArray)) ~ " face(s)");
+                    for (var faceIndex = 0; faceIndex < size(smFaceArray); faceIndex += 1)
+                    {
+                        var faceTangentPlane = undefined;
+                        try
+                        {
+                            faceTangentPlane = evFaceTangentPlane(context, {
+                                        "face"      : smFaceArray[faceIndex],
+                                        "parameter" : vector(0.5, 0.5)
+                                    });
+                        }
+                        catch
+                        {
+                            println("SM Tab Apply — Phase 7 diag B: SM master body " ~ toString(smBodyIndex) ~
+                                    " face " ~ toString(faceIndex) ~ " evFaceTangentPlane failed");
+                        }
+                        if (faceTangentPlane != undefined)
+                        {
+                            println("SM Tab Apply — Phase 7 diag B: SM master body " ~ toString(smBodyIndex) ~
+                                    " face " ~ toString(faceIndex) ~
+                                    " normal = " ~ toString(faceTangentPlane.normal) ~
+                                    " origin = " ~ toString(faceTangentPlane.origin));
+                        }
+                    }
+                }
+
+                // C
+                for (var unionBodyIndex = 0; unionBodyIndex < size(locationUnionBodiesForDiag); unionBodyIndex += 1)
+                {
+                    const unionFaceArray = evaluateQuery(context, qOwnedByBody(locationUnionBodiesForDiag[unionBodyIndex], EntityType.FACE));
+                    for (var unionFaceIndex = 0; unionFaceIndex < size(unionFaceArray); unionFaceIndex += 1)
+                    {
+                        var unionCenter = undefined;
+                        try
+                        {
+                            unionCenter = evFaceTangentPlane(context, {
+                                        "face"      : unionFaceArray[unionFaceIndex],
+                                        "parameter" : vector(0.5, 0.5)
+                                    });
+                        }
+                        catch
+                        {
+                            println("SM Tab Apply — Phase 7 diag C: union body " ~ toString(unionBodyIndex) ~
+                                    " face " ~ toString(unionFaceIndex) ~ " evFaceTangentPlane failed (non-planar or degenerate)");
+                        }
+                        if (unionCenter != undefined)
+                        {
+                            for (var planeIndex = 0; planeIndex < size(smDefinitionFacePlanes); planeIndex += 1)
+                            {
+                                const smPlane = smDefinitionFacePlanes[planeIndex];
+                                const offsetVector = unionCenter.origin - smPlane.origin;
+                                const signedDistance = dot(offsetVector, smPlane.normal);
+                                println("SM Tab Apply — Phase 7 diag C: union body " ~ toString(unionBodyIndex) ~
+                                        " face " ~ toString(unionFaceIndex) ~
+                                        " signed distance to SM definition plane " ~ toString(planeIndex) ~
+                                        " = " ~ toString(signedDistance) ~ " m" ~
+                                        " (normal dot = " ~ toString(dot(unionCenter.normal, smPlane.normal)) ~ ")");
+                            }
+                        }
+                    }
+                }
+
+                // D
+                try
+                {
+                    const contactResults = evCollision(context, {
+                                "tools"   : locationUnionBodies,
+                                "targets" : smBodiesAffected
+                            });
+                    println("SM Tab Apply — Phase 7 diag D: evCollision returned " ~
+                            toString(size(contactResults)) ~ " result(s)");
+                    for (var contactIndex = 0; contactIndex < size(contactResults); contactIndex += 1)
+                    {
+                        println("SM Tab Apply — Phase 7 diag D: contact " ~ toString(contactIndex) ~
+                                " type = " ~ toString(contactResults[contactIndex]['type']));
+                    }
+                }
+                catch
+                {
+                    println("SM Tab Apply — Phase 7 diag D: evCollision failed (bodies may have no geometric relationship)");
+                }
+
+                // E
+                for (var unionBodyIndex = 0; unionBodyIndex < size(locationUnionBodiesForDiag); unionBodyIndex += 1)
+                {
+                    const unionBodyIsSheet = !isQueryEmpty(context, qBodyType(locationUnionBodiesForDiag[unionBodyIndex], BodyType.SHEET));
+                    const unionEdgeCount   = size(evaluateQuery(context, qOwnedByBody(locationUnionBodiesForDiag[unionBodyIndex], EntityType.EDGE)));
+                    println("SM Tab Apply — Phase 7 diag E: union body " ~ toString(unionBodyIndex) ~
+                            " BodyType = " ~ (unionBodyIsSheet ? "SHEET" : "SOLID_OR_WIRE") ~
+                            "  edge count = " ~ toString(unionEdgeCount));
+                }
+                for (var smBodyIndex = 0; smBodyIndex < size(smBodiesForDiag); smBodyIndex += 1)
+                {
+                    const smBodyIsSheet = !isQueryEmpty(context, qBodyType(smBodiesForDiag[smBodyIndex], BodyType.SHEET));
+                    println("SM Tab Apply — Phase 7 diag E: SM master body " ~ toString(smBodyIndex) ~
+                            " BodyType = " ~ (smBodyIsSheet ? "SHEET" : "SOLID_OR_WIRE"));
+                }
+
+                throw regenError(ErrorStringEnum.SHEET_METAL_TAB_FAILS_MERGE, ["unionScope"]);
             }
 
-            throw regenError(ErrorStringEnum.SHEET_METAL_TAB_FAILS_MERGE, ["unionScope"]);
-        }
-        const unionBooleanStatus = getFeatureStatus(context, id + "unionTabToWall");
-        if (unionBooleanStatus.statusEnum == ErrorStringEnum.BOOLEAN_UNION_NO_OP)
-        {
-            // The UNION completed without error but produced no geometry change.
-            // The tab body is entirely within the SM wall boundary (no shared
-            // boundary edge exists).  Verify that the tab overlaps or is
-            // edge-adjacent to the SM wall in the definition surface plane.
-            println("SM Tab Apply — Phase 7: UNION was a no-op — tab body has no shared boundary with the SM definition face.");
-            throw regenError(ErrorStringEnum.SHEET_METAL_TAB_FAILS_MERGE, ["unionScope"]);
-        }
-        println("SM Tab Apply — Phase 7: UNION completed successfully.");
+            const unionBooleanStatus = getFeatureStatus(context, unionOpId);
+            if (unionBooleanStatus.statusEnum == ErrorStringEnum.BOOLEAN_UNION_NO_OP)
+            {
+                println("SM Tab Apply — location " ~ toString(locationIndex) ~
+                        " Phase 7: UNION was a no-op — tab body has no shared boundary with the SM definition face.");
+                throw regenError(ErrorStringEnum.SHEET_METAL_TAB_FAILS_MERGE, ["unionScope"]);
+            }
+            println("SM Tab Apply — location " ~ toString(locationIndex) ~ " Phase 7: UNION completed successfully.");
 
-        // Post-UNION: derive the SM definition body from the persistent face-tracking
-        // query.  persistentUnionDefinitionEntities tracks the SM definition FACES
-        // (not the body) through all operations, so qOwnerBody of the tracked faces
-        // gives a live, guaranteed-correct SM body reference even when body-level
-        // tracking (trackedSMBodies) returns 0 after the UNION restructures the
-        // SM definition body's entity topology.
-        const smBodyPostUnion = qOwnerBody(persistentUnionDefinitionEntities);
+            // Update smBodyPostUnion after this location's UNION so Phase 8 (local subtract)
+            // and Phase 11 (updateSheetMetalGeometry) target the live post-UNION SM body.
+            smBodyPostUnion = qOwnerBody(persistentUnionDefinitionEntities);
 
-        // Post-UNION entity-count diagnostics.
-        // trackedSMBodies = 0 means body-level startTracking lost the entity after UNION.
-        // smBodyPostUnion must be non-zero for Phase 8 and Phase 11 to succeed.
-        println("SM Tab Apply — Phase 7 post-UNION: trackedSMBodies count = " ~
-                toString(size(evaluateQuery(context, trackedSMBodies))));
-        println("SM Tab Apply — Phase 7 post-UNION: smBodyPostUnion count = " ~
-                toString(size(evaluateQuery(context, smBodyPostUnion))));
-        println("SM Tab Apply — Phase 7 post-UNION: localSubtractBodies count = " ~
-                toString(size(evaluateQuery(context, localSubtractBodies))));
-        println("SM Tab Apply — Phase 7 post-UNION: qCreatedBy(unionTabToWall) body count = " ~
-                toString(size(evaluateQuery(context, qCreatedBy(id + "unionTabToWall", EntityType.BODY)))));
+            println("SM Tab Apply — location " ~ toString(locationIndex) ~
+                    " Phase 7 post-UNION: smBodyPostUnion count = " ~
+                    toString(size(evaluateQuery(context, smBodyPostUnion))));
+            println("SM Tab Apply — location " ~ toString(locationIndex) ~
+                    " Phase 7 post-UNION: localSubtractBodies count = " ~
+                    toString(size(evaluateQuery(context, locationLocalSubtractBodies))));
 
-        // ------------------------------------------------------------------
-        // Phase 8 — Local subtraction (wall-scoped cuts).
-        // Surface-to-surface boolean with allowSheets: true.  The surface tool
-        // bodies cut directly against the SM master surface.
-        //
-        // smBodyPostUnion is used as the target — it is derived from the
-        // persistentUnionDefinitionEntities face tracking and is guaranteed to
-        // resolve to the live SM definition body after the Phase 7 UNION.
-        // ------------------------------------------------------------------
-        if (!isQueryEmpty(context, localSubtractBodies))
-        {
-            println("SM Tab Apply — Phase 8: attempting local SUBTRACTION with " ~
-                    toString(size(evaluateQuery(context, localSubtractBodies))) ~ " tool bodies.");
-            opBoolean(context, id + "localSubtract", {
-                        "tools"         : localSubtractBodies,
-                        "targets"       : smBodyPostUnion,
-                        "operationType" : BooleanOperationType.SUBTRACTION,
-                        "allowSheets"   : true
-                    });
-            println("SM Tab Apply — Phase 8: local SUBTRACTION completed.");
-        }
-        else
-        {
-            println("SM Tab Apply — Phase 8: no local subtract bodies; skipping.");
+            // ------------------------------------------------------------------
+            // Phase 8 — Per-location local subtraction (wall-scoped cuts).
+            //
+            // Runs immediately after this location's UNION so the cuts operate on
+            // the already-merged SM wall geometry at this location.
+            // ------------------------------------------------------------------
+            if (!isQueryEmpty(context, locationLocalSubtractBodies))
+            {
+                println("SM Tab Apply — location " ~ toString(locationIndex) ~
+                        " Phase 8: attempting local SUBTRACTION with " ~
+                        toString(size(evaluateQuery(context, locationLocalSubtractBodies))) ~ " tool bodies.");
+                opBoolean(context, id + "localSubtract" + unstableIdComponent(locationIndex), {
+                            "tools"         : locationLocalSubtractBodies,
+                            "targets"       : smBodyPostUnion,
+                            "operationType" : BooleanOperationType.SUBTRACTION,
+                            "allowSheets"   : true
+                        });
+                println("SM Tab Apply — location " ~ toString(locationIndex) ~ " Phase 8: local SUBTRACTION completed.");
+            }
         }
 
         // ------------------------------------------------------------------
@@ -939,17 +981,20 @@ export const smTabApply = defineSheetMetalFeature(function(context is Context, i
 
         // ------------------------------------------------------------------
         // Phase 10 — Clean up original surface bodies and the csys connector.
-        // - unionSurfaceBodies: consumed by the UNION boolean above.
-        // - localSubtractBodies: consumed by the local SUBTRACTION boolean above.
+        // - unionSurfaceBodies: consumed by the per-location UNION booleans.
+        // - localSubtractBodies: consumed by the per-location SUBTRACTION booleans.
         // - outerSubtractBodies: originals were thickened into solids; the
         //   original surfaces still exist and need explicit deletion.
+        // - impliedOuterSubtractBodies: copies of union surfaces created in Phase 4.6
+        //   when no outer subtract bodies were tagged; thickened into solids in Phase 5.
+        //   The surface copies still exist and need explicit deletion.
         // - thickenedOuterSubtractSolids: NOT consumed by the SM face path
         //   (createBooleanToolsForFace builds outline tools, not consuming the
         //   thickened body).  They may be consumed by the solid path when solid
         //   outer scope targets exist; try silent handles both cases.
         // - csysConnectorBodies: placement helper, no longer needed.
         // ------------------------------------------------------------------
-        const bodiesToDelete = qUnion([csysConnectorBodies, unionSurfaceBodies, localSubtractBodies, outerSubtractBodies]);
+        const bodiesToDelete = qUnion([csysConnectorBodies, unionSurfaceBodies, localSubtractBodies, outerSubtractBodies, impliedOuterSubtractBodies]);
         if (!isQueryEmpty(context, bodiesToDelete))
         {
             opDeleteBodies(context, id + "cleanupBodies", { "entities" : bodiesToDelete });
