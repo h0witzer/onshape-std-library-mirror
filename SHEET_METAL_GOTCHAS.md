@@ -140,9 +140,173 @@ When developing sheet metal features, verify:
 
 ---
 
+### 4. opBoolean UNION with SM Definition Bodies Requires Exact Coplanarity
+
+**Issue**: `opBoolean UNION` with `allowSheets: true` throws `BOOLEAN_INVALID` or silently no-ops even when a tab surface body appears to be on the correct face.
+
+**Root Cause**: The SM definition (master surface) body lives on exactly one face of the rendered 3D wall — either the inner or the outer face, never the midplane. If a derived tab body is positioned on the *opposite* face from the SM definition face, it is offset by the full wall thickness and the UNION kernel cannot merge two surfaces that are not geometrically coincident.
+
+**Solution**: Before any `opBoolean UNION`, snap every union surface body onto the SM definition plane:
+
+1. Call `getSMDefinitionEntities` on the union scope to get the definition faces.
+2. Evaluate `evPlane` on each definition face to collect their planes.
+3. For each tab body, find the nearest definition plane by Euclidean distance.
+4. If the body's face normal is antiparallel to the definition plane normal, call `opFlipOrientation` to reverse the surface direction.
+5. Translate along the wall normal by `dot(wallOrigin - bodyOrigin, wallNormal)` to achieve exact coincidence.
+
+```featurescript
+// Snap a surface body onto the nearest SM definition plane
+const snapTranslationVector = dot(nearestDefinitionPlane.origin - bodyFacePlane.origin,
+        nearestDefinitionPlane.normal) * nearestDefinitionPlane.normal;
+opTransform(context, snapId, {
+            "bodies"    : currentBody,
+            "transform" : transform(snapTranslationVector)
+        });
+```
+
+**Why `evFaceTangentPlane` over `evPlane` for orientation detection**: `evFaceTangentPlane(context, { "face": face, "parameter": vector(0.5, 0.5) })` works for any surface geometry (planar, cylindrical, conical). `evPlane` throws on non-planar faces. Use `evFaceTangentPlane` whenever the code must generalise beyond guaranteed-planar SM walls.
+
+**Impact**: Without the snap step, the UNION silently no-ops or throws, and the tab is never merged into the SM wall.
+
+---
+
+### 5. opBoolean UNION on SM Definition Body — Body-Level startTracking Resolves to Empty After the UNION
+
+**Issue**: After calling `opBoolean UNION` to merge tab surfaces into the SM definition body, any `startTracking` query that was anchored to the SM body (via `qOwnerBody(...)`) resolves to an empty query.
+
+**Root Cause**: `opBoolean UNION` internally restructures the SM definition body's face topology. Body-level tracking (`startTracking(context, qOwnerBody(definitionEntities))`) tracks the body container, which is recreated internally even though `qCreatedBy` returns 0 results — the tracking anchor is lost.
+
+**Solution**: Use **face-level** tracking on the SM definition *faces* instead of the body, and derive the body from that query after each operation:
+
+```featurescript
+// Track definition faces — these survive body-level restructuring
+const persistentUnionDefinitionEntities = qUnion([
+            unionDefinitionEntitiesQuery,
+            startTracking(context, unionDefinitionEntitiesQuery)
+        ]);
+
+// After any opBoolean UNION, derive the live body from face tracking
+const smBodyPostUnion = qOwnerBody(persistentUnionDefinitionEntities);
+```
+
+**Pattern**: This is the `unionEntityPersistantQuery` pattern from `sheetMetalTab.fs`. Always use it when the SM definition body will be mutated by boolean operations.
+
+---
+
+### 6. Operation History Non-Contiguous Parent ID Violation with opThicken
+
+**Issue**: `opThicken` throws: *"Parent Id X used at two non-contiguous points in operation history (Cannot have Y between X.thicken and X.thickenForDeRip)"*.
+
+**Root Cause**: Onshape requires that all operations sharing the same **parent** ID be contiguous in the operation history. When a loop assigns IDs like `id + "flip" + unstableIdComponent(N)` and `id + "thicken" + unstableIdComponent(N)`, the parent `id.flip` and `id.thicken` each receive multiple children across loop iterations, and those children interleave: `flip.*0`, `thicken.*0`, `flip.*1`, `thicken.*1` — making the parent `id.flip` non-contiguous.
+
+A second version of this problem arises when a Phase 5 loop uses `id + unstableIdComponent(N)` as body sub-IDs, and a later per-location loop also uses `id + unstableIdComponent(N)` as location sub-IDs — both loops consume `id.*0`, `id.*1`, etc., creating non-contiguous parents across phases.
+
+**Solution**: Give each loop iteration its own unique parent namespace and place **all** of that iteration's operations underneath it:
+
+```featurescript
+// Each body gets its own parent sub-ID so flip and thicken are siblings under it
+const bodySubId = id + "outerSubtractBody" + unstableIdComponent(bodyIndex);
+opFlipOrientation(context, bodySubId + "flip", { "bodies" : currentBody });
+opThicken(context, bodySubId + "thicken", { ... });
+
+// Per-location loop uses a separate string prefix to avoid collision with Phase 5
+const locationId = id + unstableIdComponent(locationIndex);
+opThicken(context, locationId + "thickenForDeRip", { ... });
+```
+
+The intermediate `"outerSubtractBody"` string between `id` and the unstable component prevents namespace collision with the per-location `id + unstableIdComponent(N)` IDs.
+
+---
+
+### 7. getSMDefinitionEntities Returns Stale Entity IDs After Boolean Operations
+
+**Issue**: Calling `getSMDefinitionEntities` before `opBoolean UNION` and then using the result in Phase 9 after the UNION produces either empty results or errors because the entity IDs were invalidated when the SM topology changed.
+
+**Root Cause**: Entity IDs in Onshape are transient references to topological entities. When `opBoolean UNION` or `deripEdges` restructures the SM definition body, the face/edge entity IDs from the pre-mutation call are no longer valid.
+
+**Solution**: Call `getSMDefinitionEntities` **fresh** after all mutation phases have completed:
+
+```featurescript
+// WRONG — call before UNION, use after
+const outerScopeDefFaces = getSMDefinitionEntities(context, outerScope); // stale after union
+// ... opBoolean UNION and deripEdges ...
+// Using outerScopeDefFaces here will fail or return wrong results
+
+// CORRECT — call fresh after mutations
+// ... opBoolean UNION and deripEdges ...
+var freshOuterScopeDefinitionFaces = try(getSMDefinitionEntities(context, outerScope, EntityType.FACE));
+```
+
+---
+
+### 8. Per-Location opBoolean UNION Processing Prevents Cascading Failures
+
+**Issue**: Placing a single batch `opBoolean` call for all placement locations means a geometry failure at one location fails the entire feature.
+
+**Solution**: Process each placement location in its own loop iteration with its own scoped operation IDs. Assign location-scoped operation IDs using `id + unstableIdComponent(locationIndex)` as the per-iteration parent, so each location's operations are isolated:
+
+```featurescript
+for (var locationIndex = 0; locationIndex < size(locationBodySets); locationIndex += 1)
+{
+    const locationId = id + unstableIdComponent(locationIndex);
+    const locationUnionBodies = qHasAttributeWithValueMatching(locationBodies, ...);
+
+    try
+    {
+        opBoolean(context, locationId + "unionTabToWall", { ... });
+    }
+    catch
+    {
+        // Log and continue — other locations still process
+        throw regenError(ErrorStringEnum.SHEET_METAL_TAB_FAILS_MERGE, ["unionScope"]);
+    }
+}
+```
+
+---
+
+### 9. Implied Outer Subtraction Bodies — opPattern Must Not Copy Attributes
+
+**Issue**: When copying union surface bodies to serve as implied outer subtraction tools (when no dedicated outer subtract body is tagged), the copies must not carry the role attribute from the source bodies.
+
+**Solution**: Use `opPattern` with `copyPropertiesAndAttributes: false`:
+
+```featurescript
+opPattern(context, copyId, {
+            "entities"                    : sourceBody,
+            "transforms"                  : [identityTransform()],
+            "instanceNames"               : ["implied"],
+            "copyPropertiesAndAttributes" : false
+        });
+```
+
+If `copyPropertiesAndAttributes` is `true`, the copies would be found by role-attribute queries and included in the wrong boolean operation sets.
+
+---
+
+### 10. The SM Tab Workflow — Surface-Only Definition, No Authored Thickness
+
+**Summary of the SM Tab Apply workflow** (for future feature implementors):
+
+1. **Tag Part Studio** (`smTabTag.fs`): Authors mark bodies with role attributes via a custom attribute (`smTabBodyAttribute`). Roles are: `smTabUnionSurface` (merge into SM wall), `smTabLocalSubtractBody` (cut the SM wall), `smTabOuterSubtractBody` (cut outer scope parts). All bodies remain as pure surface bodies — thickness is never embedded.
+
+2. **Apply** (`smTabApply.fs`): At regeneration time, the feature:
+   - Instantiates the tag Part Studio at each placement location.
+   - Snaps union/local-subtract bodies onto the SM definition face (Phase 4.5).
+   - Thickens outer subtract bodies using `getModelParameters` from the target SM wall (Phase 5) — thickness is always read from the live model.
+   - Runs deRip for rip joint resolution per location (Phase 6.5).
+   - Runs `opBoolean UNION allowSheets: true` per location to merge the tab into the SM wall (Phase 7).
+   - Runs `opBoolean SUBTRACTION allowSheets: true` per location for local cuts (Phase 8).
+   - Runs `createBooleanToolsForFace` + `opBoolean localizedInFaces` for SM outer scope subtraction, and `opBoolean SUBTRACTION` for solid outer scope (Phase 9).
+   - Calls `assignSMAttributesToNewOrSplitEntities` + `updateSheetMetalGeometry` to finalize SM state (Phase 11).
+
+**Why surface-only in the tag Part Studio**: Keeping all tab bodies as surfaces means the tag Part Studio is completely gauge-agnostic. Swapping to a different material thickness requires no changes in the tool Part Studio — the apply feature reads the correct thickness at the moment of feature regeneration.
+
+---
+
 ## Version Information
 
-This document is based on FeatureScript 2815 and Onshape Standard Library version 2815.0.
+This document is based on FeatureScript 2815 and Onshape Standard Library version 2815.0. Sections 4–10 were added during SM Tab Apply development (FeatureScript 2909).
 
 ## Contributing
 

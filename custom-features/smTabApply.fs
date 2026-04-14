@@ -203,15 +203,6 @@ export const smTabApply = defineSheetMetalFeature(function(context is Context, i
             throw regenError("The tool Part Studio contains no bodies tagged as union surfaces. Run SM Tab Tag in the tool Part Studio.", ["formPartStudio"]);
         }
 
-        // Diagnostic: report role-tagged body counts so the console shows what
-        // was found after instantiation.  Zero counts here means the instantiator
-        // did not carry the attribute over from the tool Part Studio.
-        println("SM Tab Apply — Phase 3 role query results:");
-        println("  union surface bodies:  " ~ toString(size(evaluateQuery(context, unionSurfaceBodies))));
-        println("  local subtract bodies: " ~ toString(size(evaluateQuery(context, localSubtractBodies))));
-        println("  outer subtract bodies: " ~ toString(size(evaluateQuery(context, outerSubtractBodies))));
-        println("  csys connector bodies: " ~ toString(size(evaluateQuery(context, csysConnectorBodies))));
-
         // ------------------------------------------------------------------
         // Phase 4 — Resolve SM definition entities from the union scope wall.
         // These are used for SM state tracking (Phase 6) and the union target
@@ -223,8 +214,6 @@ export const smTabApply = defineSheetMetalFeature(function(context is Context, i
         {
             throw regenError("Could not resolve sheet metal definition entities from union scope.", ["unionScope"]);
         }
-
-        println("SM Tab Apply — Phase 4 SM definition entity count: " ~ toString(size(unionWallDefinitionEntities)));
 
         // ------------------------------------------------------------------
         // Phase 4.5 — Snap union and local subtract surface bodies onto the SM
@@ -244,11 +233,11 @@ export const smTabApply = defineSheetMetalFeature(function(context is Context, i
         // For each union/local-subtract body:
         //   1. Evaluate evPlane on the body face and on each SM definition face.
         //   2. Find the nearest SM definition face by Euclidean origin distance.
-        //   3. If normals antiparallel, call opFlipOrientation (same heuristic as
-        //      onlyTabs.fs booleanOneTabGroup — works for any surface geometry).
+        //   3. If normals are antiparallel, call opFlipOrientation to align surface
+        //      direction with the SM wall before the boolean.
         //   4. Translate along the SM wall normal by the perpendicular distance
         //      between the two planes so the body is exactly coplanar with the
-        //      SM definition face before any boolean operation.
+        //      SM definition face.
         // ------------------------------------------------------------------
         var smDefinitionFacePlanes = [];
         for (var smFace in unionWallDefinitionEntities)
@@ -267,8 +256,6 @@ export const smTabApply = defineSheetMetalFeature(function(context is Context, i
                 smDefinitionFacePlanes = append(smDefinitionFacePlanes, definitionFacePlane);
             }
         }
-        println("SM Tab Apply — Phase 4.5 SM definition face planes found: " ~ toString(size(smDefinitionFacePlanes)));
-
         if (size(smDefinitionFacePlanes) > 0)
         {
             snapBodiesToNearestDefinitionPlane(context, id + "snapUnionBodies", unionSurfaceBodies, smDefinitionFacePlanes);
@@ -276,10 +263,6 @@ export const smTabApply = defineSheetMetalFeature(function(context is Context, i
             {
                 snapBodiesToNearestDefinitionPlane(context, id + "snapLocalSubtractBodies", localSubtractBodies, smDefinitionFacePlanes);
             }
-        }
-        else
-        {
-            println("SM Tab Apply — Phase 4.5 WARNING: no planar SM definition faces found; bodies NOT snapped to SM definition face.");
         }
 
         // ------------------------------------------------------------------
@@ -318,19 +301,14 @@ export const smTabApply = defineSheetMetalFeature(function(context is Context, i
                         });
                 impliedOuterSubtractBodies = qUnion([impliedOuterSubtractBodies, qCreatedBy(copyId, EntityType.BODY)]);
             }
-            println("SM Tab Apply — Phase 4.6: created " ~
-                    toString(size(evaluateQuery(context, impliedOuterSubtractBodies))) ~
-                    " implied outer subtract body copies from union surface bodies.");
         }
 
         // ------------------------------------------------------------------
         // Phase 5 — Thicken outer subtract surface bodies into solids.
         //
-        // Orientation is corrected with opFlipOrientation before thickening,
-        // using the same face-tangent-plane heuristic as booleanOneTabGroup in
-        // onlyTabs.fs.  evFaceTangentPlane at (0.5, 0.5) is used instead of
-        // evPlane so the heuristic works for cylindrical, conical, and other
-        // non-planar SM wall geometries — not just planar faces.
+        // Uses evFaceTangentPlane at (0.5, 0.5) rather than evPlane so orientation
+        // detection works for cylindrical, conical, and other non-planar SM walls,
+        // not just planar faces.
         //
         // Algorithm per outer subtract body:
         //   1. Pre-evaluate evFaceTangentPlane on every outer scope SM definition
@@ -457,31 +435,16 @@ export const smTabApply = defineSheetMetalFeature(function(context is Context, i
                     }
                 }
 
-                // Group this body's flip and thicken under a single per-body sub-ID
-                // so all children of the same parent ID are contiguous in operation
-                // history.  Using id + "flipOuterSubtract" + unstableIdComponent(N)
-                // and id + "thickenOuterSubtract" + unstableIdComponent(N) would give
-                // both operations the shared parents id.flipOuterSubtract and
-                // id.thickenOuterSubtract, and the two parents would be interleaved
-                // across loop iterations — a non-contiguous parent-ID violation.
-                // Grouping as id.outerSubtractBody.*N.flip and
-                // id.outerSubtractBody.*N.thicken keeps each body's operations under
-                // its own unique parent.
-                //
-                // The intermediate "outerSubtractBody" string is required to prevent
-                // a namespace collision with the per-location loop below, which uses
-                // id + unstableIdComponent(placementLocationIndex) (i.e. id.*N) as
-                // its own prefix.  Without it, Phase 5 body 0 and body 1 would both
-                // consume id.*0 and id.*1, then the per-location loop would revisit
-                // id.*0 for location 0 — making parent id.*0 non-contiguous and
-                // causing opThicken in Phase 6.5 to throw a history-ordering error.
+                // Each body gets its own parent sub-ID containing "outerSubtractBody" +
+                // an unstable index.  This keeps flip and thicken contiguous under a single
+                // parent and avoids namespace collision with the per-location loop below,
+                // which also uses id + unstableIdComponent(N).
                 const outerBodySubId = id + "outerSubtractBody" + unstableIdComponent(outerSubtractBodyIndex);
 
                 // Flip the surface body's orientation before thickening when its
                 // face normal points away from the matched SM wall's inward normal.
                 // opFlipOrientation reverses the surface direction so opThicken
-                // places material on the correct side — the non-planar-safe
-                // alternative to mirrorAcross used in the standard sheetMetalTab.
+                // places material on the correct side.
                 if (closestWallNormal != undefined && closestSubtractNormal != undefined &&
                     dot(closestSubtractNormal, closestWallNormal) < 0)
                 {
@@ -500,7 +463,6 @@ export const smTabApply = defineSheetMetalFeature(function(context is Context, i
                 const currentThickened = qCreatedBy(thickenId, EntityType.BODY)->qBodyType(BodyType.SOLID);
 
                 thickenedOuterSubtractSolids = qUnion([thickenedOuterSubtractSolids, currentThickened]);
-                println("SM Tab Apply — Phase 5: outer subtract body " ~ toString(outerSubtractBodyIndex) ~ " thickened successfully.");
             }
         }
         else if (!isQueryEmpty(context, impliedOuterSubtractBodies))
@@ -524,42 +486,21 @@ export const smTabApply = defineSheetMetalFeature(function(context is Context, i
                         });
                 const impliedThickened = qCreatedBy(impliedThickenId, EntityType.BODY)->qBodyType(BodyType.SOLID);
                 thickenedOuterSubtractSolids = qUnion([thickenedOuterSubtractSolids, impliedThickened]);
-                println("SM Tab Apply — Phase 5: implied outer subtract body " ~ toString(impliedOuterSubtractBodyIndex) ~
-                        " thickened from union surface copy.");
             }
         }
-        println("SM Tab Apply — Phase 5: thickenedOuterSubtractSolids count = " ~
-                toString(size(evaluateQuery(context, thickenedOuterSubtractSolids))));
 
         // ------------------------------------------------------------------
         // Phase 6 — Track SM model state before boolean operations.
         //
-        // Two complementary tracking mechanisms:
+        // Body-level tracking (smBodiesAffected/trackedSMBodies) anchors on
+        // concrete evaluated entity references so startTracking survives opBoolean
+        // UNION restructuring the SM definition body.
         //
-        // (a) smBodiesAffected / trackedSMBodies — body-level tracking.
-        //     The SM definition body is evaluated to a CONCRETE entity reference
-        //     before startTracking is called.  This mirrors the standard library
-        //     pattern in sheetMetalTab.fs and onlyTabs.fs exactly:
-        //       unionBodies = evaluateQuery(context, qOwnerBody(unionEntityQuery))
-        //       sheetMetalBodiesQuery = qUnion([startTracking(...), qUnion(unionBodies)])
-        //     Using a lazy derived query (qOwnerBody wrapped in qUnion) instead of
-        //     evaluated concrete entities causes startTracking to produce a
-        //     zero-result query after opBoolean UNION restructures the SM definition
-        //     body's face topology, because the body entity is recreated internally
-        //     even though qCreatedBy returns 0.
-        //
-        // (b) persistentUnionDefinitionEntities — face-level tracking.
-        //     Tracks the SM definition FACES (not the body) through all boolean
-        //     operations.  This is the unionEntityPersistantQuery pattern from
-        //     sheetMetalTab.fs and is used by updateSheetMetalGeometry (Phase 11).
-        //     Because it tracks faces rather than the body container, it survives
-        //     body-level restructuring reliably.
-        //
-        // After the UNION (Phase 7), smBodyPostUnion is derived from (b) via
-        // qOwnerBody(persistentUnionDefinitionEntities).  This is used as the
-        // Phase 8 subtraction target and the Phase 11 attribute-assignment scope,
-        // giving a guaranteed-live body reference even if body-level tracking (a)
-        // returned 0.
+        // Face-level tracking (persistentUnionDefinitionEntities) uses the
+        // unionEntityPersistantQuery pattern from sheetMetalTab.fs.  Because it
+        // tracks definition faces rather than the body container, it survives body-
+        // level restructuring reliably and is used to derive smBodyPostUnion (the
+        // live SM body reference) after every UNION in the per-location loop.
         // ------------------------------------------------------------------
         const smBodiesAffected = qUnion(evaluateQuery(context, qOwnerBody(qUnion(unionWallDefinitionEntities))));
         const initialData      = getInitialEntitiesAndAttributes(context, smBodiesAffected);
@@ -633,16 +574,11 @@ export const smTabApply = defineSheetMetalFeature(function(context is Context, i
 
             if (isQueryEmpty(context, locationUnionBodies))
             {
-                println("SM Tab Apply — location " ~ toString(placementLocationIndex) ~ ": no union surface bodies; skipping.");
                 continue;
             }
 
-            // Per-location namespace ID: all operation IDs within this iteration
-            // are formed as locationId + "string" so their parent IDs are unique
-            // to this loop iteration.  Using id + "string" + unstableIdComponent(N)
-            // instead would give all iterations the same parent id.string, causing
-            // Onshape to report non-contiguous parent-ID errors when another string's
-            // parent appears between two iterations of the same string parent.
+            // Each location gets its own parent sub-ID so all operations within this
+            // iteration are contiguous in the operation history — required by opThicken.
             const locationId = id + unstableIdComponent(placementLocationIndex);
 
             // ------------------------------------------------------------------
@@ -696,8 +632,6 @@ export const smTabApply = defineSheetMetalFeature(function(context is Context, i
 
             if (size(locationDeripEdgeCandidates) > 0)
             {
-                println("SM Tab Apply — location " ~ toString(placementLocationIndex) ~
-                        " Phase 6.5: deRipping " ~ toString(size(locationDeripEdgeCandidates)) ~ " edge candidate(s).");
                 deripEdges(context, locationId + "deripRipJoints", qUnion(locationDeripEdgeCandidates));
             }
 
@@ -708,15 +642,7 @@ export const smTabApply = defineSheetMetalFeature(function(context is Context, i
             // after any deRip that may have restructured the SM definition body
             // topology, giving a guaranteed-live target.
             // ------------------------------------------------------------------
-            const locationUnionBodiesForDiag = evaluateQuery(context, locationUnionBodies);
-            const smBodiesForDiag            = evaluateQuery(context, qOwnerBody(persistentUnionDefinitionEntities));
-            const unionOpId                  = locationId + "unionTabToWall";
-
-            println("SM Tab Apply — location " ~ toString(placementLocationIndex) ~
-                    " Phase 7: attempting UNION of " ~
-                    toString(size(locationUnionBodiesForDiag)) ~
-                    " union bodies with SM master surface body count " ~
-                    toString(size(smBodiesForDiag)));
+            const unionOpId = locationId + "unionTabToWall";
 
             try
             {
@@ -728,172 +654,18 @@ export const smTabApply = defineSheetMetalFeature(function(context is Context, i
             }
             catch
             {
-                // ------------------------------------------------------------------
-                // UNION failed — run geometry diagnostics before re-throwing.
-                //
-                //   A. Per-face tangent planes for every union body face.
-                //   B. Per-face tangent planes for every SM master body face.
-                //   C. Signed coplanarity distance from each union face to each SM plane.
-                //   D. evCollision contact check between union bodies and SM master.
-                //   E. Body type (SHEET vs SOLID) for union and SM master bodies.
-                // ------------------------------------------------------------------
-
-                // A
-                for (var unionBodyIndex = 0; unionBodyIndex < size(locationUnionBodiesForDiag); unionBodyIndex += 1)
-                {
-                    const unionFaceArray = evaluateQuery(context, qOwnedByBody(locationUnionBodiesForDiag[unionBodyIndex], EntityType.FACE));
-                    println("SM Tab Apply — Phase 7 diag A: union body " ~ toString(unionBodyIndex) ~
-                            " has " ~ toString(size(unionFaceArray)) ~ " face(s)");
-                    for (var faceIndex = 0; faceIndex < size(unionFaceArray); faceIndex += 1)
-                    {
-                        var faceTangentPlane = undefined;
-                        try
-                        {
-                            faceTangentPlane = evFaceTangentPlane(context, {
-                                        "face"      : unionFaceArray[faceIndex],
-                                        "parameter" : vector(0.5, 0.5)
-                                    });
-                        }
-                        catch
-                        {
-                            println("SM Tab Apply — Phase 7 diag A: union body " ~ toString(unionBodyIndex) ~
-                                    " face " ~ toString(faceIndex) ~ " evFaceTangentPlane failed (non-planar or degenerate)");
-                        }
-                        if (faceTangentPlane != undefined)
-                        {
-                            println("SM Tab Apply — Phase 7 diag A: union body " ~ toString(unionBodyIndex) ~
-                                    " face " ~ toString(faceIndex) ~
-                                    " normal = " ~ toString(faceTangentPlane.normal) ~
-                                    " origin = " ~ toString(faceTangentPlane.origin));
-                        }
-                    }
-                }
-
-                // B
-                for (var smBodyIndex = 0; smBodyIndex < size(smBodiesForDiag); smBodyIndex += 1)
-                {
-                    const smFaceArray = evaluateQuery(context, qOwnedByBody(smBodiesForDiag[smBodyIndex], EntityType.FACE));
-                    println("SM Tab Apply — Phase 7 diag B: SM master body " ~ toString(smBodyIndex) ~
-                            " has " ~ toString(size(smFaceArray)) ~ " face(s)");
-                    for (var faceIndex = 0; faceIndex < size(smFaceArray); faceIndex += 1)
-                    {
-                        var faceTangentPlane = undefined;
-                        try
-                        {
-                            faceTangentPlane = evFaceTangentPlane(context, {
-                                        "face"      : smFaceArray[faceIndex],
-                                        "parameter" : vector(0.5, 0.5)
-                                    });
-                        }
-                        catch
-                        {
-                            println("SM Tab Apply — Phase 7 diag B: SM master body " ~ toString(smBodyIndex) ~
-                                    " face " ~ toString(faceIndex) ~ " evFaceTangentPlane failed");
-                        }
-                        if (faceTangentPlane != undefined)
-                        {
-                            println("SM Tab Apply — Phase 7 diag B: SM master body " ~ toString(smBodyIndex) ~
-                                    " face " ~ toString(faceIndex) ~
-                                    " normal = " ~ toString(faceTangentPlane.normal) ~
-                                    " origin = " ~ toString(faceTangentPlane.origin));
-                        }
-                    }
-                }
-
-                // C
-                for (var unionBodyIndex = 0; unionBodyIndex < size(locationUnionBodiesForDiag); unionBodyIndex += 1)
-                {
-                    const unionFaceArray = evaluateQuery(context, qOwnedByBody(locationUnionBodiesForDiag[unionBodyIndex], EntityType.FACE));
-                    for (var unionFaceIndex = 0; unionFaceIndex < size(unionFaceArray); unionFaceIndex += 1)
-                    {
-                        var unionCenter = undefined;
-                        try
-                        {
-                            unionCenter = evFaceTangentPlane(context, {
-                                        "face"      : unionFaceArray[unionFaceIndex],
-                                        "parameter" : vector(0.5, 0.5)
-                                    });
-                        }
-                        catch
-                        {
-                            println("SM Tab Apply — Phase 7 diag C: union body " ~ toString(unionBodyIndex) ~
-                                    " face " ~ toString(unionFaceIndex) ~ " evFaceTangentPlane failed (non-planar or degenerate)");
-                        }
-                        if (unionCenter != undefined)
-                        {
-                            for (var planeIndex = 0; planeIndex < size(smDefinitionFacePlanes); planeIndex += 1)
-                            {
-                                const smPlane = smDefinitionFacePlanes[planeIndex];
-                                const offsetVector = unionCenter.origin - smPlane.origin;
-                                const signedDistance = dot(offsetVector, smPlane.normal);
-                                println("SM Tab Apply — Phase 7 diag C: union body " ~ toString(unionBodyIndex) ~
-                                        " face " ~ toString(unionFaceIndex) ~
-                                        " signed distance to SM definition plane " ~ toString(planeIndex) ~
-                                        " = " ~ toString(signedDistance) ~ " m" ~
-                                        " (normal dot = " ~ toString(dot(unionCenter.normal, smPlane.normal)) ~ ")");
-                            }
-                        }
-                    }
-                }
-
-                // D
-                try
-                {
-                    const contactResults = evCollision(context, {
-                                "tools"   : locationUnionBodies,
-                                "targets" : smBodiesAffected
-                            });
-                    println("SM Tab Apply — Phase 7 diag D: evCollision returned " ~
-                            toString(size(contactResults)) ~ " result(s)");
-                    for (var contactIndex = 0; contactIndex < size(contactResults); contactIndex += 1)
-                    {
-                        println("SM Tab Apply — Phase 7 diag D: contact " ~ toString(contactIndex) ~
-                                " type = " ~ toString(contactResults[contactIndex]['type']));
-                    }
-                }
-                catch
-                {
-                    println("SM Tab Apply — Phase 7 diag D: evCollision failed (bodies may have no geometric relationship)");
-                }
-
-                // E
-                for (var unionBodyIndex = 0; unionBodyIndex < size(locationUnionBodiesForDiag); unionBodyIndex += 1)
-                {
-                    const unionBodyIsSheet = !isQueryEmpty(context, qBodyType(locationUnionBodiesForDiag[unionBodyIndex], BodyType.SHEET));
-                    const unionEdgeCount   = size(evaluateQuery(context, qOwnedByBody(locationUnionBodiesForDiag[unionBodyIndex], EntityType.EDGE)));
-                    println("SM Tab Apply — Phase 7 diag E: union body " ~ toString(unionBodyIndex) ~
-                            " BodyType = " ~ (unionBodyIsSheet ? "SHEET" : "SOLID_OR_WIRE") ~
-                            "  edge count = " ~ toString(unionEdgeCount));
-                }
-                for (var smBodyIndex = 0; smBodyIndex < size(smBodiesForDiag); smBodyIndex += 1)
-                {
-                    const smBodyIsSheet = !isQueryEmpty(context, qBodyType(smBodiesForDiag[smBodyIndex], BodyType.SHEET));
-                    println("SM Tab Apply — Phase 7 diag E: SM master body " ~ toString(smBodyIndex) ~
-                            " BodyType = " ~ (smBodyIsSheet ? "SHEET" : "SOLID_OR_WIRE"));
-                }
-
                 throw regenError(ErrorStringEnum.SHEET_METAL_TAB_FAILS_MERGE, ["unionScope"]);
             }
 
             const unionBooleanStatus = getFeatureStatus(context, unionOpId);
             if (unionBooleanStatus.statusEnum == ErrorStringEnum.BOOLEAN_UNION_NO_OP)
             {
-                println("SM Tab Apply — location " ~ toString(placementLocationIndex) ~
-                        " Phase 7: UNION was a no-op — tab body has no shared boundary with the SM definition face.");
                 throw regenError(ErrorStringEnum.SHEET_METAL_TAB_FAILS_MERGE, ["unionScope"]);
             }
-            println("SM Tab Apply — location " ~ toString(placementLocationIndex) ~ " Phase 7: UNION completed successfully.");
 
             // Update smBodyPostUnion after this location's UNION so Phase 8 (local subtract)
             // and Phase 11 (updateSheetMetalGeometry) target the live post-UNION SM body.
             smBodyPostUnion = qOwnerBody(persistentUnionDefinitionEntities);
-
-            println("SM Tab Apply — location " ~ toString(placementLocationIndex) ~
-                    " Phase 7 post-UNION: smBodyPostUnion count = " ~
-                    toString(size(evaluateQuery(context, smBodyPostUnion))));
-            println("SM Tab Apply — location " ~ toString(placementLocationIndex) ~
-                    " Phase 7 post-UNION: localSubtractBodies count = " ~
-                    toString(size(evaluateQuery(context, locationLocalSubtractBodies))));
 
             // ------------------------------------------------------------------
             // Phase 8 — Per-location local subtraction (wall-scoped cuts).
@@ -903,16 +675,12 @@ export const smTabApply = defineSheetMetalFeature(function(context is Context, i
             // ------------------------------------------------------------------
             if (!isQueryEmpty(context, locationLocalSubtractBodies))
             {
-                println("SM Tab Apply — location " ~ toString(placementLocationIndex) ~
-                        " Phase 8: attempting local SUBTRACTION with " ~
-                        toString(size(evaluateQuery(context, locationLocalSubtractBodies))) ~ " tool bodies.");
                 opBoolean(context, locationId + "localSubtract", {
                             "tools"         : locationLocalSubtractBodies,
                             "targets"       : smBodyPostUnion,
                             "operationType" : BooleanOperationType.SUBTRACTION,
                             "allowSheets"   : true
                         });
-                println("SM Tab Apply — location " ~ toString(placementLocationIndex) ~ " Phase 8: local SUBTRACTION completed.");
             }
         }
 
@@ -930,10 +698,6 @@ export const smTabApply = defineSheetMetalFeature(function(context is Context, i
         // (createBooleanToolsForFace creates outline bodies as the actual tools)
         // so they must be deleted explicitly in Phase 10.
         // ------------------------------------------------------------------
-        println("SM Tab Apply — Phase 9: thickenedOuterSubtractSolids count = " ~
-                toString(size(evaluateQuery(context, thickenedOuterSubtractSolids))) ~
-                ", outerSubtractionScope empty = " ~
-                toString(isQueryEmpty(context, definition.outerSubtractionScope)));
         if (!isQueryEmpty(context, thickenedOuterSubtractSolids) && !isQueryEmpty(context, definition.outerSubtractionScope))
         {
             // Apply offset to expand/contract the thickened solids before cutting.
@@ -951,10 +715,9 @@ export const smTabApply = defineSheetMetalFeature(function(context is Context, i
             const separatedOuterScope = separateSheetMetalQueries(context, definition.outerSubtractionScope);
 
             // SM definition face targets.
-            // Call getSMDefinitionEntities FRESH here (after Phase 7 union + Phase 6.5
-            // deripping have mutated the SM body topology) rather than reusing the early
-            // outerScopeDefinitionFaces array whose transient entity IDs may be stale.
-            // Build the face query the same way subtractTab does (line 504 of sheetMetalTab.fs).
+            // Call getSMDefinitionEntities fresh after Phase 7 union and Phase 6.5
+            // deripping have mutated the SM body topology — pre-mutation entity IDs
+            // are stale and will return empty or incorrect results.
             const outerScopeSMFacesQuery = qUnion([
                         qOwnedByBody(qEntityFilter(separatedOuterScope.sheetMetalQueries, EntityType.BODY), EntityType.FACE),
                         qEntityFilter(separatedOuterScope.sheetMetalQueries, EntityType.FACE)
@@ -964,8 +727,6 @@ export const smTabApply = defineSheetMetalFeature(function(context is Context, i
             {
                 freshOuterScopeDefinitionFaces = [];
             }
-            println("SM Tab Apply — Phase 9: fresh SM definition face count = " ~
-                    toString(size(freshOuterScopeDefinitionFaces)));
             if (size(freshOuterScopeDefinitionFaces) > 0)
             {
                 var outerScopeSMFaceIndex = 0;
@@ -989,21 +750,17 @@ export const smTabApply = defineSheetMetalFeature(function(context is Context, i
                     }
                     outerScopeSMFaceIndex += 1;
                 }
-                println("SM Tab Apply — Phase 9: SM face outer SUBTRACTION completed.");
             }
 
             // Non-SM solid targets — mirrors solidSubtractTab in sheetMetalTab.fs.
             if (!isQueryEmpty(context, separatedOuterScope.nonSheetMetalQueries))
             {
-                println("SM Tab Apply — Phase 9: solid outer subtract target count = " ~
-                        toString(size(evaluateQuery(context, separatedOuterScope.nonSheetMetalQueries))));
                 try silent(opBoolean(context, id + "outerSubtractSolid", {
                                 "tools"         : thickenedOuterSubtractSolids,
                                 "targets"       : separatedOuterScope.nonSheetMetalQueries,
                                 "operationType" : BooleanOperationType.SUBTRACTION,
                                 "allowSheets"   : true
                             }));
-                println("SM Tab Apply — Phase 9: solid outer SUBTRACTION completed.");
             }
         }
 
@@ -1035,16 +792,10 @@ export const smTabApply = defineSheetMetalFeature(function(context is Context, i
         // ------------------------------------------------------------------
         // Phase 11 — Update the sheet metal model to recognise the new geometry.
         //
-        // assignSMAttributesToNewOrSplitEntities uses smBodyPostUnion (derived from
-        // persistentUnionDefinitionEntities face tracking) rather than trackedSMBodies
-        // (body-level tracking).  Body-level startTracking resolves to 0 after the
-        // Phase 7 opBoolean UNION restructures the SM definition body's face topology;
-        // smBodyPostUnion is guaranteed to resolve correctly because it is derived via
-        // qOwnerBody from the working face-level tracking query.
-        //
-        // This mirrors the sheetMetalTab.fs pattern:
-        //   assignSMAttributesToNewOrSplitEntities(context, sheetMetalBodiesQuery, ...)
-        //   updateSheetMetalGeometry(..., entities: qUnion([toUpdate, unionEntityPersistantQuery]))
+        // Uses smBodyPostUnion (derived from persistentUnionDefinitionEntities face
+        // tracking) as the live SM body reference, following the
+        // assignSMAttributesToNewOrSplitEntities + updateSheetMetalGeometry pattern
+        // from sheetMetalTab.fs.
         // ------------------------------------------------------------------
         const toUpdate = assignSMAttributesToNewOrSplitEntities(context, smBodyPostUnion, initialData, id);
         updateSheetMetalGeometry(context, id, {
@@ -1163,9 +914,7 @@ function applyOrientationOverrides(placementCSys is CoordSystem, flipDirection i
  *   1. Evaluate evPlane on the body's face and find the nearest SM definition face plane
  *      by Euclidean distance between the two face origins.
  *   2. If normals are antiparallel (dot < 0), call opFlipOrientation to reverse the
- *      surface direction before translating.  This is the same heuristic used in
- *      booleanOneTabGroup in onlyTabs.fs and avoids the mirrorAcross planar assumption
- *      used by the standard sheetMetalTab applyPlaneToPlaneTransform.
+ *      surface direction before translating.
  *   3. Translate along the SM wall's normal direction by the perpendicular distance
  *      between the two planes (dot(wallOrigin - bodyOrigin, wallNormal) * wallNormal)
  *      to achieve exact geometric coincidence with the SM definition face.
@@ -1193,8 +942,6 @@ function snapBodiesToNearestDefinitionPlane(context is Context, id is Id, bodies
         }
         catch
         {
-            println("SM Tab Apply — snapBodiesToNearestDefinitionPlane: body index " ~
-                    toString(snapBodyIndex) ~ " is non-planar; skipping snap.");
             continue;
         }
 
@@ -1211,13 +958,8 @@ function snapBodiesToNearestDefinitionPlane(context is Context, id is Id, bodies
             }
         }
 
-        // Group the flip and snap operations under a single per-body sub-ID so that
-        // all children of the same parent ID are contiguous in the operation history.
-        // Using id + "flip" + unstableIdComponent(N) and id + "snap" + unstableIdComponent(N)
-        // as sibling suffixes causes Onshape to report a non-contiguous parent-ID error
-        // because flip.*0, snap.*0, flip.*1, snap.*1 interleaves two parent trees.
-        // Grouping as id.*N.flip and id.*N.snap keeps each body's operations under its
-        // own unique parent, eliminating the interleaving.
+        // Each body gets its own parent sub-ID so flip and snap are contiguous siblings
+        // under a unique parent — required to avoid non-contiguous parent-ID errors.
         const bodySubId = id + unstableIdComponent(snapBodyIndex);
 
         // Correct surface normal direction before computing the snap translation so
@@ -1233,8 +975,6 @@ function snapBodiesToNearestDefinitionPlane(context is Context, id is Id, bodies
         // definition plane along the SM wall normal, then translate to achieve coincidence.
         const snapTranslationVector = dot(nearestDefinitionPlane.origin - bodyFacePlane.origin,
                 nearestDefinitionPlane.normal) * nearestDefinitionPlane.normal;
-        println("SM Tab Apply — snapBodiesToNearestDefinitionPlane: body " ~
-                toString(snapBodyIndex) ~ " snap translation = " ~ toString(snapTranslationVector));
         opTransform(context, bodySubId + "snap", {
                     "bodies"    : currentBody,
                     "transform" : transform(snapTranslationVector)
