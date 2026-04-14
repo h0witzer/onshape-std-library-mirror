@@ -1,33 +1,12 @@
 FeatureScript 2909;
 // SM Tab Apply — Place a tagged tab tool Part Studio onto a sheet metal model.
+// The tag half of this workflow lives in smTabTag.fs.  Thickness is resolved from the
+// target SM model at apply-time; the tool Part Studio never encodes gauge.
 //
-// This feature is the apply half of the SM Tab workflow.  The tag half lives in smTabTag.fs.
-//
-// How it works
-//   1. The user selects a tool Part Studio that has been prepared with smTabTag.  No
-//      ComputedConfigurationInputs are needed because thickness is never authored in the
-//      tool Part Studio — it is always read from the target SM model at apply-time.
-//   2. At each placement location the instantiator derives the tool Part Studio at the
-//      requested coordinate system (driven by a mate connector or sketch vertex).
-//      Multiple locations are supported; Phases 6.5/7/8 execute per location so a
-//      geometry failure at one location does not block others.
-//   3. Bodies tagged with role "smTabUnionSurface" are merged into the selected SM wall faces
-//      using a surface-to-surface opBoolean UNION (allowSheets: true), mirroring the approach
-//      used by the standard sheetMetalTab feature.  No thickening is performed for union.
-//   4. Bodies tagged with role "smTabLocalSubtractBody" cut the merged SM wall using a
-//      surface-to-surface opBoolean SUBTRACTION (allowSheets: true).  No thickening needed.
-//   5. Bodies tagged with role "smTabOuterSubtractBody" are thickened using getModelParameters
-//      from the target SM wall and then subtracted across the user-defined outer scope using
-//      the smSubtractTab + solidSubtractTab pattern from sheetMetalTab.fs.
-//      If no outer subtraction bodies are tagged but an outer subtraction scope is defined,
-//      copies of the union surface bodies are used as implied outer subtraction geometry so
-//      the tab footprint itself generates clearances without requiring a dedicated outer
-//      subtraction tool in the tag Part Studio.
-//
-// Forward-compatibility note
-//   Because ALL geometry is kept as pure surface bodies with no embedded thickness, a
-//   future opWrap path for non-planar SM walls can be added to this script without any
-//   changes to the tag Part Studio contract.
+// Union surface bodies merge into the SM wall via opBoolean UNION.  Local subtract bodies
+// cut the merged wall immediately after union.  Outer subtract bodies (or implied copies
+// of the union surfaces) are thickened using SM model parameters and subtracted across
+// the user-defined outer scope following the sheetMetalTab.fs pattern.
 
 import(path : "onshape/std/attributes.fs", version : "2909.0");
 import(path : "onshape/std/boolean.fs", version : "2909.0");
@@ -205,9 +184,9 @@ export const smTabApply = defineSheetMetalFeature(function(context is Context, i
 
         // ------------------------------------------------------------------
         // Phase 4 — Resolve SM definition entities from the union scope wall.
-        // These are used for SM state tracking (Phase 6) and the union target
-        // body (Phase 7).  Model parameters are resolved later, conditionally,
-        // only if outer subtract bodies are present and need thickening.
+        // Used for SM state tracking (Phase 8) and as union targets in Phase 9b.
+        // Model parameters are resolved conditionally in Phase 7 when outer
+        // subtract bodies need thickening.
         // ------------------------------------------------------------------
         const unionWallDefinitionEntities = getSMDefinitionEntities(context, definition.unionScope);
         if (unionWallDefinitionEntities == undefined || unionWallDefinitionEntities == [])
@@ -216,28 +195,11 @@ export const smTabApply = defineSheetMetalFeature(function(context is Context, i
         }
 
         // ------------------------------------------------------------------
-        // Phase 4.5 — Snap union and local subtract surface bodies onto the SM
-        // definition face.
+        // Phase 5 — Snap union and local subtract surface bodies onto the SM definition face.
         //
-        // The SM definition (master surface) is coincident with either the inner
-        // or the outer face of the rendered SM wall — never a midplane.
-        // getSMDefinitionEntities returns faces that live on exactly one of those
-        // two physical surfaces.
-        //
-        // Derived bodies are positioned by the placement transform (toWorld of the
-        // user's mate connector).  If the mate connector was placed on the OPPOSITE
-        // face from the SM definition face, the derived bodies will be offset by
-        // the full wall thickness and the UNION/SUBTRACTION booleans will silently
-        // no-op because the bodies never touch the master surface.
-        //
-        // For each union/local-subtract body:
-        //   1. Evaluate evPlane on the body face and on each SM definition face.
-        //   2. Find the nearest SM definition face by Euclidean origin distance.
-        //   3. If normals are antiparallel, call opFlipOrientation to align surface
-        //      direction with the SM wall before the boolean.
-        //   4. Translate along the SM wall normal by the perpendicular distance
-        //      between the two planes so the body is exactly coplanar with the
-        //      SM definition face.
+        // Aligns each derived surface body to be exactly coplanar with its nearest SM
+        // definition face.  Corrects orientation via opFlipOrientation when normals are
+        // antiparallel, then translates along the wall normal to achieve geometric coincidence.
         // ------------------------------------------------------------------
         var smDefinitionFacePlanes = [];
         for (var smFace in unionWallDefinitionEntities)
@@ -266,69 +228,22 @@ export const smTabApply = defineSheetMetalFeature(function(context is Context, i
         }
 
         // ------------------------------------------------------------------
-        // Phase 4.6 — Implied outer subtraction bodies.
-        //
-        // When no outer subtraction surface bodies were tagged in the tool Part
-        // Studio (outerSubtractBodies is empty) but an outer subtraction scope is
-        // defined, copy the already-snapped union surface bodies and use the copies
-        // as implied outer subtraction geometry.  This ensures clearances are cut
-        // from the outer scope even when the user has not explicitly tagged a
-        // separate outer subtraction tool — the tab footprint itself acts as the
-        // clearance cutter.
-        //
-        // opPattern with an identity transform creates geometry-exact copies.
-        // copyPropertiesAndAttributes : false is intentional — the copies must not
-        // carry the SM_TAB_ROLE_UNION_SURFACE attribute, as that would include them
-        // in unionSurfaceBodies (which is scoped to allInstantiatedBodies and would
-        // not resolve them) and could cause confusion in Phase 7 UNION.
-        //
-        // The copies are oriented correctly because Phase 4.5 has already snapped
-        // and flipped the source union surface bodies; no additional orientation
-        // correction is needed before Phase 5 thickening.
+        // Phase 6 — Implied outer subtraction bodies.
+        // When no outer subtraction bodies were tagged and an outer scope is defined,
+        // copy the snapped union surface bodies to act as implied clearance cutters.
         // ------------------------------------------------------------------
-        var impliedOuterSubtractBodies = qNothing();
-        if (isQueryEmpty(context, outerSubtractBodies) && !isQueryEmpty(context, definition.outerSubtractionScope))
-        {
-            const unionBodyArrayForCopy = evaluateQuery(context, unionSurfaceBodies);
-            for (var unionBodyCopyIndex = 0; unionBodyCopyIndex < size(unionBodyArrayForCopy); unionBodyCopyIndex += 1)
-            {
-                const copyId = id + "copyUnionForOuterSubtract" + unstableIdComponent(unionBodyCopyIndex);
-                opPattern(context, copyId, {
-                            "entities"                    : unionBodyArrayForCopy[unionBodyCopyIndex],
-                            "transforms"                  : [identityTransform()],
-                            "instanceNames"               : ["implied"],
-                            "copyPropertiesAndAttributes" : false
-                        });
-                impliedOuterSubtractBodies = qUnion([impliedOuterSubtractBodies, qCreatedBy(copyId, EntityType.BODY)]);
-            }
-        }
+        const impliedOuterSubtractBodies = buildImpliedOuterSubtractBodies(context, id, outerSubtractBodies, unionSurfaceBodies, definition.outerSubtractionScope);
 
         // ------------------------------------------------------------------
-        // Phase 5 — Thicken outer subtract surface bodies into solids.
+        // Phase 7 — Thicken outer subtract surface bodies into solids.
         //
-        // Uses evFaceTangentPlane at (0.5, 0.5) rather than evPlane so orientation
-        // detection works for cylindrical, conical, and other non-planar SM walls,
-        // not just planar faces.
-        //
-        // Algorithm per outer subtract body:
-        //   1. Pre-evaluate evFaceTangentPlane on every outer scope SM definition
-        //      face to collect (center origin, normal, model params) tuples.
-        //   2. For each face of the outer subtract body, find the closest outer
-        //      scope SM face by Euclidean distance between face center points.
-        //   3. If the dot product of the subtract face's normal and the closest
-        //      wall face's normal is negative, call opFlipOrientation on the
-        //      surface body to reverse its outward direction.
-        //   4. Thicken with that SM wall's frontThickness / backThickness.
-        //      Because orientation was corrected in step 3, thickness1 (positive
-        //      normal direction) reliably corresponds to the SM wall's front face.
-        //
-        // Union and local subtract bodies remain as raw surfaces (allowSheets: true).
+        // Finds the nearest outer scope SM definition face per subtract body using
+        // evFaceTangentPlane, corrects surface orientation when needed, then
+        // thickens using the matched SM wall's frontThickness / backThickness.
         // ------------------------------------------------------------------
 
-        // Resolve outer scope SM definition faces now for Phase 5 thickening
-        // orientation detection (tangent planes and model parameters).
-        // Phase 9 makes its own fresh getSMDefinitionEntities call after the
-        // Phase 7 union and Phase 6.5 deripping have mutated the SM body.
+        // Resolve outer scope SM definition faces for Phase 7 thickening orientation detection.
+        // Phase 10 makes a fresh getSMDefinitionEntities call after Phase 9a/9b mutations.
         var outerScopeDefinitionFaces = [];
         if (!isQueryEmpty(context, definition.outerSubtractionScope))
         {
@@ -435,10 +350,8 @@ export const smTabApply = defineSheetMetalFeature(function(context is Context, i
                     }
                 }
 
-                // Each body gets its own parent sub-ID containing "outerSubtractBody" +
-                // an unstable index.  This keeps flip and thicken contiguous under a single
-                // parent and avoids namespace collision with the per-location loop below,
-                // which also uses id + unstableIdComponent(N).
+                // Each body gets its own parent sub-ID to keep flip and thicken operations
+                // contiguous and avoid namespace collision with the per-location loop.
                 const outerBodySubId = id + "outerSubtractBody" + unstableIdComponent(outerSubtractBodyIndex);
 
                 // Flip the surface body's orientation before thickening when its
@@ -467,10 +380,8 @@ export const smTabApply = defineSheetMetalFeature(function(context is Context, i
         }
         else if (!isQueryEmpty(context, impliedOuterSubtractBodies))
         {
-            // No tagged outer subtraction bodies — use the implied copies of union surface bodies.
-            // These copies were made from already-snapped bodies in Phase 4.6, so no orientation
-            // correction is needed: Phase 4.5 already aligned their normals with the SM wall.
-            // Thicken using the union scope wall's gauge parameters.
+            // Use implied copies created in Phase 6.  Phase 5 already aligned their normals,
+            // so no orientation correction is needed.  Thicken using the union scope wall's gauge parameters.
             const unionSMBodyForImplied    = qOwnerBody(qUnion(unionWallDefinitionEntities));
             const unionModelParamsImplied  = getModelParameters(context, unionSMBodyForImplied);
 
@@ -490,17 +401,12 @@ export const smTabApply = defineSheetMetalFeature(function(context is Context, i
         }
 
         // ------------------------------------------------------------------
-        // Phase 6 — Track SM model state before boolean operations.
+        // Phase 8 — Track SM model state before boolean operations.
         //
-        // Body-level tracking (smBodiesAffected/trackedSMBodies) anchors on
-        // concrete evaluated entity references so startTracking survives opBoolean
-        // UNION restructuring the SM definition body.
-        //
-        // Face-level tracking (persistentUnionDefinitionEntities) uses the
-        // unionEntityPersistantQuery pattern from sheetMetalTab.fs.  Because it
-        // tracks definition faces rather than the body container, it survives body-
-        // level restructuring reliably and is used to derive smBodyPostUnion (the
-        // live SM body reference) after every UNION in the per-location loop.
+        // Body-level tracking anchors on concrete evaluated entity references.
+        // Face-level tracking (persistentUnionDefinitionEntities) follows the
+        // unionEntityPersistantQuery pattern from sheetMetalTab.fs to maintain
+        // a live SM body reference through topology changes.
         // ------------------------------------------------------------------
         const smBodiesAffected = qUnion(evaluateQuery(context, qOwnerBody(qUnion(unionWallDefinitionEntities))));
         const initialData      = getInitialEntitiesAndAttributes(context, smBodiesAffected);
@@ -511,58 +417,18 @@ export const smTabApply = defineSheetMetalFeature(function(context is Context, i
         const persistentUnionDefinitionEntities = qUnion([unionDefinitionEntitiesQuery, startTracking(context, unionDefinitionEntitiesQuery)]);
 
         // ------------------------------------------------------------------
-        // Phases 6.5 / 7 / 8 — Per-location deRip, UNION, and local subtract.
+        // Phase 9 — Per-location deRip (9a), UNION (9b), and local subtract (9c).
         //
-        // Processing each placement location independently prevents a geometry
-        // failure at one location from blocking all other locations.  With a
-        // single batch opBoolean for all locations, a single bad instance causes
-        // the entire feature to fail.
-        //
-        // Phase 6.5 (deRip): scoped to each location's union surface bodies so
-        //   the thickened solid used for collision detection matches exactly the
-        //   tab geometry at that location.  The SM definition faces adjacent to
-        //   the union scope wall are computed once (they do not change per location).
-        //
-        // Phase 7 (UNION): each location's union surface bodies are merged into
-        //   the SM master surface in a separate opBoolean UNION call.
-        //   qOwnerBody(persistentUnionDefinitionEntities) re-evaluates after every
-        //   deRip and UNION, so subsequent iterations always target the live SM body.
-        //
-        // Phase 8 (local subtract): each location's local subtract bodies cut the
-        //   SM master surface immediately after that location's UNION, ensuring the
-        //   cuts are applied to already-merged geometry.
-        //
-        // smBodyPostUnion is initialised before the loop to a valid SM body query
-        // and updated after every successful per-location UNION.  If no UNIONs are
-        // performed (locationBodySets is empty) the feature would have already
-        // thrown above; smBodyPostUnion is guaranteed to be valid for Phases 9-11.
+        // Each location is processed independently so a geometry failure at one
+        // location does not block others.  Phase 9a uses per-location union bodies
+        // for deRip collision detection.  Phase 9b re-evaluates the live SM body
+        // after each deRip.  Phase 9c cuts the wall immediately after its location's UNION.
+        // smBodyPostUnion is updated after each Phase 9b UNION and remains valid
+        // for Phases 10-12.
         // ------------------------------------------------------------------
 
-        // Pre-compute adjacency data for deRip collision detection once — this is
-        // based on the union scope wall edges, which are the same for all locations.
-        const adjacentDefinitionEdges = evaluateQuery(context,
-                qEdgeTopologyFilter(
-                    qAdjacent(unionDefinitionEntitiesQuery, AdjacencyType.EDGE, EntityType.EDGE),
-                    EdgeTopology.TWO_SIDED));
-        var deripCorrespondingPartEntityQueries = [];
-        for (var adjEdge in adjacentDefinitionEdges)
-        {
-            const jointAttributes = getSmObjectTypeAttributes(context, adjEdge, SMObjectType.JOINT);
-            if (size(jointAttributes) == 0 ||
-                jointAttributes[0].jointType == undefined ||
-                jointAttributes[0].jointType.value != SMJointType.TANGENT)
-            {
-                const partFace = try silent(getSMCorrespondingInPart(context, adjEdge, EntityType.FACE));
-                if (!isQueryEmpty(context, partFace))
-                    deripCorrespondingPartEntityQueries = append(deripCorrespondingPartEntityQueries, partFace);
-            }
-            else
-            {
-                const partEdge = try silent(getSMCorrespondingInPart(context, adjEdge, EntityType.EDGE));
-                if (!isQueryEmpty(context, partEdge))
-                    deripCorrespondingPartEntityQueries = append(deripCorrespondingPartEntityQueries, partEdge);
-            }
-        }
+        // Adjacency and deRip data is the same for all locations; compute once before the loop.
+        const deripCorrespondingPartEntityQueries = buildDeripDataForUnionScope(context, unionDefinitionEntitiesQuery);
 
         var smBodyPostUnion = qOwnerBody(persistentUnionDefinitionEntities);
 
@@ -582,13 +448,11 @@ export const smTabApply = defineSheetMetalFeature(function(context is Context, i
             const locationId = id + unstableIdComponent(placementLocationIndex);
 
             // ------------------------------------------------------------------
-            // Phase 6.5 — Per-location pre-union rip joint resolution.
+            // Phase 9a — Per-location rip joint resolution before UNION.
             //
-            // Thicken only this location's union surface bodies for the collision
-            // solid. Using location-scoped bodies avoids spurious deRip candidates
-            // generated when multiple location instances overlap different rip joints
-            // simultaneously, which can cause deripEdges to fail or process stale
-            // duplicate edge references.
+            // Thickens this location's union surface bodies for deRip collision
+            // detection.  Using per-location bodies avoids spurious candidates
+            // from overlapping instances at multiple locations.
             // ------------------------------------------------------------------
             var locationDeripEdgeCandidates = [];
             try
@@ -636,11 +500,10 @@ export const smTabApply = defineSheetMetalFeature(function(context is Context, i
             }
 
             // ------------------------------------------------------------------
-            // Phase 7 — Union this location's tab surface bodies into the SM master.
+            // Phase 9b — Union this location's tab surface bodies into the SM master.
             //
-            // qOwnerBody(persistentUnionDefinitionEntities) is re-evaluated here
-            // after any deRip that may have restructured the SM definition body
-            // topology, giving a guaranteed-live target.
+            // qOwnerBody(persistentUnionDefinitionEntities) is re-evaluated after
+            // any Phase 9a deRip restructuring to target the live SM body.
             // ------------------------------------------------------------------
             const unionOpId = locationId + "unionTabToWall";
 
@@ -663,15 +526,13 @@ export const smTabApply = defineSheetMetalFeature(function(context is Context, i
                 throw regenError(ErrorStringEnum.SHEET_METAL_TAB_FAILS_MERGE, ["unionScope"]);
             }
 
-            // Update smBodyPostUnion after this location's UNION so Phase 8 (local subtract)
-            // and Phase 11 (updateSheetMetalGeometry) target the live post-UNION SM body.
+            // Update smBodyPostUnion so Phase 9c (local subtract) and Phase 12
+            // (updateSheetMetalGeometry) target the live post-UNION SM body.
             smBodyPostUnion = qOwnerBody(persistentUnionDefinitionEntities);
 
             // ------------------------------------------------------------------
-            // Phase 8 — Per-location local subtraction (wall-scoped cuts).
-            //
-            // Runs immediately after this location's UNION so the cuts operate on
-            // the already-merged SM wall geometry at this location.
+            // Phase 9c — Per-location local subtraction (wall-scoped cuts).
+            // Runs immediately after this location's UNION.
             // ------------------------------------------------------------------
             if (!isQueryEmpty(context, locationLocalSubtractBodies))
             {
@@ -685,98 +546,17 @@ export const smTabApply = defineSheetMetalFeature(function(context is Context, i
         }
 
         // ------------------------------------------------------------------
-        // Phase 9 — Outer subtraction (broader scope cuts).
-        // Mirrors sheetMetalTab.fs subtractTab exactly:
-        //   separateSheetMetalQueries  →  getSMDefinitionEntities (fresh, called HERE
-        //   after Phase 7 union/derip, not the early outerScopeDefinitionFaces which
-        //   holds stale transient entity IDs)  →  createBooleanToolsForFace per face
-        //   + opBoolean localizedInFaces (smSubtractTab pattern).
-        //   separateSheetMetalQueries.nonSheetMetalQueries  →  opBoolean SUBTRACTION
-        //   (solidSubtractTab pattern).
-        //
-        // thickenedOuterSubtractSolids are NOT consumed by the SM face path
-        // (createBooleanToolsForFace creates outline bodies as the actual tools)
-        // so they must be deleted explicitly in Phase 10.
+        // Phase 10 — Outer subtraction (broader scope cuts).
         // ------------------------------------------------------------------
-        if (!isQueryEmpty(context, thickenedOuterSubtractSolids) && !isQueryEmpty(context, definition.outerSubtractionScope))
-        {
-            // Apply offset to expand/contract the thickened solids before cutting.
-            if (definition.outerSubtractionOffset > 0 * meter)
-            {
-                opOffsetFace(context, id + "offsetOuterSubtractTools", {
-                            "moveFaces" : qOwnedByBody(thickenedOuterSubtractSolids, EntityType.FACE),
-                            "offsetDistance" : definition.outerSubtractionOffset
-                        });
-            }
-
-            // Split the outer scope into active-SM and non-SM parts — same split
-            // that sheetMetalTab.fs performs at the top of subtractTab via
-            // separateSheetMetalQueries.
-            const separatedOuterScope = separateSheetMetalQueries(context, definition.outerSubtractionScope);
-
-            // SM definition face targets.
-            // Call getSMDefinitionEntities fresh after Phase 7 union and Phase 6.5
-            // deripping have mutated the SM body topology — pre-mutation entity IDs
-            // are stale and will return empty or incorrect results.
-            const outerScopeSMFacesQuery = qUnion([
-                        qOwnedByBody(qEntityFilter(separatedOuterScope.sheetMetalQueries, EntityType.BODY), EntityType.FACE),
-                        qEntityFilter(separatedOuterScope.sheetMetalQueries, EntityType.FACE)
-                    ]);
-            var freshOuterScopeDefinitionFaces = try(getSMDefinitionEntities(context, outerScopeSMFacesQuery, EntityType.FACE));
-            if (freshOuterScopeDefinitionFaces is undefined)
-            {
-                freshOuterScopeDefinitionFaces = [];
-            }
-            if (size(freshOuterScopeDefinitionFaces) > 0)
-            {
-                var outerScopeSMFaceIndex = 0;
-                for (var smFace in freshOuterScopeDefinitionFaces)
-                {
-                    const faceSubId = id + "outerSubtractSM" + unstableIdComponent(outerScopeSMFaceIndex);
-                    const targetModelParameters = try silent(getModelParameters(context, qOwnerBody(smFace)));
-                    if (targetModelParameters != undefined)
-                    {
-                        const tool = createBooleanToolsForFace(context, faceSubId + "tool", smFace, thickenedOuterSubtractSolids, targetModelParameters);
-                        if (tool != undefined)
-                        {
-                            opBoolean(context, faceSubId + "subtract", {
-                                        "tools"            : qCreatedBy(faceSubId + "tool", EntityType.FACE),
-                                        "targets"          : smFace,
-                                        "operationType"    : BooleanOperationType.SUBTRACTION,
-                                        "localizedInFaces" : true,
-                                        "allowSheets"      : true
-                                    });
-                        }
-                    }
-                    outerScopeSMFaceIndex += 1;
-                }
-            }
-
-            // Non-SM solid targets — mirrors solidSubtractTab in sheetMetalTab.fs.
-            if (!isQueryEmpty(context, separatedOuterScope.nonSheetMetalQueries))
-            {
-                try silent(opBoolean(context, id + "outerSubtractSolid", {
-                                "tools"         : thickenedOuterSubtractSolids,
-                                "targets"       : separatedOuterScope.nonSheetMetalQueries,
-                                "operationType" : BooleanOperationType.SUBTRACTION,
-                                "allowSheets"   : true
-                            }));
-            }
-        }
+        applyOuterSubtraction(context, id, thickenedOuterSubtractSolids, definition.outerSubtractionScope, definition.outerSubtractionOffset);
 
         // ------------------------------------------------------------------
-        // Phase 10 — Clean up original surface bodies and the csys connector.
-        // - unionSurfaceBodies: consumed by the per-location UNION booleans.
-        // - localSubtractBodies: consumed by the per-location SUBTRACTION booleans.
-        // - outerSubtractBodies: originals were thickened into solids; the
-        //   original surfaces still exist and need explicit deletion.
-        // - impliedOuterSubtractBodies: copies of union surfaces created in Phase 4.6
-        //   when no outer subtract bodies were tagged; thickened into solids in Phase 5.
-        //   The surface copies still exist and need explicit deletion.
-        // - thickenedOuterSubtractSolids: NOT consumed by the SM face path
-        //   (createBooleanToolsForFace builds outline tools, not consuming the
-        //   thickened body).  They may be consumed by the solid path when solid
-        //   outer scope targets exist; try silent handles both cases.
+        // Phase 11 — Clean up source bodies.
+        // - unionSurfaceBodies: consumed by Phase 9b UNION booleans.
+        // - localSubtractBodies: consumed by Phase 9c SUBTRACTION booleans.
+        // - outerSubtractBodies: originals thickened in Phase 7; surfaces need deletion.
+        // - impliedOuterSubtractBodies: copies from Phase 6; thickened in Phase 7.
+        // - thickenedOuterSubtractSolids: may be partially consumed by solid path; try silent.
         // - csysConnectorBodies: placement helper, no longer needed.
         // ------------------------------------------------------------------
         const bodiesToDelete = qUnion([csysConnectorBodies, unionSurfaceBodies, localSubtractBodies, outerSubtractBodies, impliedOuterSubtractBodies]);
@@ -790,12 +570,9 @@ export const smTabApply = defineSheetMetalFeature(function(context is Context, i
         }
 
         // ------------------------------------------------------------------
-        // Phase 11 — Update the sheet metal model to recognise the new geometry.
-        //
-        // Uses smBodyPostUnion (derived from persistentUnionDefinitionEntities face
-        // tracking) as the live SM body reference, following the
-        // assignSMAttributesToNewOrSplitEntities + updateSheetMetalGeometry pattern
-        // from sheetMetalTab.fs.
+        // Phase 12 — Update SM model geometry.
+        // Follows the assignSMAttributesToNewOrSplitEntities + updateSheetMetalGeometry
+        // pattern from sheetMetalTab.fs using smBodyPostUnion as the live body reference.
         // ------------------------------------------------------------------
         const toUpdate = assignSMAttributesToNewOrSplitEntities(context, smBodyPostUnion, initialData, id);
         updateSheetMetalGeometry(context, id, {
@@ -805,11 +582,8 @@ export const smTabApply = defineSheetMetalFeature(function(context is Context, i
                 });
 
         // ------------------------------------------------------------------
-        // Phase 12 — Resolve feature name from the tool Part Studio variable.
+        // Phase 13 — Resolve feature name from the tool Part Studio variable.
         // ------------------------------------------------------------------
-        // Retrieve the feature name from the source Part Studio context.
-        // The variable may not exist if the user left the name blank in smTabTag.fs.
-        // An explicit catch handles that case without suppressing unexpected error details.
         var resolvedFeatureName = "";
         try
         {
@@ -827,8 +601,7 @@ export const smTabApply = defineSheetMetalFeature(function(context is Context, i
         }
         catch
         {
-            // SM_TAB_FEATURE_NAME_VAR was not set in the tool Part Studio (user left name blank).
-            // Feature name template will display as "SM Tab Apply" with no suffix.
+            // SM_TAB_FEATURE_NAME_VAR not set; feature name template displays without suffix.
         }
         setFeatureComputedParameter(context, id, { "name" : "featureName", "value" : resolvedFeatureName });
 
@@ -980,4 +753,165 @@ function snapBodiesToNearestDefinitionPlane(context is Context, id is Id, bodies
                     "transform" : transform(snapTranslationVector)
                 });
     }
+}
+
+// ---------------------------------------------------------------------------
+// buildImpliedOuterSubtractBodies
+// ---------------------------------------------------------------------------
+
+/**
+ * Creates geometry-exact copies of the union surface bodies to use as implied outer
+ * subtraction tools when no explicit outer subtract bodies are tagged in the tool Part Studio.
+ * Returns qNothing() when tagged outer subtract bodies exist or no outer scope is defined.
+ *
+ * @param context                {Context}
+ * @param id                     {Id}
+ * @param outerSubtractBodies    {Query}  Tagged outer subtract bodies; if non-empty, returns qNothing().
+ * @param unionSurfaceBodies     {Query}  Already-snapped union surface bodies to copy from.
+ * @param outerSubtractionScope  {Query}  Outer scope; if empty, returns qNothing().
+ * @returns {Query}
+ */
+function buildImpliedOuterSubtractBodies(context is Context, id is Id, outerSubtractBodies is Query, unionSurfaceBodies is Query, outerSubtractionScope is Query) returns Query
+{
+    if (!isQueryEmpty(context, outerSubtractBodies) || isQueryEmpty(context, outerSubtractionScope))
+    {
+        return qNothing();
+    }
+
+    var impliedOuterSubtractBodies = qNothing();
+    const unionBodyArrayForCopy = evaluateQuery(context, unionSurfaceBodies);
+    for (var unionBodyCopyIndex = 0; unionBodyCopyIndex < size(unionBodyArrayForCopy); unionBodyCopyIndex += 1)
+    {
+        const copyId = id + "copyUnionForOuterSubtract" + unstableIdComponent(unionBodyCopyIndex);
+        opPattern(context, copyId, {
+                    "entities"                    : unionBodyArrayForCopy[unionBodyCopyIndex],
+                    "transforms"                  : [identityTransform()],
+                    "instanceNames"               : ["implied"],
+                    "copyPropertiesAndAttributes" : false
+                });
+        impliedOuterSubtractBodies = qUnion([impliedOuterSubtractBodies, qCreatedBy(copyId, EntityType.BODY)]);
+    }
+    return impliedOuterSubtractBodies;
+}
+
+// ---------------------------------------------------------------------------
+// applyOuterSubtraction
+// ---------------------------------------------------------------------------
+
+/**
+ * Applies the outer subtraction pass to active SM scope faces and any non-SM solid scope.
+ * Mirrors the smSubtractTab + solidSubtractTab pattern from sheetMetalTab.fs.
+ * Calls getSMDefinitionEntities fresh so post-Phase-9a/9b topology mutations do not
+ * produce stale entity references.
+ *
+ * @param context                      {Context}
+ * @param id                           {Id}
+ * @param thickenedOuterSubtractSolids {Query}           Thickened solid subtraction tools.
+ * @param outerSubtractionScope        {Query}           Bodies or faces to subtract from.
+ * @param outerSubtractionOffset       {ValueWithUnits}  Expansion offset applied before cutting.
+ */
+function applyOuterSubtraction(context is Context, id is Id, thickenedOuterSubtractSolids is Query, outerSubtractionScope is Query, outerSubtractionOffset is ValueWithUnits)
+{
+    if (isQueryEmpty(context, thickenedOuterSubtractSolids) || isQueryEmpty(context, outerSubtractionScope))
+    {
+        return;
+    }
+
+    if (outerSubtractionOffset > 0 * meter)
+    {
+        opOffsetFace(context, id + "offsetOuterSubtractTools", {
+                    "moveFaces"      : qOwnedByBody(thickenedOuterSubtractSolids, EntityType.FACE),
+                    "offsetDistance" : outerSubtractionOffset
+                });
+    }
+
+    const separatedOuterScope = separateSheetMetalQueries(context, outerSubtractionScope);
+
+    // SM definition face targets — fresh call avoids stale entity IDs from Phase 9a/9b mutations.
+    const outerScopeSMFacesQuery = qUnion([
+                qOwnedByBody(qEntityFilter(separatedOuterScope.sheetMetalQueries, EntityType.BODY), EntityType.FACE),
+                qEntityFilter(separatedOuterScope.sheetMetalQueries, EntityType.FACE)
+            ]);
+    var freshOuterScopeDefinitionFaces = try(getSMDefinitionEntities(context, outerScopeSMFacesQuery, EntityType.FACE));
+    if (freshOuterScopeDefinitionFaces is undefined)
+    {
+        freshOuterScopeDefinitionFaces = [];
+    }
+
+    if (size(freshOuterScopeDefinitionFaces) > 0)
+    {
+        var outerScopeSMFaceIndex = 0;
+        for (var smFace in freshOuterScopeDefinitionFaces)
+        {
+            const faceSubId = id + "outerSubtractSM" + unstableIdComponent(outerScopeSMFaceIndex);
+            const targetModelParameters = try silent(getModelParameters(context, qOwnerBody(smFace)));
+            if (targetModelParameters != undefined)
+            {
+                const tool = createBooleanToolsForFace(context, faceSubId + "tool", smFace, thickenedOuterSubtractSolids, targetModelParameters);
+                if (tool != undefined)
+                {
+                    opBoolean(context, faceSubId + "subtract", {
+                                "tools"            : qCreatedBy(faceSubId + "tool", EntityType.FACE),
+                                "targets"          : smFace,
+                                "operationType"    : BooleanOperationType.SUBTRACTION,
+                                "localizedInFaces" : true,
+                                "allowSheets"      : true
+                            });
+                }
+            }
+            outerScopeSMFaceIndex += 1;
+        }
+    }
+
+    // Non-SM solid targets.
+    if (!isQueryEmpty(context, separatedOuterScope.nonSheetMetalQueries))
+    {
+        try silent(opBoolean(context, id + "outerSubtractSolid", {
+                        "tools"         : thickenedOuterSubtractSolids,
+                        "targets"       : separatedOuterScope.nonSheetMetalQueries,
+                        "operationType" : BooleanOperationType.SUBTRACTION,
+                        "allowSheets"   : true
+                    }));
+    }
+}
+
+// ---------------------------------------------------------------------------
+// buildDeripDataForUnionScope
+// ---------------------------------------------------------------------------
+
+/**
+ * Collects the rendered-part entity queries needed for deRip collision detection
+ * against the union scope wall's adjacent definition edges.  Called once before
+ * the per-location loop because the union scope does not change between locations.
+ *
+ * @param context                      {Context}
+ * @param unionDefinitionEntitiesQuery {Query}  SM definition entities from the union scope.
+ * @returns {array}  Array of Query values (part faces or edges) for evCollision targets.
+ */
+function buildDeripDataForUnionScope(context is Context, unionDefinitionEntitiesQuery is Query) returns array
+{
+    const adjacentDefinitionEdges = evaluateQuery(context,
+            qEdgeTopologyFilter(
+                qAdjacent(unionDefinitionEntitiesQuery, AdjacencyType.EDGE, EntityType.EDGE),
+                EdgeTopology.TWO_SIDED));
+    var deripCorrespondingPartEntityQueries = [];
+    for (var adjEdge in adjacentDefinitionEdges)
+    {
+        const jointAttributes = getSmObjectTypeAttributes(context, adjEdge, SMObjectType.JOINT);
+        if (size(jointAttributes) == 0 ||
+            jointAttributes[0].jointType == undefined ||
+            jointAttributes[0].jointType.value != SMJointType.TANGENT)
+        {
+            const partFace = try silent(getSMCorrespondingInPart(context, adjEdge, EntityType.FACE));
+            if (!isQueryEmpty(context, partFace))
+                deripCorrespondingPartEntityQueries = append(deripCorrespondingPartEntityQueries, partFace);
+        }
+        else
+        {
+            const partEdge = try silent(getSMCorrespondingInPart(context, adjEdge, EntityType.EDGE));
+            if (!isQueryEmpty(context, partEdge))
+                deripCorrespondingPartEntityQueries = append(deripCorrespondingPartEntityQueries, partEdge);
+        }
+    }
+    return deripCorrespondingPartEntityQueries;
 }
