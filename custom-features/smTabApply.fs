@@ -32,6 +32,7 @@ import(path : "onshape/std/evaluate.fs", version : "2909.0");
 import(path : "onshape/std/feature.fs", version : "2909.0");
 import(path : "onshape/std/geomOperations.fs", version : "2909.0");
 import(path : "onshape/std/instantiator.fs", version : "2909.0");
+import(path : "onshape/std/moveFace.fs", version : "2909.0");
 import(path : "onshape/std/query.fs", version : "2909.0");
 import(path : "onshape/std/sheetMetalAttribute.fs", version : "2909.0");
 import(path : "onshape/std/sheetMetalUtils.fs", version : "2909.0");
@@ -464,16 +465,82 @@ export const smTabApply = defineSheetMetalFeature(function(context is Context, i
         const persistentUnionDefinitionEntities = qUnion([unionDefinitionEntitiesQuery, startTracking(context, unionDefinitionEntitiesQuery)]);
 
         // ------------------------------------------------------------------
+        // Phase 6.5 — Pre-union rip joint resolution.
+        //
+        // When a tab surface body's free boundary edge is coincident with a rip
+        // joint edge in the SM master surface, opBoolean UNION fails with
+        // BOOLEAN_INVALID.  The SM master surface treats each wall panel as a
+        // separate surface body; the rip is the free boundary edge where two
+        // adjacent wall panels meet.  Because the tab and the SM wall only share
+        // that boundary edge (no interior area overlap), the kernel cannot
+        // determine how to merge them.
+        //
+        // The standard sheetMetalTab feature resolves this by calling
+        // deripEdges() before the union (via subtractTab in booleanOneTabGroup),
+        // which extends the SM definition face through the rip so the tab edge
+        // lands in the interior of the extended SM face, allowing the UNION to
+        // succeed.  We do the same here.
+        //
+        // Detection: evCollision between the tab surface body and the SM master
+        // surface.  ABUT_NO_CLASS contacts signal that the tab's free boundary
+        // edge is coincident with an SM definition face boundary edge.  Each
+        // such contact's target face is queried for adjacent edges carrying
+        // SMJointType.RIP — those are the edges to deRip.
+        //
+        // Only rip edges identified via this targeted evCollision check are
+        // deRipped, so rip joints the tab is not bridging are left untouched.
+        // ------------------------------------------------------------------
+        var ripEdgesToDeRip = [];
+        try
+        {
+            const ripDetectionCollisions = evCollision(context, {
+                        "tools"   : unionSurfaceBodies,
+                        "targets" : smBodiesAffected
+                    });
+            for (var ripContact in ripDetectionCollisions)
+            {
+                if (ripContact["type"] == ClashType.ABUT_NO_CLASS)
+                {
+                    // The tab free boundary edge is coincident with an SM definition
+                    // face boundary.  Check every edge of that face for a RIP attribute.
+                    for (var candidateEdge in evaluateQuery(context,
+                            qAdjacent(ripContact.target, AdjacencyType.EDGE, EntityType.EDGE)))
+                    {
+                        const ripJointAttribute = try(getJointAttribute(context, candidateEdge));
+                        if (ripJointAttribute != undefined &&
+                            ripJointAttribute.jointType != undefined &&
+                            ripJointAttribute.jointType.value == SMJointType.RIP &&
+                            !isIn(candidateEdge, ripEdgesToDeRip))
+                        {
+                            ripEdgesToDeRip = append(ripEdgesToDeRip, candidateEdge);
+                        }
+                    }
+                }
+            }
+        }
+        catch
+        {
+            // evCollision failure is non-fatal; proceed without deRip and let
+            // Phase 7 opBoolean produce its own error if the UNION fails.
+        }
+
+        if (size(ripEdgesToDeRip) > 0)
+        {
+            println("SM Tab Apply — Phase 6.5: resolving " ~ toString(size(ripEdgesToDeRip)) ~
+                    " rip joint edge(s) adjacent to the union target wall.");
+            deripEdges(context, id + "deripRipJoints", qUnion(ripEdgesToDeRip));
+        }
+
+        // ------------------------------------------------------------------
         // Phase 7 — Union the tab surface bodies into the SM master surface.
         //
-        // Both smBodiesAffected and unionSurfaceBodies are passed as "tools"
+        // Both trackedSMBodies and unionSurfaceBodies are passed as "tools"
         // with no "targets", mirroring booleanOneTabGroup in onlyTabs.fs.
         //
-        // recomputeMatches: true is required — without it the boolean kernel
-        // uses stale match data from the SM master body and throws
-        // BOOLEAN_INVALID when the tab surface overlaps (rather than being
-        // pre-trimmed to edge-adjacency) with the SM wall.  onlyTabs.fs
-        // booleanOneTabGroup uses this flag for exactly the same reason.
+        // trackedSMBodies is used instead of the raw smBodiesAffected to
+        // ensure the correct post-deRip SM body entity is referenced; the
+        // startTracking component of the query follows the SM definition body
+        // through any topology changes made by the Phase 6.5 deRip operation.
         //
         // try (not silent) lets opBoolean log its native error to the console
         // while we still catch and add geometry diagnostics before re-throwing
@@ -495,10 +562,9 @@ export const smTabApply = defineSheetMetalFeature(function(context is Context, i
         try
         {
             opBoolean(context, id + "unionTabToWall", {
-                        "tools"            : qUnion([smBodiesAffected, unionSurfaceBodies]),
-                        "operationType"    : BooleanOperationType.UNION,
-                        "allowSheets"      : true,
-                        "recomputeMatches" : true
+                        "tools"         : qUnion([trackedSMBodies, unionSurfaceBodies]),
+                        "operationType" : BooleanOperationType.UNION,
+                        "allowSheets"   : true
                     });
         }
         catch
@@ -598,7 +664,11 @@ export const smTabApply = defineSheetMetalFeature(function(context is Context, i
                                     "parameter" : vector(0.5, 0.5)
                                 });
                     }
-                    catch { }
+                    catch
+                    {
+                        println("SM Tab Apply — Phase 7 diag C: union body " ~ toString(unionBodyIndex) ~
+                                " face " ~ toString(unionFaceIndex) ~ " evFaceTangentPlane failed (non-planar or degenerate)");
+                    }
                     if (unionCenter != undefined)
                     {
                         for (var planeIndex = 0; planeIndex < size(smDefinitionFacePlanes); planeIndex += 1)
