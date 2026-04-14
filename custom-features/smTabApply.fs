@@ -297,8 +297,10 @@ export const smTabApply = defineSheetMetalFeature(function(context is Context, i
         // Union and local subtract bodies remain as raw surfaces (allowSheets: true).
         // ------------------------------------------------------------------
 
-        // Resolve outer scope SM definition faces once here so Phase 9 can
-        // reuse the result without a second getSMDefinitionEntities call.
+        // Resolve outer scope SM definition faces now for Phase 5 thickening
+        // orientation detection (tangent planes and model parameters).
+        // Phase 9 makes its own fresh getSMDefinitionEntities call after the
+        // Phase 7 union and Phase 6.5 deripping have mutated the SM body.
         var outerScopeDefinitionFaces = [];
         if (!isQueryEmpty(context, definition.outerSubtractionScope))
         {
@@ -887,7 +889,7 @@ export const smTabApply = defineSheetMetalFeature(function(context is Context, i
                         qOwnedByBody(qEntityFilter(separatedOuterScope.sheetMetalQueries, EntityType.BODY), EntityType.FACE),
                         qEntityFilter(separatedOuterScope.sheetMetalQueries, EntityType.FACE)
                     ]);
-            var freshOuterScopeDefinitionFaces = try silent(getSMDefinitionEntities(context, outerScopeSMFacesQuery, EntityType.FACE));
+            var freshOuterScopeDefinitionFaces = try(getSMDefinitionEntities(context, outerScopeSMFacesQuery, EntityType.FACE));
             if (freshOuterScopeDefinitionFaces is undefined)
             {
                 freshOuterScopeDefinitionFaces = [];
