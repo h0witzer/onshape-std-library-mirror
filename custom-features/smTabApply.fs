@@ -38,7 +38,7 @@ const FEATURE_NAME_SEPARATOR = " - ";
 // ---------------------------------------------------------------------------
 
 /** Places a tab tool Part Studio (prepared with SM Tab Tag) at one or more locations on a sheet metal model. */
-annotation { "Feature Type Name" : "SM Tab Apply", "Feature Name Template" : "SM Tab Apply#featureName" }
+annotation { "Feature Type Name" : "SM Tabulate", "Feature Name Template" : "SM Tabulate#featureName" }
 export const smTabApply = defineSheetMetalFeature(function(context is Context, id is Id, definition is map)
     precondition
     {
@@ -780,4 +780,3 @@ function resolveTabFeatureName(context is Context, definition is map) returns st
     catch { }
     return "";
 }
-
