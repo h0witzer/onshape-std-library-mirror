@@ -159,7 +159,15 @@ export const smTabApply = defineSheetMetalFeature(function(context is Context, i
             opDeleteBodies(context, id + "cleanupDerived", { "entities" : survivingDerivedBodies });
 
         // Update SM model geometry.
-        const toUpdate = assignSMAttributesToNewOrSplitEntities(context, smBodyPostUnion, initialData, id);
+        // Pass trackedSMBodies (the pre-captured, tracked SM definition body query) here rather than
+        // smBodyPostUnion (a lazy qOwnerBody(persistentUnionDefinitionEntities)).  When all edges of a
+        // target wall are deripped the definition face topology changes dramatically and the
+        // persistentUnionDefinitionEntities tracking can drift to faces in adjacent walls, causing
+        // smBodyPostUnion to resolve across multiple SM bodies at call time.  Passing that to
+        // assignSMAttributesToNewOrSplitEntities would then corrupt attributes in every SM body it
+        // sees, after which updateSheetMetalGeometry obliterates the entire SM context.
+        // trackedSMBodies is the correct equivalent of sheetMetalBodiesQuery used in sheetMetalTab.fs.
+        const toUpdate = assignSMAttributesToNewOrSplitEntities(context, trackedSMBodies, initialData, id);
         updateSheetMetalGeometry(context, id, {
                     "entities"          : qUnion([toUpdate.modifiedEntities, persistentUnionDefinitionEntities]),
                     "deletedAttributes" : toUpdate.deletedAttributes,
