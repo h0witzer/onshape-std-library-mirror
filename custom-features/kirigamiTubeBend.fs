@@ -406,8 +406,16 @@ export const kirigamiTubeBend = defineFeature(function(context is Context, id is
                 if (!isCapFaceSimpleMiter(context, sweptFacesArray, capFaceNormal, tubeAxis))
                     continue;
 
+                // Cap faces at joints already processed by a prior Kirigami Tube Bend run will
+                // return undefined here: the boolean subtraction from the prior run replaced the
+                // edges between the cap face and tube wall faces with notch cut geometry, making
+                // the expected wall faces invisible to this function.  Skipping these cap faces
+                // is correct -- their joints already exist in the prior composite.  Only free-end
+                // cap faces (those pointing toward new frame bodies) will yield a valid edge.
                 const outerEdge = findOuterApexEdgeForCapFace(context, id, bodyIndex,
                         frameBody, capFace);
+                if (outerEdge == undefined)
+                    continue;
                 allOuterEdgeData = append(allOuterEdgeData, {
                         "edgeQuery"  : outerEdge,
                         "bodyIndex"  : bodyIndex,
@@ -1266,9 +1274,15 @@ function isCapFaceSimpleMiter(context is Context, sweptFacesArray is array,
 // @param bodyIndex        : Zero-based index of this body in the selection (for error messages).
 // @param frameBody        : Query resolving to a single solid frame body.
 // @param capFace          : Query resolving to one cap face on frameBody.
-// @returns Query          : The single outer apex edge on this cap face.
+// @returns Query or undefined  : The single outer apex edge on this cap face, or undefined if
+//                                the expected adjacent tube wall geometry is not present.  A
+//                                undefined return indicates this cap face has already been
+//                                processed by a prior Kirigami Tube Bend run (its adjacent wall
+//                                geometry was replaced by kirigami notch cut faces during the
+//                                previous boolean subtraction) and should be silently skipped by
+//                                the caller.
 function findOuterApexEdgeForCapFace(context is Context, id is Id, bodyIndex is number,
-    frameBody is Query, capFace is Query) returns Query
+    frameBody is Query, capFace is Query)
 {
     // Miter plane of the cap face.
     const capFacePlane = evPlane(context, { "face" : capFace });
@@ -1280,14 +1294,16 @@ function findOuterApexEdgeForCapFace(context is Context, id is Id, bodyIndex is 
     //   3. Keep only faces that geometrically intersect the miter plane.
     // For a hollow box tube this naturally excludes inner wall faces (they don't intersect
     // the miter plane) and top/bottom faces (their normals are parallel to the cap face normal).
+    // NOTE: If this body was already processed by a prior Kirigami Tube Bend run, the boolean
+    // subtraction that cut the notch slots replaced the edges between the cap face and the tube
+    // wall faces with notch cut-face geometry.  In that case the expected wall faces are absent
+    // and this function returns undefined so the caller can silently skip this cap face.
     const sideFaces = qAdjacent(capFace, AdjacencyType.EDGE, EntityType.FACE)->qGeometry(GeometryType.PLANE);
     const angledFaces = sideFaces->qSubtraction(qPlanesParallelToDirection(sideFaces, capFacePlane.normal));
     const facesTouchingMiterPlane = qIntersectsPlane(angledFaces, capFacePlane);
 
     if (isQueryEmpty(context, facesTouchingMiterPlane))
-        throw regenError("Frame body " ~ (bodyIndex + 1) ~ " cap face has no adjacent tube wall faces " ~
-            "touching the miter plane. Ensure the selected body is an Onshape frame member " ~
-            "created with the Frame feature.", ["frameBodies"]);
+        return undefined;
 
     // Local coordinate system (identical to frameUnroll.fs getBodyTransform):
     //   xAxis = direction of one fold edge in the miter plane (edge on the filtered face set
@@ -1299,9 +1315,7 @@ function findOuterApexEdgeForCapFace(context is Context, id is Id, bodyIndex is 
             capFacePlane);
 
     if (isQueryEmpty(context, edgesInMiterPlane))
-        throw regenError("Frame body " ~ (bodyIndex + 1) ~ ": no edges found in the miter plane on the " ~
-            "adjacent tube wall faces. Ensure the selected body is an Onshape frame member " ~
-            "created with the Frame feature.", ["frameBodies"]);
+        return undefined;
 
     const foldEdgeLine = evEdgeTangentLine(context, {
                 "edge" : edgesInMiterPlane,
@@ -1339,9 +1353,7 @@ function findOuterApexEdgeForCapFace(context is Context, id is Id, bodyIndex is 
     }
 
     if (outerEdge == undefined || isQueryEmpty(context, outerEdge))
-        throw regenError("Could not determine the outer apex edge on a cap face of frame body " ~
-            (bodyIndex + 1) ~ ". Ensure the body is a properly formed Onshape frame member.",
-            ["frameBodies"]);
+        return undefined;
 
     return qNthElement(outerEdge, 0);
 }
