@@ -326,6 +326,53 @@ export const kirigamiTubeBend = defineFeature(function(context is Context, id is
         // scoped to valid frame geometry.
         definition.frameBodies = qUnion(frameBodiesArray);
 
+        // Find any closed kirigami composites from prior runs that own the selected frame
+        // segments.  These must be dissolved before the new opCreateCompositePart so that their
+        // constituent solid bodies become free and can be re-composited.  Only composites
+        // carrying KIRIGAMI_STRIP_ATTRIBUTE_NAME are targeted; Frame-feature composites (which
+        // are also closed) are intentionally excluded.
+        const priorKirigamiComposites = qHasAttribute(
+                qCompositePartsContaining(qUnion(frameBodiesArray), CompositePartType.CLOSED),
+                KIRIGAMI_STRIP_ATTRIBUTE_NAME);
+
+        // Read the KirigamiStripAttribute from every prior composite NOW, before anything
+        // is modified.  The joints arrays are merged into the new composite's strip attribute
+        // at the end of this run so that kirigamiTubeUnfold sees the complete bend history.
+        var priorStripJoints = [];
+        for (var priorCompositeBody in evaluateQuery(context, priorKirigamiComposites))
+        {
+            const priorStripAttr = getAttribute(context, {
+                        "entity" : priorCompositeBody,
+                        "name"   : KIRIGAMI_STRIP_ATTRIBUTE_NAME
+                    });
+            if (priorStripAttr != undefined && priorStripAttr.joints != undefined)
+            {
+                for (var priorJoint in priorStripAttr.joints)
+                    priorStripJoints = append(priorStripJoints, priorJoint);
+            }
+        }
+
+        // Evaluate the non-frame constituent bodies (bent-section bridge solids, etc.) from
+        // every prior composite NOW, before dissolution, so the resulting body references
+        // remain stable and can be re-included in the new composite.
+        const priorNonFrameConstituentBodies = evaluateQuery(context, qSubtraction(
+                qContainedInCompositeParts(priorKirigamiComposites),
+                qUnion(frameBodiesArray)));
+
+        // Capture the KirigamiSegmentAttribute on each frame body BEFORE re-stamping below.
+        // The prior run's segment index for each body is used to remap the inherited joint
+        // entries to the new frame-body numbering established in this run.
+        var oldSegmentIndexByNewIndex = [];
+        for (var captureIdx = 0; captureIdx < size(frameBodiesArray); captureIdx += 1)
+        {
+            const existingSegAttr = getAttribute(context, {
+                        "entity" : frameBodiesArray[captureIdx],
+                        "name"   : KIRIGAMI_SEGMENT_ATTRIBUTE_NAME
+                    });
+            oldSegmentIndexByNewIndex = append(oldSegmentIndexByNewIndex,
+                    (existingSegAttr != undefined) ? existingSegAttr.segmentIndex : undefined);
+        }
+
         // Tag each frame segment body with its zero-based index in frameBodiesArray.
         // This attribute persists through opCreateCompositePart and into the constituent bodies
         // of the resulting composite.  kirigamiTubeUnfold reads the upstreamSegmentIndex and
@@ -448,6 +495,13 @@ export const kirigamiTubeBend = defineFeature(function(context is Context, id is
         // this threshold will be flagged with a single warning at the end of the loop.
         var anyMiterAngleExceedsLimit = false;
 
+        // Offset applied to instanceIndex values for all joints generated in this run.
+        // Joints from prior kirigami composites occupy positions 0..priorJointCount-1 in the
+        // merged KirigamiStripAttribute.joints array.  New joints from this run must begin at
+        // priorJointCount so that the position in the joints array equals the instanceIndex
+        // stored on the corresponding KirigamiBendCutFaceAttribute faces.
+        const instanceIndexOffset = size(priorStripJoints);
+
         for (var instanceIndex = 0; instanceIndex < size(sharedJoints); instanceIndex += 1)
         {
             const jointData = sharedJoints[instanceIndex];
@@ -519,7 +573,7 @@ export const kirigamiTubeBend = defineFeature(function(context is Context, id is
             pendingInstances = append(pendingInstances, {
                         "query"                    : instanceQuery,
                         "coordSystem"              : apexCoordSystem,
-                        "instanceIndex"            : instanceIndex,
+                        "instanceIndex"            : instanceIndex + instanceIndexOffset,
                         "jointBodyIndices"         : jointData.jointBodyIndices,
                         "upstreamBodyIndex"        : jointData.upstreamBodyIndex,
                         "downstreamBodyIndex"      : jointData.downstreamBodyIndex,
@@ -808,6 +862,19 @@ export const kirigamiTubeBend = defineFeature(function(context is Context, id is
                     });
         }
 
+        // Dissolve any prior kirigami composite wrappers by deleting only the composite body
+        // (not its constituents).  opDeleteBodies on the composite body alone -- without
+        // including qContainedInCompositeParts -- frees the constituent solid bodies so that
+        // they can be included in the new opCreateCompositePart call below.
+        // Frame-feature composites are not touched: the filter above restricts dissolution to
+        // composites carrying KIRIGAMI_STRIP_ATTRIBUTE_NAME.
+        if (!isQueryEmpty(context, priorKirigamiComposites))
+        {
+            opDeleteBodies(context, id + "dissolvePriorKirigamiComposites", {
+                        "entities" : priorKirigamiComposites
+                    });
+        }
+
         // Composite all bent tube section bodies together with the input frame bodies into a
         // single closed composite part.  A closed composite consumes its constituent solid
         // bodies so that they are presented as one unit to the downstream flat-layout script.
@@ -816,7 +883,11 @@ export const kirigamiTubeBend = defineFeature(function(context is Context, id is
         if (size(allBentTubeSectionBodies) > 0)
         {
             opCreateCompositePart(context, id + "bentTubeFrameComposite", {
-                        "bodies" : qUnion(concatenateArrays([allBentTubeSectionBodies, [definition.frameBodies]])),
+                        "bodies" : qUnion(concatenateArrays([
+                                allBentTubeSectionBodies,
+                                [definition.frameBodies],
+                                priorNonFrameConstituentBodies
+                            ])),
                         "closed" : true
                     });
 
@@ -847,10 +918,49 @@ export const kirigamiTubeBend = defineFeature(function(context is Context, id is
                             "downstreamSegmentIndex" : instance.downstreamBodyIndex
                         });
             }
+            // Remap the inherited prior-run joints to the new segment numbering established
+            // in this run, then prepend them to the new joints.  The merged array is written
+            // to KirigamiStripAttribute so that kirigamiTubeUnfold sees the complete bend
+            // history regardless of how many prior runs contributed to the composite.
+            //
+            // Segment index remapping: oldSegmentIndexByNewIndex[newIdx] is the segment index
+            // that the body at newIdx carried from the prior run.  Scanning this array for each
+            // old joint's upstream/downstream values gives the new index for those bodies.
+            //
+            // instanceIndex alignment: old joints occupy positions 0..priorJointCount-1 in the
+            // merged array.  Their KirigamiBendCutFaceAttribute instanceIndex values (stamped
+            // during the prior run) are 0..priorJointCount-1, matching their positions.  New
+            // joints occupy positions priorJointCount..priorJointCount+newJointCount-1; their
+            // cut faces were stamped with instanceIndex = loopVar + instanceIndexOffset,
+            // which equals their position in the merged array.  The unfold script queries cut
+            // faces with instanceIndex == loop_position, so all lookups are correct.
+            var remappedPriorJoints = [];
+            for (var priorJoint in priorStripJoints)
+            {
+                var newUpstreamIndex   = undefined;
+                var newDownstreamIndex = undefined;
+                for (var lookupIdx = 0; lookupIdx < size(oldSegmentIndexByNewIndex); lookupIdx += 1)
+                {
+                    if (oldSegmentIndexByNewIndex[lookupIdx] == priorJoint.upstreamSegmentIndex)
+                        newUpstreamIndex = lookupIdx;
+                    if (oldSegmentIndexByNewIndex[lookupIdx] == priorJoint.downstreamSegmentIndex)
+                        newDownstreamIndex = lookupIdx;
+                }
+                // Skip joints whose upstream or downstream body is not present in this run's
+                // selection (e.g. if the user only selected a subset of the prior composite).
+                if (newUpstreamIndex != undefined && newDownstreamIndex != undefined)
+                    remappedPriorJoints = append(remappedPriorJoints,
+                            mergeMaps(priorJoint, {
+                                "upstreamSegmentIndex"   : newUpstreamIndex,
+                                "downstreamSegmentIndex" : newDownstreamIndex
+                            }));
+            }
+            const allStripJoints = concatenateArrays([remappedPriorJoints, stripJoints]);
+
             setAttribute(context, {
                         "entities"  : compositeBody,
                         "name"      : KIRIGAMI_STRIP_ATTRIBUTE_NAME,
-                        "attribute" : { "joints" : stripJoints } as KirigamiStripAttribute
+                        "attribute" : { "joints" : allStripJoints } as KirigamiStripAttribute
                     });
         }
     });
