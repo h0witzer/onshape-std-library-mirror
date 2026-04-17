@@ -14,7 +14,7 @@ amalgamForm::import(path : "0e895d7eacdacb4177ac69da/4555c000085f6a9d0b49c726/54
 // derived into the active studio per unique joint; the downstream flat-layout script locates
 // each instance via KirigamiBendAttribute and booleans the unfolded segments together for
 // laser-cut export.
-KirigamiBendConstructor::import(path : "1173cc57cdf5a7d688426b78", version : "07ea5d098423341c5a3a9498");
+KirigamiBendConstructor::import(path : "1173cc57cdf5a7d688426b78", version : "ca1b986329723e0caa9b50ed");
 
 // Named key used when attaching KirigamiBendAttribute to instantiated bodies.
 const KIRIGAMI_BEND_ATTRIBUTE_NAME = "kirigamiBendData";
@@ -300,31 +300,10 @@ export const kirigamiTubeBend = defineFeature(function(context is Context, id is
         // are present (the query resolves identically to the original solid-only selection).
         definition.frameBodies = qFlattenedCompositeParts(definition.frameBodies);
 
-        // Keep only frame segment solids.  A previously generated Kirigami Tube Bend composite
-        // includes non-frame constituent bodies (for example bent-section bridge solids), which
-        // do not carry frame topology attributes and must be excluded before joint processing.
-        // This allows selecting composites from Frame and from earlier Kirigami Tube Bend runs.
-        const flattenedSelectedBodies = evaluateQuery(context, definition.frameBodies);
-        var frameBodiesArray = [];
-        for (var flattenedBodyIndex = 0; flattenedBodyIndex < size(flattenedSelectedBodies); flattenedBodyIndex += 1)
-        {
-            const flattenedBody = flattenedSelectedBodies[flattenedBodyIndex];
-            const capFacesOnBody = qHasAttributeWithValueMatching(
-                    qOwnedByBody(flattenedBody, EntityType.FACE),
-                    FRAME_ATTRIBUTE_TOPOLOGY_NAME,
-                    { "topologyType" : FrameTopologyType.CAP_FACE });
-            if (!isQueryEmpty(context, capFacesOnBody))
-                frameBodiesArray = append(frameBodiesArray, flattenedBody);
-        }
-
+        const frameBodiesArray = evaluateQuery(context, definition.frameBodies);
         if (size(frameBodiesArray) < 2)
             throw regenError("Select at least two touching Onshape frame bodies. " ~
-                "Composite selections are supported, but only constituent frame bodies are used.", ["frameBodies"]);
-
-        // Replace the working query with only valid frame segment bodies so all downstream
-        // operations (attribute painting, boolean targets, and final composite creation) are
-        // scoped to valid frame geometry.
-        definition.frameBodies = qUnion(frameBodiesArray);
+                "A single body has no shared joints with another selected body.", ["frameBodies"]);
 
         // Tag each frame segment body with its zero-based index in frameBodiesArray.
         // This attribute persists through opCreateCompositePart and into the constituent bodies
@@ -435,6 +414,11 @@ export const kirigamiTubeBend = defineFeature(function(context is Context, id is
         var cachedOffsetToInteriorSweepLine = undefined;
         var cachedTubeWallThickness = undefined;
 
+        // Set to true if any joint in this selection has a miter angle exceeding 45 degrees.
+        // Laser cutters typically cannot cut a bevel steeper than 45 degrees; joints over
+        // this threshold will be flagged with a single warning at the end of the loop.
+        var anyMiterAngleExceedsLimit = false;
+
         for (var instanceIndex = 0; instanceIndex < size(sharedJoints); instanceIndex += 1)
         {
             const jointData = sharedJoints[instanceIndex];
@@ -454,6 +438,10 @@ export const kirigamiTubeBend = defineFeature(function(context is Context, id is
             // for the miter angle.  No world-axis references are used.
             const jointDimensions = computeJointDimensions(context, jointData.frameBody,
                     jointData.tubeAxis, apexCoordSystem);
+
+            // Flag any joint whose miter angle exceeds the 45-degree laser-cut bevel limit.
+            if (jointDimensions.miterAngle > 45 * degree)
+                anyMiterAngleExceedsLimit = true;
 
             // Distance from the outer wall face to the nearest longitudinal sweep edge on a
             // top/bottom swept face (normal parallel to local Z).  For a hollow tube this equals
@@ -515,6 +503,13 @@ export const kirigamiTubeBend = defineFeature(function(context is Context, id is
                         "frameBodyTargets"         : jointFrameBodyTargets
                     });
         }
+
+        // Warn once if any joint in the selection has a miter angle greater than 45 degrees.
+        // Laser cutters typically cannot produce a bevel cut steeper than 45 degrees, so the
+        // unfolded flat layout from kirigamiTubeUnfold may require additional cleanup operations
+        // (e.g. manual trimming or secondary machining) before the part is manufacturable.
+        if (anyMiterAngleExceedsLimit)
+            reportFeatureWarning(context, id, "One or more joints have a miter angle greater than 45 degrees. Laser cutters typically cannot cut bevels steeper than 45 degrees. The unfolded flat layout may require additional cleanup operations to be manufacturable.");
 
         // Bring all queued instances into the context in one batched call.
         instantiate(context, instantiator);
