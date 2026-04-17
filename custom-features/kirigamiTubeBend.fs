@@ -678,14 +678,13 @@ export const kirigamiTubeBend = defineFeature(function(context is Context, id is
             const cutPlanarFacesArray = evaluateQuery(context,
                     qGeometry(qCreatedBy(booleanCutId, EntityType.FACE), GeometryType.PLANE));
 
-            // Place one mate connector at the centroid of each miter cut face, and tag
+            // Place one mate connector at the centroid of each planar cut face, and tag
             // the face itself with KirigamiBendCutFaceAttribute for downstream bridging.
-            // Only miter cut faces (those with outward normal approximately parallel to the
-            // apex coord system xAxis) are tagged.  The boolean subtraction also creates planar
-            // notch-slot side faces whose normals are perpendicular to xAxis; tagging those
-            // faces would pollute the KIRIGAMI_CUT_FACE_ATTRIBUTE_NAME query in
-            // kirigamiTubeUnfold and cause qNthElement(..., 0) to return a face whose normal
-            // is parallel to joint.zAxis, violating the coordSystem perpendicularity precondition.
+            // All new planar faces are tagged regardless of normal direction.  The boolean
+            // subtraction creates both miter cap faces (normals ≈ ±xAxis) and notch-slot side
+            // faces (normals in other directions).  kirigamiTubeUnfold selects a suitable face
+            // at unfold time using findCutFacePlaneForUnfold, which skips any face whose normal
+            // is parallel to joint.zAxis before building the coordSystem.
             // Z axis = face outward normal; X axis = an arbitrary perpendicular chosen
             // consistently for the same normal direction by perpendicularVector.
             // evApproximateCentroid is used rather than faceTangentPlane.origin: the
@@ -699,13 +698,6 @@ export const kirigamiTubeBend = defineFeature(function(context is Context, id is
                             "face" : cutFace,
                             "parameter" : vector(0.5, 0.5)
                         });
-
-                // Skip notch-slot side faces: their outward normal is not parallel to the
-                // miter cap face normal (instance.coordSystem.xAxis).  Only tag faces that
-                // lie on the miter cut plane so the unfold query only returns the correct faces.
-                if (!parallelVectors(faceTangentPlane.normal, instance.coordSystem.xAxis))
-                    continue;
-
                 const faceCentroid = evApproximateCentroid(context, { "entities" : cutFace });
 
                 const mateConnectorCS = coordSystem(faceCentroid,
@@ -1039,6 +1031,35 @@ export const kirigamiTubeBend = defineFeature(function(context is Context, id is
  *   5. opBoolean(UNION) all bridge bodies together with all remaining constituent frame segment
  *      bodies to produce a single continuous flat-layout solid.
  */
+// Searches the tagged cut faces at a single joint for the first face whose outward normal
+// is NOT parallel to the joint fold-line direction (avoidAxis).
+//
+// The kirigami boolean subtraction tags every new planar face with KIRIGAMI_CUT_FACE_ATTRIBUTE_NAME.
+// This includes miter cap faces (normals ≈ ±xAxis, perpendicular to the fold line) as well as
+// notch-slot side faces that may have normals in various directions, including along the fold line.
+// Using a fold-line-parallel face in coordSystem(centroid, joint.zAxis, faceNormal) would violate
+// the perpendicularVectors(xAxis, zAxis) precondition.  This function skips those faces and returns
+// the tangent Plane of the first face safe to use for coordSystem construction.
+//
+// @param context     : Active context.
+// @param facesQuery  : Query resolving to one or more tagged cut faces at this joint.
+// @param avoidAxis   : The joint fold-line direction (joint.zAxis) to avoid.
+// @returns           : Tangent Plane of the first suitable face, or undefined if none found.
+function findCutFacePlaneForUnfold(context is Context, facesQuery is Query, avoidAxis is Vector)
+{
+    const faces = evaluateQuery(context, facesQuery);
+    for (var face in faces)
+    {
+        const plane = evFaceTangentPlane(context, {
+                    "face"      : face,
+                    "parameter" : vector(0.5, 0.5)
+                });
+        if (!parallelVectors(plane.normal, avoidAxis))
+            return plane;
+    }
+    return undefined;
+}
+
 annotation { "Feature Type Name" : "Kirigami Tube Unfold",
              "Feature Type Description" : "Unfolds a composite bent tube strip produced by Kirigami Tube Bend into a flat layout for laser-cut export." }
 export const kirigamiTubeUnfold = defineFeature(function(context is Context, id is Id, definition is map)
@@ -1163,30 +1184,32 @@ export const kirigamiTubeUnfold = defineFeature(function(context is Context, id 
                 continue;
 
             // Evaluate the upstream cut face geometry.
-            // The tagged query now only contains miter cut faces (not notch-slot side faces)
-            // because kirigamiTubeBend filters at tagging time, so qNthElement is safe here.
-            // The outward normal points away from the upstream body into the gap zone.
-            const upstreamFacePlane = evFaceTangentPlane(context, {
-                        "face"      : qNthElement(upstreamCutFacesQuery, 0),
-                        "parameter" : vector(0.5, 0.5)
-                    });
+            // All tagged cut faces at this joint are searched for a face whose outward normal
+            // is not parallel to joint.zAxis (the fold-line direction).  Using a face whose
+            // normal is parallel to joint.zAxis in coordSystem(centroid, joint.zAxis, faceNormal)
+            // would violate the perpendicularVectors(xAxis, zAxis) precondition and cause a crash.
+            const upstreamFacePlane = findCutFacePlaneForUnfold(context, upstreamCutFacesQuery, joint.zAxis);
             const upstreamFaceCentroid = evApproximateCentroid(context, {
                         "entities" : upstreamCutFacesQuery
                     });
 
             // Evaluate the downstream cut face geometry.
-            // The outward normal points away from the downstream body into the gap zone.
-            const downstreamFacePlane = evFaceTangentPlane(context, {
-                        "face"      : qNthElement(downstreamCutFacesQuery, 0),
-                        "parameter" : vector(0.5, 0.5)
-                    });
+            // Same normal-direction guard applied to the downstream tagged faces.
+            const downstreamFacePlane = findCutFacePlaneForUnfold(context, downstreamCutFacesQuery, joint.zAxis);
             const downstreamFaceCentroid = evApproximateCentroid(context, {
                         "entities" : downstreamCutFacesQuery
                     });
 
+            // Skip if no usable face found on either side (degenerate joint -- all tagged faces
+            // happen to be parallel to the fold line and therefore unsafe for coordSystem).
+            if (upstreamFacePlane == undefined || downstreamFacePlane == undefined)
+                continue;
+
             // Source coordinate system: current state of the downstream body's cut face.
             // X-axis = joint.zAxis (fold-line direction, lies in the cut-face plane).
             // Z-axis = face outward normal (pointing toward the gap zone from the downstream side).
+            // In the bent state this normal is rotated from -joint.xAxis by the bend angle,
+            // so it must be read from the actual geometry rather than from the stored joint data.
             const sourceCS = coordSystem(downstreamFaceCentroid,
                     joint.zAxis,
                     downstreamFacePlane.normal);
@@ -1196,6 +1219,8 @@ export const kirigamiTubeUnfold = defineFeature(function(context is Context, id 
             // offset by neutralFiberArcLength along the upstream face outward normal.
             // The target z-axis is reversed relative to the upstream normal because in the flat
             // strip the two gap faces face each other across the bend zone gap.
+            // The upstream body is never transformed during unfolding (last-to-first order),
+            // so its cut face normal is the same as when the bend was created.
             var gapOffset = vector(0, 0, 0) * meter;
             if (joint.neutralFiberArcLength != undefined)
                 gapOffset = joint.neutralFiberArcLength * upstreamFacePlane.normal;
@@ -1247,18 +1272,15 @@ export const kirigamiTubeUnfold = defineFeature(function(context is Context, id 
             if (isQueryEmpty(context, upstreamBridgeFaces))
                 continue;
 
-            // All upstream cut faces at a given joint are coplanar (same miter cut plane),
-            // so evaluating the outward normal from the first face gives the correct extrude
-            // direction for the entire set.  The tagged query only contains miter cut faces
-            // (kirigamiTubeBend filters non-miter faces at tagging time), so qNthElement is safe.
-            // evFaceTangentPlane returns the outward normal for a face on a closed solid body
-            // (pointing away from the material); for a miter cut face produced by the kirigami
-            // boolean subtraction this means the normal points into the gap zone, i.e. toward
-            // the downstream body -- exactly the correct extrude direction.
-            const upstreamBridgeFaceNormal = evFaceTangentPlane(context, {
-                        "face"      : qNthElement(upstreamBridgeFaces, 0),
-                        "parameter" : vector(0.5, 0.5)
-                    }).normal;
+            // Find a face from the upstream cut faces whose outward normal is safe to use as
+            // the extrude direction.  The normal must not be parallel to the fold-line direction
+            // (bridgeJoint.zAxis) -- faces parallel to zAxis cannot be extruded in a meaningful
+            // direction for gap-filling and indicate a notch-slot side face rather than the miter
+            // cut face.  findCutFacePlaneForUnfold returns the first suitable face's Plane.
+            const upstreamBridgeFacePlane = findCutFacePlaneForUnfold(context, upstreamBridgeFaces, bridgeJoint.zAxis);
+            if (upstreamBridgeFacePlane == undefined)
+                continue;
+            const upstreamBridgeFaceNormal = upstreamBridgeFacePlane.normal;
 
             // Extrude all upstream cut faces by neutralFiberArcLength along the outward normal.
             // The resulting solid body spans exactly the gap introduced by the unfold transform,
