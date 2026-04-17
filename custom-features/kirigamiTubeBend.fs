@@ -1159,25 +1159,35 @@ export const kirigamiTubeUnfold = defineFeature(function(context is Context, id 
 
             // Unfold the downstream bodies using the geometric data baked into the joint.
             //
-            // rotationAround(fold-line, -(2 * miterAngle)) rotates the downstream body set
-            // about the fold-line axis (joint.zAxis passing through joint.apexOrigin) by
-            // exactly the negative of the full bend angle, undoing the tube bend.
-            // joint.zAxis = cross(capFaceNormal, outerWallNormal), so its sign encodes the
-            // handedness of the bend; the negated-angle convention is consistent for all bend
-            // directions.
+            // Step 1 -- Rotation.
+            // A 180-degree rotation about joint.xAxis (the miter-plane normal = stored
+            // cap-face normal) maps the downstream tube axis to the upstream tube axis
+            // direction, correctly orienting the downstream body in the flat strip.
+            // Using joint.xAxis as the axis keeps the miter face normal invariant (it is
+            // parallel to joint.xAxis), so after the rotation the upstream and downstream
+            // gap faces remain antiparallel -- a prerequisite for the bridge extrude to span
+            // the gap cleanly.  The rotation centre is upstreamFaceCentroid (centroid of the
+            // tagged cut faces on the anchor-side body), which lies on the miter plane on the
+            // tube axis.  Anchoring the rotation there ensures the downstream miter face
+            // centroid stays at upstreamFaceCentroid after the rotation, so that the
+            // subsequent gap translation places it exactly at the far end of the bridge extrude.
             //
-            // transform(neutralFiberArcLength * joint.tubeAxis) then slides the downstream
-            // bodies along the flat-strip direction by the arc length of the bent zone,
-            // opening the flat-pattern gap.  joint.tubeAxis is normalised to point downstream
-            // (away from the anchor segment toward the next segment), so no sign correction is
-            // needed.
+            // Step 2 -- Translation.
+            // transform(neutralFiberArcLength * joint.tubeAxis) slides the already-rotated
+            // downstream bodies along the flat-strip direction by the neutral-fiber arc length,
+            // opening the correct flat-pattern gap.  joint.tubeAxis points downstream (away
+            // from the anchor segment toward the next segment), which after Step 1 is also
+            // the direction the downstream body now runs.
             //
             // The two transforms are composed as gapTranslation * unfoldRotation so that the
-            // rotation is applied first (around the original apexOrigin) and the translation
-            // opens the gap afterward.
+            // rotation (Step 1) is applied first and the translation (Step 2) follows.
+            const upstreamFaceCentroid = evApproximateCentroid(context, {
+                        "entities" : upstreamCutFacesQuery
+                    });
+
             const unfoldRotation = rotationAround(
-                    line(joint.apexOrigin, joint.zAxis),
-                    -(2 * joint.miterAngle));
+                    line(upstreamFaceCentroid, joint.xAxis),
+                    180 * degree);
 
             var gapTranslation = transform(vector(0, 0, 0) * meter);
             if (joint.neutralFiberArcLength != undefined)
@@ -1191,8 +1201,9 @@ export const kirigamiTubeUnfold = defineFeature(function(context is Context, id 
 
         // Create straight bridge segments to fill the flat-layout gaps at each joint.
         //
-        // After all opTransform calls above have completed, each upstream cut face (anchor side)
-        // faces its downstream counterpart across a gap of exactly neutralFiberArcLength.
+        // After all opTransform calls above have completed, the 180-degree rotation placed
+        // each downstream miter face centroid back at the upstream miter face centroid, and
+        // the gap translation moved it exactly neutralFiberArcLength downstream along tubeAxis.
         // The upstream miter-plane cut faces are the correct profiles for a straight extrude:
         // extruding them by neutralFiberArcLength along bridgeJoint.tubeAxis (the stored
         // flat-strip direction) produces a new solid body that exactly spans the gap, replacing
