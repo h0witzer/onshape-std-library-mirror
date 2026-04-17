@@ -300,10 +300,31 @@ export const kirigamiTubeBend = defineFeature(function(context is Context, id is
         // are present (the query resolves identically to the original solid-only selection).
         definition.frameBodies = qFlattenedCompositeParts(definition.frameBodies);
 
-        const frameBodiesArray = evaluateQuery(context, definition.frameBodies);
+        // Keep only frame segment solids.  A previously generated Kirigami Tube Bend composite
+        // includes non-frame constituent bodies (for example bent-section bridge solids), which
+        // do not carry frame topology attributes and must be excluded before joint processing.
+        // This allows selecting composites from Frame and from earlier Kirigami Tube Bend runs.
+        const flattenedSelectedBodies = evaluateQuery(context, definition.frameBodies);
+        var frameBodiesArray = [];
+        for (var candidateBodyIndex = 0; candidateBodyIndex < size(flattenedSelectedBodies); candidateBodyIndex += 1)
+        {
+            const candidateBody = flattenedSelectedBodies[candidateBodyIndex];
+            const capFacesOnBody = qHasAttributeWithValueMatching(
+                    qOwnedByBody(candidateBody, EntityType.FACE),
+                    FRAME_ATTRIBUTE_TOPOLOGY_NAME,
+                    { "topologyType" : FrameTopologyType.CAP_FACE });
+            if (!isQueryEmpty(context, capFacesOnBody))
+                frameBodiesArray = append(frameBodiesArray, candidateBody);
+        }
+
         if (size(frameBodiesArray) < 2)
             throw regenError("Select at least two touching Onshape frame bodies. " ~
-                "A single body has no shared joints with another selected body.", ["frameBodies"]);
+                "Composite selections are supported, but only constituent frame bodies are used.", ["frameBodies"]);
+
+        // Replace the working query with only valid frame segment bodies so all downstream
+        // operations (attribute painting, boolean targets, and final composite creation) are
+        // scoped to valid frame geometry.
+        definition.frameBodies = qUnion(frameBodiesArray);
 
         // Tag each frame segment body with its zero-based index in frameBodiesArray.
         // This attribute persists through opCreateCompositePart and into the constituent bodies
