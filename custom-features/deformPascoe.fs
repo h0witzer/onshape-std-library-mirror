@@ -2747,12 +2747,12 @@ function deformEntities(context is Context, id is Id, definition is map)
             const faceBoundaryEdgeTable = evaluateQuery(context, allFaceBoundaryEdges);
             debugQueryCount(context, definition, "source faces", sourceFaces);
             debugQueryCount(context, definition, "face boundary edges", allFaceBoundaryEdges);
-            for (var edgeIndex, edge in faceBoundaryEdgeTable)
+            for (var faceBoundaryEdgeIndex, edge in faceBoundaryEdgeTable)
             {
                 const existingTargets = getAttributes(context, { "entities" : edge, "name" : ATTR_TARGET_EDGES });
                 if (size(existingTargets) > 0)
                     continue;
-                const targetEdgeId = id + ("faceEdge" ~ edgeIndex);
+                const targetEdgeId = id + ("faceEdge" ~ faceBoundaryEdgeIndex);
                 const targetEdge = deformEdge(context, targetEdgeId, definition, edge);
                 targetEdgeBodies = append(targetEdgeBodies, qCreatedBy(targetEdgeId, EntityType.BODY));
                 setAttribute(context, {
@@ -5086,7 +5086,7 @@ function createFaceFromSampledFaceCurves(context is Context, id is Id, definitio
     // and create opPoint guide-vertex bodies for opFillSurface.
     var guidePoints = [];
     var guidePointBodies = [];
-    var guideIndex = 0;
+    var interiorGuidePointIndex = 0;
     for (var rowIndex = 1; rowIndex < rowCount - 1; rowIndex += 1)
     {
         for (var colIndex = 1; colIndex < colCount - 1; colIndex += 1)
@@ -5100,15 +5100,15 @@ function createFaceFromSampledFaceCurves(context is Context, id is Id, definitio
                 addDebugPoint(context, targetPoint, DebugColor.BLUE);
             }
 
-            const pointId = id + ("guide" ~ guideIndex);
+            const pointId = id + ("guide" ~ interiorGuidePointIndex);
             opPoint(context, pointId, { "point" : targetPoint });
             guidePoints = append(guidePoints, qCreatedBy(pointId, EntityType.VERTEX));
             guidePointBodies = append(guidePointBodies, qCreatedBy(pointId, EntityType.BODY));
-            guideIndex += 1;
+            interiorGuidePointIndex += 1;
         }
     }
 
-    debugLog(definition, "sampled guide fallback: " ~ guideIndex ~ " interior guide point(s) from " ~ (rowCount - 2) ~ "x" ~ (colCount - 2) ~ " interior grid");
+    debugLog(definition, "sampled guide fallback: " ~ interiorGuidePointIndex ~ " interior guide point(s) from " ~ (rowCount - 2) ~ "x" ~ (colCount - 2) ~ " interior grid");
 
     const fillSucceeded = fillBoundaryWithGuidePoints(context, id + "boundaryFill", boundaryEdges, guidePoints);
     deleteQueryArrayIfNeeded(context, id + "deleteGuides", guidePointBodies, false);
