@@ -1554,7 +1554,9 @@ function nearestPathParameter(context is Context, pathData is map, point is Vect
 
     var bestParameter = 0.0;
     var bestDistance = inf * meter;
-    const sampleCount = 101;
+    // 17 coarse samples match the default guide sample density.
+    // The 8-step bisection refinement that follows brings accuracy well below the coarse step size.
+    const sampleCount = 17;
     for (var i = 0; i < sampleCount; i += 1)
     {
         const parameter = i / (sampleCount - 1);
@@ -1885,24 +1887,6 @@ function sourceTargetStationRange(pathData is map, basis is map, sourceMinX, sou
     const startStation = basis.anchorStation + sourceMinX / stationScale;
     const endStation = basis.anchorStation + sourceMaxX / stationScale;
     return validStationRange(startStation, endStation);
-}
-
-function pathStationRangeForCorners(context is Context, pathData is map, corners is array) returns map
-{
-    if (pathData.hasPath != true || size(corners) == 0)
-        return { "start" : 0.0, "end" : 1.0 };
-    if (pathData.isSurface == true)
-        return { "start" : 0.0, "end" : 1.0 };
-
-    var minStation = 1.0;
-    var maxStation = 0.0;
-    for (var corner in corners)
-    {
-        const station = nearestPathParameter(context, pathData, corner);
-        minStation = min(minStation, station);
-        maxStation = max(maxStation, station);
-    }
-    return validStationRange(minStation, maxStation);
 }
 
 function buildGuideProfile(context is Context, definition is map) returns array
@@ -4263,37 +4247,6 @@ function surfaceIsoLength(context is Context, targetFace is Query, alongU is boo
     return totalLength;
 }
 
-function surfaceParameterRangeForCorners(context is Context, pathData is map, corners is array) returns map
-{
-    var uValues = [];
-    var vValues = [];
-
-    for (var corner in corners)
-    {
-        const parameter = projectedSurfaceParameter(context, pathData, corner);
-        if (parameter == undefined)
-            continue;
-
-        uValues = append(uValues, parameter[0]);
-        vValues = append(vValues, parameter[1]);
-    }
-
-    if (size(uValues) == 0 || size(vValues) == 0)
-        return {
-                "uStart" : 0.0,
-                "uEnd" : 1.0,
-                "vCenter" : 0.5
-            };
-
-    const uRange = parameterRangeForValues(uValues, pathData.isUPeriodic == true);
-    const vRange = parameterRangeForValues(vValues, pathData.isVPeriodic == true);
-    return {
-            "uStart" : uRange.start,
-            "uEnd" : uRange.end,
-            "vCenter" : parameterRangeCenter(vRange, pathData.isVPeriodic == true)
-        };
-}
-
 function projectedSurfaceParameter(context is Context, pathData is map, point is Vector)
 {
     var distanceResult;
@@ -4819,21 +4772,13 @@ function createDeformedBSplineFace(context is Context, id is Id, definition is m
 
     if (approximation.boundaryBSplineCurves != undefined && size(approximation.boundaryBSplineCurves) > 0)
     {
-        var deformedBoundaryCurves = [];
-        try silent
-        {
-            deformedBoundaryCurves = deformBSplineCurveArray(context, definition, approximation.boundaryBSplineCurves);
-        }
-        if (size(deformedBoundaryCurves) > 0)
-        {
-            debugLog(definition, "B-spline approximation boundary curves=" ~ size(deformedBoundaryCurves));
-            operationDefinition.boundaryBSplineCurves = deformedBoundaryCurves;
-        }
-        else
-        {
-            debugLog(definition, "B-spline boundary curve deformation failed; skipping untrimmed approximation");
-            return qNothing();
-        }
+        // boundaryBSplineCurves are 2D curves in the surface's UV parameter space.
+        // They define the trimming boundary of the face and are NOT 3D world-space curves.
+        // Since control-net deformation preserves the UV parameterisation (only the 3D
+        // positions of the surface change, not the domain [knotMin, knotMax]), the
+        // trimming curves are valid unchanged and must be passed through directly.
+        debugLog(definition, "B-spline approximation boundary curves=" ~ size(approximation.boundaryBSplineCurves));
+        operationDefinition.boundaryBSplineCurves = approximation.boundaryBSplineCurves;
     }
     else
     {
@@ -4844,16 +4789,6 @@ function createDeformedBSplineFace(context is Context, id is Id, definition is m
 
     opCreateBSplineSurface(context, id, operationDefinition);
     return qCreatedBy(id, EntityType.BODY);
-}
-
-function deformBSplineCurveArray(context is Context, definition is map, curves is array) returns array
-{
-    var deformedCurves = [];
-    for (var curve in curves)
-    {
-        deformedCurves = append(deformedCurves, deformBSplineCurve(context, definition, curve));
-    }
-    return deformedCurves;
 }
 
 function deformBSplineCurve(context is Context, definition is map, curve is map)
@@ -4885,9 +4820,6 @@ function deformBSplineCurve(context is Context, definition is map, curve is map)
 
 // Epsilon for detecting knot coincidence in parametric space (unitless)
 const KNOT_COINCIDENCE_EPSILON = 1e-6;
-
-// Threshold below which the source X extent is treated as degenerate (length units)
-const MIN_SOURCE_X_SPAN = 1e-8 * meter;
 
 // Threshold below which a knot range denominator is treated as zero (unitless)
 const KNOT_RANGE_ZERO_THRESHOLD = 1e-10;
@@ -5011,21 +4943,26 @@ function detectPathAlignedUDirection(sourceData is map, controlPoints is array) 
 }
 
 /**
- * Returns sorted station values that mark deformation complexity boundaries along the path.
+ * Returns sorted interior station values that mark discrete deformation complexity boundaries.
  *
- * Collects interior cross-section station positions and guide profile sample positions.
- * These are used together with uniform knot insertion to ensure that each B-spline span
- * has a knot at or near every major transition point.
+ * Cross-section stations are where smoothStep-blended profile transitions occur.
+ * Inserting knots at these positions ensures each B-spline span sees at most one such
+ * transition. Interior stations only (endpoint stations 0 and 1 map to knotMin/knotMax
+ * which already have knots).
  *
- * @param definition {map} : Feature definition with crossSections and guideProfile
+ * Guide profiles are continuous radial envelopes sampled at regular intervals and applied
+ * point-by-point via guideCageOffsetAt. They do not introduce discrete step transitions
+ * and are therefore NOT included here — including them would drive excessive knot insertion
+ * (e.g. a 17-sample guide profile producing 15 interior stations → 60+ insertions).
+ *
+ * @param definition {map} : Feature definition with crossSections
  * @returns {array} : Sorted array of station numbers in (0, 1) — endpoint stations excluded
  */
 function collectDeformationBoundaryStations(definition is map) returns array
 {
     var stations = [];
 
-    // Interior cross-section station boundaries (0 and 1 are the parametric endpoints;
-    // they map to knotMin/knotMax which already have knots by definition)
+    // Interior cross-section station boundaries
     if (definition.crossSections is array)
     {
         for (var section in definition.crossSections)
@@ -5036,17 +4973,6 @@ function collectDeformationBoundaryStations(definition is map) returns array
                 if (station > KNOT_COINCIDENCE_EPSILON && station < 1 - KNOT_COINCIDENCE_EPSILON)
                     stations = append(stations, station);
             }
-        }
-    }
-
-    // Guide profile interior sample positions
-    if (definition.guideProfile is array)
-    {
-        const sampleCount = size(definition.guideProfile);
-        if (sampleCount > 2)
-        {
-            for (var sampleIndex = 1; sampleIndex < sampleCount - 1; sampleIndex += 1)
-                stations = append(stations, sampleIndex / (sampleCount - 1));
         }
     }
 
