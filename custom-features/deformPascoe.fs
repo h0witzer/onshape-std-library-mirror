@@ -2733,11 +2733,40 @@ function deformEntities(context is Context, id is Id, definition is map)
             sourceFaces = qUnion([qOwnedByBody(sourceQueries.solidBodies, EntityType.FACE), qOwnedByBody(sourceQueries.sheetBodies, EntityType.FACE), sourceQueries.faceQuery]);
     }
 
+    // Always eagerly deform wire bodies and directly-selected edges.
     var targetEdgeBodies = [];
     if (rebuildFaces || definition.keepCurves == true)
-        targetEdgeBodies = deformSourceEdges(context, id, definition, sourceQueries, sourceFaces);
+    {
+        targetEdgeBodies = deformWireAndDirectEdges(context, id, definition, sourceQueries);
+
+        // When the caller only wants curves (no face rebuild), also eagerly deform all face
+        // boundary edges now, since the lazy per-face path will not run.
+        if (!rebuildFaces && definition.keepCurves == true)
+        {
+            const allFaceBoundaryEdges = qAdjacent(sourceFaces, AdjacencyType.EDGE, EntityType.EDGE);
+            const faceBoundaryEdgeTable = evaluateQuery(context, allFaceBoundaryEdges);
+            debugQueryCount(context, definition, "source faces", sourceFaces);
+            debugQueryCount(context, definition, "face boundary edges", allFaceBoundaryEdges);
+            for (var edgeIndex, edge in faceBoundaryEdgeTable)
+            {
+                const existingTargets = getAttributes(context, { "entities" : edge, "name" : ATTR_TARGET_EDGES });
+                if (size(existingTargets) > 0)
+                    continue;
+                const targetEdgeId = id + ("faceEdge" ~ edgeIndex);
+                const targetEdge = deformEdge(context, targetEdgeId, definition, edge);
+                targetEdgeBodies = append(targetEdgeBodies, qCreatedBy(targetEdgeId, EntityType.BODY));
+                setAttribute(context, {
+                            "entities" : edge,
+                            "name" : ATTR_TARGET_EDGES,
+                            "attribute" : targetEdge
+                        });
+            }
+        }
+    }
     else
+    {
         debugLog(definition, "curve output disabled; skipping edge deformation");
+    }
     deformSelectedVertices(context, id, definition, sourceQueries.vertexQuery);
 
     if (!rebuildFaces)
@@ -2747,11 +2776,13 @@ function deformEntities(context is Context, id is Id, definition is map)
         return;
     }
 
-    const targetFaceBodies = rebuildSourceFaces(context, id, definition, sourceFaces);
+    // Rebuild faces with B-spline-first strategy; boundary edges are deformed lazily per face.
+    const faceRebuildResult = rebuildSourceFacesFFD(context, id, definition, sourceFaces);
     joinDeformedOutputs(context, id, definition, sourceQueries);
 
-    deleteSheetBodiesFromQueryArrayIfNeeded(context, id + "deleteSurfaces", targetFaceBodies, definition.keepSurfaces);
-    deleteQueryArrayIfNeeded(context, id + "deleteCurves", targetEdgeBodies, definition.keepCurves);
+    deleteSheetBodiesFromQueryArrayIfNeeded(context, id + "deleteSurfaces", faceRebuildResult.faceBodies, definition.keepSurfaces);
+    const allEdgeBodies = appendQueryArray(targetEdgeBodies, faceRebuildResult.lazyEdgeBodies);
+    deleteQueryArrayIfNeeded(context, id + "deleteCurves", allEdgeBodies, definition.keepCurves);
 }
 
 function collectDeformSourceQueries(definition is map) returns map
@@ -3147,19 +3178,20 @@ function queryHasEntities(context is Context, query is Query) returns boolean
     return hasEntities;
 }
 
-function deformSourceEdges(context is Context, id is Id, definition is map, sourceQueries is map, sourceFaces is Query) returns array
+// Eagerly deforms wire body edges and directly-selected edges, storing ATTR_TARGET_EDGES
+// on each source edge. Face boundary edges are NOT deformed here; they are deferred to
+// deformAndStoreBoundaryEdgesForFace, which runs lazily during face rebuild only when the
+// primary B-spline surface path fails.
+function deformWireAndDirectEdges(context is Context, id is Id, definition is map, sourceQueries is map) returns array
 {
-    const faceBoundaryEdges = qAdjacent(sourceFaces, AdjacencyType.EDGE, EntityType.EDGE);
     const wireEdges = qOwnedByBody(sourceQueries.wireBodies, EntityType.EDGE);
-    const edgeTable = evaluateQuery(context, qUnion([sourceQueries.directEdgeQuery, wireEdges, faceBoundaryEdges]));
+    const edgeTable = evaluateQuery(context, qUnion([sourceQueries.directEdgeQuery, wireEdges]));
 
     debugQueryCount(context, definition, "solid bodies", sourceQueries.solidBodies);
     debugQueryCount(context, definition, "sheet bodies", sourceQueries.sheetBodies);
     debugQueryCount(context, definition, "wire bodies", sourceQueries.wireBodies);
     debugQueryCount(context, definition, "selected faces", sourceQueries.faceQuery);
-    debugQueryCount(context, definition, "source faces", sourceFaces);
-    debugQueryCount(context, definition, "face boundary edges", faceBoundaryEdges);
-    debugLog(definition, "edge table size=" ~ size(edgeTable));
+    debugLog(definition, "wire and direct edge count=" ~ size(edgeTable));
 
     var targetEdgeBodies = [];
     for (var edgeIndex, edge in edgeTable)
@@ -3176,6 +3208,39 @@ function deformSourceEdges(context is Context, id is Id, definition is map, sour
     return targetEdgeBodies;
 }
 
+// Deforms and stores ATTR_TARGET_EDGES for all boundary edges of a single source face.
+// Called lazily during face rebuild when B-spline surface deformation fails.
+// Skips edges that already have a stored deformed target (e.g., from wire body deformation).
+// Returns an array of created wire body Queries for deletion-tracking by the caller.
+function deformAndStoreBoundaryEdgesForFace(context is Context, id is Id, definition is map, face is Query) returns array
+{
+    var baseEdges = qLoopEdges(face);
+    if (definition.reapplyHoles == true || definition.hasDeformedHoleCutters == true || definition.hasPocketProtrusionFaceExclusions == true)
+        baseEdges = qSubtraction(baseEdges, definition.reapplyBoundaryEdgesToSkip);
+
+    const edgeTable = evaluateQuery(context, baseEdges);
+    debugLog(definition, "lazy boundary edge deformation: " ~ size(edgeTable) ~ " edge(s)");
+
+    var createdEdgeBodies = [];
+    for (var edgeIndex, edge in edgeTable)
+    {
+        // Skip edges that already have a deformed target (shared with wire bodies or a previous face).
+        const existingTargets = getAttributes(context, { "entities" : edge, "name" : ATTR_TARGET_EDGES });
+        if (size(existingTargets) > 0)
+            continue;
+
+        const targetEdgeId = id + ("edge" ~ edgeIndex);
+        const targetEdge = deformEdge(context, targetEdgeId, definition, edge);
+        createdEdgeBodies = append(createdEdgeBodies, qCreatedBy(targetEdgeId, EntityType.BODY));
+        setAttribute(context, {
+                    "entities" : edge,
+                    "name" : ATTR_TARGET_EDGES,
+                    "attribute" : targetEdge
+                });
+    }
+    return createdEdgeBodies;
+}
+
 function deformSelectedVertices(context is Context, id is Id, definition is map, vertexQuery is Query)
 {
     for (var vertexIndex, vertex in evaluateQuery(context, vertexQuery))
@@ -3189,25 +3254,59 @@ function shouldRebuildFaces(definition is map) returns boolean
     return definition.keepSolid == true || definition.keepSurfaces == true;
 }
 
-function rebuildSourceFaces(context is Context, id is Id, definition is map, sourceFaces is Query) returns array
+// Rebuilds source faces using a B-spline-first FFD strategy.
+//
+// Priority per face:
+//   1. Direct B-spline surface control-net deformation (no boundary edges needed).
+//   2. On failure: lazily deform the face's boundary edges and fall through to
+//      edge-based reconstruction (loft, fill, sampled guide curves).
+//
+// Returns a map: { "faceBodies" : array, "lazyEdgeBodies" : array }
+// lazyEdgeBodies collects the wire body Queries created during lazy edge deformation
+// so the caller can track them for the keepCurves / deletion step.
+function rebuildSourceFacesFFD(context is Context, id is Id, definition is map, sourceFaces is Query) returns map
 {
     var targetFaceBodies = [];
+    var lazyEdgeBodies = [];
+
     for (var faceIndex, face in evaluateQuery(context, sourceFaces))
     {
-        const targetEdges = targetEdgesForSourceFace(context, definition, face);
-        if (size(targetEdges) < 1)
+        // --- Primary path: direct B-spline surface deformation ---
+        // deformPoint() is applied to the control net; no edge wire bodies are created.
+        var targetFaces = qNothing();
+        try
         {
-            debugLog(definition, "face " ~ faceIndex ~ " skipped because only " ~ size(targetEdges) ~ " target boundary edges were found");
-            continue;
+            targetFaces = createDeformedBSplineFace(context, id + ("face" ~ faceIndex) + "bspline", definition, face);
         }
 
-        var targetFaces = createFaceFromTargetEdges(context, id + ("face" ~ faceIndex), definition, face, qUnion(targetEdges), targetEdges);
-        if (evaluateQueryCount(context, targetFaces) == 0)
-            targetFaces = retryFaceRebuildWithAutoExcludedEdges(context, id + ("face" ~ faceIndex) + "exclude", definition, face, faceIndex);
+        if (evaluateQueryCount(context, targetFaces) > 0)
+        {
+            debugLog(definition, "face " ~ faceIndex ~ " rebuilt by deformed B-spline approximation");
+        }
+        else
+        {
+            // --- Fallback path: lazy edge deformation + edge-based reconstruction ---
+            debugLog(definition, "face " ~ faceIndex ~ " B-spline deformation failed; deforming boundary edges for edge-based fallbacks");
+            const newEdgeBodies = deformAndStoreBoundaryEdgesForFace(context, id + ("face" ~ faceIndex) + "edges", definition, face);
+            lazyEdgeBodies = appendQueryArray(lazyEdgeBodies, newEdgeBodies);
+
+            const targetEdges = targetEdgesForSourceFace(context, definition, face);
+            if (size(targetEdges) < 1)
+            {
+                debugLog(definition, "face " ~ faceIndex ~ " skipped: no target boundary edges after lazy deformation");
+                continue;
+            }
+
+            targetFaces = createFaceFromTargetEdges(context, id + ("face" ~ faceIndex), definition, face, qUnion(targetEdges), targetEdges);
+
+            if (evaluateQueryCount(context, targetFaces) == 0)
+                targetFaces = retryFaceRebuildWithAutoExcludedEdges(context, id + ("face" ~ faceIndex) + "exclude", definition, face, faceIndex);
+        }
 
         if (evaluateQueryCount(context, targetFaces) == 0)
         {
             debugLog(definition, "face " ~ faceIndex ~ " produced no target surface");
+            const targetEdges = targetEdgesForSourceFace(context, definition, face);
             debugEntitiesIfEnabled(context, definition, qUnion(targetEdges), DebugColor.RED);
             continue;
         }
@@ -3219,7 +3318,10 @@ function rebuildSourceFaces(context is Context, id is Id, definition is map, sou
                 });
         targetFaceBodies = append(targetFaceBodies, targetFaces);
     }
-    return targetFaceBodies;
+    return {
+            "faceBodies" : targetFaceBodies,
+            "lazyEdgeBodies" : lazyEdgeBodies
+        };
 }
 
 function targetEdgesForSourceFace(context is Context, definition is map, face is Query) returns array
@@ -3783,11 +3885,32 @@ function deformVertex(context is Context, id is Id, definition is map, vertex is
 
 function deformEdge(context is Context, id is Id, definition is map, edge is Query) returns Query
 {
+    // Primary path: deform the B-spline control net directly.
+    // evApproximateBSplineCurve yields an exact parametric representation of the edge,
+    // so applying deformPoint() to each control point produces a geometrically superior
+    // result with far fewer kernel calls than sampling points and fitting a new spline.
+    var bSplineSucceeded = false;
+    try
+    {
+        const sourceCurve = evApproximateBSplineCurve(context, { "edge" : edge });
+        const deformedCurve = deformBSplineCurve(context, definition, sourceCurve);
+        opCreateBSplineCurve(context, id + "bspline", { "bSplineCurve" : deformedCurve });
+        bSplineSucceeded = true;
+    }
+    if (bSplineSucceeded)
+    {
+        debugLog(definition, "edge deformed via B-spline control net");
+        return qCreatedBy(id + "bspline", EntityType.EDGE);
+    }
+
+    // Fallback: sample points along the source edge and fit a new spline through the
+    // deformed positions. Used only when B-spline approximation or creation fails.
+    debugLog(definition, "B-spline edge deformation failed; falling back to sample-and-fit");
     const points = deformEdgePoints(context, definition, edge);
-    opFitSpline(context, id, {
+    opFitSpline(context, id + "fit", {
                 "points" : points
             });
-    return qCreatedBy(id, EntityType.EDGE);
+    return qCreatedBy(id + "fit", EntityType.EDGE);
 }
 
 function deformEdgePoints(context is Context, definition is map, edge is Query) returns array
@@ -4832,7 +4955,11 @@ function boxCorners(bounds is Box3d) returns array
 
 function createFaceFromTargetEdges(context is Context, id is Id, definition is map, sourceFace is Query, edgesQuery is Query, edges is array) returns Query
 {
-    debugLog(definition, "rebuilding face with " ~ size(edges) ~ " boundary edge(s)");
+    // B-spline direct surface deformation is now attempted upstream in rebuildSourceFacesFFD
+    // before boundary edges are deformed at all. By the time this function is called,
+    // B-spline has already failed and boundary edges have been lazily deformed.
+    // The cascade here handles edge-based reconstruction methods only.
+    debugLog(definition, "rebuilding face with " ~ size(edges) ~ " boundary edge(s) (edge-based fallbacks)");
 
     if (size(edges) == 2)
     {
@@ -4890,26 +5017,7 @@ function createFaceFromTargetEdges(context is Context, id is Id, definition is m
         debugLog(definition, "face rebuilt by fill surface");
         return qCreatedBy(id + "fill", EntityType.BODY);
     }
-    debugLog(definition, "fill surface failed; trying B-spline approximation");
-
-    if (shouldTryBSplineFaceRebuild(definition, edges))
-    {
-        var splineResult = qNothing();
-        try silent
-        {
-            splineResult = createDeformedBSplineFace(context, id + "spline", definition, sourceFace);
-        }
-        if (evaluateQueryCount(context, splineResult) > 0)
-        {
-            debugLog(definition, "face rebuilt by deformed B-spline approximation");
-            return splineResult;
-        }
-        debugLog(definition, "deformed B-spline approximation failed; trying sampled face-curve fallback");
-    }
-    else
-    {
-        debugLog(definition, "B-spline approximation disabled; trying sampled face-curve fallback");
-    }
+    debugLog(definition, "fill surface failed; trying sampled face-curve fallback");
 
     if (shouldTryFaceCurveRebuild(definition))
     {
@@ -4920,7 +5028,7 @@ function createFaceFromTargetEdges(context is Context, id is Id, definition is m
         }
         if (evaluateQueryCount(context, faceCurveResult) > 0)
         {
-            debugLog(definition, "face rebuilt from sampled face curves constrained to deformed boundary edges");
+            debugLog(definition, "face rebuilt from sampled B-spline interior guides constrained to deformed boundary edges");
             return faceCurveResult;
         }
         debugLog(definition, "sampled face-curve fallback failed");
@@ -4932,128 +5040,84 @@ function createFaceFromTargetEdges(context is Context, id is Id, definition is m
     return qNothing();
 }
 
+// The sampled face-curve fallback is always worth attempting when it reaches this point:
+// the B-spline primary path and both loft paths have already failed, so any additional
+// effort here is worthwhile. The keepSolid guard is retained because interior guide points
+// can occasionally confuse the variational fill solver into producing surfaces that do not
+// close into a valid solid region.
 function shouldTryFaceCurveRebuild(definition is map) returns boolean
 {
-    return requestedFaceSamples(definition) > DEFAULT_FACE_SAMPLE_COUNT && definition.keepSolid != true;
+    return definition.keepSolid != true;
 }
 
-function shouldTryBSplineFaceRebuild(definition is map, edges is array) returns boolean
-{
-    return definition.useBSplineFaceRebuild == true && size(edges) >= 2;
-}
-
+// Last-resort face reconstruction: drives opFillSurface with interior guide vertices
+// derived from the B-spline surface control-point grid of the source face.
+//
+// The original implementation created N iso-curve wire bodies via opCreateCurvesOnFace,
+// sampled them with evEdgeTangentLines, and deleted the bodies afterward. This replaces
+// that cascade with a single evApproximateBSplineSurface call: interior control points
+// are extracted directly from the grid, deformed via deformPoint(), and materialized as
+// opPoint guide vertices — no intermediate wire bodies are created or deleted.
+//
+// If the source face has fewer than 3 rows or columns in its control net, there are no
+// interior grid positions and opFillSurface runs without guide points (same as the plain
+// fill path, which already failed). In practice this function is reached only when the
+// B-spline surface primary path and both loft paths have failed, so degenerate faces
+// rarely reach it.
 function createFaceFromSampledFaceCurves(context is Context, id is Id, definition is map, sourceFace is Query, boundaryEdges is Query) returns Query
 {
-    const sampleCount = resolvedFaceSamples(definition);
-    var helperBodies = [];
-    var guidePoints = [];
-
-    const sourceCurves = createFaceSampleCurves(context, id + "source", sourceFace, sampleCount);
-    helperBodies = appendQueryArray(helperBodies, sourceCurves.helperBodies);
-
-    if (size(sourceCurves.profileEdges) == 0)
+    // Obtain the B-spline surface approximation and extract the plain-map control grid.
+    var mutableSurface = undefined;
+    try silent
     {
-        deleteQueryArrayIfNeeded(context, id + "deleteFailedHelpers", helperBodies, false);
+        const approximation = evApproximateBSplineSurface(context, { "face" : sourceFace });
+        mutableSurface = extractMutableSurface(approximation.bSplineSurface);
+    }
+    if (mutableSurface == undefined)
+    {
+        debugLog(definition, "sampled guide fallback: could not obtain B-spline surface approximation");
         return qNothing();
     }
 
-    const profileResult = sampleDeformedFaceInteriorGuides(context, id + "profile", definition, sourceCurves.profileEdges, sampleCount);
-    helperBodies = appendQueryArray(helperBodies, profileResult.helperBodies);
-    guidePoints = appendQueryArray(guidePoints, profileResult.guidePoints);
-    if (!profileResult.success)
-    {
-        deleteQueryArrayIfNeeded(context, id + "deleteFailedHelpers", helperBodies, false);
-        return qNothing();
-    }
+    const rowCount = size(mutableSurface.controlPoints);
+    const colCount = rowCount > 0 ? size(mutableSurface.controlPoints[0]) : 0;
 
-    const boundaryFillSucceeded = fillBoundaryWithGuidePoints(context, id + "boundaryFill", boundaryEdges, guidePoints);
-    deleteQueryArrayIfNeeded(context, id + "deleteHelpers", helperBodies, false);
-
-    if (boundaryFillSucceeded)
-    {
-        debugLog(definition, "sampled face-curve boundary fill used " ~ size(guidePoints) ~ " interior guide point(s) from " ~ profileResult.curveCount ~ " source face curve(s)");
-        return qCreatedBy(id + "boundaryFill", EntityType.BODY);
-    }
-
-    debugLog(definition, "sampled face-curve boundary fill failed");
-    return qNothing();
-}
-
-function resolvedFaceSamples(definition is map) returns number
-{
-    return max(3, floor(requestedFaceSamples(definition)));
-}
-
-function requestedFaceSamples(definition is map) returns number
-{
-    if (definition.faceSamples == undefined)
-        return DEFAULT_FACE_SAMPLE_COUNT;
-    return definition.faceSamples;
-}
-
-function createFaceSampleCurves(context is Context, id is Id, sourceFace is Query, sampleCount is number) returns map
-{
-    const profileCurves = createFaceIsoCurves(context, id + "Profile", sourceFace, sampleCount, false);
-    return {
-            "profileEdges" : evaluateQuery(context, profileCurves),
-            "helperBodies" : [
-                qCreatedBy(id + "Profile", EntityType.BODY)
-            ]
-        };
-}
-
-function sampleDeformedFaceInteriorGuides(context is Context, id is Id, definition is map, sourceEdges is array, sampleCount is number) returns map
-{
-    var helperBodies = [];
+    // Deform interior control points (rows 1..rowCount-2, columns 1..colCount-2)
+    // and create opPoint guide-vertex bodies for opFillSurface.
     var guidePoints = [];
-    var curveCount = 0;
-
-    for (var curveIndex = 0; curveIndex < size(sourceEdges); curveIndex += 1)
+    var guidePointBodies = [];
+    var guideIndex = 0;
+    for (var rowIndex = 1; rowIndex < rowCount - 1; rowIndex += 1)
     {
-        const curveData = sampleDeformedFaceCurveFromEdge(context, definition, sourceEdges[curveIndex], sampleCount);
-        if (curveData == undefined)
-            return faceGuideSampleResult(false, helperBodies, guidePoints, curveCount);
-
-        if (curveIndex > 0 && curveIndex < size(sourceEdges) - 1)
+        for (var colIndex = 1; colIndex < colCount - 1; colIndex += 1)
         {
-            const guidePointResult = createInteriorGuidePoints(context, id + ("guidePoint" ~ curveIndex), curveData);
-            guidePoints = appendQueryArray(guidePoints, guidePointResult.guidePoints);
-            helperBodies = appendQueryArray(helperBodies, guidePointResult.helperBodies);
+            const sourcePoint = mutableSurface.controlPoints[rowIndex][colIndex];
+            const targetPoint = deformPoint(context, definition, sourcePoint);
+
+            if (definition.showSamples)
+            {
+                addDebugPoint(context, sourcePoint, DebugColor.GREEN);
+                addDebugPoint(context, targetPoint, DebugColor.BLUE);
+            }
+
+            const pointId = id + ("guide" ~ guideIndex);
+            opPoint(context, pointId, { "point" : targetPoint });
+            guidePoints = append(guidePoints, qCreatedBy(pointId, EntityType.VERTEX));
+            guidePointBodies = append(guidePointBodies, qCreatedBy(pointId, EntityType.BODY));
+            guideIndex += 1;
         }
-
-        curveCount += 1;
     }
 
-    return faceGuideSampleResult(true, helperBodies, guidePoints, curveCount);
-}
+    debugLog(definition, "sampled guide fallback: " ~ guideIndex ~ " interior guide point(s) from " ~ (rowCount - 2) ~ "x" ~ (colCount - 2) ~ " interior grid");
 
-function faceGuideSampleResult(success is boolean, helperBodies is array, guidePoints is array, curveCount is number) returns map
-{
-    return {
-            "success" : success,
-            "helperBodies" : helperBodies,
-            "guidePoints" : guidePoints,
-            "curveCount" : curveCount
-        };
-}
+    const fillSucceeded = fillBoundaryWithGuidePoints(context, id + "boundaryFill", boundaryEdges, guidePoints);
+    deleteQueryArrayIfNeeded(context, id + "deleteGuides", guidePointBodies, false);
 
-function createInteriorGuidePoints(context is Context, id is Id, curveData is map) returns map
-{
-    var guidePoints = [];
-    var helperBodies = [];
-    for (var pointIndex = 1; pointIndex < size(curveData.points) - 1; pointIndex += 1)
-    {
-        const pointId = id + ("_" ~ pointIndex);
-        opPoint(context, pointId, {
-                    "point" : curveData.points[pointIndex]
-                });
-        guidePoints = append(guidePoints, qCreatedBy(pointId, EntityType.VERTEX));
-        helperBodies = append(helperBodies, qCreatedBy(pointId, EntityType.BODY));
-    }
-    return {
-            "guidePoints" : guidePoints,
-            "helperBodies" : helperBodies
-        };
+    if (fillSucceeded)
+        return qCreatedBy(id + "boundaryFill", EntityType.BODY);
+
+    debugLog(definition, "sampled guide boundary fill failed");
+    return qNothing();
 }
 
 function fillBoundaryWithGuidePoints(context is Context, id is Id, boundaryEdges is Query, guidePoints is array) returns boolean
@@ -5080,55 +5144,6 @@ function appendQueryArray(target is array, queries is array) returns array
         target = append(target, query);
     }
     return target;
-}
-
-function createFaceIsoCurves(context is Context, id is Id, sourceFace is Query, curveCount is number, secondaryDirection is boolean) returns Query
-{
-    var curveNames = [];
-    for (var curveIndex = 0; curveIndex < curveCount; curveIndex += 1)
-    {
-        curveNames = append(curveNames, "curve" ~ curveIndex);
-    }
-
-    const creationType = secondaryDirection ? FaceCurveCreationType.DIR2_AUTO_SPACED_ISO : FaceCurveCreationType.DIR1_AUTO_SPACED_ISO;
-    const curveDefinition = curveOnFaceDefinition(sourceFace, creationType, curveNames, curveCount);
-    opCreateCurvesOnFace(context, id, {
-                "curveDefinition" : [curveDefinition]
-            });
-
-    return qCreatedBy(id, EntityType.EDGE);
-}
-
-function sampleDeformedFaceCurveFromEdge(context is Context, definition is map, sourceCurve is Query, sampleCount is number)
-{
-    var sourceTangents = [];
-    try silent
-    {
-        sourceTangents = evEdgeTangentLines(context, {
-                    "edge" : sourceCurve,
-                    "parameters" : range(0, 1, sampleCount),
-                    "arcLengthParameterization" : true
-                });
-    }
-    if (size(sourceTangents) != sampleCount)
-        return undefined;
-
-    var points = [];
-    for (var tangentLine in sourceTangents)
-    {
-        const targetPoint = deformPoint(context, definition, tangentLine.origin);
-        points = append(points, targetPoint);
-        if (definition.showSamples)
-        {
-            addDebugPoint(context, tangentLine.origin, DebugColor.GREEN);
-            addDebugPoint(context, targetPoint, DebugColor.BLUE);
-        }
-    }
-
-    return {
-            "points" : points,
-            "parameters" : range(0, 1, sampleCount)
-        };
 }
 
 function createDeformedBSplineFace(context is Context, id is Id, definition is map, sourceFace is Query) returns Query
@@ -5900,8 +5915,20 @@ function tryJoinAutoExcludedTargetFaces(context is Context, id is Id, definition
                     "entities" : baseEdges,
                     "name" : ATTR_TARGET_EDGES
                 });
+
         if (size(targetEdges) < 1)
+        {
+            // This face was deformed via the B-spline direct path (no ATTR_TARGET_EDGES set).
+            // Its target body already exists in ATTR_TARGET_FACES; include it directly rather
+            // than skipping it, so the retry solid is not missing B-spline-rebuilt faces.
+            const existingTargetFaces = getAttributes(context, {
+                        "entities" : face,
+                        "name" : ATTR_TARGET_FACES
+                    });
+            if (size(existingTargetFaces) > 0)
+                fallbackTargetFaces = append(fallbackTargetFaces, existingTargetFaces[0]);
             continue;
+        }
 
         const targetFaces = createFaceFromTargetEdges(context, id + ("face" ~ faceIndex), definition, face, qUnion(targetEdges), targetEdges);
         if (evaluateQueryCount(context, targetFaces) > 0)
