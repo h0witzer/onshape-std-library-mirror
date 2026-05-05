@@ -57,15 +57,18 @@ export const DEFORM_SECTION_INDEX_BOUNDS =
             (unitless) : [0, 0, 10000]
         } as IntegerBoundSpec;
 
-export const DEFORM_PATH_KNOT_INSERTIONS_BOUNDS =
-{
-            (unitless) : [0, 32, 200]
-        } as IntegerBoundSpec;
+// Number of knot spans targeted per inter-section region in the path direction.
+// A smoothStep blending between two adjacent cross-sections reaches its maximum
+// curvature at roughly t=0.3 and t=0.7 of the inter-section span. Degree-3
+// B-spline pieces need at least 4 spans per section interval (one per root of
+// the second derivative of smoothStep, plus endpoints) to track the nonlinearity
+// within acceptable tolerance. Increasing this gives higher accuracy at the cost
+// of a larger control net.
+const KNOTS_PER_SECTION_SPAN = 4;
 
-export const DEFORM_TRANSVERSE_KNOT_INSERTIONS_BOUNDS =
-{
-            (unitless) : [0, 8, 200]
-        } as IntegerBoundSpec;
+// Minimum total path-direction spans regardless of section count (for deformations
+// where a single section or no guide produces a simple uniform bend).
+const MIN_PATH_KNOT_SPANS = 8;
 
 const ATTR_TARGET_EDGES = "deformTargetEdges";
 const ATTR_TARGET_FACES = "deformTargetFaces";
@@ -221,28 +224,13 @@ export const deform = defineFeature(function(context is Context, id is Id, defin
                     }
             definition.pocketProtrusionSeedFaces is Query;
 
-            annotation { "Group Name" : "Sampling", "Collapsed By Default" : true }
+            annotation { "Group Name" : "Debug", "Collapsed By Default" : true }
             {
-                annotation { "Name" : "Edge sample step" }
-                isLength(definition.edgeSampleStep, DEFORM_EDGE_STEP_BOUNDS);
-
-                annotation { "Name" : "Face samples", "Description" : "For surface-only output, enables sampled iso-curve fallback after standard face rebuilds fail." }
-                isInteger(definition.faceSamples, DEFORM_FACE_SAMPLE_COUNT_BOUNDS);
-
-                annotation { "Name" : "B-spline face rebuilds", "Description" : "Approximate complex faces as deformed B-spline surfaces before trying fill.", "Default" : true, "UIHint" : UIHint.ALWAYS_HIDDEN }
-                definition.useBSplineFaceRebuild is boolean;
-
                 annotation { "Name" : "Guide samples" }
                 isInteger(definition.guideSampleCount, DEFORM_SAMPLE_COUNT_BOUNDS);
 
                 annotation { "Name" : "Show samples" }
                 definition.showSamples is boolean;
-
-                annotation { "Name" : "Max path knot insertions", "Description" : "Maximum knots to insert in the path-aligned direction per B-spline surface rebuild. Knots are placed at cross-section station boundaries to improve deformation accuracy without over-sampling." }
-                isInteger(definition.maxPathKnotInsertions, DEFORM_PATH_KNOT_INSERTIONS_BOUNDS);
-
-                annotation { "Name" : "Max transverse knot insertions", "Description" : "Maximum knots to insert in the transverse direction per B-spline surface rebuild." }
-                isInteger(definition.maxTransverseKnotInsertions, DEFORM_TRANSVERSE_KNOT_INSERTIONS_BOUNDS);
             }
         }
 
@@ -494,12 +482,8 @@ export const deform = defineFeature(function(context is Context, id is Id, defin
             keepSurfaces : false,
             keepCurves : false,
             edgeSampleStep : DEFAULT_EDGE_SAMPLE_STEP,
-            "faceSamples" : DEFAULT_FACE_SAMPLE_COUNT,
-            useBSplineFaceRebuild : true,
             guideSampleCount : DEFAULT_GUIDE_SAMPLE_COUNT,
             showSamples : false,
-            maxPathKnotInsertions : 32,
-            maxTransverseKnotInsertions : 8,
             enableDebugLogs : false,
             activeCrossSectionIndex : 0,
             newFeature : true,
@@ -765,18 +749,10 @@ function normalizeDefinitionDefaults(definition is map) returns map
         definition.startPathParameter = clamp01(definition.startPathParameter);
     if (definition.edgeSampleStep == undefined)
         definition.edgeSampleStep = DEFAULT_EDGE_SAMPLE_STEP;
-    if (definition.faceSamples == undefined)
-        definition.faceSamples = DEFAULT_FACE_SAMPLE_COUNT;
-    if (definition.useBSplineFaceRebuild == undefined)
-        definition.useBSplineFaceRebuild = true;
     if (definition.guideSampleCount == undefined)
         definition.guideSampleCount = DEFAULT_GUIDE_SAMPLE_COUNT;
     if (definition.showSamples == undefined)
         definition.showSamples = false;
-    if (definition.maxPathKnotInsertions == undefined)
-        definition.maxPathKnotInsertions = 32;
-    if (definition.maxTransverseKnotInsertions == undefined)
-        definition.maxTransverseKnotInsertions = 8;
     if (definition.pointQty == undefined)
         definition.pointQty = inferredPointQty(definition);
 
@@ -5388,29 +5364,33 @@ function detectPathAlignedUDirection(sourceData is map, controlPoints is array) 
 /**
  * Returns sorted station values that mark deformation complexity boundaries along the path.
  *
- * Cross-section stations define where the smoothStep-blended deformation profile transitions,
- * and guide envelope samples are uniformly spaced breakpoints of the piecewise-linear radial
- * envelope. Inserting knots at the corresponding surface parameters ensures that each
- * B-spline span sees at most one section transition.
+ * Collects interior cross-section station positions and guide profile sample positions.
+ * These are used together with uniform knot insertion to ensure that each B-spline span
+ * has a knot at or near every major transition point.
  *
  * @param definition {map} : Feature definition with crossSections and guideProfile
- * @returns {array} : Sorted array of station numbers in [0, 1]
+ * @returns {array} : Sorted array of station numbers in (0, 1) — endpoint stations excluded
  */
 function collectDeformationBoundaryStations(definition is map) returns array
 {
     var stations = [];
 
-    // Cross-section station boundaries
+    // Interior cross-section station boundaries (0 and 1 are the parametric endpoints;
+    // they map to knotMin/knotMax which already have knots by definition)
     if (definition.crossSections is array)
     {
         for (var section in definition.crossSections)
         {
             if (section.station is number)
-                stations = append(stations, clamp01(section.station));
+            {
+                const station = clamp01(section.station);
+                if (station > KNOT_COINCIDENCE_EPSILON && station < 1 - KNOT_COINCIDENCE_EPSILON)
+                    stations = append(stations, station);
+            }
         }
     }
 
-    // Guide profile sample positions (uniformly spaced in t: sampleIndex / (count - 1))
+    // Guide profile interior sample positions
     if (definition.guideProfile is array)
     {
         const sampleCount = size(definition.guideProfile);
@@ -5425,98 +5405,116 @@ function collectDeformationBoundaryStations(definition is map) returns array
 }
 
 /**
- * Estimates the surface knot-space parameter that corresponds to a deformation station.
+ * Computes the sorted list of uniformly-spaced knot values needed to enrich a knot vector
+ * to the target span count, supplemented by any deformation station boundaries that are
+ * not already within KNOT_COINCIDENCE_EPSILON of an existing knot.
  *
- * Uses a linear stretch from the source data X extent [minX, maxX] onto the knot range
- * [knotMin, knotMax]. This is accurate when the surface's parametric distribution is roughly
- * uniform along the path, which holds for typical planar or mildly curved faces.
+ * Target span count is determined by:
+ *   targetSpans = max(MIN_PATH_KNOT_SPANS, activeSectionCount * KNOTS_PER_SECTION_SPAN)
+ * where activeSectionCount = max(1, number of interior station transitions + 1).
  *
- * @param definition {map} : Feature definition with sourceData and pathData
- * @param station {number} : Deformation station in [0, 1]
- * @param knotMin {number} : First (minimum) knot value
- * @param knotMax {number} : Last (maximum) knot value
- * @returns {number} : Estimated surface parameter within [knotMin, knotMax]
- */
-function stationToSurfaceKnotParameter(definition is map, station is number, knotMin is number, knotMax is number) returns number
-{
-    const localX = sourceLocalXForStation(definition, station);
-    const source = definition.sourceData;
-    const xSpan = source.maxX - source.minX;
-    if (abs(xSpan) < MIN_SOURCE_X_SPAN)
-        return knotMin + (knotMax - knotMin) * clamp01(station);
-    const fraction = clamp01((localX - source.minX) / xSpan);
-    return knotMin + fraction * (knotMax - knotMin);
-}
-
-/**
- * Computes the sorted list of knot values to insert into the path-aligned direction of a surface.
+ * The uniform grid ensures that each B-spline span subtends a small enough portion of the
+ * deformation domain that the nonlinearity of deformPoint() is well-approximated by the
+ * linear interpolation between deformed control points. Station boundaries are additionally
+ * inserted so that section transitions always land on a knot, improving derivative continuity
+ * at those transitions.
  *
- * For each deformation boundary station (cross-section or guide sample), if its estimated surface
- * parameter does not already have a knot within KNOT_COINCIDENCE_EPSILON, that parameter is
- * added as a candidate insertion. Candidates are deduplicated and capped at maxInsertions.
+ * There is no arbitrary upper cap: the correct number of insertions is determined entirely
+ * by deformation complexity.
  *
- * @param definition {map} : Feature definition with sourceData, crossSections, guideProfile
- * @param knotVector {array} : Plain array of padded knot values (from evApproximateBSplineSurface)
- * @param maxInsertions {number} : Maximum number of insertions to return
+ * @param definition {map} : Feature definition with crossSections and guideProfile
+ * @param knotVector {array} : Padded knot vector (from evApproximateBSplineSurface)
+ * @param degree {number} : B-spline degree for the direction being refined
  * @returns {array} : Sorted array of knot parameters to insert (may be empty)
  */
-function computePathAlignedKnotInsertions(definition is map, knotVector is array, maxInsertions is number) returns array
+function computeEnrichedKnotInsertions(definition is map, knotVector is array, degree is number) returns array
 {
-    const boundaryStations = collectDeformationBoundaryStations(definition);
-    if (size(boundaryStations) == 0 || maxInsertions <= 0)
-        return [];
-
     const knotCount = size(knotVector);
     if (knotCount < 2)
         return [];
 
     const knotMin = knotVector[0];
     const knotMax = knotVector[knotCount - 1];
-    if (abs(knotMax - knotMin) < KNOT_RANGE_ZERO_THRESHOLD)
+    const knotRange = knotMax - knotMin;
+    if (abs(knotRange) < KNOT_RANGE_ZERO_THRESHOLD)
         return [];
 
+    // Count the current number of distinct internal knot spans (interior unique knot count + 1)
+    var uniqueKnots = [knotMin];
+    for (var knotIndex = 1; knotIndex < knotCount; knotIndex += 1)
+    {
+        if (knotVector[knotIndex] - uniqueKnots[size(uniqueKnots) - 1] > KNOT_COINCIDENCE_EPSILON)
+            uniqueKnots = append(uniqueKnots, knotVector[knotIndex]);
+    }
+    // uniqueKnots includes both endpoints; spans = uniqueKnots.size - 1
+    const currentSpanCount = size(uniqueKnots) - 1;
+
+    // Determine the required total span count from deformation complexity
+    const boundaryStations = collectDeformationBoundaryStations(definition);
+    const activeSectionCount = max(1, size(boundaryStations) + 1);
+    const targetSpanCount = max(MIN_PATH_KNOT_SPANS, activeSectionCount * KNOTS_PER_SECTION_SPAN);
+
+    // Build the candidate insertion set as the union of:
+    //   (a) uniformly spaced parameters to reach targetSpanCount
+    //   (b) station boundary positions not already covered
     var candidates = [];
+
+    // (a) Uniform grid
+    if (targetSpanCount > currentSpanCount)
+    {
+        // We need targetSpanCount - currentSpanCount new distinct internal knots
+        // Distribute them uniformly across [knotMin, knotMax]
+        for (var spanIndex = 1; spanIndex < targetSpanCount; spanIndex += 1)
+        {
+            const targetParam = knotMin + knotRange * (spanIndex / targetSpanCount);
+            if (targetParam <= knotMin + KNOT_COINCIDENCE_EPSILON)
+                continue;
+            if (targetParam >= knotMax - KNOT_COINCIDENCE_EPSILON)
+                continue;
+            candidates = append(candidates, targetParam);
+        }
+    }
+
+    // (b) Station boundaries — insert even if targetSpanCount is already met
     for (var station in boundaryStations)
     {
-        const targetParam = stationToSurfaceKnotParameter(definition, station, knotMin, knotMax);
-
-        // Skip parameters at or beyond the endpoints
+        const targetParam = knotMin + knotRange * station;
         if (targetParam <= knotMin + KNOT_COINCIDENCE_EPSILON)
             continue;
         if (targetParam >= knotMax - KNOT_COINCIDENCE_EPSILON)
             continue;
+        candidates = append(candidates, targetParam);
+    }
 
-        // Skip if a knot is already close to this parameter
+    if (size(candidates) == 0)
+        return [];
+
+    // Deduplicate and filter out positions already present in the original knot vector
+    candidates = sort(candidates, function(a, b) { return a - b; });
+    var insertions = [];
+    for (var candidateIndex = 0; candidateIndex < size(candidates); candidateIndex += 1)
+    {
+        const candidate = candidates[candidateIndex];
+
+        // Skip if too close to the previous accepted insertion
+        if (size(insertions) > 0 && candidate - insertions[size(insertions) - 1] <= KNOT_COINCIDENCE_EPSILON)
+            continue;
+
+        // Skip if already present in the original knot vector
         var alreadyPresent = false;
         for (var knotIndex = 0; knotIndex < knotCount; knotIndex += 1)
         {
-            if (abs(knotVector[knotIndex] - targetParam) <= KNOT_COINCIDENCE_EPSILON)
+            if (abs(knotVector[knotIndex] - candidate) <= KNOT_COINCIDENCE_EPSILON)
             {
                 alreadyPresent = true;
                 break;
             }
         }
         if (!alreadyPresent)
-            candidates = append(candidates, targetParam);
+            insertions = append(insertions, candidate);
     }
 
-    if (size(candidates) == 0)
-        return [];
-
-    // Sort and remove candidates that are too close to each other
-    candidates = sort(candidates, function(a, b) { return a - b; });
-    var deduplicated = [candidates[0]];
-    for (var candidateIndex = 1; candidateIndex < size(candidates); candidateIndex += 1)
-    {
-        if (candidates[candidateIndex] - deduplicated[size(deduplicated) - 1] > KNOT_COINCIDENCE_EPSILON)
-            deduplicated = append(deduplicated, candidates[candidateIndex]);
-    }
-
-    // Cap at the maximum allowed insertions
-    if (size(deduplicated) > maxInsertions)
-        deduplicated = subArray(deduplicated, 0, maxInsertions);
-
-    return deduplicated;
+    return insertions;
 }
 
 /**
