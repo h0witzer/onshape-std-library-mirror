@@ -3143,7 +3143,7 @@ function deformWireAndDirectEdges(context is Context, id is Id, definition is ma
         const targetEdgeId = id + ("edge" ~ edgeIndex);
         var targetEdge = qNothing();
         var edgeSucceeded = false;
-        try silent
+        try
         {
             targetEdge = deformEdge(context, targetEdgeId, definition, edge);
             edgeSucceeded = true;
@@ -3194,7 +3194,7 @@ function rebuildSourceFacesFFD(context is Context, id is Id, definition is map, 
     {
         var targetFaces = qNothing();
         var faceSucceeded = false;
-        try silent
+        try
         {
             targetFaces = createDeformedBSplineFace(context, id + ("face" ~ faceIndex) + "bspline", definition, face);
             faceSucceeded = evaluateQueryCount(context, targetFaces) > 0;
@@ -5380,26 +5380,12 @@ function insertSingleKnotV(mutableSurface is map, tBar is number) returns map
 }
 
 /**
- * Returns the effective maximum path-direction knot insertions, defaulting to 32.
- *
- * @param definition {map} : Feature definition
- * @returns {number} : Non-negative integer insertion budget
- */
-function resolvedMaxPathKnotInsertions(definition is map) returns number
-{
-    if (definition.maxPathKnotInsertions is number && definition.maxPathKnotInsertions >= 0)
-        return floor(definition.maxPathKnotInsertions);
-    return 32;
-}
-
-/**
  * Refines a mutable surface's knot structure to match the complexity of the deformation domain.
  *
  * Detects the parametric direction (u or v) that aligns with the deformation path, then inserts
- * knots at the surface parameters corresponding to cross-section station boundaries and guide
- * envelope sample positions. This guarantees that no single B-spline span in the path direction
- * straddles more than one section transition, preserving deformation locality without the cost
- * of full-surface re-sampling.
+ * knots uniformly at a density sufficient for the piecewise-polynomial B-spline pieces to
+ * accurately track the nonlinear deformPoint() function within each span. The number of
+ * insertions is determined automatically from the active section count; there is no arbitrary cap.
  *
  * Periodic directions are skipped because inserting into a periodic spline requires different
  * wrap-around logic that is rarely needed for path deformation.
@@ -5410,10 +5396,6 @@ function resolvedMaxPathKnotInsertions(definition is map) returns number
  */
 function refineKnotsForDeformationDomain(definition is map, mutableSurface is map) returns map
 {
-    const maxPathInsertions = resolvedMaxPathKnotInsertions(definition);
-    if (maxPathInsertions <= 0)
-        return mutableSurface;
-
     const isUPathAligned = detectPathAlignedUDirection(definition.sourceData, mutableSurface.controlPoints);
     const pathIsPeriodic = isUPathAligned ? (mutableSurface.isUPeriodic == true) : (mutableSurface.isVPeriodic == true);
 
@@ -5424,11 +5406,12 @@ function refineKnotsForDeformationDomain(definition is map, mutableSurface is ma
     }
 
     const pathKnots = isUPathAligned ? mutableSurface.uKnots : mutableSurface.vKnots;
-    const insertionValues = computePathAlignedKnotInsertions(definition, pathKnots, maxPathInsertions);
+    const pathDegree = isUPathAligned ? mutableSurface.uDegree : mutableSurface.vDegree;
+    const insertionValues = computeEnrichedKnotInsertions(definition, pathKnots, pathDegree);
 
     if (size(insertionValues) == 0)
     {
-        debugLog(definition, "Knot insertion: all section boundaries already represented in the knot vector");
+        debugLog(definition, "Knot insertion: knot density already sufficient for deformation domain");
         return mutableSurface;
     }
 
