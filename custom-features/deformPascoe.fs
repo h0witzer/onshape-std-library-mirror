@@ -57,6 +57,16 @@ export const DEFORM_SECTION_INDEX_BOUNDS =
             (unitless) : [0, 0, 10000]
         } as IntegerBoundSpec;
 
+export const DEFORM_PATH_KNOT_INSERTIONS_BOUNDS =
+{
+            (unitless) : [0, 32, 200]
+        } as IntegerBoundSpec;
+
+export const DEFORM_TRANSVERSE_KNOT_INSERTIONS_BOUNDS =
+{
+            (unitless) : [0, 8, 200]
+        } as IntegerBoundSpec;
+
 const ATTR_TARGET_EDGES = "deformTargetEdges";
 const ATTR_TARGET_FACES = "deformTargetFaces";
 const ATTR_SOURCE_HOLE_FACES = "deformSourceHoleFaces";
@@ -227,6 +237,12 @@ export const deform = defineFeature(function(context is Context, id is Id, defin
 
                 annotation { "Name" : "Show samples" }
                 definition.showSamples is boolean;
+
+                annotation { "Name" : "Max path knot insertions", "Description" : "Maximum knots to insert in the path-aligned direction per B-spline surface rebuild. Knots are placed at cross-section station boundaries to improve deformation accuracy without over-sampling." }
+                isInteger(definition.maxPathKnotInsertions, DEFORM_PATH_KNOT_INSERTIONS_BOUNDS);
+
+                annotation { "Name" : "Max transverse knot insertions", "Description" : "Maximum knots to insert in the transverse direction per B-spline surface rebuild." }
+                isInteger(definition.maxTransverseKnotInsertions, DEFORM_TRANSVERSE_KNOT_INSERTIONS_BOUNDS);
             }
         }
 
@@ -482,6 +498,8 @@ export const deform = defineFeature(function(context is Context, id is Id, defin
             useBSplineFaceRebuild : true,
             guideSampleCount : DEFAULT_GUIDE_SAMPLE_COUNT,
             showSamples : false,
+            maxPathKnotInsertions : 32,
+            maxTransverseKnotInsertions : 8,
             enableDebugLogs : false,
             activeCrossSectionIndex : 0,
             newFeature : true,
@@ -755,6 +773,10 @@ function normalizeDefinitionDefaults(definition is map) returns map
         definition.guideSampleCount = DEFAULT_GUIDE_SAMPLE_COUNT;
     if (definition.showSamples == undefined)
         definition.showSamples = false;
+    if (definition.maxPathKnotInsertions == undefined)
+        definition.maxPathKnotInsertions = 32;
+    if (definition.maxTransverseKnotInsertions == undefined)
+        definition.maxTransverseKnotInsertions = 8;
     if (definition.pointQty == undefined)
         definition.pointQty = inferredPointQty(definition);
 
@@ -5114,16 +5136,21 @@ function createDeformedBSplineFace(context is Context, id is Id, definition is m
     const approximation = evApproximateBSplineSurface(context, {
                 "face" : sourceFace
             });
-    const sourceSurface = approximation.bSplineSurface;
-    const rowCount = size(sourceSurface.controlPoints);
+
+    // Extract to a mutable plain-map form and refine the knot structure so that
+    // no single B-spline span straddles more than one cross-section station boundary.
+    var mutableSurface = extractMutableSurface(approximation.bSplineSurface);
+    mutableSurface = refineKnotsForDeformationDomain(definition, mutableSurface);
+
+    const rowCount = size(mutableSurface.controlPoints);
     var columnCount = 0;
     if (rowCount > 0)
-        columnCount = size(sourceSurface.controlPoints[0]);
+        columnCount = size(mutableSurface.controlPoints[0]);
 
     var deformedControlPoints = [];
-    debugLog(definition, "B-spline approximation: uDegree=" ~ sourceSurface.uDegree ~ ", vDegree=" ~ sourceSurface.vDegree ~ ", control net=" ~ rowCount ~ "x" ~ columnCount);
+    debugLog(definition, "B-spline approximation: uDegree=" ~ mutableSurface.uDegree ~ ", vDegree=" ~ mutableSurface.vDegree ~ ", control net=" ~ rowCount ~ "x" ~ columnCount);
 
-    for (var row in sourceSurface.controlPoints)
+    for (var row in mutableSurface.controlPoints)
     {
         var deformedRow = [];
         for (var controlPoint in row)
@@ -5134,17 +5161,17 @@ function createDeformedBSplineFace(context is Context, id is Id, definition is m
     }
 
     var surfaceDefinition = {
-        "uDegree" : sourceSurface.uDegree,
-        "vDegree" : sourceSurface.vDegree,
-        "isUPeriodic" : sourceSurface.isUPeriodic,
-        "isVPeriodic" : sourceSurface.isVPeriodic,
+        "uDegree" : mutableSurface.uDegree,
+        "vDegree" : mutableSurface.vDegree,
+        "isUPeriodic" : mutableSurface.isUPeriodic,
+        "isVPeriodic" : mutableSurface.isVPeriodic,
         "controlPoints" : controlPointMatrix(deformedControlPoints),
-        "uKnots" : sourceSurface.uKnots,
-        "vKnots" : sourceSurface.vKnots
+        "uKnots" : knotArray(mutableSurface.uKnots),
+        "vKnots" : knotArray(mutableSurface.vKnots)
     };
 
-    if (sourceSurface.weights != undefined)
-        surfaceDefinition.weights = sourceSurface.weights;
+    if (mutableSurface.weights != undefined)
+        surfaceDefinition.weights = matrix(mutableSurface.weights);
 
     var operationDefinition = {
         "bSplineSurface" : bSplineSurface(surfaceDefinition)
@@ -5210,6 +5237,552 @@ function deformBSplineCurve(context is Context, definition is map, curve is map)
         curveDefinition.weights = curve.weights;
 
     return bSplineCurve(curveDefinition);
+}
+
+// ============================================================
+// Knot insertion for deformation-domain locality (Boehm 1980)
+// ============================================================
+
+// Epsilon for detecting knot coincidence in parametric space (unitless)
+const KNOT_COINCIDENCE_EPSILON = 1e-6;
+
+// Threshold below which the source X extent is treated as degenerate (length units)
+const MIN_SOURCE_X_SPAN = 1e-8 * meter;
+
+// Threshold below which a knot range denominator is treated as zero (unitless)
+const KNOT_RANGE_ZERO_THRESHOLD = 1e-10;
+
+// Threshold below which a NURBS homogeneous weight is treated as zero (unitless)
+const NURBS_WEIGHT_ZERO_THRESHOLD = 1e-12;
+
+/**
+ * Extracts the mutable plain-map representation of a BSplineSurface
+ * returned by evApproximateBSplineSurface, ready for Boehm knot insertion.
+ *
+ * The returned map contains:
+ *   controlPoints - 2D plain array of Vector3 (with length units), indexed [row][col]
+ *   weights       - 2D plain array of unitless numbers indexed [row][col], or undefined
+ *   uKnots        - plain array of numbers (padded knot vector)
+ *   vKnots        - plain array of numbers (padded knot vector)
+ *   uDegree, vDegree, isUPeriodic, isVPeriodic
+ *
+ * @param sourceSurface : BSplineSurface from evApproximateBSplineSurface
+ * @returns {map} : Mutable surface representation
+ */
+function extractMutableSurface(sourceSurface) returns map
+{
+    const rowCount = size(sourceSurface.controlPoints);
+    const colCount = rowCount > 0 ? size(sourceSurface.controlPoints[0]) : 0;
+
+    // Control points to plain 2D array
+    var controlPoints = makeArray(rowCount);
+    for (var rowIndex = 0; rowIndex < rowCount; rowIndex += 1)
+    {
+        controlPoints[rowIndex] = makeArray(colCount);
+        for (var columnIndex = 0; columnIndex < colCount; columnIndex += 1)
+            controlPoints[rowIndex][columnIndex] = sourceSurface.controlPoints[rowIndex][columnIndex];
+    }
+
+    // Weights to plain 2D array (or undefined for non-rational surfaces)
+    var weights = undefined;
+    if (sourceSurface.weights != undefined)
+    {
+        weights = makeArray(rowCount);
+        for (var rowIndex = 0; rowIndex < rowCount; rowIndex += 1)
+        {
+            weights[rowIndex] = makeArray(colCount);
+            for (var columnIndex = 0; columnIndex < colCount; columnIndex += 1)
+                weights[rowIndex][columnIndex] = sourceSurface.weights[rowIndex][columnIndex];
+        }
+    }
+
+    // Knot vectors to plain arrays (preserving padded format from evApproximateBSplineSurface)
+    const uKnotCount = size(sourceSurface.uKnots);
+    var uKnots = makeArray(uKnotCount);
+    for (var knotIndex = 0; knotIndex < uKnotCount; knotIndex += 1)
+        uKnots[knotIndex] = sourceSurface.uKnots[knotIndex];
+
+    const vKnotCount = size(sourceSurface.vKnots);
+    var vKnots = makeArray(vKnotCount);
+    for (var knotIndex = 0; knotIndex < vKnotCount; knotIndex += 1)
+        vKnots[knotIndex] = sourceSurface.vKnots[knotIndex];
+
+    return {
+        "controlPoints" : controlPoints,
+        "weights" : weights,
+        "uKnots" : uKnots,
+        "vKnots" : vKnots,
+        "uDegree" : sourceSurface.uDegree,
+        "vDegree" : sourceSurface.vDegree,
+        "isUPeriodic" : sourceSurface.isUPeriodic,
+        "isVPeriodic" : sourceSurface.isVPeriodic
+    };
+}
+
+/**
+ * Determines whether the u-parametric direction of the surface aligns with the deformation path.
+ *
+ * Computes how much the local-X coordinate (path axis in source space) varies when traversing
+ * the u-direction (rows) versus the v-direction (columns). The direction with the greater
+ * spread is path-aligned.
+ *
+ * Manual dot-product projection onto sourceData.xAxis is used intentionally here.
+ * No query or ev* function exists to project an arbitrary set of in-memory control points
+ * (plain Vector3 arrays, not geometry entities) onto a coordinate axis. The custom
+ * worldToLocal helper in this file converts all three local coordinates at once and
+ * requires all four axes (origin, xAxis, yAxis, zAxis), while here we only need the
+ * x-component from a partial coordinate system. The projection dot(point - origin, xAxis)
+ * is the standard and only correct way to extract local-X given a source coordinate frame.
+ *
+ * @param sourceData {map} : Source coordinate system (origin, xAxis) from definition.sourceData
+ * @param controlPoints {array} : 2D plain array of Vector3 control points [row][col]
+ * @returns {boolean} : true if u is path-aligned, false if v is
+ */
+function detectPathAlignedUDirection(sourceData is map, controlPoints is array) returns boolean
+{
+    const rowCount = size(controlPoints);
+    if (rowCount < 2)
+        return true;
+    const colCount = size(controlPoints[0]);
+    if (colCount < 2)
+        return true;
+
+    // Sum of local-X for the first and last row (measures X extent traversed in the u-direction)
+    var firstRowLocalXSum = 0 * meter;
+    var lastRowLocalXSum = 0 * meter;
+    for (var columnIndex = 0; columnIndex < colCount; columnIndex += 1)
+    {
+        firstRowLocalXSum = firstRowLocalXSum + dot(controlPoints[0][columnIndex] - sourceData.origin, sourceData.xAxis);
+        lastRowLocalXSum = lastRowLocalXSum + dot(controlPoints[rowCount - 1][columnIndex] - sourceData.origin, sourceData.xAxis);
+    }
+    const uDirectionXSpread = abs(lastRowLocalXSum - firstRowLocalXSum) / colCount;
+
+    // Sum of local-X for the first and last column (measures X extent traversed in the v-direction)
+    var firstColumnLocalXSum = 0 * meter;
+    var lastColumnLocalXSum = 0 * meter;
+    for (var rowIndex = 0; rowIndex < rowCount; rowIndex += 1)
+    {
+        firstColumnLocalXSum = firstColumnLocalXSum + dot(controlPoints[rowIndex][0] - sourceData.origin, sourceData.xAxis);
+        lastColumnLocalXSum = lastColumnLocalXSum + dot(controlPoints[rowIndex][colCount - 1] - sourceData.origin, sourceData.xAxis);
+    }
+    const vDirectionXSpread = abs(lastColumnLocalXSum - firstColumnLocalXSum) / rowCount;
+
+    return uDirectionXSpread >= vDirectionXSpread;
+}
+
+/**
+ * Returns sorted station values that mark deformation complexity boundaries along the path.
+ *
+ * Cross-section stations define where the smoothStep-blended deformation profile transitions,
+ * and guide envelope samples are uniformly spaced breakpoints of the piecewise-linear radial
+ * envelope. Inserting knots at the corresponding surface parameters ensures that each
+ * B-spline span sees at most one section transition.
+ *
+ * @param definition {map} : Feature definition with crossSections and guideProfile
+ * @returns {array} : Sorted array of station numbers in [0, 1]
+ */
+function collectDeformationBoundaryStations(definition is map) returns array
+{
+    var stations = [];
+
+    // Cross-section station boundaries
+    if (definition.crossSections is array)
+    {
+        for (var section in definition.crossSections)
+        {
+            if (section.station is number)
+                stations = append(stations, clamp01(section.station));
+        }
+    }
+
+    // Guide profile sample positions (uniformly spaced in t: sampleIndex / (count - 1))
+    if (definition.guideProfile is array)
+    {
+        const sampleCount = size(definition.guideProfile);
+        if (sampleCount > 2)
+        {
+            for (var sampleIndex = 1; sampleIndex < sampleCount - 1; sampleIndex += 1)
+                stations = append(stations, sampleIndex / (sampleCount - 1));
+        }
+    }
+
+    return sort(stations, function(a, b) { return a - b; });
+}
+
+/**
+ * Estimates the surface knot-space parameter that corresponds to a deformation station.
+ *
+ * Uses a linear stretch from the source data X extent [minX, maxX] onto the knot range
+ * [knotMin, knotMax]. This is accurate when the surface's parametric distribution is roughly
+ * uniform along the path, which holds for typical planar or mildly curved faces.
+ *
+ * @param definition {map} : Feature definition with sourceData and pathData
+ * @param station {number} : Deformation station in [0, 1]
+ * @param knotMin {number} : First (minimum) knot value
+ * @param knotMax {number} : Last (maximum) knot value
+ * @returns {number} : Estimated surface parameter within [knotMin, knotMax]
+ */
+function stationToSurfaceKnotParameter(definition is map, station is number, knotMin is number, knotMax is number) returns number
+{
+    const localX = sourceLocalXForStation(definition, station);
+    const source = definition.sourceData;
+    const xSpan = source.maxX - source.minX;
+    if (abs(xSpan) < MIN_SOURCE_X_SPAN)
+        return knotMin + (knotMax - knotMin) * clamp01(station);
+    const fraction = clamp01((localX - source.minX) / xSpan);
+    return knotMin + fraction * (knotMax - knotMin);
+}
+
+/**
+ * Computes the sorted list of knot values to insert into the path-aligned direction of a surface.
+ *
+ * For each deformation boundary station (cross-section or guide sample), if its estimated surface
+ * parameter does not already have a knot within KNOT_COINCIDENCE_EPSILON, that parameter is
+ * added as a candidate insertion. Candidates are deduplicated and capped at maxInsertions.
+ *
+ * @param definition {map} : Feature definition with sourceData, crossSections, guideProfile
+ * @param knotVector {array} : Plain array of padded knot values (from evApproximateBSplineSurface)
+ * @param maxInsertions {number} : Maximum number of insertions to return
+ * @returns {array} : Sorted array of knot parameters to insert (may be empty)
+ */
+function computePathAlignedKnotInsertions(definition is map, knotVector is array, maxInsertions is number) returns array
+{
+    const boundaryStations = collectDeformationBoundaryStations(definition);
+    if (size(boundaryStations) == 0 || maxInsertions <= 0)
+        return [];
+
+    const knotCount = size(knotVector);
+    if (knotCount < 2)
+        return [];
+
+    const knotMin = knotVector[0];
+    const knotMax = knotVector[knotCount - 1];
+    if (abs(knotMax - knotMin) < KNOT_RANGE_ZERO_THRESHOLD)
+        return [];
+
+    var candidates = [];
+    for (var station in boundaryStations)
+    {
+        const targetParam = stationToSurfaceKnotParameter(definition, station, knotMin, knotMax);
+
+        // Skip parameters at or beyond the endpoints
+        if (targetParam <= knotMin + KNOT_COINCIDENCE_EPSILON)
+            continue;
+        if (targetParam >= knotMax - KNOT_COINCIDENCE_EPSILON)
+            continue;
+
+        // Skip if a knot is already close to this parameter
+        var alreadyPresent = false;
+        for (var knotIndex = 0; knotIndex < knotCount; knotIndex += 1)
+        {
+            if (abs(knotVector[knotIndex] - targetParam) <= KNOT_COINCIDENCE_EPSILON)
+            {
+                alreadyPresent = true;
+                break;
+            }
+        }
+        if (!alreadyPresent)
+            candidates = append(candidates, targetParam);
+    }
+
+    if (size(candidates) == 0)
+        return [];
+
+    // Sort and remove candidates that are too close to each other
+    candidates = sort(candidates, function(a, b) { return a - b; });
+    var deduplicated = [candidates[0]];
+    for (var candidateIndex = 1; candidateIndex < size(candidates); candidateIndex += 1)
+    {
+        if (candidates[candidateIndex] - deduplicated[size(deduplicated) - 1] > KNOT_COINCIDENCE_EPSILON)
+            deduplicated = append(deduplicated, candidates[candidateIndex]);
+    }
+
+    // Cap at the maximum allowed insertions
+    if (size(deduplicated) > maxInsertions)
+        deduplicated = subArray(deduplicated, 0, maxInsertions);
+
+    return deduplicated;
+}
+
+/**
+ * Applies Boehm's knot insertion algorithm to a single 1D sequence of B-spline control points.
+ *
+ * Inserts the knot value tBar into the span [T[k], T[k+1]) of the padded knot vector,
+ * producing one additional control point at the exact position on the original curve
+ * (the shape is unchanged).
+ *
+ * For rational (NURBS) curves, blending is performed in homogeneous coordinates:
+ *   P'_i = ((1 - blendingWeight) * w_{i-1} * P_{i-1} + blendingWeight * w_i * P_i) / w'_i
+ *   w'_i  = (1 - blendingWeight) * w_{i-1} + blendingWeight * w_i
+ *
+ * Reference: Boehm, W. (1980). "Inserting New Knots into B-Spline Curves."
+ *            Computer-Aided Design, 12(4), 199-201.
+ *
+ * @param controlRow {array} : lastControlPointIndex+1 Vector3 control points (with length units)
+ * @param weightRow  : lastControlPointIndex+1 unitless weights, or undefined for non-rational
+ * @param knotVector {array} : Padded knot vector of size lastControlPointIndex + degree + 2
+ * @param degree {number} : B-spline degree (p)
+ * @param tBar {number} : Knot value to insert
+ * @returns {map} : { "controlRow", "weightRow", "knotVector" } with one extra element each
+ */
+function boehmKnotInsertionOnRow(controlRow is array, weightRow, knotVector is array, degree is number, tBar is number) returns map
+{
+    const lastControlPointIndex = size(controlRow) - 1;
+
+    // Find knotSpanIndex: the largest index such that knotVector[knotSpanIndex] <= tBar < knotVector[knotSpanIndex+1]
+    var knotSpanIndex = -1;
+    for (var knotIndex = 0; knotIndex < size(knotVector) - 1; knotIndex += 1)
+    {
+        if (knotVector[knotIndex] <= tBar && tBar < knotVector[knotIndex + 1])
+        {
+            knotSpanIndex = knotIndex;
+            break;
+        }
+    }
+    if (knotSpanIndex < 0)
+        return { "controlRow" : controlRow, "weightRow" : weightRow, "knotVector" : knotVector };
+
+    // Produce lastControlPointIndex+2 new control points via Boehm blending
+    var newControlRow = makeArray(lastControlPointIndex + 2);
+    var newWeightRow = (weightRow != undefined) ? makeArray(lastControlPointIndex + 2) : undefined;
+
+    for (var controlPointIndex = 0; controlPointIndex <= lastControlPointIndex + 1; controlPointIndex += 1)
+    {
+        if (controlPointIndex <= knotSpanIndex - degree)
+        {
+            // Left of the insertion zone: copy unchanged
+            newControlRow[controlPointIndex] = controlRow[controlPointIndex];
+            if (newWeightRow != undefined)
+                newWeightRow[controlPointIndex] = weightRow[controlPointIndex];
+        }
+        else if (controlPointIndex >= knotSpanIndex + 1)
+        {
+            // Right of the insertion zone: shift the index by one
+            newControlRow[controlPointIndex] = controlRow[controlPointIndex - 1];
+            if (newWeightRow != undefined)
+                newWeightRow[controlPointIndex] = weightRow[controlPointIndex - 1];
+        }
+        else
+        {
+            // Insertion zone [knotSpanIndex-degree+1, knotSpanIndex]: blend adjacent control points
+            const blendDenominator = knotVector[controlPointIndex + degree] - knotVector[controlPointIndex];
+            const blendingWeight = abs(blendDenominator) < KNOT_RANGE_ZERO_THRESHOLD ? 0.0 : (tBar - knotVector[controlPointIndex]) / blendDenominator;
+
+            if (newWeightRow != undefined)
+            {
+                // Rational NURBS: blend in homogeneous coordinates
+                const previousWeight = weightRow[controlPointIndex - 1];
+                const currentWeight = weightRow[controlPointIndex];
+                const newWeight = (1 - blendingWeight) * previousWeight + blendingWeight * currentWeight;
+                newWeightRow[controlPointIndex] = newWeight;
+                newControlRow[controlPointIndex] = abs(newWeight) < NURBS_WEIGHT_ZERO_THRESHOLD
+                    ? controlRow[controlPointIndex - 1]
+                    : ((1 - blendingWeight) * previousWeight * controlRow[controlPointIndex - 1] + blendingWeight * currentWeight * controlRow[controlPointIndex]) / newWeight;
+            }
+            else
+            {
+                // Non-rational: direct linear blend
+                newControlRow[controlPointIndex] = (1 - blendingWeight) * controlRow[controlPointIndex - 1] + blendingWeight * controlRow[controlPointIndex];
+            }
+        }
+    }
+
+    // Insert tBar into the knot vector after position knotSpanIndex
+    var newKnotVector = makeArray(size(knotVector) + 1);
+    for (var knotIndex = 0; knotIndex <= knotSpanIndex; knotIndex += 1)
+        newKnotVector[knotIndex] = knotVector[knotIndex];
+    newKnotVector[knotSpanIndex + 1] = tBar;
+    for (var knotIndex = knotSpanIndex + 1; knotIndex < size(knotVector); knotIndex += 1)
+        newKnotVector[knotIndex + 1] = knotVector[knotIndex];
+
+    return { "controlRow" : newControlRow, "weightRow" : newWeightRow, "knotVector" : newKnotVector };
+}
+
+/**
+ * Inserts a single knot value into the u-direction of a mutable surface.
+ *
+ * Applies boehmKnotInsertionOnRow to each column of the control net (fixed v, varying u)
+ * independently, adding one new row. The u-knot vector gains one element; the v-knot
+ * vector and all degree/periodicity fields remain unchanged.
+ *
+ * @param mutableSurface {map} : Mutable surface from extractMutableSurface
+ * @param tBar {number} : Knot value to insert in the u-direction
+ * @returns {map} : Updated mutable surface with one additional control point row
+ */
+function insertSingleKnotU(mutableSurface is map, tBar is number) returns map
+{
+    const rowCount = size(mutableSurface.controlPoints);
+    const colCount = size(mutableSurface.controlPoints[0]);
+    const degree = mutableSurface.uDegree;
+    const knotVector = mutableSurface.uKnots;
+
+    // Apply insertion to each column (the u-direction sequence at each fixed v)
+    var columnResults = makeArray(colCount);
+    var newKnotVector = knotVector;
+
+    for (var columnIndex = 0; columnIndex < colCount; columnIndex += 1)
+    {
+        var columnPoints = makeArray(rowCount);
+        var columnWeights = (mutableSurface.weights != undefined) ? makeArray(rowCount) : undefined;
+        for (var rowIndex = 0; rowIndex < rowCount; rowIndex += 1)
+        {
+            columnPoints[rowIndex] = mutableSurface.controlPoints[rowIndex][columnIndex];
+            if (columnWeights != undefined)
+                columnWeights[rowIndex] = mutableSurface.weights[rowIndex][columnIndex];
+        }
+
+        const result = boehmKnotInsertionOnRow(columnPoints, columnWeights, knotVector, degree, tBar);
+        columnResults[columnIndex] = result;
+        newKnotVector = result.knotVector; // Identical for every column; captured once
+    }
+
+    // Reconstruct the 2D arrays from column results (new row count = rowCount + 1)
+    const newRowCount = rowCount + 1;
+    var newControlPoints = makeArray(newRowCount);
+    var newWeights = (mutableSurface.weights != undefined) ? makeArray(newRowCount) : undefined;
+
+    for (var rowIndex = 0; rowIndex < newRowCount; rowIndex += 1)
+    {
+        newControlPoints[rowIndex] = makeArray(colCount);
+        if (newWeights != undefined)
+            newWeights[rowIndex] = makeArray(colCount);
+        for (var columnIndex = 0; columnIndex < colCount; columnIndex += 1)
+        {
+            newControlPoints[rowIndex][columnIndex] = columnResults[columnIndex].controlRow[rowIndex];
+            if (newWeights != undefined)
+                newWeights[rowIndex][columnIndex] = columnResults[columnIndex].weightRow[rowIndex];
+        }
+    }
+
+    return {
+        "controlPoints" : newControlPoints,
+        "weights" : newWeights,
+        "uKnots" : newKnotVector,
+        "vKnots" : mutableSurface.vKnots,
+        "uDegree" : mutableSurface.uDegree,
+        "vDegree" : mutableSurface.vDegree,
+        "isUPeriodic" : mutableSurface.isUPeriodic,
+        "isVPeriodic" : mutableSurface.isVPeriodic
+    };
+}
+
+/**
+ * Inserts a single knot value into the v-direction of a mutable surface.
+ *
+ * Applies boehmKnotInsertionOnRow to each row of the control net (fixed u, varying v)
+ * independently, adding one new column. The v-knot vector gains one element; the u-knot
+ * vector and all degree/periodicity fields remain unchanged.
+ *
+ * @param mutableSurface {map} : Mutable surface from extractMutableSurface
+ * @param tBar {number} : Knot value to insert in the v-direction
+ * @returns {map} : Updated mutable surface with one additional control point column
+ */
+function insertSingleKnotV(mutableSurface is map, tBar is number) returns map
+{
+    const rowCount = size(mutableSurface.controlPoints);
+    const degree = mutableSurface.vDegree;
+    const knotVector = mutableSurface.vKnots;
+
+    var newControlPoints = makeArray(rowCount);
+    var newWeights = (mutableSurface.weights != undefined) ? makeArray(rowCount) : undefined;
+    var newKnotVector = knotVector;
+
+    for (var rowIndex = 0; rowIndex < rowCount; rowIndex += 1)
+    {
+        var rowWeights = undefined;
+        if (mutableSurface.weights != undefined)
+        {
+            const colCount = size(mutableSurface.controlPoints[rowIndex]);
+            rowWeights = makeArray(colCount);
+            for (var columnIndex = 0; columnIndex < colCount; columnIndex += 1)
+                rowWeights[columnIndex] = mutableSurface.weights[rowIndex][columnIndex];
+        }
+
+        const result = boehmKnotInsertionOnRow(mutableSurface.controlPoints[rowIndex], rowWeights, knotVector, degree, tBar);
+        newControlPoints[rowIndex] = result.controlRow;
+        if (newWeights != undefined)
+            newWeights[rowIndex] = result.weightRow;
+        newKnotVector = result.knotVector;
+    }
+
+    return {
+        "controlPoints" : newControlPoints,
+        "weights" : newWeights,
+        "uKnots" : mutableSurface.uKnots,
+        "vKnots" : newKnotVector,
+        "uDegree" : mutableSurface.uDegree,
+        "vDegree" : mutableSurface.vDegree,
+        "isUPeriodic" : mutableSurface.isUPeriodic,
+        "isVPeriodic" : mutableSurface.isVPeriodic
+    };
+}
+
+/**
+ * Returns the effective maximum path-direction knot insertions, defaulting to 32.
+ *
+ * @param definition {map} : Feature definition
+ * @returns {number} : Non-negative integer insertion budget
+ */
+function resolvedMaxPathKnotInsertions(definition is map) returns number
+{
+    if (definition.maxPathKnotInsertions is number && definition.maxPathKnotInsertions >= 0)
+        return floor(definition.maxPathKnotInsertions);
+    return 32;
+}
+
+/**
+ * Refines a mutable surface's knot structure to match the complexity of the deformation domain.
+ *
+ * Detects the parametric direction (u or v) that aligns with the deformation path, then inserts
+ * knots at the surface parameters corresponding to cross-section station boundaries and guide
+ * envelope sample positions. This guarantees that no single B-spline span in the path direction
+ * straddles more than one section transition, preserving deformation locality without the cost
+ * of full-surface re-sampling.
+ *
+ * Periodic directions are skipped because inserting into a periodic spline requires different
+ * wrap-around logic that is rarely needed for path deformation.
+ *
+ * @param definition {map} : Feature definition (must include sourceData, crossSections, guideProfile, pathData)
+ * @param mutableSurface {map} : Mutable surface from extractMutableSurface
+ * @returns {map} : Refined mutable surface with path-aligned knots inserted
+ */
+function refineKnotsForDeformationDomain(definition is map, mutableSurface is map) returns map
+{
+    const maxPathInsertions = resolvedMaxPathKnotInsertions(definition);
+    if (maxPathInsertions <= 0)
+        return mutableSurface;
+
+    const isUPathAligned = detectPathAlignedUDirection(definition.sourceData, mutableSurface.controlPoints);
+    const pathIsPeriodic = isUPathAligned ? (mutableSurface.isUPeriodic == true) : (mutableSurface.isVPeriodic == true);
+
+    if (pathIsPeriodic)
+    {
+        debugLog(definition, "Knot insertion skipped: path-aligned direction is periodic");
+        return mutableSurface;
+    }
+
+    const pathKnots = isUPathAligned ? mutableSurface.uKnots : mutableSurface.vKnots;
+    const insertionValues = computePathAlignedKnotInsertions(definition, pathKnots, maxPathInsertions);
+
+    if (size(insertionValues) == 0)
+    {
+        debugLog(definition, "Knot insertion: all section boundaries already represented in the knot vector");
+        return mutableSurface;
+    }
+
+    // Apply insertions one at a time; each insertion updates the knot vector for subsequent ones
+    var refined = mutableSurface;
+    for (var tBar in insertionValues)
+    {
+        if (isUPathAligned)
+            refined = insertSingleKnotU(refined, tBar);
+        else
+            refined = insertSingleKnotV(refined, tBar);
+    }
+
+    debugLog(definition, "Knot insertion: " ~ size(insertionValues) ~ " knot(s) added in " ~ (isUPathAligned ? "u" : "v") ~ "-direction; control net is now " ~ size(refined.controlPoints) ~ "x" ~ size(refined.controlPoints[0]));
+
+    return refined;
 }
 
 function joinTargetFaces(context is Context, id is Id, definition is map, sourceBodies is Query, makeSolid is boolean)
