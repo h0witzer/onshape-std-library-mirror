@@ -159,6 +159,7 @@ export const autolayout = defineFeature(function(context is Context, id is Id, d
             println(groups);
         }
         var groupIndex = 0;
+        var totalUnnestedBodies = 0;
 
         // === Step 3: Process each group ===
         for (var materialName in keys(groups))
@@ -182,17 +183,28 @@ export const autolayout = defineFeature(function(context is Context, id is Id, d
                 if (definition.debugDiagnostics)
                     println("Laying out material: " ~ materialName ~ ", thickness: " ~ thickness);
 
-                doOneLayout(context, id + makeId("group_" ~ groupIndex), tempDef, combinedQuery);
+                totalUnnestedBodies += doOneLayout(context, id + makeId("group_" ~ groupIndex), tempDef, combinedQuery);
                 groupIndex += 1;
             }
+        }
+
+        // Report the total number of parts that could not be nested, so the user sees
+        // an actionable count in the feature info dialog.
+        if (totalUnnestedBodies > 0)
+        {
+            reportFeatureInfo(context, id, totalUnnestedBodies ~ " part(s) could not be nested (too large for sheet dimensions). They have been moved aside and excluded from the layout. Consider increasing the sheet size or splitting these parts into a separate layout.");
         }
 
     });
 
 
-export function doOneLayout(context is Context, id is Id, definition is map, bodies is Query)
+// Returns the number of bodies that could not be nested (too large for the sheet).
+// Callers should accumulate this across all groups and surface the total via
+// reportFeatureInfo on the top-level feature id.
+export function doOneLayout(context is Context, id is Id, definition is map, bodies is Query) returns number
 {
     // === Initial setup ===
+    var unnestedBodyCount = 0;
     var initialY = 0 * meter;
     try silent
     {
@@ -319,9 +331,7 @@ export function doOneLayout(context is Context, id is Id, definition is map, bod
 
             if (size(oversizedBodies) > 0)
             {
-                const materialLabel = definition.material != undefined ? definition.material : "Unknown Material";
-                const thicknessLabel = round(definition.thickness / millimeter) ~ "mm";
-                reportFeatureInfo(context, id, size(oversizedBodies) ~ " part(s) too large for sheet in group " ~ materialLabel ~ " (" ~ thicknessLabel ~ "). Moved aside and excluded from layout.");
+                unnestedBodyCount = size(oversizedBodies);
 
                 const oversizedQuery = qUnion(oversizedBodies);
                 const bbox = evBox3d(context, { "topology" : oversizedQuery });
@@ -378,6 +388,8 @@ export function doOneLayout(context is Context, id is Id, definition is map, bod
 
     // Update Y variable for next layout stack
     setVariable(context, "AutoLayout_yinitial", initialY + definition.width * 1.1);
+
+    return unnestedBodyCount;
 }
 
 
