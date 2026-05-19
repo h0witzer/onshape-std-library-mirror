@@ -101,8 +101,11 @@ export const autolayout = defineFeature(function(context is Context, id is Id, d
             const body = entities[i];
             const thickness = getBoundingThickness(context, body);
 
-            const materialQuery = definition.materialPropertyData[i].material;
-            const materialName = (materialQuery != undefined && materialQuery.name != undefined) ? materialQuery.name : "Undefined Material";
+            const materialProperty = getProperty(context, {
+                        "entity" : body,
+                        "propertyType" : PropertyType.MATERIAL
+                    });
+            const materialName = (materialProperty != undefined && materialProperty.name != undefined) ? materialProperty.name : "Undefined Material";
 
             partData = append(partData, {
                         "entity" : body,
@@ -187,9 +190,6 @@ export function doOneLayout(context is Context, id is Id, definition is map, bod
     {
         initialY = getVariable(context, "AutoLayout_yinitial");
     }
-
-    // Save original bodies for composite part creation later
-    var originalBodies = bodies;
 
     // Remove already-placed bodies (so we only process unplaced parts)
     var hasAttribute = qAttributeQuery("" as AutoLayoutAttribute);
@@ -360,23 +360,22 @@ export function doOneLayout(context is Context, id is Id, definition is map, bod
                     "entities" : placed,
                     "attribute" : "AutoLayout_PLACED" as AutoLayoutAttribute
                 });
+
+        opCreateCompositePart(context, id + "Placed_Composite", {
+                    "bodies" : placed
+                });
+
+        // Clean name: Material and thickness
+        const cleanMaterialName = definition.material != undefined ? replace(definition.material, " ", "") : "UnknownMaterial";
+        const cleanThickness = round(definition.thickness * 1000 / inch) / 1000;
+        const compositeName = cleanThickness ~ "_" ~ cleanMaterialName;
+
+        setProperty(context, {
+                    "entities" : qCreatedBy(id + "Placed_Composite", EntityType.BODY),
+                    "propertyType" : PropertyType.NAME,
+                    "value" : compositeName
+                });
     }
-
-
-    opCreateCompositePart(context, id + "Placed_Composite", {
-                "bodies" : qUnion([placed, originalBodies])
-            });
-
-    // Clean name: Material and thickness
-    const cleanMaterialName = definition.material != undefined ? replace(definition.material, " ", "") : "UnknownMaterial";
-    const cleanThickness = round(definition.thickness * 1000 / inch) / 1000;
-    const compositeName = cleanThickness ~ "_" ~ cleanMaterialName;
-
-    setProperty(context, {
-                "entities" : qCreatedBy(id + "Placed_Composite", EntityType.BODY),
-                "propertyType" : PropertyType.NAME,
-                "value" : compositeName
-            });
 
     // Update Y variable for next layout stack
     setVariable(context, "AutoLayout_yinitial", initialY + definition.width * 1.1);
@@ -821,6 +820,3 @@ export function editLogic(context is Context, id is Id, oldDefinition is map, de
 
     return definition;
 }
-
-
-
