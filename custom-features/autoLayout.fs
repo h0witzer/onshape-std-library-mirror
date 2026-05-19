@@ -93,19 +93,17 @@ export const autolayout = defineFeature(function(context is Context, id is Id, d
 
 
         // === Step 1: Extract all part data ===
-        var entities = evaluateQuery(context, qAllModifiableSolidBodies());
+        // Iterate directly over the materialPropertyData entries collected by editLogic.
+        // Each entry already carries the entity reference and its material property together,
+        // so no index-based correlation with a separate evaluateQuery call is needed.
+        // getProperty is only valid in editing logic and cannot be called here at runtime.
         var partData = [];
 
-        for (var i = 0; i < size(entities); i += 1)
+        for (var entry in definition.materialPropertyData)
         {
-            const body = entities[i];
+            const body = entry.entity;
             const thickness = getBoundingThickness(context, body);
-
-            const materialProperty = getProperty(context, {
-                        "entity" : body,
-                        "propertyType" : PropertyType.MATERIAL
-                    });
-            const materialName = (materialProperty != undefined && materialProperty.name != undefined) ? materialProperty.name : "Undefined Material";
+            const materialName = (entry.material != undefined && entry.material.name != undefined) ? entry.material.name : "Undefined Material";
 
             partData = append(partData, {
                         "entity" : body,
