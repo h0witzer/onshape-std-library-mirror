@@ -76,45 +76,34 @@ export const autolayout = defineFeature(function(context is Context, id is Id, d
         annotation { "Name" : "Show cut sheet sketches", "UIHint" : "REMEMBER_PREVIOUS_VALUE" }
         definition.showSheets is boolean;
 
-        annotation { "Name" : "Material data", "UIHint" : [UIHint.READ_ONLY] }
-        isAnything(definition.materialPropertyData);
+        annotation { "Name" : "Enable diagnostics", "UIHint" : "DISPLAY_SHORT" }
+        definition.debugDiagnostics is boolean;
+
+        if (definition.debugDiagnostics)
+        {
+            annotation { "Name" : "Material data", "UIHint" : [UIHint.READ_ONLY] }
+            isAnything(definition.materialPropertyData);
+        }
 
         annotation { "Name" : "Refresh Layouts" }
         isButton(definition.refresh);
 
-        // DEBUG ONLY
-        // annotation { "Name" : "Test Part", "Filter" : EntityType.BODY, "MaxNumberOfPicks" : 1 }
-        // definition.testP is Query;
-
     }
     {
         reportFeatureInfo(context, id, "Auto Layout with material and thickness grouping");
-        //reportFeatureInfo(context, id, "If the groups look weird, check your part thicknesses and materials");
-
 
         // === Step 1: Extract all part data ===
-        // getProperty is editLogic-only (properties.fs documents that it cannot be called
-        // in the current context during feature body execution — features regenerate before
-        // user-set properties are applied). editLogic therefore pre-resolves material names
-        // to plain strings in definition.materialPropertyData, in the same order that
-        // qAllModifiableSolidBodies() returns bodies. Both editLogic and the feature body
-        // run against the same context state, so the index order is stable.
-        //
-        // Query objects must NOT be stored in definition. QueryType is an enum that becomes
-        // a raw integer after JSON serialization, so canBeQuery (value.queryType is QueryType)
-        // always fails when the map is read back. Bodies are obtained fresh here via
-        // qNthElement, which is the typed Query constructor used throughout this file
-        // (see doOneLayout, line ~229) and is guaranteed to pass canBeQuery.
+        // Material names are resolved in editLogic (where getProperty is available) and stored
+        // as plain strings in definition.materialPropertyData, indexed to match the order
+        // qAllModifiableSolidBodies() returns bodies. Bodies are re-evaluated here via
+        // qNthElement to get fresh typed Query references.
         var partData = [];
         const allBodiesQuery = qAllModifiableSolidBodies();
         const bodyCount = size(evaluateQuery(context, allBodiesQuery));
-        // Safely read the material name array; default to empty if editLogic hasn't run yet.
         const materialData = (definition.materialPropertyData != undefined) ? definition.materialPropertyData : [];
 
         for (var bodyIndex = 0; bodyIndex < bodyCount; bodyIndex += 1)
         {
-            // qNthElement returns a typed Query (queryType: QueryType.NTH_ELEMENT) that
-            // satisfies canBeQuery and can be passed to any function taking body is Query.
             const body = qNthElement(allBodiesQuery, bodyIndex);
             const materialName = (bodyIndex < size(materialData))
                 ? materialData[bodyIndex].materialName
@@ -128,10 +117,11 @@ export const autolayout = defineFeature(function(context is Context, id is Id, d
                     });
         }
 
-        println("Total parts collected: " ~ size(partData));
+        if (definition.debugDiagnostics)
+            println("Total parts collected: " ~ size(partData));
 
         // Step 2: Group by material and thickness using tolerantEquals
-        var groups = {}; // material -> array of { thickness, parts }
+        var groups = {};
 
         for (var part in partData)
         {
@@ -163,9 +153,13 @@ export const autolayout = defineFeature(function(context is Context, id is Id, d
             }
         }
 
-        println("Material and thickness groups built:");
-        println(groups);
+        if (definition.debugDiagnostics)
+        {
+            println("Material and thickness groups built:");
+            println(groups);
+        }
         var groupIndex = 0;
+        var totalUnnestedBodies = 0;
 
         // === Step 3: Process each group ===
         for (var materialName in keys(groups))
@@ -174,8 +168,6 @@ export const autolayout = defineFeature(function(context is Context, id is Id, d
             {
                 const thickness = group.thickness;
                 const partGroup = group.parts;
-
-                println("Laying out material: " ~ materialName ~ ", thickness: " ~ thickness);
 
                 var partQueries = [];
                 for (var part in partGroup)
@@ -188,17 +180,31 @@ export const autolayout = defineFeature(function(context is Context, id is Id, d
                 tempDef.thickness = thickness;
                 tempDef.material = materialName;
 
-                doOneLayout(context, id + makeId("group_" ~ groupIndex), tempDef, combinedQuery);
+                if (definition.debugDiagnostics)
+                    println("Laying out material: " ~ materialName ~ ", thickness: " ~ thickness);
+
+                totalUnnestedBodies += doOneLayout(context, id + makeId("group_" ~ groupIndex), tempDef, combinedQuery);
                 groupIndex += 1;
             }
+        }
+
+        // Report the total number of parts that could not be nested, so the user sees
+        // an actionable count in the feature info dialog.
+        if (totalUnnestedBodies > 0)
+        {
+            reportFeatureInfo(context, id, totalUnnestedBodies ~ " part(s) could not be nested (too large for sheet dimensions). They have been moved aside and excluded from the layout. Consider increasing the sheet size or splitting these parts into a separate layout.");
         }
 
     });
 
 
-export function doOneLayout(context is Context, id is Id, definition is map, bodies is Query)
+// Returns the number of bodies that could not be nested (too large for the sheet).
+// Callers should accumulate this across all groups and surface the total via
+// reportFeatureInfo on the top-level feature id.
+export function doOneLayout(context is Context, id is Id, definition is map, bodies is Query) returns number
 {
     // === Initial setup ===
+    var unnestedBodyCount = 0;
     var initialY = 0 * meter;
     try silent
     {
@@ -241,7 +247,7 @@ export function doOneLayout(context is Context, id is Id, definition is map, bod
 
         if (!isQueryEmpty(context, face))
         {
-            var blockInfo = getInitialTransform(context, definition, face);
+            var blockInfo = getInitialTransform(context, id, definition, face);
             blocks = append(blocks, new box({
                             'w' : blockInfo.w,
                             'h' : blockInfo.h,
@@ -316,8 +322,6 @@ export function doOneLayout(context is Context, id is Id, definition is map, bod
         // Safety: check for packing failure
         if (size(prevBlocks) != 0 && size(blocks) != 0 && prevBlocks == blocks)
         {
-            println("Warning: Some parts are too large for the sheet size. Moving aside.");
-
             // Collect oversized bodies
             var oversizedBodies = [];
             for (var block in blocks)
@@ -327,10 +331,7 @@ export function doOneLayout(context is Context, id is Id, definition is map, bod
 
             if (size(oversizedBodies) > 0)
             {
-                const materialLabel = definition.material != undefined ? definition.material : "Unknown Material";
-                const thicknessLabel = round(definition.thickness / millimeter) ~ "mm";
-
-                println("⚠️ " ~ size(oversizedBodies) ~ " part(s) too large for nesting in group " ~ materialLabel ~ " (" ~ thicknessLabel ~ "). Moved aside and excluded from layout.");
+                unnestedBodyCount = size(oversizedBodies);
 
                 const oversizedQuery = qUnion(oversizedBodies);
                 const bbox = evBox3d(context, { "topology" : oversizedQuery });
@@ -343,18 +344,10 @@ export function doOneLayout(context is Context, id is Id, definition is map, bod
                             "bodies" : oversizedQuery,
                             "transform" : transformAway * transformToOrigin
                         });
-
-                // setAttribute(context, {
-                //             "entities" : oversizedQuery,
-                //             "attribute" : "AutoLayout_OVERSIZED" as AutoLayoutAttribute
-                //         });
             }
 
-            // Clear blocks so nesting can continue
             blocks = [];
             prevBlocks = [];
-
-            // No need to continue sorting, skip to next iteration
             sortedBlocks = [];
         }
         else
@@ -368,21 +361,15 @@ export function doOneLayout(context is Context, id is Id, definition is map, bod
     }
 
     // === Final: Create composite part ===
-    // IMPORTANT: setAttribute MUST come after opCreateCompositePart and setProperty.
-    // `placed` is a qUnion of qNthElement(qSubtraction(bodies, hasAttribute), i) queries,
-    // which are all lazily evaluated. Calling setAttribute on `placed` first marks those
-    // bodies with AutoLayoutAttribute, causing qSubtraction(bodies, hasAttribute) to
-    // exclude them, making every qNthElement inside `placed` resolve to the wrong body
-    // or nothing. opCreateCompositePart would then receive 0 valid entities and throw
-    // COMPOSITE_PART_SELECT_ENTITIES. Always evaluate `placed` for operations first,
-    // then stamp the attribute.
+    // setAttribute must come after opCreateCompositePart and setProperty because `placed`
+    // contains lazy queries over qSubtraction(bodies, hasAttribute). Stamping the attribute
+    // first would cause those queries to resolve to nothing, failing opCreateCompositePart.
     if (!isQueryEmpty(context, placed))
     {
         opCreateCompositePart(context, id + "Placed_Composite", {
                     "bodies" : placed
                 });
 
-        // Clean name: Material and thickness
         const cleanMaterialName = definition.material != undefined ? replace(definition.material, " ", "") : "UnknownMaterial";
         const cleanThickness = round(definition.thickness * 1000 / inch) / 1000;
         const compositeName = cleanThickness ~ "_" ~ cleanMaterialName;
@@ -393,8 +380,6 @@ export function doOneLayout(context is Context, id is Id, definition is map, bod
                     "value" : compositeName
                 });
 
-        // Set attribute last so the lazy qSubtraction queries inside `placed` still
-        // resolve correctly for the operations above.
         setAttribute(context, {
                     "entities" : placed,
                     "attribute" : "AutoLayout_PLACED" as AutoLayoutAttribute
@@ -403,6 +388,8 @@ export function doOneLayout(context is Context, id is Id, definition is map, bod
 
     // Update Y variable for next layout stack
     setVariable(context, "AutoLayout_yinitial", initialY + definition.width * 1.1);
+
+    return unnestedBodyCount;
 }
 
 
@@ -413,20 +400,7 @@ export function sortBlocks(blocks is array)
 {
     var sortedBlocks = sort(blocks, function(block1, block2)
     {
-        // if (max(block2[].w, block2[].h) != max(block1[].w, block1[].h))
-        // {
-        //     return max(block2[].w, block2[].h) - max(block1[].w, block1[].h);
-        // }
-        // else
-        // {
-        //     return min(block2[].w, block2[].h) - min(block1[].w, block1[].h);
-        // }
-
         return (block2[].w * block2[].h - block1[].w * block1[].h);
-
-        // var block1param = block1[].w * block1[].h * (1 + log(max(block1[].w, block1[].h) / min(block1[].w, block1[].h)));
-        // var block2param = block2[].w * block2[].h * (1 + log(max(block2[].w, block2[].h) / min(block2[].w, block2[].h)));
-        // return block2param - block1param;
     });
     return sortedBlocks;
 }
@@ -516,14 +490,12 @@ export function findNode(root is box, block is box)
         {
             // The part will fit in root without rotation
             normalFit = w + root[].x;
-            // normalFit = root[].w - w;
         }
 
         if ((h < root[].w || tolerantEquals(h, root[].w)) && (w < root[].h || tolerantEquals(w, root[].h)))
         {
             // The part will fit in root with rotation
             rotatedFit = h + root[].x;
-            // rotatedFit = root[].h - h;
         }
 
         if (normalFit != undefined && rotatedFit != undefined) //Part fits both ways, choose tighter fit
@@ -582,22 +554,14 @@ export function placeBlockAndSplit(node is box, block is box, spacing is ValueWi
 
     node[].used = true;
 
-
     node[].above = new box({ 'x' : node[].x, 'y' : node[].y + h + spacing, 'w' : node[].w, 'h' : node[].h - (h + spacing), 'used' : false, 'rotated' : false, 'fitParam' : 0 * meter });
     node[].right = new box({ 'x' : node[].x + w + spacing, 'y' : node[].y, 'w' : node[].w - (w + spacing), 'h' : h, 'used' : false, 'rotated' : false, 'fitParam' : 0 * meter });
-
-    // DEBUG ONLY
-    // debug(context, node[].x);
-    // debug(context, node[].y);
-    // debug(context, node[].above);
-    // debug(context, node[].right);
-
 
     return node;
 }
 
 // Computes the initial transform (rotation + movement) to place the part at the origin, oriented with the minimum bounding box
-export function getInitialTransform(context is Context, definition is map, largestFace is Query)
+export function getInitialTransform(context is Context, id is Id, definition is map, largestFace is Query)
 {
     const tempLargestFacePlane = evPlane(context, {
                 "face" : largestFace
@@ -609,10 +573,21 @@ export function getInitialTransform(context is Context, definition is map, large
     // List of all straight edges to use as candidate x axes
     var orientationEdges = qGeometry(qAdjacent(largestFace, AdjacencyType.EDGE, EntityType.EDGE), GeometryType.LINE);
     // Only unique directions (including directly opposed)
-    var unique = getUniqueVectors(context, orientationEdges);
+    var rawUnique = getUniqueVectors(context, orientationEdges);
 
-    // DEBUG ONLY
-    // debug(context, unique);
+    // Deduplicate directions, skipping any that are parallel to the face normal (degenerate for coordSystem).
+    var unique = [];
+    for (var rawDir in rawUnique)
+    {
+        if (!parallelVectors(largestFacePlane.normal, rawDir) &&
+            size(filter(unique, function(existingDir)
+                    {
+                        return parallelVectors(rawDir, existingDir);
+                    })) == 0)
+        {
+            unique = append(unique, rawDir);
+        }
+    }
 
     if (size(unique) == 0)
     {
@@ -640,7 +615,23 @@ export function getInitialTransform(context is Context, definition is map, large
 
     for (var dir in unique)
     {
-        var orientedCSys = coordSystem(largestFacePlane.origin, dir, largestFacePlane.normal);
+        // Raw evAxis directions can carry sub-tolerance floating-point deviations that make
+        // them non-perpendicular to the face normal, violating coordSystem's precondition.
+        // Snap the candidate into the face plane by removing any out-of-plane component.
+        var xAxisCandidate = dir;
+        if (!perpendicularVectors(dir, largestFacePlane.normal))
+        {
+            if (definition.debugDiagnostics)
+            {
+                reportFeatureInfo(context, id, "Candidate x-axis direction " ~ toString(dir) ~
+                    " is not perpendicular to face normal " ~ toString(largestFacePlane.normal) ~
+                    " (dot = " ~ toString(dot(dir, largestFacePlane.normal)) ~
+                    "); snapping to face plane.");
+            }
+            xAxisCandidate = normalize(dir - dot(dir, largestFacePlane.normal) * largestFacePlane.normal);
+        }
+
+        var orientedCSys = coordSystem(largestFacePlane.origin, xAxisCandidate, largestFacePlane.normal);
         var bbox is Box3d = evBox3d(context, {
                 "topology" : body,
                 "cSys" : orientedCSys
@@ -653,21 +644,28 @@ export function getInitialTransform(context is Context, definition is map, large
         if (deltaX * deltaY < minimumArea)
         {
             minimumArea = deltaX * deltaY;
-            finalXAxis = dir;
+            finalXAxis = xAxisCandidate;
             finalBBox = bbox;
         }
     }
 
     var finalDeltaX = abs(finalBBox.maxCorner[0] - finalBBox.minCorner[0]);
     var finalDeltaY = abs(finalBBox.maxCorner[1] - finalBBox.minCorner[1]);
+
+    // Apply the same in-plane snap to the selected axis before the final coordSystem call.
+    if (!perpendicularVectors(finalXAxis, largestFacePlane.normal))
+    {
+        if (definition.debugDiagnostics)
+        {
+            reportFeatureInfo(context, id, "Final x-axis " ~ toString(finalXAxis) ~
+                " is not perpendicular to face normal " ~ toString(largestFacePlane.normal) ~
+                "; snapping to face plane.");
+        }
+        finalXAxis = normalize(finalXAxis - dot(finalXAxis, largestFacePlane.normal) * largestFacePlane.normal);
+    }
+
     var finalCSys = coordSystem(largestFacePlane.origin, finalXAxis, largestFacePlane.normal);
 
-    // DEBUG ONLY
-    // debug(context, finalCSys);
-    // debug(context, finalDeltaX);
-    // debug(context, finalDeltaY);
-
-    // Calculate transform to the top plane and to the origin
     var transformFromWorld = fromWorld(finalCSys);
     var transformToOrigin = transform(-finalBBox.minCorner);
 
@@ -768,7 +766,7 @@ export function getCorrespondingFace(context is Context, definition is map, body
     return correspondingFace;
 }
 
-// Given a set of edges, return an array U of unique directions such that for all a,b in U, dot(a,b) != 0
+// Given a set of edges, return an array U of unique directions such that no two directions in U are parallel or anti-parallel
 export function getUniqueVectors(context is Context, edgeList is Query)
 {
     var edges = evaluateQuery(context, edgeList);
@@ -780,8 +778,8 @@ export function getUniqueVectors(context is Context, edgeList is Query)
 
         if (size(filter(U, function(x)
                     {
-                        return abs(abs(dot(edgeDirection, x)) - 1) < 1e-6; // return elements of U which are parallel or antiparallel to edge
-                    })) == 0) // If there are none of these, we have a new vector, so add it to the list
+                        return parallelVectors(edgeDirection, x); // return elements of U which are parallel or anti-parallel to edge
+                    })) == 0) // If there are none of these, we have a new unique direction
         {
             U = append(U, edgeDirection);
         }
@@ -817,33 +815,27 @@ export function getBoundingThickness(context is Context, body is Query)
 
 export function editLogic(context is Context, id is Id, oldDefinition is map, definition is map, isCreating is boolean, specifiedParameters is map, clickedButton is string) returns map
 {
-    // Fetch all modifiable solid bodies in the Part Studio
     var entities = evaluateQuery(context, qAllModifiableSolidBodies());
 
-    // Prepare an array to hold property data
     definition.materialPropertyData = [];
 
-    // Iterate over each entity and fetch its property
     for (var entity in entities)
     {
-        var propertyDef = {
-            "entity" : entity,
-            "propertyType" : PropertyType.MATERIAL
-        };
+        var prop = getProperty(context, {
+                    "entity" : entity,
+                    "propertyType" : PropertyType.MATERIAL
+                });
 
-        var prop = getProperty(context, propertyDef);
-
-        // Store only the material name as a plain string. Query objects cannot be
-        // round-tripped through definition because QueryType is an enum that becomes
-        // a raw integer after JSON serialization, causing canBeQuery to fail at runtime.
-        // The feature body re-evaluates qAllModifiableSolidBodies() to obtain fresh Query
-        // references and correlates them with these material names by index.
+        // Material names are stored as plain strings because Query objects cannot survive
+        // round-tripping through definition (QueryType serializes to a raw integer).
+        // The feature body re-evaluates fresh body queries and correlates by index.
         definition.materialPropertyData = append(definition.materialPropertyData, {
                     "materialName" : (prop != undefined && prop.name != undefined) ? prop.name : "Undefined Material"
                 });
     }
 
-    println("Number of entities found: " ~ size(definition.materialPropertyData));
+    if (definition.debugDiagnostics)
+        println("Number of entities found: " ~ size(definition.materialPropertyData));
 
     return definition;
 }
