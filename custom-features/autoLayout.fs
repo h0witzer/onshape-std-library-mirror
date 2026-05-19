@@ -611,28 +611,17 @@ export function getInitialTransform(context is Context, definition is map, large
     // Only unique directions (including directly opposed)
     var rawUnique = getUniqueVectors(context, orientationEdges);
 
-    // Project each raw edge direction onto the face plane using the library project(plane, line)
-    // function, which returns a Line whose direction is normalized and guaranteed to lie on the
-    // plane. Derived or transformed parts can carry sub-tolerance floating-point deviations that
-    // make raw evAxis directions non-perpendicular to the face normal, causing the coordSystem
-    // precondition (perpendicularVectors(xAxis, zAxis)) to fail.
-    // Directions parallel to the face normal project to zero and are skipped via the
-    // parallelVectors() guard (which is also the precondition of project(plane, line)).
-    // After projection, re-deduplicate with parallelVectors() since two previously distinct
-    // directions can become parallel once projected.
+    // Deduplicate directions, skipping any that are parallel to the face normal (degenerate for coordSystem).
     var unique = [];
     for (var rawDir in rawUnique)
     {
-        if (!parallelVectors(largestFacePlane.normal, rawDir))
+        if (!parallelVectors(largestFacePlane.normal, rawDir) &&
+            size(filter(unique, function(existingDir)
+                    {
+                        return parallelVectors(rawDir, existingDir);
+                    })) == 0)
         {
-            const projectedLine = project(largestFacePlane, line(largestFacePlane.origin, rawDir));
-            if (size(filter(unique, function(existingDir)
-                        {
-                            return parallelVectors(projectedLine.direction, existingDir);
-                        })) == 0)
-            {
-                unique = append(unique, projectedLine.direction);
-            }
+            unique = append(unique, rawDir);
         }
     }
 
