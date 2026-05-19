@@ -101,9 +101,11 @@ export const autolayout = defineFeature(function(context is Context, id is Id, d
 
         for (var entry in definition.materialPropertyData)
         {
-            // Queries stored in definition are deserialized as maps; the type annotation
-            // reasserts the Query type so downstream functions that expect Query accept it.
-            const body is Query = entry.entity;
+            // Queries stored in definition are deserialized as plain maps when the feature
+            // body runs. A transient Query serializes to { "queryType": QueryType.TRANSIENT,
+            // "transientId": "<id>" }, so we extract the transientId and reconstruct the
+            // Query using qTransient to get a properly-typed Query reference.
+            const body = qTransient(entry.entity.transientId);
             const thickness = getBoundingThickness(context, body);
             const materialName = (entry.material != undefined && entry.material.name != undefined) ? entry.material.name : "Undefined Material";
 
