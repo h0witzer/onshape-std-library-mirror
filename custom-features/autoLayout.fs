@@ -101,7 +101,9 @@ export const autolayout = defineFeature(function(context is Context, id is Id, d
 
         for (var entry in definition.materialPropertyData)
         {
-            const body = entry.entity;
+            // Queries stored in definition are deserialized as maps; the type annotation
+            // reasserts the Query type so downstream functions that expect Query accept it.
+            const body is Query = entry.entity;
             const thickness = getBoundingThickness(context, body);
             const materialName = (entry.material != undefined && entry.material.name != undefined) ? entry.material.name : "Undefined Material";
 
@@ -598,7 +600,7 @@ export function getInitialTransform(context is Context, definition is map, large
             increment = definition.RDelta;
         }
 
-        for (var i = 0; i < 90; i += 5)
+        for (var i = 0; i < 90; i += increment)
         {
             var testDir = xDir * cos(i * degree) + yDir * sin(i * degree);
             unique = append(unique, testDir);
