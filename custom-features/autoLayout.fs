@@ -611,6 +611,10 @@ export function getInitialTransform(context is Context, definition is map, large
     // Only unique directions (including directly opposed)
     var rawUnique = getUniqueVectors(context, orientationEdges);
 
+    // Tolerance for direction uniqueness: matches the threshold used in getUniqueVectors.
+    // Directions whose cosine is within this value of ±1 are treated as parallel/anti-parallel.
+    const DIRECTION_PARALLEL_TOLERANCE = 1e-6;
+
     // Project each candidate direction onto the face plane by removing the component along the face
     // normal, then re-normalize. Derived or transformed parts can introduce small floating-point
     // deviations that make raw edge directions non-perpendicular to the face normal, which causes
@@ -621,12 +625,12 @@ export function getInitialTransform(context is Context, definition is map, large
     {
         var projected = rawDir - dot(rawDir, largestFacePlane.normal) * largestFacePlane.normal;
         const projectedNorm = norm(projected);
-        if (projectedNorm > 1e-6)
+        if (projectedNorm > DIRECTION_PARALLEL_TOLERANCE)
         {
             const normalizedProjected = projected / projectedNorm;
             if (size(filter(unique, function(existingDir)
                         {
-                            return abs(abs(dot(normalizedProjected, existingDir)) - 1) < 1e-6;
+                            return abs(abs(dot(normalizedProjected, existingDir)) - 1) < DIRECTION_PARALLEL_TOLERANCE;
                         })) == 0)
             {
                 unique = append(unique, normalizedProjected);
