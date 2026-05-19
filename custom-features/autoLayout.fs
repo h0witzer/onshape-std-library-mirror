@@ -321,7 +321,7 @@ export function doOneLayout(context is Context, id is Id, definition is map, bod
             {
                 const materialLabel = definition.material != undefined ? definition.material : "Unknown Material";
                 const thicknessLabel = round(definition.thickness / millimeter) ~ "mm";
-                reportFeatureWarning(context, id, size(oversizedBodies) ~ " part(s) too large for sheet in group " ~ materialLabel ~ " (" ~ thicknessLabel ~ "). Moved aside and excluded from layout.");
+                reportFeatureInfo(context, id, size(oversizedBodies) ~ " part(s) too large for sheet in group " ~ materialLabel ~ " (" ~ thicknessLabel ~ "). Moved aside and excluded from layout.");
 
                 const oversizedQuery = qUnion(oversizedBodies);
                 const bbox = evBox3d(context, { "topology" : oversizedQuery });
