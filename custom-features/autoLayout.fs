@@ -192,7 +192,7 @@ export const autolayout = defineFeature(function(context is Context, id is Id, d
         // an actionable count in the feature info dialog.
         if (totalUnnestedBodies > 0)
         {
-            reportFeatureInfo(context, id, totalUnnestedBodies ~ " part(s) could not be nested (too large for sheet dimensions). They have been moved aside and excluded from the layout. Consider increasing the sheet size or splitting these parts into a separate layout.");
+            reportFeatureInfo(context, id, totalUnnestedBodies ~ " part(s) could not be nested (too large for sheet dimensions). They have been moved aside and excluded from the layout. Consider splitting these parts into separate pieces.");
         }
 
     });
