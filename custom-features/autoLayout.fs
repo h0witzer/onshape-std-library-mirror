@@ -368,16 +368,16 @@ export function doOneLayout(context is Context, id is Id, definition is map, bod
     }
 
     // === Final: Create composite part ===
-    // opCreateCompositePart requires at least 2 bodies; a single-part group must be
-    // handled separately — setAttribute and name it directly without creating a composite.
-    const placedCount = evaluateQueryCount(context, placed);
-    if (placedCount >= 2)
+    // IMPORTANT: setAttribute MUST come after opCreateCompositePart and setProperty.
+    // `placed` is a qUnion of qNthElement(qSubtraction(bodies, hasAttribute), i) queries,
+    // which are all lazily evaluated. Calling setAttribute on `placed` first marks those
+    // bodies with AutoLayoutAttribute, causing qSubtraction(bodies, hasAttribute) to
+    // exclude them, making every qNthElement inside `placed` resolve to the wrong body
+    // or nothing. opCreateCompositePart would then receive 0 valid entities and throw
+    // COMPOSITE_PART_SELECT_ENTITIES. Always evaluate `placed` for operations first,
+    // then stamp the attribute.
+    if (!isQueryEmpty(context, placed))
     {
-        setAttribute(context, {
-                    "entities" : placed,
-                    "attribute" : "AutoLayout_PLACED" as AutoLayoutAttribute
-                });
-
         opCreateCompositePart(context, id + "Placed_Composite", {
                     "bodies" : placed
                 });
@@ -392,24 +392,12 @@ export function doOneLayout(context is Context, id is Id, definition is map, bod
                     "propertyType" : PropertyType.NAME,
                     "value" : compositeName
                 });
-    }
-    else if (placedCount == 1)
-    {
-        // Single-part group: mark as placed and name the body directly.
-        // opCreateCompositePart requires at least 2 bodies, so skip composite creation.
+
+        // Set attribute last so the lazy qSubtraction queries inside `placed` still
+        // resolve correctly for the operations above.
         setAttribute(context, {
                     "entities" : placed,
                     "attribute" : "AutoLayout_PLACED" as AutoLayoutAttribute
-                });
-
-        const cleanMaterialName = definition.material != undefined ? replace(definition.material, " ", "") : "UnknownMaterial";
-        const cleanThickness = round(definition.thickness * 1000 / inch) / 1000;
-        const singleName = cleanThickness ~ "_" ~ cleanMaterialName;
-
-        setProperty(context, {
-                    "entities" : placed,
-                    "propertyType" : PropertyType.NAME,
-                    "value" : singleName
                 });
     }
 
