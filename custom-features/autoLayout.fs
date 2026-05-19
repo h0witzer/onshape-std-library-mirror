@@ -93,21 +93,31 @@ export const autolayout = defineFeature(function(context is Context, id is Id, d
 
 
         // === Step 1: Extract all part data ===
-        // editLogic stores material names in definition.materialPropertyData in the same
-        // order that evaluateQuery(context, qAllModifiableSolidBodies()) returns bodies.
-        // Both editLogic and the feature body run against the same context state (all
-        // previous features applied, autoLayout not yet run), so the index order is stable.
-        // Query objects cannot be stored in definition — QueryType is an enum that becomes
-        // a raw integer after JSON serialization, causing canBeQuery to fail. Instead, we
-        // re-evaluate bodies here and correlate with stored material names by index.
+        // getProperty is editLogic-only (properties.fs documents that it cannot be called
+        // in the current context during feature body execution — features regenerate before
+        // user-set properties are applied). editLogic therefore pre-resolves material names
+        // to plain strings in definition.materialPropertyData, in the same order that
+        // qAllModifiableSolidBodies() returns bodies. Both editLogic and the feature body
+        // run against the same context state, so the index order is stable.
+        //
+        // Query objects must NOT be stored in definition. QueryType is an enum that becomes
+        // a raw integer after JSON serialization, so canBeQuery (value.queryType is QueryType)
+        // always fails when the map is read back. Bodies are obtained fresh here via
+        // qNthElement, which is the typed Query constructor used throughout this file
+        // (see doOneLayout, line ~229) and is guaranteed to pass canBeQuery.
         var partData = [];
-        const allBodies = evaluateQuery(context, qAllModifiableSolidBodies());
+        const allBodiesQuery = qAllModifiableSolidBodies();
+        const bodyCount = size(evaluateQuery(context, allBodiesQuery));
+        // Safely read the material name array; default to empty if editLogic hasn't run yet.
+        const materialData = (definition.materialPropertyData != undefined) ? definition.materialPropertyData : [];
 
-        for (var bodyIndex = 0; bodyIndex < size(allBodies); bodyIndex += 1)
+        for (var bodyIndex = 0; bodyIndex < bodyCount; bodyIndex += 1)
         {
-            const body = allBodies[bodyIndex];
-            const materialName = (bodyIndex < size(definition.materialPropertyData))
-                ? definition.materialPropertyData[bodyIndex].materialName
+            // qNthElement returns a typed Query (queryType: QueryType.NTH_ELEMENT) that
+            // satisfies canBeQuery and can be passed to any function taking body is Query.
+            const body = qNthElement(allBodiesQuery, bodyIndex);
+            const materialName = (bodyIndex < size(materialData))
+                ? materialData[bodyIndex].materialName
                 : "Undefined Material";
             const thickness = getBoundingThickness(context, body);
 
