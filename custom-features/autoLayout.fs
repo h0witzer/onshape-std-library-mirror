@@ -609,7 +609,30 @@ export function getInitialTransform(context is Context, definition is map, large
     // List of all straight edges to use as candidate x axes
     var orientationEdges = qGeometry(qAdjacent(largestFace, AdjacencyType.EDGE, EntityType.EDGE), GeometryType.LINE);
     // Only unique directions (including directly opposed)
-    var unique = getUniqueVectors(context, orientationEdges);
+    var rawUnique = getUniqueVectors(context, orientationEdges);
+
+    // Project each candidate direction onto the face plane by removing the component along the face
+    // normal, then re-normalize. Derived or transformed parts can introduce small floating-point
+    // deviations that make raw edge directions non-perpendicular to the face normal, which causes
+    // the coordSystem precondition (perpendicularVectors(xAxis, zAxis)) to fail.
+    // After projection, re-deduplicate since two previously distinct directions may become parallel.
+    var unique = [];
+    for (var rawDir in rawUnique)
+    {
+        var projected = rawDir - dot(rawDir, largestFacePlane.normal) * largestFacePlane.normal;
+        const projectedNorm = norm(projected);
+        if (projectedNorm > 1e-6)
+        {
+            const normalizedProjected = projected / projectedNorm;
+            if (size(filter(unique, function(existingDir)
+                        {
+                            return abs(abs(dot(normalizedProjected, existingDir)) - 1) < 1e-6;
+                        })) == 0)
+            {
+                unique = append(unique, normalizedProjected);
+            }
+        }
+    }
 
     // DEBUG ONLY
     // debug(context, unique);
