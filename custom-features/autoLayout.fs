@@ -241,7 +241,7 @@ export function doOneLayout(context is Context, id is Id, definition is map, bod
 
         if (!isQueryEmpty(context, face))
         {
-            var blockInfo = getInitialTransform(context, definition, face);
+            var blockInfo = getInitialTransform(context, id, definition, face);
             blocks = append(blocks, new box({
                             'w' : blockInfo.w,
                             'h' : blockInfo.h,
@@ -597,7 +597,7 @@ export function placeBlockAndSplit(node is box, block is box, spacing is ValueWi
 }
 
 // Computes the initial transform (rotation + movement) to place the part at the origin, oriented with the minimum bounding box
-export function getInitialTransform(context is Context, definition is map, largestFace is Query)
+export function getInitialTransform(context is Context, id is Id, definition is map, largestFace is Query)
 {
     const tempLargestFacePlane = evPlane(context, {
                 "face" : largestFace
@@ -654,7 +654,20 @@ export function getInitialTransform(context is Context, definition is map, large
 
     for (var dir in unique)
     {
-        var orientedCSys = coordSystem(largestFacePlane.origin, dir, largestFacePlane.normal);
+        // coordSystem requires xAxis perpendicular to zAxis. Raw evAxis directions can carry
+        // sub-tolerance floating-point deviations that violate this precondition.
+        // Snap the direction into the face plane by removing any out-of-plane component.
+        var xAxisCandidate = dir;
+        if (!perpendicularVectors(dir, largestFacePlane.normal))
+        {
+            reportFeatureInfo(context, id, "Candidate x-axis direction " ~ toString(dir) ~
+                " is not perpendicular to face normal " ~ toString(largestFacePlane.normal) ~
+                " (dot = " ~ toString(dot(dir, largestFacePlane.normal)) ~
+                "); snapping to face plane.");
+            xAxisCandidate = normalize(dir - dot(dir, largestFacePlane.normal) * largestFacePlane.normal);
+        }
+
+        var orientedCSys = coordSystem(largestFacePlane.origin, xAxisCandidate, largestFacePlane.normal);
         var bbox is Box3d = evBox3d(context, {
                 "topology" : body,
                 "cSys" : orientedCSys
@@ -667,13 +680,23 @@ export function getInitialTransform(context is Context, definition is map, large
         if (deltaX * deltaY < minimumArea)
         {
             minimumArea = deltaX * deltaY;
-            finalXAxis = dir;
+            finalXAxis = xAxisCandidate;
             finalBBox = bbox;
         }
     }
 
     var finalDeltaX = abs(finalBBox.maxCorner[0] - finalBBox.minCorner[0]);
     var finalDeltaY = abs(finalBBox.maxCorner[1] - finalBBox.minCorner[1]);
+
+    // Guard the final coordSystem construction with the same perpendicularity check.
+    if (!perpendicularVectors(finalXAxis, largestFacePlane.normal))
+    {
+        reportFeatureInfo(context, id, "Final x-axis " ~ toString(finalXAxis) ~
+            " is not perpendicular to face normal " ~ toString(largestFacePlane.normal) ~
+            "; snapping to face plane.");
+        finalXAxis = normalize(finalXAxis - dot(finalXAxis, largestFacePlane.normal) * largestFacePlane.normal);
+    }
+
     var finalCSys = coordSystem(largestFacePlane.origin, finalXAxis, largestFacePlane.normal);
 
     // DEBUG ONLY
