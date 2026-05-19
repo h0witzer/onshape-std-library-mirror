@@ -93,21 +93,23 @@ export const autolayout = defineFeature(function(context is Context, id is Id, d
 
 
         // === Step 1: Extract all part data ===
-        // Iterate directly over the materialPropertyData entries collected by editLogic.
-        // Each entry already carries the entity reference and its material property together,
-        // so no index-based correlation with a separate evaluateQuery call is needed.
-        // getProperty is only valid in editing logic and cannot be called here at runtime.
+        // editLogic stores material names in definition.materialPropertyData in the same
+        // order that evaluateQuery(context, qAllModifiableSolidBodies()) returns bodies.
+        // Both editLogic and the feature body run against the same context state (all
+        // previous features applied, autoLayout not yet run), so the index order is stable.
+        // Query objects cannot be stored in definition — QueryType is an enum that becomes
+        // a raw integer after JSON serialization, causing canBeQuery to fail. Instead, we
+        // re-evaluate bodies here and correlate with stored material names by index.
         var partData = [];
+        const allBodies = evaluateQuery(context, qAllModifiableSolidBodies());
 
-        for (var entry in definition.materialPropertyData)
+        for (var bodyIndex = 0; bodyIndex < size(allBodies); bodyIndex += 1)
         {
-            // Queries stored in definition are deserialized as plain maps when the feature body
-            // runs. editLogic stores each entity as a makeRobustQuery result (a UNION query with
-            // queryType: QueryType.UNION), which satisfies the Query predicate after deserialization.
-            // Cast back to Query with "as Query" so downstream functions accept it.
-            const body = entry.entity as Query;
+            const body = allBodies[bodyIndex];
+            const materialName = (bodyIndex < size(definition.materialPropertyData))
+                ? definition.materialPropertyData[bodyIndex].materialName
+                : "Undefined Material";
             const thickness = getBoundingThickness(context, body);
-            const materialName = (entry.material != undefined && entry.material.name != undefined) ? entry.material.name : "Undefined Material";
 
             partData = append(partData, {
                         "entity" : body,
@@ -811,14 +813,13 @@ export function editLogic(context is Context, id is Id, oldDefinition is map, de
 
         var prop = getProperty(context, propertyDef);
 
-        // Append to array
+        // Store only the material name as a plain string. Query objects cannot be
+        // round-tripped through definition because QueryType is an enum that becomes
+        // a raw integer after JSON serialization, causing canBeQuery to fail at runtime.
+        // The feature body re-evaluates qAllModifiableSolidBodies() to obtain fresh Query
+        // references and correlates them with these material names by index.
         definition.materialPropertyData = append(definition.materialPropertyData, {
-                    // makeRobustQuery combines the current transient query with a historical
-                    // identity-tracking query (qUnion). The result serializes as a UNION query
-                    // whose queryType satisfies the Query predicate when deserialized at runtime,
-                    // allowing "as Query" to safely reintroduce the type.
-                    "entity" : makeRobustQuery(context, entity),
-                    "material" : prop
+                    "materialName" : (prop != undefined && prop.name != undefined) ? prop.name : "Undefined Material"
                 });
     }
 
