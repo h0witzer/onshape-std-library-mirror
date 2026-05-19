@@ -93,16 +93,33 @@ export const autolayout = defineFeature(function(context is Context, id is Id, d
 
 
         // === Step 1: Extract all part data ===
-        var entities = evaluateQuery(context, qAllModifiableSolidBodies());
+        // getProperty is editLogic-only (properties.fs documents that it cannot be called
+        // in the current context during feature body execution — features regenerate before
+        // user-set properties are applied). editLogic therefore pre-resolves material names
+        // to plain strings in definition.materialPropertyData, in the same order that
+        // qAllModifiableSolidBodies() returns bodies. Both editLogic and the feature body
+        // run against the same context state, so the index order is stable.
+        //
+        // Query objects must NOT be stored in definition. QueryType is an enum that becomes
+        // a raw integer after JSON serialization, so canBeQuery (value.queryType is QueryType)
+        // always fails when the map is read back. Bodies are obtained fresh here via
+        // qNthElement, which is the typed Query constructor used throughout this file
+        // (see doOneLayout, line ~229) and is guaranteed to pass canBeQuery.
         var partData = [];
+        const allBodiesQuery = qAllModifiableSolidBodies();
+        const bodyCount = size(evaluateQuery(context, allBodiesQuery));
+        // Safely read the material name array; default to empty if editLogic hasn't run yet.
+        const materialData = (definition.materialPropertyData != undefined) ? definition.materialPropertyData : [];
 
-        for (var i = 0; i < size(entities); i += 1)
+        for (var bodyIndex = 0; bodyIndex < bodyCount; bodyIndex += 1)
         {
-            const body = entities[i];
+            // qNthElement returns a typed Query (queryType: QueryType.NTH_ELEMENT) that
+            // satisfies canBeQuery and can be passed to any function taking body is Query.
+            const body = qNthElement(allBodiesQuery, bodyIndex);
+            const materialName = (bodyIndex < size(materialData))
+                ? materialData[bodyIndex].materialName
+                : "Undefined Material";
             const thickness = getBoundingThickness(context, body);
-
-            const materialQuery = definition.materialPropertyData[i].material;
-            const materialName = (materialQuery != undefined && materialQuery.name != undefined) ? materialQuery.name : "Undefined Material";
 
             partData = append(partData, {
                         "entity" : body,
@@ -187,9 +204,6 @@ export function doOneLayout(context is Context, id is Id, definition is map, bod
     {
         initialY = getVariable(context, "AutoLayout_yinitial");
     }
-
-    // Save original bodies for composite part creation later
-    var originalBodies = bodies;
 
     // Remove already-placed bodies (so we only process unplaced parts)
     var hasAttribute = qAttributeQuery("" as AutoLayoutAttribute);
@@ -354,29 +368,38 @@ export function doOneLayout(context is Context, id is Id, definition is map, bod
     }
 
     // === Final: Create composite part ===
+    // IMPORTANT: setAttribute MUST come after opCreateCompositePart and setProperty.
+    // `placed` is a qUnion of qNthElement(qSubtraction(bodies, hasAttribute), i) queries,
+    // which are all lazily evaluated. Calling setAttribute on `placed` first marks those
+    // bodies with AutoLayoutAttribute, causing qSubtraction(bodies, hasAttribute) to
+    // exclude them, making every qNthElement inside `placed` resolve to the wrong body
+    // or nothing. opCreateCompositePart would then receive 0 valid entities and throw
+    // COMPOSITE_PART_SELECT_ENTITIES. Always evaluate `placed` for operations first,
+    // then stamp the attribute.
     if (!isQueryEmpty(context, placed))
     {
+        opCreateCompositePart(context, id + "Placed_Composite", {
+                    "bodies" : placed
+                });
+
+        // Clean name: Material and thickness
+        const cleanMaterialName = definition.material != undefined ? replace(definition.material, " ", "") : "UnknownMaterial";
+        const cleanThickness = round(definition.thickness * 1000 / inch) / 1000;
+        const compositeName = cleanThickness ~ "_" ~ cleanMaterialName;
+
+        setProperty(context, {
+                    "entities" : qCreatedBy(id + "Placed_Composite", EntityType.BODY),
+                    "propertyType" : PropertyType.NAME,
+                    "value" : compositeName
+                });
+
+        // Set attribute last so the lazy qSubtraction queries inside `placed` still
+        // resolve correctly for the operations above.
         setAttribute(context, {
                     "entities" : placed,
                     "attribute" : "AutoLayout_PLACED" as AutoLayoutAttribute
                 });
     }
-
-
-    opCreateCompositePart(context, id + "Placed_Composite", {
-                "bodies" : qUnion([placed, originalBodies])
-            });
-
-    // Clean name: Material and thickness
-    const cleanMaterialName = definition.material != undefined ? replace(definition.material, " ", "") : "UnknownMaterial";
-    const cleanThickness = round(definition.thickness * 1000 / inch) / 1000;
-    const compositeName = cleanThickness ~ "_" ~ cleanMaterialName;
-
-    setProperty(context, {
-                "entities" : qCreatedBy(id + "Placed_Composite", EntityType.BODY),
-                "propertyType" : PropertyType.NAME,
-                "value" : compositeName
-            });
 
     // Update Y variable for next layout stack
     setVariable(context, "AutoLayout_yinitial", initialY + definition.width * 1.1);
@@ -601,7 +624,7 @@ export function getInitialTransform(context is Context, definition is map, large
             increment = definition.RDelta;
         }
 
-        for (var i = 0; i < 90; i += 5)
+        for (var i = 0; i < 90; i += increment)
         {
             var testDir = xDir * cos(i * degree) + yDir * sin(i * degree);
             unique = append(unique, testDir);
@@ -810,10 +833,13 @@ export function editLogic(context is Context, id is Id, oldDefinition is map, de
 
         var prop = getProperty(context, propertyDef);
 
-        // Append to array
+        // Store only the material name as a plain string. Query objects cannot be
+        // round-tripped through definition because QueryType is an enum that becomes
+        // a raw integer after JSON serialization, causing canBeQuery to fail at runtime.
+        // The feature body re-evaluates qAllModifiableSolidBodies() to obtain fresh Query
+        // references and correlates them with these material names by index.
         definition.materialPropertyData = append(definition.materialPropertyData, {
-                    "entity" : entity,
-                    "material" : prop
+                    "materialName" : (prop != undefined && prop.name != undefined) ? prop.name : "Undefined Material"
                 });
     }
 
@@ -821,6 +847,3 @@ export function editLogic(context is Context, id is Id, oldDefinition is map, de
 
     return definition;
 }
-
-
-
