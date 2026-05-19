@@ -101,11 +101,11 @@ export const autolayout = defineFeature(function(context is Context, id is Id, d
 
         for (var entry in definition.materialPropertyData)
         {
-            // Queries stored in definition are deserialized as plain maps when the feature
-            // body runs. A transient Query serializes to { "queryType": QueryType.TRANSIENT,
-            // "transientId": "<id>" }, so we extract the transientId and reconstruct the
-            // Query using qTransient to get a properly-typed Query reference.
-            const body = qTransient(entry.entity.transientId);
+            // Queries stored in definition are deserialized as plain maps when the feature body
+            // runs. editLogic stores each entity as a makeRobustQuery result (a UNION query with
+            // queryType: QueryType.UNION), which satisfies the Query predicate after deserialization.
+            // Cast back to Query with "as Query" so downstream functions accept it.
+            const body = entry.entity as Query;
             const thickness = getBoundingThickness(context, body);
             const materialName = (entry.material != undefined && entry.material.name != undefined) ? entry.material.name : "Undefined Material";
 
@@ -813,7 +813,11 @@ export function editLogic(context is Context, id is Id, oldDefinition is map, de
 
         // Append to array
         definition.materialPropertyData = append(definition.materialPropertyData, {
-                    "entity" : entity,
+                    // makeRobustQuery combines the current transient query with a historical
+                    // identity-tracking query (qUnion). The result serializes as a UNION query
+                    // whose queryType satisfies the Query predicate when deserialized at runtime,
+                    // allowing "as Query" to safely reintroduce the type.
+                    "entity" : makeRobustQuery(context, entity),
                     "material" : prop
                 });
     }
