@@ -368,7 +368,10 @@ export function doOneLayout(context is Context, id is Id, definition is map, bod
     }
 
     // === Final: Create composite part ===
-    if (!isQueryEmpty(context, placed))
+    // opCreateCompositePart requires at least 2 bodies; a single-part group must be
+    // handled separately — setAttribute and name it directly without creating a composite.
+    const placedCount = evaluateQueryCount(context, placed);
+    if (placedCount >= 2)
     {
         setAttribute(context, {
                     "entities" : placed,
@@ -388,6 +391,25 @@ export function doOneLayout(context is Context, id is Id, definition is map, bod
                     "entities" : qCreatedBy(id + "Placed_Composite", EntityType.BODY),
                     "propertyType" : PropertyType.NAME,
                     "value" : compositeName
+                });
+    }
+    else if (placedCount == 1)
+    {
+        // Single-part group: mark as placed and name the body directly.
+        // opCreateCompositePart requires at least 2 bodies, so skip composite creation.
+        setAttribute(context, {
+                    "entities" : placed,
+                    "attribute" : "AutoLayout_PLACED" as AutoLayoutAttribute
+                });
+
+        const cleanMaterialName = definition.material != undefined ? replace(definition.material, " ", "") : "UnknownMaterial";
+        const cleanThickness = round(definition.thickness * 1000 / inch) / 1000;
+        const singleName = cleanThickness ~ "_" ~ cleanMaterialName;
+
+        setProperty(context, {
+                    "entities" : placed,
+                    "propertyType" : PropertyType.NAME,
+                    "value" : singleName
                 });
     }
 
