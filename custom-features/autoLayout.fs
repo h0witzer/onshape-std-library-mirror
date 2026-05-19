@@ -611,29 +611,27 @@ export function getInitialTransform(context is Context, definition is map, large
     // Only unique directions (including directly opposed)
     var rawUnique = getUniqueVectors(context, orientationEdges);
 
-    // Tolerance for direction uniqueness: matches the threshold used in getUniqueVectors.
-    // Directions whose cosine is within this value of ±1 are treated as parallel/anti-parallel.
-    const DIRECTION_PARALLEL_TOLERANCE = 1e-6;
-
-    // Project each candidate direction onto the face plane by removing the component along the face
-    // normal, then re-normalize. Derived or transformed parts can introduce small floating-point
-    // deviations that make raw edge directions non-perpendicular to the face normal, which causes
-    // the coordSystem precondition (perpendicularVectors(xAxis, zAxis)) to fail.
-    // After projection, re-deduplicate since two previously distinct directions may become parallel.
+    // Project each raw edge direction onto the face plane using the library project(plane, line)
+    // function, which returns a Line whose direction is normalized and guaranteed to lie on the
+    // plane. Derived or transformed parts can carry sub-tolerance floating-point deviations that
+    // make raw evAxis directions non-perpendicular to the face normal, causing the coordSystem
+    // precondition (perpendicularVectors(xAxis, zAxis)) to fail.
+    // Directions parallel to the face normal project to zero and are skipped via the
+    // parallelVectors() guard (which is also the precondition of project(plane, line)).
+    // After projection, re-deduplicate with parallelVectors() since two previously distinct
+    // directions can become parallel once projected.
     var unique = [];
     for (var rawDir in rawUnique)
     {
-        var projected = rawDir - dot(rawDir, largestFacePlane.normal) * largestFacePlane.normal;
-        const projectedNorm = norm(projected);
-        if (projectedNorm > DIRECTION_PARALLEL_TOLERANCE)
+        if (!parallelVectors(largestFacePlane.normal, rawDir))
         {
-            const normalizedProjected = projected / projectedNorm;
+            const projectedLine = project(largestFacePlane, line(largestFacePlane.origin, rawDir));
             if (size(filter(unique, function(existingDir)
                         {
-                            return abs(abs(dot(normalizedProjected, existingDir)) - 1) < DIRECTION_PARALLEL_TOLERANCE;
+                            return parallelVectors(projectedLine.direction, existingDir);
                         })) == 0)
             {
-                unique = append(unique, normalizedProjected);
+                unique = append(unique, projectedLine.direction);
             }
         }
     }
@@ -795,7 +793,7 @@ export function getCorrespondingFace(context is Context, definition is map, body
     return correspondingFace;
 }
 
-// Given a set of edges, return an array U of unique directions such that for all a,b in U, dot(a,b) != 0
+// Given a set of edges, return an array U of unique directions such that no two directions in U are parallel or anti-parallel
 export function getUniqueVectors(context is Context, edgeList is Query)
 {
     var edges = evaluateQuery(context, edgeList);
@@ -807,8 +805,8 @@ export function getUniqueVectors(context is Context, edgeList is Query)
 
         if (size(filter(U, function(x)
                     {
-                        return abs(abs(dot(edgeDirection, x)) - 1) < 1e-6; // return elements of U which are parallel or antiparallel to edge
-                    })) == 0) // If there are none of these, we have a new vector, so add it to the list
+                        return parallelVectors(edgeDirection, x); // return elements of U which are parallel or anti-parallel to edge
+                    })) == 0) // If there are none of these, we have a new unique direction
         {
             U = append(U, edgeDirection);
         }
