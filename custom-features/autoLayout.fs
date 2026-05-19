@@ -16,14 +16,12 @@
             3.1     - May  8, 2020 - Arul Suresh       - Changed part orientation to ease usage for routed parts.
             3.1.1   - Dec  8, 2023 - Arul Suresh       - Add feature description to publish feature.
             4.0     - Apr 11, 2025 - Derek Van Allen   - Removed thickness input, nest per material and thickess support added, composite resulting groups.
-            4.1     - Apr 22, 2026 - Trevor Jones      - Added options to toggle composite creation on and off. Added "Dissolve other composite parts" option.  
-            4.2     - May  8, 2026 - Trevor Jones      - Added support for multiple runs.  
 */ 
 
 FeatureScript 2625;
 import(path : "onshape/std/geometry.fs", version : "2625.0");
-import(path : "aa8ee374e7061289b937b984", version : "b0af54cc89dae3c240e344e8");
-import(path : "bb79595d1ad4e6528fb60762", version : "20987b283a5fd1abb9b2d6f5");
+import(path : "aa8ee374e7061289b937b984", version : "b0af54cc89dae3c240e344e8"); //autoLayoutConfig.fs
+import(path : "bb79595d1ad4e6528fb60762", version : "20987b283a5fd1abb9b2d6f5"); //autoLayoutTypes.fs
 import(path : "f4e7238da5afaf5a3f1498c0/7a207cd9ceffd98f8f03ad47/22d17eb94c85900576fbf53e", version : "d8911b6f752a07bc27cfc8dc");
 
 
@@ -78,12 +76,6 @@ export const autolayout = defineFeature(function(context is Context, id is Id, d
         annotation { "Name" : "Show cut sheet sketches", "UIHint" : "REMEMBER_PREVIOUS_VALUE" }
         definition.showSheets is boolean;
 
-        annotation { "Name" : "Create composite parts (Recommended)", "UIHint" : "REMEMBER_PREVIOUS_VALUE" }
-        definition.createCompositeParts is boolean;
-
-        annotation { "Name" : "Dissolve all other open composite parts", "UIHint" : "REMEMBER_PREVIOUS_VALUE" }
-        definition.dissolveReleaseComposites is boolean;
-
         annotation { "Name" : "Material data", "UIHint" : [UIHint.READ_ONLY] }
         isAnything(definition.materialPropertyData);
 
@@ -96,31 +88,8 @@ export const autolayout = defineFeature(function(context is Context, id is Id, d
 
     }
     {
-        const isAdditionalRun = hasPreviousAutoLayoutPlacementAttributes(context);
-        const runLabel = isAdditionalRun ? "Rerun" : "First run";
-
-        reportFeatureInfo(context, id, "Auto Layout with material and thickness grouping — " ~ runLabel);
+        reportFeatureInfo(context, id, "Auto Layout with material and thickness grouping");
         //reportFeatureInfo(context, id, "If the groups look weird, check your part thicknesses and materials");
-
-        // Additive rerun support:
-        // Clear stale AutoLayout+ placement markers from earlier AutoLayout+ features/regens
-        // before this feature builds its new material/thickness groups.
-        // The original in-run marker behavior inside doOneLayout is intentionally unchanged.
-        clearPreviousAutoLayoutPlacementAttributes(context);
-
-        // === Optional: Dissolve all other open composite parts before processing ===
-        if (definition.dissolveReleaseComposites)
-        {
-            const existingOpenComposites = qCompositePartTypeFilter(qEverything(EntityType.BODY), CompositePartType.OPEN);
-
-            if (!isQueryEmpty(context, existingOpenComposites))
-            {
-                opDeleteBodies(context, id + "dissolve_other_composites", {
-                            "entities" : existingOpenComposites,
-                            "deleteType" : CompositePartDeleteOptions.DISSOLVE
-                        });
-            }
-        }
 
 
         // === Step 1: Extract all part data ===
@@ -207,38 +176,8 @@ export const autolayout = defineFeature(function(context is Context, id is Id, d
             }
         }
 
-        }, {
-        "copies" : false,
-        "orientFaces" : false,
-        "setIncrement" : false,
-        "showSheets" : false,
-        "createCompositeParts" : true,
-        "dissolveReleaseComposites" : true
     });
 
-
-export function hasPreviousAutoLayoutPlacementAttributes(context is Context) returns boolean
-{
-    // Checks whether any bodies already carry AutoLayout+'s existing legacy placement marker.
-    // Used only for the feature info dialogue before cleanup happens.
-    return !isQueryEmpty(context, qAttributeQuery("AutoLayout_PLACED" as AutoLayoutAttribute));
-}
-
-export function clearPreviousAutoLayoutPlacementAttributes(context is Context)
-{
-    // AutoLayout+ currently uses a legacy unnamed typed attribute to prevent the same body
-    // from being processed twice during a single feature run. Removing this exact marker at
-    // the start allows a later AutoLayout+ feature to process bodies laid out by an earlier one.
-    const previouslyPlaced = qAttributeQuery("AutoLayout_PLACED" as AutoLayoutAttribute);
-
-    if (!isQueryEmpty(context, previouslyPlaced))
-    {
-        removeAttributes(context, {
-                    "entities" : previouslyPlaced,
-                    "attributePattern" : "AutoLayout_PLACED" as AutoLayoutAttribute
-                });
-    }
-}
 
 export function doOneLayout(context is Context, id is Id, definition is map, bodies is Query)
 {
@@ -413,6 +352,7 @@ export function doOneLayout(context is Context, id is Id, definition is map, bod
         }
 
     }
+
     // === Final: Create composite part ===
     if (!isQueryEmpty(context, placed))
     {
@@ -422,23 +362,21 @@ export function doOneLayout(context is Context, id is Id, definition is map, bod
                 });
     }
 
-    if (definition.createCompositeParts)
-    {
-        opCreateCompositePart(context, id + "Placed_Composite", {
-                    "bodies" : qUnion([placed, originalBodies])
-                });
 
-        // Clean name: Material and thickness
-        const cleanMaterialName = definition.material != undefined ? replace(definition.material, " ", "") : "UnknownMaterial";
-        const cleanThickness = round(definition.thickness * 1000 / inch) / 1000;
-        const compositeName = cleanThickness ~ "_" ~ cleanMaterialName;
+    opCreateCompositePart(context, id + "Placed_Composite", {
+                "bodies" : qUnion([placed, originalBodies])
+            });
 
-        setProperty(context, {
-                    "entities" : qCreatedBy(id + "Placed_Composite", EntityType.BODY),
-                    "propertyType" : PropertyType.NAME,
-                    "value" : compositeName
-                });
-    }
+    // Clean name: Material and thickness
+    const cleanMaterialName = definition.material != undefined ? replace(definition.material, " ", "") : "UnknownMaterial";
+    const cleanThickness = round(definition.thickness * 1000 / inch) / 1000;
+    const compositeName = cleanThickness ~ "_" ~ cleanMaterialName;
+
+    setProperty(context, {
+                "entities" : qCreatedBy(id + "Placed_Composite", EntityType.BODY),
+                "propertyType" : PropertyType.NAME,
+                "value" : compositeName
+            });
 
     // Update Y variable for next layout stack
     setVariable(context, "AutoLayout_yinitial", initialY + definition.width * 1.1);
