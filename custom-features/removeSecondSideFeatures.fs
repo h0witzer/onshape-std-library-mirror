@@ -12,10 +12,12 @@
 
     Algorithm overview:
         1. Locate every solid body carrying the AutoLayout_PLACED attribute.
-        2. Identify the top (cut) face of each body as its largest planar face --
-           the same heuristic Auto Layout uses to establish the cutting plane.
-        3. Find the bottom exterior face as the planar face farthest in the
-           direction opposite to the top-face normal (qParallelPlanes + qFarthestAlong).
+        2. Identify the bottom (non-cut) face of each body as its largest planar
+           face. Auto Layout lays parts face-down on the cut sheet, so the largest
+           face is the one resting on the table.
+        3. Find the top exterior face as the planar face farthest in the upward
+           direction (opposite to the bottom face outward normal) using
+           qParallelPlanes + qFarthestAlong.
         4. Flood-fill concavely from the bottom exterior face (qConcaveConnectedFaces)
            to capture all features that open into the bottom: pockets, countersinks,
            counterbores, bottom-side chamfers, etc.
@@ -26,6 +28,13 @@
            faces reachable only from the bottom -- the second-side features.
         7. Delete those faces with opDeleteFace (heal mode), per-body, with error
            isolation so one failing body does not abort the rest.
+
+    Face orientation:
+        Auto Layout orients each part so that the largest planar face lies face-down
+        on the cut sheet. That face is therefore the BOTTOM exterior face. Its
+        outward normal (as returned by evPlane) points away from the solid toward
+        the machine table -- i.e. downward. The machining tool approaches from
+        the opposite direction, which is the upward direction (-bottomFaceNormal).
 
     Known limitation:
         Through-counterbores (a large-diameter bore on the bottom with a smaller
@@ -66,7 +75,9 @@ export predicate canBeAutoLayoutAttribute(value)
  * Scans all bodies placed by Auto Layout+ and deletes geometry that is only
  * accessible from the bottom (second-setup) side of the part: pockets,
  * countersinks, counterbores, and any concave features whose entrance is on
- * the bottom exterior face. The resulting voids are healed automatically.
+ * the bottom exterior face. Auto Layout lays parts with their largest planar
+ * face down on the cut sheet, so that face is treated as the bottom. The
+ * resulting voids are healed automatically.
  *
  * Place this feature immediately after Auto Layout+ in the feature tree.
  */
@@ -110,12 +121,13 @@ export const removeSecondSideFeatures = defineFeature(function(context is Contex
         {
             const body = qNthElement(placedBodies, bodyIndex);
 
-            // Find the top (cut) face: the largest planar face of the body.
-            // This is the same heuristic Auto Layout uses to determine which
-            // face lies on the cutting plane.
-            const topFace = qLargest(qGeometry(qOwnedByBody(body, EntityType.FACE), GeometryType.PLANE));
+            // Find the bottom exterior face: the largest planar face of the body.
+            // Auto Layout orients every part so that this face rests on the cut sheet,
+            // making it the bottom (non-cut) face. Its outward normal points away from
+            // the solid toward the machine table -- i.e. downward.
+            const bottomExteriorFace = qLargest(qGeometry(qOwnedByBody(body, EntityType.FACE), GeometryType.PLANE));
 
-            if (isQueryEmpty(context, topFace))
+            if (isQueryEmpty(context, bottomExteriorFace))
             {
                 if (definition.enableDiagnostics)
                     reportFeatureInfo(context, id,
@@ -125,31 +137,33 @@ export const removeSecondSideFeatures = defineFeature(function(context is Contex
 
             bodiesProcessed += 1;
 
-            // Evaluate the top face plane to obtain its outward normal.
-            // The down direction is the opposite of this normal and points
-            // toward the bottom (second-setup) side of the part.
-            const topFacePlane = evPlane(context, { "face" : topFace });
-            const downDirection = -topFacePlane.normal;
+            // Evaluate the bottom face plane to obtain its outward normal.
+            // That normal points downward (toward the table). The up direction
+            // (toward the machining tool) is the opposite.
+            const bottomFacePlane = evPlane(context, { "face" : bottomExteriorFace });
+            const upDirection = -bottomFacePlane.normal;
 
             // All faces owned by this body.
             const bodyFaces = qOwnedByBody(body, EntityType.FACE);
 
             // ------------------------------------------------------------------
-            // Step 3: Identify the exterior top and bottom faces.
+            // Step 3: Identify the exterior bottom and top faces.
             //
             // qParallelPlanes returns every planar face whose normal is parallel
-            // (or anti-parallel) to the top-face normal. For a flat plate these
-            // are the top and bottom exterior faces, plus any horizontal interior
+            // (or anti-parallel) to the bottom-face normal. For a flat plate these
+            // are the bottom and top exterior faces, plus any horizontal interior
             // faces (pocket floors, counterbore shoulders, etc.).
             //
-            // qFarthestAlong then picks the face(s) at each extreme: the one
-            // farthest in the up direction is the top exterior face, the one
-            // farthest in the down direction is the bottom exterior face.
+            // qFarthestAlong then picks the face(s) at each extreme:
+            //   - farthest in the downward direction (bottomFacePlane.normal) = the
+            //     bottom exterior face resting on the cut sheet.
+            //   - farthest in the upward direction (upDirection) = the top exterior
+            //     face that the machining tool operates on.
             // ------------------------------------------------------------------
-            const horizontalFaces = qParallelPlanes(bodyFaces, topFacePlane.normal);
+            const horizontalFaces = qParallelPlanes(bodyFaces, bottomFacePlane.normal);
 
-            const bottomExteriorFaces = qFarthestAlong(horizontalFaces, downDirection);
-            const topExteriorFaces    = qFarthestAlong(horizontalFaces, topFacePlane.normal);
+            const bottomExteriorFaces = qFarthestAlong(horizontalFaces, bottomFacePlane.normal);
+            const topExteriorFaces    = qFarthestAlong(horizontalFaces, upDirection);
 
             // ------------------------------------------------------------------
             // Step 4: Flood-fill concavely from the bottom exterior face.
@@ -214,11 +228,13 @@ export const removeSecondSideFeatures = defineFeature(function(context is Contex
             //                       that belong to the same feature, so the heal
             //                       has clean geometry to work with.
             //
-            // The try block isolates failures per body. An error here means
-            // opDeleteFace could not heal this body (e.g. geometry is too
-            // complex or a void cannot be capped). The error is reported and
-            // processing continues with the next body.
+            // deleteSucceeded is set inside the try block only if opDeleteFace
+            // returns without throwing, making it a reliable success indicator.
+            // An untouched value of false after the try block means the operation
+            // failed; we report a warning so the user knows which body needs
+            // manual attention regardless of the diagnostics toggle.
             // ------------------------------------------------------------------
+            var deleteSucceeded = false;
             try
             {
                 opDeleteFace(context, id + ("deleteFace_" ~ bodyIndex), {
@@ -227,7 +243,17 @@ export const removeSecondSideFeatures = defineFeature(function(context is Contex
                             "capVoid"       : true,
                             "leaveOpen"     : false
                         });
+                deleteSucceeded = true;
+            }
+
+            if (deleteSucceeded)
+            {
                 bodiesModified += 1;
+            }
+            else
+            {
+                reportFeatureWarning(context, id,
+                    "Body " ~ bodyIndex ~ ": could not remove second-side faces (geometry may be too complex to heal automatically). Manual cleanup may be needed.");
             }
         }
 
