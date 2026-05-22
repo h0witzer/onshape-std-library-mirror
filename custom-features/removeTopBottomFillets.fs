@@ -22,8 +22,8 @@
         4. Intersect the fillet set with faces edge-adjacent to any horizontal
            face so that fillets at every elevation — not just the top and bottom
            extremes — are captured.
-        4b. Exclude any fillet face whose cylinder/torus axis is parallel to Z;
-            those are side fillets spanning two vertical walls and must stay.
+        4b. Exclude any cylindrical fillet face whose axis is parallel to Z;
+            those are side fillets spanning two vertical walls and can be milled.
         5. Call opModifyFillet (REMOVE_FILLET) for the remaining set, with error
            isolation per body so that a failing body does not abort the rest.
 */
@@ -37,10 +37,10 @@ import(path : "bb79595d1ad4e6528fb60762", version : "20987b283a5fd1abb9b2d6f5");
  * Remove Horizontal-Adjacent Fillets
  *
  * Scans all bodies placed by Auto Layout+ and removes fillet faces that bound
- * any planar face parallel to the XY plane, at any elevation.  Fillet faces
- * whose axis is Z-aligned (side fillets between two vertical walls) are left
- * intact.  Place this feature immediately before Remove Second Side Features
- * in the feature tree.
+ * any planar face parallel to the XY plane, at any elevation.  Cylindrical
+ * fillet faces whose axis is Z-aligned (side fillets between two vertical walls
+ * that can be milled) are left intact.  Place this feature immediately before
+ * Remove Second Side Features in the feature tree.
  */
 annotation { "Feature Type Name" : "Remove Horizontal-Adjacent Fillets",
         "Feature Type Description" : "Companion for Auto Layout+. Strips fillets bounding any XY-parallel flat face on each placed body (Z-aligned side fillets are preserved). Run this before Remove Second Side Features." }
@@ -130,14 +130,8 @@ export const removeTopBottomFillets = defineFeature(function(context is Context,
                 if (surfDef == undefined)
                     continue;
 
-                var filletAxis = undefined;
-                if (surfDef is Cylinder)
-                    filletAxis = surfDef.coordSystem.zAxis;
-                else if (surfDef is Torus)
-                    filletAxis = surfDef.coordSystem.zAxis;
-
-                // Skip if the fillet axis is parallel to Z (side fillet).
-                if (filletAxis != undefined && parallelVectors(filletAxis, WORLD_DOWN))
+                // Skip Z-aligned cylindrical fillets — those are side fillets that can be milled.
+                if (surfDef is Cylinder && parallelVectors(surfDef.coordSystem.zAxis, WORLD_DOWN))
                     continue;
 
                 facesToRemove = append(facesToRemove, face);
