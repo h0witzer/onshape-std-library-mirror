@@ -78,7 +78,7 @@ export const removeSecondSideFeatures = defineFeature(function(context is Contex
         // The attribute "AutoLayout_PLACED" is stamped on each body after
         // it is successfully nested and transformed onto the cut sheet.
         // ------------------------------------------------------------------
-        const placedBodies = qAttributeQuery("AutoLayout_PLACED" as AutoLayoutAttribute);
+        const placedBodies = qAttributeQuery("" as AutoLayoutAttribute);
 
         if (isQueryEmpty(context, placedBodies))
         {
