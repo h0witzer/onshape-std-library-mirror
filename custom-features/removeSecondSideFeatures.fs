@@ -12,42 +12,23 @@
 
     Algorithm overview:
         1. Locate every solid body carrying the AutoLayout_PLACED attribute.
-        2. Identify the bottom (non-cut) face of each body as its largest planar
-           face. Auto Layout lays parts face-down on the cut sheet, so the largest
-           face is the one resting on the table.
-        3. Determine the self-shadow viewing direction: the bottom face outward
-           normal already points downward (toward the table), which is the direction
-           of incoming rays when the tool/viewer is above. That direction is passed
-           directly as viewDirection.
-        4. Call opSplitBySelfShadow with viewDirection = bottomFaceNormal (downward)
-           to split each body into faces visible from above (accessible to the mill)
-           and faces invisible from above (second-side features). The operation
-           inserts shadow curve edges at visibility transitions.
-        5. From the invisible set, subtract only the bottom exterior face (the flat
-           face coplanar with the cut sheet). Side walls are not self-shadowed and
-           land in the visible set automatically. What remains are blind bottom
-           pockets, countersinks, counterbores, and similar features that require
-           a second setup.
-        6. Delete those faces with opDeleteFace (heal mode), per-body, with error
+        2. Auto Layout places all parts with their bottom face in the world XY plane,
+           so world -Z is always the downward direction for every placed body.
+        3. Call opSplitBySelfShadow with viewDirection = world -Z (downward) to split
+           each body into faces visible from above (accessible to the mill) and faces
+           invisible from above (second-side features).
+        4. From the invisible set, subtract the bottom exterior face (the lowest
+           Z-parallel face). Side walls land in the visible set automatically.
+           What remains are blind bottom pockets, countersinks, counterbores, and
+           similar features that require a second setup.
+        5. Delete those faces with opDeleteFace (heal mode), per-body, with error
            isolation so one failing body does not abort the rest.
-
-    Face orientation:
-        Auto Layout orients each part so that the largest planar face lies face-down
-        on the cut sheet. That face is therefore the BOTTOM exterior face. Its
-        outward normal (as returned by evPlane) points away from the solid toward
-        the machine table -- i.e. downward. The machining tool approaches from
-        above, and opSplitBySelfShadow's viewDirection is the direction of incoming
-        rays (from tool toward part), which is that same downward vector
-        (bottomFaceNormal). Passing the upward vector (-bottomFaceNormal) instead
-        would invert the analysis, classifying top/side faces as invisible and
-        bottom pockets as visible -- exactly the opposite of what is needed.
 
     Why opSplitBySelfShadow correctly handles through-holes:
         Under a parallel projection from above, rays entering a through-hole from
         the top opening illuminate the cylindrical wall -- it is NOT self-shadowed.
-        Through-holes therefore land in the visible set and are preserved. Blind
-        bottom pockets are fully blocked by surrounding material and land in the
-        invisible set, correctly targeting them for removal.
+        Through-holes land in the visible set and are preserved. Blind bottom pockets
+        are fully blocked by surrounding material and land in the invisible set.
 */
 
 FeatureScript 2909;
@@ -55,19 +36,15 @@ import(path : "onshape/std/geometry.fs", version : "2909.0");
 import(path : "aa8ee374e7061289b937b984", version : "b0af54cc89dae3c240e344e8"); //autoLayoutConfig.fs
 import(path : "bb79595d1ad4e6528fb60762", version : "20987b283a5fd1abb9b2d6f5"); //autoLayoutTypes.fs
 
-// ---------------------------------------------------------------------------
-// Feature definition
-// ---------------------------------------------------------------------------
-
 /**
  * Remove Second Side Features
  *
  * Scans all bodies placed by Auto Layout+ and deletes geometry that is only
  * accessible from the bottom (second-setup) side of the part: pockets,
- * countersinks, counterbores, and any concave features whose entrance is on
- * the bottom exterior face. Auto Layout lays parts with their largest planar
- * face down on the cut sheet, so that face is treated as the bottom. The
- * resulting voids are healed automatically.
+ * countersinks, counterbores, and any concave features whose entrance faces
+ * downward. Auto Layout places all parts with their bottom face in the world
+ * XY plane, so world -Z is the tool approach direction for every placed body.
+ * The resulting voids are healed automatically.
  *
  * Place this feature immediately after Auto Layout+ in the feature tree.
  */
@@ -80,11 +57,7 @@ export const removeSecondSideFeatures = defineFeature(function(context is Contex
         definition.enableDiagnostics is boolean;
     }
     {
-        // ------------------------------------------------------------------
-        // Step 1: Locate all bodies that Auto Layout+ has already placed.
-        // The attribute "AutoLayout_PLACED" is stamped on each body after
-        // it is successfully nested and transformed onto the cut sheet.
-        // ------------------------------------------------------------------
+        // Step 1: Locate all bodies placed by Auto Layout+.
         const placedBodies = qAttributeQuery("" as AutoLayoutAttribute);
 
         if (isQueryEmpty(context, placedBodies))
@@ -102,103 +75,52 @@ export const removeSecondSideFeatures = defineFeature(function(context is Contex
         var bodiesProcessed = 0;
         var bodiesModified = 0;
 
-        // ------------------------------------------------------------------
-        // Step 2: Process each placed body independently so that a failure
-        // on one body (e.g. opDeleteFace cannot heal a particular void) does
-        // not abort cleanup of the remaining bodies.
-        // ------------------------------------------------------------------
+        // Step 2: Process each placed body independently so that a failure on one
+        // body does not abort cleanup of the remaining bodies.
         for (var bodyIndex = 0; bodyIndex < placedBodyCount; bodyIndex += 1)
         {
             const body = qNthElement(placedBodies, bodyIndex);
 
-            // Find the bottom exterior face: the largest planar face of the body.
-            // Auto Layout orients every part so that this face rests on the cut sheet,
-            // making it the bottom (non-cut) face. Its outward normal points away from
-            // the solid toward the machine table -- i.e. downward.
-            const bottomExteriorFace = qLargest(qGeometry(qOwnedByBody(body, EntityType.FACE), GeometryType.PLANE));
+            // Auto Layout places all parts with their bottom face in the world XY
+            // plane. World -Z is therefore the downward direction for every placed
+            // body and is used as the viewDirection for the self-shadow analysis.
+            const WORLD_DOWN = vector(0, 0, -1);
 
-            if (isQueryEmpty(context, bottomExteriorFace))
+            // All faces owned by this body. Defined here so the query re-resolves
+            // lazily and reflects the post-split state after opSplitBySelfShadow.
+            const bodyFaces = qOwnedByBody(body, EntityType.FACE);
+
+            // Z-parallel planar faces include the bottom exterior face and any
+            // pocket floors. If none exist the body has no horizontal geometry.
+            const horizontalFaces = qParallelPlanes(bodyFaces, WORLD_DOWN);
+
+            if (isQueryEmpty(context, horizontalFaces))
             {
                 if (definition.enableDiagnostics)
                     reportFeatureInfo(context, id,
-                        "Body " ~ bodyIndex ~ ": no planar face found -- skipping (non-planar part?).");
+                        "Body " ~ bodyIndex ~ ": no Z-aligned planar face found -- skipping.");
                 continue;
             }
 
             bodiesProcessed += 1;
 
-            // Evaluate the bottom face plane to obtain its outward normal.
-            // That normal points downward (toward the table) and is also the
-            // correct viewDirection for opSplitBySelfShadow: it is the direction
-            // of incoming rays when the CNC tool approaches from above.
-            const bottomFacePlane = evPlane(context, { "face" : bottomExteriorFace });
-
-            // All faces owned by this body. This query re-resolves lazily, so
-            // it reflects the post-split state when used after opSplitBySelfShadow.
-            const bodyFaces = qOwnedByBody(body, EntityType.FACE);
-
-            // ------------------------------------------------------------------
-            // Step 3: Split the body into visible/invisible face regions with
-            // respect to the tool approach direction.
-            //
-            // opSplitBySelfShadow's viewDirection is the direction of incoming
-            // rays -- from the viewer/tool toward the part. Since the tool
-            // approaches from above, rays travel downward, which is exactly the
-            // outward normal of the bottom face (bottomFacePlane.normal).
-            //
-            // Using the upward direction (-bottomFacePlane.normal) would invert
-            // the analysis: it would simulate viewing from below, making bottom
-            // pockets land in visibleFaces (no color) and top/side faces land in
-            // invisibleFaces -- the opposite of what is needed.
-            //
-            // The returned SplitBySelfShadowResult contains two arrays:
-            //   - visibleFaces:   faces accessible from above (top, through-holes)
-            //   - invisibleFaces: faces blocked from above (second-side candidates)
-            //
-            // Through-holes remain in the visible set because rays from above
-            // enter the top opening and illuminate the cylindrical wall -- they
-            // are NOT self-shadowed. Blind bottom pockets and counterbores are
-            // blocked by surrounding material and land in the invisible set.
-            // ------------------------------------------------------------------
+            // Step 3: Split into visible/invisible regions from above.
             const shadowId = id + ("shadow_" ~ bodyIndex);
             const shadowResult = opSplitBySelfShadow(context, shadowId, {
                         "bodies"        : body,
-                        "viewDirection" : bottomFacePlane.normal
+                        "viewDirection" : WORLD_DOWN
                     });
 
-            // Use the full invisibleFaces array returned by the operation.
-            // qSplitBy would only return faces that were physically split by a
-            // shadow curve edge; entirely-invisible faces (e.g. a plain pocket
-            // floor) never get split and would be missed. invisibleFaces from
-            // the result struct includes both split and unsplit invisible faces.
+            // Use the full invisibleFaces array so that entirely-invisible faces
+            // (e.g. plain pocket floors that are never split) are not missed.
             const invisibleFacesQuery = qUnion(shadowResult.invisibleFaces);
 
-            // ------------------------------------------------------------------
-            // Step 4: Exclude the bottom exterior face from the deletion set.
-            //
-            // The bottom exterior face is the flat face that rests on the cut
-            // sheet. It is invisible from above (the body self-shadows it), so
-            // it appears in invisibleFacesQuery and must be explicitly preserved.
-            //
-            // Side walls do NOT need to be excluded: under a self-shadow analysis
-            // from above, outer perimeter walls are not blocked by any other part
-            // of the same body, so they land in the visible set automatically.
-            // ------------------------------------------------------------------
-            const bottomExteriorFaces = qFarthestAlong(
-                qParallelPlanes(bodyFaces, bottomFacePlane.normal),
-                bottomFacePlane.normal
-            );
+            // Step 4: Identify the bottom exterior face -- the lowest Z-parallel
+            // planar face. Subtract it from the deletion set so the flat bottom
+            // of the part is preserved.
+            const bottomExteriorFaces = qFarthestAlong(horizontalFaces, WORLD_DOWN);
 
-            // ------------------------------------------------------------------
-            // Step 5: Compute the second-side face set.
-            //
-            //   secondSideFaces = invisible from above
-            //                   minus bottom exterior face
-            //
-            // What remains are faces belonging to blind bottom pockets,
-            // countersinks, counterbores, and similar features that require
-            // a second machine setup to manufacture.
-            // ------------------------------------------------------------------
+            // Step 5: Second-side faces = invisible from above minus bottom exterior face.
             const secondSideFaces = qSubtraction(invisibleFacesQuery, bottomExteriorFaces);
 
             if (definition.enableDiagnostics)
@@ -226,18 +148,7 @@ export const removeSecondSideFeatures = defineFeature(function(context is Contex
                     "Body " ~ bodyIndex ~ ": removing " ~ removedFaceCount ~ " second-side face(s).");
             }
 
-            // ------------------------------------------------------------------
-            // Step 6: Delete the second-side faces and heal the voids.
-            //
-            // capVoid: true  -- if the standard heal cannot close the gap,
-            //                   fall back to capping the void with a flat face.
-            // includeFillet: true -- pull in adjacent fillet/chamfer faces that
-            //                        belong to the same feature so the heal has
-            //                        clean geometry to work with.
-            //
-            // deleteSucceeded is set inside the try block only if opDeleteFace
-            // returns without throwing, making it a reliable success indicator.
-            // ------------------------------------------------------------------
+            // Step 6: Delete second-side faces and heal the voids.
             var deleteSucceeded = false;
             try
             {
