@@ -21,10 +21,11 @@
            into faces visible from above (accessible to the mill) and faces invisible
            from above (second-side features). The operation inserts shadow curve
            edges at visibility transitions.
-        5. From the invisible set, subtract vertical side walls
-           (qFacesParallelToDirection) and the bottom exterior face. What remains
-           are blind bottom pockets, countersinks, counterbores, and similar
-           features that require a second setup.
+        5. From the invisible set, subtract only the bottom exterior face (the flat
+           face coplanar with the cut sheet). Side walls are not self-shadowed and
+           land in the visible set automatically. What remains are blind bottom
+           pockets, countersinks, counterbores, and similar features that require
+           a second setup.
         6. Delete those faces with opDeleteFace (heal mode), per-body, with error
            isolation so one failing body does not abort the rest.
 
@@ -136,11 +137,10 @@ export const removeSecondSideFeatures = defineFeature(function(context is Contex
             //
             // opSplitBySelfShadow inserts shadow curve edges where a face
             // transitions from visible to invisible under a parallel projection
-            // from the given viewDirection. After the operation:
-            //   - qSplitBy(..., false) = faces visible from above = keep these
-            //                            (top face, top pockets, through-holes)
-            //   - qSplitBy(..., true)  = faces invisible from above = candidates
-            //                            for second-side feature deletion
+            // from the given viewDirection. The returned SplitBySelfShadowResult
+            // contains two arrays:
+            //   - visibleFaces:   faces accessible from above (top, through-holes)
+            //   - invisibleFaces: faces blocked from above (second-side candidates)
             //
             // Through-holes remain in the visible set because rays from above
             // enter the top opening and illuminate the cylindrical wall -- they
@@ -148,26 +148,29 @@ export const removeSecondSideFeatures = defineFeature(function(context is Contex
             // blocked by surrounding material and land in the invisible set.
             // ------------------------------------------------------------------
             const shadowId = id + ("shadow_" ~ bodyIndex);
-            opSplitBySelfShadow(context, shadowId, {
+            const shadowResult = opSplitBySelfShadow(context, shadowId, {
                         "bodies"        : body,
                         "viewDirection" : upDirection
                     });
 
-            const invisibleFacesQuery = qSplitBy(shadowId, EntityType.FACE, true);
+            // Use the full invisibleFaces array returned by the operation.
+            // qSplitBy would only return faces that were physically split by a
+            // shadow curve edge; entirely-invisible faces (e.g. a plain pocket
+            // floor) never get split and would be missed. invisibleFaces from
+            // the result struct includes both split and unsplit invisible faces.
+            const invisibleFacesQuery = qUnion(shadowResult.invisibleFaces);
 
             // ------------------------------------------------------------------
-            // Step 4: Exclude faces that should never be deleted.
+            // Step 4: Exclude the bottom exterior face from the deletion set.
             //
-            //   a) Side walls -- faces whose normals are perpendicular to the
-            //      tool axis (vertical perimeter walls). These are edge-on from
-            //      above and land in the invisible set, but they are structural
-            //      faces, not second-side features.
-            //   b) Bottom exterior face -- the large flat face resting on the
-            //      cut sheet. Keep it; removing it would open the bottom of the
-            //      part.
+            // The bottom exterior face is the flat face that rests on the cut
+            // sheet. It is invisible from above (the body self-shadows it), so
+            // it appears in invisibleFacesQuery and must be explicitly preserved.
+            //
+            // Side walls do NOT need to be excluded: under a self-shadow analysis
+            // from above, outer perimeter walls are not blocked by any other part
+            // of the same body, so they land in the visible set automatically.
             // ------------------------------------------------------------------
-            const sideFaces = qFacesParallelToDirection(bodyFaces, upDirection);
-
             const bottomExteriorFaces = qFarthestAlong(
                 qParallelPlanes(bodyFaces, bottomFacePlane.normal),
                 bottomFacePlane.normal
@@ -177,17 +180,23 @@ export const removeSecondSideFeatures = defineFeature(function(context is Contex
             // Step 5: Compute the second-side face set.
             //
             //   secondSideFaces = invisible from above
-            //                   minus side walls
             //                   minus bottom exterior face
             //
             // What remains are faces belonging to blind bottom pockets,
             // countersinks, counterbores, and similar features that require
             // a second machine setup to manufacture.
             // ------------------------------------------------------------------
-            const secondSideFaces = qSubtraction(
-                qSubtraction(invisibleFacesQuery, sideFaces),
-                bottomExteriorFaces
-            );
+            const secondSideFaces = qSubtraction(invisibleFacesQuery, bottomExteriorFaces);
+
+            if (definition.enableDiagnostics)
+            {
+                // Blue:  the full invisible-from-above set (everything opSplitBySelfShadow classified as invisible)
+                addDebugEntities(context, invisibleFacesQuery, DebugColor.BLUE);
+                // Green: the bottom exterior face being preserved (would open the part if deleted)
+                addDebugEntities(context, bottomExteriorFaces, DebugColor.GREEN);
+                // Red:   faces that will be sent to opDeleteFace
+                addDebugEntities(context, secondSideFaces, DebugColor.RED);
+            }
 
             if (isQueryEmpty(context, secondSideFaces))
             {
