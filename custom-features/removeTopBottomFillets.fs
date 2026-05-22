@@ -137,7 +137,7 @@ export const removeTopBottomFillets = defineFeature(function(context is Context,
                     filletAxis = surfDef.coordSystem.zAxis;
 
                 // Skip if the fillet axis is parallel to Z (side fillet).
-                if (filletAxis != undefined && abs(dot(filletAxis, WORLD_DOWN)) > (1 - 1e-6))
+                if (filletAxis != undefined && parallelVectors(filletAxis, WORLD_DOWN))
                     continue;
 
                 facesToRemove = append(facesToRemove, face);
