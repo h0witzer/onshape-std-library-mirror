@@ -143,12 +143,14 @@ export const removeTopBottomFillets = defineFeature(function(context is Context,
                                 if (abs(fp.origin[2] - refZ) < TOLERANCE.zeroLength * meter)
                                     topList = append(topList, hFace);
                             }
+                            catch { }
                         }
                         if (size(topList) > 0)
                             topFlatFaces = qUnion(topList);
                         else
                             topFlatFaces = topRef;
                     }
+                    catch { }
                 }
             }
 
@@ -169,12 +171,14 @@ export const removeTopBottomFillets = defineFeature(function(context is Context,
                                 if (abs(fp.origin[2] - refZ) < TOLERANCE.zeroLength * meter)
                                     bottomList = append(bottomList, hFace);
                             }
+                            catch { }
                         }
                         if (size(bottomList) > 0)
                             bottomFlatFaces = qUnion(bottomList);
                         else
                             bottomFlatFaces = bottomRef;
                     }
+                    catch { }
                 }
             }
 

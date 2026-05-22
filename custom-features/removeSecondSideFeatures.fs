@@ -154,10 +154,12 @@ export const removeSecondSideFeatures = defineFeature(function(context is Contex
                             if (abs(fp.origin[2] - refZ) < TOLERANCE.zeroLength * meter)
                                 coplanarList = append(coplanarList, hFace);
                         }
+                        catch { }
                     }
                     if (size(coplanarList) > 0)
                         coplanarWithBottom = qUnion(coplanarList);
                 }
+                catch { }
             }
 
             const keepFaces = qUnion([visibleFacesQuery, vertexAdjacentFaces, coplanarWithBottom]);
