@@ -17,11 +17,17 @@
         3. Call opSplitBySelfShadow with viewDirection = world -Z (downward) to split
            each body into faces visible from above (accessible to the mill) and faces
            invisible from above (second-side features).
-        4. From the invisible set, subtract the bottom exterior face (the lowest
-           Z-parallel face). Side walls land in the visible set automatically.
-           What remains are blind bottom pockets, countersinks, counterbores, and
-           similar features that require a second setup.
-        5. Delete those faces with opDeleteFace (heal mode), per-body, with error
+        4. Build a keep set — faces that must NOT be deleted even if they land in the
+           invisible set:
+             a. All visible faces (top surfaces and illuminated side walls).
+             b. All faces vertex-adjacent to any visible face, so that side walls whose
+                shadow boundary passes through a shared vertex are also preserved.
+             c. All faces coplanar with the bottom exterior plane (the stock bed, Z=0
+                in the studio). These are the flat exterior bottom faces that cap the
+                part against the spoilboard.
+        5. Delete set = invisible faces minus keep set.  These are blind-bottom pockets,
+           countersinks, counterbores, and similar features reachable only from below.
+        6. Delete those faces with opDeleteFace (heal mode), per-body, with error
            isolation so one failing body does not abort the rest.
 
     Why opSplitBySelfShadow correctly handles through-holes:
@@ -111,25 +117,65 @@ export const removeSecondSideFeatures = defineFeature(function(context is Contex
                         "viewDirection" : WORLD_DOWN
                     });
 
-            // Use the full invisibleFaces array so that entirely-invisible faces
-            // (e.g. plain pocket floors that are never split) are not missed.
+            // Use the full faces arrays so entirely-visible or entirely-invisible
+            // faces (never split) are not missed.
             const invisibleFacesQuery = qUnion(shadowResult.invisibleFaces);
+            const visibleFacesQuery   = qUnion(shadowResult.visibleFaces);
 
-            // Step 4: Identify the bottom exterior face -- the lowest Z-parallel
-            // planar face. Subtract it from the deletion set so the flat bottom
-            // of the part is preserved.
-            const bottomExteriorFaces = qFarthestAlong(horizontalFaces, WORLD_DOWN);
+            // Step 4: Build the keep set — everything that must not be deleted.
+            //
+            // (a) All faces visible from above (top surfaces and illuminated walls).
+            //
+            // (b) All faces vertex-adjacent to any visible face.  The shadow
+            //     boundary can pass through a shared vertex, leaving part of a side
+            //     wall in the invisible set even though it is topologically connected
+            //     to a visible top face.  Including vertex-adjacent faces ensures
+            //     those connected side walls are preserved.
+            const vertexAdjacentFaces = qAdjacent(visibleFacesQuery, AdjacencyType.VERTEX, EntityType.FACE);
 
-            // Step 5: Second-side faces = invisible from above minus bottom exterior face.
-            const secondSideFaces = qSubtraction(invisibleFacesQuery, bottomExteriorFaces);
+            // (c) All faces coplanar with the stock-bed plane (Z=0, the world Top
+            //     plane).  Auto Layout places every part bottom-side-down at Z=0, so
+            //     these are the flat exterior bottom faces that sit against the
+            //     spoilboard.  The farthest-along face gives us the reference Z; we
+            //     then collect every horizontal face at that same elevation.
+            const bottomReferenceFace = qFarthestAlong(horizontalFaces, WORLD_DOWN);
+            var coplanarWithBottom = bottomReferenceFace;
+            if (!isQueryEmpty(context, bottomReferenceFace))
+            {
+                try
+                {
+                    const refZ = evPlane(context, { "face" : bottomReferenceFace }).origin[2];
+                    var coplanarList = [];
+                    for (var hFace in evaluateQuery(context, horizontalFaces))
+                    {
+                        try
+                        {
+                            const fp = evPlane(context, { "face" : hFace });
+                            if (abs(fp.origin[2] - refZ) < TOLERANCE.zeroLength * meter)
+                                coplanarList = append(coplanarList, hFace);
+                        }
+                    }
+                    if (size(coplanarList) > 0)
+                        coplanarWithBottom = qUnion(coplanarList);
+                }
+            }
+
+            const keepFaces = qUnion([visibleFacesQuery, vertexAdjacentFaces, coplanarWithBottom]);
+
+            // Step 5: Second-side faces = invisible from above minus keep set.
+            const secondSideFaces = qSubtraction(invisibleFacesQuery, keepFaces);
 
             if (definition.enableDiagnostics)
             {
-                // Blue:  the full invisible-from-above set (everything opSplitBySelfShadow classified as invisible)
+                // Blue:    full invisible-from-above set
                 addDebugEntities(context, invisibleFacesQuery, DebugColor.BLUE);
-                // Green: the bottom exterior face being preserved (would open the part if deleted)
-                addDebugEntities(context, bottomExteriorFaces, DebugColor.GREEN);
-                // Red:   faces that will be sent to opDeleteFace
+                // Green:   visible-from-above faces (shadow result)
+                addDebugEntities(context, visibleFacesQuery, DebugColor.GREEN);
+                // Cyan:    vertex-adjacent faces added to the keep set
+                addDebugEntities(context, vertexAdjacentFaces, DebugColor.CYAN);
+                // Yellow:  faces coplanar with the stock-bed plane (Z=0)
+                addDebugEntities(context, coplanarWithBottom, DebugColor.YELLOW);
+                // Red:     faces that will be sent to opDeleteFace
                 addDebugEntities(context, secondSideFaces, DebugColor.RED);
             }
 
