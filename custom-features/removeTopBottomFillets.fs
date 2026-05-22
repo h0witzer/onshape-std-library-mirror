@@ -1,17 +1,18 @@
 /*
     Remove Horizontal-Adjacent Fillets
 
-    Companion feature for Auto Layout+. Strips all fillet faces that bound any
+    Companion feature for Auto Layout+. Strips fillet faces that bound any
     planar face parallel to the XY plane on each placed body, before any
-    second-side cleanup is performed.
+    second-side cleanup is performed.  Side fillets (whose axis is parallel to
+    Z) are preserved so they can be milled.
 
     Run this feature BEFORE Remove Second Side Features in the feature tree.
 
     Why this matters at the CNC:
         Fillets that sit against or span any horizontal step surface confuse the
         self-shadow split used by the second-side removal algorithm.  Removing
-        every horizontal-adjacent fillet before the shadow analysis produces
-        clean, unambiguous face classifications.
+        those fillets before the shadow analysis produces clean, unambiguous
+        face classifications.
 
     Algorithm:
         1. Locate every solid body carrying the AutoLayout_PLACED attribute.
@@ -21,7 +22,9 @@
         4. Intersect the fillet set with faces edge-adjacent to any horizontal
            face so that fillets at every elevation — not just the top and bottom
            extremes — are captured.
-        5. Call opModifyFillet (REMOVE_FILLET) for the collected set, with error
+        4b. Exclude any fillet face whose cylinder/torus axis is parallel to Z;
+            those are side fillets spanning two vertical walls and must stay.
+        5. Call opModifyFillet (REMOVE_FILLET) for the remaining set, with error
            isolation per body so that a failing body does not abort the rest.
 */
 
@@ -33,13 +36,14 @@ import(path : "bb79595d1ad4e6528fb60762", version : "20987b283a5fd1abb9b2d6f5");
 /**
  * Remove Horizontal-Adjacent Fillets
  *
- * Scans all bodies placed by Auto Layout+ and removes every fillet face that
- * bounds any planar face parallel to the XY plane, at any elevation.
- * Place this feature immediately before Remove Second Side Features in the
- * feature tree.
+ * Scans all bodies placed by Auto Layout+ and removes fillet faces that bound
+ * any planar face parallel to the XY plane, at any elevation.  Fillet faces
+ * whose axis is Z-aligned (side fillets between two vertical walls) are left
+ * intact.  Place this feature immediately before Remove Second Side Features
+ * in the feature tree.
  */
 annotation { "Feature Type Name" : "Remove Horizontal-Adjacent Fillets",
-        "Feature Type Description" : "Companion for Auto Layout+. Strips all fillets bounding any XY-parallel flat face on each placed body, run this before Remove Second Side Features." }
+        "Feature Type Description" : "Companion for Auto Layout+. Strips fillets bounding any XY-parallel flat face on each placed body (Z-aligned side fillets are preserved). Run this before Remove Second Side Features." }
 export const removeTopBottomFillets = defineFeature(function(context is Context, id is Id, definition is map)
     precondition
     {
@@ -104,18 +108,10 @@ export const removeTopBottomFillets = defineFeature(function(context is Context,
             // This captures fillets at every elevation — not only the top and
             // bottom extremes — so stepped faces and mid-height pockets are
             // covered in full.
-            const filletFacesToRemove = qIntersection([allFilletFaces,
+            const horizontalAdjacentFillets = qIntersection([allFilletFaces,
                         qAdjacent(horizontalFaces, AdjacencyType.EDGE, EntityType.FACE)]);
 
-            if (definition.enableDiagnostics)
-            {
-                // Green:  horizontal (XY-parallel) seed faces
-                addDebugEntities(context, horizontalFaces,     DebugColor.GREEN);
-                // Yellow: fillet faces to be removed
-                addDebugEntities(context, filletFacesToRemove, DebugColor.YELLOW);
-            }
-
-            if (isQueryEmpty(context, filletFacesToRemove))
+            if (isQueryEmpty(context, horizontalAdjacentFillets))
             {
                 if (definition.enableDiagnostics)
                     reportFeatureInfo(context, id,
@@ -123,11 +119,48 @@ export const removeTopBottomFillets = defineFeature(function(context is Context,
                 continue;
             }
 
+            // Step 4b: Exclude fillet faces whose axis is Z-aligned.  A Z-aligned
+            // fillet axis means the fillet spans two vertical (side) faces — those
+            // are milled features and must be preserved.
+            var facesToRemove = [];
+            for (var face in evaluateQuery(context, horizontalAdjacentFillets))
+            {
+                var surfDef;
+                try silent { surfDef = evSurfaceDefinition(context, { "face" : face }); }
+                if (surfDef == undefined)
+                    continue;
+
+                var filletAxis = undefined;
+                if (surfDef is Cylinder)
+                    filletAxis = surfDef.coordSystem.zAxis;
+                else if (surfDef is Torus)
+                    filletAxis = surfDef.coordSystem.zAxis;
+
+                // Skip if the fillet axis is parallel to Z (side fillet).
+                if (filletAxis != undefined && abs(dot(filletAxis, WORLD_DOWN)) > (1 - 1e-6))
+                    continue;
+
+                facesToRemove = append(facesToRemove, face);
+            }
+
+            if (size(facesToRemove) == 0)
+            {
+                if (definition.enableDiagnostics)
+                    reportFeatureInfo(context, id,
+                        "Body " ~ bodyIndex ~ ": all horizontal-adjacent fillets are Z-aligned side fillets -- skipping.");
+                continue;
+            }
+
+            const filletFacesToRemove = qUnion(facesToRemove);
+
             if (definition.enableDiagnostics)
             {
-                const count = evaluateQueryCount(context, filletFacesToRemove);
+                // Green:  horizontal (XY-parallel) seed faces
+                addDebugEntities(context, horizontalFaces,     DebugColor.GREEN);
+                // Yellow: fillet faces to be removed
+                addDebugEntities(context, filletFacesToRemove, DebugColor.YELLOW);
                 reportFeatureInfo(context, id,
-                    "Body " ~ bodyIndex ~ ": removing " ~ count ~ " horizontal-adjacent fillet face(s).");
+                    "Body " ~ bodyIndex ~ ": removing " ~ size(facesToRemove) ~ " horizontal-adjacent fillet face(s).");
             }
 
             // Step 5: Remove the fillets.  opModifyFillet heals the geometry back
