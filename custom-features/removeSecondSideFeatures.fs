@@ -15,12 +15,14 @@
         2. Identify the bottom (non-cut) face of each body as its largest planar
            face. Auto Layout lays parts face-down on the cut sheet, so the largest
            face is the one resting on the table.
-        3. Derive the tool approach direction (upward) as the negation of the
-           bottom face's outward normal.
-        4. Call opSplitBySelfShadow with viewDirection = upward to split each body
-           into faces visible from above (accessible to the mill) and faces invisible
-           from above (second-side features). The operation inserts shadow curve
-           edges at visibility transitions.
+        3. Determine the self-shadow viewing direction: the bottom face outward
+           normal already points downward (toward the table), which is the direction
+           of incoming rays when the tool/viewer is above. That direction is passed
+           directly as viewDirection.
+        4. Call opSplitBySelfShadow with viewDirection = bottomFaceNormal (downward)
+           to split each body into faces visible from above (accessible to the mill)
+           and faces invisible from above (second-side features). The operation
+           inserts shadow curve edges at visibility transitions.
         5. From the invisible set, subtract only the bottom exterior face (the flat
            face coplanar with the cut sheet). Side walls are not self-shadowed and
            land in the visible set automatically. What remains are blind bottom
@@ -34,7 +36,11 @@
         on the cut sheet. That face is therefore the BOTTOM exterior face. Its
         outward normal (as returned by evPlane) points away from the solid toward
         the machine table -- i.e. downward. The machining tool approaches from
-        the opposite direction, which is the upward direction (-bottomFaceNormal).
+        above, and opSplitBySelfShadow's viewDirection is the direction of incoming
+        rays (from tool toward part), which is that same downward vector
+        (bottomFaceNormal). Passing the upward vector (-bottomFaceNormal) instead
+        would invert the analysis, classifying top/side faces as invisible and
+        bottom pockets as visible -- exactly the opposite of what is needed.
 
     Why opSplitBySelfShadow correctly handles through-holes:
         Under a parallel projection from above, rays entering a through-hole from
@@ -122,10 +128,10 @@ export const removeSecondSideFeatures = defineFeature(function(context is Contex
             bodiesProcessed += 1;
 
             // Evaluate the bottom face plane to obtain its outward normal.
-            // That normal points downward (toward the table). The up direction
-            // (toward the machining tool) is the opposite.
+            // That normal points downward (toward the table) and is also the
+            // correct viewDirection for opSplitBySelfShadow: it is the direction
+            // of incoming rays when the CNC tool approaches from above.
             const bottomFacePlane = evPlane(context, { "face" : bottomExteriorFace });
-            const upDirection = -bottomFacePlane.normal;
 
             // All faces owned by this body. This query re-resolves lazily, so
             // it reflects the post-split state when used after opSplitBySelfShadow.
@@ -133,12 +139,19 @@ export const removeSecondSideFeatures = defineFeature(function(context is Contex
 
             // ------------------------------------------------------------------
             // Step 3: Split the body into visible/invisible face regions with
-            // respect to the tool approach direction (viewDirection = upward).
+            // respect to the tool approach direction.
             //
-            // opSplitBySelfShadow inserts shadow curve edges where a face
-            // transitions from visible to invisible under a parallel projection
-            // from the given viewDirection. The returned SplitBySelfShadowResult
-            // contains two arrays:
+            // opSplitBySelfShadow's viewDirection is the direction of incoming
+            // rays -- from the viewer/tool toward the part. Since the tool
+            // approaches from above, rays travel downward, which is exactly the
+            // outward normal of the bottom face (bottomFacePlane.normal).
+            //
+            // Using the upward direction (-bottomFacePlane.normal) would invert
+            // the analysis: it would simulate viewing from below, making bottom
+            // pockets land in visibleFaces (no color) and top/side faces land in
+            // invisibleFaces -- the opposite of what is needed.
+            //
+            // The returned SplitBySelfShadowResult contains two arrays:
             //   - visibleFaces:   faces accessible from above (top, through-holes)
             //   - invisibleFaces: faces blocked from above (second-side candidates)
             //
@@ -150,7 +163,7 @@ export const removeSecondSideFeatures = defineFeature(function(context is Contex
             const shadowId = id + ("shadow_" ~ bodyIndex);
             const shadowResult = opSplitBySelfShadow(context, shadowId, {
                         "bodies"        : body,
-                        "viewDirection" : upDirection
+                        "viewDirection" : bottomFacePlane.normal
                     });
 
             // Use the full invisibleFaces array returned by the operation.
