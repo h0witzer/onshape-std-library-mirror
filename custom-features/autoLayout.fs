@@ -93,19 +93,19 @@ export const autolayout = defineFeature(function(context is Context, id is Id, d
         reportFeatureInfo(context, id, "Auto Layout with material and thickness grouping");
 
         // === Step 1: Extract all part data ===
-        // Each materialPropertyData entry carries a robust query that identifies the body
-        // by identity (not index). Cast the stored value back to Query and skip entries
-        // that no longer resolve (e.g., deleted upstream parts).
+        // materialPropertyData is built by editLogic using the same qAllModifiableSolidBodies()
+        // order, so index correlation between the two is deterministic within a regeneration.
         var partData = [];
+        const allBodiesQuery = qAllModifiableSolidBodies();
+        const bodyCount = size(evaluateQuery(context, allBodiesQuery));
         const materialData = (definition.materialPropertyData != undefined) ? definition.materialPropertyData : [];
 
-        for (var entry in materialData)
+        for (var bodyIndex = 0; bodyIndex < bodyCount; bodyIndex += 1)
         {
-            const body = entry.entity as Query;
-            if (body == undefined || isQueryEmpty(context, body))
-                continue;
-
-            const materialName = entry.materialName;
+            const body = qNthElement(allBodiesQuery, bodyIndex);
+            const materialName = (bodyIndex < size(materialData))
+                ? materialData[bodyIndex].materialName
+                : "Undefined Material";
             const thickness = getBoundingThickness(context, body);
 
             partData = append(partData, {
@@ -813,26 +813,23 @@ export function getBoundingThickness(context is Context, body is Query)
 
 export function editLogic(context is Context, id is Id, oldDefinition is map, definition is map, isCreating is boolean, specifiedParameters is map, clickedButton is string) returns map
 {
-    if (clickedButton == "refresh" || definition.materialPropertyData == undefined || size(definition.materialPropertyData) == 0)
+    // Always rebuild material data fresh. editLogic and the feature body run in the same
+    // regeneration context, so qAllModifiableSolidBodies() yields the same deterministic
+    // order in both — index correlation is reliable.
+    var entities = evaluateQuery(context, qAllModifiableSolidBodies());
+
+    definition.materialPropertyData = [];
+
+    for (var entity in entities)
     {
-        var entities = evaluateQuery(context, qAllModifiableSolidBodies());
+        var prop = getProperty(context, {
+                    "entity" : entity,
+                    "propertyType" : PropertyType.MATERIAL
+                });
 
-        definition.materialPropertyData = [];
-
-        for (var entity in entities)
-        {
-            var prop = getProperty(context, {
-                        "entity" : entity,
-                        "propertyType" : PropertyType.MATERIAL
-                    });
-
-            // Each entry stores a robust query alongside the material name so the feature
-            // body can match bodies by identity rather than relying on evaluation order.
-            definition.materialPropertyData = append(definition.materialPropertyData, {
-                        "entity" : makeRobustQuery(context, entity),
-                        "materialName" : (prop != undefined && prop.name != undefined) ? prop.name : "Undefined Material"
-                    });
-        }
+        definition.materialPropertyData = append(definition.materialPropertyData, {
+                    "materialName" : (prop != undefined && prop.name != undefined) ? prop.name : "Undefined Material"
+                });
     }
 
     if (definition.debugDiagnostics)
