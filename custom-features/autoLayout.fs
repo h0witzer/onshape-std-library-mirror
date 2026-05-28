@@ -93,8 +93,8 @@ export const autolayout = defineFeature(function(context is Context, id is Id, d
         reportFeatureInfo(context, id, "Auto Layout with material and thickness grouping");
 
         // === Step 1: Extract all part data ===
-        // Material is read directly via getProperty so there is no dependency on editLogic
-        // data or index correlation between separate evaluateQuery calls.
+        // Material names are provided by editLogic via definition.materialPropertyData
+        // (getProperty cannot be called on the current context in a feature body).
         var partData = [];
         const allBodiesQuery = qAllModifiableSolidBodies();
         const bodyCount = size(evaluateQuery(context, allBodiesQuery));
@@ -104,14 +104,10 @@ export const autolayout = defineFeature(function(context is Context, id is Id, d
             const body = qNthElement(allBodiesQuery, bodyIndex);
 
             var materialName = "Undefined Material";
-            try silent
+            if (definition.materialPropertyData != undefined &&
+                bodyIndex < size(definition.materialPropertyData))
             {
-                const prop = getProperty(context, {
-                            "entity" : body,
-                            "propertyType" : PropertyType.MATERIAL
-                        });
-                if (prop != undefined && prop.name != undefined)
-                    materialName = prop.name;
+                materialName = definition.materialPropertyData[bodyIndex].materialName;
             }
 
             const thickness = getBoundingThickness(context, body);
@@ -821,8 +817,8 @@ export function getBoundingThickness(context is Context, body is Query)
 
 export function editLogic(context is Context, id is Id, oldDefinition is map, definition is map, isCreating is boolean, specifiedParameters is map, clickedButton is string) returns map
 {
-    // editLogic populates materialPropertyData for the debug diagnostics display only.
-    // The feature body reads material directly via getProperty at runtime.
+    // getProperty can only be called in editLogic, not in the feature body.
+    // Populate materialPropertyData so the feature body can read material names by index.
     var entities = evaluateQuery(context, qAllModifiableSolidBodies());
 
     definition.materialPropertyData = [];
