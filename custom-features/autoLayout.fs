@@ -79,11 +79,8 @@ export const autolayout = defineFeature(function(context is Context, id is Id, d
         annotation { "Name" : "Enable diagnostics", "UIHint" : "DISPLAY_SHORT" }
         definition.debugDiagnostics is boolean;
 
-        if (definition.debugDiagnostics)
-        {
-            annotation { "Name" : "Material data", "UIHint" : [UIHint.READ_ONLY] }
-            isAnything(definition.materialPropertyData);
-        }
+        annotation { "Name" : "Material data", "UIHint" : [UIHint.ALWAYS_HIDDEN] }
+        isAnything(definition.materialPropertyData);
 
         annotation { "Name" : "Refresh Layouts" }
         isButton(definition.refresh);
@@ -291,7 +288,7 @@ export function doOneLayout(context is Context, id is Id, definition is map, bod
 
             if (block[].fit != undefined)
             {
-                opTransform(context, id + ("transform_to_bin" ~ i ~ cutSheetNumber), {
+                opTransform(context, id + ("transform_to_bin" ~ i ~ "_" ~ cutSheetNumber), {
                             "bodies" : block[].owner,
                             "transform" : block[].transform
                         });
