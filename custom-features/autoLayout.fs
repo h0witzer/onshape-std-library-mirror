@@ -104,7 +104,7 @@ export const autolayout = defineFeature(function(context is Context, id is Id, d
             if (definition.materialPropertyData != undefined &&
                 bodyIndex < size(definition.materialPropertyData))
             {
-                materialName = definition.materialPropertyData[bodyIndex].materialName;
+                materialName = definition.materialPropertyData[bodyIndex];
             }
 
             const thickness = getBoundingThickness(context, body);
@@ -815,7 +815,7 @@ export function getBoundingThickness(context is Context, body is Query)
 export function editLogic(context is Context, id is Id, oldDefinition is map, definition is map, isCreating is boolean, specifiedParameters is map, clickedButton is string) returns map
 {
     // getProperty can only be called in editLogic, not in the feature body.
-    // Populate materialPropertyData so the feature body can read material names by index.
+    // Store material names as a flat string array for reliable serialization.
     var entities = evaluateQuery(context, qAllModifiableSolidBodies());
 
     definition.materialPropertyData = [];
@@ -833,9 +833,7 @@ export function editLogic(context is Context, id is Id, oldDefinition is map, de
                 materialName = prop.name;
         }
 
-        definition.materialPropertyData = append(definition.materialPropertyData, {
-                    "materialName" : materialName
-                });
+        definition.materialPropertyData = append(definition.materialPropertyData, materialName);
     }
 
     if (definition.debugDiagnostics)
