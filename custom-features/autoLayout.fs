@@ -93,21 +93,19 @@ export const autolayout = defineFeature(function(context is Context, id is Id, d
         reportFeatureInfo(context, id, "Auto Layout with material and thickness grouping");
 
         // === Step 1: Extract all part data ===
-        // Material names are resolved in editLogic (where getProperty is available) and stored
-        // as plain strings in definition.materialPropertyData, indexed to match the order
-        // qAllModifiableSolidBodies() returns bodies. Bodies are re-evaluated here via
-        // qNthElement to get fresh typed Query references.
+        // Each materialPropertyData entry carries a robust query that identifies the body
+        // by identity (not index). Cast the stored value back to Query and skip entries
+        // that no longer resolve (e.g., deleted upstream parts).
         var partData = [];
-        const allBodiesQuery = qAllModifiableSolidBodies();
-        const bodyCount = size(evaluateQuery(context, allBodiesQuery));
         const materialData = (definition.materialPropertyData != undefined) ? definition.materialPropertyData : [];
 
-        for (var bodyIndex = 0; bodyIndex < bodyCount; bodyIndex += 1)
+        for (var entry in materialData)
         {
-            const body = qNthElement(allBodiesQuery, bodyIndex);
-            const materialName = (bodyIndex < size(materialData))
-                ? materialData[bodyIndex].materialName
-                : "Undefined Material";
+            const body = entry.entity as Query;
+            if (body == undefined || isQueryEmpty(context, body))
+                continue;
+
+            const materialName = entry.materialName;
             const thickness = getBoundingThickness(context, body);
 
             partData = append(partData, {
@@ -815,23 +813,26 @@ export function getBoundingThickness(context is Context, body is Query)
 
 export function editLogic(context is Context, id is Id, oldDefinition is map, definition is map, isCreating is boolean, specifiedParameters is map, clickedButton is string) returns map
 {
-    var entities = evaluateQuery(context, qAllModifiableSolidBodies());
-
-    definition.materialPropertyData = [];
-
-    for (var entity in entities)
+    if (clickedButton == "refresh" || definition.materialPropertyData == undefined || size(definition.materialPropertyData) == 0)
     {
-        var prop = getProperty(context, {
-                    "entity" : entity,
-                    "propertyType" : PropertyType.MATERIAL
-                });
+        var entities = evaluateQuery(context, qAllModifiableSolidBodies());
 
-        // Material names are stored as plain strings because Query objects cannot survive
-        // round-tripping through definition (QueryType serializes to a raw integer).
-        // The feature body re-evaluates fresh body queries and correlates by index.
-        definition.materialPropertyData = append(definition.materialPropertyData, {
-                    "materialName" : (prop != undefined && prop.name != undefined) ? prop.name : "Undefined Material"
-                });
+        definition.materialPropertyData = [];
+
+        for (var entity in entities)
+        {
+            var prop = getProperty(context, {
+                        "entity" : entity,
+                        "propertyType" : PropertyType.MATERIAL
+                    });
+
+            // Each entry stores a robust query alongside the material name so the feature
+            // body can match bodies by identity rather than relying on evaluation order.
+            definition.materialPropertyData = append(definition.materialPropertyData, {
+                        "entity" : makeRobustQuery(context, entity),
+                        "materialName" : (prop != undefined && prop.name != undefined) ? prop.name : "Undefined Material"
+                    });
+        }
     }
 
     if (definition.debugDiagnostics)
