@@ -44,7 +44,7 @@ const EXTEND_FRAMES_PAD_LENGTH = .1 * millimeter;
  * Create frames from a profile and set of path selections.
  */
 annotation {
-        "Feature Type Name" : "Frame",
+        "Feature Type Name" : "Frame System",
         "Manipulator Change Function" : "frameManipulators",
         "Filter Selector" : "allparts",
         "Editing Logic Function" : "frameEditLogicFunction"
