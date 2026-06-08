@@ -2080,6 +2080,13 @@ function getOpenCapFace(context is Context, beamBody is Query, trimEnds is array
 // candidate nearest the beam root (where a flush butt lands); the far plane is the candidate nearest the
 // open tip (where a flipped or coped butt carries the beam to). When the eligible faces fall into more
 // than two distinct (non-coplanar) planes the abutment is ambiguous.
+//
+// evCollision reports interferences over the whole beam body, so a beam that meets earlier members at
+// both of its ends (for example a vertical that borders both a top-face group and a bottom-face group)
+// reports the abutments from both ends together. Each candidate face is therefore attributed to the
+// nearer beam end and only the faces local to the end being terminated are considered, the same per-side
+// grouping the global trim uses. Without this restriction the far end's abutment would be mixed in,
+// inflating the plane count and producing a false "cannot trim the same frame end" ambiguity.
 // Returns { found : boolean, ambiguous : boolean, entryPlane : Plane, farPlane : Plane }.
 function getCrossGroupButtPlane(context is Context, beamBody is Query, capFace is Query, earlierBeams is Query) returns map
 {
@@ -2103,7 +2110,18 @@ function getCrossGroupButtPlane(context is Context, beamBody is Query, capFace i
 
     // Restrict to planar earlier faces whose normal is parallel (or antiparallel) to the beam axis.
     const squareFacesQuery = qParallelPlanes(qGeometry(qUnion(toolFaces), GeometryType.PLANE), beamAxis, true);
-    const squareFaces = evaluateQuery(context, squareFacesQuery);
+    const allSquareFaces = evaluateQuery(context, squareFacesQuery);
+    if (allSquareFaces == [])
+    {
+        return { "found" : false, "ambiguous" : false };
+    }
+
+    // Keep only the abutting faces nearer to this end's cap face than to the beam's opposite cap face so a
+    // single corner is analyzed at a time. When the beam has no resolvable opposite end every face is kept.
+    const oppositeCapFace = qSubtraction(qUnion([qFrameStartFace(beamBody), qFrameEndFace(beamBody)]), capFace);
+    const squareFaces = isQueryEmpty(context, oppositeCapFace)
+        ? allSquareFaces
+        : facesNearerToEnd(context, allSquareFaces, capFace, oppositeCapFace);
     if (squareFaces == [])
     {
         return { "found" : false, "ambiguous" : false };
@@ -2170,6 +2188,30 @@ function countDistinctPlaneClusters(planes is array) returns number
         }
     }
     return size(clusters);
+}
+
+// Return the subset of candidate faces that abut the beam end identified by thisCapFace, keeping the faces
+// that are closer to thisCapFace than to the beam's opposite cap face. This attributes each abutting
+// earlier-group face to the nearer beam end so a single corner is analyzed at a time, the same way the
+// global trim groups its tools per side.
+// Inputs:
+//   candidateFaces : array of earlier-group faces interfering with the beam
+//   thisCapFace    : the cap face of the end currently being terminated
+//   otherCapFace   : the cap face of the beam's opposite end
+// Returns the array of candidate faces nearer to thisCapFace.
+function facesNearerToEnd(context is Context, candidateFaces is array, thisCapFace is Query, otherCapFace is Query) returns array
+{
+    var nearFaces = [];
+    for (var candidateFace in candidateFaces)
+    {
+        const distanceToThisEnd = evDistance(context, { "side0" : thisCapFace, "side1" : candidateFace }).distance;
+        const distanceToOtherEnd = evDistance(context, { "side0" : otherCapFace, "side1" : candidateFace }).distance;
+        if (distanceToThisEnd <= distanceToOtherEnd)
+        {
+            nearFaces = append(nearFaces, candidateFace);
+        }
+    }
+    return nearFaces;
 }
 
 // Reterminate a beam's open cap face onto the supplied butt plane with a planar face, preserving the
