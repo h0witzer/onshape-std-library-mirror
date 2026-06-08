@@ -62,11 +62,21 @@ export const frame = defineFeature(function(context is Context, id is Id, defini
         definition.profileSketch is PartStudioData;
 
         annotation {
-                    "Name" : "Selections",
-                    "Description" : "Faces, edges, and vertices that define sweep paths",
-                    "Filter" : ((EntityType.FACE && ConstructionObject.NO) || EntityType.EDGE || (EntityType.VERTEX && AllowEdgePoint.NO) || (EntityType.BODY && BodyType.WIRE && SketchObject.NO))
+                    "Name" : "Selection groups",
+                    "Item name" : "group",
+                    "Driven query" : "groupSelections",
+                    "Item label template" : "#groupSelections"
                 }
-        definition.selections is Query;
+        definition.selectionGroups is array;
+        for (var group in definition.selectionGroups)
+        {
+            annotation {
+                        "Name" : "Selections",
+                        "Description" : "Faces, edges, and vertices that define sweep paths",
+                        "Filter" : ((EntityType.FACE && ConstructionObject.NO) || EntityType.EDGE || (EntityType.VERTEX && AllowEdgePoint.NO) || (EntityType.BODY && BodyType.WIRE && SketchObject.NO))
+                    }
+            group.groupSelections is Query;
+        }
 
         annotation {
                     "Name" : "Lock profile faces",
@@ -184,6 +194,7 @@ export const frame = defineFeature(function(context is Context, id is Id, defini
             index : FRAME_NINE_POINT_CENTER_INDEX,
             angle : 0 * degree,
             cornerOverrides : [],
+            selectionGroups : [],
             trim : false,
             mergeTangentSegments : true,
             angleReference : qNothing(),
@@ -268,16 +279,37 @@ function doFrame(context is Context, id is Id, definition is map)
         definition.lockFaces = definition.profileLockFaces;
     }
 
+    verify(size(definition.selectionGroups) > 0, ErrorStringEnum.FRAME_SELECT_PATH, { "faultyParameters" : ["selectionGroups"] });
+
     var bodiesToDelete = new box([]);
     const profileData = getProfile(context, id, definition, bodiesToDelete);
 
-    const sweepData = sweepFrames(context, id, definition, profileData, bodiesToDelete);
+    var allManipulators = {};
+    var previousGroupBodies = qNothing();
 
-    addManipulators(context, id, sweepData.manipulators);
-    trimFrame(context, id, definition, sweepData.trimEnds, sweepData.sweepBodies, bodiesToDelete);
-    createComposites(context, id, definition.mergeTangentSegments, sweepData.compositeGroups, profileData);
+    for (var groupIndex = 0; groupIndex < size(definition.selectionGroups); groupIndex += 1)
+    {
+        const group = definition.selectionGroups[groupIndex];
+        var groupDefinition = definition;
+        groupDefinition.selections = group.groupSelections;
+
+        const groupId = id + "group" + unstableIdComponent(groupIndex);
+        // Group 0 uses the feature id so the angle and points manipulators are registered in the correct scope.
+        const sweepId = (groupIndex == 0) ? id : groupId;
+
+        const sweepData = sweepFrames(context, sweepId, groupDefinition, profileData, bodiesToDelete, groupIndex == 0);
+        allManipulators = mergeMaps(allManipulators, sweepData.manipulators);
+
+        trimFramesByPreviousGroups(context, groupId + "prevTrim", sweepData.trimEnds, sweepData.sweepBodies, previousGroupBodies, bodiesToDelete);
+        trimFrame(context, groupId, groupDefinition, sweepData.trimEnds, sweepData.sweepBodies, bodiesToDelete);
+        createComposites(context, groupId, definition.mergeTangentSegments, sweepData.compositeGroups, profileData);
+
+        previousGroupBodies = qUnion([previousGroupBodies, qUnion(sweepData.sweepBodies)]);
+    }
+
+    addManipulators(context, id, allManipulators);
     cleanUpBodies(context, id, bodiesToDelete);
-    const remainingTransform = getRemainderPatternTransform(context, { "references" : definition.selections });
+    const remainingTransform = getRemainderPatternTransform(context, { "references" : definition.selectionGroups[0].groupSelections });
     transformResultIfNecessary(context, id, remainingTransform);
 }
 
@@ -323,20 +355,32 @@ function createComposites(context is Context, id is Id, mergeSegments is boolean
     }
 }
 
-function sweepFrames(context is Context, topLevelId is Id, definition is map, profileData is map, bodiesToDelete is box) returns map
+function sweepFrames(context is Context, topLevelId is Id, definition is map, profileData is map, bodiesToDelete is box, isFirstGroup is boolean) returns map
 {
-    verify(!isQueryEmpty(context, definition.selections), ErrorStringEnum.FRAME_SELECT_PATH, { "faultyParameters" : ["selections"] });
+    verify(!isQueryEmpty(context, definition.selections), ErrorStringEnum.FRAME_SELECT_PATH, { "faultyParameters" : ["selectionGroups"] });
     const cornerOverrides = gatherCornerOverrides(context, definition.cornerOverrides);
     const selectionData = createPathsFromSelections(context, topLevelId, definition.selections, bodiesToDelete);
 
-    const frameManipulators = createStableFrameManipulators(context, topLevelId, definition, selectionData.manipulatorEdge, profileData);
-    // The points manipulator _must_ succeed because there is no mapping for the points manipulator back to any user-editable field in the UI.
-    // Therefore the points manipulator *may* modify the index as required.
-    definition.index = frameManipulators.points.index;
-    // Immediately display the manipulators before the sweep operation is performed.
-    // This guarantees the point and angle manipulator show even in the event of failure.
-    // The user thus always has a way to undo the fail state.
-    addManipulators(context, topLevelId, frameManipulators);
+    var frameManipulators = {};
+    if (isFirstGroup)
+    {
+        frameManipulators = createStableFrameManipulators(context, topLevelId, definition, selectionData.manipulatorEdge, profileData);
+        // The points manipulator _must_ succeed because there is no mapping for the points manipulator back to any user-editable field in the UI.
+        // Therefore the points manipulator *may* modify the index as required.
+        definition.index = frameManipulators.points.index;
+        // Immediately display the manipulators before the sweep operation is performed.
+        // This guarantees the point and angle manipulator show even in the event of failure.
+        // The user thus always has a way to undo the fail state.
+        addManipulators(context, topLevelId, frameManipulators);
+    }
+    else
+    {
+        // Clamp the index in case the profile changed and the stored index is now out of bounds.
+        if (definition.index >= size(profileData.pointsManipulatorData.offset))
+        {
+            definition.index = FRAME_NINE_POINT_CENTER_INDEX;
+        }
+    }
     const sweepData = doStablePaths(context, topLevelId, definition, profileData, cornerOverrides, selectionData.paths, selectionData.stableEdges, bodiesToDelete);
 
     return {
@@ -934,6 +978,53 @@ function trimFrame(context is Context, topLevelId is Id, definition is map, trim
         trimFramesByPlanes(context, topLevelId, trimData.capFaceToTrimPlane);
         trimFramesByBodies(context, topLevelId, trimData.frameToTrimFrameData, bodiesToDelete);
     }
+}
+
+function trimFramesByPreviousGroups(context is Context, groupId is Id, trimEnds is array, sweepBodies is array,
+    previousGroupBodies is Query, bodiesToDelete is box)
+{
+    if (isQueryEmpty(context, previousGroupBodies))
+    {
+        return;
+    }
+
+    const collisions = getTrimCandidates(context, qNothing(), previousGroupBodies, trimEnds, sweepBodies);
+    if (collisions == [])
+    {
+        return;
+    }
+
+    const collisionData = groupCollisionResults(context, collisions);
+    const framesToBodies = collisionData.framesToBodies;
+
+    var frameToTrimFrameData = {};
+    for (var entry in framesToBodies)
+    {
+        const target = entry.key;
+        const tools = entry.value;
+        const capFaces = getTrimmableCapFaces(context, target, trimEnds);
+        const toolsPerSide = groupToolsPerSide(context, capFaces, tools);
+
+        const robustTarget = makeRobustQuery(context, target);
+        frameToTrimFrameData[robustTarget] = {
+                "startFrames" : qIntersection([toolsPerSide.start, previousGroupBodies]),
+                "endFrames" : qIntersection([toolsPerSide.end, previousGroupBodies])
+            };
+    }
+
+    if (frameToTrimFrameData == {})
+    {
+        return;
+    }
+
+    const trimData = {
+            "capFaceToTrimPlane" : {},
+            "frameToTrimFrameData" : frameToTrimFrameData,
+            "capFaceToToolBodies" : collisionData.capFaceToToolBodies
+        };
+
+    extendFrames(context, groupId, trimData);
+    trimFramesByBodies(context, groupId, trimData.frameToTrimFrameData, bodiesToDelete);
 }
 
 function preprocessForTrim(context is Context, id is Id, definition is map, trimEnds is array, sweepBodies is array) returns map
