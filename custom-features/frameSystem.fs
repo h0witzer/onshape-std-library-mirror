@@ -2086,15 +2086,7 @@ function getCrossGroupButtPlane(context is Context, beamBody is Query, capFace i
     const capFacePlane = evPlane(context, { "face" : capFace });
     const beamAxis = capFacePlane.normal;
 
-    var collisions = [];
-    try
-    {
-        collisions = evCollision(context, { "tools" : earlierBeams, "targets" : beamBody });
-    }
-    catch
-    {
-        collisions = [];
-    }
+    const collisions = evCollision(context, { "tools" : earlierBeams, "targets" : beamBody });
 
     var toolFaces = [];
     for (var collision in collisions)
@@ -2128,10 +2120,12 @@ function getCrossGroupButtPlane(context is Context, beamBody is Query, capFace i
         return { "found" : false, "ambiguous" : true };
     }
 
-    // Order the candidate planes along the beam axis relative to the cap face. The signed projection is a
-    // scalar position along a single known direction, used only to separate the entry face from the far
-    // face. The entry face (where an unflipped butt lands) is the candidate nearest the beam root, and the
-    // far face (where a flipped butt lands) is the candidate nearest the open tip.
+    // Order the candidate planes along the beam axis relative to the cap face to separate the entry face
+    // from the far face. The entry face (where an unflipped butt lands) is the candidate nearest the beam
+    // root and the far face (where a flipped or coped butt lands) is nearest the open tip. The standard
+    // library has no query/ev function that ranks faces by signed position along an arbitrary direction,
+    // so the candidate origins are projected onto the (already query-filtered) beam axis with dot; this is
+    // a one-dimensional ordering along a single known direction, not a parallelism or sense test.
     const capOrigin = capFacePlane.origin;
     var entryPlane = candidatePlanes[0];
     var farPlane = candidatePlanes[0];
