@@ -40,6 +40,21 @@ export const FRAME_NINE_POINT_CENTER_INDEX = 4;
 // in `extendFrames` we pad our frame extrusion length to help avoid non-manifold cases in boolean operations
 const EXTEND_FRAMES_PAD_LENGTH = .1 * millimeter;
 
+// FrameJointType is a non-standard enum defined locally in this custom feature (it is not part of the
+// Onshape Standard Library). It governs the joint geometry applied between ordered selection groups:
+// each group is terminated against the union of all groups that precede it in the `frameGroups` array.
+// It intentionally excludes MITER; mitered geometry is only available for in-group corners through the
+// Standard Library FrameCornerType used by the primary corner controls.
+export enum FrameJointType
+{
+    annotation { "Name" : "Butt" }
+    BUTT,
+    annotation { "Name" : "Coped butt" }
+    COPED_BUTT,
+    annotation { "Name" : "None" }
+    NONE
+}
+
 /**
  * Create frames from a profile and set of path selections.
  */
@@ -62,11 +77,21 @@ export const frame = defineFeature(function(context is Context, id is Id, defini
         definition.profileSketch is PartStudioData;
 
         annotation {
-                    "Name" : "Selections",
-                    "Description" : "Faces, edges, and vertices that define sweep paths",
-                    "Filter" : ((EntityType.FACE && ConstructionObject.NO) || EntityType.EDGE || (EntityType.VERTEX && AllowEdgePoint.NO) || (EntityType.BODY && BodyType.WIRE && SketchObject.NO))
+                    "Name" : "Frame groups",
+                    "Item name" : "group",
+                    "Item label template" : "Group #index",
+                    "UIHint" : UIHint.ALLOW_QUERY_ORDER
                 }
-        definition.selections is Query;
+        definition.frameGroups is array;
+        for (var group in definition.frameGroups)
+        {
+            annotation {
+                        "Name" : "Selections",
+                        "Description" : "Faces, edges, and vertices that define sweep paths",
+                        "Filter" : ((EntityType.FACE && ConstructionObject.NO) || EntityType.EDGE || (EntityType.VERTEX && AllowEdgePoint.NO) || (EntityType.BODY && BodyType.WIRE && SketchObject.NO))
+                    }
+            group.selections is Query;
+        }
 
         annotation {
                     "Name" : "Lock profile faces",
@@ -144,6 +169,22 @@ export const frame = defineFeature(function(context is Context, id is Id, defini
         }
 
         annotation {
+                    "Name" : "Joint type between groups",
+                    "Description" : "How each group terminates where it meets the groups before it in the list",
+                    "UIHint" : UIHint.SHOW_LABEL
+                }
+        definition.groupJointType is FrameJointType;
+
+        if (definition.groupJointType == FrameJointType.BUTT || definition.groupJointType == FrameJointType.COPED_BUTT)
+        {
+            annotation {
+                        "Name" : "Flip group joint",
+                        "UIHint" : UIHint.OPPOSITE_DIRECTION
+                    }
+            definition.groupJointFlip is boolean;
+        }
+
+        annotation {
                     "Name" : "Limit frame ends",
                     "Default" : false
                 }
@@ -184,6 +225,9 @@ export const frame = defineFeature(function(context is Context, id is Id, defini
             index : FRAME_NINE_POINT_CENTER_INDEX,
             angle : 0 * degree,
             cornerOverrides : [],
+            frameGroups : [],
+            groupJointType : FrameJointType.NONE,
+            groupJointFlip : false,
             trim : false,
             mergeTangentSegments : true,
             angleReference : qNothing(),
@@ -193,9 +237,24 @@ export const frame = defineFeature(function(context is Context, id is Id, defini
 /** @internal */
 export function frameEditLogicFunction(context is Context, id is Id, oldDefinition is map, definition is map, isCreating is boolean) returns map
 {
+    definition = migrateSelectionsToFrameGroups(oldDefinition, definition);
     if (oldDefinition.cornerOverrides != undefined)
     {
         definition = handleNewCornerOverride(context, oldDefinition, definition);
+    }
+    return definition;
+}
+
+// Frame features authored before the group array stored a single `selections` query. When such a
+// definition is opened its selections are moved into the first entry of `frameGroups` so the saved
+// feature continues to resolve its paths.
+function migrateSelectionsToFrameGroups(oldDefinition is map, definition is map) returns map
+{
+    const hasLegacySelections = oldDefinition.selections is Query;
+    const groupsEmpty = (definition.frameGroups == undefined) || (size(definition.frameGroups) == 0);
+    if (hasLegacySelections && groupsEmpty)
+    {
+        definition.frameGroups = [{ "selections" : oldDefinition.selections }];
     }
     return definition;
 }
@@ -271,14 +330,88 @@ function doFrame(context is Context, id is Id, definition is map)
     var bodiesToDelete = new box([]);
     const profileData = getProfile(context, id, definition, bodiesToDelete);
 
-    const sweepData = sweepFrames(context, id, definition, profileData, bodiesToDelete);
+    const groupedData = sweepFrameGroups(context, id, definition, profileData, bodiesToDelete);
 
-    addManipulators(context, id, sweepData.manipulators);
-    trimFrame(context, id, definition, sweepData.trimEnds, sweepData.sweepBodies, bodiesToDelete);
-    createComposites(context, id, definition.mergeTangentSegments, sweepData.compositeGroups, profileData);
+    addManipulators(context, id, groupedData.manipulators);
+    trimFrame(context, id, definition, groupedData.trimEnds, groupedData.sweepBodies, bodiesToDelete);
+    createComposites(context, id, definition.mergeTangentSegments, groupedData.compositeGroups, profileData);
     cleanUpBodies(context, id, bodiesToDelete);
-    const remainingTransform = getRemainderPatternTransform(context, { "references" : definition.selections });
+    const remainingTransform = getRemainderPatternTransform(context, { "references" : groupedData.allSelections });
     transformResultIfNecessary(context, id, remainingTransform);
+}
+
+// Sweep every selection group in array order using the global frame settings. After a group is swept and
+// its own in-group corners are built, it is terminated against the union of all previously processed
+// groups according to the between-groups joint type. Because the earlier groups act as the trim tools,
+// reordering the groups changes which beams get terminated. Returns the accumulated sweep results that
+// the global trim and compositing steps consume.
+//
+// Inputs:
+//   definition.frameGroups : array of { selections : Query }
+//   definition.groupJointType : FrameJointType (butt / coped butt / none)
+//   definition.groupJointFlip : boolean
+// Output map fields:
+//   trimEnds, sweepBodies, compositeGroups : aggregated across all groups
+//   manipulators : map of all manipulators (global angle/points come from the first group)
+//   allSelections : union of every group's selections, used for the remainder pattern transform
+function sweepFrameGroups(context is Context, id is Id, definition is map, profileData is map, bodiesToDelete is box) returns map
+{
+    verify(size(definition.frameGroups) > 0, ErrorStringEnum.FRAME_SELECT_PATH, { "faultyParameters" : ["frameGroups"] });
+
+    var allTrimEnds = [];
+    var allSweepBodies = [];
+    var allCompositeGroups = [];
+    var allManipulators = {};
+    var allSelections = [];
+    var processedBeams = qNothing();
+    var processedAnyGroup = false;
+
+    for (var groupIndex = 0; groupIndex < size(definition.frameGroups); groupIndex += 1)
+    {
+        const group = definition.frameGroups[groupIndex];
+        if (isQueryEmpty(context, group.selections))
+        {
+            continue;
+        }
+        allSelections = append(allSelections, group.selections);
+
+        const groupId = id + ("frameGroup" ~ groupIndex);
+        // The first group that produces geometry owns the global angle and points manipulators so they
+        // are not recreated (and visually duplicated) for every group.
+        const createGlobalManipulators = !processedAnyGroup;
+
+        var groupDefinition = definition;
+        groupDefinition.selections = group.selections;
+
+        const sweepData = sweepFrames(context, groupId, groupDefinition, profileData, bodiesToDelete, createGlobalManipulators);
+        // The points manipulator may update the index; carry it forward so later groups stay aligned.
+        definition.index = sweepData.index;
+
+        if (definition.groupJointType != FrameJointType.NONE && !isQueryEmpty(context, processedBeams))
+        {
+            applyCrossGroupJoints(context, id, groupId, definition, sweepData, processedBeams, bodiesToDelete);
+        }
+
+        allTrimEnds = concatenateArrays([allTrimEnds, sweepData.trimEnds]);
+        allSweepBodies = concatenateArrays([allSweepBodies, sweepData.sweepBodies]);
+        allCompositeGroups = concatenateArrays([allCompositeGroups, sweepData.compositeGroups]);
+        allManipulators = mergeMaps(allManipulators, sweepData.manipulators);
+
+        // Beam body queries are history based (qCreatedBy), so they continue to resolve after later groups
+        // boolean against them. Accumulate them as the tool set for every subsequent group.
+        processedBeams = qUnion([processedBeams, qUnion(sweepData.sweepBodies)]);
+        processedAnyGroup = true;
+    }
+
+    verify(processedAnyGroup, ErrorStringEnum.FRAME_SELECT_PATH, { "faultyParameters" : ["frameGroups"] });
+
+    return {
+            "trimEnds" : allTrimEnds,
+            "sweepBodies" : allSweepBodies,
+            "compositeGroups" : allCompositeGroups,
+            "manipulators" : allManipulators,
+            "allSelections" : qUnion(allSelections)
+        };
 }
 
 function createComposites(context is Context, id is Id, mergeSegments is boolean, compositeGroups is array, profileData is map)
@@ -323,27 +456,33 @@ function createComposites(context is Context, id is Id, mergeSegments is boolean
     }
 }
 
-function sweepFrames(context is Context, topLevelId is Id, definition is map, profileData is map, bodiesToDelete is box) returns map
+function sweepFrames(context is Context, topLevelId is Id, definition is map, profileData is map, bodiesToDelete is box, createGlobalManipulators is boolean) returns map
 {
-    verify(!isQueryEmpty(context, definition.selections), ErrorStringEnum.FRAME_SELECT_PATH, { "faultyParameters" : ["selections"] });
+    verify(!isQueryEmpty(context, definition.selections), ErrorStringEnum.FRAME_SELECT_PATH, { "faultyParameters" : ["frameGroups"] });
     const cornerOverrides = gatherCornerOverrides(context, definition.cornerOverrides);
     const selectionData = createPathsFromSelections(context, topLevelId, definition.selections, bodiesToDelete);
 
-    const frameManipulators = createStableFrameManipulators(context, topLevelId, definition, selectionData.manipulatorEdge, profileData);
-    // The points manipulator _must_ succeed because there is no mapping for the points manipulator back to any user-editable field in the UI.
-    // Therefore the points manipulator *may* modify the index as required.
-    definition.index = frameManipulators.points.index;
-    // Immediately display the manipulators before the sweep operation is performed.
-    // This guarantees the point and angle manipulator show even in the event of failure.
-    // The user thus always has a way to undo the fail state.
-    addManipulators(context, topLevelId, frameManipulators);
+    var globalManipulators = {};
+    if (createGlobalManipulators)
+    {
+        const frameManipulators = createStableFrameManipulators(context, topLevelId, definition, selectionData.manipulatorEdge, profileData);
+        // The points manipulator _must_ succeed because there is no mapping for the points manipulator back to any user-editable field in the UI.
+        // Therefore the points manipulator *may* modify the index as required.
+        definition.index = frameManipulators.points.index;
+        // Immediately display the manipulators before the sweep operation is performed.
+        // This guarantees the point and angle manipulator show even in the event of failure.
+        // The user thus always has a way to undo the fail state.
+        addManipulators(context, topLevelId, frameManipulators);
+        globalManipulators = frameManipulators;
+    }
     const sweepData = doStablePaths(context, topLevelId, definition, profileData, cornerOverrides, selectionData.paths, selectionData.stableEdges, bodiesToDelete);
 
     return {
             "trimEnds" : sweepData.trimEnds,
-            "manipulators" : mergeMaps(sweepData.manipulators, frameManipulators),
+            "manipulators" : mergeMaps(sweepData.manipulators, globalManipulators),
             "sweepBodies" : sweepData.sweepBodies,
-            "compositeGroups" : sweepData.compositeGroups
+            "compositeGroups" : sweepData.compositeGroups,
+            "index" : definition.index
         };
 }
 
@@ -1858,6 +1997,206 @@ function createOneCorner(context is Context, cornerId is Id, prevFace is Query, 
                 "templateFace" : qCreatedBy(idPlane, EntityType.FACE)
             });
     cleanUpAtEndOfFeature(bodiesToDelete, qUnion([qCreatedBy(idPlane), qCreatedBy(idPrevPlane)]));
+}
+
+// ======================= Cross-group joints ===================================
+// These functions terminate the beams of one group where they meet the union of all groups that precede
+// it in the `frameGroups` array. Like the in-group butt corner, a butt joint produces a planar face
+// termination (rather than a raw boolean subtraction): the open beam end is reterminated onto the plane
+// of the earlier-group face it abuts using opPlane + opReplaceFace, which preserves the cap-face
+// attributes the cutlist relies on. A coped butt additionally copes the beam to the earlier surface with
+// the same boolean trim used by the in-group cope. Only open beam ends (the outer terminus faces of a
+// path) are eligible, matching the feature's existing rule against trimming internal segments.
+
+// Terminate every eligible open beam end in the current group against the earlier-group tool set.
+// Inputs:
+//   topLevelId  : the feature id, used for warnings and error entities
+//   groupId     : the current group's id, used to disambiguate the helper operations
+//   definition  : provides groupJointType and groupJointFlip
+//   sweepData   : { sweepBodies : array of beam body queries, trimEnds : array of open cap-face queries }
+//   earlierBeams: union of all previously processed group bodies (the trim tools)
+function applyCrossGroupJoints(context is Context, topLevelId is Id, groupId is Id, definition is map, sweepData is map, earlierBeams is Query, bodiesToDelete is box)
+{
+    const jointId = getUnstableIncrementingId(groupId + "groupJoint");
+    const isCoped = definition.groupJointType == FrameJointType.COPED_BUTT;
+
+    for (var beam in sweepData.sweepBodies)
+    {
+        var beamBody = beam;
+        // Each side is resolved against the current body so the second side stays valid after the first
+        // side reterminates or copes the beam.
+        for (var isStart in [true, false])
+        {
+            const capFace = getOpenCapFace(context, beamBody, sweepData.trimEnds, isStart);
+            if (capFace == undefined)
+            {
+                continue;
+            }
+
+            const buttPlaneResult = getCrossGroupButtPlane(context, beamBody, capFace, earlierBeams);
+            if (buttPlaneResult.ambiguous)
+            {
+                setErrorEntities(context, topLevelId, { "entities" : qOwnerBody(beamBody) });
+                reportFeatureWarning(context, topLevelId, ErrorStringEnum.FRAME_MULTIPLE_TRIM_PLANES);
+                continue;
+            }
+            if (!buttPlaneResult.found)
+            {
+                continue;
+            }
+
+            // A plain butt stops flush against the earlier member (entry face by default, far face when
+            // flipped). A coped butt first carries the beam to the earlier member's far face so it fully
+            // overlaps, then copes that overlap away, matching the in-group coped corner.
+            const selectFarFace = isCoped || definition.groupJointFlip;
+            const buttPlane = selectFarFace ? buttPlaneResult.farPlane : buttPlaneResult.entryPlane;
+            beamBody = terminateBeamEndAtPlane(context, jointId(), beamBody, capFace, buttPlane, bodiesToDelete);
+
+            if (isCoped)
+            {
+                beamBody = doOneEndTrim(context, groupId, jointId(), beamBody, earlierBeams, isStart, bodiesToDelete);
+            }
+        }
+    }
+}
+
+// Return the open (path terminus) cap-face query for the requested side of a beam, or undefined when that
+// side is not an open end. The returned query is attribute based so it continues to resolve after the cap
+// face is reterminated.
+function getOpenCapFace(context is Context, beamBody is Query, trimEnds is array, isStart is boolean)
+{
+    const capFaceQuery = isStart ? qFrameStartFace(beamBody) : qFrameEndFace(beamBody);
+    const openCapFace = qIntersection([capFaceQuery, qUnion(trimEnds)]);
+    if (isQueryEmpty(context, openCapFace))
+    {
+        return undefined;
+    }
+    return openCapFace;
+}
+
+// Find the earlier-group planar face that a beam's open end abuts and return the planes to terminate on.
+// The candidate faces are the earlier-group planar faces that interfere with the beam and are square to
+// the beam axis (their normal is parallel or antiparallel to the cap-face normal). The entry plane is the
+// candidate nearest the beam root (where a flush butt lands); the far plane is the candidate nearest the
+// open tip (where a flipped or coped butt carries the beam to). When the eligible faces fall into more
+// than two distinct (non-coplanar) planes the abutment is ambiguous.
+// Returns { found : boolean, ambiguous : boolean, entryPlane : Plane, farPlane : Plane }.
+function getCrossGroupButtPlane(context is Context, beamBody is Query, capFace is Query, earlierBeams is Query) returns map
+{
+    const capFacePlane = evPlane(context, { "face" : capFace });
+    const beamAxis = capFacePlane.normal;
+
+    var collisions = [];
+    try
+    {
+        collisions = evCollision(context, { "tools" : earlierBeams, "targets" : beamBody });
+    }
+    catch
+    {
+        collisions = [];
+    }
+
+    var toolFaces = [];
+    for (var collision in collisions)
+    {
+        if (collision['type'] == ClashType.INTERFERE)
+        {
+            toolFaces = append(toolFaces, collision.tool);
+        }
+    }
+    if (toolFaces == [])
+    {
+        return { "found" : false, "ambiguous" : false };
+    }
+
+    // Restrict to planar earlier faces whose normal is parallel (or antiparallel) to the beam axis.
+    const squareFacesQuery = qParallelPlanes(qGeometry(qUnion(toolFaces), GeometryType.PLANE), beamAxis, true);
+    const squareFaces = evaluateQuery(context, squareFacesQuery);
+    if (squareFaces == [])
+    {
+        return { "found" : false, "ambiguous" : false };
+    }
+
+    var candidatePlanes = [];
+    for (var squareFace in squareFaces)
+    {
+        candidatePlanes = append(candidatePlanes, evPlane(context, { "face" : squareFace }));
+    }
+
+    if (countDistinctPlaneClusters(candidatePlanes) > 2)
+    {
+        return { "found" : false, "ambiguous" : true };
+    }
+
+    // Order the candidate planes along the beam axis relative to the cap face. The signed projection is a
+    // scalar position along a single known direction, used only to separate the entry face from the far
+    // face. The entry face (where an unflipped butt lands) is the candidate nearest the beam root, and the
+    // far face (where a flipped butt lands) is the candidate nearest the open tip.
+    const capOrigin = capFacePlane.origin;
+    var entryPlane = candidatePlanes[0];
+    var farPlane = candidatePlanes[0];
+    var entryPosition = dot(candidatePlanes[0].origin - capOrigin, beamAxis);
+    var farPosition = entryPosition;
+    for (var i = 1; i < size(candidatePlanes); i += 1)
+    {
+        const position = dot(candidatePlanes[i].origin - capOrigin, beamAxis);
+        if (position < entryPosition)
+        {
+            entryPosition = position;
+            entryPlane = candidatePlanes[i];
+        }
+        if (position > farPosition)
+        {
+            farPosition = position;
+            farPlane = candidatePlanes[i];
+        }
+    }
+
+    return { "found" : true, "ambiguous" : false, "entryPlane" : entryPlane, "farPlane" : farPlane };
+}
+
+// Count how many distinct (mutually non-coplanar) planes a list of planes contains.
+function countDistinctPlaneClusters(planes is array) returns number
+{
+    var clusters = [];
+    for (var candidate in planes)
+    {
+        var matched = false;
+        for (var cluster in clusters)
+        {
+            if (coplanarPlanes(candidate, cluster))
+            {
+                matched = true;
+                break;
+            }
+        }
+        if (!matched)
+        {
+            clusters = append(clusters, candidate);
+        }
+    }
+    return size(clusters);
+}
+
+// Reterminate a beam's open cap face onto the supplied butt plane with a planar face, preserving the
+// cap-face attributes. The termination plane is positioned at the abutting earlier face but takes the cap
+// face's own outward normal, so it is square to the beam and oriented like the original cap face; this
+// lets opReplaceFace keep the beam's material without an explicit sense flag, exactly as createOneCorner
+// does. The helper plane body is routed for cleanup at the end of the feature. The beam body query is
+// history based and continues to resolve after the replace, so it is returned unchanged.
+function terminateBeamEndAtPlane(context is Context, jointId is Id, beamBody is Query, capFace is Query, buttPlane is Plane, bodiesToDelete is box) returns Query
+{
+    const capFacePlane = evPlane(context, { "face" : capFace });
+    const terminationPlane = plane(buttPlane.origin, capFacePlane.normal);
+    const planeId = jointId + "buttPlane";
+    opPlane(context, planeId, { "plane" : terminationPlane, "width" : 1 * meter, "height" : 1 * meter });
+    // By using replaceFace we are preserving attributes
+    opReplaceFace(context, jointId + "replaceFace", {
+                "replaceFaces" : capFace,
+                "templateFace" : qCreatedBy(planeId, EntityType.FACE)
+            });
+    cleanUpAtEndOfFeature(bodiesToDelete, qCreatedBy(planeId));
+    return beamBody;
 }
 
 function getMiterCornerData(prevEdgeEnd is map, edgeStart is map, position is Vector) returns map
