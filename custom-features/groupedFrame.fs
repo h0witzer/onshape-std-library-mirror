@@ -1,228 +1,253 @@
-FeatureScript ✨; /* Automatically generated version */
-// This module is part of the FeatureScript Standard Library and is distributed under the MIT License.
-// See the LICENSE tab for the license text.
-// Copyright (c) 2013-Present PTC Inc.
+FeatureScript 2960;
+import(path : "onshape/std/attributes.fs", version : "2960.0");
+import(path : "onshape/std/booleanoperationtype.gen.fs", version : "2960.0");
+import(path : "onshape/std/bridgingCurve.fs", version : "2960.0");
+import(path : "onshape/std/containers.fs", version : "2960.0");
+import(path : "onshape/std/coordSystem.fs", version : "2960.0");
+import(path : "onshape/std/curveGeometry.fs", version : "2960.0");
+import(path : "onshape/std/error.fs", version : "2960.0");
+import(path : "onshape/std/evaluate.fs", version : "2960.0");
+import(path : "onshape/std/feature.fs", version : "2960.0");
+import(path : "onshape/std/frameAttributes.fs", version : "2960.0");
+import(path : "onshape/std/instantiator.fs", version : "2960.0");
+import(path : "onshape/std/manipulator.fs", version : "2960.0");
+import(path : "onshape/std/path.fs", version : "2960.0");
+import(path : "onshape/std/surfaceGeometry.fs", version : "2960.0");
+import(path : "onshape/std/tabReferences.fs", version : "2960.0");
+import(path : "onshape/std/tool.fs", version : "2960.0");
+import(path : "onshape/std/topologyUtils.fs", version : "2960.0");
+import(path : "onshape/std/transform.fs", version : "2960.0");
+import(path : "onshape/std/valueBounds.fs", version : "2960.0");
+import(path : "onshape/std/vector.fs", version : "2960.0");
 
-import(path : "onshape/std/attributes.fs", version : "✨");
-import(path : "onshape/std/booleanoperationtype.gen.fs", version : "✨");
-import(path : "onshape/std/bridgingCurve.fs", version : "✨");
-import(path : "onshape/std/containers.fs", version : "✨");
-import(path : "onshape/std/coordSystem.fs", version : "✨");
-import(path : "onshape/std/curveGeometry.fs", version : "✨");
-import(path : "onshape/std/error.fs", version : "✨");
-import(path : "onshape/std/evaluate.fs", version : "✨");
-import(path : "onshape/std/feature.fs", version : "✨");
-import(path : "onshape/std/frameAttributes.fs", version : "✨");
-import(path : "onshape/std/instantiator.fs", version : "✨");
-import(path : "onshape/std/manipulator.fs", version : "✨");
-import(path : "onshape/std/path.fs", version : "✨");
-import(path : "onshape/std/surfaceGeometry.fs", version : "✨");
-import(path : "onshape/std/tabReferences.fs", version : "✨");
-import(path : "onshape/std/tool.fs", version : "✨");
-import(path : "onshape/std/topologyUtils.fs", version : "✨");
-import(path : "onshape/std/transform.fs", version : "✨");
-import(path : "onshape/std/valueBounds.fs", version : "✨");
-import(path : "onshape/std/vector.fs", version : "✨");
+export import(path : "onshape/std/profilecontrolmode.gen.fs", version : "2960.0");
+export import(path : "onshape/std/frameUtils.fs", version : "2960.0");
 
-export import(path : "onshape/std/profilecontrolmode.gen.fs", version : "✨");
-export import(path : "onshape/std/frameUtils.fs", version : "✨");
-
-/** @internal */
+// Alignment point index bounds for the nine-point profile positioning grid
 export const FRAME_NINE_POINT_COUNT =
 {
             (unitless) : [0, 4, 100]
         }
     as IntegerBoundSpec;
 
-/** @internal */
+// Default center index for the nine-point profile grid
 export const FRAME_NINE_POINT_CENTER_INDEX = 4;
 
-// in `extendFrames` we pad our frame extrusion length to help avoid non-manifold cases in boolean operations
+// Padding added to frame extrusion length to avoid non-manifold cases in boolean operations
 const EXTEND_FRAMES_PAD_LENGTH = .1 * millimeter;
 
 /**
- * Create frames from a profile and set of path selections.
+ * Create frames from multiple profile groups with automatic inter-group trimming.
+ * Each group has its own profile, path selections, corner settings, and trim options.
+ * Groups are ordered by priority: earlier groups act as boolean trim tools for later groups.
  */
 annotation {
-        "Feature Type Name" : "Frame",
-        "Manipulator Change Function" : "frameManipulators",
+        "Feature Type Name" : "Grouped Frame",
+        "Manipulator Change Function" : "groupedFrameManipulatorChange",
         "Filter Selector" : "allparts",
-        "Editing Logic Function" : "frameEditLogicFunction"
+        "Editing Logic Function" : "groupedFrameEditLogic"
     }
-export const frame = defineFeature(function(context is Context, id is Id, definition is map)
+export const groupedFrame = defineFeature(function(context is Context, id is Id, definition is map)
     precondition
     {
         annotation {
-                    "Library Definition" : "65dcc2a02c4ff1c239467ec9", // This is the id of the Onshape Frame Profile Library definition
-                    "Name" : "Sketch profile",
-                    "Filter" : PartStudioItemType.SKETCH,
-                    "MaxNumberOfPicks" : 1,
-                    "UIHint" : UIHint.REMEMBER_PREVIOUS_VALUE
+                    "Name" : "Frame groups",
+                    "Item name" : "group",
+                    "Item label template" : "Group #groupNumber",
+                    "UIHint" : UIHint.COLLAPSE_ARRAY_ITEMS
                 }
-        definition.profileSketch is PartStudioData;
+        definition.frameGroups is array;
 
-        annotation {
-                    "Name" : "Selections",
-                    "Description" : "Faces, edges, and vertices that define sweep paths",
-                    "Filter" : ((EntityType.FACE && ConstructionObject.NO) || EntityType.EDGE || (EntityType.VERTEX && AllowEdgePoint.NO) || (EntityType.BODY && BodyType.WIRE && SketchObject.NO))
-                }
-        definition.selections is Query;
-
-        annotation {
-                    "Name" : "Lock profile faces",
-                    "Default" : false
-                }
-        definition.lockProfile is boolean;
-
-        if (definition.lockProfile)
+        for (var frameGroup in definition.frameGroups)
         {
-            annotation { "Group Name" : "Lock profile faces", "Collapsed By Default" : false, "Driving Parameter" : "lockProfile" }
-            {
-                annotation { "Name" : "Faces to lock", "Filter" : EntityType.FACE && ConstructionObject.NO }
-                definition.profileLockFaces is Query;
-            }
-        }
+            annotation { "Name" : "Group number", "UIHint" : UIHint.ALWAYS_HIDDEN }
+            isInteger(frameGroup.groupNumber, { (unitless) : [1, 1, 100] } as IntegerBoundSpec);
 
-        annotation { "Name" : "Merge tangent segments", "Default" : true }
-        definition.mergeTangentSegments is boolean;
-
-        annotation { "Name" : "Angle" }
-        isAngle(definition.angle, ANGLE_360_ZERO_DEFAULT_BOUNDS);
-
-        annotation {
-                    "Name" : "Mirror across Y axis",
-                    "UIHint" : UIHint.OPPOSITE_DIRECTION
-                }
-        definition.mirrorProfile is boolean;
-
-        annotation { "Name" : "Angle reference", "Filter" : QueryFilterCompound.ALLOWS_DIRECTION || BodyType.MATE_CONNECTOR, "MaxNumberOfPicks" : 1 }
-        definition.angleReference is Query;
-
-        annotation { "Name" : "Default corner type", "UIHint" : UIHint.SHOW_LABEL }
-        definition.defaultCornerType is FrameCornerType;
-
-        if (definition.defaultCornerType == FrameCornerType.BUTT || definition.defaultCornerType == FrameCornerType.COPED_BUTT)
-        {
             annotation {
-                        "Name" : "Flip corner",
+                        "Library Definition" : "65dcc2a02c4ff1c239467ec9",
+                        "Name" : "Sketch profile",
+                        "Filter" : PartStudioItemType.SKETCH,
+                        "MaxNumberOfPicks" : 1,
+                        "UIHint" : UIHint.REMEMBER_PREVIOUS_VALUE
+                    }
+            frameGroup.profileSketch is PartStudioData;
+
+            annotation {
+                        "Name" : "Selections",
+                        "Description" : "Faces, edges, and vertices that define sweep paths",
+                        "Filter" : ((EntityType.FACE && ConstructionObject.NO) || EntityType.EDGE || (EntityType.VERTEX && AllowEdgePoint.NO) || (EntityType.BODY && BodyType.WIRE && SketchObject.NO))
+                    }
+            frameGroup.selections is Query;
+
+            annotation {
+                        "Name" : "Lock profile faces",
+                        "Default" : false
+                    }
+            frameGroup.lockProfile is boolean;
+
+            if (frameGroup.lockProfile)
+            {
+                annotation { "Group Name" : "Lock profile faces", "Collapsed By Default" : false, "Driving Parameter" : "lockProfile" }
+                {
+                    annotation { "Name" : "Faces to lock", "Filter" : EntityType.FACE && ConstructionObject.NO }
+                    frameGroup.profileLockFaces is Query;
+                }
+            }
+
+            annotation { "Name" : "Merge tangent segments", "Default" : true }
+            frameGroup.mergeTangentSegments is boolean;
+
+            annotation { "Name" : "Angle" }
+            isAngle(frameGroup.angle, ANGLE_360_ZERO_DEFAULT_BOUNDS);
+
+            annotation {
+                        "Name" : "Mirror across Y axis",
                         "UIHint" : UIHint.OPPOSITE_DIRECTION
                     }
-            definition.defaultButtFlip is boolean;
-        }
+            frameGroup.mirrorProfile is boolean;
 
-        annotation {
-                    "Name" : "Corner overrides",
-                    "Item name" : "vertex",
-                    "Driven query" : "vertex",
-                    "Item label template" : "#vertex [#cornerType]"
-                }
-        definition.cornerOverrides is array;
-        for (var corner in definition.cornerOverrides)
-        {
-            annotation {
-                        "Name" : "Vertex",
-                        "Filter" : EntityType.VERTEX && ConstructionObject.NO,
-                        "MaxNumberOfPicks" : 1,
-                        "UIHint" : UIHint.ALWAYS_HIDDEN
-                    }
-            corner.vertex is Query;
+            annotation { "Name" : "Angle reference", "Filter" : QueryFilterCompound.ALLOWS_DIRECTION || BodyType.MATE_CONNECTOR, "MaxNumberOfPicks" : 1 }
+            frameGroup.angleReference is Query;
 
-            annotation {
-                        "Name" : "Corner type",
-                        "UIHint" : UIHint.SHOW_LABEL
-                    }
-            corner.cornerType is FrameCornerType;
+            annotation { "Name" : "Default corner type", "UIHint" : UIHint.SHOW_LABEL }
+            frameGroup.defaultCornerType is FrameCornerType;
 
-            if (corner.cornerType == FrameCornerType.BUTT || corner.cornerType == FrameCornerType.COPED_BUTT)
+            if (frameGroup.defaultCornerType == FrameCornerType.BUTT || frameGroup.defaultCornerType == FrameCornerType.COPED_BUTT)
             {
                 annotation {
                             "Name" : "Flip corner",
                             "UIHint" : UIHint.OPPOSITE_DIRECTION
                         }
-                corner.cornerButtFlip is boolean;
+                frameGroup.defaultButtFlip is boolean;
             }
-        }
 
-        annotation {
-                    "Name" : "Limit frame ends",
-                    "Default" : false
-                }
-        definition.trim is boolean;
-
-        if (definition.trim)
-        {
             annotation {
-                        "Group Name" : "Trimming",
-                        "Collapsed By Default" : false,
-                        "Driving Parameter" : "trim"
+                        "Name" : "Corner overrides",
+                        "Item name" : "vertex",
+                        "Driven query" : "vertex",
+                        "Item label template" : "#vertex [#cornerType]"
                     }
+            frameGroup.cornerOverrides is array;
+            for (var corner in frameGroup.cornerOverrides)
             {
                 annotation {
-                            "Name" : "Faces to trim to",
-                            "Description" : "Planes and planar faces to use as trim tools",
-                            "Filter" : (EntityType.FACE && GeometryType.PLANE)
+                            "Name" : "Vertex",
+                            "Filter" : EntityType.VERTEX && ConstructionObject.NO,
+                            "MaxNumberOfPicks" : 1,
+                            "UIHint" : UIHint.ALWAYS_HIDDEN
                         }
-                definition.trimPlanes is Query;
+                corner.vertex is Query;
 
                 annotation {
-                            "Name" : "Parts to trim to",
-                            "Description" : "Parts to use as trim tools",
-                            "Filter" : EntityType.BODY && BodyType.SOLID
+                            "Name" : "Corner type",
+                            "UIHint" : UIHint.SHOW_LABEL
                         }
-                definition.trimBodies is Query;
+                corner.cornerType is FrameCornerType;
+
+                if (corner.cornerType == FrameCornerType.BUTT || corner.cornerType == FrameCornerType.COPED_BUTT)
+                {
+                    annotation {
+                                "Name" : "Flip corner",
+                                "UIHint" : UIHint.OPPOSITE_DIRECTION
+                            }
+                    corner.cornerButtFlip is boolean;
+                }
             }
+
+            annotation {
+                        "Name" : "Limit frame ends",
+                        "Default" : false
+                    }
+            frameGroup.trim is boolean;
+
+            if (frameGroup.trim)
+            {
+                annotation {
+                            "Group Name" : "Trimming",
+                            "Collapsed By Default" : false,
+                            "Driving Parameter" : "trim"
+                        }
+                {
+                    annotation {
+                                "Name" : "Faces to trim to",
+                                "Description" : "Planes and planar faces to use as trim tools",
+                                "Filter" : (EntityType.FACE && GeometryType.PLANE)
+                            }
+                    frameGroup.trimPlanes is Query;
+
+                    annotation {
+                                "Name" : "Parts to trim to",
+                                "Description" : "Parts to use as trim tools",
+                                "Filter" : EntityType.BODY && BodyType.SOLID
+                            }
+                    frameGroup.trimBodies is Query;
+                }
+            }
+
+            annotation { "Name" : "Index", "UIHint" : UIHint.ALWAYS_HIDDEN }
+            isInteger(frameGroup.index, FRAME_NINE_POINT_COUNT);
         }
-        annotation { "Name" : "Index", "UIHint" : UIHint.ALWAYS_HIDDEN }
-        isInteger(definition.index, FRAME_NINE_POINT_COUNT); // for points manipulator
+
+        annotation { "Name" : "Auto trim between groups", "Default" : true }
+        definition.autoTrim is boolean;
     }
     {
-        doFrame(context, id, definition);
+        doGroupedFrame(context, id, definition);
     },
     {
-            mirrorProfile : false,
-            defaultCornerType : FrameCornerType.MITER,
-            index : FRAME_NINE_POINT_CENTER_INDEX,
-            angle : 0 * degree,
-            cornerOverrides : [],
-            trim : false,
-            mergeTangentSegments : true,
-            angleReference : qNothing(),
-            lockProfile : false
+            frameGroups : [],
+            autoTrim : true
         });
 
-/** @internal */
-export function frameEditLogicFunction(context is Context, id is Id, oldDefinition is map, definition is map, isCreating is boolean) returns map
+// Editing logic for the grouped frame - handles corner override defaults and group numbering
+export function groupedFrameEditLogic(context is Context, id is Id, oldDefinition is map, definition is map, isCreating is boolean) returns map
 {
-    if (oldDefinition.cornerOverrides != undefined)
+    // Auto-number newly added groups
+    const oldGroupCount = (oldDefinition.frameGroups != undefined) ? size(oldDefinition.frameGroups) : 0;
+    const newGroupCount = size(definition.frameGroups);
+    if (newGroupCount == oldGroupCount + 1)
     {
-        definition = handleNewCornerOverride(context, oldDefinition, definition);
+        definition.frameGroups[newGroupCount - 1].groupNumber = newGroupCount;
     }
-    return definition;
-}
 
-/** @internal */
-export function frameManipulators(context is Context, definition is map, newManipulators is map) returns map
-{
-    try silent
+    // Handle corner override editing logic within each group
+    for (var groupIndex = 0; groupIndex < newGroupCount; groupIndex += 1)
     {
-        var newAngle is ValueWithUnits = newManipulators["angleManipulator"].angle;
-        definition.angle = newAngle;
-    }
-    try silent
-    {
-        definition.index = newManipulators["points"].index;
-    }
-    for (var i = 0; i < size(definition.cornerOverrides); i += 1)
-    {
-        if (newManipulators["flip" ~ i] != undefined)
+        if (groupIndex < oldGroupCount && oldDefinition.frameGroups[groupIndex].cornerOverrides != undefined)
         {
-            definition.cornerOverrides[i].cornerButtFlip = newManipulators["flip" ~ i].flipped;
+            definition.frameGroups[groupIndex] = handleNewCornerOverride(context, oldDefinition.frameGroups[groupIndex], definition.frameGroups[groupIndex]);
         }
     }
     return definition;
 }
 
-/** @internal */
+// Manipulator change handler - routes manipulator changes to the correct group by index suffix
+export function groupedFrameManipulatorChange(context is Context, definition is map, newManipulators is map) returns map
+{
+    for (var groupIndex = 0; groupIndex < size(definition.frameGroups); groupIndex += 1)
+    {
+        try
+        {
+            var newAngle is ValueWithUnits = newManipulators["angleManipulator_" ~ groupIndex].angle;
+            definition.frameGroups[groupIndex].angle = newAngle;
+        }
+        try
+        {
+            definition.frameGroups[groupIndex].index = newManipulators["points_" ~ groupIndex].index;
+        }
+        for (var cornerIndex = 0; cornerIndex < size(definition.frameGroups[groupIndex].cornerOverrides); cornerIndex += 1)
+        {
+            const manipulatorKey = "flip_" ~ groupIndex ~ "_" ~ cornerIndex;
+            if (newManipulators[manipulatorKey] != undefined)
+            {
+                definition.frameGroups[groupIndex].cornerOverrides[cornerIndex].cornerButtFlip = newManipulators[manipulatorKey].flipped;
+            }
+        }
+    }
+    return definition;
+}
+
+// Assigns profile and topology attributes to a freshly swept frame body
 export function setFrameAttributes(context is Context, frame is Query, profileData is map, frameData is map)
 {
     setFrameProfileAttribute(context, frame, profileData.profileAttribute);
@@ -235,7 +260,7 @@ export function setFrameAttributes(context is Context, frame is Query, profileDa
     setFrameTopologyAttribute(context, frameData.endFace, frameTopologyAttributeForCapFace(false, false, false));
 }
 
-/** @internal */
+// Marks the start and end faces of a complete frame path as terminal faces
 export function setFrameTerminusAttributes(context is Context, startFace is Query, endFace is Query)
 {
     setFrameTopologyAttribute(context, startFace, frameTopologyAttributeForCapFace(true, true, false));
@@ -260,7 +285,32 @@ function handleNewCornerOverride(context is Context, oldDefinition is map, defin
     return definition;
 }
 
-function doFrame(context is Context, id is Id, definition is map)
+// Top-level orchestrator: iterates over frame groups, creates each group, then performs auto-trim
+function doGroupedFrame(context is Context, id is Id, definition is map)
+{
+    verify(size(definition.frameGroups) >= 1, ErrorStringEnum.FRAME_SELECT_PATH, { "faultyParameters" : ["frameGroups"] });
+
+    // Collect bodies created by each group for inter-group trimming
+    var groupBodiesArray = [];
+
+    for (var groupIndex = 0; groupIndex < size(definition.frameGroups); groupIndex += 1)
+    {
+        const groupDefinition = definition.frameGroups[groupIndex];
+        const groupId = id + ("group" ~ groupIndex);
+        const groupSweepBodies = doOneFrameGroup(context, groupId, groupDefinition, groupIndex);
+        groupBodiesArray = append(groupBodiesArray, qUnion(groupSweepBodies));
+    }
+
+    // Boolean trim later groups against earlier groups
+    if (definition.autoTrim && size(groupBodiesArray) >= 2)
+    {
+        doAutoGroupTrim(context, id, groupBodiesArray);
+    }
+}
+
+// Executes the full frame sweep/corner/trim/composite pipeline for a single group.
+// Returns an array of sweep body queries produced by this group.
+function doOneFrameGroup(context is Context, id is Id, definition is map, groupIndex is number) returns array
 {
     if (definition.lockProfile)
     {
@@ -275,12 +325,54 @@ function doFrame(context is Context, id is Id, definition is map)
        ? sweepFrames(context, id, definition, profileData, bodiesToDelete)
        : sweepFrames_PRE_V1742(context, id, definition, profileData, bodiesToDelete);
 
-    addManipulators(context, id, sweepData.manipulators);
+    // Remap manipulator keys with group index suffix so each group's manipulators are independent
+    var remappedManipulators = {};
+    for (var manipulatorKey, manipulatorValue in sweepData.manipulators)
+    {
+        remappedManipulators[manipulatorKey ~ "_" ~ groupIndex] = manipulatorValue;
+    }
+    addManipulators(context, id, remappedManipulators);
+
     trimFrame(context, id, definition, sweepData.trimEnds, sweepData.sweepBodies, bodiesToDelete);
     createComposites(context, id, definition.mergeTangentSegments, sweepData.compositeGroups, profileData);
     cleanUpBodies(context, id, bodiesToDelete);
     const remainingTransform = getRemainderPatternTransform(context, { "references" : definition.selections });
     transformResultIfNecessary(context, id, remainingTransform);
+
+    return sweepData.sweepBodies;
+}
+
+// Boolean-subtracts all earlier group bodies from each later group.
+// Group 0 is never trimmed. Group N is trimmed by all groups 0 through N-1.
+function doAutoGroupTrim(context is Context, topLevelId is Id, groupBodiesArray is array)
+{
+    const autoTrimId = getUnstableIncrementingId(topLevelId + "autoTrim");
+
+    for (var targetGroupIndex = 1; targetGroupIndex < size(groupBodiesArray); targetGroupIndex += 1)
+    {
+        var toolQueries = [];
+        for (var toolGroupIndex = 0; toolGroupIndex < targetGroupIndex; toolGroupIndex += 1)
+        {
+            toolQueries = append(toolQueries, groupBodiesArray[toolGroupIndex]);
+        }
+        const tools = qUnion(toolQueries);
+        const targets = groupBodiesArray[targetGroupIndex];
+
+        if (isQueryEmpty(context, targets) || isQueryEmpty(context, tools))
+        {
+            continue;
+        }
+
+        try
+        {
+            opBoolean(context, autoTrimId(), {
+                        "tools" : tools,
+                        "targets" : targets,
+                        "keepTools" : true,
+                        "operationType" : BooleanOperationType.SUBTRACTION
+                    });
+        }
+    }
 }
 
 function createComposites(context is Context, id is Id, mergeSegments is boolean, compositeGroups is array, profileData is map)
