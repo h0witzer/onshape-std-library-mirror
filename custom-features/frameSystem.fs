@@ -41,10 +41,12 @@ export const FRAME_NINE_POINT_CENTER_INDEX = 4;
 const EXTEND_FRAMES_PAD_LENGTH = .1 * millimeter;
 
 // Joint types available for user selection in the feature dialog.
-enum FrameJointType
+export enum FrameJointType
 {
     annotation { "Name" : "Butt" }
     BUTT,
+    annotation { "Name" : "Coped Butt" }
+    COPED_BUTT,
     annotation { "Name" : "None" }
     NONE
 }
@@ -124,7 +126,7 @@ export const frame = defineFeature(function(context is Context, id is Id, defini
         annotation { "Name" : "Default corner type", "UIHint" : UIHint.SHOW_LABEL }
         definition.defaultCornerType is FrameJointType;
 
-        if (definition.defaultCornerType == FrameJointType.BUTT)
+        if (definition.defaultCornerType == FrameJointType.BUTT || definition.defaultCornerType == FrameJointType.COPED_BUTT)
         {
             annotation {
                         "Name" : "Flip corner",
@@ -156,7 +158,7 @@ export const frame = defineFeature(function(context is Context, id is Id, defini
                     }
             corner.cornerType is FrameJointType;
 
-            if (corner.cornerType == FrameJointType.BUTT)
+            if (corner.cornerType == FrameJointType.BUTT || corner.cornerType == FrameJointType.COPED_BUTT)
             {
                 annotation {
                             "Name" : "Flip corner",
@@ -1278,127 +1280,6 @@ function doTrim(context is Context, topLevelId is Id, trimId is Id, target is Qu
                 "propagateErrorDisplay" : true,
                 "additionalErrorEntities" : qUnion([tools, target])
             });
-}
-
-// Performs inter-group MITER trimming: each group-2+ frame end that would otherwise be boolean-subtracted
-// against group-1 bodies is instead cut at the bisecting plane between the two frames' directions.
-// Falls back to COPED_BUTT (boolean subtraction) when no group-1 cap face is close enough to the
-// group-2 trim face to form a corner joint (i.e., for T-intersections where miter has no meaning).
-function doInterGroupMiterTrim(context is Context, topLevelId is Id, frameToTrimData is map, bodiesToDelete is box)
-{
-    const trimId = getUnstableIncrementingId(topLevelId + "miterTrim");
-    for (var entry in frameToTrimData)
-    {
-        const trimData = entry.value;
-        const target = entry.key;
-        doOneMiterEndTrim(context, topLevelId, trimId(), target, trimData.startFrames, true, bodiesToDelete);
-        doOneMiterEndTrim(context, topLevelId, trimId(), target, trimData.endFrames, false, bodiesToDelete);
-    }
-}
-
-function doOneMiterEndTrim(context is Context, topLevelId is Id, trimId is Id, target is Query, tools is Query,
-    isStart is boolean, bodiesToDelete is box)
-{
-    if (isQueryEmpty(context, tools) || isQueryEmpty(context, target))
-    {
-        return;
-    }
-
-    const cutFaceQuery = isStart ? qFrameStartFace(target) : qFrameEndFace(target);
-    const cutFaces = evaluateQuery(context, cutFaceQuery);
-    if (cutFaces == [])
-    {
-        return;
-    }
-
-    var cutFacePlane;
-    try silent
-    {
-        cutFacePlane = evPlane(context, { "face" : cutFaces[0] });
-    }
-    if (cutFacePlane == undefined)
-    {
-        doTrim(context, topLevelId, trimId, target, tools);
-        return;
-    }
-
-    // END cap normal = path direction at end → use as-is gives "toward corner"
-    // START cap normal = opposite to path direction at start → negate gives "toward corner"
-    // Both follow the same convention as prevEdgeEnd.direction / edgeStart.direction in getMiterCornerData
-    const targetDir = isStart ? (-cutFacePlane.normal) : cutFacePlane.normal;
-
-    const miterCutPlane = getMiterInterGroupPlane(context, cutFaces[0], targetDir, tools);
-    if (miterCutPlane == undefined)
-    {
-        doTrim(context, topLevelId, trimId, target, tools);
-        return;
-    }
-
-    const idMiterPlane = trimId + "miterPlane";
-    opPlane(context, idMiterPlane, {
-                "plane" : miterCutPlane,
-                "width" : 1 * meter,
-                "height" : 1 * meter
-            });
-    // opReplaceFace preserves frame topology attributes on the replaced face automatically
-    callSubfeatureAndProcessStatus(topLevelId, opReplaceFace, context, trimId, {
-                "replaceFaces" : cutFaceQuery,
-                "templateFace" : qCreatedBy(idMiterPlane, EntityType.FACE)
-            }, {
-                "overrideStatus" : ErrorStringEnum.FRAME_TRIM_FAILED,
-                "propagateErrorDisplay" : true,
-                "additionalErrorEntities" : target
-            });
-    cleanUpAtEndOfFeature(bodiesToDelete, qCreatedBy(idMiterPlane));
-}
-
-// Returns the bisecting plane for a MITER inter-group trim, or undefined if no group-1 cap face is
-// close enough to `cutFace` to form a corner joint (as opposed to a T-intersection where miter has
-// no meaning). Uses a threshold of 10x the frame extension pad so that caps at a shared corner
-// (distance ≈ 0) are accepted while caps at the far end of a frame running through the middle of
-// another (distance >> 1 mm) are rejected with a fallback to COPED_BUTT.
-function getMiterInterGroupPlane(context is Context, cutFace is Query, targetDir is Vector, tools is Query)
-{
-    const toolBodies = evaluateQuery(context, tools);
-    var bestDir;
-    var bestOrigin;
-    var minDist = EXTEND_FRAMES_PAD_LENGTH * 10;
-
-    for (var toolBody in toolBodies)
-    {
-        const capFaceData = [
-                { "query" : qFrameStartFace(toolBody), "isStart" : true },
-                { "query" : qFrameEndFace(toolBody), "isStart" : false }
-            ];
-        for (var capData in capFaceData)
-        {
-            const capFaces = evaluateQuery(context, capData.query);
-            for (var capFace in capFaces)
-            {
-                try silent
-                {
-                    const distResult = evDistance(context, {
-                                "side0" : cutFace,
-                                "side1" : capFace
-                            });
-                    if (distResult.distance < minDist)
-                    {
-                        minDist = distResult.distance;
-                        const capFacePlane = evPlane(context, { "face" : capFace });
-                        bestOrigin = capFacePlane.origin;
-                        bestDir = capData.isStart ? (-capFacePlane.normal) : capFacePlane.normal;
-                    }
-                }
-            }
-        }
-    }
-
-    if (bestDir == undefined)
-    {
-        return undefined;
-    }
-
-    return plane(bestOrigin, normalize(targetDir + bestDir));
 }
 
 function reapplyAttributes(context is Context, bodyToPreserve is Query, attributesToReapply is FrameTopologyAttribute)
