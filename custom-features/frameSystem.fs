@@ -74,9 +74,13 @@ export const frame = defineFeature(function(context is Context, id is Id, defini
             annotation {
                         "Name" : "Selections",
                         "Description" : "Faces, edges, and vertices that define sweep paths",
-                        "Filter" : ((EntityType.FACE && ConstructionObject.NO) || EntityType.EDGE || (EntityType.VERTEX && AllowEdgePoint.NO) || (EntityType.BODY && BodyType.WIRE && SketchObject.NO))
+                        "Filter" : ((EntityType.FACE && ConstructionObject.NO) || EntityType.EDGE || (EntityType.VERTEX && AllowEdgePoint.NO) || (EntityType.BODY && BodyType.WIRE && SketchObject.NO)),
+                        "UIHint" : UIHint.ALLOW_QUERY_ORDER
                     }
             group.groupSelections is Query;
+
+            annotation { "Name" : "Cross-group trim", "UIHint" : UIHint.SHOW_LABEL }
+            group.secondaryTrimType is FrameCornerType;
         }
 
         annotation {
@@ -301,7 +305,8 @@ function doFrame(context is Context, id is Id, definition is map)
         const sweepData = sweepFrames(context, sweepId, groupDefinition, profileData, bodiesToDelete, groupIndex == 0);
         allManipulators = mergeMaps(allManipulators, sweepData.manipulators);
 
-        trimFramesByPreviousGroups(context, groupId + "prevTrim", sweepData.trimEnds, sweepData.sweepBodies, previousGroupBodies, bodiesToDelete);
+        const secondaryTrimType = (group.secondaryTrimType == undefined) ? FrameCornerType.COPED_BUTT : group.secondaryTrimType;
+        trimFramesByPreviousGroups(context, groupId + "prevTrim", sweepData.trimEnds, sweepData.sweepBodies, previousGroupBodies, bodiesToDelete, secondaryTrimType);
         trimFrame(context, groupId, groupDefinition, sweepData.trimEnds, sweepData.sweepBodies, bodiesToDelete);
         createComposites(context, groupId, definition.mergeTangentSegments, sweepData.compositeGroups, profileData);
 
@@ -985,12 +990,16 @@ function trimFrame(context is Context, topLevelId is Id, definition is map, trim
     }
 }
 
-// Trims the current group's swept bodies against all bodies produced by earlier groups. Each end cap of the
-// current group that intersects a previous-group body is trimmed using the same boolean-subtraction mechanism
-// as the user-facing trim feature. Bodies with no intersection are left untouched.
+// Trims the current group's swept bodies against all bodies produced by earlier groups, using
+// the trim type specified per group. Bodies with no intersection are left untouched.
 function trimFramesByPreviousGroups(context is Context, groupId is Id, trimEnds is array, sweepBodies is array,
-    previousGroupBodies is Query, bodiesToDelete is box)
+    previousGroupBodies is Query, bodiesToDelete is box, trimType is FrameCornerType)
 {
+    if (trimType == FrameCornerType.NONE)
+    {
+        return;
+    }
+
     if (isQueryEmpty(context, previousGroupBodies))
     {
         return;
@@ -1051,7 +1060,15 @@ function trimFramesByPreviousGroups(context is Context, groupId is Id, trimEnds 
         };
 
     extendFrames(context, groupId, trimData);
-    trimFramesByBodies(context, groupId, trimData.frameToTrimFrameData, bodiesToDelete);
+
+    if (trimType == FrameCornerType.MITER)
+    {
+        doInterGroupMiterTrim(context, groupId, trimData.frameToTrimFrameData, bodiesToDelete);
+    }
+    else
+    {
+        trimFramesByBodies(context, groupId, trimData.frameToTrimFrameData, bodiesToDelete);
+    }
 }
 
 function preprocessForTrim(context is Context, id is Id, definition is map, trimEnds is array, sweepBodies is array) returns map
@@ -1261,6 +1278,125 @@ function doTrim(context is Context, topLevelId is Id, trimId is Id, target is Qu
                 "propagateErrorDisplay" : true,
                 "additionalErrorEntities" : qUnion([tools, target])
             });
+}
+
+// Performs inter-group MITER trimming: each group-2+ frame end that would otherwise be boolean-subtracted
+// against group-1 bodies is instead cut at the bisecting plane between the two frames' directions.
+// Falls back to COPED_BUTT (boolean subtraction) when no group-1 cap face is close enough to the
+// group-2 trim face to form a corner joint (i.e., for T-intersections where miter has no meaning).
+function doInterGroupMiterTrim(context is Context, topLevelId is Id, frameToTrimData is map, bodiesToDelete is box)
+{
+    const trimId = getUnstableIncrementingId(topLevelId + "miterTrim");
+    for (var entry in frameToTrimData)
+    {
+        const trimData = entry.value;
+        const target = entry.key;
+        doOneMiterEndTrim(context, topLevelId, trimId(), target, trimData.startFrames, true, bodiesToDelete);
+        doOneMiterEndTrim(context, topLevelId, trimId(), target, trimData.endFrames, false, bodiesToDelete);
+    }
+}
+
+function doOneMiterEndTrim(context is Context, topLevelId is Id, trimId is Id, target is Query, tools is Query,
+    isStart is boolean, bodiesToDelete is box)
+{
+    if (isQueryEmpty(context, tools) || isQueryEmpty(context, target))
+    {
+        return;
+    }
+
+    const cutFaceQuery = isStart ? qFrameStartFace(target) : qFrameEndFace(target);
+    const cutFaces = evaluateQuery(context, cutFaceQuery);
+    if (cutFaces == [])
+    {
+        return;
+    }
+
+    var cutFacePlane;
+    try silent
+    {
+        cutFacePlane = evPlane(context, { "face" : cutFaces[0] });
+    }
+    if (cutFacePlane == undefined)
+    {
+        doTrim(context, topLevelId, trimId, target, tools);
+        return;
+    }
+
+    // END cap normal = path direction at end → use as-is gives "toward corner"
+    // START cap normal = opposite to path direction at start → negate gives "toward corner"
+    // Both follow the same convention as prevEdgeEnd.direction / edgeStart.direction in getMiterCornerData
+    const targetDir = isStart ? (-cutFacePlane.normal) : cutFacePlane.normal;
+
+    const miterCutPlane = getMiterInterGroupPlane(context, cutFaces[0], targetDir, tools);
+    if (miterCutPlane == undefined)
+    {
+        doTrim(context, topLevelId, trimId, target, tools);
+        return;
+    }
+
+    const idMiterPlane = trimId + "miterPlane";
+    opPlane(context, idMiterPlane, {
+                "plane" : miterCutPlane,
+                "width" : 1 * meter,
+                "height" : 1 * meter
+            });
+    // opReplaceFace preserves frame topology attributes on the replaced face automatically
+    callSubfeatureAndProcessStatus(topLevelId, opReplaceFace, context, trimId, {
+                "replaceFaces" : cutFaceQuery,
+                "templateFace" : qCreatedBy(idMiterPlane, EntityType.FACE)
+            }, {
+                "overrideStatus" : ErrorStringEnum.FRAME_TRIM_FAILED,
+                "propagateErrorDisplay" : true,
+                "additionalErrorEntities" : target
+            });
+    cleanUpAtEndOfFeature(bodiesToDelete, qCreatedBy(idMiterPlane));
+}
+
+// Returns the bisecting plane for a MITER inter-group trim, or undefined if no group-1 cap face is
+// within EXTEND_FRAMES_PAD_LENGTH * 10 of `cutFace` (indicating a T-intersection rather than a
+// corner joint).
+function getMiterInterGroupPlane(context is Context, cutFace is Query, targetDir is Vector, tools is Query)
+{
+    const toolBodies = evaluateQuery(context, tools);
+    var bestDir;
+    var bestOrigin;
+    var minDist = EXTEND_FRAMES_PAD_LENGTH * 10;
+
+    for (var toolBody in toolBodies)
+    {
+        const capFaceData = [
+                { "query" : qFrameStartFace(toolBody), "isStart" : true },
+                { "query" : qFrameEndFace(toolBody), "isStart" : false }
+            ];
+        for (var capData in capFaceData)
+        {
+            const capFaces = evaluateQuery(context, capData.query);
+            for (var capFace in capFaces)
+            {
+                try silent
+                {
+                    const distResult = evDistance(context, {
+                                "side0" : cutFace,
+                                "side1" : capFace
+                            });
+                    if (distResult.distance < minDist)
+                    {
+                        minDist = distResult.distance;
+                        const capFacePlane = evPlane(context, { "face" : capFace });
+                        bestOrigin = capFacePlane.origin;
+                        bestDir = capData.isStart ? (-capFacePlane.normal) : capFacePlane.normal;
+                    }
+                }
+            }
+        }
+    }
+
+    if (bestDir == undefined)
+    {
+        return undefined;
+    }
+
+    return plane(bestOrigin, normalize(targetDir + bestDir));
 }
 
 function reapplyAttributes(context is Context, bodyToPreserve is Query, attributesToReapply is FrameTopologyAttribute)
