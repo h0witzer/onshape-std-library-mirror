@@ -1353,8 +1353,10 @@ function doOneMiterEndTrim(context is Context, topLevelId is Id, trimId is Id, t
 }
 
 // Returns the bisecting plane for a MITER inter-group trim, or undefined if no group-1 cap face is
-// within EXTEND_FRAMES_PAD_LENGTH * 10 of `cutFace` (indicating a T-intersection rather than a
-// corner joint).
+// close enough to `cutFace` to form a corner joint (as opposed to a T-intersection where miter has
+// no meaning). Uses a threshold of 10x the frame extension pad so that caps at a shared corner
+// (distance ≈ 0) are accepted while caps at the far end of a frame running through the middle of
+// another (distance >> 1 mm) are rejected with a fallback to COPED_BUTT.
 function getMiterInterGroupPlane(context is Context, cutFace is Query, targetDir is Vector, tools is Query)
 {
     const toolBodies = evaluateQuery(context, tools);
