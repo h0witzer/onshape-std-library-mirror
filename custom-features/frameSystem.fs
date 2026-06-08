@@ -1013,12 +1013,12 @@ function trimFramesByPreviousGroups(context is Context, groupId is Id, trimEnds 
     {
         for (var entry in collisionData.capFaceToToolBodies)
         {
-            const frameSegmentTransients = evaluateQuery(context, qOwnerBody(entry.key));
-            if (frameSegmentTransients != [])
+            const frameSegmentTransientQueries = evaluateQuery(context, qOwnerBody(entry.key));
+            if (frameSegmentTransientQueries != [])
             {
                 for (var toolBodyQ in entry.value)
                 {
-                    framesToBodies = insertIntoMapOfArrays(framesToBodies, frameSegmentTransients[0], toolBodyQ);
+                    framesToBodies = insertIntoMapOfArrays(framesToBodies, frameSegmentTransientQueries[0], toolBodyQ);
                 }
             }
         }
