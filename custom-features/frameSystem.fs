@@ -271,9 +271,7 @@ function doFrame(context is Context, id is Id, definition is map)
     var bodiesToDelete = new box([]);
     const profileData = getProfile(context, id, definition, bodiesToDelete);
 
-    const sweepData = (isAtVersionOrLater(context, FeatureScriptVersionNumber.V1742_STABLE_FRAME_SWEEP))
-       ? sweepFrames(context, id, definition, profileData, bodiesToDelete)
-       : sweepFrames_PRE_V1742(context, id, definition, profileData, bodiesToDelete);
+    const sweepData = sweepFrames(context, id, definition, profileData, bodiesToDelete);
 
     addManipulators(context, id, sweepData.manipulators);
     trimFrame(context, id, definition, sweepData.trimEnds, sweepData.sweepBodies, bodiesToDelete);
@@ -299,17 +297,8 @@ function createComposites(context is Context, id is Id, mergeSegments is boolean
         }
 
         const bodyQuery = qUnion(group.segments);
-        // BEL-209918 Disambiguate between frames created in the same operation to improve downstream stability-under-edit.
-        var compositeId;
-        if (isAtVersionOrLater(context, FeatureScriptVersionNumber.V2123_COMPOSITE_SEGMENT_DISAMBIGUATION))
-        {
-            compositeId = id + "compositePart" + unstableIdComponent(index);
-            setExternalDisambiguation(context, compositeId, bodyQuery);
-        }
-        else
-        {
-            compositeId = id + "compositePart" + index;
-        }
+        var compositeId = id + "compositePart" + unstableIdComponent(index);
+        setExternalDisambiguation(context, compositeId, bodyQuery);
         index += 1;
         opCreateCompositePart(context, compositeId, {
                 "bodies" : bodyQuery,
@@ -437,9 +426,7 @@ function doOneStablePath(context is Context, topLevelId is Id, definition is map
     const createSweepId = getDisambiguatedIncrementingId(context, pathId);
     const pathData = sweepOnePath(context, topLevelId, createSweepId, definition, profileData, cornerOverrides, path, bodiesToDelete);
     setAttributesOnPath(context, profileData, pathData.sweepData);
-    const createCornerId = isAtVersionOrLater(context, FeatureScriptVersionNumber.V2149_DEPRECATE_INCREMENTING_ID_GENERATOR)
-        ? getUnstableIncrementingId(pathId + "corner")
-        : getIncrementingId(pathId + "corner");
+    const createCornerId = getUnstableIncrementingId(pathId + "corner");
 
     createCorners(context, topLevelId, createCornerId, pathData.sweepData, pathData.cornerData, bodiesToDelete);
     const compositeGroups = groupTangentSegments(context, pathData.sweepData, pathData.cornerData);
@@ -610,9 +597,7 @@ function doSplitPath(context is Context, topLevelId is Id, pathId is Id, definit
                 [{ "endFace" : frontPathData.sweepData[0].startFace }],
                 backPathSweepData.sweepData]);
 
-    const createCornerId = isAtVersionOrLater(context, FeatureScriptVersionNumber.V2149_DEPRECATE_INCREMENTING_ID_GENERATOR)
-        ? getUnstableIncrementingId(pathId + "corner")
-        : getIncrementingId(pathId + "corner");
+    const createCornerId = getUnstableIncrementingId(pathId + "corner");
 
     createCorners(context, topLevelId, createCornerId, frontPathData.sweepData, frontPathData.cornerData, bodiesToDelete);
     createCorners(context, topLevelId, createCornerId, tempBackSweepData, backPathSweepData.cornerData, bodiesToDelete);
@@ -621,10 +606,7 @@ function doSplitPath(context is Context, topLevelId is Id, pathId is Id, definit
     const totalPathCornerData = concatenateArrays([reverse(backPathSweepData.cornerData), frontPathData.cornerData]);
     const compositeGroups = groupTangentSegments(context, totalPathSweepData, totalPathCornerData);
 
-    // Versioned bugfix: Selecting wrong trim ends during frame trims
-    const trimEnds = isAtVersionOrLater(context, FeatureScriptVersionNumber.V1770_TRIM_END_FIX)
-        ? [last(backPathSweepData.sweepData).endFace, last(frontPathData.sweepData).endFace]
-        : [previousFace, last(frontPathData.sweepData).endFace];
+    const trimEnds = [last(backPathSweepData.sweepData).endFace, last(frontPathData.sweepData).endFace];
 
     return {
             "trimEnds" : trimEnds,
@@ -957,9 +939,7 @@ function trimFrame(context is Context, topLevelId is Id, definition is map, trim
 function preprocessForTrim(context is Context, id is Id, definition is map, trimEnds is array, sweepBodies is array) returns map
 {
     const collisions = getTrimCandidates(context, definition.trimPlanes, definition.trimBodies, trimEnds, sweepBodies);
-    const collisionData = isAtVersionOrLater(context, FeatureScriptVersionNumber.V2057_FRAME_TRIM_GROUP_BY_TRANSIENT_QUERY)
-    ? groupCollisionResults(context, collisions)
-    : groupCollisionResults_PRE_2057(context, collisions);
+    const collisionData = groupCollisionResults(context, collisions);
 
     var capFaceToToolBodies = collisionData.capFaceToToolBodies;
     const framesToBodies = collisionData.framesToBodies;
@@ -1329,8 +1309,7 @@ function extendFrames(context is Context, id is Id, trimData is map)
      * incorrect frame length (BEL-209139).
      * Now we check if there will be a trim before we add padding.
      */
-    const skipPadding = isAtVersionOrLater(context, FeatureScriptVersionNumber.V2124_FRAME_PADDING_FIX) &&
-        (trimData.capFaceToTrimPlane == {} && trimData.frameToTrimFrameData == {});
+    const skipPadding = (trimData.capFaceToTrimPlane == {} && trimData.frameToTrimFrameData == {});
     const offsetId = getUnstableIncrementingId(id + "extendFrame");
     for (var entry in capFaceToToolBodies)
     {
@@ -1384,11 +1363,6 @@ function gatherCornerOverrides(context is Context, definitionOverrides is array)
         if (size(vertices) == 0)
         {
             throw regenError(ErrorStringEnum.CANNOT_RESOLVE_ENTITIES);
-        }
-        // In case there already exist documents where the vertex queries evaluates to more than one vertex.
-        if (!isAtVersionOrLater(context, FeatureScriptVersionNumber.V2745_QUERY_VARIABLE_CHANGES))
-        {
-            vertices = [vertices[0]];
         }
         const positions = vertices->mapArray(vertex => evVertexPoint(context, { "vertex" : vertex }));
         cornerOverrides = append(cornerOverrides, mergeMaps(corners, { "positions" : positions }));
@@ -1625,9 +1599,7 @@ function getProfile(context is Context, id is Id, definition is map, bodiesToDel
     var faceData = {};
     faceData.profileBody = profileBody;
     faceData.profilePlane = evPlane(context, { "face" : qOwnedByBody(profileBody, EntityType.FACE) });
-    faceData.pointsManipulatorData = isAtVersionOrLater(context, FeatureScriptVersionNumber.V2442_USE_BOUNDING_BOX_CENTER)
-        ? getPointsManipulatorData(context, faceData, customPoints)
-        : getPointsManipulatorData_PRE_V2442(context, faceData, customPoints);
+    faceData.pointsManipulatorData = getPointsManipulatorData(context, faceData, customPoints);
     // For cutlists:
     // Must use original profile, not extracted.  opExtractSurface seems to clear the attribute here.
     faceData.profileAttribute = getFrameProfileAttributeOrDefault(context, outerFaces, definition.profileSketch.configuration);
@@ -1654,41 +1626,6 @@ function getPointsManipulatorData(context is Context, faceData is map, customPoi
         "center" : offsetData.centerOffset,
         "halfExtents" : offsetData.halfExtents,
         "offset" : concatenateArrays([offsetData.offsets, customOffsets])
-    };
-}
-
-function getPointsManipulatorData_PRE_V2442(context is Context, faceData is map, customPoints is array) returns map
-{
-    const bb = evBox3d(context, {
-                "topology" : faceData.profileBody,
-                "cSys" : coordSystem(faceData.profilePlane)
-            });
-    const center2d = 0.5 * (bb.maxCorner + bb.minCorner);
-    const halfExtents = 0.5 *(bb.maxCorner - bb.minCorner);
-    //compute standard offsets with layout:
-    //8 7 6
-    //5 4 3
-    //2 1 0
-    var standardOffsets = makeArray(9);
-    standardOffsets[8] = vector(-halfExtents[0], halfExtents[1], 0 * meter);
-    standardOffsets[7] = vector(0 * meter, halfExtents[1], 0 * meter);
-    standardOffsets[6] = vector(halfExtents[0], halfExtents[1], 0 * meter);
-    standardOffsets[5] = vector(-halfExtents[0], 0 * meter, 0 * meter);
-    standardOffsets[FRAME_NINE_POINT_CENTER_INDEX] = vector(0, 0, 0) * meter;
-    standardOffsets[3] = -standardOffsets[5];
-    standardOffsets[2] = -standardOffsets[6];
-    standardOffsets[1] = -standardOffsets[7];
-    standardOffsets[0] = -standardOffsets[8];
-
-    const customOffsets = mapArray(customPoints, function(pointQuery) {
-        const pointWCS = evVertexPoint(context, { "vertex" : pointQuery });
-        return worldToPlane3D(faceData.profilePlane, pointWCS);
-        });
-
-    return {
-        "center" : center2d,
-        "halfExtents" : halfExtents,
-        "offset" : concatenateArrays([standardOffsets, customOffsets])
     };
 }
 
@@ -2019,174 +1956,4 @@ function setAttributesOnPath(context is Context, profileData is map, pathSweepDa
         setFrameAttributes(context, qCreatedBy(sweepData.id, EntityType.BODY), profileData, frameData);
     }
     setFrameTerminusAttributes(context, pathSweepData[0].startFace, last(pathSweepData).endFace);
-}
-
-// NB: Functions below are used in downversion frames operations only.
-function sweepFrames_PRE_V1742(context is Context, topLevelId is Id, definition is map, profileData is map, bodiesToDelete is box) returns map
-{
-    verify(!isQueryEmpty(context, definition.selections), ErrorStringEnum.FRAME_SELECT_PATH, { "faultyParameters" : ["selections"] });
-
-    var trimEnds = [];
-    var sweepBodies = [];
-    var manipulators = {};
-
-    const cornerOverrides = gatherCornerOverrides(context, definition.cornerOverrides);
-    const pathData = createPathsFromSelections(context, topLevelId, definition.selections, bodiesToDelete);
-    const paths = pathData.paths;
-
-    for (var pathIndex = 0; pathIndex < size(paths); pathIndex += 1)
-    {
-        const pathId = topLevelId + unstableIdComponent(pathIndex);
-        const edgePath = paths[pathIndex];
-        var pathSweepData = [];
-        var pathCornerData = [];
-        var pathFrameData = [];
-
-        const numPathSegments = size(edgePath.edges);
-        for (var edgeIndex = 0; edgeIndex < numPathSegments; edgeIndex += 1)
-        {
-            const edgeId = pathId + unstableIdComponent(edgeIndex);
-            setExternalDisambiguation(context, edgeId, edgePath.edges[edgeIndex]);
-            const profileId = edgeId + "profile";
-            const edgeResult = (edgeIndex == 0) ?
-                handleStartingEdge(context, definition, edgeId, edgePath, profileData) :
-                handleContinuingEdge(context, definition, pathSweepData, edgeId, edgePath, edgeIndex, cornerOverrides, bodiesToDelete);
-
-            manipulators = updateManipulators(manipulators, edgeResult.manipulators);
-            pathCornerData = updateCornerData(pathCornerData, edgeResult.cornerData);
-            const sweepId = edgeId + "sweep";
-            const sweepData = sweepOneEdge(context, definition, sweepId, edgeResult.faceToSweep, edgeResult.edge);
-            sweepBodies = append(sweepBodies, sweepData.body);
-            pathSweepData = append(pathSweepData, sweepData);
-            // make additional corner for closed loop
-            const closedLoopCornerData = handleCornerForClosedLoop(context, definition, cornerOverrides, pathSweepData, edgePath, edgeIndex);
-            manipulators = updateManipulators(manipulators, closedLoopCornerData.manipulator);
-            pathCornerData = updateCornerData(pathCornerData, closedLoopCornerData);
-            cleanUpAtEndOfFeature(bodiesToDelete, qCreatedBy(profileId, EntityType.BODY));
-            const frameData = getFrameData(context, sweepId, sweepData);
-
-            const frameQ = qCreatedBy(sweepId, EntityType.BODY);
-            setFrameAttributes(context, frameQ, profileData, frameData);
-            pathFrameData = append(pathFrameData, frameData);
-        }
-        // Only allow trimming of first segments's startFace and last segment's endFace
-        // for paths of only one segment, this will be both ends of that single beam
-        const lastPathSegment = last(pathFrameData);
-        setFrameTerminusAttributes(context, pathFrameData[0].startFace, lastPathSegment.endFace);
-        trimEnds = concatenateArrays([trimEnds, [pathFrameData[0].startFace, lastPathSegment.endFace]]);
-
-        const createCornerId = isAtVersionOrLater(context, FeatureScriptVersionNumber.V2149_DEPRECATE_INCREMENTING_ID_GENERATOR)
-            ? getUnstableIncrementingId(pathId)
-            : getIncrementingId(pathId);
-        createCorners(context, topLevelId, createCornerId, pathSweepData, pathCornerData, bodiesToDelete);
-    }
-    // Always attach the frame manipulator to the first edge of the first path
-    // this keeps the manipulator oriented correctly to the frame orientation (even though this orientation may change based on edge selection)
-    const manipulatorEdge = paths[0].edges[0];
-    const manipulatorFlipped = paths[0].flipped[0];
-    const manipulatorLine = evaluatePathEdge(context, manipulatorEdge, manipulatorFlipped, 0.5);
-    const frameManipulators = createFrameManipulators(context, topLevelId, definition, manipulatorLine, profileData);
-
-    manipulators = updateManipulators(frameManipulators, manipulators);
-    return {
-            "trimEnds" : trimEnds,
-            "manipulators" : manipulators,
-            "sweepBodies" : sweepBodies,
-            "compositeGroups" : []
-        };
-}
-
-function handleStartingEdge(context is Context, definition is map, edgeId is Id,
-    edgePath is Path, profileData is map) returns map
-{
-    const profileId = edgeId + "profile";
-    // by definition the starting edge has index 0
-    const edge = edgePath.edges[0];
-    const edgeLine = evaluatePathEdge(context, edge, edgePath.flipped[0], 0);
-    const planeAtEdgeStart = getPlaneAtLineStart(context, definition, edgeLine);
-    const profilePlane = getProfilePlane(profileData, definition);
-
-    const mirrorAndAngleTransform = getMirrorAndAngleTransform(definition.mirrorProfile, edgeLine, planeAtEdgeStart, definition.angle);
-    const profileTransform = mirrorAndAngleTransform * transform(profilePlane, planeAtEdgeStart);
-    opPattern(context, profileId, {
-                "entities" : profileData.profileBody,
-                "transforms" : [profileTransform],
-                "instanceNames" : ["1"]
-            });
-
-    return {
-            "edge" : edge,
-            "faceToSweep" : qCreatedBy(profileId, EntityType.FACE),
-            "manipulators" : {},
-            "cornerData" : {}
-        };
-}
-
-function handleContinuingEdge(context is Context, definition is map, sweepData is array, edgeId is Id,
-    edgePath is Path, edgeIndex is number, cornerOverrides is array, bodiesToDelete is box) returns map
-{
-    const profileId = edgeId + "profile";
-    // We transform the end face of the previous sweep to the start of new edge
-    // rather than transforming from original plane to start of new edge.
-    // BEL-168513: Fixes geometric problems for spline paths but causes tracking problems.
-    const edge = edgePath.edges[edgeIndex];
-    const edgeLine = evaluatePathEdge(context, edge, edgePath.flipped[edgeIndex], 0);
-
-    const endFace = sweepData[edgeIndex - 1].endFace;
-    opExtractSurface(context, edgeId + "extract", { "faces" : endFace });
-    const extractedBody = qCreatedBy(edgeId + "extract", EntityType.BODY);
-    cleanUpAtEndOfFeature(bodiesToDelete, extractedBody);
-    var prevEdgeEnd = evaluatePathEdgeFromIndex(context, edgePath, edgeIndex - 1, 1);
-    const sweepProfileTransform = transform(line(prevEdgeEnd.origin, prevEdgeEnd.direction), line(edgeLine.origin, edgeLine.direction));
-    opTransform(context, profileId, {
-                "bodies" : extractedBody,
-                "transform" : sweepProfileTransform
-            });
-    const faceToSweep = qOwnedByBody(extractedBody, EntityType.FACE);
-    const cornerData = getCurrentCornerData(context, prevEdgeEnd, edgeLine, cornerOverrides, definition, faceToSweep,
-        endFace);
-    return ({
-                "edge" : edge,
-                "faceToSweep" : faceToSweep,
-                "manipulators" : cornerData.manipulator,
-                "cornerData" : cornerData
-            });
-}
-
-function groupCollisionResults_PRE_2057(context is Context, collisions is array) returns map
-{
-    var capFaceToToolBodies = {};
-    var framesToBodies = {};
-
-    for (var collision in collisions)
-    {
-        // if capFaces are trimmed, we will extend their beam end to improve trimming
-        if (isFrameCapFace(context, collision.target))
-        {
-            capFaceToToolBodies = insertIntoMapOfArrays(capFaceToToolBodies, collision.target, collision.toolBody);
-        }
-
-        // Collect only collisions with overlapping volume and ignore adjacency or containment collisions
-        if (collision["type"] == ClashType.INTERFERE)
-        {
-            framesToBodies = insertIntoMapOfArrays(framesToBodies, collision.targetBody, collision.toolBody);
-        }
-    }
-
-    return
-    {
-            "capFaceToToolBodies" : capFaceToToolBodies,
-            "framesToBodies" : framesToBodies
-        };
-}
-
-function getIncrementingId(prefix is Id) returns function
-{
-    var index = new box(0);
-    return function()
-        {
-            const newId = prefix + index[];
-            index[] += 1;
-            return newId;
-        };
 }
