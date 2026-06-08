@@ -65,7 +65,8 @@ export const frame = defineFeature(function(context is Context, id is Id, defini
                     "Name" : "Selection groups",
                     "Item name" : "group",
                     "Driven query" : "groupSelections",
-                    "Item label template" : "#groupSelections"
+                    "Item label template" : "#groupSelections",
+                    "UIHint" : UIHint.REORDER_ALLOWED
                 }
         definition.selectionGroups is array;
         for (var group in definition.selectionGroups)
@@ -1002,7 +1003,26 @@ function trimFramesByPreviousGroups(context is Context, groupId is Id, trimEnds 
     }
 
     const collisionData = groupCollisionResults(context, collisions);
-    const framesToBodies = collisionData.framesToBodies;
+    var framesToBodies = collisionData.framesToBodies;
+
+    // For the same-terminus case, two groups' frames that arrive at the exact same endpoint may only
+    // touch (ABUT) rather than volumetrically overlap (INTERFERE), leaving framesToBodies empty.
+    // When capFaceToToolBodies has entries from those ABUT collisions, use them as trim candidates
+    // so extendFrames can create the necessary overlap before the boolean trim.
+    if (framesToBodies == {})
+    {
+        for (var entry in collisionData.capFaceToToolBodies)
+        {
+            const frameSegmentTransients = evaluateQuery(context, qOwnerBody(entry.key));
+            if (frameSegmentTransients != [])
+            {
+                for (var toolBodyQ in entry.value)
+                {
+                    framesToBodies = insertIntoMapOfArrays(framesToBodies, frameSegmentTransients[0], toolBodyQ);
+                }
+            }
+        }
+    }
 
     var frameToTrimFrameData = {};
     for (var entry in framesToBodies)
