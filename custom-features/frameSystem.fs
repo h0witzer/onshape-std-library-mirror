@@ -313,7 +313,7 @@ function doFrame(context is Context, id is Id, definition is map)
         const sweepData = sweepFrames(context, sweepId, groupDefinition, profileData, bodiesToDelete, groupIndex == 0);
         allManipulators = mergeMaps(allManipulators, sweepData.manipulators);
 
-        const secondaryTrimType = (group.secondaryTrimType == undefined) ? FrameCornerType.BUTT : group.secondaryTrimType;
+        const secondaryTrimType = (group.secondaryTrimType == undefined) ? FrameJointType.BUTT : group.secondaryTrimType;
         trimFramesByPreviousGroups(context, groupId + "prevTrim", sweepData.trimEnds, sweepData.sweepBodies, previousGroupBodies, bodiesToDelete, secondaryTrimType);
         trimFrame(context, groupId, groupDefinition, sweepData.trimEnds, sweepData.sweepBodies, bodiesToDelete);
         createComposites(context, groupId, definition.mergeTangentSegments, sweepData.compositeGroups, profileData);
@@ -1001,9 +1001,9 @@ function trimFrame(context is Context, topLevelId is Id, definition is map, trim
 // Trims the current group's swept bodies against all bodies produced by earlier groups, using
 // the trim type specified per group. Bodies with no intersection are left untouched.
 function trimFramesByPreviousGroups(context is Context, groupId is Id, trimEnds is array, sweepBodies is array,
-    previousGroupBodies is Query, bodiesToDelete is box, trimType is FrameCornerType)
+    previousGroupBodies is Query, bodiesToDelete is box, trimType is FrameJointType)
 {
-    if (trimType == FrameCornerType.NONE)
+    if (trimType == FrameJointType.NONE)
     {
         return;
     }
@@ -1068,15 +1068,7 @@ function trimFramesByPreviousGroups(context is Context, groupId is Id, trimEnds 
         };
 
     extendFrames(context, groupId, trimData);
-
-    if (trimType == FrameCornerType.MITER)
-    {
-        doInterGroupMiterTrim(context, groupId, trimData.frameToTrimFrameData, bodiesToDelete);
-    }
-    else
-    {
-        trimFramesByBodies(context, groupId, trimData.frameToTrimFrameData, bodiesToDelete);
-    }
+    trimFramesByBodies(context, groupId, trimData.frameToTrimFrameData, bodiesToDelete);
 }
 
 function preprocessForTrim(context is Context, id is Id, definition is map, trimEnds is array, sweepBodies is array) returns map
