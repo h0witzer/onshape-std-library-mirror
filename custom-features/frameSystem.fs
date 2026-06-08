@@ -355,6 +355,9 @@ function createComposites(context is Context, id is Id, mergeSegments is boolean
     }
 }
 
+// Sweeps all path selections for one group. When isFirstGroup is true the angle and points manipulators
+// are registered against topLevelId (the feature's top-level id) so that the manipulator change function
+// can resolve them correctly. Subsequent groups skip manipulator registration to avoid scope conflicts.
 function sweepFrames(context is Context, topLevelId is Id, definition is map, profileData is map, bodiesToDelete is box, isFirstGroup is boolean) returns map
 {
     verify(!isQueryEmpty(context, definition.selections), ErrorStringEnum.FRAME_SELECT_PATH, { "faultyParameters" : ["selectionGroups"] });
@@ -375,7 +378,8 @@ function sweepFrames(context is Context, topLevelId is Id, definition is map, pr
     }
     else
     {
-        // Clamp the index in case the profile changed and the stored index is now out of bounds.
+        // Clamp the index in case the stored index exceeds the current profile's point count,
+        // which can occur when switching profiles between edits.
         if (definition.index >= size(profileData.pointsManipulatorData.offset))
         {
             definition.index = FRAME_NINE_POINT_CENTER_INDEX;
@@ -980,6 +984,9 @@ function trimFrame(context is Context, topLevelId is Id, definition is map, trim
     }
 }
 
+// Trims the current group's swept bodies against all bodies produced by earlier groups. Each end cap of the
+// current group that intersects a previous-group body is trimmed using the same boolean-subtraction mechanism
+// as the user-facing trim feature. Bodies with no intersection are left untouched.
 function trimFramesByPreviousGroups(context is Context, groupId is Id, trimEnds is array, sweepBodies is array,
     previousGroupBodies is Query, bodiesToDelete is box)
 {
