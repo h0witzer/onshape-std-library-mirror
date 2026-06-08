@@ -40,6 +40,15 @@ export const FRAME_NINE_POINT_CENTER_INDEX = 4;
 // in `extendFrames` we pad our frame extrusion length to help avoid non-manifold cases in boolean operations
 const EXTEND_FRAMES_PAD_LENGTH = .1 * millimeter;
 
+// Joint types available for user selection in the feature dialog.
+enum FrameJointType
+{
+    annotation { "Name" : "Butt" }
+    BUTT,
+    annotation { "Name" : "None" }
+    NONE
+}
+
 /**
  * Create frames from a profile and set of path selections.
  */
@@ -65,8 +74,7 @@ export const frame = defineFeature(function(context is Context, id is Id, defini
                     "Name" : "Selection groups",
                     "Item name" : "group",
                     "Driven query" : "groupSelections",
-                    "Item label template" : "#groupSelections",
-                    "UIHint" : UIHint.REORDER_ALLOWED
+                    "Item label template" : "#groupSelections"
                 }
         definition.selectionGroups is array;
         for (var group in definition.selectionGroups)
@@ -79,8 +87,8 @@ export const frame = defineFeature(function(context is Context, id is Id, defini
                     }
             group.groupSelections is Query;
 
-            annotation { "Name" : "Cross-group trim", "UIHint" : UIHint.SHOW_LABEL }
-            group.secondaryTrimType is FrameCornerType;
+            annotation { "Name" : "Cross-group trim", "UIHint" : [UIHint.SHOW_LABEL, UIHint.MATCH_LAST_ARRAY_ITEM] }
+            group.secondaryTrimType is FrameJointType;
         }
 
         annotation {
@@ -114,9 +122,9 @@ export const frame = defineFeature(function(context is Context, id is Id, defini
         definition.angleReference is Query;
 
         annotation { "Name" : "Default corner type", "UIHint" : UIHint.SHOW_LABEL }
-        definition.defaultCornerType is FrameCornerType;
+        definition.defaultCornerType is FrameJointType;
 
-        if (definition.defaultCornerType == FrameCornerType.BUTT || definition.defaultCornerType == FrameCornerType.COPED_BUTT)
+        if (definition.defaultCornerType == FrameJointType.BUTT)
         {
             annotation {
                         "Name" : "Flip corner",
@@ -146,9 +154,9 @@ export const frame = defineFeature(function(context is Context, id is Id, defini
                         "Name" : "Corner type",
                         "UIHint" : UIHint.SHOW_LABEL
                     }
-            corner.cornerType is FrameCornerType;
+            corner.cornerType is FrameJointType;
 
-            if (corner.cornerType == FrameCornerType.BUTT || corner.cornerType == FrameCornerType.COPED_BUTT)
+            if (corner.cornerType == FrameJointType.BUTT)
             {
                 annotation {
                             "Name" : "Flip corner",
@@ -195,7 +203,7 @@ export const frame = defineFeature(function(context is Context, id is Id, defini
     },
     {
             mirrorProfile : false,
-            defaultCornerType : FrameCornerType.MITER,
+            defaultCornerType : FrameJointType.BUTT,
             index : FRAME_NINE_POINT_CENTER_INDEX,
             angle : 0 * degree,
             cornerOverrides : [],
@@ -305,7 +313,7 @@ function doFrame(context is Context, id is Id, definition is map)
         const sweepData = sweepFrames(context, sweepId, groupDefinition, profileData, bodiesToDelete, groupIndex == 0);
         allManipulators = mergeMaps(allManipulators, sweepData.manipulators);
 
-        const secondaryTrimType = (group.secondaryTrimType == undefined) ? FrameCornerType.COPED_BUTT : group.secondaryTrimType;
+        const secondaryTrimType = (group.secondaryTrimType == undefined) ? FrameCornerType.BUTT : group.secondaryTrimType;
         trimFramesByPreviousGroups(context, groupId + "prevTrim", sweepData.trimEnds, sweepData.sweepBodies, previousGroupBodies, bodiesToDelete, secondaryTrimType);
         trimFrame(context, groupId, groupDefinition, sweepData.trimEnds, sweepData.sweepBodies, bodiesToDelete);
         createComposites(context, groupId, definition.mergeTangentSegments, sweepData.compositeGroups, profileData);
