@@ -2000,17 +2000,23 @@ function createOneCorner(context is Context, cornerId is Id, prevFace is Query, 
 }
 
 // ======================= Cross-group joints ===================================
-// These functions terminate the beams of one group where they meet the union of all groups that precede
-// it in the `frameGroups` array. Like the in-group butt corner, a butt joint produces a planar face
-// termination (rather than a raw boolean subtraction): the open beam end is reterminated onto the plane
-// of the earlier-group face it abuts using opPlane + opReplaceFace, which preserves the cap-face
-// attributes the cutlist relies on. A coped butt additionally copes the beam to the earlier surface with
-// the same boolean trim used by the in-group cope. Only open beam ends (the outer terminus faces of a
+// These functions terminate the beams of one group where they meet the groups that precede it in the
+// `frameGroups` array. The array order is the precedence rule: an earlier group is always a trim tool and
+// a later group is always trimmed, so the cross-group network can never form a trim cycle. Each open beam
+// end is resolved as its own junction against the earlier groups, so a single beam that meets earlier
+// members at both ends (for example a vertical that borders both a top-face group and a bottom-face group)
+// terminates each end independently.
+//
+// A plain butt reterminates the open beam end flush onto the neighbour's own face plane with opPlane +
+// opReplaceFace, which preserves the cap-face attributes the cutlist relies on; because the cut takes the
+// neighbour's plane, an angled abutment produces an angled flush face. A coped butt (and any butt landing
+// on a non-planar neighbour such as a round tube, where there is no flush plane) conforms to the neighbour
+// with the same boolean trim used by the in-group cope. Only open beam ends (the outer terminus faces of a
 // path) are eligible, matching the feature's existing rule against trimming internal segments.
 
 // Terminate every eligible open beam end in the current group against the earlier-group tool set.
 // Inputs:
-//   topLevelId  : the feature id, used for warnings and error entities
+//   topLevelId  : the feature id, used for error entities
 //   groupId     : the current group's id, used to disambiguate the helper operations
 //   definition  : provides groupJointType and groupJointFlip
 //   sweepData   : { sweepBodies : array of beam body queries, trimEnds : array of open cap-face queries }
@@ -2033,28 +2039,40 @@ function applyCrossGroupJoints(context is Context, topLevelId is Id, groupId is 
                 continue;
             }
 
-            const buttPlaneResult = getCrossGroupButtPlane(context, beamBody, capFace, earlierBeams);
-            if (buttPlaneResult.ambiguous)
+            const junction = resolveCrossGroupJunction(context, beamBody, capFace, earlierBeams);
+            // A beam end wedged into two non-coplanar neighbours has no single resolvable termination; this
+            // is a modelling conflict the user must fix, so it stops the feature rather than silently
+            // skipping the end.
+            if (junction.ambiguous)
             {
-                setErrorEntities(context, topLevelId, { "entities" : qOwnerBody(beamBody) });
-                reportFeatureWarning(context, topLevelId, ErrorStringEnum.FRAME_MULTIPLE_TRIM_PLANES);
-                continue;
+                throw regenError(ErrorStringEnum.FRAME_MULTIPLE_TRIM_PLANES, qOwnerBody(beamBody));
             }
-            if (!buttPlaneResult.found)
+            if (!junction.found)
             {
                 continue;
             }
 
-            // A plain butt stops flush against the earlier member (entry face by default, far face when
-            // flipped). A coped butt first carries the beam to the earlier member's far face so it fully
-            // overlaps, then copes that overlap away, matching the in-group coped corner.
-            const selectFarFace = isCoped || definition.groupJointFlip;
-            const buttPlane = selectFarFace ? buttPlaneResult.farPlane : buttPlaneResult.entryPlane;
-            beamBody = terminateBeamEndAtPlane(context, jointId(), beamBody, capFace, buttPlane, bodiesToDelete);
-
-            if (isCoped)
+            // A coped butt, or a butt against a neighbour with no flush plane (a round tube), conforms with
+            // a boolean cut against only this end's neighbour. The beam is first carried to the neighbour's
+            // far side when that plane exists so the overlap the subtraction needs is present, matching the
+            // in-group coped corner. A plain butt against a planar neighbour stops flush on the neighbour's
+            // face (its far face when the joint is flipped).
+            const useBoolean = isCoped || junction.entryPlane == undefined;
+            if (useBoolean)
             {
-                beamBody = doOneEndTrim(context, groupId, jointId(), beamBody, earlierBeams, isStart, bodiesToDelete);
+                if (junction.farPlane != undefined)
+                {
+                    beamBody = terminateBeamEndAtPlane(context, jointId(), beamBody, capFace, junction.farPlane, bodiesToDelete);
+                }
+                beamBody = doOneEndTrim(context, groupId, jointId(), beamBody, junction.toolBodies, isStart, bodiesToDelete);
+            }
+            else
+            {
+                // A flip carries the butt to the neighbour's far face when that face exists; otherwise it
+                // stays on the entry face.
+                const useFarPlane = definition.groupJointFlip && junction.farPlane != undefined;
+                const buttPlane = useFarPlane ? junction.farPlane : junction.entryPlane;
+                beamBody = terminateBeamEndAtPlane(context, jointId(), beamBody, capFace, buttPlane, bodiesToDelete);
             }
         }
     }
@@ -2074,24 +2092,27 @@ function getOpenCapFace(context is Context, beamBody is Query, trimEnds is array
     return openCapFace;
 }
 
-// Find the earlier-group planar face that a beam's open end abuts and return the planes to terminate on.
-// The candidate faces are the earlier-group planar faces that interfere with the beam and are square to
-// the beam axis (their normal is parallel or antiparallel to the cap-face normal). The entry plane is the
-// candidate nearest the beam root (where a flush butt lands); the far plane is the candidate nearest the
-// open tip (where a flipped or coped butt carries the beam to). When the eligible faces fall into more
-// than two distinct (non-coplanar) planes the abutment is ambiguous.
+// Resolve the cross-group junction at one open beam end against the earlier-group tools and report how to
+// terminate it. The interfering earlier faces are first attributed to this beam end (the faces nearer this
+// cap than the beam's opposite cap) so a beam meeting earlier members at both ends resolves each end on its
+// own. The owner bodies of those faces are the tools for a conforming boolean cut, which works at any joint
+// angle and on non-planar neighbours such as round tubes. Among the planar abutting faces, each is then
+// classified by how it faces the incoming beam: a face the beam runs into (its front toward the beam) is an
+// entry candidate where a flush butt lands; a face on the far side the beam would exit through is a far
+// candidate where a flipped or coped butt carries the beam to. A beam end that runs into two non-coplanar
+// faces has no single flush termination and is reported ambiguous.
 //
-// evCollision reports interferences over the whole beam body, so a beam that meets earlier members at
-// both of its ends (for example a vertical that borders both a top-face group and a bottom-face group)
-// reports the abutments from both ends together. Each candidate face is therefore attributed to the
-// nearer beam end and only the faces local to the end being terminated are considered, the same per-side
-// grouping the global trim uses. Without this restriction the far end's abutment would be mixed in,
-// inflating the plane count and producing a false "cannot trim the same frame end" ambiguity.
-// Returns { found : boolean, ambiguous : boolean, entryPlane : Plane, farPlane : Plane }.
-function getCrossGroupButtPlane(context is Context, beamBody is Query, capFace is Query, earlierBeams is Query) returns map
+// The facing classification and the nearest-plane ranking use dot against the cap-face normal because the
+// standard library has no query/ev function that ranks faces by signed position along an arbitrary
+// direction or that selects faces by normal sense relative to one; both are one-dimensional tests along a
+// single known direction, not parallelism tests.
+// Returns { found : boolean, ambiguous : boolean, toolBodies : Query, entryPlane : Plane, farPlane : Plane }
+// where entryPlane / farPlane are undefined when the neighbour has no corresponding planar face.
+function resolveCrossGroupJunction(context is Context, beamBody is Query, capFace is Query, earlierBeams is Query) returns map
 {
     const capFacePlane = evPlane(context, { "face" : capFace });
     const beamAxis = capFacePlane.normal;
+    const capOrigin = capFacePlane.origin;
 
     const collisions = evCollision(context, { "tools" : earlierBeams, "targets" : beamBody });
 
@@ -2108,63 +2129,72 @@ function getCrossGroupButtPlane(context is Context, beamBody is Query, capFace i
         return { "found" : false, "ambiguous" : false };
     }
 
-    // Restrict to planar earlier faces whose normal is parallel (or antiparallel) to the beam axis.
-    const squareFacesQuery = qParallelPlanes(qGeometry(qUnion(toolFaces), GeometryType.PLANE), beamAxis, true);
-    const allSquareFaces = evaluateQuery(context, squareFacesQuery);
-    if (allSquareFaces == [])
-    {
-        return { "found" : false, "ambiguous" : false };
-    }
-
-    // Keep only the abutting faces nearer to this end's cap face than to the beam's opposite cap face so a
-    // single corner is analyzed at a time. When the beam has no resolvable opposite end every face is kept.
+    // Keep only the interfering faces nearer this end's cap than the beam's opposite cap so a single corner
+    // is resolved at a time. When the beam has no resolvable opposite end every interfering face is kept.
     const oppositeCapFace = qSubtraction(qUnion([qFrameStartFace(beamBody), qFrameEndFace(beamBody)]), capFace);
-    const squareFaces = isQueryEmpty(context, oppositeCapFace)
-        ? allSquareFaces
-        : facesNearerToEnd(context, allSquareFaces, capFace, oppositeCapFace);
-    if (squareFaces == [])
+    const localToolFaces = isQueryEmpty(context, oppositeCapFace)
+        ? toolFaces
+        : facesNearerToEnd(context, toolFaces, capFace, oppositeCapFace);
+    if (localToolFaces == [])
     {
         return { "found" : false, "ambiguous" : false };
     }
 
-    var candidatePlanes = [];
-    for (var squareFace in squareFaces)
-    {
-        candidatePlanes = append(candidatePlanes, evPlane(context, { "face" : squareFace }));
-    }
+    // The owner bodies of this end's abutting faces are the tools for the conforming (boolean) cut.
+    const toolBodies = qOwnerBody(qUnion(localToolFaces));
 
-    if (countDistinctPlaneClusters(candidatePlanes) > 2)
+    // Classify this end's planar abutting faces by how they face the incoming beam.
+    const planarFaces = evaluateQuery(context, qGeometry(qUnion(localToolFaces), GeometryType.PLANE));
+    var entryPlanes = [];
+    var farPlanes = [];
+    for (var planarFace in planarFaces)
     {
-        return { "found" : false, "ambiguous" : true };
-    }
-
-    // Order the candidate planes along the beam axis relative to the cap face to separate the entry face
-    // from the far face. The entry face (where an unflipped butt lands) is the candidate nearest the beam
-    // root and the far face (where a flipped or coped butt lands) is nearest the open tip. The standard
-    // library has no query/ev function that ranks faces by signed position along an arbitrary direction,
-    // so the candidate origins are projected onto the (already query-filtered) beam axis with dot; this is
-    // a one-dimensional ordering along a single known direction, not a parallelism or sense test.
-    const capOrigin = capFacePlane.origin;
-    var entryPlane = candidatePlanes[0];
-    var farPlane = candidatePlanes[0];
-    var entryPosition = dot(candidatePlanes[0].origin - capOrigin, beamAxis);
-    var farPosition = entryPosition;
-    for (var i = 1; i < size(candidatePlanes); i += 1)
-    {
-        const position = dot(candidatePlanes[i].origin - capOrigin, beamAxis);
-        if (position < entryPosition)
+        const facePlane = evPlane(context, { "face" : planarFace });
+        const facing = dot(facePlane.normal, beamAxis);
+        if (facing < -TOLERANCE.zeroLength)
         {
-            entryPosition = position;
-            entryPlane = candidatePlanes[i];
+            entryPlanes = append(entryPlanes, facePlane);
         }
-        if (position > farPosition)
+        else if (facing > TOLERANCE.zeroLength)
         {
-            farPosition = position;
-            farPlane = candidatePlanes[i];
+            farPlanes = append(farPlanes, facePlane);
         }
     }
 
-    return { "found" : true, "ambiguous" : false, "entryPlane" : entryPlane, "farPlane" : farPlane };
+    if (countDistinctPlaneClusters(entryPlanes) > 1)
+    {
+        return { "found" : true, "ambiguous" : true };
+    }
+
+    return {
+            "found" : true,
+            "ambiguous" : false,
+            "toolBodies" : toolBodies,
+            "entryPlane" : nearestPlaneAlongAxis(entryPlanes, capOrigin, beamAxis),
+            "farPlane" : nearestPlaneAlongAxis(farPlanes, capOrigin, beamAxis)
+        };
+}
+
+// Return the plane whose origin projects nearest to `referenceOrigin` along `axis`, or undefined when the
+// list is empty. Used to pick the closest abutting face on each side of a cross-group beam end.
+function nearestPlaneAlongAxis(planes is array, referenceOrigin is Vector, axis is Vector)
+{
+    if (planes == [])
+    {
+        return undefined;
+    }
+    var nearestPlane = planes[0];
+    var nearestDistance = abs(dot(planes[0].origin - referenceOrigin, axis));
+    for (var i = 1; i < size(planes); i += 1)
+    {
+        const distance = abs(dot(planes[i].origin - referenceOrigin, axis));
+        if (distance < nearestDistance)
+        {
+            nearestDistance = distance;
+            nearestPlane = planes[i];
+        }
+    }
+    return nearestPlane;
 }
 
 // Count how many distinct (mutually non-coplanar) planes a list of planes contains.
@@ -2215,15 +2245,20 @@ function facesNearerToEnd(context is Context, candidateFaces is array, thisCapFa
 }
 
 // Reterminate a beam's open cap face onto the supplied butt plane with a planar face, preserving the
-// cap-face attributes. The termination plane is positioned at the abutting earlier face but takes the cap
-// face's own outward normal, so it is square to the beam and oriented like the original cap face; this
-// lets opReplaceFace keep the beam's material without an explicit sense flag, exactly as createOneCorner
-// does. The helper plane body is routed for cleanup at the end of the feature. The beam body query is
-// history based and continues to resolve after the replace, so it is returned unchanged.
+// cap-face attributes. The termination plane sits at the abutting earlier face and takes that face's own
+// orientation, so an angled abutment produces an angled flush cut; its normal sense is aligned with the
+// cap's outward direction so opReplaceFace keeps the beam's material, exactly as createOneCorner does. The
+// helper plane body is routed for cleanup at the end of the feature. The beam body query is history based
+// and continues to resolve after the replace, so it is returned unchanged.
 function terminateBeamEndAtPlane(context is Context, jointId is Id, beamBody is Query, capFace is Query, buttPlane is Plane, bodiesToDelete is box) returns Query
 {
     const capFacePlane = evPlane(context, { "face" : capFace });
-    const terminationPlane = plane(buttPlane.origin, capFacePlane.normal);
+    var terminationNormal = buttPlane.normal;
+    if (dot(terminationNormal, capFacePlane.normal) < 0)
+    {
+        terminationNormal = -terminationNormal;
+    }
+    const terminationPlane = plane(buttPlane.origin, terminationNormal);
     const planeId = jointId + "buttPlane";
     opPlane(context, planeId, { "plane" : terminationPlane, "width" : 1 * meter, "height" : 1 * meter });
     // By using replaceFace we are preserving attributes
