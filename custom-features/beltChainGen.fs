@@ -25,6 +25,8 @@ export enum beltType
     HTD5,
     annotation { "Name" : "GT2 3mm" }
     GT2_3,
+    annotation { "Name" : "GT2 2mm" }
+    GT2_2,
     annotation { "Name" : "RT25" }
     RT25
 }
@@ -48,6 +50,23 @@ const beltDims = {
             r2 : 0.26 * millimeter,
             pitch : 3 * millimeter,
             name : "3M" },
+        // GT2 2mm profile, derived from the analytical GT2-2M tooth definition in
+        // timingBeltPulleyAnalytical.fs (P = 2, H = 1.38, h = 0.75, PLD = 0.254, R1 = 0.15, R3 = 0.555).
+        //   d1    : belt back above the pitch line              = H - h - PLD = 0.376
+        //   d2    : pitch line to tooth root land               = PLD          = 0.254
+        //   d2_nt : tooth root land to tooth tip (tooth height) = h            = 0.75
+        //   d3    : tooth circle center offset from pitch line  = PLD + h - R3 = 0.449
+        //   r1    : tooth approximating circle radius           = R3           = 0.555
+        //   r2    : tooth root fillet radius                    = R1           = 0.15
+        beltType.GT2_2 : {
+            d1 : 0.376 * millimeter,
+            d2 : 0.254 * millimeter,
+            d2_nt : 0.75 * millimeter,
+            d3 : 0.449 * millimeter,
+            r1 : 0.555 * millimeter,
+            r2 : 0.15 * millimeter,
+            pitch : 2 * millimeter,
+            name : "2M" },
         beltType.RT25 : {
             d1 : 0.7112 * millimeter,
             d2 : 0.5588 * millimeter,
