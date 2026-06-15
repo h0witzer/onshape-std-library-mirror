@@ -104,7 +104,7 @@ export const twistedSweep = defineFeature(function(context is Context, id is Id,
             sweepPath = qOwnedByBody(sweepPath, EntityType.EDGE);
         }
 
-        // Calculate twist radius based on the furthest vertex of the profile from the path
+        // Calculate twist radius using a tight aligned bounding box approach
         var twistRadius = 1 * millimeter; // Default fallback
 
         // Get the profile query based on body type
@@ -143,32 +143,83 @@ export const twistedSweep = defineFeature(function(context is Context, id is Id,
             profileQuery = qConstructionFilter(definition.wallShape, ConstructionObject.NO);
         }
 
-        // Get vertices from the profile
-        var profileVertices = qAdjacent(profileQuery, AdjacencyType.VERTEX, EntityType.VERTEX);
-
-        // Find the furthest vertex from the path
-        if (!isQueryEmpty(context, profileVertices))
+        // Calculate the twist radius using a tight aligned bounding box
+        if (!isQueryEmpty(context, profileQuery))
         {
-            var maxDistance = 0 * meter;
-            var vertices = evaluateQuery(context, profileVertices);
-
-            for (var vertex in vertices)
+            // Calculate a coordinate system aligned with the sweep path at the starting point
+            // Default to world coordinate system if we can't compute a better one
+            var sweepCoordSystem = WORLD_COORD_SYSTEM;
+            try silent
             {
-                var distResult = evDistance(context, {
-                            "side0" : vertex,
-                            "side1" : sweepPath
+                // Get a tangent line at the start of the sweep path for proper alignment
+                var firstEdge = qNthElement(sweepPath, 0);
+                var tangentLine = evEdgeTangentLine(context, {
+                            "edge" : firstEdge,
+                            "parameter" : 0.0
                         });
-
-                if (distResult.distance > maxDistance)
-                {
-                    maxDistance = distResult.distance;
-                }
+                
+                // Create coordinate system with tangent as zAxis (along the path)
+                // and a perpendicular vector as xAxis (perpendicular to the path)
+                var xAxisDirection = perpendicularVector(tangentLine.direction);
+                sweepCoordSystem = coordSystem(tangentLine.origin, xAxisDirection, tangentLine.direction);
             }
-
-            // Use the maximum distance found, with a small multiplier for safety
-            if (maxDistance > 0 * meter)
+            // Silent failure is acceptable here - if we can't compute a path-aligned coordinate system,
+            // we fall back to WORLD_COORD_SYSTEM which will still produce a valid bounding box
+            
+            // Calculate the tight aligned bounding box of the profile entities
+            var boundingBox;
+            try
             {
-                twistRadius = maxDistance * 1.5;
+                boundingBox = evBox3d(context, {
+                            "topology" : profileQuery,
+                            "cSys" : sweepCoordSystem,
+                            "tight" : true
+                        });
+            }
+            catch
+            {
+                // If bounding box calculation fails, fall back to default radius
+                // This can happen with invalid or degenerate geometry
+                boundingBox = undefined;
+            }
+            
+            // Calculate the maximum distance from the sweep path origin to any corner of the bounding box
+            // The bounding box is in the coordinate system aligned with the sweep path, so we can
+            // compute distances directly in the local coordinate system
+            if (boundingBox != undefined)
+            {
+                var maxDistance = 0 * meter;
+                
+                // Check all 8 corners of the bounding box
+                var minCorner = boundingBox.minCorner;
+                var maxCorner = boundingBox.maxCorner;
+                
+                var corners = [
+                    vector(minCorner[0], minCorner[1], minCorner[2]),
+                    vector(minCorner[0], minCorner[1], maxCorner[2]),
+                    vector(minCorner[0], maxCorner[1], minCorner[2]),
+                    vector(minCorner[0], maxCorner[1], maxCorner[2]),
+                    vector(maxCorner[0], minCorner[1], minCorner[2]),
+                    vector(maxCorner[0], minCorner[1], maxCorner[2]),
+                    vector(maxCorner[0], maxCorner[1], minCorner[2]),
+                    vector(maxCorner[0], maxCorner[1], maxCorner[2])
+                ];
+                
+                for (var corner in corners)
+                {
+                    // Calculate the distance from the origin of the coordinate system to this corner
+                    var distance = norm(corner);
+                    if (distance > maxDistance)
+                    {
+                        maxDistance = distance;
+                    }
+                }
+                
+                // Use the maximum distance found without a multiplier (the bounding box already accounts for geometry extent)
+                if (maxDistance > 0 * meter)
+                {
+                    twistRadius = maxDistance;
+                }
             }
         }
         
