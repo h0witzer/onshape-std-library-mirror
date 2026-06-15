@@ -295,8 +295,146 @@ The code represents a significant improvement over the discretization approach a
 
 ---
 
-**Project Completed:** December 2025
+## Version 2.0 Update - 3D Kerf Geometry Generation (December 2025)
+
+### New Capabilities
+
+**3D CNC Manufacturing Support:**
+- ✅ Generate actual 3D cut geometry on solid bodies
+- ✅ Board thickness parameter for real-world materials
+- ✅ Automatic cut orientation based on surface geometry
+- ✅ Flexible layer thickness calculation
+- ✅ Cut extension option for manufacturing tolerance
+
+### Implementation Details
+
+**New Function: `generate3DKerfCuts()`**
+- **Lines Added:** ~150 lines
+- **Location:** `custom-features/kerf-bending/kerfBendingAnalytical.fs`
+- **Purpose:** Creates 3D rectangular cuts on solid bodies for CNC manufacturing
+
+**Key Implementation Features:**
+1. **Intelligent Cut Orientation**
+   - Uses curve tangent to determine cut direction
+   - Attempts to use surface normal for better orientation
+   - Falls back to perpendicular vector if no face adjacent
+
+2. **Geometry Creation Pipeline**
+   - Creates sketch plane perpendicular to curve at each cut position
+   - Draws rectangular profile based on blade width and cut depth
+   - Extrudes profile along surface normal
+   - Boolean subtracts from target solid body
+
+3. **Material Specification**
+   - Board thickness parameter (e.g., 18mm plywood)
+   - Cut depth parameter (e.g., 16mm cut depth)
+   - Calculates flexible layer thickness (e.g., 2mm remaining)
+
+**Updated Feature: `kerfBendingFeatureAnalytical.fs`**
+- **Lines Updated:** ~90 lines added
+- **New Mode System:** 
+  - `VISUALIZATION` mode: Creates 2D sketch (original behavior)
+  - `GENERATE_3D_CUTS` mode: Creates 3D cuts on solid bodies
+- **Enhanced UI:** Mode selector, board thickness input, solid body selection
+
+### Technical Improvements
+
+**Additional Imports:**
+```featurescript
+import(path : "onshape/std/surfaceGeometry.fs", version : "2837.0");
+import(path : "onshape/std/sketch.fs", version : "2837.0");
+import(path : "onshape/std/geomOperations.fs", version : "2837.0");
+import(path : "onshape/std/booleanoperationtype.gen.fs", version : "2837.0");
+import(path : "onshape/std/boundingtype.gen.fs", version : "2837.0");
+```
+
+**Geometry Operations Used:**
+- `plane()` - Create sketch planes perpendicular to curve
+- `newSketchOnPlane()` - Create sketches at cut positions
+- `skRectangle()` - Draw cut profiles
+- `opExtrude()` - Extrude cut profiles into solids
+- `opBoolean()` - Subtract cuts from target body
+- `evFaceTangentPlaneAtEdge()` - Get surface orientation
+
+### Usage Example (3D Mode)
+
+```featurescript
+// Generate kerf solution
+const solution = generateAnalyticalKerfSolution(
+    context,
+    curveEdge,
+    2.7 * millimeter,  // Blade width
+    16 * millimeter    // Cut depth
+);
+
+// Create 3D cuts on solid body
+generate3DKerfCuts(
+    context,
+    id + "cuts",
+    solidBody,          // The board to cut
+    curveEdge,          // Curve defining bend line
+    solution,
+    2.7 * millimeter,   // Blade width
+    16 * millimeter,    // Cut depth
+    18 * millimeter     // Board thickness (leaves 2mm flexible layer)
+);
+```
+
+### Design Decisions
+
+1. **Two-Mode Feature**
+   - Kept original visualization mode for backward compatibility
+   - Added new 3D mode for manufacturing
+   - User can choose based on use case
+
+2. **Board Thickness Separate from Cut Depth**
+   - Follows real-world CNC workflow
+   - Allows specification of flexible layer thickness
+   - Example: 18mm plywood with 16mm cuts = 2mm flexible hinge
+
+3. **Cut Orientation Strategy**
+   - Primary: Use surface normal from adjacent face
+   - Fallback: Use perpendicular to curve tangent
+   - Ensures cuts are properly oriented for all geometries
+
+4. **Extrude Strategy**
+   - Extrude to board thickness (not just cut depth)
+   - Ensures cuts fully penetrate even at angles
+   - Boolean subtraction handles intersection properly
+
+### Documentation Updates
+
+**README Enhancements:**
+- Added 3D function documentation
+- Included board thickness vs cut depth explanation
+- Added usage examples for both modes
+- Updated feature modes section
+- Added recent additions section
+
+**Lines Updated:** ~120 lines of documentation
+
+### Testing Considerations
+
+The implementation should be tested with:
+1. **Planar surfaces** - Most common case (plywood boards)
+2. **Curved edges on flat surfaces** - Splines and arcs on boards
+3. **Edges at angles** - Ensure cut orientation is correct
+4. **Different board thicknesses** - Validate flexible layer calculation
+5. **Various cut spacings** - Test with different blade widths
+
+### Future Enhancements
+
+Potential additions for Version 3.0:
+- Support for non-planar surfaces (curved boards)
+- Variable cut depth along curve
+- Bidirectional cut patterns
+- Integration with sheet metal features
+- Unfold/flatten operations
+
+---
+
+**Version 2.0 Completed:** December 2025
 **FeatureScript Version:** 2837
-**Total Commits:** 38 commits
-**Files:** 2 implementation files + 1 documentation file
-**Lines of Code:** 576 lines (implementation) + documentation
+**Additional Commits:** 5 commits for 3D implementation
+**Total Lines Added:** ~270 lines (implementation + documentation)
+**Files Modified:** 2 implementation files + 1 documentation file

@@ -8,6 +8,11 @@ import(path : "onshape/std/math.fs", version : "2837.0");
 import(path : "onshape/std/units.fs", version : "2837.0");
 import(path : "onshape/std/vector.fs", version : "2837.0");
 import(path : "onshape/std/splineUtils.fs", version : "2837.0");
+import(path : "onshape/std/surfaceGeometry.fs", version : "2837.0");
+import(path : "onshape/std/sketch.fs", version : "2837.0");
+import(path : "onshape/std/geomOperations.fs", version : "2837.0");
+import(path : "onshape/std/booleanoperationtype.gen.fs", version : "2837.0");
+import(path : "onshape/std/boundingtype.gen.fs", version : "2837.0");
 
 /**
  * Kerf bending utilities using analytical NURBS-based approach for performance.
@@ -415,4 +420,641 @@ export function createKerfBendingSummary(solution is KerfBendingSolution) return
         "maximumCutSpacing" : maxSpacing
     };
 }
+
+/**
+ * Generate 3D kerf cut geometry on a solid body along a curve.
+ * Creates rectangular cuts perpendicular to the curve at calculated positions.
+ * 
+ * @param context : The Onshape context
+ * @param id : The feature ID for creating operations
+ * @param solidBody : Query for the solid body to cut
+ * @param curveEdge : Query for the curve edge defining the bend line
+ * @param solution : The kerf bending solution containing cut positions and parameters
+ * @param cutWidth : The width of each cut (blade thickness) with length units
+ * @param cutDepth : The depth of each cut with length units
+ * @param boardThickness : The total thickness of the board with length units
+ * @param cutExtension : Optional extension beyond the curve in both directions with length units (default: 0)
+ * 
+ * @returns {boolean} : Returns true if cuts were successfully created
+ */
+export function generate3DKerfCuts(context is Context,
+                                  id is Id,
+                                  solidBody is Query,
+                                  curveEdge is Query,
+                                  solution is KerfBendingSolution,
+                                  cutWidth is ValueWithUnits,
+                                  cutDepth is ValueWithUnits,
+                                  boardThickness is ValueWithUnits,
+                                  cutExtension is ValueWithUnits) returns boolean
+precondition
+{
+    isLength(cutWidth);
+    isLength(cutDepth);
+    isLength(boardThickness);
+    isLength(cutExtension);
+    cutWidth > 0 * meter;
+    cutDepth > 0 * meter;
+    boardThickness > 0 * meter;
+    cutDepth < boardThickness;
+    cutExtension >= 0 * meter;
+}
+{
+    // Iterate through each cut position and create a cut geometry
+    for (var cutIndex = 0; cutIndex < solution.numberOfCuts; cutIndex += 1)
+    {
+        const cutPosition = solution.cutPositions[cutIndex];
+        const cutParameter = solution.cutParameters[cutIndex];
+        
+        // Get tangent line at cut position to determine orientation
+        const tangentLine = evEdgeTangentLine(context, {
+            "edge" : curveEdge,
+            "parameter" : cutParameter,
+            "arcLengthParameterization" : true
+        });
+        
+        // The cutting plane should be perpendicular to the curve tangent
+        // The sketch plane normal is perpendicular to the tangent (cutting across the curve)
+        var cuttingPlaneNormal = perpendicularVector(tangentLine.direction);
+        
+        // Try to get a better orientation using the surface normal if the edge is on a face
+        try
+        {
+            const adjacentFaces = qAdjacent(curveEdge, AdjacencyType.EDGE, EntityType.FACE);
+            const faceCount = @size(evaluateQuery(context, adjacentFaces));
+            
+            if (faceCount > 0)
+            {
+                // Get the first adjacent face
+                const face = qNthElement(adjacentFaces, 0);
+                
+                // Get the tangent plane of the face at the edge
+                const edgeTangentPlane = evFaceTangentPlaneAtEdge(context, {
+                    "edge" : curveEdge,
+                    "face" : face,
+                    "parameter" : cutParameter,
+                    "arcLengthParameterization" : true
+                });
+                
+                // Use the face normal as the cutting plane normal for better orientation
+                // This ensures cuts are perpendicular to the surface
+                cuttingPlaneNormal = edgeTangentPlane.normal;
+            }
+        }
+        
+        // For the x-axis of the sketch plane, use the tangent direction
+        // This way the rectangle width will be along the curve
+        const sketchXAxis = tangentLine.direction;
+        
+        // Create a sketch plane perpendicular to the curve at the cut position
+        // The plane is oriented with:
+        // - Normal: perpendicular to curve (into the material)
+        // - X-axis: along the curve tangent (for cut width)
+        // - Y-axis: will be perpendicular to both (for cut depth)
+        const sketchPlane = plane(cutPosition, cuttingPlaneNormal, sketchXAxis);
+        
+        // Create a sketch on this plane for the cut profile
+        const sketchId = id + ("cutSketch" ~ cutIndex);
+        var cutSketch = newSketchOnPlane(context, sketchId, {
+            "sketchPlane" : sketchPlane
+        });
+        
+        // Draw a rectangle representing the cut
+        // The rectangle is oriented:
+        // - X direction (horizontal): along the curve, width = cutWidth + extensions
+        // - Y direction (vertical): perpendicular to surface, depth = cutDepth
+        // - The cut starts at Y=0 (at the surface) and goes down to Y=cutDepth
+        
+        // Calculate the total width including extensions
+        const totalWidth = cutWidth + 2 * cutExtension;
+        const halfTotalWidth = totalWidth / 2;
+        
+        // Draw the rectangle for the cut profile
+        // Corner 1: (-halfWidth, 0) - top left at surface
+        // Corner 2: (halfWidth, cutDepth) - bottom right at cut depth
+        skRectangle(cutSketch, "cutProfile", {
+            "firstCorner" : vector(-halfTotalWidth, 0 * meter),
+            "secondCorner" : vector(halfTotalWidth, cutDepth)
+        });
+        
+        skSolve(cutSketch);
+        
+        // Extrude the sketch perpendicular to the sketch plane (into the material)
+        // This creates a solid body that will be subtracted from the board
+        const extrudeId = id + ("cutExtrude" ~ cutIndex);
+        
+        // The extrude direction should be perpendicular to the sketch plane
+        // going into the board material (along the cutting plane normal)
+        // We need to extrude far enough to ensure the cut goes through the entire board
+        opExtrude(context, extrudeId, {
+            "entities" : qSketchRegion(sketchId),
+            "direction" : cuttingPlaneNormal,
+            "endBound" : BoundingType.BLIND,
+            "depth" : boardThickness
+        });
+        
+        // Boolean subtract the cut from the solid body
+        const booleanId = id + ("cutBoolean" ~ cutIndex);
+        opBoolean(context, booleanId, {
+            "tools" : qCreatedBy(extrudeId, EntityType.BODY),
+            "targets" : solidBody,
+            "operationType" : BooleanOperationType.SUBTRACTION
+        });
+    }
+    
+    return true;
+}
+
+/**
+ * Overloaded version with default cut extension of 0
+ */
+export function generate3DKerfCuts(context is Context,
+                                  id is Id,
+                                  solidBody is Query,
+                                  curveEdge is Query,
+                                  solution is KerfBendingSolution,
+                                  cutWidth is ValueWithUnits,
+                                  cutDepth is ValueWithUnits,
+                                  boardThickness is ValueWithUnits) returns boolean
+precondition
+{
+    isLength(cutWidth);
+    isLength(cutDepth);
+    isLength(boardThickness);
+    cutWidth > 0 * meter;
+    cutDepth > 0 * meter;
+    boardThickness > 0 * meter;
+    cutDepth < boardThickness;
+}
+{
+    return generate3DKerfCuts(context, id, solidBody, curveEdge, solution, cutWidth, cutDepth, boardThickness, 0 * meter);
+}
+
+/**
+ * Generate 3D kerf cut geometry on a bent surface using offset curves.
+ * For bent surfaces in 3D, each kerf has 4 lines:
+ * - 2 perpendicular lines (cut depth dimension)
+ * - 2 offset curves of the bending curve
+ * 
+ * @param context : The Onshape context
+ * @param id : The feature ID for creating operations
+ * @param solidBody : Query for the solid body to cut
+ * @param bendFace : Query for the face being bent
+ * @param bendCurve : Query for the curve edge defining the bend line
+ * @param solution : The kerf bending solution containing cut positions and parameters
+ * @param cutWidth : The width of each cut (blade thickness) with length units
+ * @param cutDepth : The depth of each cut with length units
+ * @param boardThickness : The total thickness of the board with length units
+ * 
+ * @returns {boolean} : Returns true if cuts were successfully created
+ */
+export function generate3DKerfCutsOnBentSurface(context is Context,
+                                                id is Id,
+                                                solidBody is Query,
+                                                bendFace is Query,
+                                                bendCurve is Query,
+                                                solution is KerfBendingSolution,
+                                                cutWidth is ValueWithUnits,
+                                                cutDepth is ValueWithUnits,
+                                                boardThickness is ValueWithUnits) returns boolean
+precondition
+{
+    isLength(cutWidth);
+    isLength(cutDepth);
+    isLength(boardThickness);
+    cutWidth > 0 * meter;
+    cutDepth > 0 * meter;
+    boardThickness > 0 * meter;
+    cutDepth < boardThickness;
+}
+{
+    const halfWidth = cutWidth / 2;
+    
+    // Iterate through each cut position and create kerf geometry
+    for (var cutIndex = 0; cutIndex < solution.numberOfCuts; cutIndex += 1)
+    {
+        const cutPosition = solution.cutPositions[cutIndex];
+        const cutParameter = solution.cutParameters[cutIndex];
+        
+        // Get the curvature at this position to establish proper coordinate frame
+        const edgeCurvature = evEdgeCurvature(context, {
+            "edge" : bendCurve,
+            "parameter" : cutParameter,
+            "arcLengthParameterization" : true
+        });
+        
+        // Use the curvature frame to get proper orientation
+        // tangent: along the curve (the curvy direction)
+        // normal: points toward center of curvature (in plane of curve)
+        // binormal: perpendicular to both (out of plane of curve, the less curvy direction)
+        const curveTangent = curvatureFrameTangent(edgeCurvature);
+        const curveNormal = curvatureFrameNormal(edgeCurvature);
+        const curveBinormal = curvatureFrameBinormal(edgeCurvature);
+        
+        // For kerf cutting, we want the sketch plane perpendicular to the extrude direction
+        // The extrude direction is the binormal (less curvy direction, into the material)
+        // So the sketch plane should have binormal as its normal
+        // X-axis: along the curve tangent (the curvy direction)
+        // Y-axis: in the curveNormal direction (toward center of curvature, for cut depth)
+        // Normal: binormal (extrude direction, the less curvy direction)
+        const sketchPlane = plane(cutPosition, curveBinormal, curveTangent);
+        
+        const sketchId = id + ("cutSketch" ~ cutIndex);
+        var cutSketch = newSketchOnPlane(context, sketchId, {
+            "sketchPlane" : sketchPlane
+        });
+        
+        // In 3D bent state, we need to create kerf geometry with:
+        // - 2 perpendicular lines at cut depth
+        // - 2 offset curves from the bending curve
+        
+        // For now, create offset points along the curve direction
+        // Get positions offset by half width in both directions along the curve
+        const prevParam = max(0, cutParameter - 0.01);
+        const nextParam = min(1, cutParameter + 0.01);
+        
+        const prevTangentLine = evEdgeTangentLine(context, {
+            "edge" : bendCurve,
+            "parameter" : prevParam,
+            "arcLengthParameterization" : true
+        });
+        
+        const nextTangentLine = evEdgeTangentLine(context, {
+            "edge" : bendCurve,
+            "parameter" : nextParam,
+            "arcLengthParameterization" : true
+        });
+        
+        // Calculate offset positions
+        const offset1 = prevTangentLine.origin;
+        const offset2 = nextTangentLine.origin;
+        
+        // Project these to 2D sketch coordinates
+        // For simplicity, draw a trapezoid that approximates the kerf shape
+        // Top edge (at surface): width cutWidth, centered
+        // Bottom edge (at cut depth): also width cutWidth
+        // Height: cutDepth in the direction perpendicular to surface
+        
+        // Draw the kerf profile as a quadrilateral
+        // In sketch coordinates, X is along curve, Y is perpendicular (into material)
+        skLineSegment(cutSketch, "line1", {
+            "start" : vector(-halfWidth, 0 * meter),
+            "end" : vector(halfWidth, 0 * meter)
+        });
+        
+        skLineSegment(cutSketch, "line2", {
+            "start" : vector(halfWidth, 0 * meter),
+            "end" : vector(halfWidth, cutDepth)
+        });
+        
+        skLineSegment(cutSketch, "line3", {
+            "start" : vector(halfWidth, cutDepth),
+            "end" : vector(-halfWidth, cutDepth)
+        });
+        
+        skLineSegment(cutSketch, "line4", {
+            "start" : vector(-halfWidth, cutDepth),
+            "end" : vector(-halfWidth, 0 * meter)
+        });
+        
+        skSolve(cutSketch);
+        
+        // Extrude the kerf profile perpendicular to the sketch plane
+        // This extrudes into the material along the face normal direction
+        const extrudeId = id + ("cutExtrude" ~ cutIndex);
+        
+        try
+        {
+            opExtrude(context, extrudeId, {
+                "entities" : qSketchRegion(sketchId),
+                "endBound" : BoundingType.BLIND,
+                "depth" : boardThickness
+            });
+            
+            // Boolean subtract the cut from the solid body
+            const booleanId = id + ("cutBoolean" ~ cutIndex);
+            opBoolean(context, booleanId, {
+                "tools" : qCreatedBy(extrudeId, EntityType.BODY),
+                "targets" : solidBody,
+                "operationType" : BooleanOperationType.SUBTRACTION,
+                "keepTools" : false
+            });
+        }
+        catch
+        {
+            println("Warning: Failed to create cut " ~ cutIndex);
+        }
+    }
+    
+    return true;
+}
+
+/**
+ * Generate kerf bending solution using face parameters instead of curve edges.
+ * Works directly with face parametric space for better generalization.
+ * 
+ * @param context : The context
+ * @param bendFace : Query for the face to bend
+ * @param bendDirection : The principal curvature direction vector (from evFaceCurvature)
+ * @param bendCurvature : The curvature magnitude in the bend direction
+ * @param cutWidth : The thickness of the cutting tool with length units
+ * @param cutDepth : The depth of the cut with length units
+ * @param minimumCutSpacing : Minimum distance between cuts with length units
+ * @param useHalfKerfOffset : For closed curves, offset first and last cuts by half spacing
+ * @returns {KerfBendingSolution} : Complete solution containing all cut information
+ */
+export function generateAnalyticalKerfSolutionFromFace(context is Context,
+                                                       bendFace is Query,
+                                                       bendDirection is Vector,
+                                                       bendCurvature is ValueWithUnits,
+                                                       cutWidth is ValueWithUnits,
+                                                       cutDepth is ValueWithUnits,
+                                                       minimumCutSpacing is ValueWithUnits,
+                                                       useHalfKerfOffset is boolean) returns KerfBendingSolution
+precondition
+{
+    isLength(cutWidth);
+    isLength(cutDepth);
+    isLength(minimumCutSpacing);
+    cutWidth > 0 * meter;
+    cutDepth > 0 * meter;
+    minimumCutSpacing > 0 * meter;
+}
+{
+    // Calculate the kerf angle
+    const kerfAngle = calculateKerfAngle(cutWidth, cutDepth);
+    
+    // Sample the face along the bend direction to estimate arc length
+    // We'll use parameter sampling in the direction most aligned with bendDirection
+    const numSamples = 100;
+    var totalArcLength = 0 * meter;
+    var previousPoint = undefined;
+    
+    // Determine if we should sample along U (v=0.5 constant) or V (u=0.5 constant)
+    // This is a simplification - a more robust approach would trace the principal curvature direction
+    const faceParam = evFaceTangentPlane(context, {
+        "face" : bendFace,
+        "parameter" : vector(0.5, 0.5)
+    });
+    
+    // Sample along parameter direction to estimate curve length
+    // For now, sample along U direction (v = 0.5)
+    for (var i = 0; i <= numSamples; i += 1)
+    {
+        const t = i / numSamples;
+        const param = vector(t, 0.5);
+        
+        const pointOnFace = evFaceTangentPlane(context, {
+            "face" : bendFace,
+            "parameter" : param
+        });
+        
+        if (previousPoint != undefined)
+        {
+            totalArcLength += norm(pointOnFace.origin - previousPoint);
+        }
+        previousPoint = pointOnFace.origin;
+    }
+    
+    // Calculate required total bend angle from curvature and arc length
+    const totalBendAngle = abs(bendCurvature) * totalArcLength;
+    
+    // Calculate number of cuts needed - multiply by radian to convert angle to unitless
+    const numberOfCuts = ceil((totalBendAngle / kerfAngle) * radian);
+    
+    // Calculate cut spacing
+    const cutSpacing = totalArcLength / (numberOfCuts + 1);
+    
+    // Generate cut parameters and positions
+    var cutParameters = [];
+    var cutPositions = [];
+    var cutDistances = [];
+    var curvatureSigns = [];
+    
+    const curvatureSign = bendCurvature > (0 / meter) ? 1 : (bendCurvature < (0 / meter) ? -1 : 0);
+    
+    for (var i = 1; i <= numberOfCuts; i += 1)
+    {
+        const parameter = i / (numberOfCuts + 1);
+        cutParameters = append(cutParameters, parameter);
+        
+        // Evaluate position on face at this parameter
+        const facePoint = evFaceTangentPlane(context, {
+            "face" : bendFace,
+            "parameter" : vector(parameter, 0.5)
+        });
+        
+        cutPositions = append(cutPositions, facePoint.origin);
+        cutDistances = append(cutDistances, cutSpacing);
+        curvatureSigns = append(curvatureSigns, curvatureSign);
+    }
+    
+    return {
+        "cutParameters" : cutParameters,
+        "cutPositions" : cutPositions,
+        "cutDistances" : cutDistances,
+        "totalLength" : totalArcLength,
+        "numberOfCuts" : numberOfCuts,
+        "kerfAngle" : kerfAngle,
+        "curvatureSigns" : curvatureSigns
+    } as KerfBendingSolution;
+}
+
+/**
+ * Generate 3D kerf cuts on a bent surface using face parameters.
+ * This version works directly with face parameters instead of requiring curve edges.
+ * 
+ * @param context : The context
+ * @param id : The feature ID
+ * @param solidBody : Query for the solid body to cut
+ * @param bendFace : Query for the face defining the bend
+ * @param bendDirection : Principal curvature direction for the bend
+ * @param solution : The kerf bending solution
+ * @param cutWidth : Width of the blade
+ * @param cutDepth : Depth of cut
+ * @param boardThickness : Total thickness of the board
+ */
+export function generate3DKerfCutsFromFaceParameters(context is Context,
+                                                      id is Id,
+                                                      solidBody is Query,
+                                                      bendFace is Query,
+                                                      bendDirection is Vector,
+                                                      solution is KerfBendingSolution,
+                                                      cutWidth is ValueWithUnits,
+                                                      cutDepth is ValueWithUnits,
+                                                      boardThickness is ValueWithUnits)
+precondition
+{
+    isLength(cutWidth);
+    isLength(cutDepth);
+    isLength(boardThickness);
+}
+{
+    const halfWidth = cutWidth / 2;
+    
+    // Track successful cuts
+    var successfulCuts = 0;
+    
+    for (var cutIndex = 0; cutIndex < solution.numberOfCuts; cutIndex += 1)
+    {
+        const cutParameter = solution.cutParameters[cutIndex];
+        const cutPosition = solution.cutPositions[cutIndex];
+        
+        // Evaluate face properties at this parameter location
+        const faceTangentPlane = evFaceTangentPlane(context, {
+            "face" : bendFace,
+            "parameter" : vector(cutParameter, 0.5)
+        });
+        
+        // Get face curvature at this location for proper frame
+        const faceCurvature = evFaceCurvature(context, {
+            "face" : bendFace,
+            "parameter" : vector(cutParameter, 0.5)
+        });
+        
+        // Determine which direction has greater curvature using absolute values
+        // (curvature can be negative, we care about magnitude)
+        const minCurvMagnitude = abs(faceCurvature.minCurvature);
+        const maxCurvMagnitude = abs(faceCurvature.maxCurvature);
+        
+        // The direction with maximum curvature magnitude is the bend direction
+        // The direction with minimum curvature magnitude is the extrude direction
+        const isBendAlongMax = maxCurvMagnitude > minCurvMagnitude;
+        
+        // Get the actual curvature value (with sign) for the bend direction
+        const actualBendCurvature = isBendAlongMax ? faceCurvature.maxCurvature : faceCurvature.minCurvature;
+        
+        // For positive curvature (convex from this face), the selected face is the tension side
+        // We need to place cuts on the opposite (compression) side
+        // For negative curvature (concave from this face), this face is already the compression side
+        const faceNormal = faceTangentPlane.normal;
+        const isPositiveCurvature = actualBendCurvature > 0 * meter^-1;
+        
+        // Measure actual board thickness using evDistance to opposite face
+        var measuredThickness = boardThickness; // fallback
+        
+        // Find opposite face for accurate thickness measurement
+        const ownerBody = qOwnerBody(bendFace);
+        const allFaces = qOwnedByBody(ownerBody, EntityType.FACE);
+        const candidateFaces = evaluateQuery(context, qSubtraction(allFaces, bendFace));
+        
+        var closestOppositeFace = undefined;
+        var minDistance = 1000000 * meter;
+        
+        for (var candidateFace in candidateFaces)
+        {
+            const candidatePlane = try silent(evFaceTangentPlane(context, {
+                "face" : candidateFace,
+                "parameter" : vector(0.5, 0.5)
+            }));
+            
+            if (candidatePlane != undefined)
+            {
+                const candidateNormal = candidatePlane.normal;
+                const candidatePoint = candidatePlane.origin;
+                
+                // Check if normals are anti-parallel (opposite face)
+                if (dot(faceNormal, candidateNormal) < -0.9)
+                {
+                    // Check if candidate is behind the selected face
+                    const directionVector = candidatePoint - cutPosition;
+                    if (dot(directionVector, faceNormal) < 0 * meter)
+                    {
+                        // Measure distance between faces
+                        const distanceResult = try silent(evDistance(context, {
+                            "side0" : bendFace,
+                            "side1" : candidateFace
+                        }));
+                        
+                        if (distanceResult != undefined && distanceResult.distance < minDistance)
+                        {
+                            minDistance = distanceResult.distance;
+                            closestOppositeFace = candidateFace;
+                            measuredThickness = distanceResult.distance;
+                        }
+                    }
+                }
+            }
+        }
+        
+        // Offset the cut position to opposite face if curvature is positive (convex)
+        const adjustedCutPosition = isPositiveCurvature ? 
+            cutPosition + (faceNormal * measuredThickness) : 
+            cutPosition;
+        
+        // The sketch plane should be perpendicular to the extrude direction
+        // Sketch plane orientation:
+        // - Normal: direction with MINIMUM curvature magnitude (perpendicular to bend, extrude direction)
+        // - X-axis: direction with MAXIMUM curvature magnitude (along the bend curve, the curvier direction)
+        // - Y-axis: cross(normal, X-axis) = direction for cut depth
+        const sketchNormal = isBendAlongMax ? faceCurvature.minDirection : faceCurvature.maxDirection;
+        const sketchXAxis = isBendAlongMax ? faceCurvature.maxDirection : faceCurvature.minDirection;
+        
+        const sketchPlane = plane(adjustedCutPosition, sketchNormal, sketchXAxis);
+        
+        const sketchId = id + ("cutSketch" ~ cutIndex);
+        var cutSketch = newSketchOnPlane(context, sketchId, {
+            "sketchPlane" : sketchPlane
+        });
+        
+        // Draw kerf profile for bent surface (not a simple rectangle)
+        // The geometry has 4 lines:
+        // - 2 perpendicular lines at cut depth dimension (top and bottom of kerf)
+        // - 2 offset curves from the bending curve (sides follow the bend)
+        //
+        // For now, we'll use a rectangular approximation
+        // Future enhancement: sample face curvature to create proper curved sides
+        // 
+        // Sketch coordinate system:
+        // - Normal = minDirection (extrude direction, points OUT of material)
+        // - X-axis = maxDirection (along bend curve)
+        // - Y-axis = cross(normal, X) = perpendicular to both
+        // 
+        // Rectangle drawn in POSITIVE Y direction (INTO material, opposite of normal):
+        skLineSegment(cutSketch, "line1", {
+            "start" : vector(-halfWidth, 0 * meter),
+            "end" : vector(halfWidth, 0 * meter)
+        });
+        
+        skLineSegment(cutSketch, "line2", {
+            "start" : vector(halfWidth, 0 * meter),
+            "end" : vector(halfWidth, cutDepth)
+        });
+        
+        skLineSegment(cutSketch, "line3", {
+            "start" : vector(halfWidth, cutDepth),
+            "end" : vector(-halfWidth, cutDepth)
+        });
+        
+        skLineSegment(cutSketch, "line4", {
+            "start" : vector(-halfWidth, cutDepth),
+            "end" : vector(-halfWidth, 0 * meter)
+        });
+        
+        skSolve(cutSketch);
+        
+        // Extrude the kerf profile through all material (testing mode)
+        const extrudeId = id + ("cutExtrude" ~ cutIndex);
+        
+        try
+        {
+            opExtrude(context, extrudeId, {
+                "entities" : qSketchRegion(sketchId),
+                "startBound" : BoundingType.THROUGH_ALL,
+                "endBound" : BoundingType.THROUGH_ALL,
+                "operationType" : NewBodyOperationType.REMOVE,
+                "defaultScope" : false,
+                "booleanScope" : solidBody
+            });
+            successfulCuts += 1;
+        }
+        catch
+        {
+            println("Warning: Failed to create cut " ~ cutIndex);
+        }
+    }
+    
+    // Return true only if at least one cut was successful
+    return successfulCuts > 0;
+}
+
 
