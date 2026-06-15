@@ -1,13 +1,16 @@
 
-// This custom feature is owned by Evan Reese and distributed by The Onsherpa. It may not be redistributed without permission of the owner. Copywright © 2025 Evan Reese.
+// This custom feature is owned by Evan Reese and distributed by The Onsherpa. It may not be redistributed without permission of the owner. Copyright © 2025 Evan Reese.
 
 // TODO I'm still working on getting directions 2 and 3 to match previous features. What's different between them and direction 1, which seems to work?
 
-FeatureScript 1711;
-import(path : "onshape/std/geometry.fs", version : "1711.0");
-export import(path : "onshape/std/patternUtils.fs", version : "1711.0");
-icon::import(path : "112b21d6eefe93747274a402", version : "8a4b67ede16d223bb06f67bf");
-import(path : "c3fe41e654ffc2f052a38c8f/312092e1b28afbd4f1e894dd/3c37750af0cf716cb0ede1e0", version : "632ec68437f325e31ffbe8f9"); //reeseSetVariablesFunctions.fs
+FeatureScript 2837;
+import(path : "onshape/std/geometry.fs", version : "2837.0");
+export import(path : "onshape/std/patternUtils.fs", version : "2837.0");
+import(path : "onshape/std/manipulator.fs", version : "2837.0");
+import(path : "onshape/std/recordpatterntype.gen.fs", version : "2837.0");
+
+icon::import(path : "20b2a3d05c3013e2f73b24d4", version : "3d19453df2c52d2777d8108f");
+import(path : "c3fe41e654ffc2f052a38c8f/312092e1b28afbd4f1e894dd/3c37750af0cf716cb0ede1e0", version : "632ec68437f325e31ffbe8f9");
 
 
 export enum DistanceType
@@ -47,6 +50,7 @@ export enum RoundingType
 
 annotation { "Feature Type Name" : "Linear pattern plus",
         "Icon" : icon::BLOB_DATA,
+        "Filter Selector" : "allparts",
         "Editing Logic Function" : "linearPatternPlusEditingLogic",
         "Manipulator Change Function" : "linearPatternPlusManipulatorFunction",
     }
@@ -303,8 +307,46 @@ export const linearPatternPlus = defineFeature(function(context is Context, id i
             }
         }
 
+        annotation { "Name" : "Skip instances" }
+        definition.skipInstances is boolean;
+
+        annotation { "Group Name" : "Skip instances", "Driving Parameter" : "skipInstances", "Collapsed By Default" : false }
+        {
+            if (definition.skipInstances)
+            {
+                annotation { "Name" : "Instances to skip", "Item name" : "instance", "Item label template" : "(#index1, #index2, #index3)", "Show labels only" : true, "UIHint" : [UIHint.INITIAL_FOCUS, UIHint.PREVENT_ARRAY_REORDER, UIHint.ALLOW_ARRAY_FOCUS] }
+                definition.skippedInstances is array;
+
+                for (var instance in definition.skippedInstances)
+                {
+                    annotation { "Name" : "First direction" }
+                    isInteger(instance.index1, { (unitless) : [-1e5, 0, 1e5] } as IntegerBoundSpec);
+
+                    annotation { "Name" : "Second direction" }
+                    isInteger(instance.index2, { (unitless) : [-1e5, 0, 1e5] } as IntegerBoundSpec);
+
+                    annotation { "Name" : "Third direction" }
+                    isInteger(instance.index3, { (unitless) : [-1e5, 0, 1e5] } as IntegerBoundSpec);
+                }
+            }
+        }
+
     }
     {
+        // Verify that direction queries don't reference mesh bodies
+        if (!definition.matchPrevious)
+        {
+            verifyNoMesh(context, definition, "directionOne");
+            if (definition.hasSecondDir)
+            {
+                verifyNoMesh(context, definition, "directionTwo");
+            }
+            if (definition.hasSecondDir && definition.hasThirdDir)
+            {
+                verifyNoMesh(context, definition, "directionThree");
+            }
+        }
+        
         // a map to store variables to be later retrieved by the Extract Variables feature. These are also used by downstream Linear Pattern Plus features if "match previous feature settings" is selected.
         var embeddedVariables = {};
 
@@ -314,7 +356,6 @@ export const linearPatternPlus = defineFeature(function(context is Context, id i
         var distanceOne;
         var directionOne;
         var directionQueryOne;
-        var isCenteredOne;
 
         var oppositeDirectionTwo;
         var hasSecondDir = false; // false default, and will change true later if needed
@@ -322,7 +363,6 @@ export const linearPatternPlus = defineFeature(function(context is Context, id i
         var distanceTwo;
         var directionTwo;
         var directionQueryTwo;
-        var isCenteredTwo;
 
         var oppositeDirectionThree;
         var hasThirdDir = false; // false default, and will change true later if needed
@@ -330,7 +370,6 @@ export const linearPatternPlus = defineFeature(function(context is Context, id i
         var distanceThree;
         var directionThree;
         var directionQueryThree;
-        var isCenteredThree;
 
         var toCleanUp = [];
 
@@ -340,25 +379,33 @@ export const linearPatternPlus = defineFeature(function(context is Context, id i
         {
             // get the info from last feature's variables
             var previousFeatureInfo;
-            for (var key, value in definition.feature)
+            
+            // definition.feature is a FeatureList, iterate over the actual features
+            for (var selectedFeature in definition.feature)
             {
-                const featureID = key;
                 try
                 {
-                    previousFeatureInfo = getVariable(context, toString(featureID));
+                    previousFeatureInfo = getVariable(context, selectedFeature);
                     println(previousFeatureInfo);
+                    // Successfully retrieved, break out of loop
+                    break;
                 }
-                catch (error)
+                catch
                 {
                     reportFeatureWarning(context, id, "Incompatible feature selected. Only other Linear Pattern Plus features may be used, and others are ignored.");
                 }
+            }
+
+            // Check if previousFeatureInfo was successfully retrieved
+            if (previousFeatureInfo == undefined)
+            {
+                throw regenError("No valid previous feature found. Please select a Linear Pattern Plus feature to match.");
             }
 
             countOne = previousFeatureInfo.countOne;
             distanceOne = previousFeatureInfo.spacingOne;
             directionOne = previousFeatureInfo["@directionOne"];
             oppositeDirectionOne = previousFeatureInfo["@oppositeDirectionOne"];
-            isCenteredOne = definition.isCenteredOne;
 
             opPlane(context, id + "directionQueryOneBody", {
                         "plane" : plane(vector(0, 0, 0) * inch, directionOne)
@@ -373,7 +420,6 @@ export const linearPatternPlus = defineFeature(function(context is Context, id i
                 distanceTwo = previousFeatureInfo.spacingTwo;
                 directionTwo = previousFeatureInfo["@directionTwo"];
                 hasSecondDir = true;
-                isCenteredTwo = definition.isCenteredTwo;
 
                 oppositeDirectionTwo = previousFeatureInfo["@oppositeDirectionTwo"];
 
@@ -391,7 +437,6 @@ export const linearPatternPlus = defineFeature(function(context is Context, id i
                 distanceThree = previousFeatureInfo.spacingThree;
                 directionThree = previousFeatureInfo["@directionThree"];
                 hasThirdDir = true;
-                isCenteredThree = definition.isCenteredThree;
 
                 oppositeDirectionThree = previousFeatureInfo["@oppositeDirectionThree"];
 
@@ -405,6 +450,26 @@ export const linearPatternPlus = defineFeature(function(context is Context, id i
 
             // carry the variables forward so this feature can be selected for extraction too.
             embeddedVariables = previousFeatureInfo;
+            
+            // Restore skip instances from previous feature if present
+            // If not present (older feature), use defaults: false and []
+            if (previousFeatureInfo.skipInstances != undefined)
+            {
+                definition.skipInstances = previousFeatureInfo.skipInstances;
+            }
+            else
+            {
+                definition.skipInstances = false;
+            }
+            
+            if (previousFeatureInfo.skippedInstances != undefined)
+            {
+                definition.skippedInstances = previousFeatureInfo.skippedInstances;
+            }
+            else
+            {
+                definition.skippedInstances = [];
+            }
         }
 
         // Processing standard UI inputs
@@ -421,7 +486,6 @@ export const linearPatternPlus = defineFeature(function(context is Context, id i
             }
             else if (definition.patternType == PatternType.FACE)
             {
-                var entities = evaluateQuery(context, definition.entities);
                 manipOrigin = evApproximateCentroid(context, { "entities" : evaluateQuery(context, definition.faces)[0] });
             }
             else if (definition.patternType == PatternType.FEATURE)
@@ -646,6 +710,11 @@ export const linearPatternPlus = defineFeature(function(context is Context, id i
             }
         }
 
+        // Add skip instances to embedded variables for match previous feature functionality
+        // Always save these fields to ensure they're available for downstream features
+        embeddedVariables.skipInstances = definition.skipInstances;
+        embeddedVariables.skippedInstances = definition.skippedInstances;
+
         // embedding variables for retrieval by the Extract Variables feature.
         embedVariableList(context, id, embeddedVariables);
 
@@ -727,13 +796,27 @@ export const linearPatternPlus = defineFeature(function(context is Context, id i
 
         verifyPatternSize(context, id, count1 * count2 * count3);
 
-        reportFeatureInfo(context, id, toString(count1 * count2 * count3) ~ " instances.");
+        // Handle skip instances validation and manipulators
+        var skippedIndicesSet = {};
+        if (definition.skipInstances)
+        {
+            reportAnyInvalidEntriesThreeDirection(context, id, definition, count1, count2, count3, 
+                definition.isCenteredOne, definition.isCenteredTwo, definition.isCenteredThree);
+
+            // Build a set of skipped indices for fast lookup
+            for (var instance in definition.skippedInstances)
+            {
+                const instanceKey = toString(instance.index1) ~ "," ~ toString(instance.index2) ~ "," ~ toString(instance.index3);
+                skippedIndicesSet[instanceKey] = true;
+            }
+        }
 
         // Compute a vector of transforms
         // Adding just the values and mutating the transform rather than creating the translation from scratch on each iteration
         // is necessary for performance since it is in an inner loop bottleneck.
         var transforms = [];
         var instanceNames = [];
+        var manipulatorPoints = [];
         const identity = identityMatrix(3);
         var instanceTransform = transform(identity, zeroVector(3) * meter);
 
@@ -758,11 +841,26 @@ export const linearPatternPlus = defineFeature(function(context is Context, id i
                 // i for direction 1
                 for (var i = startIndex1; i < count1; i += 1)
                 {
-                    // skip recreating original
+                    // Check if this instance should be skipped
+                    const instanceKey = toString(i) ~ "," ~ toString(j) ~ "," ~ toString(k);
+                    const isSkipped = definition.skipInstances && skippedIndicesSet[instanceKey] == true;
+                    
+                    // Collect manipulator points for ALL instances (including seed) for skip functionality
+                    // The seed will be suppressed via suppressedIndices in the manipulator
+                    if (definition.skipInstances)
+                    {
+                        manipulatorPoints = append(manipulatorPoints, instanceTransform.translation);
+                    }
+                    
+                    // skip recreating original (seed instance)
                     if (j != 0 || i != 0 || k != 0)
                     {
-                        transforms = append(transforms, instanceTransform);
-                        instanceNames = append(instanceNames, i ~ jName ~ kName);
+                        // Only add transform if not skipped
+                        if (!isSkipped)
+                        {
+                            transforms = append(transforms, instanceTransform);
+                            instanceNames = append(instanceNames, i ~ jName ~ kName);
+                        }
                     }
                     instanceTransform.translation[0].value += offset1[0].value;
                     instanceTransform.translation[1].value += offset1[1].value;
@@ -774,12 +872,54 @@ export const linearPatternPlus = defineFeature(function(context is Context, id i
                 instanceTransform.translation[2].value += offset2[2].value;
             }
         }
+        
+        // Add manipulators for skip instances
+        if (definition.skipInstances)
+        {
+            const instanceToIndex = function(instance)
+                {
+                    return gridCoordinatesToIndexThreeDirection(instance.index1, instance.index2, instance.index3, 
+                        count1, count2, count3, 
+                        definition.isCenteredOne, definition.isCenteredTwo, definition.isCenteredThree);
+                };
+            const isInstanceWithinRange = function(instance)
+                {
+                    return !isIndexOutsideRangeThreeDirection(instance.index1, instance.index2, instance.index3, 
+                        count1, count2, count3, 
+                        definition.isCenteredOne, definition.isCenteredTwo, definition.isCenteredThree);
+                };
+            
+            addManipulators(context, id, { "points" : {
+                        "points" : manipulatorPoints,
+                        "selectedIndices" : mapArray(filter(definition.skippedInstances, isInstanceWithinRange), instanceToIndex),
+                        "suppressedIndices" : [gridCoordinatesToIndexThreeDirection(0, 0, 0, count1, count2, count3, 
+                            definition.isCenteredOne, definition.isCenteredTwo, definition.isCenteredThree)],
+                        "manipulatorType" : ManipulatorType.TOGGLE_POINTS } as Manipulator });
+        }
 
         definition.transforms = transforms;
         definition.instanceNames = instanceNames;
         definition.seed = definition.entities;
+        
+        definition.sketchPatternInfo = ErrorStringEnum.LINEAR_PATTERN_SKETCH_REAPPLY_INFO;
+        
+        // Report actual number of instances (including seed, after skipping)
+        const actualInstanceCount = size(transforms) + 1; // +1 for seed
+        reportFeatureInfo(context, id, toString(actualInstanceCount) ~ " instances.");
 
         applyPattern(context, id, definition, remainingTransform);
+        
+        // Record pattern metadata for downstream features
+        var patternDirections = [offset1];
+        if (count2 > 1)
+        {
+            patternDirections = append(patternDirections, offset2);
+        }
+        if (count3 > 1)
+        {
+            patternDirections = append(patternDirections, offset3);
+        }
+        setPatternData(context, id, RecordPatternType.LINEAR, patternDirections);
 
         if (definition.patternType == PatternType.PART && definition.composite && definition.operationType == NewBodyOperationType.NEW)
         {
@@ -800,7 +940,8 @@ export const linearPatternPlus = defineFeature(function(context is Context, id i
     },
 
     { patternType : PatternType.PART, operationType : NewBodyOperationType.NEW, hasSecondDir : false,
-            oppositeDirection : false, oppositeDirectionTwo : false, isCentered : false, isCenteredTwo : false, fullFeaturePattern : false }
+            oppositeDirection : false, oppositeDirectionTwo : false, isCentered : false, isCenteredTwo : false, fullFeaturePattern : false,
+            skipInstances : false, skippedInstances : [] }
 
     );
 
@@ -997,6 +1138,115 @@ export function getCountAndDistance(
     return directionInfo;
 }
 
+/**
+ * Helper function to compute instance count for a direction in skip instances manipulator.
+ * Matches the pattern generation logic by calling getCountAndDistance.
+ * 
+ * @param context : The context for this operation
+ * @param definition : The feature definition
+ * @param directionNum : Direction number (1, 2, or 3)
+ * @returns number : The computed instance count for this direction
+ */
+function computeInstanceCountForManipulator(context is Context, definition is map, directionNum is number) returns number
+{
+    var measuredDistance = 0 * inch;
+    var distance;
+    var hasOffset;
+    var oppositeDirection;
+    var spacingType;
+    var distanceType;
+    var offset;
+    var oppositeOffsetDirection;
+    var instanceCountType;
+    var instanceCount;
+    var targetSpacing;
+    var roundingType;
+    
+    if (directionNum == 1)
+    {
+        measuredDistance = try(definition.distanceTypeOne == DistanceType.Measured ? 
+            evDistance(context, { "side0" : definition.startEntityOne, "side1" : definition.endEntityOne }).distance : 0 * inch);
+        if (measuredDistance == undefined)
+            measuredDistance = 0 * inch;
+        
+        distance = definition.distanceOne;
+        hasOffset = definition.hasOffsetOne;
+        oppositeDirection = definition.oppositeDirectionOne;
+        spacingType = definition.spacingTypeOne;
+        distanceType = definition.distanceTypeOne;
+        offset = definition.offsetOne;
+        oppositeOffsetDirection = definition.oppositeOffsetDirectionOne;
+        instanceCountType = definition.instanceCountTypeOne;
+        instanceCount = definition.countOne;
+        targetSpacing = definition.targetSpacingOne;
+        roundingType = definition.roundingTypeOne;
+    }
+    else if (directionNum == 2)
+    {
+        measuredDistance = try(definition.distanceTypeTwo == DistanceType.Measured ? 
+            evDistance(context, { "side0" : definition.startEntityTwo, "side1" : definition.endEntityTwo }).distance : 0 * inch);
+        if (measuredDistance == undefined)
+            measuredDistance = 0 * inch;
+        
+        distance = definition.distanceTwo;
+        hasOffset = definition.hasOffsetTwo;
+        oppositeDirection = definition.oppositeDirectionTwo;
+        spacingType = definition.spacingTypeTwo;
+        distanceType = definition.distanceTypeTwo;
+        offset = definition.offsetTwo;
+        oppositeOffsetDirection = definition.oppositeOffsetDirectionTwo;
+        instanceCountType = definition.instanceCountTypeTwo;
+        instanceCount = definition.countTwo;
+        targetSpacing = definition.targetSpacingTwo;
+        roundingType = definition.roundingTypeTwo;
+    }
+    else // directionNum == 3
+    {
+        measuredDistance = try(definition.distanceTypeThree == DistanceType.Measured ? 
+            evDistance(context, { "side0" : definition.startEntityThree, "side1" : definition.endEntityThree }).distance : 0 * inch);
+        if (measuredDistance == undefined)
+            measuredDistance = 0 * inch;
+        
+        distance = definition.distanceThree;
+        hasOffset = definition.hasOffsetThree;
+        oppositeDirection = definition.oppositeDirectionThree;
+        spacingType = definition.spacingTypeThree;
+        distanceType = definition.distanceTypeThree;
+        offset = definition.offsetThree;
+        oppositeOffsetDirection = definition.oppositeOffsetDirectionThree;
+        instanceCountType = definition.instanceCountTypeThree;
+        instanceCount = definition.countThree;
+        targetSpacing = definition.targetSpacingThree;
+        roundingType = definition.roundingTypeThree;
+    }
+    
+    var directionInfo = getCountAndDistance(
+        distance,
+        hasOffset,
+        oppositeDirection,
+        spacingType,
+        distanceType,
+        offset,
+        oppositeOffsetDirection,
+        instanceCountType,
+        instanceCount,
+        targetSpacing,
+        measuredDistance,
+        roundingType
+    );
+    
+    return directionInfo.instanceCount;
+}
+
+/**
+ * Manipulator change function for linearPatternPlus.
+ * Handles updates from linear manipulators, offset manipulators, and skip instances toggle points.
+ * 
+ * @param context : The context for this operation
+ * @param definition : The current feature definition
+ * @param newManipulators : Map containing the updated manipulator values
+ * @returns map : Updated definition with new manipulator values
+ */
 export function linearPatternPlusManipulatorFunction(context is Context, definition is map, newManipulators is map) returns map
 {
     if (newManipulators["linearManipOne"] is map)
@@ -1029,6 +1279,91 @@ export function linearPatternPlusManipulatorFunction(context is Context, definit
         definition.oppositeOffsetDirectionThree = newManipulators["offsetManipThree"].offset < 0;
         definition.offsetThree = abs(newManipulators["offsetManipThree"].offset);
     }
+    
+    // Handle skip instances manipulator changes
+    if (newManipulators["points"] is map)
+    {
+        // Determine the instance counts to use - must match the pattern generation logic!
+        // The counts may differ from definition.countOne/Two/Three due to target spacing rounding
+        
+        var count1 = computeInstanceCountForManipulator(context, definition, 1);
+        var count2 = definition.hasSecondDir ? computeInstanceCountForManipulator(context, definition, 2) : 1;
+        var count3 = (definition.hasSecondDir && definition.hasThirdDir) ? computeInstanceCountForManipulator(context, definition, 3) : 1;
+        
+        const indexToInstance = function(index)
+            {
+                return indexToGridCoordinatesThreeDirection(index, count1, count2, count3, 
+                    definition.isCenteredOne, definition.isCenteredTwo, definition.isCenteredThree);
+            };
+        const isInstanceOutsideRange = function(instance)
+            {
+                return isIndexOutsideRangeThreeDirection(instance.index1, instance.index2, instance.index3, 
+                    count1, count2, count3, 
+                    definition.isCenteredOne, definition.isCenteredTwo, definition.isCenteredThree);
+            };
+
+        const newInstances = mapArray(newManipulators["points"].selectedIndices, indexToInstance);
+        const outInstances = filter(definition.skippedInstances, isInstanceOutsideRange);
+
+        if (size(outInstances) == 0)
+        {
+            definition.skippedInstances = newInstances;
+            return definition;
+        }
+
+        // Merge and deduplicate newInstances and outInstances
+        // First, combine both arrays
+        var mergedInstances = makeArray(size(newInstances) + size(outInstances));
+        var newIndex = 0;
+        var outIndex = 0;
+        var mergedIndex = 0;
+
+        while (newIndex < size(newInstances) || outIndex < size(outInstances))
+        {
+            if (newIndex >= size(newInstances))
+            {
+                mergedInstances[mergedIndex] = outInstances[outIndex];
+                outIndex += 1;
+                mergedIndex += 1;
+            }
+            else if (outIndex >= size(outInstances))
+            {
+                mergedInstances[mergedIndex] = newInstances[newIndex];
+                newIndex += 1;
+                mergedIndex += 1;
+            }
+            else
+            {
+                const comparison = compareInstanceIndices(newInstances[newIndex], outInstances[outIndex]);
+                if (comparison < 0)
+                {
+                    mergedInstances[mergedIndex] = newInstances[newIndex];
+                    newIndex += 1;
+                    mergedIndex += 1;
+                }
+                else if (comparison > 0)
+                {
+                    mergedInstances[mergedIndex] = outInstances[outIndex];
+                    outIndex += 1;
+                    mergedIndex += 1;
+                }
+                else // comparison == 0, duplicate found, skip one
+                {
+                    mergedInstances[mergedIndex] = newInstances[newIndex];
+                    newIndex += 1;
+                    outIndex += 1;
+                    mergedIndex += 1;
+                }
+            }
+        }
+
+        // Trim array to actual size (removing duplicates may have reduced the size)
+        definition.skippedInstances = makeArray(mergedIndex);
+        for (var i = 0; i < mergedIndex; i += 1)
+        {
+            definition.skippedInstances[i] = mergedInstances[i];
+        }
+    }
 
     return definition;
 }
@@ -1043,5 +1378,154 @@ export function checkTargetSpacingAndDistance(context is Context, id is Id, dist
     }
     return targetTooBig;
 
+}
+
+/**
+ * Compares two three-dimensional instance coordinates for sorting.
+ * Orders by index3, then index2, then index1 (row-major order with third direction as outermost).
+ * 
+ * @param instance1 : First instance with index1, index2, index3 fields
+ * @param instance2 : Second instance with index1, index2, index3 fields
+ * @returns number : Negative if instance1 < instance2, positive if instance1 > instance2, 0 if equal
+ */
+function compareInstanceIndices(instance1 is map, instance2 is map) returns number
+{
+    if (instance1.index3 != instance2.index3)
+    {
+        return instance1.index3 - instance2.index3;
+    }
+    if (instance1.index2 != instance2.index2)
+    {
+        return instance1.index2 - instance2.index2;
+    }
+    return instance1.index1 - instance2.index1;
+}
+
+/**
+ * Reports any invalid entries in the skipped instances array.
+ * Checks for seed index (0,0,0) and indices outside the pattern range.
+ * 
+ * @param context : The context for this operation
+ * @param id : The id of the feature
+ * @param definition : The feature definition containing skippedInstances array
+ */
+function reportAnyInvalidEntriesThreeDirection(context is Context, id is Id, definition is map, count1 is number, count2 is number, count3 is number, isCentered1 is boolean, isCentered2 is boolean, isCentered3 is boolean)
+{
+    var hasSeedIndex = false;
+    var hasOutsideRangeIndex = false;
+
+    for (var instance in definition.skippedInstances)
+    {
+        if (instance.index1 == 0 && instance.index2 == 0 && instance.index3 == 0)
+        {
+            hasSeedIndex = true;
+        }
+
+        if (isIndexOutsideRangeThreeDirection(instance.index1, instance.index2, instance.index3, count1, count2, count3, isCentered1, isCentered2, isCentered3))
+        {
+            hasOutsideRangeIndex = true;
+        }
+    }
+
+    if (hasSeedIndex)
+    {
+        reportFeatureInfo(context, id, ErrorStringEnum.PATTERN_SKIPPED_INSTANCES_SEED_INDEX);
+    }
+    else if (hasOutsideRangeIndex)
+    {
+        reportFeatureInfo(context, id, ErrorStringEnum.PATTERN_SKIPPED_INSTANCES_OUT_OF_RANGE_INDEX);
+    }
+}
+
+/**
+ * Converts a linear index to three-dimensional grid coordinates.
+ * Maps directly to the k-j-i nested loop iteration order used in pattern generation.
+ * 
+ * @param index : The linear index to convert (corresponds to Nth iteration of nested loops)
+ * @param instanceCount1 : Number of instances in first direction
+ * @param instanceCount2 : Number of instances in second direction
+ * @param instanceCount3 : Number of instances in third direction
+ * @param isCentered1 : Whether first direction is centered
+ * @param isCentered2 : Whether second direction is centered
+ * @param isCentered3 : Whether third direction is centered
+ * @returns map : Map containing index1, index2, and index3
+ */
+function indexToGridCoordinatesThreeDirection(index is number, instanceCount1 is number, instanceCount2 is number, instanceCount3 is number, isCentered1 is boolean, isCentered2 is boolean, isCentered3 is boolean) returns map
+{
+    // Calculate the actual loop ranges (these match the pattern generation loops)
+    const startIndex1 = isCentered1 ? 1 - instanceCount1 : 0;
+    const startIndex2 = isCentered2 ? 1 - instanceCount2 : 0;
+    const startIndex3 = isCentered3 ? 1 - instanceCount3 : 0;
+    
+    const range1 = instanceCount1 - startIndex1;
+    const range2 = instanceCount2 - startIndex2;
+    const range3 = instanceCount3 - startIndex3;
+    
+    // Decompose linear index to k-j-i coordinates (matching nested loop order)
+    const planarSize = range1 * range2;
+    const kOffset = floor(index / planarSize);
+    const remainder = index % planarSize;
+    const jOffset = floor(remainder / range1);
+    const iOffset = remainder % range1;
+    
+    return {
+            "index1" : iOffset + startIndex1,
+            "index2" : jOffset + startIndex2,
+            "index3" : kOffset + startIndex3
+        };
+}
+
+/**
+ * Converts three-dimensional grid coordinates to a linear index.
+ * Maps directly to the k-j-i nested loop iteration order used in pattern generation.
+ * 
+ * @param index1 : Index in first direction
+ * @param index2 : Index in second direction
+ * @param index3 : Index in third direction
+ * @param instanceCount1 : Number of instances in first direction
+ * @param instanceCount2 : Number of instances in second direction
+ * @param instanceCount3 : Number of instances in third direction
+ * @param isCentered1 : Whether first direction is centered
+ * @param isCentered2 : Whether second direction is centered
+ * @param isCentered3 : Whether third direction is centered
+ * @returns number : The linear index
+ */
+function gridCoordinatesToIndexThreeDirection(index1 is number, index2 is number, index3 is number, instanceCount1 is number, instanceCount2 is number, instanceCount3 is number, isCentered1 is boolean, isCentered2 is boolean, isCentered3 is boolean) returns number
+{
+    // Calculate the actual loop ranges (these match the pattern generation loops)
+    const startIndex1 = isCentered1 ? 1 - instanceCount1 : 0;
+    const startIndex2 = isCentered2 ? 1 - instanceCount2 : 0;
+    const startIndex3 = isCentered3 ? 1 - instanceCount3 : 0;
+    
+    const range1 = instanceCount1 - startIndex1;
+    const range2 = instanceCount2 - startIndex2;
+    
+    // Convert k-j-i coordinates to linear index (matching nested loop order)
+    const iOffset = index1 - startIndex1;
+    const jOffset = index2 - startIndex2;
+    const kOffset = index3 - startIndex3;
+    
+    return kOffset * range1 * range2 + jOffset * range1 + iOffset;
+}
+
+/**
+ * Checks if a three-dimensional grid coordinate is outside the valid pattern range.
+ * 
+ * @param index1 : Index in first direction
+ * @param index2 : Index in second direction
+ * @param index3 : Index in third direction
+ * @param instanceCount1 : Number of instances in first direction
+ * @param instanceCount2 : Number of instances in second direction
+ * @param instanceCount3 : Number of instances in third direction
+ * @param isCentered1 : Whether first direction is centered
+ * @param isCentered2 : Whether second direction is centered
+ * @param isCentered3 : Whether third direction is centered
+ * @returns boolean : True if the index is outside range
+ */
+function isIndexOutsideRangeThreeDirection(index1 is number, index2 is number, index3 is number, instanceCount1 is number, instanceCount2 is number, instanceCount3 is number, isCentered1 is boolean, isCentered2 is boolean, isCentered3 is boolean) returns boolean
+{
+    return index1 >= instanceCount1 || index1 < (isCentered1 ? -instanceCount1 + 1 : 0)
+        || index2 >= instanceCount2 || index2 < (isCentered2 ? -instanceCount2 + 1 : 0)
+        || index3 >= instanceCount3 || index3 < (isCentered3 ? -instanceCount3 + 1 : 0);
 }
 
