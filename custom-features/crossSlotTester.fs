@@ -10,6 +10,14 @@
 //
 // This script is heavily instrumented with debug information and entity highlighting
 // to help diagnose and fix issues with cross-slot generation.
+//
+// OPTIMIZATION: Batched SUBTRACT_COMPLEMENT Operations
+// Instead of running SUBTRACT_COMPLEMENT once per collision pair (which could be 40+ operations),
+// this implementation groups bodies into mega-groups where:
+//  - Group 1 contains bodies that don't collide with each other
+//  - Group 2 contains all their neighbors (bodies that collide with Group 1)
+// This allows running SUBTRACT_COMPLEMENT once per group instead of once per pair,
+// dramatically reducing computational cost from O(pairs) to O(groups).
 
 FeatureScript 2837;
 import(path : "onshape/std/common.fs", version : "2837.0");
@@ -119,8 +127,24 @@ export const crossSlotTester = defineFeature(function(context is Context, id is 
                     "targets" : allBodies
                 });
         
-        // Build a map of which bodies collide with which
+        // Build a map from body query string to body index for efficient lookup
+        var bodyToIndex = {} as map;
+        for (var i = 0; i < size(bodyInfo); i += 1)
+        {
+            bodyToIndex[toString(bodyInfo[i].body)] = i;
+        }
+        
+        // Build collision adjacency data structure
+        // collisionNeighbors[bodyIndex] = array of body indices that collide with bodyIndex
+        var collisionNeighbors = {} as map;
+        for (var bodyIndex = 0; bodyIndex < size(bodyInfo); bodyIndex += 1)
+        {
+            collisionNeighbors[bodyIndex] = [];
+        }
+        
         var collidingPairs = {} as map;
+        var processedPairs = {} as map;  // Track which pairs we've already added to avoid duplicates
+        
         for (var collision in collisions)
         {
             // Skip self-collisions
@@ -135,15 +159,58 @@ export const crossSlotTester = defineFeature(function(context is Context, id is 
                 clashType == ClashType.TARGET_IN_TOOL ||
                 clashType == ClashType.TOOL_IN_TARGET)
             {
-                // Store collision (use sorted pair to avoid duplicates)
-                const toolIndex = collision.toolBody;
-                const targetIndex = collision.targetBody;
-                const pairKey = toString(toolIndex) ~ "_" ~ toString(targetIndex);
-                collidingPairs[pairKey] = true;
+                // Look up body indices using the map (O(1) instead of O(n))
+                const toolBodyIndex = bodyToIndex[toString(collision.toolBody)];
+                const targetBodyIndex = bodyToIndex[toString(collision.targetBody)];
+                
+                if (toolBodyIndex != undefined && targetBodyIndex != undefined)
+                {
+                    // Create a canonical pair key (always smaller index first) to avoid duplicates
+                    const minIndex = toolBodyIndex < targetBodyIndex ? toolBodyIndex : targetBodyIndex;
+                    const maxIndex = toolBodyIndex < targetBodyIndex ? targetBodyIndex : toolBodyIndex;
+                    const canonicalPairKey = minIndex ~ "_" ~ maxIndex;
+                    
+                    // Only process each unique pair once
+                    if (processedPairs[canonicalPairKey] == undefined)
+                    {
+                        processedPairs[canonicalPairKey] = true;
+                        
+                        // Add to adjacency lists (both directions)
+                        collisionNeighbors[toolBodyIndex] = append(collisionNeighbors[toolBodyIndex], targetBodyIndex);
+                        collisionNeighbors[targetBodyIndex] = append(collisionNeighbors[targetBodyIndex], toolBodyIndex);
+                        
+                        // Store collision pair for later lookup (both directions)
+                        const pairKey1 = toString(collision.toolBody) ~ "_" ~ toString(collision.targetBody);
+                        const pairKey2 = toString(collision.targetBody) ~ "_" ~ toString(collision.toolBody);
+                        collidingPairs[pairKey1] = true;
+                        collidingPairs[pairKey2] = true;
+                    }
+                }
             }
         }
         
         println("Found " ~ size(collisions) ~ " collision checks, " ~ size(collidingPairs) ~ " actual intersections");
+        
+        // Print collision counts for debugging
+        for (var bodyIndex = 0; bodyIndex < size(bodyInfo); bodyIndex += 1)
+        {
+            println("Body " ~ bodyIndex ~ " collides with " ~ size(collisionNeighbors[bodyIndex]) ~ " other bodies");
+        }
+        
+        // OPTIMIZED BATCHING: Group bodies into mega-groups for efficient SUBTRACT_COMPLEMENT operations
+        // Algorithm: Start with body with most collisions, place it in Group 1, its neighbors in Group 2
+        // Then find bodies that share Group 2 neighbors but don't collide with Group 1, add to Group 1
+        // Repeat until all bodies are assigned
+        println("=== Grouping bodies for batched operations ===");
+        const bodyGroups = computeCollisionGroups(collisionNeighbors, size(bodyInfo));
+        println("Created " ~ size(bodyGroups) ~ " body groups for processing");
+        
+        // Log group details for verification
+        for (var gIdx = 0; gIdx < size(bodyGroups); gIdx += 1)
+        {
+            const group = bodyGroups[gIdx];
+            println("Group " ~ gIdx ~ ": Group1=" ~ size(group.group1) ~ " bodies, Group2=" ~ size(group.group2) ~ " bodies");
+        }
         
         // BATCHED APPROACH: Collect all split tools per body, then subtract all at once
         // This dramatically reduces boolean operation count
@@ -157,365 +224,478 @@ export const crossSlotTester = defineFeature(function(context is Context, id is 
         }
         
         var intersectionCounter = 0;
-        var skippedPairs = 0;
+        var subtractComplementCounter = 0;
         
-        // Process all colliding pairs to generate split tools
-        for (var bodyAIndex = 0; bodyAIndex < size(bodyInfo); bodyAIndex += 1)
+        // Process each body group
+        for (var groupIndex = 0; groupIndex < size(bodyGroups); groupIndex += 1)
         {
-            for (var bodyBIndex = bodyAIndex + 1; bodyBIndex < size(bodyInfo); bodyBIndex += 1)
+            const group = bodyGroups[groupIndex];
+            println("--- Processing Group " ~ groupIndex ~ " ---");
+            println("  Group 1 (non-colliding): " ~ size(group.group1) ~ " bodies");
+            println("  Group 2 (neighbors): " ~ size(group.group2) ~ " bodies");
+            
+            // For this group, we'll create a single batched intersection geometry
+            // by combining all Group 1 bodies and all Group 2 bodies
+            if (size(group.group1) > 0 && size(group.group2) > 0)
             {
-                const bodyA = bodyInfo[bodyAIndex];
-                const bodyB = bodyInfo[bodyBIndex];
+                // Collect bodies for batch intersection
+                var group1Bodies = [] as array;
+                var group2Bodies = [] as array;
                 
-                // Check if this pair was detected as colliding
-                const pairKey1 = toString(bodyA.body) ~ "_" ~ toString(bodyB.body);
-                const pairKey2 = toString(bodyB.body) ~ "_" ~ toString(bodyA.body);
-                
-                if (collidingPairs[pairKey1] == undefined && collidingPairs[pairKey2] == undefined)
+                for (var idx in group.group1)
                 {
-                    skippedPairs += 1;
-                    continue;
+                    group1Bodies = append(group1Bodies, bodyInfo[idx].body);
+                }
+                for (var idx in group.group2)
+                {
+                    group2Bodies = append(group2Bodies, bodyInfo[idx].body);
                 }
                 
-                println("--- Processing Pair " ~ intersectionCounter ~ " (Body " ~ bodyAIndex ~ " x Body " ~ bodyBIndex ~ ") ---");
+                // Create union queries for batch processing
+                const group1Query = qUnion(group1Bodies);
+                const group2Query = qUnion(group2Bodies);
                 
-                // Calculate slot direction for this specific pair
-                const normalA = bodyA.primaryPlane.normal;
-                const normalB = bodyB.primaryPlane.normal;
-                var pairSlotDirection = cross(normalA, normalB);
+                println("  Creating batched intersection for " ~ size(group1Bodies) ~ " x " ~ size(group2Bodies) ~ " bodies");
                 
-                if (norm(pairSlotDirection) > TOLERANCE.zeroLength)
-                {
-                    pairSlotDirection = normalize(pairSlotDirection);
-                    println("  Pair slot direction: " ~ pairSlotDirection);
-                }
-                else
-                {
-                    // Bodies are parallel, use a perpendicular direction
-                    pairSlotDirection = perpendicularVector(normalA);
-                    println("  Bodies are parallel, using perpendicular: " ~ pairSlotDirection);
-                }
-                
-                // Generate intersection and split it, collecting tools for both bodies
+                // Perform single SUBTRACT_COMPLEMENT for entire group
                 try
                 {
-                    const splitTools = generateIntersectionSplitTools(context, id + "pair" + intersectionCounter, 
-                                                                       bodyA, bodyB, pairSlotDirection, definition.showDebug);
+                    const batchedIntersection = generateBatchedIntersection(context, id + "group" + groupIndex,
+                                                                            group1Query, group2Query, definition.showDebug);
+                    subtractComplementCounter += 1;
                     
-                    // Add split tools to the appropriate bodies' collections
-                    if (splitTools.toolForA != undefined)
+                    if (!isQueryEmpty(context, batchedIntersection))
                     {
-                        splitToolsPerBody[bodyAIndex] = append(splitToolsPerBody[bodyAIndex], splitTools.toolForA);
+                        println("  Batched intersection created successfully");
+                        
+                        // Process the batched intersection bodies
+                        // These contain all intersection regions for all Group 1 x Group 2 pairs
+                        const intersectionCells = evaluateQuery(context, batchedIntersection);
+                        println("  Processing " ~ size(intersectionCells) ~ " intersection cells");
+                        
+                        // Initialize arrays to collect split tools for batched subtraction (following WaffleIt pattern)
+                        var splitToolsForGroup1 = [];
+                        var splitToolsForGroup2 = [];
+                        
+                        // Process each intersection cell - split and assign to appropriate bodies
+                        var cellIndex = 0;
+                        for (var intersectionCell in intersectionCells)
+                        {
+                            println("    Processing intersection cell " ~ cellIndex);
+                            
+                            // Each intersection cell determines its own split direction independently
+                            // based on its edge geometry, not based on specific collision pairs
+                            
+                            // Find all linear edges in this intersection cell
+                            const bodyEdges = evaluateQuery(context, qGeometry(qOwnedByBody(intersectionCell, EntityType.EDGE), GeometryType.LINE));
+                            
+                            if (size(bodyEdges) == 0)
+                            {
+                                println("      No linear edges found in cell, skipping split");
+                                continue;
+                            }
+                            
+                            // Find the most common edge direction (slot direction)
+                            var edgeDirections = [] as array;
+                            for (var edge in bodyEdges)
+                            {
+                                try
+                                {
+                                    const edgeLine = evLine(context, { "edge" : edge });
+                                    const edgeTangent = evEdgeTangentLine(context, {
+                                                "edge" : edge,
+                                                "parameter" : 0.5
+                                            });
+                                    edgeDirections = append(edgeDirections, {
+                                                "direction" : edgeLine.direction,
+                                                "position" : edgeTangent.origin
+                                            });
+                                }
+                                catch
+                                {
+                                    // Edge might not be linear
+                                }
+                            }
+                            
+                            if (size(edgeDirections) == 0)
+                            {
+                                println("      No valid edge directions found, skipping split");
+                                continue;
+                            }
+                            
+                            // Use the first edge direction as the split direction
+                            // (in practice, aligned edges should all be parallel)
+                            var cellSlotDirection = normalize(edgeDirections[0].direction);
+                            
+                            // Find all edges aligned with this direction
+                            var alignedEdges = [] as array;
+                            for (var edgeInfo in edgeDirections)
+                            {
+                                const alignment = abs(dot(edgeInfo.direction, cellSlotDirection));
+                                if (alignment > 0.9999)
+                                {
+                                    alignedEdges = append(alignedEdges, edgeInfo);
+                                }
+                            }
+                            
+                            if (size(alignedEdges) == 0)
+                            {
+                                println("      No aligned edges found, skipping split");
+                                continue;
+                            }
+                            
+                            // Calculate split plane at average position along slot direction
+                            var positionAccumulator = 0 * meter;
+                            for (var edgeInfo in alignedEdges)
+                            {
+                                positionAccumulator += dot(edgeInfo.position, cellSlotDirection);
+                            }
+                            const avgPosition = positionAccumulator / size(alignedEdges);
+                            
+                            const splitPlaneOrigin = (cellSlotDirection * avgPosition) / squaredNorm(cellSlotDirection);
+                            const splitPlane = plane(splitPlaneOrigin, cellSlotDirection);
+                            
+                            // Create split plane and split the intersection cell
+                            opPlane(context, id + ("splitPlane_" ~ cellIndex), {
+                                        "plane" : splitPlane
+                                    });
+                            const splitPlaneBody = qCreatedBy(id + ("splitPlane_" ~ cellIndex), EntityType.BODY);
+                            
+                            try
+                            {
+                                opSplitPart(context, id + ("split_" ~ cellIndex), {
+                                            "targets" : intersectionCell,
+                                            "tool" : splitPlaneBody
+                                        });
+                                
+                                const splitBodies = qOwnerBody(qCreatedBy(id + ("split_" ~ cellIndex)));
+                                
+                                // Determine which bodies this intersection belongs to
+                                // by checking which bodies from group1 and group2 collide at this location
+                                // Collect split halves for batched subtraction (following WaffleIt pattern)
+                                const halfA = qFarthestAlong(splitBodies, cellSlotDirection);
+                                const halfB = qFarthestAlong(splitBodies, -cellSlotDirection);
+                                
+                                // halfB goes to Group 1 bodies (opposite direction)
+                                // halfA goes to Group 2 bodies (slot direction)
+                                splitToolsForGroup1 = append(splitToolsForGroup1, halfB);
+                                splitToolsForGroup2 = append(splitToolsForGroup2, halfA);
+                                
+                                intersectionCounter += 1;
+                                println("      Split cell " ~ cellIndex ~ " and assigned halves");
+                                
+                                // Clean up split plane
+                                try
+                                {
+                                    opDeleteBodies(context, id + ("cleanupPlane_" ~ cellIndex), {
+                                                "entities" : splitPlaneBody
+                                            });
+                                }
+                                catch {}
+                            }
+                            catch (error)
+                            {
+                                println("      WARNING: Could not split intersection cell: " ~ error);
+                                
+                                // Clean up split plane even if split failed
+                                try
+                                {
+                                    opDeleteBodies(context, id + ("cleanupPlane_" ~ cellIndex), {
+                                                "entities" : splitPlaneBody
+                                            });
+                                }
+                                catch {}
+                            }
+                            
+                            cellIndex += 1;
+                        }
+                        
+                        // Perform batched subtraction following WaffleIt pattern (lines 496-512)
+                        println("  Performing batched subtraction operations");
+                        
+                        // Build queries for all Group 1 and Group 2 bodies
+                        const group1Bodies = qUnion(mapArray(group.group1, function(bodyIdx)
+                                {
+                                    return bodyInfo[bodyIdx].body;
+                                }));
+                        
+                        const group2Bodies = qUnion(mapArray(group.group2, function(bodyIdx)
+                                {
+                                    return bodyInfo[bodyIdx].body;
+                                }));
+                        
+                        // Subtract split tools from Group 1 bodies in one batched operation
+                        if (size(splitToolsForGroup1) > 0)
+                        {
+                            println("  Subtracting " ~ size(splitToolsForGroup1) ~ " tools from Group 1 bodies");
+                            try
+                            {
+                                opBoolean(context, id + "subtractGroup1Slots", {
+                                            "tools" : qUnion(splitToolsForGroup1),
+                                            "targets" : group1Bodies,
+                                            "operationType" : BooleanOperationType.SUBTRACTION,
+                                            "keepTools" : false
+                                        });
+                                println("  Group 1 slots cut successfully");
+                            }
+                            catch (error)
+                            {
+                                println("  ERROR cutting Group 1 slots: " ~ error);
+                            }
+                        }
+                        
+                        // Subtract split tools from Group 2 bodies in one batched operation
+                        if (size(splitToolsForGroup2) > 0)
+                        {
+                            println("  Subtracting " ~ size(splitToolsForGroup2) ~ " tools from Group 2 bodies");
+                            try
+                            {
+                                opBoolean(context, id + "subtractGroup2Slots", {
+                                            "tools" : qUnion(splitToolsForGroup2),
+                                            "targets" : group2Bodies,
+                                            "operationType" : BooleanOperationType.SUBTRACTION,
+                                            "keepTools" : false
+                                        });
+                                println("  Group 2 slots cut successfully");
+                            }
+                            catch (error)
+                            {
+                                println("  ERROR cutting Group 2 slots: " ~ error);
+                            }
+                        }
                     }
-                    if (splitTools.toolForB != undefined)
-                    {
-                        splitToolsPerBody[bodyBIndex] = append(splitToolsPerBody[bodyBIndex], splitTools.toolForB);
-                    }
-                    
-                    println("  Intersection processed successfully");
                 }
                 catch (error)
                 {
-                    println("  ERROR processing intersection: " ~ error);
+                    println("  ERROR creating batched intersection: " ~ error);
                 }
-                
-                intersectionCounter += 1;
             }
         }
         
         println("=== Batched slot subtraction ===");
-        println("Processed " ~ intersectionCounter ~ " intersections");
-        println("Pairs skipped (no collision): " ~ skippedPairs);
-        
-        // Now perform batched subtraction for each body
-        for (var bodyIndex = 0; bodyIndex < size(bodyInfo); bodyIndex += 1)
-        {
-            const toolArray = splitToolsPerBody[bodyIndex];
-            if (size(toolArray) > 0)
-            {
-                println("Body " ~ bodyIndex ~ ": subtracting " ~ size(toolArray) ~ " slot tools");
-                
-                // Batch all tools into single subtraction
-                const allTools = qUnion(toolArray);
-                const targetBody = bodyInfo[bodyIndex].body;
-                
-                try
-                {
-                    opBoolean(context, id + "subtractSlots" + bodyIndex, {
-                                "tools" : allTools,
-                                "targets" : targetBody,
-                                "operationType" : BooleanOperationType.SUBTRACTION,
-                                "keepTools" : false,
-                                "recomputeMatches" : true
-                            });
-                    println("  Slots cut successfully");
-                }
-                catch (error)
-                {
-                    println("  ERROR cutting slots: " ~ error);
-                }
-            }
-        }
+        println("Processed " ~ intersectionCounter ~ " intersection cells");
+        println("SUBTRACT_COMPLEMENT operations: " ~ subtractComplementCounter ~ " (optimized from " ~ size(collisionPairs) ~ " pairs)")
         
         println("=== CROSS-SLOT TESTER COMPLETE ===");
     });
 
-// Generate intersection and split tools for a body pair
-// Returns a map with toolForA and toolForB queries (the split halves to subtract from each body)
+// Compute collision groups for batched intersection operations
+// Groups bodies such that:
+//  - Group 1 contains bodies that don't collide with each other
+//  - Group 2 contains all neighbors (bodies that collide with Group 1)
+// This allows a single SUBTRACT_COMPLEMENT operation per group instead of per pair
+//
 // Inputs:
-//  - bodyA, bodyB: Info maps containing body, primaryFace, primaryPlane, index
-//  - slotDirection: Vector indicating the direction for splitting the slot
-//  - showDebug: Whether to highlight debug geometry
-function generateIntersectionSplitTools(context is Context, id is Id, bodyA is map, bodyB is map, slotDirection is Vector, showDebug is boolean) returns map
+//  - collisionNeighbors: Map of bodyIndex -> array of colliding body indices
+//  - totalBodies: Total number of bodies
+// Returns: Array of group objects, each with {group1: array, group2: array}
+function computeCollisionGroups(collisionNeighbors is map, totalBodies is number) returns array
 {
-    println("  Creating copies for intersection calculation...");
+    var groups = [] as array;
+    var assignedBodies = {} as map;  // Track which bodies are already in a group
     
-    // Step 1: Create copies of both bodies
-    opPattern(context, id + "copyA", {
-                "entities" : bodyA.body,
-                "transforms" : [identityTransform()],
-                "instanceNames" : ["copyA"]
-            });
-    const copyA = qCreatedBy(id + "copyA", EntityType.BODY);
+    // Initialize all bodies as unassigned
+    for (var i = 0; i < totalBodies; i += 1)
+    {
+        assignedBodies[i] = false;
+    }
     
-    opPattern(context, id + "copyB", {
-                "entities" : bodyB.body,
+    while (true)
+    {
+        // Find unassigned body with most collisions
+        var maxCollisions = -1;
+        var startBodyIndex = -1;
+        
+        for (var bodyIndex = 0; bodyIndex < totalBodies; bodyIndex += 1)
+        {
+            if (assignedBodies[bodyIndex] == false)
+            {
+                const collisionCount = size(collisionNeighbors[bodyIndex]);
+                if (collisionCount > maxCollisions)
+                {
+                    maxCollisions = collisionCount;
+                    startBodyIndex = bodyIndex;
+                }
+            }
+        }
+        
+        // If no unassigned bodies remain, we're done
+        if (startBodyIndex == -1)
+        {
+            break;
+        }
+        
+        // Start a new group with this body
+        var group1 = [startBodyIndex];
+        var group2 = [] as array;
+        
+        // Add all neighbors of startBody to group2
+        for (var neighborIdx in collisionNeighbors[startBodyIndex])
+        {
+            if (assignedBodies[neighborIdx] == false)
+            {
+                group2 = append(group2, neighborIdx);
+            }
+        }
+        
+        // Build a set of group1 bodies for fast lookup
+        var group1Set = {} as map;
+        group1Set[startBodyIndex] = true;
+        
+        // Iteratively try to add more bodies to group1
+        // A body can be added to group1 if:
+        //  1. It's not already assigned
+        //  2. It shares at least one neighbor with group2
+        //  3. It doesn't collide with any body in group1
+        var addedNewBody = true;
+        while (addedNewBody)
+        {
+            addedNewBody = false;
+            
+            // Build set of group2 bodies for fast lookup
+            var group2Set = {} as map;
+            for (var idx in group2)
+            {
+                group2Set[idx] = true;
+            }
+            
+            for (var candidateIdx = 0; candidateIdx < totalBodies; candidateIdx += 1)
+            {
+                if (assignedBodies[candidateIdx] == true || group1Set[candidateIdx] == true || group2Set[candidateIdx] == true)
+                {
+                    continue;
+                }
+                
+                // Check if candidate shares any neighbors with group2
+                var sharesNeighbor = false;
+                for (var neighborIdx in collisionNeighbors[candidateIdx])
+                {
+                    if (group2Set[neighborIdx] == true)
+                    {
+                        sharesNeighbor = true;
+                        break;
+                    }
+                }
+                
+                if (!sharesNeighbor)
+                {
+                    continue;
+                }
+                
+                // Check if candidate collides with any body in group1
+                var collidesWithGroup1 = false;
+                for (var neighborIdx in collisionNeighbors[candidateIdx])
+                {
+                    if (group1Set[neighborIdx] == true)
+                    {
+                        collidesWithGroup1 = true;
+                        break;
+                    }
+                }
+                
+                if (!collidesWithGroup1)
+                {
+                    // Add candidate to group1
+                    group1 = append(group1, candidateIdx);
+                    group1Set[candidateIdx] = true;
+                    
+                    // Add its neighbors to group2 (if not already there and not in group1)
+                    for (var neighborIdx in collisionNeighbors[candidateIdx])
+                    {
+                        if (group1Set[neighborIdx] != true && group2Set[neighborIdx] != true && assignedBodies[neighborIdx] == false)
+                        {
+                            group2 = append(group2, neighborIdx);
+                            group2Set[neighborIdx] = true;
+                        }
+                    }
+                    
+                    addedNewBody = true;
+                }
+            }
+        }
+        
+        // Mark all bodies in this group as assigned
+        for (var idx in group1)
+        {
+            assignedBodies[idx] = true;
+        }
+        for (var idx in group2)
+        {
+            assignedBodies[idx] = true;
+        }
+        
+        // Add this group to the result
+        groups = append(groups, {
+            "group1" : group1,
+            "group2" : group2
+        });
+    }
+    
+    return groups;
+}
+
+// Generate batched intersection geometry for a group of bodies
+// Performs a single SUBTRACT_COMPLEMENT operation for all Group 1 bodies vs all Group 2 bodies
+// This is the key optimization that reduces the number of boolean operations
+//
+// Key insight: Copy GROUP 1 ONLY, use copy as targets, Group 2 as tools
+// This preserves original bodies and the intersection results come from the copy operation
+//
+// Inputs:
+//  - group1Query: Query for all bodies in Group 1 (non-colliding with each other)
+//  - group2Query: Query for all bodies in Group 2 (neighbors of Group 1)
+//  - showDebug: Whether to highlight debug geometry
+// Returns: Query for the batched intersection geometry
+function generateBatchedIntersection(context is Context, id is Id, group1Query is Query, group2Query is Query, showDebug is boolean) returns Query
+{
+    println("  Creating copy of Group 1 for batched intersection...");
+    
+    // ONLY copy Group 1 - this is the key optimization
+    // We use the copy as targets in SUBTRACT_COMPLEMENT
+    opPattern(context, id + "copyGroup1", {
+                "entities" : group1Query,
                 "transforms" : [identityTransform()],
-                "instanceNames" : ["copyB"]
+                "instanceNames" : ["group1Copy"]
             });
-    const copyB = qCreatedBy(id + "copyB", EntityType.BODY);
+    const copyGroup1 = qCreatedBy(id + "copyGroup1", EntityType.BODY);
     
     if (showDebug)
     {
-        debug(context, copyA, DebugColor.BLUE);
-        debug(context, copyB, DebugColor.RED);
+        debug(context, copyGroup1, DebugColor.BLUE);
+        debug(context, group2Query, DebugColor.RED);
     }
     
-    println("  Calculating intersection geometry...");
+    println("  Calculating batched intersection geometry...");
     
-    // Step 2: Find intersection using SUBTRACT_COMPLEMENT
+    // Perform single SUBTRACT_COMPLEMENT for entire group
+    // Tools: Group 2 (original bodies, preserved with keepTools: true)
+    // Targets: Copy of Group 1 (will be modified to contain intersection)
     try
     {
-        opBoolean(context, id + "intersection", {
-                    "tools" : copyA,
-                    "targets" : copyB,
+        opBoolean(context, id + "batchIntersection", {
+                    "tools" : group2Query,
+                    "targets" : copyGroup1,
                     "operationType" : BooleanOperationType.SUBTRACT_COMPLEMENT,
-                    "keepTargets" : true,
+                    "keepTools" : true,
                     "recomputeMatches" : true
                 });
+        
+        // The copyGroup1 bodies are now modified to contain only the intersection regions
+        // These bodies were created by the copy operation AND potentially modified by SUBTRACT_COMPLEMENT
+        // We need to query both qCreatedBy (from the pattern) and the result of the operation
+        const intersectionBodies = qUnion([
+            qCreatedBy(id + "copyGroup1", EntityType.BODY),
+            qCreatedBy(id + "batchIntersection", EntityType.BODY)
+        ]);
+        const intersectionCount = size(evaluateQuery(context, intersectionBodies));
+        println("  Batched intersection created " ~ intersectionCount ~ " bodies");
+        
+        return intersectionBodies;
     }
     catch (error)
     {
-        println("  ERROR in intersection boolean: " ~ error);
-        // Clean up
-        opDeleteBodies(context, id + "cleanupCopies", {
-                    "entities" : qUnion([copyA, copyB])
-                });
-        return { "toolForA" : undefined, "toolForB" : undefined };
+        println("  ERROR in batched intersection: " ~ error);
+        // Return empty query on error
+        return qNothing();
     }
-    
-    // Step 3: Check if intersection exists
-    const intersectionBodies = evaluateQuery(context, copyB);
-    println("  Intersection bodies found: " ~ size(intersectionBodies));
-    
-    if (size(intersectionBodies) == 0)
-    {
-        println("  No intersection found - bodies don't overlap");
-        opDeleteBodies(context, id + "cleanupCopies", {
-                    "entities" : qUnion([copyA, copyB])
-                });
-        return { "toolForA" : undefined, "toolForB" : undefined };
-    }
-    
-    // Step 4: Find the slot-direction-aligned edges in the intersection
-    var alignedEdges = [] as array;
-    for (var intersectionBody in intersectionBodies)
-    {
-        // Check body type for debugging
-        const bodyType = evaluateQuery(context, qBodyType(intersectionBody, BodyType.SOLID));
-        if (size(bodyType) > 0)
-        {
-            println("  Intersection body is SOLID");
-        }
-        else
-        {
-            println("  Intersection body is SHEET/SURFACE (not solid)");
-        }
-        
-        const bodyEdges = evaluateQuery(context, qGeometry(qOwnedByBody(intersectionBody, EntityType.EDGE), GeometryType.LINE));
-        
-        for (var edge in bodyEdges)
-        {
-            try
-            {
-                const edgeLine = evLine(context, { "edge" : edge });
-                const alignment = abs(dot(edgeLine.direction, slotDirection));
-                
-                if (alignment > 0.9999)
-                {
-                    const edgeTangent = evEdgeTangentLine(context, {
-                                "edge" : edge,
-                                "parameter" : 0.5
-                            });
-                    alignedEdges = append(alignedEdges, {
-                                "edge" : edge,
-                                "position" : edgeTangent.origin
-                            });
-                    
-                    if (showDebug)
-                    {
-                        debug(context, edge, DebugColor.YELLOW);
-                    }
-                }
-            }
-            catch
-            {
-                // Edge might not be linear
-            }
-        }
-    }
-    
-    println("  Slot-direction-aligned edges found: " ~ size(alignedEdges));
-    
-    if (size(alignedEdges) == 0)
-    {
-        println("  No aligned edges found - can't determine split plane");
-        opDeleteBodies(context, id + "cleanupCopies", {
-                    "entities" : qUnion([copyA, copyB])
-                });
-        return { "toolForA" : undefined, "toolForB" : undefined };
-    }
-    
-    // Step 5: Calculate split plane at the average position along slot direction
-    var positionAccumulator = 0 * meter;
-    for (var edgeInfo in alignedEdges)
-    {
-        positionAccumulator += dot(edgeInfo.position, slotDirection);
-    }
-    const avgPosition = positionAccumulator / size(alignedEdges);
-    
-    const splitPlaneOrigin = (slotDirection * avgPosition) / squaredNorm(slotDirection);
-    const splitPlane = plane(splitPlaneOrigin, slotDirection);
-    
-    println("  Split plane position along slot direction: " ~ avgPosition);
-    
-    // Step 6: Create split plane and split the intersection bodies
-    opPlane(context, id + "splitPlane", {
-                "plane" : splitPlane
-            });
-    const splitPlaneBody = qCreatedBy(id + "splitPlane", EntityType.BODY);
-    
-    if (showDebug)
-    {
-        debug(context, splitPlaneBody, DebugColor.CYAN);
-    }
-    
-    // Split each intersection body
-    var splitToolsForA = [] as array;
-    var splitToolsForB = [] as array;
-    var cellIndex = 0;
-    
-    for (var intersectionBody in intersectionBodies)
-    {
-        println("  Attempting to split intersection body " ~ cellIndex);
-        
-        // Debug: Check if we can even evaluate the intersection body
-        try
-        {
-            const intersectionBodyArray = evaluateQuery(context, intersectionBody);
-            println("  Intersection body evaluates to " ~ size(intersectionBodyArray) ~ " entity/entities");
-        }
-        catch (error)
-        {
-            println("  ERROR evaluating intersection body: " ~ error);
-        }
-        
-        try
-        {
-            // NOTE: opSplitPart only works on solid bodies, not sheet bodies
-            // If the intersection is a sheet body, this will create 0 bodies
-            opSplitPart(context, id + "split" + cellIndex, {
-                        "targets" : intersectionBody,
-                        "tool" : splitPlaneBody
-                    });
-            
-            // Try using qOwnerBody like waffleIt does
-            const splitBodiesViaOwnerBody = qOwnerBody(qCreatedBy(id + "split" + cellIndex));
-            const splitBodiesViaOwnerBodyArray = evaluateQuery(context, splitBodiesViaOwnerBody);
-            println("  Split via qOwnerBody: " ~ size(splitBodiesViaOwnerBodyArray) ~ " bodies");
-            
-            const splitBodies = qCreatedBy(id + "split" + cellIndex, EntityType.BODY);
-            const splitBodiesArray = evaluateQuery(context, splitBodies);
-            println("  Split via qCreatedBy: " ~ size(splitBodiesArray) ~ " bodies");
-            
-            if (size(splitBodiesArray) == 0 && size(splitBodiesViaOwnerBodyArray) == 0)
-            {
-                println("  WARNING: Split created no bodies");
-                println("  Possible causes:");
-                println("    - Split plane doesn't intersect the body");
-                println("    - Body is a sheet/surface (opSplitPart requires solid)");
-                println("    - Geometric issue with split operation");
-            }
-            
-            // Use whichever query found bodies
-            const splitBodiesToUse = size(splitBodiesViaOwnerBodyArray) > 0 ? splitBodiesViaOwnerBody : splitBodies;
-            
-            // Find which split goes to which body based on slot direction
-            const upperSplit = qFarthestAlong(splitBodiesToUse, slotDirection);
-            const lowerSplit = qFarthestAlong(splitBodiesToUse, -slotDirection);
-            
-            println("  Upper split empty: " ~ isQueryEmpty(context, upperSplit));
-            println("  Lower split empty: " ~ isQueryEmpty(context, lowerSplit));
-            
-            if (!isQueryEmpty(context, upperSplit))
-            {
-                splitToolsForA = append(splitToolsForA, upperSplit);
-                if (showDebug)
-                {
-                    debug(context, upperSplit, DebugColor.MAGENTA);
-                }
-            }
-            
-            if (!isQueryEmpty(context, lowerSplit))
-            {
-                splitToolsForB = append(splitToolsForB, lowerSplit);
-                if (showDebug)
-                {
-                    debug(context, lowerSplit, DebugColor.ORANGE);
-                }
-            }
-            
-            cellIndex += 1;
-        }
-        catch (error)
-        {
-            println("  ERROR splitting intersection body " ~ cellIndex ~ ": " ~ error);
-        }
-    }
-    
-    println("  Split tools for body A: " ~ size(splitToolsForA));
-    println("  Split tools for body B: " ~ size(splitToolsForB));
-    
-    // Return the split tools for batched subtraction later
-    // Don't delete the copies - they are the tools we'll use for subtraction
-    // Only delete the split plane
-    if (!isQueryEmpty(context, splitPlaneBody))
-    {
-        try
-        {
-            opDeleteBodies(context, id + "cleanupPlane", {
-                        "entities" : splitPlaneBody
-                    });
-        }
-        catch (error)
-        {
-            println("  WARNING: Plane cleanup failed: " ~ error);
-        }
-    }
-    
-    // Return queries for the split tools
-    return {
-        "toolForA" : size(splitToolsForA) > 0 ? qUnion(splitToolsForA) : undefined,
-        "toolForB" : size(splitToolsForB) > 0 ? qUnion(splitToolsForB) : undefined
-    };
 }
