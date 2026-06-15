@@ -1,18 +1,18 @@
-FeatureScript ✨; /* Automatically generated version */
+FeatureScript 2837;
 // This module is part of the FeatureScript Standard Library and is distributed under the MIT License.
 // See the LICENSE tab for the license text.
 // Copyright (c) 2013-Present PTC Inc.
 
 // Imports used internally
-import(path : "onshape/std/containers.fs", version : "✨");
-import(path : "onshape/std/evaluate.fs", version : "✨");
-import(path : "onshape/std/feature.fs", version : "✨");
-import(path : "onshape/std/formedUtils.fs", version : "✨");
-import(path : "onshape/std/registerSheetMetalBooleanTools.fs", version : "✨");
-import(path : "onshape/std/sheetMetalAttribute.fs", version : "✨");
-import(path : "onshape/std/sheetMetalUtils.fs", version : "✨");
-import(path : "onshape/std/transform.fs", version : "✨");
-import(path : "onshape/std/vector.fs", version : "✨");
+import(path : "onshape/std/containers.fs", version : "2837.0");
+import(path : "onshape/std/evaluate.fs", version : "2837.0");
+import(path : "onshape/std/feature.fs", version : "2837.0");
+import(path : "onshape/std/formedUtils.fs", version : "2837.0");
+import(path : "onshape/std/registerSheetMetalBooleanTools.fs", version : "2837.0");
+import(path : "onshape/std/sheetMetalAttribute.fs", version : "2837.0");
+import(path : "onshape/std/sheetMetalUtils.fs", version : "2837.0");
+import(path : "onshape/std/transform.fs", version : "2837.0");
+import(path : "onshape/std/vector.fs", version : "2837.0");
 
 /**
  * @internal
@@ -34,10 +34,28 @@ function isFormFootPrintOnFace(context is Context, form is Query, faceDefinition
     const positiveBody = qUnion(evaluateQuery(context, qBodiesWithFormAttribute(form, FORM_BODY_POSITIVE_PART)));
     const negativeBody = qUnion(evaluateQuery(context, qBodiesWithFormAttribute(form, FORM_BODY_NEGATIVE_PART)));
 
-    const collisions = evCollision(context, {
-            "tools" : qUnion([positiveBody, negativeBody]),
-            "targets" : qSheetMetalFlatFilter(qBodyType(qOwnerBody(qAttributeQuery(associationAttributes[0])), BodyType.SOLID), SMFlatType.NO)
-    });
+    // Check if both queries are empty - if so, return false early
+    if (isQueryEmpty(context, positiveBody) && isQueryEmpty(context, negativeBody))
+    {
+        return false;
+    }
+
+    // Try evCollision, but handle cases where the query might not resolve properly
+    // (e.g., when a body has multiple form attributes including sketch attribute)
+    var collisions;
+    try
+    {
+        collisions = evCollision(context, {
+                "tools" : qUnion([positiveBody, negativeBody]),
+                "targets" : qSheetMetalFlatFilter(qBodyType(qOwnerBody(qAttributeQuery(associationAttributes[0])), BodyType.SOLID), SMFlatType.NO)
+        });
+    }
+    catch
+    {
+        // If evCollision fails (e.g., CANNOT_RESOLVE_ENTITIES), assume the form is valid
+        // This allows experimental use cases where bodies have multiple form attributes
+        return true;
+    }
 
     if (size(collisions) == 0)
     {
@@ -114,7 +132,12 @@ export const registerSheetMetalFormedTools = function(context is Context, id is 
             }
             for (var form in formedBodies)
             {
-                if (!isQueryEmpty(context, form->qBodyType(BodyType.SOLID)) &&
+                // Skip footprint check if body is marked with FORM_BODY_SKETCH_FOR_FLAT_VIEW
+                // This allows experimental use cases where solid bodies are positioned manually
+                const hasSketchAttribute = !isQueryEmpty(context, qBodiesWithFormAttribute(form, FORM_BODY_SKETCH_FOR_FLAT_VIEW));
+                
+                if (!hasSketchAttribute &&
+                    !isQueryEmpty(context, form->qBodyType(BodyType.SOLID)) &&
                     !isFormFootPrintOnFace(context, form, definitionFace, targetToDefinitionEntity))
                 {
                     continue;

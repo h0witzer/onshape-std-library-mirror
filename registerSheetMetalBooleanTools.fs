@@ -1,16 +1,16 @@
-FeatureScript ✨; /* Automatically generated version */
+FeatureScript 2837; /* Automatically generated version */
 // This module is part of the FeatureScript Standard Library and is distributed under the MIT License.
 // See the LICENSE tab for the license text.
 // Copyright (c) 2013-Present PTC Inc.
 
 // Imports used internally
-import(path : "onshape/std/containers.fs", version : "✨");
-import(path : "onshape/std/evaluate.fs", version : "✨");
-import(path : "onshape/std/feature.fs", version : "✨");
-import(path : "onshape/std/holepropagationtype.gen.fs", version : "✨");
-import(path : "onshape/std/sheetMetalAttribute.fs", version : "✨");
-import(path : "onshape/std/sheetMetalUtils.fs", version : "✨");
-import(path : "onshape/std/transform.fs", version : "✨");
+import(path : "onshape/std/containers.fs", version : "2837.0");
+import(path : "onshape/std/evaluate.fs", version : "2837.0");
+import(path : "onshape/std/feature.fs", version : "2837.0");
+import(path : "onshape/std/holepropagationtype.gen.fs", version : "2837.0");
+import(path : "onshape/std/sheetMetalAttribute.fs", version : "2837.0");
+import(path : "onshape/std/sheetMetalUtils.fs", version : "2837.0");
+import(path : "onshape/std/transform.fs", version : "2837.0");
 
 /**
  * @internal
@@ -73,9 +73,11 @@ export function makeIsEntityPlanarCache(context is Context) returns function
  *
  * @param definition {{
  *      @field subtractiveTools {Query}:
- *              The cutting tool bodies you want subtracted from the sheet metal target bodies.
+ *              The cutting tool bodies you want subtracted from the sheet metal target bodies. @optional
+ *      @field additiveTools {Query}:
+ *              The additive tool bodies you want unioned with the sheet metal target bodies. @optional
  *      @field targets {Query}:
- *              The sheet metal target bodies you want to cut the tool bodies from.
+ *              The sheet metal target bodies you want to boolean the tool bodies with.
  *      @field doUpdateSMGeometry {boolean} :
  *              true : Call [updateSheetMetalGeometry] so that the actual boolean is performed
  *              false: The caller might want to call [updateSheetMetalGeometry] themselves
@@ -84,8 +86,33 @@ export function makeIsEntityPlanarCache(context is Context) returns function
  */
 export const registerSheetMetalBooleanTools = function(context is Context, id is Id, definition is map)
     {
+        // Determine which tools to use (subtractiveTools or additiveTools)
+        var toolsQuery = undefined;
+        var isAdditive = false;
+        
+        if (definition.subtractiveTools != undefined)
+        {
+            toolsQuery = definition.subtractiveTools;
+            isAdditive = false;
+        }
+        else if (definition.additiveTools != undefined)
+        {
+            toolsQuery = definition.additiveTools;
+            isAdditive = true;
+        }
+        else
+        {
+            throw "Either subtractiveTools or additiveTools must be provided";
+        }
+        
+        // Validate that toolsQuery is actually a Query
+        if (!(toolsQuery is Query))
+        {
+            throw "Tools parameter must be a Query, got: " ~ toolsQuery;
+        }
+        
         var collisions = evCollision(context, {
-                "tools" : definition.subtractiveTools,
+                "tools" : toolsQuery,
                 "targets" : definition.targets
             });
 
@@ -165,14 +192,33 @@ export const registerSheetMetalBooleanTools = function(context is Context, id is
                 throw "Unexpected as planes have been filtered";
             }
             var alteredWallAttribute = wallAttribute;
-            if (alteredWallAttribute.cuttingToolBodyIds == undefined)
+            
+            // Handle both subtractive and additive tools
+            if (isAdditive)
             {
-                alteredWallAttribute.cuttingToolBodyIds = cuttingToolBodyIds;
+                // For additive tools, store in additiveToolBodyIds attribute
+                if (alteredWallAttribute.additiveToolBodyIds == undefined)
+                {
+                    alteredWallAttribute.additiveToolBodyIds = cuttingToolBodyIds;
+                }
+                else
+                {
+                    alteredWallAttribute.additiveToolBodyIds = concatenateArrays([alteredWallAttribute.additiveToolBodyIds, cuttingToolBodyIds]);
+                }
             }
             else
             {
-                alteredWallAttribute.cuttingToolBodyIds = concatenateArrays([alteredWallAttribute.cuttingToolBodyIds, cuttingToolBodyIds]);
+                // For subtractive tools, store in cuttingToolBodyIds attribute (existing behavior)
+                if (alteredWallAttribute.cuttingToolBodyIds == undefined)
+                {
+                    alteredWallAttribute.cuttingToolBodyIds = cuttingToolBodyIds;
+                }
+                else
+                {
+                    alteredWallAttribute.cuttingToolBodyIds = concatenateArrays([alteredWallAttribute.cuttingToolBodyIds, cuttingToolBodyIds]);
+                }
             }
+            
             replaceSMAttribute(context, wallAttribute, alteredWallAttribute);
             updatedSMEntities = append(updatedSMEntities, wall);
             robustWallToCuttingToolBodyIdSet[makeRobustQuery(context, wall)] = cuttingToolBodyIdSet;
@@ -269,4 +315,5 @@ export const registerSheetMetalBooleanTools = function(context is Context, id is
         }
         return wallToCuttingToolBodyIdSet;
     }
+
 
