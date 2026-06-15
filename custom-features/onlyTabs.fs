@@ -22,6 +22,8 @@ import(path : "onshape/std/surfaceGeometry.fs", version : "2856.0");
 import(path : "onshape/std/topologyUtils.fs", version : "2856.0");
 import(path : "onshape/std/vector.fs", version : "2856.0");
 import(path : "onshape/std/smcornerbreakstyle.gen.fs", version : "2856.0");
+import(path : "onshape/std/frameUtils.fs", version : "2856.0");
+import(path : "onshape/std/frameAttributes.fs", version : "2856.0");
 // Import spacingUtils module for centralized pattern spacing logic
 export import(path : "c51f6558b7346f455a634ff5/cf14633de6fca78124306ce9/8ce820287d75ed2e92412d90", version : "cf26b6d26aa41f8853237904");//spacingUtils.fs
 // Import numberUtils for pseudo-random number generation
@@ -36,6 +38,18 @@ import(path : "9f4c9835d8018ff7dbdb5683/c06f405c6cafaa13845f6727/f937aebd788e8d7
 // NOTE: This feature uses the centralized spacingUtils.fs module for spacing logic.
 // All spacing types, predicates, and calculations are imported from spacingUtils
 // to ensure consistency across pattern generation tools.
+
+// Selects which type of body the tab generation targets.
+// SHEET_METAL uses the existing SM surface-copy-and-extend approach with SM attribute merging.
+// FRAME uses the same edge-split / surface-copy / surface-extend approach adapted for solid frame bodies,
+// with bounding-box trimming to avoid artifact geometry along the full swept face.
+export enum OnlyTabsMode
+{
+    annotation { "Name" : "Sheet Metal" }
+    SHEET_METAL,
+    annotation { "Name" : "Frame" }
+    FRAME
+}
 
 const EDGE_LENGTH_TOLERANCE = 1e-9 * meter;
 const EDGE_PARAMETER_TOLERANCE = 1e-6;
@@ -83,17 +97,31 @@ annotation { "Feature Type Name" : "OnlyTabs", "Icon" : ICON::BLOB_DATA, "Featur
 export const tabAndSlotBossDisplay = defineSheetMetalFeature(function(context is Context, id is Id, definition is map)
     precondition
     {
-        // Edge selection
-        annotation { "Name" : "Edges", "Filter" : EntityType.EDGE, "UIHint" : UIHint.SHOW_CREATE_SELECTION }
-        definition.edges is Query;
+        // Mode selector: switch between sheet metal and frame tab generation
+        annotation { "Name" : "Mode", "UIHint" : [UIHint.HORIZONTAL_ENUM, UIHint.REMEMBER_PREVIOUS_VALUE] }
+        definition.tabMode is OnlyTabsMode;
 
-        // Spacing parameters (uses centralized spacing predicate from spacingUtils)
+        // Sheet metal edge selection (hidden in frame mode)
+        if (definition.tabMode != OnlyTabsMode.FRAME)
+        {
+            annotation { "Name" : "Edges", "Filter" : EntityType.EDGE, "UIHint" : UIHint.SHOW_CREATE_SELECTION }
+            definition.edges is Query;
+        }
+
+        // Frame edge selection: select edges on the perimeter of a frame cap face (start or end face)
+        if (definition.tabMode == OnlyTabsMode.FRAME)
+        {
+            annotation { "Name" : "Frame Edges", "Filter" : EntityType.EDGE, "UIHint" : UIHint.SHOW_CREATE_SELECTION }
+            definition.frameEdges is Query;
+        }
+
+        // Spacing parameters (uses centralized spacing predicate from spacingUtils, shared between modes)
         curvePatternSpacingPredicate(definition);
 
         // Tab parameters group - always visible but collapsible
         annotation { "Name" : "Tab parameters", "Default" : true, "UIHint" : UIHint.ALWAYS_HIDDEN }
         definition.showTabParameters is boolean;
-        
+
         annotation { "Group Name" : "Tab parameters", "Driving Parameter" : "showTabParameters", "Collapsed By Default" : false }
         {
             annotation { "Name" : "Tab width", "UIHint" : UIHint.REMEMBER_PREVIOUS_VALUE }
@@ -102,27 +130,37 @@ export const tabAndSlotBossDisplay = defineSheetMetalFeature(function(context is
             annotation { "Name" : "Tab depth", "UIHint" : UIHint.REMEMBER_PREVIOUS_VALUE }
             isLength(definition.tabDepth, TAB_DEPTH_BOUNDS);
 
+            // Frame tab extrusion depth: how far the tab surface protrudes beyond the frame cap face
+            if (definition.tabMode == OnlyTabsMode.FRAME)
+            {
+                annotation { "Name" : "Frame tab extrusion depth", "UIHint" : UIHint.REMEMBER_PREVIOUS_VALUE }
+                isLength(definition.frameTabDepth, TAB_DEPTH_BOUNDS);
+            }
+
             annotation { "Name" : "Tab chamfer width", "UIHint" : UIHint.REMEMBER_PREVIOUS_VALUE }
             isLength(definition.tabChamfer, CHAMFER_WIDTH_BOUNDS);
         }
 
-        // Slot parameters group - always visible but collapsible
-        annotation { "Name" : "Slot parameters", "Default" : true, "UIHint" : UIHint.ALWAYS_HIDDEN }
-        definition.showSlotParameters is boolean;
-        
-        annotation { "Group Name" : "Slot parameters", "Driving Parameter" : "showSlotParameters", "Collapsed By Default" : false }
+        // Slot parameters group - sheet metal only (frame body merge is a later phase)
+        if (definition.tabMode != OnlyTabsMode.FRAME)
         {
-            annotation { "Name" : "Slot width clearance", "UIHint" : UIHint.REMEMBER_PREVIOUS_VALUE }
-            isLength(definition.slotWidthClearance, SLOT_WIDTH_CLEARANCE_BOUNDS);
+            annotation { "Name" : "Slot parameters", "Default" : true, "UIHint" : UIHint.ALWAYS_HIDDEN }
+            definition.showSlotParameters is boolean;
 
-            annotation { "Name" : "Slot thickness clearance", "UIHint" : UIHint.REMEMBER_PREVIOUS_VALUE }
-            isLength(definition.slotThicknessClearance, SLOT_THICKNESS_CLEARANCE_BOUNDS);
+            annotation { "Group Name" : "Slot parameters", "Driving Parameter" : "showSlotParameters", "Collapsed By Default" : false }
+            {
+                annotation { "Name" : "Slot width clearance", "UIHint" : UIHint.REMEMBER_PREVIOUS_VALUE }
+                isLength(definition.slotWidthClearance, SLOT_WIDTH_CLEARANCE_BOUNDS);
 
-            annotation { "Name" : "Slot bodies (for overlapping tabs)", "Filter" : EntityType.BODY }
-            definition.mergeScope is Query;
+                annotation { "Name" : "Slot thickness clearance", "UIHint" : UIHint.REMEMBER_PREVIOUS_VALUE }
+                isLength(definition.slotThicknessClearance, SLOT_THICKNESS_CLEARANCE_BOUNDS);
+
+                annotation { "Name" : "Slot bodies (for overlapping tabs)", "Filter" : EntityType.BODY }
+                definition.mergeScope is Query;
+            }
         }
 
-        // Tab width randomization group
+        // Tab width randomization group (available in both modes)
         annotation { "Group Name" : "Tab width randomization", "Collapsed By Default" : true }
         {
             annotation { "Name" : "Enable randomization", "Default" : false, "UIHint" : UIHint.REMEMBER_PREVIOUS_VALUE }
@@ -143,6 +181,13 @@ export const tabAndSlotBossDisplay = defineSheetMetalFeature(function(context is
 
     }
     {
+        // Dispatch to frame tab generation when in frame mode
+        if (definition.tabMode == OnlyTabsMode.FRAME)
+        {
+            executeFrameTabGeneration(context, id, definition);
+            return;
+        }
+
         // Phase 1: Split the input edges using the edge splitting method
         const selectedEdgesQuery = qEntityFilter(definition.edges, EntityType.EDGE);
         const selectedEdges = evaluateQuery(context, selectedEdgesQuery);
@@ -256,6 +301,16 @@ export const tabAndSlotBossDisplay = defineSheetMetalFeature(function(context is
         // This ensures we capture both affected (split) and unaffected edges
         const trackedEdges = qUnion([orderedEdgeQuery, startTracking(context, orderedEdgeQuery)]);
 
+        // Capture the 3D world-space position of the pre-split path start point.
+        // identifyTabSegmentsByEdgeMidpoints uses this to anchor the post-split path so
+        // that it starts from the same vertex as the pre-split path — fixing domain
+        // mismatches for both closed loops and open chains traversed in reverse.
+        const pathStartParameter = path.flipped[0] ? 1 : 0;
+        const pathStartPosition = evEdgeTangentLine(context, {
+                        "edge" : path.edges[0],
+                        "parameter" : pathStartParameter
+                    }).origin;
+
         // Split the edges at tab boundaries
         const splitParameters = calculateSplitParametersFromTabDomains(tabDomains);
         const splitInstructions = calculateEdgeSplitInstructionsFromParameters(context, path, splitParameters);
@@ -289,7 +344,7 @@ export const tabAndSlotBossDisplay = defineSheetMetalFeature(function(context is
         // Filter to edges only and combine with original to handle both split and unsplit edges
         const allEdgesAfterSplit = qEntityFilter(qUnion([orderedEdgeQuery, trackedEdges]), EntityType.EDGE);
 
-        const tabSegmentEdges = identifyTabSegmentsByEdgeMidpoints(context, allEdgesAfterSplit, path, totalLength, tabDomains);
+        const tabSegmentEdges = identifyTabSegmentsByEdgeMidpoints(context, allEdgesAfterSplit, path, totalLength, tabDomains, pathStartPosition);
 
         // Phase 2: Copy adjacent sheet metal wall surfaces
         // Use the identified tab segment edges to find adjacent faces
@@ -551,73 +606,81 @@ function calculateEdgeSplitInstructionsFromParameters(context is Context, path i
 }
 
 // Identifies edges that correspond to tab segments by checking edge midpoints against tab domains.
-// For each edge, calculates its midpoint position along the edge chain and checks if it falls
-// within any tab domain. This works for all edges after splitting.
+// For each post-split edge, calculates its midpoint position along the edge chain and checks
+// whether it falls within any tab domain.
+//
+// The core problem: after splitting, re-ordering the post-split edges with constructPath may
+// traverse the chain in a different direction or from a different start vertex than the pre-split
+// path. This shifts all midpoint fractions relative to the tab domain fractions, causing wrong
+// tabs to be selected. This affects:
+//   - CLOSED loops (circular tube cap perimeters): constructPath picks an arbitrary start vertex
+//   - OPEN chains in distance mode: constructPath may start from the opposite endpoint
+//
+// The universal fix: pathStartPosition is the 3D world-space position of the pre-split path's
+// start vertex. We find the post-split vertex closest to pathStartPosition using qClosestTo,
+// then pass it as referenceGeometry to constructPath. This anchors the reconstructed path to
+// start from the same vertex as the pre-split path — for both open and closed chains — with no
+// special-case branching needed for either topology.
+//
 // Inputs:
-//   allSplitEdges - Query for all edges created by split operations
-//   path - Original path before splitting (used for reference)
-//   totalLength - Total length of the edge chain
-//   tabDomains - Array of {start, end} maps with normalized parameters for each tab
-// Outputs: Query containing all edges that fall within tab domains
-function identifyTabSegmentsByEdgeMidpoints(context is Context, allSplitEdges is Query, path is Path, totalLength is ValueWithUnits, tabDomains is array) returns Query
+//   allSplitEdges     - Query for all edges after the split operations
+//   path              - Original pre-split path (used only for its Path type annotation)
+//   totalLength       - Total arc length of the full edge chain
+//   tabDomains        - Array of {start, end} maps with normalized parameters (0 to 1) for each tab
+//   pathStartPosition - 3D world-space position of the pre-split path's start vertex
+// Outputs: Query containing all edges whose midpoints fall within tab domains
+function identifyTabSegmentsByEdgeMidpoints(context is Context, allSplitEdges is Query, path is Path,
+    totalLength is ValueWithUnits, tabDomains is array, pathStartPosition is Vector) returns Query
 {
     if (size(tabDomains) == 0)
     {
         return qNothing();
     }
 
-    // Get all split edges and try to reconstruct them into an ordered path
     const edges = evaluateQuery(context, allSplitEdges);
-    const edgeCount = size(edges);
-
-    if (edgeCount == 0)
+    if (size(edges) == 0)
     {
         return qNothing();
     }
 
-    // Try to construct a path from the split edges to get them in order
-    const orderedPath = try silent(constructPath(context, qUnion(edges)));
+    // Find the post-split vertex closest to the pre-split path start position.
+    // Passing it as referenceGeometry to constructPath anchors the reconstructed path so that
+    // it starts from the same vertex for both open chains and closed loops, eliminating the
+    // need for any closed-loop-specific offset correction or direction-reversal handling.
+    const postSplitEdgeQuery = qUnion(edges);
+    const allPostSplitVertices = qAdjacent(postSplitEdgeQuery, AdjacencyType.VERTEX, EntityType.VERTEX);
+    const startAnchorVertex = qClosestTo(allPostSplitVertices, pathStartPosition);
+
+    const pathResult = try silent(constructPath(context, postSplitEdgeQuery, {
+                        "referenceGeometry" : startAnchorVertex
+                    }));
     var orderedEdges = edges;
-    if (orderedPath != undefined)
+    if (pathResult != undefined)
     {
-        orderedEdges = orderedPath.edges;
+        orderedEdges = pathResult.path.edges;
     }
 
-    // Calculate the normalized position (0 to 1) of each edge's midpoint along the chain
-    var edgeMidpointParameters = [];
-    var accumulatedLength = 0 * meter;
-
-    for (var edge in orderedEdges)
-    {
-        const edgeLength = evLength(context, { "entities" : edge });
-        const midpointParameter = (accumulatedLength + edgeLength / 2) / totalLength;
-        edgeMidpointParameters = append(edgeMidpointParameters, midpointParameter);
-        accumulatedLength += edgeLength;
-    }
-
-    // Check which edges fall within tab domains
+    // Compute the midpoint fraction of each post-split edge and check whether it falls
+    // within any tab domain. Because the path is anchored to the same start vertex as the
+    // pre-split path, these fractions are directly comparable to the tab domain fractions.
     var tabEdgeQueries = [];
+    var accumulatedLength = 0 * meter;
 
     for (var i = 0; i < size(orderedEdges); i += 1)
     {
         const edge = orderedEdges[i];
-        const midpointParameter = edgeMidpointParameters[i];
+        const edgeLength = evLength(context, { "entities" : edge });
+        const midpointFraction = (accumulatedLength + edgeLength / 2) / totalLength;
+        accumulatedLength += edgeLength;
 
-        // Check if this parameter falls within any tab domain
-        var isInTabDomain = false;
         for (var j = 0; j < size(tabDomains); j += 1)
         {
             const domain = tabDomains[j];
-            if (midpointParameter >= domain.start && midpointParameter <= domain.end)
+            if (midpointFraction >= domain.start && midpointFraction <= domain.end)
             {
-                isInTabDomain = true;
+                tabEdgeQueries = append(tabEdgeQueries, edge);
                 break;
             }
-        }
-
-        if (isInTabDomain)
-        {
-            tabEdgeQueries = append(tabEdgeQueries, edge);
         }
     }
 
@@ -1460,6 +1523,279 @@ function applyWidthRandomizationToTabDomains(tabDomains is array, totalLength is
     }
     
     return randomizedDomains;
+}
+
+// ========================================
+// Frame tab generation helper functions
+// These functions implement tab generation for solid frame bodies.
+// The approach mirrors the sheet metal implementation but uses a bounding-box
+// slab to limit the extracted swept face copy to only the region near the
+// frame cap face, avoiding artifact geometry along the full frame length.
+// ========================================
+
+/**
+ * Finds the first frame cap face (start or end) that is adjacent to the supplied edge query.
+ * Used to validate that selected frame tab edges are on a frame cap face perimeter.
+ * Inputs: edges (query for candidate edges on the cap face perimeter).
+ * Outputs: Query for the adjacent cap face, or qNothing() when none is found.
+ */
+function findFrameCapFaceForEdges(context is Context, edges is Query) returns Query
+{
+    const adjacentFaces = evaluateQuery(context, qAdjacent(edges, AdjacencyType.EDGE, EntityType.FACE));
+    for (var face in adjacentFaces)
+    {
+        const faceQuery = qUnion([face]);
+        if (isCapFace(context, faceQuery))
+        {
+            return faceQuery;
+        }
+    }
+    return qNothing();
+}
+
+/**
+ * Filters a face query to return only frame swept faces (the long side faces of a frame body).
+ * Inputs: faceQuery (query containing candidate faces).
+ * Outputs: Query containing only faces with the SWEPT_FACE frame topology attribute.
+ */
+function filterFrameSweptFaces(context is Context, faceQuery is Query) returns Query
+{
+    const faces = evaluateQuery(context, faceQuery);
+    var sweptFaceQueries = [];
+    for (var face in faces)
+    {
+        const faceAsQuery = qUnion([face]);
+        if (isSweptFace(context, faceAsQuery))
+        {
+            sweptFaceQueries = append(sweptFaceQueries, faceAsQuery);
+        }
+    }
+    if (size(sweptFaceQueries) == 0)
+    {
+        return qNothing();
+    }
+    return qUnion(sweptFaceQueries);
+}
+
+/**
+ * Main frame tab generation function. Implements the Phase 1 pipeline for frame bodies:
+ *   1. Validate selected edges are on a frame cap face perimeter
+ *   2. Build ordered path and compute tab domains using the centralized spacing utilities
+ *   3. Split edges at tab domain boundaries
+ *   4. Identify the tab segment edges from the split result
+ *   5. Extract the adjacent swept faces as surface bodies
+ *   6. Extend from the cap face boundary laminar edges outward by frameTabDepth
+ *
+ * No sketch-based geometry is used for surface extraction or extension — the approach
+ * works for all frame profile geometries including round tubes, rectangular profiles,
+ * and coped (angle-cut) frame ends.
+ *
+ * The resulting surface bodies represent the tab geometry. Boolean union with the frame body
+ * is deferred to a later phase so that this phase can be validated independently.
+ *
+ * Inputs: definition - feature definition map containing:
+ *   frameEdges, tabWidth, frameTabDepth, spacingType, instanceCount, tabChamfer, randomization params
+ */
+function executeFrameTabGeneration(context is Context, id is Id, definition is map)
+{
+    // --- Step 1: Validate edge selection ---
+    const selectedEdgesQuery = qEntityFilter(definition.frameEdges, EntityType.EDGE);
+    const selectedEdges = evaluateQuery(context, selectedEdgesQuery);
+    if (size(selectedEdges) == 0)
+    {
+        throw regenError("Select at least one frame edge on a cap face perimeter", ["frameEdges"]);
+    }
+
+    // --- Step 2: Find the adjacent frame cap face ---
+    const capFace = findFrameCapFaceForEdges(context, selectedEdgesQuery);
+    if (isQueryEmpty(context, capFace))
+    {
+        throw regenError("Selected edges must be on the perimeter of a frame cap face (start or end face)", ["frameEdges"]);
+    }
+
+    // --- Step 3: Build ordered path and compute total length ---
+    const orderedEdgeQuery = qUnion(selectedEdges);
+    const edgePath = try silent(constructPath(context, orderedEdgeQuery));
+    if (edgePath == undefined)
+    {
+        throw regenError("Unable to order the selected frame edges into a continuous chain", ["frameEdges"], definition.frameEdges);
+    }
+
+    const totalLength = evLength(context, { "entities" : definition.frameEdges });
+
+    // computeCurvePatternSpacing reads definition.edges for the length calculation.
+    // Redirect it to definition.frameEdges by temporarily aliasing the field.
+    var spacingDefinition = definition;
+    spacingDefinition.edges = definition.frameEdges;
+    spacingDefinition = computeCurvePatternSpacing(context, id, spacingDefinition);
+
+    var tabCount = spacingDefinition.instanceCount;
+    var tabDomains = [];
+
+    // Resolve start/end offsets from spacing parameters
+    var startOffset = 0 * meter;
+    var endOffset = 0 * meter;
+    if (spacingDefinition.useOffsets == true)
+    {
+        if (!spacingDefinition.twoOffsets)
+        {
+            startOffset = spacingDefinition.offset;
+            endOffset = spacingDefinition.offset;
+        }
+        else
+        {
+            if (!spacingDefinition.oppositeDirection)
+            {
+                startOffset = spacingDefinition.offset1;
+                endOffset = spacingDefinition.offset2;
+            }
+            else
+            {
+                startOffset = spacingDefinition.offset2;
+                endOffset = spacingDefinition.offset1;
+            }
+        }
+    }
+
+    // --- Step 4: Compute tab domains ---
+    if (spacingDefinition.spacingType == CurvePatternSpacingType.EQUAL)
+    {
+        tabDomains = calculateEqualSpacedDomains(totalLength, definition.tabWidth, tabCount, startOffset, endOffset, spacingDefinition.endMode);
+    }
+    else if (spacingDefinition.spacingType == CurvePatternSpacingType.DISTANCE)
+    {
+        tabDomains = calculateDistanceSpacedDomains(totalLength, definition.tabWidth, spacingDefinition.distance, tabCount, startOffset, endOffset);
+    }
+    else if (spacingDefinition.spacingType == CurvePatternSpacingType.BESTFIT)
+    {
+        tabDomains = calculateEqualSpacedDomains(totalLength, definition.tabWidth, tabCount, startOffset, endOffset, spacingDefinition.endMode);
+    }
+
+    // Apply width randomization if enabled
+    if (definition.enableRandomization && definition.widthVariation > 0 * meter)
+    {
+        tabDomains = applyWidthRandomizationToTabDomains(tabDomains, totalLength, definition);
+    }
+
+    if (tabCount == 0 || size(tabDomains) == 0)
+    {
+        throw regenError("No tabs can fit with the specified parameters", ["tabWidth", "frameEdges"]);
+    }
+
+    if (!validateDomainsNoOverlap(tabDomains, FRACTION_TOLERANCE))
+    {
+        throw regenError("Resultant tabs would overlap. Reduce instance count or tab width to avoid overlapping tabs.", ["tabWidth"]);
+    }
+
+    // --- Step 5: Split edges at tab domain boundaries ---
+    const trackedEdges = qUnion([orderedEdgeQuery, startTracking(context, orderedEdgeQuery)]);
+
+    // Capture the 3D world-space position of the pre-split path start point before any splits
+    // occur. identifyTabSegmentsByEdgeMidpoints uses this to anchor the post-split path so
+    // that it starts from the same vertex as the pre-split path — fixing domain mismatches
+    // for both closed-loop cap face perimeters and open chains traversed in reverse.
+    const pathStartParameter = edgePath.flipped[0] ? 1 : 0;
+    const framePathStartPosition = evEdgeTangentLine(context, {
+                    "edge" : edgePath.edges[0],
+                    "parameter" : pathStartParameter
+                }).origin;
+
+    const splitParameters = calculateSplitParametersFromTabDomains(tabDomains);
+    const splitInstructions = calculateEdgeSplitInstructionsFromParameters(context, edgePath, splitParameters);
+
+    if (size(splitInstructions) == 0)
+    {
+        throw regenError("Unable to calculate edge split locations for frame tabs", ["frameEdges"]);
+    }
+
+    const splitOperationId = id + "frameEdgeSplit";
+    var splitIndex = 0;
+    for (var instruction in splitInstructions)
+    {
+        try
+        {
+            @opSplitEdges(context, splitOperationId + ("split" ~ toString(splitIndex)), {
+                        "edges" : instruction.edge,
+                        "parameters" : [instruction.parameters]
+                    });
+        }
+        catch
+        {
+            throw regenError("Failed to split frame edge at the requested tab boundary location", ["frameEdges"], instruction.edge);
+        }
+        splitIndex += 1;
+    }
+
+    // --- Step 6: Identify tab segment edges after splitting ---
+    const allEdgesAfterSplit = qEntityFilter(qUnion([orderedEdgeQuery, trackedEdges]), EntityType.EDGE);
+    const tabSegmentEdges = identifyTabSegmentsByEdgeMidpoints(context, allEdgesAfterSplit, edgePath, totalLength, tabDomains, framePathStartPosition);
+
+    if (isQueryEmpty(context, tabSegmentEdges))
+    {
+        throw regenError("Could not identify tab segment edges after splitting. Check spacing parameters.", ["frameEdges"]);
+    }
+
+    // --- Step 7: Find adjacent swept faces and extract them as surface bodies ---
+    const adjacentFaces = qAdjacent(tabSegmentEdges, AdjacencyType.EDGE, EntityType.FACE);
+    const sweptFaces = filterFrameSweptFaces(context, adjacentFaces);
+
+    if (isQueryEmpty(context, sweptFaces))
+    {
+        throw regenError("No adjacent swept faces found on the frame body. Verify selected edges are on a frame cap face perimeter.", ["frameEdges"]);
+    }
+
+    // Track the tab segment edges through the upcoming extract operation so we can locate
+    // the corresponding laminar edges on the extracted surface body for the extension step.
+    const trackedTabSegments = startTracking(context, tabSegmentEdges);
+
+    try
+    {
+        @opExtractSurface(context, id + "extractFrameSweptFaces", {
+                    "faces" : sweptFaces,
+                    "tangentPropagation" : false
+                });
+    }
+    catch
+    {
+        throw regenError("Failed to extract swept faces adjacent to the frame tab edges", ["frameEdges"]);
+    }
+
+    const extractedBodies = qCreatedBy(id + "extractFrameSweptFaces", EntityType.BODY);
+
+    // --- Step 8: Extend from the cap face boundary laminar edges to form the tab surfaces ---
+    // The tab segment edges tracked through opExtractSurface become laminar (one-sided) on the
+    // extracted surface body, because the cap face / swept face boundary is now a free boundary.
+    // opExtendSheetBody is called only on these tracked edges — not all laminar edges — so only
+    // the tab positions are extended. This works for all profile shapes (rectangular, round,
+    // coped) because no sketches or plane assumptions are made.
+    const trackedTabSegmentsAfterExtract = qEntityFilter(trackedTabSegments, EntityType.EDGE);
+    const edgesToExtend = qEdgeTopologyFilter(trackedTabSegmentsAfterExtract, EdgeTopology.ONE_SIDED);
+
+    if (!isQueryEmpty(context, edgesToExtend))
+    {
+        try
+        {
+            @opExtendSheetBody(context, id + "extendFrameTabs", {
+                        "endCondition" : ExtendEndType.EXTEND_BLIND,
+                        "entities" : edgesToExtend,
+                        "tangentPropagation" : false,
+                        "extendDistance" : definition.frameTabDepth,
+                        "extensionShape" : ExtendSheetShapeType.LINEAR
+                    });
+        }
+        catch
+        {
+            throw regenError("Failed to extend frame tab surfaces. Check that frameTabDepth is a positive value and the selected edges are on a valid frame cap face perimeter.", ["frameTabDepth"]);
+        }
+    }
+    else
+    {
+        throw regenError("No extendable edges found on the extracted frame surfaces. Verify the selected edges are on a frame cap face perimeter and that edge splitting succeeded.", ["frameEdges"]);
+    }
+
+    // Tab surface bodies now exist in the model representing the desired tab geometry.
+    // Boolean union with the frame body will be implemented in a subsequent phase.
+    reportFeatureInfo(context, id, "Frame tab surfaces created successfully. Boolean union with the frame body is a planned next phase.");
 }
 
 /**
