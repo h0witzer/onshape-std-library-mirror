@@ -162,6 +162,18 @@ export enum FontEnumLocal
 //   "z": undefined
 // };
 
+export enum TextSourceType
+{
+    annotation { "Name" : "Manual text" }
+    MANUAL,
+    annotation { "Name" : "Part name" }
+    PART_NAME,
+    annotation { "Name" : "Part number" }
+    PART_NUMBER,
+    annotation { "Name" : "Part description" }
+    PART_DESCRIPTION
+}
+
 export predicate TextMainPredicatePascoe(definition)
 {
     annotation { "Name" : "Boolean enum", "Default" : BooleanScopeLocal.NEW, "UIHint" : [UIHint.HORIZONTAL_ENUM, UIHint.REMEMBER_PREVIOUS_VALUE] }
@@ -173,8 +185,14 @@ export predicate TextMainPredicatePascoe(definition)
         definition.bodyOption is BodyOptions;
     }
 
-    annotation { "Name" : "Text (abc)", "Default" : "Words" }
-    definition.text is string;
+    annotation { "Name" : "Text source", "Default" : TextSourceType.MANUAL, "UIHint" : UIHint.REMEMBER_PREVIOUS_VALUE }
+    definition.textSourceType is TextSourceType;
+
+    if (definition.textSourceType == TextSourceType.MANUAL)
+    {
+        annotation { "Name" : "Text (abc)", "Default" : "Words" }
+        definition.text is string;
+    }
 
     annotation { "Name" : "Face", "Filter" : EntityType.FACE || BodyType.MATE_CONNECTOR, "MaxNumberOfPicks" : 1 }
     definition.location is Query;
@@ -192,6 +210,21 @@ export predicate TextMainPredicatePascoe(definition)
 
         annotation { "Name" : "Opposite direction", "UIHint" : [UIHint.OPPOSITE_DIRECTION, UIHint.REMEMBER_PREVIOUS_VALUE] }
         definition.oppositeDirection is boolean;
+    }
+    
+    if (definition.booleanEnum == BooleanScopeLocal.SUBTRACT)
+    {
+        annotation { "Name" : "Delete island bodies", "Default" : true, "UIHint" : UIHint.REMEMBER_PREVIOUS_VALUE }
+        definition.deleteIslandBodies is boolean;
+    }
+    
+    if (definition.textSourceType != TextSourceType.MANUAL && 
+        (definition.booleanEnum == BooleanScopeLocal.ADD || 
+         definition.booleanEnum == BooleanScopeLocal.SUBTRACT ||
+         definition.booleanEnum == BooleanScopeLocal.INTERSECT))
+    {
+        annotation { "Name" : "Update from part properties" }
+        isButton(definition.updatePartProperties);
     }
 }
 
@@ -290,7 +323,6 @@ export function TextFunctionPascoe(
     skSolve(sketch1);
 
     var toDelete = qNothing();
-    var toBoolean = qNothing();
     var sketchEdges = qCreatedBy(id + "sketch1", EntityType.EDGE);
 
     const longestEdge = evaluateQuery(context, qLargest(sketchEdges))[0];
@@ -430,7 +462,57 @@ export function TextFunctionPascoe(
             tools = qUnion([tools, thickenned]);
             tools = qIntersection([tools, qBodyType(tools, BodyType.SOLID)]);
 
-            BooleanFunctionPascoe(context, id, definition.booleanEnum->toString(), tools, definition.mergeScope->qOwnerBody(), false);
+            // Delete island bodies created by subtraction operation
+            if (definition.booleanEnum == BooleanScopeLocal.SUBTRACT && definition.deleteIslandBodies == true)
+            {
+                // Start tracking the merge scope bodies BEFORE the boolean operation
+                const mergeScopeBodies = definition.mergeScope->qOwnerBody();
+                const trackedBodies = startTracking(context, mergeScopeBodies);
+                
+                // Get bounding box volumes BEFORE the boolean operation
+                const bodiesBeforeBoolean = evaluateQuery(context, mergeScopeBodies);
+                var beforeBBoxVolumes = [];
+                for (var body in bodiesBeforeBoolean)
+                {
+                    const bbox = evBox3d(context, {
+                            "topology" : body,
+                            "tight" : false
+                        });
+                    const volume = (bbox.maxCorner[0] - bbox.minCorner[0]) * 
+                                   (bbox.maxCorner[1] - bbox.minCorner[1]) * 
+                                   (bbox.maxCorner[2] - bbox.minCorner[2]);
+                    beforeBBoxVolumes = append(beforeBBoxVolumes, {
+                            "body" : body,
+                            "bboxVolume" : volume
+                        });
+                }
+
+                BooleanFunctionPascoe(context, id, definition.booleanEnum->toString(), tools, mergeScopeBodies, false);
+                
+                // Query tracked bodies AFTER the boolean operation using the tracking query
+                const bodiesAfterBoolean = evaluateQuery(context, qOwnerBody(trackedBodies));
+                var afterBBoxVolumes = [];
+                for (var body in bodiesAfterBoolean)
+                {
+                    const bbox = evBox3d(context, {
+                            "topology" : body,
+                            "tight" : false
+                        });
+                    const volume = (bbox.maxCorner[0] - bbox.minCorner[0]) * 
+                                   (bbox.maxCorner[1] - bbox.minCorner[1]) * 
+                                   (bbox.maxCorner[2] - bbox.minCorner[2]);
+                    afterBBoxVolumes = append(afterBBoxVolumes, {
+                            "body" : body,
+                            "bboxVolume" : volume
+                        });
+                }
+                
+                deleteIslandBodies(context, id, beforeBBoxVolumes, afterBBoxVolumes);
+            }
+            else
+            {
+                BooleanFunctionPascoe(context, id, definition.booleanEnum->toString(), tools, definition.mergeScope->qOwnerBody(), false);
+            }
         }
     }
 
@@ -521,7 +603,7 @@ function isMateConnector(context is Context, definition is map) returns boolean
  * @param mateConnectorQuery : Query for the mate connector
  * @returns {Query} : Query for the face/body at the mate connector location, or qNothing() if not found
  */
-function getFaceAtMateConnectorOrigin(context is Context, mateConnectorQuery is Query) returns Query
+export function getFaceAtMateConnectorOrigin(context is Context, mateConnectorQuery is Query) returns Query
 {
     try
     {
@@ -568,7 +650,64 @@ function getFaceAtMateConnectorOrigin(context is Context, mateConnectorQuery is 
 }
 
 
-export function editLogic(context is Context, id is Id, oldDefinition is map, definition is map, isCreating is boolean, specifiedParameters is map) returns map
+/**
+ * Delete small island bodies created by subtraction operations.
+ * Compares bounding box volumes before and after the boolean operation to identify the main body.
+ * @param context : The current context
+ * @param id : The feature id
+ * @param beforeBBoxVolumes : Array of {body, bboxVolume} for bodies before the boolean operation
+ * @param afterBBoxVolumes : Array of {body, bboxVolume} for bodies after the boolean operation
+ */
+function deleteIslandBodies(context is Context, id is Id, beforeBBoxVolumes is array, afterBBoxVolumes is array)
+{
+    // If only one body after the operation, no islands to delete
+    if (size(afterBBoxVolumes) <= 1)
+    {
+        return;
+    }
+    
+    // Find the body with the largest bounding box in the BEFORE set
+    var largestBeforeBBox = beforeBBoxVolumes[0];
+    for (var bodyData in beforeBBoxVolumes)
+    {
+        if (bodyData.bboxVolume > largestBeforeBBox.bboxVolume)
+        {
+            largestBeforeBBox = bodyData;
+        }
+    }
+    
+    // Find the body with the largest bounding box in the AFTER set
+    var largestAfterBBox = afterBBoxVolumes[0];
+    for (var bodyData in afterBBoxVolumes)
+    {
+        if (bodyData.bboxVolume > largestAfterBBox.bboxVolume)
+        {
+            largestAfterBBox = bodyData;
+        }
+    }
+    
+    // The body with the biggest bounding box in both sets is the original to keep
+    // Collect all other bodies as islands to delete
+    var islandBodies = [];
+    for (var bodyData in afterBBoxVolumes)
+    {
+        if (bodyData.body != largestAfterBBox.body)
+        {
+            islandBodies = append(islandBodies, bodyData.body);
+        }
+    }
+    
+    // Delete the island bodies
+    if (size(islandBodies) > 0)
+    {
+        opDeleteBodies(context, id + "deleteIslands", {
+                "entities" : qUnion(islandBodies)
+            });
+    }
+}
+
+
+export function editLogic(context is Context, id is Id, oldDefinition is map, definition is map, isCreating is boolean, specifiedParameters is map, clickedButton is string) returns map
 {
     definition = cadsharpUrlFunctionForPreExistingEditLogic(oldDefinition, definition);
 
@@ -603,6 +742,52 @@ export function editLogic(context is Context, id is Id, oldDefinition is map, de
                     {
                         definition.mergeScope = qOwnerBody(faceAtMateConnector);
                     }
+                }
+            }
+        }
+    }
+    
+    // Update text from part properties when button is pressed or settings change
+    if (definition.textSourceType != TextSourceType.MANUAL && 
+        (definition.booleanEnum == BooleanScopeLocal.ADD || 
+         definition.booleanEnum == BooleanScopeLocal.SUBTRACT ||
+         definition.booleanEnum == BooleanScopeLocal.INTERSECT))
+    {
+        const shouldUpdate = (clickedButton == "updatePartProperties") ||
+                            (definition.textSourceType != oldDefinition.textSourceType) ||
+                            (definition.mergeScope != oldDefinition.mergeScope);
+        
+        if (shouldUpdate)
+        {
+            // Retrieve text from part property
+            if (!isQueryEmpty(context, definition.mergeScope))
+            {
+                try silent
+                {
+                    var propertyType = PropertyType.NAME;
+                    
+                    if (definition.textSourceType == TextSourceType.PART_NUMBER)
+                    {
+                        propertyType = PropertyType.PART_NUMBER;
+                    }
+                    else if (definition.textSourceType == TextSourceType.PART_DESCRIPTION)
+                    {
+                        propertyType = PropertyType.DESCRIPTION;
+                    }
+                    
+                    const propertyValue = getProperty(context, {
+                            "entity" : definition.mergeScope,
+                            "propertyType" : propertyType
+                        });
+                    
+                    if (propertyValue != undefined && propertyValue != "")
+                    {
+                        definition.text = propertyValue;
+                    }
+                }
+                catch
+                {
+                    // If property retrieval fails, keep existing text
                 }
             }
         }
