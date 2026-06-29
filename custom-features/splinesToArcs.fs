@@ -57,7 +57,11 @@ export const splinesToArcs = defineFeature(function(context is Context, id is Id
  */
 function approximateCurvesWithArcs(context is Context, id is Id, definition is map)
 {
-    const paths = constructPaths(context, qOwnedByBody(definition.curves, EntityType.EDGE), {});
+    // Accept either directly selected edges or whole wire/sketch bodies: union the
+    // edges the selection itself names with the edges owned by any selected body.
+    const edges = qUnion([qEntityFilter(definition.curves, EntityType.EDGE),
+                qOwnedByBody(definition.curves, EntityType.EDGE)]);
+    const paths = constructPaths(context, edges, {});
     if (size(paths) == 0)
         throw regenError(ErrorStringEnum.INVALID_INPUT, ["curves"], definition.curves);
 
@@ -87,7 +91,7 @@ function approximateCurvesWithArcs(context is Context, id is Id, definition is m
     if (size(paths) == 1)
         maxDeviation = evMaxPathDeviation(context, {
                     "side1" : qOwnedByBody(qCreatedBy(id + "splineToArcsSketch", EntityType.BODY), EntityType.EDGE),
-                    "side2" : qOwnedByBody(definition.curves, EntityType.EDGE) }).deviation;
+                    "side2" : edges }).deviation;
 
     setFeatureComputedParameter(context, id, { "name" : "arcCount", "value" : arcCount });
     setFeatureComputedParameter(context, id, { "name" : "maxDeviation", "value" : maxDeviation });
