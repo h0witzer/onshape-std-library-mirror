@@ -12,7 +12,10 @@ FeatureScript 2960;
 // The pipeline mirrors the surface path of Move Face's offsetSheetMetalFaces
 // (moveFace.fs:807) — map model faces to master faces, snapshot/track, operate on the
 // master surfaces, then assignSMAttributesToNewOrSplitEntities + updateSheetMetalGeometry.
-// This does not handle sheet metal edge selections; only wall surface faces are rebased.
+// Bend handling also follows Move Face: bends and walls flanking a cylindrical bend are
+// rejected up front, and adjacent joint angles are recomputed after the op so neighbouring
+// bends re-fold. This does not handle sheet metal edge selections; only wall surface faces
+// are rebased.
 
 // Imports used in interface
 export import(path : "onshape/std/query.fs", version : "2960.0");
@@ -97,6 +100,13 @@ export const butcherReplaceFace = defineSheetMetalFeature(function(context is Co
             throw regenError("Could not resolve the master definition faces for the faces to replace", ["replaceFaces"]);
         }
 
+        // ── Reject bend faces, matching Move Face's bend support ───────────────────
+        // Move Face refuses to operate on a bend or a wall flanking a cylindrical bend
+        // (moveFace.fs:848-865). The same applies here: replacing a bend face, or a wall
+        // adjacent to a cylindrical bend, would corrupt the fold. Guard the selection up
+        // front so the offending pick is highlighted instead of failing inside opReplaceFace.
+        throwIfReplacingBend(context, masterReplaceFaces);
+
         // ── DEBUG: report selection -> master-face mapping ─────────────────────────
         // Selected resultant faces highlight CYAN, resolved master faces MAGENTA.
         println("[butcherReplaceFace] selected replaceFaces count = " ~ size(evaluateQuery(context, definition.replaceFaces)));
@@ -152,8 +162,18 @@ export const butcherReplaceFace = defineSheetMetalFeature(function(context is Co
         // later sheet metal tool dirties the master surfaces.
         const definitionBodies = qOwnerBody(associatedChanges);
         const robustReplaceFaces = qUnion([masterReplaceFaces, associatedChanges]);
-        const modifiedFaces = qOwnedByBody(qAdjacent(robustReplaceFaces, AdjacencyType.EDGE, EntityType.FACE), definitionBodies);
+        var modifiedFaces = qOwnedByBody(qAdjacent(robustReplaceFaces, AdjacencyType.EDGE, EntityType.FACE), definitionBodies);
         addRipsForReplacedFaceEdges(context, id, qAdjacent(robustReplaceFaces, AdjacencyType.EDGE, EntityType.EDGE)->qOwnedByBody(definitionBodies));
+
+        // ── Recompute bend angles, matching Move Face's bend support ───────────────
+        // Replacing a wall can change the angle of an adjacent bend. Move Face recomputes
+        // every joint adjacent to the moved faces (moveFace.fs:986-991) and grows the rebuild
+        // set to include faces flanking each cylindrical bend (moveFace.fs:1021) so the bend
+        // re-folds. Mirror both here: update angles on adjacent edges/faces, then add cylinder
+        // neighbours to modifiedFaces so updateSheetMetalGeometry rebuilds the bend.
+        updateJointAngle(context, id, qUnion([qAdjacent(robustReplaceFaces, AdjacencyType.EDGE, EntityType.EDGE)->qOwnedByBody(definitionBodies),
+                                              qAdjacent(robustReplaceFaces, AdjacencyType.EDGE, EntityType.FACE)->qOwnedByBody(definitionBodies)]));
+        modifiedFaces = qUnion([modifiedFaces, qAdjacent(qGeometry(modifiedFaces, GeometryType.CYLINDER), AdjacencyType.EDGE, EntityType.FACE)->qOwnedByBody(definitionBodies)]);
 
         // ── DEBUG: report rebuild inputs; modified faces GREEN ─────────────────────
         println("[butcherReplaceFace] modifiedFaces count = " ~ size(evaluateQuery(context, modifiedFaces)));
@@ -226,6 +246,35 @@ export function butcherReplaceFaceManipulatorChange(context is Context, definiti
 }
 
 //======================= Helpers ==========================
+
+/**
+ * Rejects the operation when any selected master face is a bend or is a wall flanking a
+ * cylindrical bend, mirroring Move Face's bend support (moveFace.fs:848-865). Replacing
+ * either would corrupt the fold, so the selection is refused up front with the offending
+ * face highlighted rather than letting opReplaceFace fail deep inside the rebuild.
+ *
+ * @param masterReplaceFaces {Query} : resolved master definition faces to be replaced
+ */
+function throwIfReplacingBend(context is Context, masterReplaceFaces is Query)
+{
+    for (var masterFace in evaluateQuery(context, masterReplaceFaces))
+    {
+        // The face itself carries a bend joint attribute.
+        const jointAttribute = try silent(getJointAttribute(context, masterFace));
+        if (jointAttribute != undefined && jointAttribute.jointType != undefined && jointAttribute.jointType.value == SMJointType.BEND)
+        {
+            throw regenError(ErrorStringEnum.SHEET_METAL_CANNOT_MOVE_BEND_EDGE, ["replaceFaces"], masterFace);
+        }
+
+        // The face borders a cylindrical bend, whose fold would be distorted by the replace.
+        const adjacentCylinderFaces = qGeometry(qAdjacent(masterFace, AdjacencyType.EDGE, EntityType.FACE), GeometryType.CYLINDER);
+        const adjacentJointAttribute = try silent(getJointAttribute(context, adjacentCylinderFaces));
+        if (adjacentJointAttribute != undefined && adjacentJointAttribute.jointType != undefined && adjacentJointAttribute.jointType.value == SMJointType.BEND)
+        {
+            throw regenError(ErrorStringEnum.SHEET_METAL_MOVE_FACE_NEXT_TO_CYLINDER_BEND, ["replaceFaces"], masterFace);
+        }
+    }
+}
 
 /**
  * Stamps a RIP joint attribute on each newly created two-sided wall boundary edge that
