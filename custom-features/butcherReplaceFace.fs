@@ -141,6 +141,8 @@ export const butcherReplaceFace = defineSheetMetalFeature(function(context is Co
         // After the op the body-wide tracking is the only anchor that survives the face
         // regenerate; if this resolves empty the rebuild will defer and the 3D/flat stay stale.
         println("[butcherReplaceFace] associatedChanges resolved AFTER op = " ~ size(evaluateQuery(context, associatedChanges)));
+        println("[butcherReplaceFace] sheetMetalModels faces AFTER op = " ~ size(evaluateQuery(context, qOwnedByBody(sheetMetalModels, EntityType.FACE))));
+        println("[butcherReplaceFace] trackingSMModel faces AFTER op = " ~ size(evaluateQuery(context, qOwnedByBody(trackingSMModel, EntityType.FACE))));
         debug(context, associatedChanges, DebugColor.YELLOW);
 
         // ── Stamp rips on any new boundary edges and rebuild the sheet metal ───────
