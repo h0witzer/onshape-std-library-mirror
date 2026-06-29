@@ -355,8 +355,8 @@ function getBiArcData(startPoint is Vector, startTangent is Vector, endPoint is 
     // plane when the two tangents are parallel.
     var referenceNormal = cross(startTangent, endTangent);
     if (norm(referenceNormal) < 1e-6)
-        referenceNormal = cross(startTangent, chord);
-    if (norm(referenceNormal) < 1e-6 * meter)
+        referenceNormal = cross(startTangent, normalize(chord));
+    if (norm(referenceNormal) < 1e-6)
         return { valid : false };
     referenceNormal = normalize(referenceNormal);
 
