@@ -87,11 +87,19 @@ function approximateCurvesWithArcs(context is Context, id is Id, definition is m
     skSolve(sketch);
 
     // True realized deviation, reported only for a single continuous selection.
+    // S-shaped or self-touching paths can be rejected by evMaxPathDeviation
+    // (CONSTRUCT_PATH_EDGES_OVERLAP); the deviation is informational, so skip it
+    // gracefully rather than fail the feature.
     var maxDeviation = 0 * meter;
     if (size(paths) == 1)
-        maxDeviation = evMaxPathDeviation(context, {
-                    "side1" : qOwnedByBody(qCreatedBy(id + "splineToArcsSketch", EntityType.BODY), EntityType.EDGE),
-                    "side2" : edges }).deviation;
+    {
+        try
+        {
+            maxDeviation = evMaxPathDeviation(context, {
+                        "side1" : qOwnedByBody(qCreatedBy(id + "splineToArcsSketch", EntityType.BODY), EntityType.EDGE),
+                        "side2" : edges }).deviation;
+        }
+    }
 
     setFeatureComputedParameter(context, id, { "name" : "arcCount", "value" : arcCount });
     setFeatureComputedParameter(context, id, { "name" : "maxDeviation", "value" : maxDeviation });
