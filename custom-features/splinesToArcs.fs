@@ -263,11 +263,7 @@ function maxArcDeviation(samplePoints is array, startIndex is number, endIndex i
     var maxDeviation = 0 * meter;
     for (var k = startIndex + 1; k < endIndex; k += 1)
     {
-        const offset = samplePoints[k] - arcData.center;
-        const axial = dot(offset, arcData.normal);
-        const planar = offset - axial * arcData.normal;
-        const radial = abs(norm(planar) - arcData.radius);
-        const deviation = sqrt(radial * radial + axial * axial);
+        const deviation = pointArcDeviation(samplePoints[k], arcData);
         if (deviation > maxDeviation)
             maxDeviation = deviation;
     }
@@ -306,6 +302,10 @@ function maxBiArcDeviation(samplePoints is array, startIndex is number, endIndex
     }
     return maxDeviation;
 }
+
+// Cosine-error threshold for the biarc junction bisection: the end tangent is
+// considered exactly matched once 1 - dot(endDir, endTangent) falls below this.
+const BIARC_TANGENT_MATCH_TOLERANCE = 1e-6;
 
 /**
  * Compute the two-arc (biarc) chain that joins a start point with a fixed start
@@ -347,7 +347,7 @@ function getBiArcData(startPoint is Vector, startTangent is Vector, endPoint is 
         }
         const endDir = arcEndTangentOf(secondArc, endPoint);
         const diff = dot(endDir, endTangent) - 1;
-        if (abs(diff) < 1e-6)
+        if (abs(diff) < BIARC_TANGENT_MATCH_TOLERANCE)
         {
             matched = true;
             break;
