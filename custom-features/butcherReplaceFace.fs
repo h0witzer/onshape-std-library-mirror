@@ -104,6 +104,8 @@ export const butcherReplaceFace = defineSheetMetalFeature(function(context is Co
         const trackingFaces = startTracking(context, masterReplaceFaces);
 
         // ── Manipulator on the template face so the offset can be dragged ───────────
+        // try mirrors replaceFace.fs: skip the manipulator if the template face has no
+        // tangent plane yet (e.g. selection still being defined) without failing the feature.
         const templateFacePlane = try(computeFacePlane(context, definition.templateFace, definition.oppositeSense));
         if (templateFacePlane != undefined)
         {
@@ -197,10 +199,10 @@ export function butcherReplaceFaceManipulatorChange(context is Context, definiti
  */
 function addRipsForReplacedFaceEdges(context is Context, id is Id, edges is Query)
 {
-    var index = 0;
+    var jointIndex = 0;
     for (var edge in evaluateQuery(context, edges))
     {
-        const jointAttribute = try silent(getJointAttribute(context, edge));
+        const jointAttribute = try(getJointAttribute(context, edge));
         if (jointAttribute != undefined)
         {
             continue;
@@ -209,13 +211,13 @@ function addRipsForReplacedFaceEdges(context is Context, id is Id, edges is Quer
         // Only rip edges between two wall faces, matching the standard move face gate.
         if (size(adjacentFaces) == 2 && size(getSmObjectTypeAttributes(context, qUnion(adjacentFaces), SMObjectType.WALL)) == 2)
         {
-            const ripAttribute = createRipAttribute(context, edge, toAttributeId(id + "joint" + index), SMJointStyle.EDGE, {});
+            const ripAttribute = createRipAttribute(context, edge, toAttributeId(id + "joint" + jointIndex), SMJointStyle.EDGE, {});
             if (ripAttribute != undefined)
             {
                 setAttribute(context, { "entities" : edge, "attribute" : ripAttribute });
             }
         }
-        index += 1;
+        jointIndex += 1;
     }
 }
 
