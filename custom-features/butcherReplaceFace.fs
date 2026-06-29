@@ -37,9 +37,10 @@ import(path : "onshape/std/uihint.gen.fs", version : "2960.0");
  * operating on the underlying master surface definition body, then rebuilding the
  * sheet metal geometry.
  *
- * Both selections are resultant 3D model faces (the only faces a user can pick); they
- * are mapped back to their master definition faces before opReplaceFace runs, matching
- * how Move Face operates on master surfaces.
+ * The faces to replace are resultant 3D model faces (the only faces a user can pick);
+ * they are mapped back to their master definition faces before opReplaceFace runs,
+ * matching how Move Face operates on master surfaces.  The template face is used directly
+ * as reference geometry and may be any face, not just a sheet metal wall.
  */
 annotation { "Feature Type Name" : "Butcher replace face",
              "Filter Selector" : "allparts",
@@ -83,18 +84,16 @@ export const butcherReplaceFace = defineSheetMetalFeature(function(context is Co
         if (definition.oppositeDirection)
             offset = -offset;
 
-        // ── Map both selections from 3D model faces to master definition faces ──────
-        // Users can only pick resultant 3D model faces; opReplaceFace must run on the
-        // invisible master surface definition that those faces are derived from.
+        // ── Map the faces being edited from 3D model faces to master definition faces ──
+        // Users can only pick resultant 3D model faces; opReplaceFace must edit the
+        // invisible master surface definition that those faces are derived from.  The
+        // template face only supplies reference geometry, so it is passed through
+        // unchanged and may be any face (including non-sheet-metal faces).
         const masterReplaceFaces = qEntityFilter(qUnion(getSMDefinitionEntities(context, definition.replaceFaces, EntityType.FACE)), EntityType.FACE);
-        const masterTemplateFace = qEntityFilter(qUnion(getSMDefinitionEntities(context, definition.templateFace, EntityType.FACE)), EntityType.FACE);
+        const masterTemplateFace = definition.templateFace;
         if (isQueryEmpty(context, masterReplaceFaces))
         {
             throw regenError("Could not resolve the master definition faces for the faces to replace", ["replaceFaces"]);
-        }
-        if (isQueryEmpty(context, masterTemplateFace))
-        {
-            throw regenError("Could not resolve the master definition face for the template", ["templateFace"]);
         }
 
         // ── Locate the SM definition bodies and snapshot their state ───────────────
