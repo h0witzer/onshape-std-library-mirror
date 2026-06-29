@@ -31,6 +31,7 @@ import(path : "onshape/std/valueBounds.fs", version : "2960.0");
 import(path : "onshape/std/vector.fs", version : "2960.0");
 import(path : "onshape/std/containers.fs", version : "2960.0");
 import(path : "onshape/std/uihint.gen.fs", version : "2960.0");
+import(path : "onshape/std/debug.fs", version : "2960.0");
 
 /**
  * Rebases one or more sheet metal wall faces onto the geometry of another face by
@@ -96,6 +97,14 @@ export const butcherReplaceFace = defineSheetMetalFeature(function(context is Co
             throw regenError("Could not resolve the master definition faces for the faces to replace", ["replaceFaces"]);
         }
 
+        // ── DEBUG: report selection -> master-face mapping ─────────────────────────
+        // Selected resultant faces highlight CYAN, resolved master faces MAGENTA.
+        println("[butcherReplaceFace] selected replaceFaces count = " ~ size(evaluateQuery(context, definition.replaceFaces)));
+        println("[butcherReplaceFace] resolved masterReplaceFaces count = " ~ size(evaluateQuery(context, masterReplaceFaces)));
+        println("[butcherReplaceFace] offset (signed) = " ~ toString(offset));
+        debug(context, definition.replaceFaces, DebugColor.CYAN);
+        debug(context, masterReplaceFaces, DebugColor.MAGENTA);
+
         // ── Locate the SM definition bodies and snapshot their state ───────────────
         // Track every face of the SM definition body (not just the selected faces), started
         // BEFORE opReplaceFace. opReplaceFace deletes and regenerates the targeted faces, so a
@@ -107,6 +116,10 @@ export const butcherReplaceFace = defineSheetMetalFeature(function(context is Co
         const trackingSMModel = startTracking(context, sheetMetalModels);
         const associatedChanges = startTracking(context, qOwnedByBody(sheetMetalModels, EntityType.FACE));
 
+        // ── DEBUG: report SM definition body and pre-op body-wide face count ───────
+        println("[butcherReplaceFace] SM definition body count = " ~ size(evaluateQuery(context, sheetMetalModels)));
+        println("[butcherReplaceFace] body-wide faces tracked BEFORE op = " ~ size(evaluateQuery(context, qOwnedByBody(sheetMetalModels, EntityType.FACE))));
+
         // ── Manipulator on the template face so the offset can be dragged ───────────
         // try mirrors replaceFace.fs: skip the manipulator if the template face has no
         // tangent plane yet (e.g. selection still being defined) without failing the feature.
@@ -117,12 +130,18 @@ export const butcherReplaceFace = defineSheetMetalFeature(function(context is Co
         }
 
         // ── Replace the master surfaces with the template geometry ─────────────────
+        println("[butcherReplaceFace] calling opReplaceFace...");
         opReplaceFace(context, id + "replaceFace", {
                     "replaceFaces"  : masterReplaceFaces,
                     "templateFace"  : masterTemplateFace,
                     "offset"        : offset,
                     "oppositeSense" : definition.oppositeSense
                 });
+        println("[butcherReplaceFace] opReplaceFace returned");
+        // After the op the body-wide tracking is the only anchor that survives the face
+        // regenerate; if this resolves empty the rebuild will defer and the 3D/flat stay stale.
+        println("[butcherReplaceFace] associatedChanges resolved AFTER op = " ~ size(evaluateQuery(context, associatedChanges)));
+        debug(context, associatedChanges, DebugColor.YELLOW);
 
         // ── Stamp rips on any new boundary edges and rebuild the sheet metal ───────
         // Confine every downstream query to the sheet metal definition bodies. opReplaceFace
@@ -134,12 +153,19 @@ export const butcherReplaceFace = defineSheetMetalFeature(function(context is Co
         const modifiedFaces = qOwnedByBody(qAdjacent(robustReplaceFaces, AdjacencyType.EDGE, EntityType.FACE), definitionBodies);
         addRipsForReplacedFaceEdges(context, id, qAdjacent(robustReplaceFaces, AdjacencyType.EDGE, EntityType.EDGE)->qOwnedByBody(definitionBodies));
 
+        // ── DEBUG: report rebuild inputs; modified faces GREEN ─────────────────────
+        println("[butcherReplaceFace] modifiedFaces count = " ~ size(evaluateQuery(context, modifiedFaces)));
+        debug(context, modifiedFaces, DebugColor.GREEN);
+
         const toUpdate = assignSMAttributesToNewOrSplitEntities(context, definitionBodies, initialData, id);
+        println("[butcherReplaceFace] toUpdate.modifiedEntities count = " ~ size(evaluateQuery(context, toUpdate.modifiedEntities)));
+        println("[butcherReplaceFace] calling updateSheetMetalGeometry...");
         callSubfeatureAndProcessStatus(id, updateSheetMetalGeometry, context, id + "smUpdate", {
                     "entities" : qOwnedByBody(qUnion([toUpdate.modifiedEntities, modifiedFaces, associatedChanges]), definitionBodies),
                     "deletedAttributes" : toUpdate.deletedAttributes,
                     "associatedChanges" : associatedChanges
                 });
+        println("[butcherReplaceFace] updateSheetMetalGeometry returned");
     }, { oppositeSense : false, oppositeDirection : false });
 
 //======================= Manipulators ==========================
