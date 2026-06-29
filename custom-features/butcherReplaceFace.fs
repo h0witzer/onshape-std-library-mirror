@@ -113,7 +113,6 @@ export const butcherReplaceFace = defineSheetMetalFeature(function(context is Co
         // later tool dirties the master surfaces. Body-wide face tracking survives the regenerate.
         const sheetMetalModels = qOwnerBody(masterReplaceFaces);
         const initialData = getInitialEntitiesAndAttributes(context, sheetMetalModels);
-        const trackingSMModel = startTracking(context, sheetMetalModels);
         const associatedChanges = startTracking(context, qOwnedByBody(sheetMetalModels, EntityType.FACE));
 
         // ── DEBUG: report SM definition body and pre-op body-wide face count ───────
@@ -139,19 +138,19 @@ export const butcherReplaceFace = defineSheetMetalFeature(function(context is Co
                 });
         println("[butcherReplaceFace] opReplaceFace returned");
         // After the op the body-wide tracking is the only anchor that survives the face
-        // regenerate; if this resolves empty the rebuild will defer and the 3D/flat stay stale.
+        // regenerate; the live definition body is re-derived from it below via qOwnerBody.
         println("[butcherReplaceFace] associatedChanges resolved AFTER op = " ~ size(evaluateQuery(context, associatedChanges)));
-        println("[butcherReplaceFace] sheetMetalModels faces AFTER op = " ~ size(evaluateQuery(context, qOwnedByBody(sheetMetalModels, EntityType.FACE))));
-        println("[butcherReplaceFace] trackingSMModel faces AFTER op = " ~ size(evaluateQuery(context, qOwnedByBody(trackingSMModel, EntityType.FACE))));
-        println("[butcherReplaceFace] body via qOwnerBody(associatedChanges) faces AFTER op = " ~ size(evaluateQuery(context, qOwnedByBody(qOwnerBody(associatedChanges), EntityType.FACE))));
+        println("[butcherReplaceFace] live body via qOwnerBody(associatedChanges) faces AFTER op = " ~ size(evaluateQuery(context, qOwnedByBody(qOwnerBody(associatedChanges), EntityType.FACE))));
         debug(context, associatedChanges, DebugColor.YELLOW);
 
         // ── Stamp rips on any new boundary edges and rebuild the sheet metal ───────
-        // Confine every downstream query to the sheet metal definition bodies. opReplaceFace
-        // edits the master surface in place, but the template face lives on another body; if
-        // any of its entities leaked into the update set, updateSheetMetalGeometry would check
-        // the SM version flag on a non-sheet-metal body and fail.
-        const definitionBodies = qUnion([trackingSMModel, sheetMetalModels]);
+        // opReplaceFace deletes and regenerates the master faces, which invalidates the
+        // pre-op body references (qOwnerBody(masterReplaceFaces) and the trackingSMModel both
+        // resolve empty afterward). The body-wide face track survives the regenerate, so the
+        // live SM definition body must be re-derived from it via qOwnerBody. Without this the
+        // attribute pass and rebuild run on a dead body and the 3D/flat refresh defers until a
+        // later sheet metal tool dirties the master surfaces.
+        const definitionBodies = qOwnerBody(associatedChanges);
         const robustReplaceFaces = qUnion([masterReplaceFaces, associatedChanges]);
         const modifiedFaces = qOwnedByBody(qAdjacent(robustReplaceFaces, AdjacencyType.EDGE, EntityType.FACE), definitionBodies);
         addRipsForReplacedFaceEdges(context, id, qAdjacent(robustReplaceFaces, AdjacencyType.EDGE, EntityType.EDGE)->qOwnedByBody(definitionBodies));
