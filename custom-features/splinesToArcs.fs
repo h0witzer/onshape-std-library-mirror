@@ -43,6 +43,8 @@ export const splinesToArcs = defineFeature(function(context is Context, id is Id
         isLength(definition.tolerance, NONNEGATIVE_ZERO_DEFAULT_LENGTH_BOUNDS);
 
         annotation { "Name" : "Sample count" }
+        // More samples = better breakpoint resolution and fidelity, but the DP is
+        // O(sampleCount^2) arc evaluations; the original feature used 60.
         isInteger(definition.sampleCount, { (unitless) : [20, 80, 400] } as IntegerBoundSpec);
 
         annotation { "Name" : "End tangent tolerance" }
@@ -126,7 +128,7 @@ function solveTangentArcChain(context is Context, path is Path, definition is ma
         parameters[i] = i / sampleCount;
 
     const tangentLines = evPathTangentLines(context, path, parameters).tangentLines;
-    var samplePoints = makeArray(sampleCount + 1, vector(0, 0, 0) * meter);
+    var samplePoints = makeArray(sampleCount + 1, undefined);
     for (var i = 0; i <= sampleCount; i += 1)
         samplePoints[i] = tangentLines[i].origin;
 
@@ -157,13 +159,10 @@ function solveTangentArcChain(context is Context, path is Path, definition is ma
             const deviation = maxArcDeviation(samplePoints, i, j, arc);
             if (deviation > definition.tolerance)
                 continue;
+            const arcEndTangent = arcEndTangentOf(arc, samplePoints[j]);
             // Reject the final arc unless it lands on the path end tangent.
-            if (j == sampleCount)
-            {
-                const arcEndTangent = arcEndTangentOf(arc, samplePoints[j]);
-                if (abs(angleBetween(arcEndTangent, endTangent)) > definition.endTangentTolerance)
-                    continue;
-            }
+            if (j == sampleCount && abs(angleBetween(arcEndTangent, endTangent)) > definition.endTangentTolerance)
+                continue;
             const count = bestCount[i] + 1;
             const summed = bestDeviation[i] + deviation;
             if (bestCount[j] == undefined || count < bestCount[j] ||
@@ -172,13 +171,13 @@ function solveTangentArcChain(context is Context, path is Path, definition is ma
                 bestCount[j] = count;
                 bestDeviation[j] = summed;
                 bestPrevious[j] = i;
-                tangentAt[j] = arcEndTangentOf(arc, samplePoints[j]);
+                tangentAt[j] = arcEndTangent;
             }
         }
     }
 
     if (bestCount[sampleCount] == undefined)
-        throw regenError("No arc chain meets the deviation tolerance; increase tolerance or sample count.", ["tolerance"]);
+        throw regenError("No arc chain meets the deviation tolerance; increase tolerance or sample count.", ["tolerance", "sampleCount"]);
 
     // Reconstruct breakpoints from the end backwards.
     var breakpoints = [sampleCount];
@@ -220,9 +219,10 @@ function arcEndTangentOf(arcData is map, endPoint is Vector) returns Vector
  * Worst deviation between path samples in [startIndex, endIndex] and a candidate
  * arc.  Inputs: samplePoints (array of Vector), startIndex/endIndex (number),
  * arcData (center, radius, normal).  Output: max distance as ValueWithUnits.
- * Manual radial/axial math is used deliberately: no std query measures a sampled
- * point against an unbuilt arc, and building a wire per candidate would be far too
- * costly.  The realized chain is validated with evMaxPathDeviation afterward.
+ * Used to score candidate arcs during the DP search.  Manual radial/axial math
+ * is deliberate: no std query measures a sampled point against an unbuilt arc, and
+ * building a wire per candidate would be far too costly.  The chosen chain is
+ * validated with evMaxPathDeviation afterward.
  */
 function maxArcDeviation(samplePoints is array, startIndex is number, endIndex is number, arcData is map) returns ValueWithUnits
 {
