@@ -126,13 +126,18 @@ export const butcherReplaceFace = defineSheetMetalFeature(function(context is Co
         // the SM version flag on a non-sheet-metal body and fail.
         const definitionBodies = qUnion([trackingSMModel, sheetMetalModels]);
         const robustReplaceFaces = qUnion([masterReplaceFaces, trackingFaces]);
-        const modifiedFaces = qAdjacent(robustReplaceFaces, AdjacencyType.EDGE, EntityType.FACE)->qOwnedByBody(definitionBodies);
+        // The replaced faces are the entities that actually changed, so they must drive the
+        // rebuild — adjacent faces alone leave updateSheetMetalGeometry believing nothing moved,
+        // which is why the 3D and flat patterns only refreshed after a later Move Face.
+        const associatedChanges = qOwnedByBody(robustReplaceFaces, definitionBodies);
+        const modifiedFaces = qOwnedByBody(qAdjacent(robustReplaceFaces, AdjacencyType.EDGE, EntityType.FACE), definitionBodies);
         addRipsForReplacedFaceEdges(context, id, qAdjacent(robustReplaceFaces, AdjacencyType.EDGE, EntityType.EDGE)->qOwnedByBody(definitionBodies));
 
         const toUpdate = assignSMAttributesToNewOrSplitEntities(context, definitionBodies, initialData, id);
         callSubfeatureAndProcessStatus(id, updateSheetMetalGeometry, context, id + "smUpdate", {
-                    "entities" : qOwnedByBody(qUnion([toUpdate.modifiedEntities, modifiedFaces]), definitionBodies),
-                    "deletedAttributes" : toUpdate.deletedAttributes
+                    "entities" : qOwnedByBody(qUnion([toUpdate.modifiedEntities, modifiedFaces, associatedChanges]), definitionBodies),
+                    "deletedAttributes" : toUpdate.deletedAttributes,
+                    "associatedChanges" : associatedChanges
                 });
     }, { oppositeSense : false, oppositeDirection : false });
 
