@@ -308,9 +308,54 @@ If `copyPropertiesAndAttributes` is `true`, the copies would be found by role-at
 
 ---
 
+### 11. Master Surface Edits Don't Show Until a Later SM Tool — `associatedChanges` Must Be Body-Wide Face Tracking
+
+**Issue**: A feature edits the SM master surface definition (e.g. `opReplaceFace`, `opOffsetFace`, `opMoveFace`) and builds without error, but the 3D solid and flat pattern do not update. The change only becomes visible after a *different* sheet metal tool (such as Move Face) is applied, which dirties the master surfaces again. This has bitten Bip Joints and other custom features.
+
+**Root Cause**: `updateSheetMetalGeometry` rebuilds the 3D/flat representation only for the entities reported in `associatedChanges`. Tracking queries anchored to the *specific selected faces* resolve to empty after the operation, because ops like `opReplaceFace` delete and regenerate those faces — the tracking anchor is lost, so the change set is empty and the rebuild is deferred.
+
+**Solution**: Snapshot **all faces of the SM definition body** with `startTracking` **before** the op, and pass that as `associatedChanges`. Body-wide tracking survives face regeneration. This mirrors `sheetMetalTab.fs:78` (`startTracking(context, qOwnedByBody(sheetMetalBodiesQuery, EntityType.FACE))`) and `moveFace.fs:1022-1027`.
+
+```featurescript
+const sheetMetalModels = qOwnerBody(masterFaces);
+const associatedChanges = startTracking(context, qOwnedByBody(sheetMetalModels, EntityType.FACE)); // before the op
+op...(context, id, { ... });
+const toUpdate = assignSMAttributesToNewOrSplitEntities(context, sheetMetalModels, initialData, id);
+updateSheetMetalGeometry(context, id, {
+    "entities" : qUnion([toUpdate.modifiedEntities, associatedChanges]),
+    "deletedAttributes" : toUpdate.deletedAttributes,
+    "associatedChanges" : associatedChanges });
+```
+
+**Rule of thumb**: If a master-surface edit doesn't trigger a rebuild, your `associatedChanges` is too narrow or was anchored to entities the op destroyed. Always track the whole body's faces up front.
+
+---
+
+### 12. Bend Support on Master-Surface Edits — Reject Folds, Recompute Adjacent Angles
+
+**Issue**: A master-surface edit (e.g. `opReplaceFace`) on a wall adjacent to a bend either corrupts the fold or leaves the bend at its old angle so the 3D/flat is geometrically wrong.
+
+**Root Cause**: A replaced/moved wall changes the geometry feeding an adjacent bend, but bend faces store their fold angle as a joint attribute. The op does not recompute that attribute, and editing a bend (or a wall flanking a cylindrical bend) directly invalidates the fold the rebuild can no longer resolve.
+
+**Solution**: Mirror Move Face. Reject the operation up front when a selected master face is a `SMJointType.BEND` or borders a cylindrical bend (`moveFace.fs:848-865`). After the op, call `updateJointAngle` on edges *and* faces adjacent to the edited faces, and grow the rebuild set with faces flanking each cylindrical bend so `updateSheetMetalGeometry` re-folds them (`moveFace.fs:986-991`, `:1021`).
+
+```featurescript
+// before the op: highlight the offending pick instead of failing inside the op
+if (jointAttribute.jointType.value == SMJointType.BEND)
+    throw regenError(ErrorStringEnum.SHEET_METAL_CANNOT_MOVE_BEND_EDGE, ["replaceFaces"], masterFace);
+// after the op: re-fold adjacent bends
+updateJointAngle(context, id, qUnion([qAdjacent(robust, AdjacencyType.EDGE, EntityType.EDGE),
+                                      qAdjacent(robust, AdjacencyType.EDGE, EntityType.FACE)]));
+modifiedFaces = qUnion([modifiedFaces, qAdjacent(qGeometry(modifiedFaces, GeometryType.CYLINDER), AdjacencyType.EDGE, EntityType.FACE)]);
+```
+
+**Rule of thumb**: There are reasons Move Face forbids certain bend selections; follow its gates rather than relaxing them. Always recompute neighbouring joint angles after a wall edit so bends re-fold.
+
+---
+
 ## Version Information
 
-This document is based on FeatureScript 2815 and Onshape Standard Library version 2815.0. Sections 4–10 were added during SM Tab Apply development (FeatureScript 2909).
+This document is based on FeatureScript 2815 and Onshape Standard Library version 2815.0. Sections 4–10 were added during SM Tab Apply development (FeatureScript 2909). Sections 11–12 were added during Butcher Replace Face development (FeatureScript 2960).
 
 ## Contributing
 
