@@ -16,13 +16,13 @@ import(path : "onshape/std/units.fs", version : "2679.0");
  * Splines to arcs.
  *
  * Approximates one or more planar input curves with a chain of tangent-continuous
- * circular arcs.  Construction and tangency are handed to the sketch solver: each
- * span of the source is seeded with a three-point arc, consecutive arcs are joined
- * with coincident + tangent constraints, both ends are pinned to the source
- * endpoints, and short fixed construction lines force the first and last arcs to
- * share the source start and end tangents.  The solver then satisfies all of those
- * constraints at once, so tangency (including at the final arc) is solved rather
- * than hand-built.
+ * circular arcs.  The source is greedily split into spans that stay within tolerance
+ * and never cross a curvature inflection; each span is seeded with a three-point arc
+ * and its source midpoint is fixed and pinned onto the arc so the arc cannot flip to
+ * the major (wrong-way) solution.  Consecutive arcs are joined coincident + tangent,
+ * and short fixed construction lines force the first and last arcs to share the
+ * source start and end tangents.  The solver satisfies all of those at once, so
+ * tangency (including at the final arc) is solved rather than hand-built.
  *
  * Locked to the planar domain: every selected curve must lie in one plane within
  * the deviation tolerance or the feature errors.  Intended for frozen import
@@ -111,9 +111,10 @@ function approximateCurvesWithArcs(context is Context, id is Id, definition is m
  * Add one path's tangent-arc span chain to a sketch and constrain it.  Inputs:
  * sketch (Sketch), plane (Plane), samples (samplePath map), tolerance
  * (ValueWithUnits), startCount (number, running arc index for unique ids).  Greedily
- * groups samples into spans whose chord deviation stays within tolerance, places one
- * sketch arc per span, then joins them coincident + tangent and pins both source
- * endpoints and tangents with fixed lines.  Output: number of arcs added.
+ * groups samples into spans within tolerance that do not cross an inflection, places
+ * one three-point arc per span, fixes each span midpoint onto its arc to lock the
+ * bow direction, then joins arcs coincident + tangent and pins both source endpoints
+ * and tangents with fixed lines.  Output: number of arcs added.
  */
 function addTangentArcChain(sketch is Sketch, plane is Plane, samples is map, tolerance is ValueWithUnits, startCount is number) returns number
 {
@@ -130,6 +131,15 @@ function addTangentArcChain(sketch is Sketch, plane is Plane, samples is map, to
                     "start" : worldToPlane(plane, samples.worldPoints[startSample]),
                     "mid" : worldToPlane(plane, samples.worldPoints[midSample]),
                     "end" : worldToPlane(plane, samples.worldPoints[endSample]) });
+
+        // Fix a sketch point on the source midpoint and pull the arc through it. This
+        // pins which side the arc bows, so tangency can never be satisfied by the
+        // major arc swinging the long way around an inflection.
+        const midId = arcId ~ "Mid";
+        skPoint(sketch, midId, { "position" : worldToPlane(plane, samples.worldPoints[midSample]) });
+        skConstraint(sketch, midId ~ "Fix", { "constraintType" : ConstraintType.FIX, "localFirst" : midId });
+        skConstraint(sketch, midId ~ "OnArc", { "constraintType" : ConstraintType.COINCIDENT,
+                    "localFirst" : midId, "localSecond" : arcId });
 
         // Each arc's start meets the previous arc's end, tangentially.
         if (arcIndex > 0)
@@ -152,28 +162,6 @@ function addTangentArcChain(sketch is Sketch, plane is Plane, samples is map, to
     pinEndTangent(sketch, plane, lastArc ~ ".end", lastArc, samples.worldPoints[size(samples.worldPoints) - 1], samples.tangents[size(samples.tangents) - 1]);
 
     return arcCount;
-}
-
-/**
- * Pin one chain endpoint to a fixed sketch point and force the adjacent arc to
- * share the source tangent there.  Inputs: sketch (Sketch), plane (Plane),
- * endpointId (string, arc start/end vertex id), arcId (string), worldPoint
- * (Vector), worldTangent (Vector).  Fixes a short construction line aligned to the
- * tangent, anchors the arc endpoint to it, and constrains the arc tangent to it.
- */
-function pinEndTangent(sketch is Sketch, plane is Plane, endpointId is string, arcId is string, worldPoint is Vector, worldTangent is Vector)
-{
-    const baseId = arcId ~ "End";
-    const planePoint = worldToPlane(plane, worldPoint);
-    // worldTangent is a unit (unitless) direction; scale by a length so it can be
-    // added to the length-valued worldPoint when mapping into plane coordinates.
-    const planeDirection = worldToPlane(plane, worldPoint + worldTangent * 1 * meter) - planePoint;
-    skLineSegment(sketch, baseId ~ "Line", { "start" : planePoint, "end" : planePoint + planeDirection, "construction" : true });
-    skConstraint(sketch, baseId ~ "Fix", { "constraintType" : ConstraintType.FIX, "localFirst" : baseId ~ "Line" });
-    skConstraint(sketch, baseId ~ "OnPoint", { "constraintType" : ConstraintType.COINCIDENT,
-                "localFirst" : baseId ~ "Line.start", "localSecond" : endpointId });
-    skConstraint(sketch, baseId ~ "Tangent", { "constraintType" : ConstraintType.TANGENT,
-                "localFirst" : arcId, "localSecond" : baseId ~ "Line" });
 }
 
 // =================== Sampling, planar fit, and segmentation ===================
