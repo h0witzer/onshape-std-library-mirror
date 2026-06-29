@@ -143,6 +143,7 @@ export const butcherReplaceFace = defineSheetMetalFeature(function(context is Co
         println("[butcherReplaceFace] associatedChanges resolved AFTER op = " ~ size(evaluateQuery(context, associatedChanges)));
         println("[butcherReplaceFace] sheetMetalModels faces AFTER op = " ~ size(evaluateQuery(context, qOwnedByBody(sheetMetalModels, EntityType.FACE))));
         println("[butcherReplaceFace] trackingSMModel faces AFTER op = " ~ size(evaluateQuery(context, qOwnedByBody(trackingSMModel, EntityType.FACE))));
+        println("[butcherReplaceFace] body via qOwnerBody(associatedChanges) faces AFTER op = " ~ size(evaluateQuery(context, qOwnedByBody(qOwnerBody(associatedChanges), EntityType.FACE))));
         debug(context, associatedChanges, DebugColor.YELLOW);
 
         // ── Stamp rips on any new boundary edges and rebuild the sheet metal ───────
