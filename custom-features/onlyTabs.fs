@@ -143,7 +143,7 @@ export const tabAndSlotBossDisplay = defineSheetMetalFeature(function(context is
 
     }
     {
-        // Phase 1: Split the input edges using the edge splitting method
+        // Validate the selection up front.
         const selectedEdgesQuery = qEntityFilter(definition.edges, EntityType.EDGE);
         const selectedEdges = evaluateQuery(context, selectedEdgesQuery);
         if (size(selectedEdges) == 0)
@@ -151,227 +151,369 @@ export const tabAndSlotBossDisplay = defineSheetMetalFeature(function(context is
             throw regenError("Select at least one sheet metal edge", ["edges"]);
         }
 
-        const orderedEdgeQuery = qUnion(selectedEdges);
-        const path = try silent(constructPath(context, orderedEdgeQuery));
-        if (path == undefined)
+        // Group the selected edges into independent chains by vertex connectivity.
+        // Each connected component is processed independently (its own spacing, splitting, and
+        // surface extraction), but all chains are merged into the sheet metal model with a single
+        // updateSheetMetalGeometry call to minimize sheet metal regeneration overhead.
+        // This mirrors the per-entity / single-update pattern used by Bip Joints
+        // (sheetMetalStitchCutBend.fs).
+        const edgeComponents = connectedComponents(context, selectedEdgesQuery, AdjacencyType.VERTEX);
+        var chains = [];
+        for (var component in edgeComponents)
         {
-            throw regenError("Unable to order the selected edges into a continuous chain", ["edges"], definition.edges);
+            chains = append(chains, qUnion(component));
+        }
+        if (size(chains) == 0)
+        {
+            // Fallback: treat the entire selection as a single chain.
+            chains = [selectedEdgesQuery];
         }
 
-        // Calculate tab positions along the edge chain (as normalized parameters from 0 to 1)
-        const totalLength = evLength(context, {
-                    "entities" : definition.edges
-                });
-
-        // Use centralized spacing calculation from spacingUtils
-        definition = computeCurvePatternSpacing(context, id, definition);
-
-        var tabCount = definition.instanceCount;
-        var tabDomains = []; // Array of {start, end} maps representing tab positions as normalized parameters
-
-        // Get offsets based on mode
-        var startOffset = 0 * meter;
-        var endOffset = 0 * meter;
-        
-        if (definition.useOffsets == true)
+        // Restrict the operation to a single sheet metal context. Multiple parts within the same
+        // context (which share one sheet metal model id) are fully supported and batch into one
+        // update. Tabbing edges across different sheet metal contexts is intentionally disallowed:
+        // each context still requires its own sheet metal update (so there is no batching
+        // performance benefit), the shared clearance/thickness parameters do not transfer sensibly
+        // between contexts of different thickness, and mergeTabSurfacesWithSheetMetal assumes a
+        // single model per execution (a tab body from one context finds no parallel wall on another
+        // context -> SHEET_METAL_TAB_NO_PARALLEL_WALL).
+        var sheetMetalModelIds = [];
+        for (var chain in chains)
         {
-            if (!definition.twoOffsets)
+            const modelId = getActiveSheetMetalId(context, chain);
+            if (modelId != undefined && !isIn(modelId, sheetMetalModelIds))
             {
-                // Equal offsets mode: same offset on both ends
-                startOffset = definition.offset;
-                endOffset = definition.offset;
+                sheetMetalModelIds = append(sheetMetalModelIds, modelId);
+            }
+        }
+        if (size(sheetMetalModelIds) > 1)
+        {
+            throw regenError("Select edges from a single sheet metal context. Tabbing edges across different sheet metal contexts is not supported (parts within the same context are fine).", ["edges"]);
+        }
+
+        const multiChain = size(chains) > 1;
+        if (multiChain)
+        {
+            reportFeatureInfo(context, id, size(chains) ~ " edge chains will be tabbed in a single sheet metal update.");
+        }
+
+        // Accumulators so all chains can be merged with one updateSheetMetalGeometry call.
+        var accumExtractedBodies = [];
+        var accumWallFaces = [];
+        var accumExtensionEdges = [];
+        var accumExtensionVertices = [];
+        var successfulChains = 0;
+
+        // Seed for cross-chain width randomization. Each chain advances the seed so that distinct
+        // chains do not receive identical random tab-width patterns.
+        var currentSeed = (definition.enableRandomization && definition.randomSeed != undefined) ? definition.randomSeed : 0;
+
+        for (var chainIndex = 0; chainIndex < size(chains); chainIndex += 1)
+        {
+            // Isolate each chain's parameters so spacing computations do not contaminate one another.
+            var chainDefinition = mergeMaps(definition, { "edges" : chains[chainIndex] });
+
+            if (definition.enableRandomization)
+            {
+                chainDefinition.randomSeed = currentSeed;
+                currentSeed = floor(pseudoRandomNumber(currentSeed));
+            }
+
+            // Single chain: let the specific error surface (preserves original UX).
+            // Multiple chains: skip a problematic chain (silently) so it does not abort the batch.
+            var chainResult;
+            if (multiChain)
+            {
+                chainResult = try silent(processTabChain(context, id + ("chain" ~ chainIndex), chainDefinition));
             }
             else
             {
-                // Two offsets mode: different offsets on each end
-                // oppositeDirection controls which offset goes to which end
-                if (!definition.oppositeDirection)
-                {
-                    startOffset = definition.offset1;
-                    endOffset = definition.offset2;
-                }
-                else
-                {
-                    // Flipped: swap which offset goes where
-                    startOffset = definition.offset2;
-                    endOffset = definition.offset1;
-                }
+                chainResult = processTabChain(context, id + ("chain" ~ chainIndex), chainDefinition);
             }
+
+            if (chainResult == undefined)
+            {
+                if (multiChain)
+                {
+                    reportFeatureInfo(context, id, "Chain " ~ (chainIndex + 1) ~ " was skipped (no tabs could be placed or no adjacent wall was found).");
+                }
+                continue;
+            }
+
+            accumExtractedBodies = append(accumExtractedBodies, chainResult.extractedBodies);
+            accumWallFaces = append(accumWallFaces, chainResult.wallFaces);
+            accumExtensionEdges = append(accumExtensionEdges, chainResult.extensionEdgesTracking);
+            accumExtensionVertices = append(accumExtensionVertices, chainResult.extensionVerticesTracking);
+            successfulChains += 1;
         }
 
+        if (successfulChains == 0)
+        {
+            throw regenError("No tabs could be created on any selected edge chain. Check tab width, spacing, and that the edges have adjacent sheet metal walls.", ["edges"]);
+        }
+
+        // Phase 4 (single sheet metal update): merge every chain's tab surfaces at once.
+        // The accumulated trackings span all chains; mergeTabSurfacesWithSheetMetal already loops
+        // over every tab body internally and matches each to its coincident wall, so a single call
+        // handles all chains and performs only one updateSheetMetalGeometry.
+        definition.extensionEdgesTracking = qUnion(accumExtensionEdges);
+        definition.extensionVerticesTracking = qUnion(accumExtensionVertices);
+
+        mergeTabSurfacesWithSheetMetal(context, id + "mergeTabsWithModel", qUnion(accumExtractedBodies), qUnion(accumWallFaces), definition);
+    }, { mergeScope : qNothing() });
+
+/**
+ * Processes a single edge chain: computes tab spacing, splits the chain at tab boundaries,
+ * extracts the adjacent sheet metal wall surfaces, and extends them to form tab surfaces.
+ *
+ * This is the per-chain worker that lets OnlyTabs modify many edge chains in one feature
+ * execution while performing only a single updateSheetMetalGeometry call (done by the caller).
+ * Modeled on the processJointEntity pattern from sheetMetalStitchCutBend.fs (Bip Joints).
+ *
+ * The merge itself is intentionally deferred to the caller; this function only produces and
+ * tracks the geometry needed for that merge.
+ *
+ * Inputs:
+ *   id         - Operation ID scoped to this chain (e.g. featureId + "chain0").
+ *   definition - Feature definition whose `edges` field has been set to this single chain.
+ * Outputs: Map with keys extractedBodies, wallFaces, extensionEdgesTracking,
+ *          extensionVerticesTracking. Throws a regenError if no tabs can be placed on the chain
+ *          or no adjacent wall surface is found.
+ */
+function processTabChain(context is Context, id is Id, definition is map) returns map
+{
+    // Phase 1: Split the input edges using the edge splitting method
+    const selectedEdgesQuery = qEntityFilter(definition.edges, EntityType.EDGE);
+    const selectedEdges = evaluateQuery(context, selectedEdgesQuery);
+    if (size(selectedEdges) == 0)
+    {
+        throw regenError("Select at least one sheet metal edge", ["edges"]);
+    }
+
+    const orderedEdgeQuery = qUnion(selectedEdges);
+    const path = try silent(constructPath(context, orderedEdgeQuery));
+    if (path == undefined)
+    {
+        throw regenError("Unable to order the selected edges into a continuous chain", ["edges"], definition.edges);
+    }
+
+    // Calculate tab positions along the edge chain (as normalized parameters from 0 to 1)
+    const totalLength = evLength(context, {
+                "entities" : definition.edges
+            });
+
+    // Use centralized spacing calculation from spacingUtils
+    definition = computeCurvePatternSpacing(context, id, definition);
+
+    var tabCount = definition.instanceCount;
+    var tabDomains = []; // Array of {start, end} maps representing tab positions as normalized parameters
+
+    // Get offsets based on mode
+    var startOffset = 0 * meter;
+    var endOffset = 0 * meter;
+
+    if (definition.useOffsets == true)
+    {
+        if (!definition.twoOffsets)
+        {
+            // Equal offsets mode: same offset on both ends
+            startOffset = definition.offset;
+            endOffset = definition.offset;
+        }
+        else
+        {
+            // Two offsets mode: different offsets on each end
+            // oppositeDirection controls which offset goes to which end
+            if (!definition.oppositeDirection)
+            {
+                startOffset = definition.offset1;
+                endOffset = definition.offset2;
+            }
+            else
+            {
+                // Flipped: swap which offset goes where
+                startOffset = definition.offset2;
+                endOffset = definition.offset1;
+            }
+        }
+    }
+
+    if (definition.spacingType == CurvePatternSpacingType.EQUAL)
+    {
+        tabDomains = calculateEqualSpacedDomains(totalLength, definition.tabWidth, tabCount, startOffset, endOffset, definition.endMode);
+    }
+    else if (definition.spacingType == CurvePatternSpacingType.DISTANCE)
+    {
+        tabDomains = calculateDistanceSpacedDomains(totalLength, definition.tabWidth, definition.distance, tabCount, startOffset, endOffset);
+    }
+    else if (definition.spacingType == CurvePatternSpacingType.BESTFIT)
+    {
+        // For BESTFIT, instanceCount is computed by computeCurvePatternSpacing
+        tabDomains = calculateEqualSpacedDomains(totalLength, definition.tabWidth, tabCount, startOffset, endOffset, definition.endMode);
+    }
+
+    // Apply width randomization if enabled
+    if (definition.enableRandomization && definition.widthVariation > 0 * meter)
+    {
+        tabDomains = applyWidthRandomizationToTabDomains(tabDomains, totalLength, definition);
+    }
+
+    if (tabCount == 0 || size(tabDomains) == 0)
+    {
         if (definition.spacingType == CurvePatternSpacingType.EQUAL)
         {
-            tabDomains = calculateEqualSpacedDomains(totalLength, definition.tabWidth, tabCount, startOffset, endOffset, definition.endMode);
+            throw regenError("No tabs can fit with the specified parameters", ["tabWidth", "instanceCount"]);
         }
         else if (definition.spacingType == CurvePatternSpacingType.DISTANCE)
         {
-            tabDomains = calculateDistanceSpacedDomains(totalLength, definition.tabWidth, definition.distance, tabCount, startOffset, endOffset);
+            throw regenError("No tabs can fit with the specified parameters", ["tabWidth", "distance"]);
         }
-        else if (definition.spacingType == CurvePatternSpacingType.BESTFIT)
+        else // BESTFIT
         {
-            // For BESTFIT, instanceCount is computed by computeCurvePatternSpacing
-            tabDomains = calculateEqualSpacedDomains(totalLength, definition.tabWidth, tabCount, startOffset, endOffset, definition.endMode);
+            throw regenError("No tabs can fit with the specified parameters", ["tabWidth", "targetPitch"]);
         }
+    }
 
-        // Apply width randomization if enabled
-        if (definition.enableRandomization && definition.widthVariation > 0 * meter)
+    // Validate that tab domains do not overlap
+    if (!validateDomainsNoOverlap(tabDomains, FRACTION_TOLERANCE))
+    {
+        if (definition.spacingType == CurvePatternSpacingType.EQUAL)
         {
-            tabDomains = applyWidthRandomizationToTabDomains(tabDomains, totalLength, definition);
+            throw regenError("Resultant tabs would overlap. Reduce instance count or tab width to avoid overlapping tabs.", ["instanceCount", "tabWidth"]);
         }
-
-        if (tabCount == 0 || size(tabDomains) == 0)
+        else if (definition.spacingType == CurvePatternSpacingType.DISTANCE)
         {
-            if (definition.spacingType == CurvePatternSpacingType.EQUAL)
-            {
-                throw regenError("No tabs can fit with the specified parameters", ["tabWidth", "instanceCount"]);
-            }
-            else if (definition.spacingType == CurvePatternSpacingType.DISTANCE)
-            {
-                throw regenError("No tabs can fit with the specified parameters", ["tabWidth", "distance"]);
-            }
-            else // BESTFIT
-            {
-                throw regenError("No tabs can fit with the specified parameters", ["tabWidth", "targetPitch"]);
-            }
+            throw regenError("Resultant tabs would overlap. Increase distance or reduce tab width to avoid overlapping tabs.", ["distance", "tabWidth"]);
         }
-
-        // Validate that tab domains do not overlap
-        if (!validateDomainsNoOverlap(tabDomains, FRACTION_TOLERANCE))
+        else // BESTFIT
         {
-            if (definition.spacingType == CurvePatternSpacingType.EQUAL)
-            {
-                throw regenError("Resultant tabs would overlap. Reduce instance count or tab width to avoid overlapping tabs.", ["instanceCount", "tabWidth"]);
-            }
-            else if (definition.spacingType == CurvePatternSpacingType.DISTANCE)
-            {
-                throw regenError("Resultant tabs would overlap. Increase distance or reduce tab width to avoid overlapping tabs.", ["distance", "tabWidth"]);
-            }
-            else // BESTFIT
-            {
-                throw regenError("Resultant tabs would overlap. Increase target pitch or reduce tab width to avoid overlapping tabs.", ["targetPitch", "tabWidth"]);
-            }
+            throw regenError("Resultant tabs would overlap. Increase target pitch or reduce tab width to avoid overlapping tabs.", ["targetPitch", "tabWidth"]);
         }
+    }
 
-        // Use mixInTracking pattern: union the original query with a tracking query
-        // This ensures we capture both affected (split) and unaffected edges
-        const trackedEdges = qUnion([orderedEdgeQuery, startTracking(context, orderedEdgeQuery)]);
+    // Use mixInTracking pattern: union the original query with a tracking query
+    // This ensures we capture both affected (split) and unaffected edges
+    const trackedEdges = qUnion([orderedEdgeQuery, startTracking(context, orderedEdgeQuery)]);
 
-        // Split the edges at tab boundaries
-        const splitParameters = calculateSplitParametersFromTabDomains(tabDomains);
-        const splitInstructions = calculateEdgeSplitInstructionsFromParameters(context, path, splitParameters);
+    // Split the edges at tab boundaries
+    const splitParameters = calculateSplitParametersFromTabDomains(tabDomains);
+    const splitInstructions = calculateEdgeSplitInstructionsFromParameters(context, path, splitParameters);
 
-        if (size(splitInstructions) == 0)
-        {
-            throw regenError("Unable to calculate edge split locations", ["edges"]);
-        }
+    if (size(splitInstructions) == 0)
+    {
+        throw regenError("Unable to calculate edge split locations", ["edges"]);
+    }
 
-        // Perform all split operations and collect their IDs
-        const splitOperationId = id + "splitAllEdges";
-        var splitOperationIndex = 0;
-        for (var instruction in splitInstructions)
-        {
-            try
-            {
-                @opSplitEdges(context, splitOperationId + ("split" ~ toString(splitOperationIndex)), {
-                            "edges" : instruction.edge,
-                            "parameters" : [instruction.parameters]
-                        });
-            }
-            catch
-            {
-                throw regenError("Failed to split the sheet metal edge chain at the requested locations", ["edges"], instruction.edge);
-            }
-            splitOperationIndex += 1;
-        }
-
-        // Identify tab segment edges by checking which domain each edge's midpoint falls into
-        // Use mixInTracking pattern: union original with tracked edges to ensure nothing is missed
-        // Filter to edges only and combine with original to handle both split and unsplit edges
-        const allEdgesAfterSplit = qEntityFilter(qUnion([orderedEdgeQuery, trackedEdges]), EntityType.EDGE);
-
-        const tabSegmentEdges = identifyTabSegmentsByEdgeMidpoints(context, allEdgesAfterSplit, path, totalLength, tabDomains);
-
-        // Phase 2: Copy adjacent sheet metal wall surfaces
-        // Use the identified tab segment edges to find adjacent faces
-        const adjacentFaces = qAdjacent(tabSegmentEdges, AdjacencyType.EDGE, EntityType.FACE);
-        const wallFaces = filterSheetMetalWallFaces(context, adjacentFaces);
-
-        if (size(evaluateQuery(context, wallFaces)) == 0)
-        {
-            throw regenError("No adjacent wall surfaces found to copy", ["edges"]);
-        }
-
-        // Phase 3: Track tab segment edges directly through extraction
-        // Instead of trying to identify wall edges geometrically, we'll track the tab segments
-        // and find the corresponding edges on the extracted surfaces
-
-        // Track the tab segment edges themselves
-        const trackedTabSegments = startTracking(context, tabSegmentEdges);
-
+    // Perform all split operations and collect their IDs
+    const splitOperationId = id + "splitAllEdges";
+    var splitOperationIndex = 0;
+    for (var instruction in splitInstructions)
+    {
         try
         {
-            @opExtractSurface(context, id + "extractWalls", {
-                        "faces" : wallFaces,
-                        "tangentPropagation" : false
+            @opSplitEdges(context, splitOperationId + ("split" ~ toString(splitOperationIndex)), {
+                        "edges" : instruction.edge,
+                        "parameters" : [instruction.parameters]
                     });
         }
         catch
         {
-            throw regenError("Failed to extract adjacent wall surfaces", ["edges"]);
+            throw regenError("Failed to split the sheet metal edge chain at the requested locations", ["edges"], instruction.edge);
         }
+        splitOperationIndex += 1;
+    }
 
-        // After extraction, find edges on extracted surfaces that correspond directly to the tab segments
-        const extractedBodies = qCreatedBy(id + "extractWalls", EntityType.BODY);
-        const extractedEdges = qOwnedByBody(extractedBodies, EntityType.EDGE);
+    // Identify tab segment edges by checking which domain each edge's midpoint falls into
+    // Use mixInTracking pattern: union original with tracked edges to ensure nothing is missed
+    // Filter to edges only and combine with original to handle both split and unsplit edges
+    const allEdgesAfterSplit = qEntityFilter(qUnion([orderedEdgeQuery, trackedEdges]), EntityType.EDGE);
 
-        // Find the tracked tab segments after extraction
-        const trackedTabSegmentsAfterExtraction = qEntityFilter(trackedTabSegments, EntityType.EDGE);
+    const tabSegmentEdges = identifyTabSegmentsByEdgeMidpoints(context, allEdgesAfterSplit, path, totalLength, tabDomains);
 
-        // Filter to only laminar (one-sided/boundary) edges to avoid EXTEND_NON_LAMINAR error
-        const extractedEdgesToExtend = qEdgeTopologyFilter(trackedTabSegmentsAfterExtraction, EdgeTopology.ONE_SIDED);
-        
-        if (size(evaluateQuery(context, extractedEdgesToExtend)) > 0)
+    // Phase 2: Copy adjacent sheet metal wall surfaces
+    // Use the identified tab segment edges to find adjacent faces
+    const adjacentFaces = qAdjacent(tabSegmentEdges, AdjacencyType.EDGE, EntityType.FACE);
+    const wallFaces = filterSheetMetalWallFaces(context, adjacentFaces);
+
+    if (size(evaluateQuery(context, wallFaces)) == 0)
+    {
+        throw regenError("No adjacent wall surfaces found to copy", ["edges"]);
+    }
+
+    // Phase 3: Track tab segment edges directly through extraction
+    // Instead of trying to identify wall edges geometrically, we'll track the tab segments
+    // and find the corresponding edges on the extracted surfaces
+
+    // Track the tab segment edges themselves
+    const trackedTabSegments = startTracking(context, tabSegmentEdges);
+
+    try
+    {
+        @opExtractSurface(context, id + "extractWalls", {
+                    "faces" : wallFaces,
+                    "tangentPropagation" : false
+                });
+    }
+    catch
+    {
+        throw regenError("Failed to extract adjacent wall surfaces", ["edges"]);
+    }
+
+    // After extraction, find edges on extracted surfaces that correspond directly to the tab segments
+    const extractedBodies = qCreatedBy(id + "extractWalls", EntityType.BODY);
+
+    // Find the tracked tab segments after extraction
+    const trackedTabSegmentsAfterExtraction = qEntityFilter(trackedTabSegments, EntityType.EDGE);
+
+    // Filter to only laminar (one-sided/boundary) edges to avoid EXTEND_NON_LAMINAR error
+    const extractedEdgesToExtend = qEdgeTopologyFilter(trackedTabSegmentsAfterExtraction, EdgeTopology.ONE_SIDED);
+
+    if (size(evaluateQuery(context, extractedEdgesToExtend)) > 0)
+    {
+        try
         {
-            try
-            {
-                @opExtendSheetBody(context, id + "extendTabs", {
-                            "endCondition" : ExtendEndType.EXTEND_BLIND,
-                            "entities" : extractedEdgesToExtend,
-                            "tangentPropagation" : false,
-                            "extendDistance" : definition.tabDepth,
-                            "extensionShape" : ExtendSheetShapeType.LINEAR
-                        });
-            }
-            catch
-            {
-                throw regenError("Failed to extend tab edges", ["tabDepth"]);
-            }
+            @opExtendSheetBody(context, id + "extendTabs", {
+                        "endCondition" : ExtendEndType.EXTEND_BLIND,
+                        "entities" : extractedEdgesToExtend,
+                        "tangentPropagation" : false,
+                        "extendDistance" : definition.tabDepth,
+                        "extensionShape" : ExtendSheetShapeType.LINEAR
+                    });
         }
-
-        // Phase 4: Merge the extended surface bodies back with the sheet metal model
-        // Call mergeTabSurfacesWithSheetMetal to integrate the surface bodies using integrated helper functions
-        // The wallFaces we extracted from are the sheet metal definition faces to add material to
-
-        if (!isQueryEmpty(context, extractedBodies))
+        catch
         {
-            // Get the edges created by the extension operation (the new outer edges at tab tips)
-            const extensionCreatedEdges = qCreatedBy(id + "extendTabs", EntityType.EDGE);
-            definition.extensionEdgesTracking = startTracking(context, extensionCreatedEdges);
-            
-            // Get vertices from both sets of edges:
-            // - extractedEdgesToExtend: the top edges of tabs (after extension moved them)
-            // - extensionCreatedEdges: the new edges created by the extension operation
-            const verticesFromExtendedEdges = qAdjacent(extractedEdgesToExtend, AdjacencyType.VERTEX, EntityType.VERTEX);
-            const verticesFromCreatedEdges = qAdjacent(extensionCreatedEdges, AdjacencyType.VERTEX, EntityType.VERTEX);
-            
-            // The intersection gives us vertices that are common to both edge sets
-            // These are the corner vertices at the tips where extended edges meet created edges
-            const cornerVertices = qIntersection([verticesFromExtendedEdges, verticesFromCreatedEdges]);
-            definition.extensionVerticesTracking = startTracking(context, cornerVertices);
-            
-            mergeTabSurfacesWithSheetMetal(context, id + "mergeTabsWithModel", extractedBodies, wallFaces, definition);
+            throw regenError("Failed to extend tab edges", ["tabDepth"]);
         }
-    }, { mergeScope : qNothing() });
+    }
+
+    if (isQueryEmpty(context, extractedBodies))
+    {
+        throw regenError("No tab surfaces were produced for the selected edges", ["edges"]);
+    }
+
+    // Phase 4 prep: capture tracking for the deferred, single merge performed by the caller.
+    // Get the edges created by the extension operation (the new outer edges at tab tips)
+    const extensionCreatedEdges = qCreatedBy(id + "extendTabs", EntityType.EDGE);
+    const extensionEdgesTracking = startTracking(context, extensionCreatedEdges);
+
+    // Get vertices from both sets of edges:
+    // - extractedEdgesToExtend: the top edges of tabs (after extension moved them)
+    // - extensionCreatedEdges: the new edges created by the extension operation
+    const verticesFromExtendedEdges = qAdjacent(extractedEdgesToExtend, AdjacencyType.VERTEX, EntityType.VERTEX);
+    const verticesFromCreatedEdges = qAdjacent(extensionCreatedEdges, AdjacencyType.VERTEX, EntityType.VERTEX);
+
+    // The intersection gives us vertices that are common to both edge sets
+    // These are the corner vertices at the tips where extended edges meet created edges
+    const cornerVertices = qIntersection([verticesFromExtendedEdges, verticesFromCreatedEdges]);
+    const extensionVerticesTracking = startTracking(context, cornerVertices);
+
+    return {
+            "extractedBodies" : extractedBodies,
+            "wallFaces" : wallFaces,
+            "extensionEdgesTracking" : extensionEdgesTracking,
+            "extensionVerticesTracking" : extensionVerticesTracking
+        };
+}
 
 // Calculates split parameters for each edge within a path so a folded edge chain can be split into evenly sized segments.
 // Adapted from custom-features/onlyTabs-refactor/splitSmEdgeChainToSegments.fs
