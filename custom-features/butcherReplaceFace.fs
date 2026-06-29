@@ -120,13 +120,18 @@ export const butcherReplaceFace = defineSheetMetalFeature(function(context is Co
                 });
 
         // ── Stamp rips on any new boundary edges and rebuild the sheet metal ───────
+        // Confine every downstream query to the sheet metal definition bodies. opReplaceFace
+        // edits the master surface in place, but the template face lives on another body; if
+        // any of its entities leaked into the update set, updateSheetMetalGeometry would check
+        // the SM version flag on a non-sheet-metal body and fail.
+        const definitionBodies = qUnion([trackingSMModel, sheetMetalModels]);
         const robustReplaceFaces = qUnion([masterReplaceFaces, trackingFaces]);
-        const modifiedFaces = qAdjacent(robustReplaceFaces, AdjacencyType.EDGE, EntityType.FACE);
-        addRipsForReplacedFaceEdges(context, id, qAdjacent(robustReplaceFaces, AdjacencyType.EDGE, EntityType.EDGE));
+        const modifiedFaces = qAdjacent(robustReplaceFaces, AdjacencyType.EDGE, EntityType.FACE)->qOwnedByBody(definitionBodies);
+        addRipsForReplacedFaceEdges(context, id, qAdjacent(robustReplaceFaces, AdjacencyType.EDGE, EntityType.EDGE)->qOwnedByBody(definitionBodies));
 
-        const toUpdate = assignSMAttributesToNewOrSplitEntities(context, qUnion([trackingSMModel, sheetMetalModels]), initialData, id);
+        const toUpdate = assignSMAttributesToNewOrSplitEntities(context, definitionBodies, initialData, id);
         callSubfeatureAndProcessStatus(id, updateSheetMetalGeometry, context, id + "smUpdate", {
-                    "entities" : qUnion([toUpdate.modifiedEntities, modifiedFaces]),
+                    "entities" : qOwnedByBody(qUnion([toUpdate.modifiedEntities, modifiedFaces]), definitionBodies),
                     "deletedAttributes" : toUpdate.deletedAttributes
                 });
     }, { oppositeSense : false, oppositeDirection : false });
