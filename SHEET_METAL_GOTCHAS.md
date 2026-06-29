@@ -331,9 +331,31 @@ updateSheetMetalGeometry(context, id, {
 
 ---
 
+### 12. Bend Support on Master-Surface Edits — Reject Folds, Recompute Adjacent Angles
+
+**Issue**: A master-surface edit (e.g. `opReplaceFace`) on a wall adjacent to a bend either corrupts the fold or leaves the bend at its old angle so the 3D/flat is geometrically wrong.
+
+**Root Cause**: A replaced/moved wall changes the geometry feeding an adjacent bend, but bend faces store their fold angle as a joint attribute. The op does not recompute that attribute, and editing a bend (or a wall flanking a cylindrical bend) directly invalidates the fold the rebuild can no longer resolve.
+
+**Solution**: Mirror Move Face. Reject the operation up front when a selected master face is a `SMJointType.BEND` or borders a cylindrical bend (`moveFace.fs:848-865`). After the op, call `updateJointAngle` on edges *and* faces adjacent to the edited faces, and grow the rebuild set with faces flanking each cylindrical bend so `updateSheetMetalGeometry` re-folds them (`moveFace.fs:986-991`, `:1021`).
+
+```featurescript
+// before the op: highlight the offending pick instead of failing inside the op
+if (jointAttribute.jointType.value == SMJointType.BEND)
+    throw regenError(ErrorStringEnum.SHEET_METAL_CANNOT_MOVE_BEND_EDGE, ["replaceFaces"], masterFace);
+// after the op: re-fold adjacent bends
+updateJointAngle(context, id, qUnion([qAdjacent(robust, AdjacencyType.EDGE, EntityType.EDGE),
+                                      qAdjacent(robust, AdjacencyType.EDGE, EntityType.FACE)]));
+modifiedFaces = qUnion([modifiedFaces, qAdjacent(qGeometry(modifiedFaces, GeometryType.CYLINDER), AdjacencyType.EDGE, EntityType.FACE)]);
+```
+
+**Rule of thumb**: There are reasons Move Face forbids certain bend selections; follow its gates rather than relaxing them. Always recompute neighbouring joint angles after a wall edit so bends re-fold.
+
+---
+
 ## Version Information
 
-This document is based on FeatureScript 2815 and Onshape Standard Library version 2815.0. Sections 4–10 were added during SM Tab Apply development (FeatureScript 2909). Section 11 was added during Butcher Replace Face development (FeatureScript 2960).
+This document is based on FeatureScript 2815 and Onshape Standard Library version 2815.0. Sections 4–10 were added during SM Tab Apply development (FeatureScript 2909). Sections 11–12 were added during Butcher Replace Face development (FeatureScript 2960).
 
 ## Contributing
 
