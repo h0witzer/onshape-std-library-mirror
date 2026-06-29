@@ -371,7 +371,7 @@ function getBiArcData(startPoint is Vector, startTangent is Vector, endPoint is 
         if (!sample.valid)
             continue;
         if (abs(sample.signedError) < BIARC_TANGENT_MATCH_TOLERANCE)
-            return { valid : true, "junction" : sample.junction, "firstArc" : sample.firstArc, "secondArc" : sample.secondArc };
+            return biArcResultFrom(sample);
         if (previous != undefined && previous.signedError * sample.signedError < 0)
         {
             lowParam = previous.parameter;
@@ -405,5 +405,14 @@ function getBiArcData(startPoint is Vector, startTangent is Vector, endPoint is 
     }
     if (!best.valid)
         return { valid : false };
-    return { valid : true, "junction" : best.junction, "firstArc" : best.firstArc, "secondArc" : best.secondArc };
+    return biArcResultFrom(best);
+}
+
+/**
+ * Pack an evaluateBiArc sample into the public biarc result.  Input: sample
+ * (evaluateBiArc output).  Output: { valid, junction, firstArc, secondArc }.
+ */
+function biArcResultFrom(sample is map) returns map
+{
+    return { valid : true, "junction" : sample.junction, "firstArc" : sample.firstArc, "secondArc" : sample.secondArc };
 }
