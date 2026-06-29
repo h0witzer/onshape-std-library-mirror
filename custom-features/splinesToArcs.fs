@@ -189,6 +189,10 @@ function solveTangentArcChain(context is Context, path is Path, definition is ma
     {
         if (bestCount[i] == undefined)
             continue;
+        // Skip breakpoints that cannot beat or tie the best closure already
+        // found; this avoids the expensive biarc solve on dead-end candidates.
+        if (closingCount != undefined && bestCount[i] + 2 > closingCount)
+            continue;
         const biArc = getBiArcData(samplePoints[i], tangentAt[i], samplePoints[sampleCount], endTangent);
         if (!biArc.valid)
             continue;
@@ -360,10 +364,14 @@ function getBiArcData(startPoint is Vector, startTangent is Vector, endPoint is 
         return { valid : false };
     referenceNormal = normalize(referenceNormal);
 
-    // Scan candidate junctions and bracket the first sign change in the error.
+    // Scan candidate junctions for a sign change in the end-tangent error while
+    // tracking the smallest-magnitude error seen, so a monotonic (no-crossing)
+    // error still yields a usable closing biarc instead of failing outright.
     var previous = undefined;
     var lowParam = undefined;
     var highParam = undefined;
+    var bestSample = { valid : false };
+    var bestError = undefined;
     for (var k = 1; k < BIARC_BRACKET_SAMPLES; k += 1)
     {
         const parameter = k / BIARC_BRACKET_SAMPLES;
@@ -372,6 +380,11 @@ function getBiArcData(startPoint is Vector, startTangent is Vector, endPoint is 
             continue;
         if (abs(sample.signedError) < BIARC_TANGENT_MATCH_TOLERANCE)
             return biArcResultFrom(sample);
+        if (bestError == undefined || abs(sample.signedError) < bestError)
+        {
+            bestError = abs(sample.signedError);
+            bestSample = sample;
+        }
         if (previous != undefined && previous.signedError * sample.signedError < 0)
         {
             lowParam = previous.parameter;
@@ -380,8 +393,10 @@ function getBiArcData(startPoint is Vector, startTangent is Vector, endPoint is 
         }
         previous = { "parameter" : parameter, "signedError" : sample.signedError };
     }
+    // No sign change: return the best junction found so the caller's deviation
+    // gate decides acceptance rather than throwing a chain-not-found error.
     if (lowParam == undefined)
-        return { valid : false };
+        return bestSample;
 
     // Bisect the bracketed interval to the exact junction.
     var lowError = evaluateBiArc(startPoint, startTangent, endPoint, endTangent, lowParam, referenceNormal).signedError;
