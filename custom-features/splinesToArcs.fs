@@ -117,7 +117,7 @@ function approximateCurvesWithArcs(context is Context, id is Id, definition is m
  */
 function addTangentArcChain(sketch is Sketch, plane is Plane, samples is map, tolerance is ValueWithUnits, startCount is number) returns number
 {
-    const breakpoints = segmentSamples(samples.worldPoints, tolerance);
+    const breakpoints = segmentSamples(samples.worldPoints, tolerance, plane.normal);
     const arcCount = size(breakpoints) - 1;
 
     for (var arcIndex = 0; arcIndex < arcCount; arcIndex += 1)
@@ -256,20 +256,23 @@ function maxPlaneDeviation(plane is Plane, samples is map) returns ValueWithUnit
 
 /**
  * Greedily group sample indices into arc spans within tolerance.  Inputs:
- * worldPoints (array of Vector), tolerance (ValueWithUnits).  Each span grows until
- * an interior sample's distance from the span chord exceeds tolerance, so tighter
- * curvature yields shorter spans.  Output: array of sample indices including 0 and
- * the last index; sketch arc tangency is solved separately by the constraints.
+ * worldPoints (array of Vector), tolerance (ValueWithUnits), planeNormal (unit
+ * Vector for the sketch plane).  Each span grows until an interior sample's
+ * distance from the span chord exceeds tolerance, or until the path's turning
+ * direction reverses (an inflection): a single circular arc can only bend one way,
+ * so spanning an inflection would swing the arc the long way around.  Output: array
+ * of sample indices including 0 and the last index; arc tangency is solved
+ * separately by the constraints.
  */
-function segmentSamples(worldPoints is array, tolerance is ValueWithUnits) returns array
+function segmentSamples(worldPoints is array, tolerance is ValueWithUnits, planeNormal is Vector) returns array
 {
     const lastIndex = size(worldPoints) - 1;
     var breakpoints = [0];
     var startIndex = 0;
     while (startIndex < lastIndex)
     {
-        var endIndex = lastIndex;
-        for (var candidate = startIndex + 2; candidate <= lastIndex; candidate += 1)
+        var endIndex = inflectionLimit(worldPoints, planeNormal, startIndex);
+        for (var candidate = startIndex + 2; candidate <= endIndex; candidate += 1)
         {
             if (maxChordDeviation(worldPoints, startIndex, candidate) > tolerance)
             {
@@ -284,6 +287,33 @@ function segmentSamples(worldPoints is array, tolerance is ValueWithUnits) retur
     }
     return breakpoints;
 }
+
+/**
+ * Find the next sample index at or after startIndex where the path's turning
+ * direction reverses.  Inputs: worldPoints (array of Vector), planeNormal (unit
+ * Vector), startIndex (number).  Turning sense is the sign of the chord cross
+ * product projected on the plane normal; the first interior index whose sign
+ * opposes the span's initial sense caps the span there, else lastIndex.  Output:
+ * sample index, used to keep each arc span on one side of an inflection.
+ */
+function inflectionLimit(worldPoints is array, planeNormal is Vector, startIndex is number) returns number
+{
+    const lastIndex = size(worldPoints) - 1;
+    var initialSign = 0;
+    for (var i = startIndex + 1; i < lastIndex; i += 1)
+    {
+        const turn = dot(cross(worldPoints[i] - worldPoints[i - 1], worldPoints[i + 1] - worldPoints[i]), planeNormal);
+        const turnSign = turn > 0 * meter * meter ? 1 : (turn < 0 * meter * meter ? -1 : 0);
+        if (turnSign == 0)
+            continue;
+        if (initialSign == 0)
+            initialSign = turnSign;
+        else if (turnSign != initialSign)
+            return i;
+    }
+    return lastIndex;
+}
+
 
 /**
  * Worst perpendicular distance of interior samples from the chord between two
