@@ -303,62 +303,107 @@ function maxBiArcDeviation(samplePoints is array, startIndex is number, endIndex
     return maxDeviation;
 }
 
-// Cosine-error threshold for the biarc junction bisection: the end tangent is
-// considered exactly matched once 1 - dot(endDir, endTangent) falls below this.
-const BIARC_TANGENT_MATCH_TOLERANCE = 1e-6;
+// Angular threshold for the biarc junction search: the end tangent is considered
+// matched once the signed end-tangent error falls below this.
+const BIARC_TANGENT_MATCH_TOLERANCE = 1e-6 * radian;
+
+// Number of parameter samples used to bracket the biarc junction before bisecting.
+const BIARC_BRACKET_SAMPLES = 64;
+// Bisection refinement iterations once a sign-changing bracket is found.
+const BIARC_BISECTION_STEPS = 40;
+
+/**
+ * Evaluate the biarc for a single junction parameter along the chord.
+ * Inputs: startPoint, startTangent, endPoint, endTangent (Vectors), parameter
+ * (number in 0..1), referenceNormal (unit Vector for signed-angle orientation).
+ * Output: { valid, firstArc, secondArc, junction, signedError } where signedError
+ * is the oriented angle (radians) between the second arc's terminal tangent and
+ * the requested end tangent; it crosses zero at an exact biarc, so the caller can
+ * bracket on its sign.  valid is false when either arc cannot be built.
+ */
+function evaluateBiArc(startPoint is Vector, startTangent is Vector, endPoint is Vector, endTangent is Vector, parameter is number, referenceNormal is Vector) returns map
+{
+    const junction = startPoint + parameter * (endPoint - startPoint);
+    const firstArc = getTangentArcData(startPoint, startTangent, junction);
+    if (!firstArc.valid)
+        return { valid : false };
+    const firstTangent = arcEndTangentOf(firstArc, junction);
+    const secondArc = getTangentArcData(junction, firstTangent, endPoint);
+    if (!secondArc.valid)
+        return { valid : false };
+    const endDir = arcEndTangentOf(secondArc, endPoint);
+    const signedError = atan2(dot(cross(endDir, endTangent), referenceNormal), dot(endDir, endTangent));
+    return { valid : true, "firstArc" : firstArc, "secondArc" : secondArc, "junction" : junction, "signedError" : signedError };
+}
 
 /**
  * Compute the two-arc (biarc) chain that joins a start point with a fixed start
  * tangent to an end point with a fixed end tangent, hitting both tangents exactly.
  * Inputs: startPoint, startTangent, endPoint, endTangent (Vectors).  A single arc
  * cannot pin both tangents through fixed endpoints, so the free junction is slid
- * along the chord by bisection until the second arc's terminal tangent matches the
- * requested end tangent.  Output: { valid, junction, firstArc, secondArc } where
- * each arc is getTangentArcData output; valid is false if no junction yields two
- * buildable arcs that meet the end tangent.  Mirrors the bisection in custom
- * feature 3dArcUtils.fs opBiArc3d, but stays in math so the DP can score it cheaply.
+ * along the chord until the second arc's terminal tangent matches the requested
+ * end tangent.  The end-tangent error is signed about the curve's bending plane,
+ * so the junction is found by scanning for a sign change then bisecting that
+ * bracket.  Output: { valid, junction, firstArc, secondArc } where each arc is
+ * getTangentArcData output; valid is false if no junction yields two buildable
+ * arcs that meet the end tangent.
  */
 function getBiArcData(startPoint is Vector, startTangent is Vector, endPoint is Vector, endTangent is Vector) returns map
 {
     const chord = endPoint - startPoint;
-    var parameter = 0.5;
-    var step = 0.25;
-    var firstArc = { valid : false };
-    var secondArc = { valid : false };
-    var junction = startPoint;
-    var matched = false;
-    for (var i = 0; i < 40; i += 1)
+    // Orientation axis for the signed end-tangent error; fall back to the chord
+    // plane when the two tangents are parallel.
+    var referenceNormal = cross(startTangent, endTangent);
+    if (norm(referenceNormal) < 1e-6)
+        referenceNormal = cross(startTangent, chord);
+    if (norm(referenceNormal) < 1e-6 * meter)
+        return { valid : false };
+    referenceNormal = normalize(referenceNormal);
+
+    // Scan candidate junctions and bracket the first sign change in the error.
+    var previous = undefined;
+    var lowParam = undefined;
+    var highParam = undefined;
+    for (var k = 1; k < BIARC_BRACKET_SAMPLES; k += 1)
     {
-        junction = startPoint + parameter * chord;
-        firstArc = getTangentArcData(startPoint, startTangent, junction);
-        if (!firstArc.valid)
-        {
-            parameter += step;
-            step *= 0.5;
+        const parameter = k / BIARC_BRACKET_SAMPLES;
+        const sample = evaluateBiArc(startPoint, startTangent, endPoint, endTangent, parameter, referenceNormal);
+        if (!sample.valid)
             continue;
-        }
-        const firstTangent = arcEndTangentOf(firstArc, junction);
-        secondArc = getTangentArcData(junction, firstTangent, endPoint);
-        if (!secondArc.valid)
+        if (abs(sample.signedError) < BIARC_TANGENT_MATCH_TOLERANCE)
+            return { valid : true, "junction" : sample.junction, "firstArc" : sample.firstArc, "secondArc" : sample.secondArc };
+        if (previous != undefined && previous.signedError * sample.signedError < 0)
         {
-            parameter -= step;
-            step *= 0.5;
-            continue;
-        }
-        const endDir = arcEndTangentOf(secondArc, endPoint);
-        const diff = dot(endDir, endTangent) - 1;
-        if (abs(diff) < BIARC_TANGENT_MATCH_TOLERANCE)
-        {
-            matched = true;
+            lowParam = previous.parameter;
+            highParam = parameter;
             break;
         }
-        if (diff > 0)
-            parameter += step;
-        else
-            parameter -= step;
-        step *= 0.5;
+        previous = { "parameter" : parameter, "signedError" : sample.signedError };
     }
-    if (!matched || !firstArc.valid || !secondArc.valid)
+    if (lowParam == undefined)
         return { valid : false };
-    return { valid : true, "junction" : junction, "firstArc" : firstArc, "secondArc" : secondArc };
+
+    // Bisect the bracketed interval to the exact junction.
+    var lowError = evaluateBiArc(startPoint, startTangent, endPoint, endTangent, lowParam, referenceNormal).signedError;
+    var best = { valid : false };
+    for (var i = 0; i < BIARC_BISECTION_STEPS; i += 1)
+    {
+        const mid = (lowParam + highParam) / 2;
+        const sample = evaluateBiArc(startPoint, startTangent, endPoint, endTangent, mid, referenceNormal);
+        if (!sample.valid)
+            return { valid : false };
+        best = sample;
+        if (abs(sample.signedError) < BIARC_TANGENT_MATCH_TOLERANCE)
+            break;
+        if (lowError * sample.signedError < 0)
+            highParam = mid;
+        else
+        {
+            lowParam = mid;
+            lowError = sample.signedError;
+        }
+    }
+    if (!best.valid)
+        return { valid : false };
+    return { valid : true, "junction" : best.junction, "firstArc" : best.firstArc, "secondArc" : best.secondArc };
 }
