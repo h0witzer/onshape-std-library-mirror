@@ -260,7 +260,7 @@ function throwIfReplacingBend(context is Context, masterReplaceFaces is Query)
     for (var masterFace in evaluateQuery(context, masterReplaceFaces))
     {
         // The face itself carries a bend joint attribute.
-        const jointAttribute = try silent(getJointAttribute(context, masterFace));
+        const jointAttribute = try(getJointAttribute(context, masterFace));
         if (jointAttribute != undefined && jointAttribute.jointType != undefined && jointAttribute.jointType.value == SMJointType.BEND)
         {
             throw regenError(ErrorStringEnum.SHEET_METAL_CANNOT_MOVE_BEND_EDGE, ["replaceFaces"], masterFace);
@@ -268,7 +268,7 @@ function throwIfReplacingBend(context is Context, masterReplaceFaces is Query)
 
         // The face borders a cylindrical bend, whose fold would be distorted by the replace.
         const adjacentCylinderFaces = qGeometry(qAdjacent(masterFace, AdjacencyType.EDGE, EntityType.FACE), GeometryType.CYLINDER);
-        const adjacentJointAttribute = try silent(getJointAttribute(context, adjacentCylinderFaces));
+        const adjacentJointAttribute = try(getJointAttribute(context, adjacentCylinderFaces));
         if (adjacentJointAttribute != undefined && adjacentJointAttribute.jointType != undefined && adjacentJointAttribute.jointType.value == SMJointType.BEND)
         {
             throw regenError(ErrorStringEnum.SHEET_METAL_MOVE_FACE_NEXT_TO_CYLINDER_BEND, ["replaceFaces"], masterFace);
