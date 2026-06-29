@@ -25,12 +25,16 @@ import(path : "97730412fb61f53dcd526c08", version : "e7466f17a5e8f9cda49e262e");
  * search over candidate breakpoints finds a globally minimal-count chain rather
  * than a greedy one.
  *
- * Both ends are tangent to the source: arc one is seeded with the curve's start
- * tangent, and chains whose terminal arc does not match the curve's end tangent
- * within the angular tolerance are rejected.  Multiple curves are solved in input
- * order and stitched so each curve's end tangent feeds the next, yielding one
- * continuous chain across the whole selection.  Intended for frozen import
- * geometry, so the per-rebuild solve cost is acceptable.
+ * Both ends are strictly tangent to the source: arc one is seeded with the
+ * curve's start tangent, and the chain is closed with a biarc whose terminal
+ * tangent exactly equals the curve's end tangent, so there is no end-tangent
+ * tolerance to trade off.  A single tangent arc through two fixed endpoints has
+ * only its start tangent free, so it cannot also pin its end tangent; the closing
+ * biarc adds the free junction that makes exact two-tangent closure possible.
+ * Multiple curves are solved in input order and stitched so each curve's exact
+ * end tangent feeds the next, yielding one continuous chain across the whole
+ * selection.  Intended for frozen import geometry, so the per-rebuild solve cost
+ * is acceptable.
  */
 annotation { "Feature Type Name" : "Splines to arcs" }
 export const splinesToArcs = defineFeature(function(context is Context, id is Id, definition is map)
@@ -46,13 +50,10 @@ export const splinesToArcs = defineFeature(function(context is Context, id is Id
         // More samples = better breakpoint resolution and fidelity, but the DP is
         // O(sampleCount^2) arc evaluations; the original feature used 60.
         isInteger(definition.sampleCount, { (unitless) : [20, 80, 400] } as IntegerBoundSpec);
-
-        annotation { "Name" : "End tangent tolerance" }
-        isAngle(definition.endTangentTolerance, { (degree) : [0.1, 5, 30] } as AngleBoundSpec);
     }
     {
         approximateCurvesWithArcs(context, id, definition);
-    }, { tolerance : 0.001 * meter, sampleCount : 80, endTangentTolerance : 5 * degree });
+    }, { tolerance : 0.001 * meter, sampleCount : 80 });
 
 // =================== Top-level solve and chain construction ===================
 
@@ -60,9 +61,8 @@ export const splinesToArcs = defineFeature(function(context is Context, id is Id
  * Solve each connected source path with a tangent-arc DP and build the arcs.
  *
  * Fields used from `definition`: curves (Query), tolerance (ValueWithUnits),
- * sampleCount (number), endTangentTolerance (ValueWithUnits angle).
- * Reports the worst measured deviation across the whole chain as a computed
- * parameter so it can be surfaced to the user.
+ * sampleCount (number).  Reports the worst measured deviation across the whole
+ * chain as a computed parameter so it can be surfaced to the user.
  */
 function approximateCurvesWithArcs(context is Context, id is Id, definition is map)
 {
@@ -115,10 +115,13 @@ function approximateCurvesWithArcs(context is Context, id is Id, definition is m
  * Inputs: path (Path), definition (feature map), incomingTangent (Vector or
  * undefined for the free start tangent).  Bulk-samples the path once, then runs
  * a forward DP keyed on breakpoint index, carrying the deterministic incoming
- * tangent of the best chain reaching each breakpoint.  Tie-breaks equal counts
- * on summed deviation for smoothness, and rejects terminal arcs that miss the
- * path end tangent by more than endTangentTolerance.
- * Returns { breakpoints, samplePoints, arcs, endTangent }.
+ * tangent of the best chain reaching each breakpoint.  Interior breakpoints are
+ * joined by single tangent arcs (start tangent fixed, end tangent free); the
+ * chain is then closed by a biarc whose terminal tangent equals the path end
+ * tangent exactly, so both ends are strictly tangent with no angular tolerance.
+ * Tie-breaks equal counts on summed deviation for smoothness.
+ * Returns { samplePoints, arcs, endTangent }, where endTangent is the exact path
+ * end tangent.
  */
 function solveTangentArcChain(context is Context, path is Path, definition is map, incomingTangent) returns map
 {
@@ -146,12 +149,14 @@ function solveTangentArcChain(context is Context, path is Path, definition is ma
     bestCount[0] = 0;
     tangentAt[0] = startTangent;
 
+    // Single tangent arcs reach the interior breakpoints; the terminal index
+    // sampleCount is intentionally left for the strict biarc closure below.
     for (var i = 0; i < sampleCount; i += 1)
     {
         if (bestCount[i] == undefined)
             continue;
         const tangent = tangentAt[i];
-        for (var j = i + 1; j <= sampleCount; j += 1)
+        for (var j = i + 1; j < sampleCount; j += 1)
         {
             const arc = getTangentArcData(samplePoints[i], tangent, samplePoints[j]);
             if (!arc.valid)
@@ -160,9 +165,6 @@ function solveTangentArcChain(context is Context, path is Path, definition is ma
             if (deviation > definition.tolerance)
                 continue;
             const arcEndTangent = arcEndTangentOf(arc, samplePoints[j]);
-            // Reject the final arc unless it lands on the path end tangent.
-            if (j == sampleCount && abs(angleBetween(arcEndTangent, endTangent)) > definition.endTangentTolerance)
-                continue;
             const count = bestCount[i] + 1;
             const summed = bestDeviation[i] + deviation;
             if (bestCount[j] == undefined || count < bestCount[j] ||
@@ -176,12 +178,41 @@ function solveTangentArcChain(context is Context, path is Path, definition is ma
         }
     }
 
-    if (bestCount[sampleCount] == undefined)
+    // Close from every reachable interior breakpoint with a biarc that hits the
+    // path end tangent exactly; pick the closure that minimizes arc count, then
+    // summed deviation.  The biarc adds two arcs.
+    var closingFrom = undefined;
+    var closingBiArc = undefined;
+    var closingCount = undefined;
+    var closingDeviation = 0 * meter;
+    for (var i = 0; i < sampleCount; i += 1)
+    {
+        if (bestCount[i] == undefined)
+            continue;
+        const biArc = getBiArcData(samplePoints[i], tangentAt[i], samplePoints[sampleCount], endTangent);
+        if (!biArc.valid)
+            continue;
+        const deviation = maxBiArcDeviation(samplePoints, i, sampleCount, biArc);
+        if (deviation > definition.tolerance)
+            continue;
+        const count = bestCount[i] + 2;
+        const summed = bestDeviation[i] + deviation;
+        if (closingCount == undefined || count < closingCount ||
+            (count == closingCount && summed < closingDeviation))
+        {
+            closingFrom = i;
+            closingBiArc = biArc;
+            closingCount = count;
+            closingDeviation = summed;
+        }
+    }
+
+    if (closingFrom == undefined)
         throw regenError("No arc chain meets the deviation tolerance; increase tolerance or sample count.", ["tolerance", "sampleCount"]);
 
-    // Reconstruct breakpoints from the end backwards.
-    var breakpoints = [sampleCount];
-    var cursor = sampleCount;
+    // Reconstruct interior breakpoints from the biarc start backwards.
+    var breakpoints = [closingFrom];
+    var cursor = closingFrom;
     while (cursor != 0)
     {
         cursor = bestPrevious[cursor];
@@ -199,8 +230,11 @@ function solveTangentArcChain(context is Context, path is Path, definition is ma
         arcs = append(arcs, { "start" : start, "mid" : arc.mid, "end" : end });
         tangent = arcEndTangentOf(arc, end);
     }
+    // Strict end tangency: the closing biarc's two arcs land on the exact end tangent.
+    arcs = append(arcs, { "start" : samplePoints[closingFrom], "mid" : closingBiArc.firstArc.mid, "end" : closingBiArc.junction });
+    arcs = append(arcs, { "start" : closingBiArc.junction, "mid" : closingBiArc.secondArc.mid, "end" : samplePoints[sampleCount] });
 
-    return { "breakpoints" : breakpoints, "samplePoints" : samplePoints, "arcs" : arcs, "endTangent" : tangent };
+    return { "samplePoints" : samplePoints, "arcs" : arcs, "endTangent" : endTangent };
 }
 
 // =================== Geometry helpers ===================
@@ -238,4 +272,93 @@ function maxArcDeviation(samplePoints is array, startIndex is number, endIndex i
             maxDeviation = deviation;
     }
     return maxDeviation;
+}
+
+/**
+ * Radial/axial distance of a single point to an unbuilt arc.  Inputs: point
+ * (Vector), arcData (center, radius, normal).  Output: distance as ValueWithUnits.
+ */
+function pointArcDeviation(point is Vector, arcData is map) returns ValueWithUnits
+{
+    const offset = point - arcData.center;
+    const axial = dot(offset, arcData.normal);
+    const planar = offset - axial * arcData.normal;
+    const radial = abs(norm(planar) - arcData.radius);
+    return sqrt(radial * radial + axial * axial);
+}
+
+/**
+ * Worst deviation between path samples in [startIndex, endIndex] and a closing
+ * biarc.  Inputs: samplePoints (array of Vector), startIndex/endIndex (number),
+ * biArc (firstArc, secondArc, junction).  Output: max distance as ValueWithUnits,
+ * each sample scored against whichever of the two arcs it lies closer to.
+ */
+function maxBiArcDeviation(samplePoints is array, startIndex is number, endIndex is number, biArc is map) returns ValueWithUnits
+{
+    var maxDeviation = 0 * meter;
+    for (var k = startIndex + 1; k < endIndex; k += 1)
+    {
+        const toFirst = pointArcDeviation(samplePoints[k], biArc.firstArc);
+        const toSecond = pointArcDeviation(samplePoints[k], biArc.secondArc);
+        const deviation = min(toFirst, toSecond);
+        if (deviation > maxDeviation)
+            maxDeviation = deviation;
+    }
+    return maxDeviation;
+}
+
+/**
+ * Compute the two-arc (biarc) chain that joins a start point with a fixed start
+ * tangent to an end point with a fixed end tangent, hitting both tangents exactly.
+ * Inputs: startPoint, startTangent, endPoint, endTangent (Vectors).  A single arc
+ * cannot pin both tangents through fixed endpoints, so the free junction is slid
+ * along the chord by bisection until the second arc's terminal tangent matches the
+ * requested end tangent.  Output: { valid, junction, firstArc, secondArc } where
+ * each arc is getTangentArcData output; valid is false if no junction yields two
+ * buildable arcs that meet the end tangent.  Mirrors the bisection in custom
+ * feature 3dArcUtils.fs opBiArc3d, but stays in math so the DP can score it cheaply.
+ */
+function getBiArcData(startPoint is Vector, startTangent is Vector, endPoint is Vector, endTangent is Vector) returns map
+{
+    const chord = endPoint - startPoint;
+    var parameter = 0.5;
+    var step = 0.25;
+    var firstArc = { valid : false };
+    var secondArc = { valid : false };
+    var junction = startPoint;
+    var matched = false;
+    for (var i = 0; i < 40; i += 1)
+    {
+        junction = startPoint + parameter * chord;
+        firstArc = getTangentArcData(startPoint, startTangent, junction);
+        if (!firstArc.valid)
+        {
+            parameter += step;
+            step *= 0.5;
+            continue;
+        }
+        const firstTangent = arcEndTangentOf(firstArc, junction);
+        secondArc = getTangentArcData(junction, firstTangent, endPoint);
+        if (!secondArc.valid)
+        {
+            parameter -= step;
+            step *= 0.5;
+            continue;
+        }
+        const endDir = arcEndTangentOf(secondArc, endPoint);
+        const diff = dot(endDir, endTangent) - 1;
+        if (abs(diff) < 1e-6)
+        {
+            matched = true;
+            break;
+        }
+        if (diff > 0)
+            parameter += step;
+        else
+            parameter -= step;
+        step *= 0.5;
+    }
+    if (!matched || !firstArc.valid || !secondArc.valid)
+        return { valid : false };
+    return { valid : true, "junction" : junction, "firstArc" : firstArc, "secondArc" : secondArc };
 }
