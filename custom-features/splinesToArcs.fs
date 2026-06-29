@@ -32,7 +32,7 @@ annotation { "Feature Type Name" : "Splines to arcs" }
 export const splinesToArcs = defineFeature(function(context is Context, id is Id, definition is map)
     precondition
     {
-        annotation { "Name" : "Curves", "Filter" : EntityType.EDGE || (EntityType.BODY && BodyType.WIRE && SketchObject.NO) }
+        annotation { "Name" : "Curves", "Filter" : EntityType.EDGE || (EntityType.BODY && BodyType.WIRE) }
         definition.curves is Query;
 
         annotation { "Name" : "Maximum deviation" }
@@ -153,7 +153,9 @@ function pinEndTangent(sketch is Sketch, plane is Plane, endpointId is string, a
 {
     const baseId = arcId ~ "End";
     const planePoint = worldToPlane(plane, worldPoint);
-    const planeDirection = worldToPlane(plane, worldPoint + worldTangent) - planePoint;
+    // worldTangent is a unit (unitless) direction; scale by a length so it can be
+    // added to the length-valued worldPoint when mapping into plane coordinates.
+    const planeDirection = worldToPlane(plane, worldPoint + worldTangent * 1 * meter) - planePoint;
     skLineSegment(sketch, baseId ~ "Line", { "start" : planePoint, "end" : planePoint + planeDirection, "construction" : true });
     skConstraint(sketch, baseId ~ "Fix", { "constraintType" : ConstraintType.FIX, "localFirst" : baseId ~ "Line" });
     skConstraint(sketch, baseId ~ "OnPoint", { "constraintType" : ConstraintType.COINCIDENT,
