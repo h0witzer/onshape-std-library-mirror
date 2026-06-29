@@ -308,9 +308,32 @@ If `copyPropertiesAndAttributes` is `true`, the copies would be found by role-at
 
 ---
 
+### 11. Master Surface Edits Don't Show Until a Later SM Tool — `associatedChanges` Must Be Body-Wide Face Tracking
+
+**Issue**: A feature edits the SM master surface definition (e.g. `opReplaceFace`, `opOffsetFace`, `opMoveFace`) and builds without error, but the 3D solid and flat pattern do not update. The change only becomes visible after a *different* sheet metal tool (such as Move Face) is applied, which dirties the master surfaces again. This has bitten Bip Joints and other custom features.
+
+**Root Cause**: `updateSheetMetalGeometry` rebuilds the 3D/flat representation only for the entities reported in `associatedChanges`. Tracking queries anchored to the *specific selected faces* resolve to empty after the operation, because ops like `opReplaceFace` delete and regenerate those faces — the tracking anchor is lost, so the change set is empty and the rebuild is deferred.
+
+**Solution**: Snapshot **all faces of the SM definition body** with `startTracking` **before** the op, and pass that as `associatedChanges`. Body-wide tracking survives face regeneration. This mirrors `sheetMetalTab.fs:78` (`startTracking(context, qOwnedByBody(sheetMetalBodiesQuery, EntityType.FACE))`) and `moveFace.fs:1022-1027`.
+
+```featurescript
+const sheetMetalModels = qOwnerBody(masterFaces);
+const associatedChanges = startTracking(context, qOwnedByBody(sheetMetalModels, EntityType.FACE)); // before the op
+op...(context, id, { ... });
+const toUpdate = assignSMAttributesToNewOrSplitEntities(context, sheetMetalModels, initialData, id);
+updateSheetMetalGeometry(context, id, {
+    "entities" : qUnion([toUpdate.modifiedEntities, associatedChanges]),
+    "deletedAttributes" : toUpdate.deletedAttributes,
+    "associatedChanges" : associatedChanges });
+```
+
+**Rule of thumb**: If a master-surface edit doesn't trigger a rebuild, your `associatedChanges` is too narrow or was anchored to entities the op destroyed. Always track the whole body's faces up front.
+
+---
+
 ## Version Information
 
-This document is based on FeatureScript 2815 and Onshape Standard Library version 2815.0. Sections 4–10 were added during SM Tab Apply development (FeatureScript 2909).
+This document is based on FeatureScript 2815 and Onshape Standard Library version 2815.0. Sections 4–10 were added during SM Tab Apply development (FeatureScript 2909). Section 11 was added during Butcher Replace Face development (FeatureScript 2960).
 
 ## Contributing
 

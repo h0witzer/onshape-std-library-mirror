@@ -97,10 +97,15 @@ export const butcherReplaceFace = defineSheetMetalFeature(function(context is Co
         }
 
         // ── Locate the SM definition bodies and snapshot their state ───────────────
+        // Track every face of the SM definition body (not just the selected faces), started
+        // BEFORE opReplaceFace. opReplaceFace deletes and regenerates the targeted faces, so a
+        // tracking query anchored only to masterReplaceFaces resolves empty afterward; the
+        // SM rebuild then sees no associated change and defers — the 3D/flat only refresh once a
+        // later tool dirties the master surfaces. Body-wide face tracking survives the regenerate.
         const sheetMetalModels = qOwnerBody(masterReplaceFaces);
         const initialData = getInitialEntitiesAndAttributes(context, sheetMetalModels);
         const trackingSMModel = startTracking(context, sheetMetalModels);
-        const trackingFaces = startTracking(context, masterReplaceFaces);
+        const associatedChanges = startTracking(context, qOwnedByBody(sheetMetalModels, EntityType.FACE));
 
         // ── Manipulator on the template face so the offset can be dragged ───────────
         // try mirrors replaceFace.fs: skip the manipulator if the template face has no
@@ -125,11 +130,7 @@ export const butcherReplaceFace = defineSheetMetalFeature(function(context is Co
         // any of its entities leaked into the update set, updateSheetMetalGeometry would check
         // the SM version flag on a non-sheet-metal body and fail.
         const definitionBodies = qUnion([trackingSMModel, sheetMetalModels]);
-        const robustReplaceFaces = qUnion([masterReplaceFaces, trackingFaces]);
-        // The replaced faces are the entities that actually changed, so they must drive the
-        // rebuild — adjacent faces alone leave updateSheetMetalGeometry believing nothing moved,
-        // which is why the 3D and flat patterns only refreshed after a later Move Face.
-        const associatedChanges = qOwnedByBody(robustReplaceFaces, definitionBodies);
+        const robustReplaceFaces = qUnion([masterReplaceFaces, associatedChanges]);
         const modifiedFaces = qOwnedByBody(qAdjacent(robustReplaceFaces, AdjacencyType.EDGE, EntityType.FACE), definitionBodies);
         addRipsForReplacedFaceEdges(context, id, qAdjacent(robustReplaceFaces, AdjacencyType.EDGE, EntityType.EDGE)->qOwnedByBody(definitionBodies));
 
