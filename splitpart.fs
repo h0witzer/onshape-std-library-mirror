@@ -8,22 +8,16 @@ export import(path : "onshape/std/projectiontype.gen.fs", version : "✨");
 export import(path : "onshape/std/query.fs", version : "✨");
 
 // Imports used internally
-import(path : "onshape/std/attributes.fs", version : "✨");
-import(path : "onshape/std/boundingtype.gen.fs", version : "✨");
 import(path : "onshape/std/boolean.fs", version : "✨");
 import(path : "onshape/std/containers.fs", version : "✨");
 import(path : "onshape/std/evaluate.fs", version : "✨");
 import(path : "onshape/std/feature.fs", version : "✨");
 import(path : "onshape/std/manipulator.fs", version : "✨");
-import(path : "onshape/std/math.fs", version : "✨");
 import(path : "onshape/std/sheetMetalAttribute.fs", version : "✨");
-import(path : "onshape/std/sheetMetalUtils.fs", version : "✨");
 import(path : "onshape/std/sketch.fs", version : "✨");
 import(path : "onshape/std/splitoperationkeeptype.gen.fs", version : "✨");
 import(path : "onshape/std/surfaceGeometry.fs", version : "✨");
-import(path : "onshape/std/tool.fs", version : "✨");
 import(path : "onshape/std/topologyUtils.fs", version : "✨");
-import(path : "onshape/std/vector.fs", version : "✨");
 
 /**
  * Defines whether a `split` should split whole parts, or just faces.
@@ -80,7 +74,7 @@ export const splitPart = defineFeature(function(context is Context, id is Id, de
             definition.faceTargets is Query;
 
             annotation { "Name" : "Entities to split with",
-                        "Filter" : (EntityType.EDGE && SketchObject.YES && ConstructionObject.NO) || //Sketch edge
+                        "Filter" : (EntityType.EDGE && ConstructionObject.NO) ||
                             (EntityType.BODY && (BodyType.SHEET || BodyType.WIRE) && ModifiableEntityOnly.NO && SketchObject.NO) || //Sheet Body (surface) or Wire Body (curve)
                             EntityType.FACE || //Face or Construction Plane
                             BodyType.MATE_CONNECTOR

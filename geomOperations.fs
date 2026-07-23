@@ -17,8 +17,6 @@ FeatureScript ✨; /* Automatically generated version */
  */
 import(path : "onshape/std/containers.fs", version : "✨");
 import(path : "onshape/std/context.fs", version : "✨");
-import(path : "onshape/std/curveGeometry.fs", version : "✨");
-import(path : "onshape/std/surfaceGeometry.fs", version : "✨");
 import(path : "onshape/std/query.fs", version : "✨");
 import(path : "onshape/std/valueBounds.fs", version : "✨");
 import(path : "onshape/std/vector.fs", version : "✨");
@@ -176,6 +174,7 @@ export const opBoolean = function(context is Context, id is Id, definition is ma
  *      @field vDerivativeInfo {array} :  @optional An array of maps analogous to uDerivativeInfo, but for v profiles.
  *      @field showIsocurves {boolean} : Show graphical representation of a subset of isoparameteric curves on each face of the created boundary surface. Default `false`. @optional
  *      @field curveCount {number} : When `showIsocurves` is `true`, the number of curves to draw in each direction of each face's grid. Default `10`. @optional
+ *      @field useProfileApproximation {boolean} : If true, the profiles will be reapproximated if it is likely to improve quality. Default is true. @optional
  * }}
  */
 export const opBoundarySurface = function(context is Context, id is Id, definition is map)
@@ -477,6 +476,38 @@ export const opEnclose = function(context is Context, id is Id, definition is ma
  *      @field reFillet {boolean} : @optional
  *              `true` to attempt to defillet draft faces before the draft and reapply the fillets
  *              after. Default is `false`.
+ *      @field inferReferences {boolean} : @optional
+ *              `true` to replicate the reference face selection of the [draft] feature for PARTING_LINE draft. Default is `false`.
+ *      @field inferReferenceOptions {{
+ *          @field partingLineSides {PartingLineSides}: @requiredif { `inferReferences` is `true` }
+ *                  Specifies whether to draft one or both faces adjacent to the parting edges, and whether the draft should
+ *                  be symmetrical if drafting both faces.  See [PartingLineSides].
+ *          @field secondAngle {ValueWithUnits}: @requiredif { `PartingLineSides` is `TWO_SIDED` and `inferReferences` is `true` }
+ *                  The second draft angle for a `TWO_SIDED` `PARTING_LINE` draft. Must be between 0 and 89.9 degrees.
+ *                  Note that when using `TWO_SIDED`, `angle` will be applied to faces that are away from the pull direction,
+ *                  from the perspective of the edge.  `secondAngle` will be applied to faces that are along the pull direction,
+ *                  from the perspective of the edge. @ex `3 * degree`.
+ *          @field alongPull {boolean}: @optional
+ *                  Specifies which face will be drafted in a `ONE_SIDED` `PARTING_LINE` draft if `inferReferences` is `true`.  If `true`, the face which
+ *                  is more along the pull direction from the perspective of the parting edge is drafted.  If `false`, the
+ *                  face which is more away from the pull direction from the perspective of the parting edge is drafted.
+ *          @field negateSecondPullDirection {boolean}: @optional
+ *                  If `inferReferences` is `true`, determines whether the pull direction of the draft should be reversed for the second angle of a `TWO_SIDED` draft.
+ *                  In equivalent terms, whether the draft should use `-secondAngle` as the second draft angle (`true`), or
+ *                  `secondAngle` as the second draft angle (`false`).
+ *                  Default is `false`.
+ *          @field negatePullVec {boolean}: @optional
+ *                  If `inferReferences` is `true`, whether the pull direction of the draft should be reversed.  In equivalent terms, whether the draft
+ *                  should use `-angle` as the draft angle (`true`), or `angle` as the draft angle (`false`).
+ *                  Default is `false`.
+ *          @field partingEdges {Query}: @requiredif { `draftFeatureType` is `PARTING_LINE` and `inferReferences` is `true` }
+ *                  Edges defining the parting line of the draft. These edges will remain unchanged as some adjacent faces,
+ *                  as defined by `partingLineSides`, are drafted.
+ *          @field hintFaces {Query} : @optional
+ *                  For Onshape internal use. For `PARTING_LINE` draft, specifies in advance which adjacent faces of
+ *                  `partingEdges` should be treated as more along the pull direction. When unspecified, the feature will
+ *                  use a geometric calculation to determine this distinction. Only used if `inferReferences` is `true`.
+ *     }}
  * }}
  */
 export const opDraft = function(context is Context, id is Id, definition is map)
@@ -767,6 +798,8 @@ export const opFillSurface = function(context is Context, id is Id, definition i
  *      @field derivatives {map} : A map of derivatives at non-end points.
  *           Entries should be `index : derivative`, where `index` is an integer between 1 and `size(points) - 2`
  *           and `derivative` is a `Vector` that specifies the derivative at `points[index]`. @optional
+ *      @field hasTargetLength {boolean} : Whether the spline should attempt to match a target length. Default is `false`. @optional
+ *      @field targetLength {ValueWithUnits} : The target length of the resulting spline. Only used if `hasTargetLength` is `true`. @optional
  * }}
  */
 export const opFitSpline = function(context is Context, id is Id, definition is map)
@@ -1050,6 +1083,7 @@ export const opImportForeign = function(context is Context, id is Id, definition
  * }}
  */
 export const opCreateIsocline = function(context is Context, id is Id, definition is map)
+precondition definition.direction is Vector;
 {
     return @opCreateIsocline(context, id, definition);
 };
@@ -1109,6 +1143,8 @@ export const opLoft = function(context is Context, id is Id, definition is map)
  *      @field owner {Query} : The owner body of the mate connector: when the owner is brought into an assembly, owned
  *          mate connectors will be brought in and move rigidly with it.  If the query resolves to multiple bodies, the
  *          first is taken as the owner.
+ *      @field attachTo {Query} : A face or body query to which mate connector will be attached -
+ *              will follow it in downstream transformations. @optional
  * }}
  */
 export const opMateConnector = function(context is Context, id is Id, definition is map)
@@ -1256,6 +1292,8 @@ export const opOffsetWire = function(context is Context, id is Id, definition is
  *      @field instanceNames {array} : An array of distinct non-empty strings the same size as `transforms` to identify
  *              the patterned entities.  Similar to an `Id`, an instance names may consist only of letters, numbers, and any of `+`, `-`, `/`, `_`.
  *      @field copyPropertiesAndAttributes {boolean} : If true (default), copies properties and attributes to patterned entities. @optional
+ *      @field companionBodyPattern {Id} : used in feature-selection patterns @optional
+ *      @field companionFacePatternSeeds {Query} : used in feature-selection patterns @optional
  * }}
  */
 export const opPattern = function(context is Context, id is Id, definition is map)
@@ -1571,6 +1609,9 @@ export predicate canBeSplitFaceResult(value)
  *             if `true`, imprinted edges are extended to complete split of faces. Default is `false`.
  *      @field mutualImprint {boolean} : @optional
  *             if `true` and only `bodyTools` are supplied target faces are used to split faces of `bodyTools`.
+ *             Default is `false`.
+ *      @field ownExistingImprints {boolean} : @optional
+ *             If `true`, already existing edges where the faces intersect are treated as created by this operation.
  *             Default is `false`.
  * }}
  */

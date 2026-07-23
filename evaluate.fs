@@ -16,7 +16,6 @@ import(path : "onshape/std/curveGeometry.fs", version : "✨");
 import(path : "onshape/std/feature.fs", version : "✨");
 import(path : "onshape/std/mathUtils.fs", version : "✨");
 import(path : "onshape/std/query.fs", version : "✨");
-import(path : "onshape/std/string.fs", version : "✨");
 import(path : "onshape/std/surfaceGeometry.fs", version : "✨");
 import(path : "onshape/std/units.fs", version : "✨");
 
@@ -389,7 +388,7 @@ predicate canBeDistanceResult(value)
  * @param context {Context}
  * @param arg {{
  *      @field side0 : One of the following: A query, or a point (3D Length Vector), or a [Line], or a [Plane], or an array of points, or an array of [Line]s, or an array of [Plane]s.
- *          @eg `qNthElement(qEverything(EntityType.FACE), 0)` or `vector(1, 2, 3) * meter` or `line(vector(1, 0, 1) * meter, vector(1, 1, 1)` or `plane(vector(1,1,1) * meter, vector(0,0,1), vector(1,0,0))`.
+ *          @eg `qNthElement(qEverything(EntityType.FACE), 0)` or `vector(1, 2, 3) * meter` or `line(vector(1, 0, 1) * meter, vector(1, 1, 1))` or `plane(vector(1,1,1) * meter, vector(0,0,1), vector(1,0,0))`.
  *      @field extendSide0 {boolean} : If `true` and side0 is a query, bodies will be ignored and edges and faces extended to
  *          their possibly infinite underlying surfaces.  Defaults to `false`. @optional
  *      @field side1 : Like `side0`.
@@ -1458,6 +1457,43 @@ precondition
 }
 {
     return @evSheetMetalFormToolBodies(context, definition);
+}
+
+/**
+ * @internal
+ * Returns the flat transformation stored on a sheet metal wall face or bend edge.
+ * This transform maps points from 3D model space to flat-pattern space.
+ * Accepts a face or edge from either the 3D solid model or the SM definition surface directly.
+ * @param arg {{
+ *      @field face {Query} : A wall face or bend edge of a 3D or flat sheet metal model
+ *                            (does not have to be the flat face). May also be a face or edge
+ *                            of the SM definition surface body.
+ * }}
+ */
+export function evSheetMetalFlatTransformation(context is Context, arg is map) returns Transform
+precondition
+{
+    arg.face is Query;
+}
+{
+    return transformFromBuiltin(@evSheetMetalFlatTransformation(context, arg));
+}
+
+/**
+ * @internal
+ * Returns `true` if the given bend centerline wire body bends upward (toward the face normal),
+ * or `false` if it bends downward (away from the face normal).
+ * @param arg {{
+ *      @field wireBody {Query} : A bend centerline wire body from the sheet metal model.
+ * }}
+ */
+export function evSheetMetalBendUp(context is Context, arg is map) returns boolean
+precondition
+{
+    arg.wireBody is Query;
+}
+{
+    return @evSheetMetalBendUp(context, arg);
 }
 
 /**

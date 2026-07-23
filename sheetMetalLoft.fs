@@ -22,7 +22,6 @@ import(path : "onshape/std/sheetMetalAttribute.fs", version : "✨");
 import(path : "onshape/std/sheetMetalUtils.fs", version : "✨");
 import(path : "onshape/std/string.fs", version : "✨");
 import(path : "onshape/std/surfaceGeometry.fs", version : "✨");
-import(path : "onshape/std/topologyUtils.fs", version : "✨");
 import(path : "onshape/std/transform.fs", version : "✨");
 import(path : "onshape/std/valueBounds.fs", version : "✨");
 import(path : "onshape/std/vector.fs", version : "✨");
@@ -42,6 +41,7 @@ const CHORDAL_BOUNDS = {
  * Operations on sheet metal models are automatically represented as a flat pattern, and joints and bends are listed in a table.
  */
 annotation { "Feature Type Name" : "Sheet metal loft",
+        "Parameter Library Purpose Id" : "65dcc2bb2c4ff1c239467ecc",
         "Editing Logic Function" : "tessLoftEditLogic",
         "Manipulator Change Function" : "tessLoftManipulator" }
 export const sheetMetalLoft = defineSheetMetalFeature(function(context is Context, id is Id, definition is map)

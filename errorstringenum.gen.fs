@@ -3497,7 +3497,87 @@ export enum ErrorStringEnum
     /* The mate owner occurrence path must be provided. */
     REST_ASSEMBLY_MISSING_MATE_OWNER_OCCURRENCE_PATH,
     /* An internal error has occurred. Contact Onshape support. */
-    FGS_TS_SOLVER_ISSUE_INTERNAL_ERROR_NO_CLEAR_USER_FIX
+    FGS_TS_SOLVER_ISSUE_INTERNAL_ERROR_NO_CLEAR_USER_FIX,
+    /* Simulation features for the active simulation must not have errors. */
+    SIMULATION_FEATURE_HAS_ERROR,
+    /* Assembly configuration parameters cannot be excluded from properties */
+    ASSEMBLY_COSMETIC_CONFIG_NOT_SUPPORTED,
+    /* Failed to get flat transform from the selected entity. */
+    SHEET_METAL_FAILED_TO_GET_FLAT_TRANSFORM,
+    /* The part to unfold does not match the part to finish. */
+    PCB_PARTS_TO_UNFOLD_MISMATCH,
+    /* Assembly is too large. */
+    EXPORT_ASSEMBLY_TOO_LARGE,
+    /* Boolean operation would result in non-manifold body. */
+    SWEEP_TWIST_NON_MANIFOLD,
+    /* Target length must be positive. */
+    FIT_SPLINE_NEGATIVE_TARGET_LENGTH,
+    /* Cannot match length if derivatives at all points are defined. */
+    FIT_SPLINE_LENGTH_NO_DOF,
+    /* Failed to converge to the target length. Try adding more points or removing derivative constraints. */
+    FIT_SPLINE_LENGTH_CONVERGENCE_FAILURE,
+    /* A keep-out cannot reference a part instance that is a keep-in. */
+    GENERATIVE_KEEP_IN_CONFLICTS_WITH_KEEP_OUT,
+    /* A keep-out cannot reference a part instance that is a generative part. */
+    GENERATIVE_KEEP_OUT_CONFLICTS_WITH_PART_INSTANCE,
+    /* Loads for the active simulation must not have errors. */
+    SIMULATION_LOAD_HAS_ERROR,
+    /* Cannot match length if creating a line. */
+    FIT_SPLINE_LENGTH_NO_LINE,
+    /* Extended sweep scale factor is equal or lower than zero. */
+    SWEEP_SCALE_LESS_THAN_ZERO,
+    /* Extend to full path option has no effect on closed sweep paths. */
+    SWEEP_EXTEND_HAS_NO_EFFECT,
+    /* Invalid text or symbols. */
+    ANNOTATION_SYMBOL_NOT_SUPPORTED,
+    /* No part selected to unfold. */
+    SHEET_METAL_UNFOLD_NO_PART_SELECTED,
+    /* No bend or rolled wall selected to unfold. */
+    SHEET_METAL_UNFOLD_NO_BEND_OR_ROLLED_WALL_SELECTED,
+    /* Select entities from the same part to unfold. */
+    SHEET_METAL_UNFOLD_SELECT_FROM_SAME_PART,
+    /* Nothing to unfold. */
+    SHEET_METAL_UNFOLD_NOTHING_TO_UNFOLD,
+    /* No hold entity selected. */
+    SHEET_METAL_UNFOLD_NO_HOLD_ENTITY,
+    /* Only a single hold entity can be selected. */
+    SHEET_METAL_UNFOLD_SINGLE_HOLD_ENTITY,
+    /* Hold entity is not on the selected part. */
+    SHEET_METAL_UNFOLD_HOLD_ENTITY_NOT_ON_PART,
+    /* Entity is not a wall or joint. */
+    SHEET_METAL_UNFOLD_ENTITY_NOT_WALL_OR_JOINT,
+    /* Joint has no type. */
+    SHEET_METAL_UNFOLD_JOINT_NO_TYPE,
+    /* Joint is not a bend. */
+    SHEET_METAL_UNFOLD_JOINT_NOT_A_BEND,
+    /* Hold entity is not a wall or boundary edge. */
+    SHEET_METAL_UNFOLD_HOLD_ENTITY_NOT_WALL_OR_BOUNDARY_EDGE,
+    /* Request body is missing. */
+    REST_EMPTY_REQUEST_BODY,
+    /* Selected faces must be contiguous. */
+    MUTUAL_TRIM_NON_CONTIGUOUS_FACE_SELECTION,
+    /* Inconsistent tangent conditions. Some conditions may not be satisfied, resulting in poor surface quality. */
+    BSURF_INCONSISTENT_BOUNDARY_TANGENT,
+    /* Inconsistent curvature conditions. Some conditions may not be satisfied, resulting in poor surface quality. */
+    BSURF_INCONSISTENT_BOUNDARY_CURVATURE,
+    /* Boundary condition tolerances had to be relaxed to construct a surface. */
+    BSURF_BOUNDARY_CONDITIONS_RELAXED_INFO,
+    /* Select a version to run the active simulation. */
+    ASYNC_SIMULATION_VERSION_NOT_SELECTED,
+    /* Select a named position to run the active simulation. */
+    ASYNC_SIMULATION_INVALID_POSITION,
+    SIMULATION_ASSEMBLY_EXCEEDS_INSTANCE_COUNT_LIMIT,
+    FGS_SIMULATION_TOO_MANY_CONTACT_PAIRS,
+    /* Simulation has timed out. Try running the simulation from a version. */
+    SIMULATION_TIMEOUT,
+    /* Simulation requires at least one fixed instance or inertial relief. */
+    FIXED_PART_REQUIRED_FOR_SIMULATION_NO_BOUNDARY_CONDITION,
+    /* Sketch solve has timed out. */
+    SKETCH_TIMED_OUT,
+    /* Cancel failed. Simulation is already complete. */
+    ASYNC_SIMULATION_ALREADY_COMPLETE,
+    /* Select an entity for the mate connector attachment. */
+    MATECONNECTOR_ATTACH_TO_NOT_RESOLVED
 }
 
 
