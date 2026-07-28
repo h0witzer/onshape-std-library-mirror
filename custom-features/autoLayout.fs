@@ -25,6 +25,20 @@ import(path : "bb79595d1ad4e6528fb60762", version : "20987b283a5fd1abb9b2d6f5");
 import(path : "f4e7238da5afaf5a3f1498c0/7a207cd9ceffd98f8f03ad47/22d17eb94c85900576fbf53e", version : "d8911b6f752a07bc27cfc8dc");
 
 
+// Which sheet axis a grained part's grain must run along when nesting. Defined here (not in
+// autoLayoutTypes) because an enum used as a precondition parameter type must be exported from
+// the feature's own file - a plain cross-tab import can't supply it. GrainDirectionAttribute
+// stays in autoLayoutTypes since it's a shared attribute type used via `as`, which resolves fine
+// across tabs (exactly like AutoLayoutAttribute).
+export enum SheetGrainAxis
+{
+    annotation { "Name" : "Sheet length (X)" }
+    X,
+    annotation { "Name" : "Sheet width (Y)" }
+    Y
+}
+
+
 annotation { "Feature Type Name" : "Auto Layout+",
         "Feature Type Description" : "Nests parts for 2D fabrication.<br>" ~
         "Implements a rectangular bin-packing heuristic algorithm, and " ~
@@ -73,6 +87,15 @@ export const autolayout = defineFeature(function(context is Context, id is Id, d
             isInteger(definition.RDelta, ROTATION_BOUNDS);
         }
 
+        annotation { "Name" : "Respect grain direction", "Default" : true, "UIHint" : "DISPLAY_SHORT" }
+        definition.respectGrain is boolean;
+
+        if (definition.respectGrain)
+        {
+            annotation { "Name" : "Sheet grain axis" }
+            definition.sheetGrainAxis is SheetGrainAxis;
+        }
+
         annotation { "Name" : "Show cut sheet sketches", "UIHint" : "REMEMBER_PREVIOUS_VALUE" }
         definition.showSheets is boolean;
 
@@ -94,9 +117,11 @@ export const autolayout = defineFeature(function(context is Context, id is Id, d
 
         // === Step 1: Extract all part data ===
         // Material names are resolved in editLogic (where getProperty is available) and stored
-        // as plain strings in definition.materialPropertyData, indexed to match the order
-        // qAllModifiableSolidBodies() returns bodies. Bodies are re-evaluated here via
-        // qNthElement to get fresh typed Query references.
+        // in definition.materialPropertyData (as { "materialName" : ... } maps), indexed to match
+        // the order qAllModifiableSolidBodies() returns bodies. Bodies are re-evaluated here via
+        // qNthElement to get fresh typed Query references. Feature instances saved by older
+        // versions stored plain material-name strings instead of maps; the read below prefers the
+        // map and falls back to a bare string so a stale instance regenerates instead of crashing.
         var partData = [];
         const allBodiesQuery = qAllModifiableSolidBodies();
         const bodyCount = size(evaluateQuery(context, allBodiesQuery));
@@ -105,9 +130,15 @@ export const autolayout = defineFeature(function(context is Context, id is Id, d
         for (var bodyIndex = 0; bodyIndex < bodyCount; bodyIndex += 1)
         {
             const body = qNthElement(allBodiesQuery, bodyIndex);
-            const materialName = (bodyIndex < size(materialData))
-                ? materialData[bodyIndex].materialName
-                : "Undefined Material";
+            var materialName = "Undefined Material";
+            if (bodyIndex < size(materialData))
+            {
+                const entry = materialData[bodyIndex];
+                if (entry is map && entry.materialName != undefined)
+                    materialName = entry.materialName; // current format
+                else if (entry is string)
+                    materialName = entry; // legacy format from older saved instances
+            }
             const thickness = getBoundingThickness(context, body);
 
             partData = append(partData, {
@@ -243,17 +274,56 @@ export function doOneLayout(context is Context, id is Id, definition is map, bod
     for (var i = 0; i < N; i += 1)
     {
         var body = qNthElement(operBodies, i);
-        var face = getOrientedFace(context, definition, id + "make_copies", body);
+
+        // Face precedence: an explicitly assigned oriented face (manual override via "Assign
+        // oriented faces") wins; otherwise fall back to the largest planar face, which a grain
+        // sigil may further refine below.
+        var orientedInfo = resolveOrientedFace(context, definition, body);
+        var face = orientedInfo.face;
 
         if (!isQueryEmpty(context, face))
         {
-            var blockInfo = getInitialTransform(context, id, definition, face);
+            // Detect a grain sigil on this body. The "Set Grain Direction" feature stamps a
+            // GrainDirectionAttribute on the arrow's long shaft edge; its live direction is the
+            // grain axis. Attributes ride along through opPattern copies, so patterned instances
+            // are constrained too. Auto Layout stays agnostic to how the sigil was authored.
+            // When a sigil exists the grain ALWAYS drives the in-plane rotation; "Assign oriented
+            // faces" only overrides which side lays down (see the face-override gate below).
+            var grainDir = undefined;
+            var grained = false;
+            if (definition.respectGrain == true)
+            {
+                var grainEdge = qIntersection([
+                            qOwnedByBody(body, EntityType.EDGE),
+                            qEntityFilter(qAttributeQuery("GrainDirection" as GrainDirectionAttribute), EntityType.EDGE)
+                        ]);
+                if (!isQueryEmpty(context, grainEdge))
+                {
+                    var ge = qNthElement(grainEdge, 0);
+                    grainDir = evAxis(context, { "axis" : ge }).direction;
+                    grained = true;
+
+                    // Only let the sigil pick the down-side face when the user has NOT manually
+                    // assigned an oriented face. The sigil face was the largest planar face when
+                    // stamped, but the imprint split may have shrunk it below the opposite face, so
+                    // plain getLargestFace could flip the part; the sigil edge borders the small arrow
+                    // island and the large remainder, and the remainder is the face to lay down.
+                    // When an oriented face IS assigned it wins for the down-side, and getInitialTransform
+                    // still locks rotation to the grain axis, expressed in that face's (flipped) frame.
+                    if (!orientedInfo.assigned)
+                        face = qLargest(qAdjacent(ge, AdjacencyType.EDGE, EntityType.FACE));
+                }
+            }
+
+            var blockInfo = getInitialTransform(context, id, definition, face, grainDir);
             blocks = append(blocks, new box({
                             'w' : blockInfo.w,
                             'h' : blockInfo.h,
                             'owner' : body,
                             'transform' : blockInfo.transform,
-                            'rotated' : false
+                            'rotated' : false,
+                            'grained' : grained,
+                            'grainAlongWidth' : grained && definition.sheetGrainAxis == SheetGrainAxis.Y
                         }));
         }
     }
@@ -366,6 +436,13 @@ export function doOneLayout(context is Context, id is Id, definition is map, bod
     // first would cause those queries to resolve to nothing, failing opCreateCompositePart.
     if (!isQueryEmpty(context, placed))
     {
+        // Strip grain sigils from the successfully nested parts BEFORE compositing. A leftover sigil
+        // leaves the reference face split into a small island + remainder, which would make the
+        // downstream nesting software mis-detect the largest/cutting face on import - the same issue
+        // handled above. This cleanup is intentionally NOT user-optional. Only `placed` (nested)
+        // parts are touched; oversized/unprocessed parts keep their sigils.
+        stripGrainSigils(context, id + "stripGrain", placed, definition.debugDiagnostics);
+
         opCreateCompositePart(context, id + "Placed_Composite", {
                     "bodies" : placed
                 });
@@ -390,6 +467,54 @@ export function doOneLayout(context is Context, id is Id, definition is map, bod
     setVariable(context, "AutoLayout_yinitial", initialY + definition.width * 1.1);
 
     return unnestedBodyCount;
+}
+
+// Removes grain sigils (the arrow imprint island faces + GrainDirectionAttribute) from the given
+// bodies and heals the coplanar imprint back flat, so the reference face is whole again and
+// downstream software won't mis-detect the cutting face. Uses only the shared attribute type from
+// autoLayoutTypes, so Auto Layout stays decoupled from the Set Grain Direction feature. No-op on
+// bodies that carry no sigil.
+function stripGrainSigils(context is Context, id is Id, bodies is Query, highlight is boolean)
+{
+    const sigilFaces = qIntersection([
+                qOwnedByBody(bodies, EntityType.FACE),
+                qEntityFilter(qAttributeQuery("GrainDirection" as GrainDirectionAttribute), EntityType.FACE)
+            ]);
+
+    if (highlight)
+    {
+        // Diagnostics: highlight the sigil geometry BEFORE it's healed away, so it can be visually
+        // confirmed the right edges/faces were detected. Debug graphics snapshot the geometry, so
+        // the highlights persist in the graphics even after the strip below removes the real edges.
+        const sigilEdges = qIntersection([
+                    qOwnedByBody(bodies, EntityType.EDGE),
+                    qEntityFilter(qAttributeQuery("GrainDirection" as GrainDirectionAttribute), EntityType.EDGE)
+                ]);
+        if (!isQueryEmpty(context, sigilEdges))
+            debug(context, sigilEdges, DebugColor.RED);
+        if (!isQueryEmpty(context, sigilFaces))
+            debug(context, sigilFaces, DebugColor.GREEN);
+    }
+
+    if (!isQueryEmpty(context, sigilFaces))
+    {
+        // Coplanar imprint island -> delete-and-heal merges it back into the parent face. Wrapped so
+        // a heal failure can't abort an otherwise successful nest; the attribute is cleared either way.
+        try silent
+        {
+            opDeleteFace(context, id + "del", {
+                        "deleteFaces" : sigilFaces,
+                        "includeFillet" : false,
+                        "capVoid" : false,
+                        "leaveOpen" : false
+                    });
+        }
+    }
+
+    removeAttributes(context, {
+                "entities" : qOwnedByBody(bodies),
+                "attributePattern" : "GrainDirection" as GrainDirectionAttribute
+            });
 }
 
 
@@ -498,6 +623,18 @@ export function findNode(root is box, block is box)
             rotatedFit = h + root[].x;
         }
 
+        // Grained parts may occupy only one orientation so the grain axis stays aligned to the
+        // sheet: grainAlongWidth == false keeps grain along the sheet length (no 90-degree
+        // rotation); true forces the rotated placement (grain along the sheet width). This is
+        // what makes Auto Layout honor the grain sigils with 0/180 tolerance only.
+        if (block[].grained == true)
+        {
+            if (block[].grainAlongWidth == true)
+                normalFit = undefined;
+            else
+                rotatedFit = undefined;
+        }
+
         if (normalFit != undefined && rotatedFit != undefined) //Part fits both ways, choose tighter fit
         {
             if (normalFit < rotatedFit || tolerantEquals(normalFit, rotatedFit))
@@ -561,7 +698,10 @@ export function placeBlockAndSplit(node is box, block is box, spacing is ValueWi
 }
 
 // Computes the initial transform (rotation + movement) to place the part at the origin, oriented with the minimum bounding box
-export function getInitialTransform(context is Context, id is Id, definition is map, largestFace is Query)
+// grainDir is optional. When provided (a grain sigil was detected on the part), the orientation
+// search is skipped and the block's local x-axis is locked to the grain direction so the grain
+// runs along the block's width. Pass undefined for the normal area-minimizing behavior.
+export function getInitialTransform(context is Context, id is Id, definition is map, largestFace is Query, grainDir)
 {
     const tempLargestFacePlane = evPlane(context, {
                 "face" : largestFace
@@ -569,6 +709,29 @@ export function getInitialTransform(context is Context, id is Id, definition is 
     const largestFacePlane = plane(tempLargestFacePlane.origin, -tempLargestFacePlane.normal, tempLargestFacePlane.x);
 
     const body = qOwnerBody(largestFace);
+
+    // Grain-locked orientation: fix local +x to the grain axis and skip the area search entirely.
+    // Everything downstream (packing, transforms) then treats grain as the block's local x.
+    if (grainDir != undefined)
+    {
+        var lockedX = grainDir;
+        if (!perpendicularVectors(grainDir, largestFacePlane.normal))
+        {
+            lockedX = normalize(grainDir - dot(grainDir, largestFacePlane.normal) * largestFacePlane.normal);
+        }
+
+        const lockedCSys = coordSystem(largestFacePlane.origin, lockedX, largestFacePlane.normal);
+        const lockedBBox is Box3d = evBox3d(context, {
+                    "topology" : body,
+                    "cSys" : lockedCSys
+                });
+
+        return {
+            "transform" : transform(-lockedBBox.minCorner) * fromWorld(lockedCSys),
+            "w" : abs(lockedBBox.maxCorner[0] - lockedBBox.minCorner[0]),
+            "h" : abs(lockedBBox.maxCorner[1] - lockedBBox.minCorner[1])
+        };
+    }
 
     // List of all straight edges to use as candidate x axes
     var orientationEdges = qGeometry(qAdjacent(largestFace, AdjacencyType.EDGE, EntityType.EDGE), GeometryType.LINE);
@@ -678,35 +841,35 @@ export function getInitialTransform(context is Context, id is Id, definition is 
     return blockInfo;
 }
 
-export function getOrientedFace(context is Context, definition is map, patternID is Id, body is Query)
+// Resolves the face defining a part's cutting plane / down-side, and reports whether it came from
+// an explicit "Assign oriented faces" selection. Returns { "face" : Query, "assigned" : boolean };
+// `assigned` is true iff orientFaces supplied a face for this body (a selected oriented face, or a
+// matching corresponding face on a pattern copy) rather than falling back to the largest planar
+// face. Callers use `assigned` to let a manual oriented face win over the automatic grain sigil.
+export function resolveOrientedFace(context is Context, definition is map, body is Query) returns map
 {
-    var face = qNothing();
-
     if (definition.orientFaces)
     {
-        var candidateFace = qLargest(qOwnedByBody(definition.orientedFaces, body)); // Grab largest of any oriented faces that are owned by this body
-        var correspondingFace = getCorrespondingFace(context, definition, body);
-
+        // One of the original parts: the user selected an oriented face directly on this body.
+        var candidateFace = qLargest(qOwnedByBody(definition.orientedFaces, body));
         if (evaluateQuery(context, candidateFace) != [])
-        {
-            face = candidateFace; // One of the original parts, so use the selected face directly
-        }
-        else if (evaluateQuery(context, correspondingFace) != [])
-        {
-            face = correspondingFace; // If the body was created by pattern and there's a matching face, choose that
-        }
-        else
-        {
-            // No orientations, just get largest planar face
-            face = getLargestFace(context, body);
-        }
+            return { "face" : candidateFace, "assigned" : true };
+
+        // A pattern copy: match an oriented face by geometry.
+        var correspondingFace = getCorrespondingFace(context, definition, body);
+        if (evaluateQuery(context, correspondingFace) != [])
+            return { "face" : correspondingFace, "assigned" : true };
     }
-    else
-    {
-        // No orientations, just get largest planar face
-        face = getLargestFace(context, body);
-    }
-    return face;
+
+    // No orientation assigned: use the largest planar face.
+    return { "face" : getLargestFace(context, body), "assigned" : false };
+}
+
+// Backward-compatible wrapper returning just the face. patternID is unused (kept for signature
+// stability with earlier callers).
+export function getOrientedFace(context is Context, definition is map, patternID is Id, body is Query)
+{
+    return resolveOrientedFace(context, definition, body).face;
 }
 
 
