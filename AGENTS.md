@@ -1,10 +1,29 @@
 # Contributor Guide
 
-## Repository Layout
-- The repository root holds only the mirrored Onshape standard library `.fs` files, this file, the upstream `README.md`/`README.pdf`, and `LICENSE.txt`. Do not add specs, summaries, or other implementation markdown to the root.
-- `custom-features/` holds custom FeatureScript source only. It contains no markdown.
-- `docs/` holds every spec, guide, and feature document. See [docs/README.md](docs/README.md) for the index and for which subfolder new documentation belongs in.
-- Before working on sheet metal, ids, or geometry tracking, read the matching guide in `docs/featurescript-guides/`. When you write documentation for a feature, put it under `docs/` and point at it from the feature header by its repo-relative path.
+## Repository Layout — READ THIS BEFORE YOU CREATE ANY FILE
+
+This repository was cleaned up once because two dozen loose markdown files had piled up in
+the root and in `custom-features/` until neither directory was navigable. Do not undo that.
+**Every markdown file you create goes in `docs/`. No exceptions, no "just this one."**
+
+Where things live:
+
+| Directory | Contents | May you add markdown here? |
+| --- | --- | --- |
+| Repository root | Mirrored Onshape standard library `.fs` files, `AGENTS.md`, upstream `README.md`/`README.pdf`, `LICENSE.txt` | **NO** |
+| `custom-features/` | Custom FeatureScript source only | **NO** |
+| `docs/` | Every spec, guide, plan, summary, and feature document | Yes — pick the right subfolder |
+
+Rules, stated plainly because they have been broken before:
+
+- **Never** write a spec, plan, design doc, implementation summary, refactoring summary, migration note, "lessons learned", status report, or README into the repository root or into `custom-features/`. The root is reserved for standard library content imported from Onshape plus this file. `custom-features/` is reserved for `.fs` source.
+- **Never** drop scratch output — CSVs, PNGs, logs, exported data, test fixtures — into the root or `custom-features/`. If it is a work artifact and not source, it does not belong in either place.
+- Do not create a new top-level directory to dodge these rules. If your document does not obviously fit an existing `docs/` subfolder, put it in the closest one and say so in your summary rather than inventing a new tree.
+- One document per topic. If a document on the subject already exists in `docs/`, **update it** instead of writing `THING_V2.md`, `THING_FINAL.md`, or `THING_SUMMARY.md` next to it. Proliferating near-duplicate summaries is exactly how this got out of hand.
+- See [docs/README.md](docs/README.md) for the index and for which subfolder a new document belongs in. If you add a document, add its one-line entry to that index in the same change.
+- When a feature needs documentation, put it under `docs/` and reference it from the feature's header comment by its repo-relative path (for example `docs/specs/TIPPY_BUCKET_PIVOT_SPEC.md`). Do not park the doc beside the `.fs` file "so it's easy to find" — that is what the header reference and the index are for.
+- If you move or rename anything under `docs/`, update every reference to it in the same change and leave the link check clean. Do not leave dangling paths for someone else to chase.
+- Before working on sheet metal, ids, or geometry tracking, read the matching guide in `docs/featurescript-guides/`.
 
 ## Dev Environment Tips
 - All functions in this github are a mirror of the Onshape Standard Library functions with version numbers stripped from the imports

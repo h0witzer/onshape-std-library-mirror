@@ -1,0 +1,94 @@
+#!/bin/sh
+#
+# pre-commit: repository layout guard
+#
+# Enforces the "Repository Layout" rules in AGENTS.md:
+#   * No markdown in the repository root (except AGENTS.md and README.md)
+#   * No markdown anywhere under custom-features/
+#   * No scratch data artifacts (.csv/.png/.jpg/.jpeg/.log) in either place
+#
+# The root is reserved for the Onshape standard library content mirrored from
+# Onshape; custom-features/ is reserved for FeatureScript source. All
+# documentation belongs under docs/ -- see docs/README.md for the index.
+#
+# Install (once per clone):  git config core.hooksPath .githooks
+# Deliberate bypass:         git commit --no-verify
+
+set -u
+
+# Only newly added, copied, or renamed paths -- editing a file that is already
+# tracked in one of these locations is not this hook's business.
+staged=$(git diff --cached --name-only --diff-filter=ACR)
+
+[ -n "$staged" ] || exit 0
+
+violations=""
+
+# A here-doc redirect keeps this loop in the current shell, so $violations
+# survives it (a pipeline would run the loop in a subshell and lose it).
+while IFS= read -r path; do
+    [ -n "$path" ] || continue
+
+    lower=$(printf '%s' "$path" | tr '[:upper:]' '[:lower:]')
+
+    case "$path" in
+        */*) location="" ;;
+        *)   location="the repository root" ;;
+    esac
+    case "$path" in
+        custom-features/*) location="custom-features/" ;;
+    esac
+
+    # Nothing to check outside the two protected locations.
+    [ -n "$location" ] || continue
+
+    reason=""
+    case "$path" in
+        AGENTS.md|README.md)
+            # The two documents that legitimately live at the root.
+            ;;
+        *)
+            case "$lower" in
+                *.md)
+                    reason="markdown is not allowed in $location"
+                    ;;
+                *.csv|*.png|*.jpg|*.jpeg|*.log)
+                    reason="scratch artifacts are not allowed in $location"
+                    ;;
+            esac
+            ;;
+    esac
+
+    if [ -n "$reason" ]; then
+        violations="${violations}${path}|${reason}
+"
+    fi
+done <<EOF
+$staged
+EOF
+
+[ -n "$violations" ] || exit 0
+
+printf '\n'
+printf 'COMMIT BLOCKED - repository layout guard\n'
+printf '\n'
+printf 'These staged files break the layout rules in AGENTS.md:\n'
+printf '\n'
+printf '%s' "$violations" | while IFS='|' read -r offending_path reason; do
+    [ -n "$offending_path" ] || continue
+    printf '  %s\n      %s\n' "$offending_path" "$reason"
+done
+printf '\n'
+printf 'Documentation belongs under docs/:\n'
+printf '  docs/featurescript-guides/    cross-cutting FeatureScript knowledge\n'
+printf '  docs/specs/                   design docs for planned or in-progress work\n'
+printf '  docs/features/<feature>/      docs tied to a single feature\n'
+printf '\n'
+printf 'Move the file, add its entry to docs/README.md, and stage again:\n'
+printf '  git mv YOUR_DOC.md docs/specs/YOUR_DOC.md\n'
+printf '\n'
+printf 'If a file genuinely belongs where it is, update the allowlist in\n'
+printf '.githooks/pre-commit. To bypass this once: git commit --no-verify\n'
+printf '\n'
+
+exit 1

@@ -1,0 +1,4 @@
+# Git hooks must keep LF endings or /bin/sh fails on the CR characters.
+# Scoped deliberately to .githooks/ so the mirrored standard library files
+# are left entirely alone.
+.githooks/** text eol=lf
