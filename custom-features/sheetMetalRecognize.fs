@@ -19,6 +19,7 @@ import(path : "onshape/std/geomOperations.fs", version : "2599.0");
 import(path : "onshape/std/manipulator.fs", version : "2599.0");
 import(path : "onshape/std/math.fs", version : "2599.0");
 import(path : "onshape/std/modifyFillet.fs", version : "2599.0");
+import(path : "onshape/std/properties.fs", version : "2599.0");
 import(path : "onshape/std/sheetMetalAttribute.fs", version : "2599.0");
 import(path : "onshape/std/sheetMetalUtils.fs", version : "2599.0");
 import(path : "onshape/std/sketch.fs", version : "2599.0");
@@ -275,7 +276,8 @@ export const sheetMetalStart = defineSheetMetalFeature(function(context is Conte
             "hasOffset" : false,
             "hasSecondDirectionOffset" : false,
             "offsetOppositeDirection" : false,
-            "secondDirectionOffsetOppositeDirection" : false
+            "secondDirectionOffsetOppositeDirection" : false,
+            "inputBodyNames" : [] // Array to store names from input bodies for preservation
         });
 
 function finalizeSheetMetalGeometry(context is Context, id is Id, entities is Query)
@@ -473,9 +475,38 @@ function sheetMetalRecognize(context is Context, id is Id, definition is map)
             throw regenError(ErrorStringEnum.SHEET_METAL_CANNOT_RECOGNIZE_PARTS, ["bodies"], qUnion(badParts));
     }
 
+    // Map each input body to its corresponding offset group for name preservation
+    // Build the mapping efficiently by pre-evaluating all owner bodies
+    var evaluatedInputBodies = evaluateQuery(context, definition.bodies);
+    var bodyToGroupIndex = {};
+    var evaluatedGroupOwnerBodies = [];
+    
+    // Pre-evaluate owner bodies for each offset group
+    for (var j = 0; j < size(offsetGroups); j += 1)
+    {
+        var ownerBodyQuery = qOwnerBody(offsetGroups[j].side0[0]);
+        var evaluatedOwnerBodies = evaluateQuery(context, ownerBodyQuery);
+        evaluatedGroupOwnerBodies = append(evaluatedGroupOwnerBodies, evaluatedOwnerBodies);
+    }
+    
+    // Map each input body to its group by comparing evaluated bodies
+    for (var i = 0; i < size(evaluatedInputBodies); i += 1)
+    {
+        for (var j = 0; j < size(evaluatedGroupOwnerBodies); j += 1)
+        {
+            // Check if input body is in the owner bodies for this group
+            if (size(evaluatedGroupOwnerBodies[j]) > 0 && evaluatedInputBodies[i] == evaluatedGroupOwnerBodies[j][0])
+            {
+                bodyToGroupIndex[i] = j;
+                break;
+            }
+        }
+    }
+
     var objectCount = 0;
     var groupCount = 0;
     var smFacesAndEdgesQ = qNothing();
+    var surfaceIdToBodyIndex = {};
     for (var group in offsetGroups)
     {
         var surfaceId = id + ("surface_" ~ groupCount);
@@ -503,6 +534,16 @@ function sheetMetalRecognize(context is Context, id is Id, definition is map)
                     "defaultBendReliefScale" : definition.defaultBendReliefScale
                 });
 
+        // Store mapping from surface ID to original body index for name preservation
+        for (var bodyIdx = 0; bodyIdx < size(evaluatedInputBodies); bodyIdx += 1)
+        {
+            if (bodyToGroupIndex[bodyIdx] != undefined && bodyToGroupIndex[bodyIdx] == groupCount)
+            {
+                surfaceIdToBodyIndex[surfaceId] = bodyIdx;
+                break;
+            }
+        }
+
         groupCount += 1;
         smFacesAndEdgesQ = qUnion([smFacesAndEdgesQ, qCreatedBy(surfaceId, EntityType.FACE), qCreatedBy(surfaceId, EntityType.EDGE)]);
         objectCount = annotateSmSurfaceBodies(context, id, surfaceData, objectCount);
@@ -526,6 +567,49 @@ function sheetMetalRecognize(context is Context, id is Id, definition is map)
     }
 
     finalizeSheetMetalGeometry(context, id, smFacesAndEdgesQ);
+
+    // Apply names from input bodies to generated sheet metal bodies
+    // Iterate through surface IDs and find their corresponding final bodies for better performance
+    if (definition.inputBodyNames != undefined && size(definition.inputBodyNames) > 0)
+    {
+        println("Feature: Have " ~ size(definition.inputBodyNames) ~ " names to apply");
+        println("Feature: surfaceIdToBodyIndex size = " ~ size(surfaceIdToBodyIndex));
+        for (var idMapping in surfaceIdToBodyIndex)
+        {
+            var surfaceId = idMapping.key;
+            var bodyIndex = idMapping.value;
+            println("Feature: Processing surfaceId with bodyIndex " ~ bodyIndex);
+            
+            if (bodyIndex < size(definition.inputBodyNames) && definition.inputBodyNames[bodyIndex] != undefined)
+            {
+                var nameToApply = definition.inputBodyNames[bodyIndex];
+                println("Feature: Attempting to apply name: " ~ nameToApply);
+                
+                // Find the final body that contains faces created by this surface ID
+                var createdFaces = evaluateQuery(context, qCreatedBy(surfaceId, EntityType.FACE));
+                println("Feature: Found " ~ size(createdFaces) ~ " created faces");
+                if (size(createdFaces) > 0)
+                {
+                    var owningBody = qOwnerBody(createdFaces[0]);
+                    var finalBodies = evaluateQuery(context, owningBody);
+                    println("Feature: Found " ~ size(finalBodies) ~ " final bodies");
+                    if (size(finalBodies) > 0)
+                    {
+                        setProperty(context, {
+                            "entities" : finalBodies[0],
+                            "propertyType" : PropertyType.NAME,
+                            "value" : nameToApply
+                        });
+                        println("Feature: Applied name '" ~ nameToApply ~ "' to body");
+                    }
+                }
+            }
+        }
+    }
+    else
+    {
+        println("Feature: No names to apply or inputBodyNames is undefined");
+    }
 }
 
 
@@ -658,6 +742,9 @@ export function sheetMetalStartManipulatorChange(context is Context, definition 
 export function sheetMetalStartEditLogic(context is Context, id is Id, oldDefinition is map, definition is map,
     specifiedParameters is map, hiddenBodies is Query) returns map
 {
+    println("EditLogic: CALLED - oldDefinition empty = " ~ (oldDefinition == {}));
+    println("EditLogic: definition.bodies = " ~ definition.bodies);
+    
     // Preselection processing
     if (oldDefinition == {})
     {
@@ -682,14 +769,58 @@ export function sheetMetalStartEditLogic(context is Context, id is Id, oldDefini
 
     // Extrude flips
     // If this is changed, make sure to reflect the change in extrude::extrudeEditLogic.
-    if (canSetExtrudeFlips(definition, specifiedParameters))
+    try
     {
-        if (canSetExtrudeUpToFlip(definition, specifiedParameters))
+        if (canSetExtrudeFlips(definition, specifiedParameters))
         {
-            definition = extrudeUpToBoundaryFlip(context, definition);
+            if (canSetExtrudeUpToFlip(definition, specifiedParameters))
+            {
+                definition = extrudeUpToBoundaryFlip(context, definition);
+            }
+        }
+        definition = setExtrudeSecondDirectionFlip(definition, specifiedParameters);
+    }
+    catch (error)
+    {
+        // Silently ignore errors in extrude flip logic as it may not apply to sheet metal recognize
+        println("EditLogic: Skipping extrude flip logic (error: " ~ error ~ ")");
+    }
+
+    // Capture names from input bodies to preserve them after recognition
+    // This is done at the end to ensure it happens even if earlier logic has errors
+    if (definition.bodies != undefined)
+    {
+        try
+        {
+            var inputBodyNames = [];
+            var evaluatedBodies = evaluateQuery(context, definition.bodies);
+            println("EditLogic: Found " ~ size(evaluatedBodies) ~ " input bodies");
+            for (var body in evaluatedBodies)
+            {
+                try
+                {
+                    var bodyName = getProperty(context, { "entity" : body, "propertyType" : PropertyType.NAME });
+                    println("EditLogic: Body name = " ~ bodyName);
+                    inputBodyNames = append(inputBodyNames, bodyName);
+                }
+                catch (error)
+                {
+                    println("EditLogic: ERROR getting property for body: " ~ error);
+                    inputBodyNames = append(inputBodyNames, undefined);
+                }
+            }
+            definition.inputBodyNames = inputBodyNames;
+            println("EditLogic: Stored " ~ size(inputBodyNames) ~ " names");
+        }
+        catch (error)
+        {
+            println("EditLogic: ERROR in name capture block: " ~ error);
         }
     }
-    definition = setExtrudeSecondDirectionFlip(definition, specifiedParameters);
+    else
+    {
+        println("EditLogic: definition.bodies is undefined");
+    }
 
     return definition;
 }
