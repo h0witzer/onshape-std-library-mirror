@@ -1,6 +1,7 @@
-FeatureScript 2770;
-import(path : "onshape/std/common.fs", version : "2770.0");
-import(path : "onshape/std/queryVariable.fs", version : "2770.0");
+FeatureScript 2878;
+import(path : "onshape/std/common.fs", version : "2878.0");
+import(path : "onshape/std/feature.fs", version : "2878.0");
+import(path : "onshape/std/queryVariable.fs", version : "2878.0");
 
 icon::import(path : "1b1876c4208ee0105bc5dc22", version : "8b4fcea5cec1f2bcc95aa71f");
 image::import(path : "2423f73366a997651d42c6a3", version : "a8c55fd240b78a829c9517eb");
@@ -29,24 +30,82 @@ export const queryPattern = defineFeature(function(context is Context, id is Id,
 
         const targetQueries = definition.targetQueries->qSubtraction(seedQuery);
 
-        forEachEntity(context, id + "featurePattern", targetQueries, function(targetQuery is Query, id is Id)
+        // Track entities where pattern operations succeeded or failed
+        var failedEntities = [];
+        var successCount = 0;
+        var failureCount = 0;
+
+        // Manually iterate to allow tracking of successes and failures
+        const evaluatedQueries = evaluateQuery(context, targetQueries);
+        for (var i = 0; i < size(evaluatedQueries); i += 1)
+        {
+            const targetQuery = evaluatedQueries[i];
+            const entityId = id + "featurePattern" + unstableIdComponent(i);
+
+            setQueryVariable(context, definition.seedQueryVariableName, targetQuery);
+
+            // Inline implementation of callSubfeatureAndProcessStatus pattern
+            // Cannot use callSubfeatureAndProcessStatus directly because applyPattern requires
+            // a 4th parameter (transform) that doesn't fit the standard 3-parameter signature
+            const patternId = entityId + "pattern";
+            var hadError = false;
+            try
             {
+                applyPattern(context, patternId, {
+                            "patternType" : PatternType.FEATURE,
+                            "instanceFunction" : definition.featuresToLoop,
+                            "fullFeaturePattern" : true,
+                            "transforms" : [identityTransform()],
+                            "instanceNames" : ["instanceName"],
+                            "sketchPatternInfo" : "Some sketch pattern info" //hidden parameter of new feature pattern
+                        }, identityTransform());
+            }
+            catch (e)
+            {
+                hadError = true;
+            }
 
-                setQueryVariable(context, definition.seedQueryVariableName, targetQuery);
+            // Process any subfeature status and propagate errors to the top-level feature
+            // Include the target query as an additional error entity for highlighting
+            processSubfeatureStatus(context, id, {
+                        "subfeatureId" : patternId,
+                        "propagateErrorDisplay" : true,
+                        "additionalErrorEntities" : targetQuery
+                    });
 
-                try
-                {
-                    applyPattern(context, id + "pattern", {
-                                "patternType" : PatternType.FEATURE,
-                                "instanceFunction" : definition.featuresToLoop,
-                                "fullFeaturePattern" : true,
-                                "transforms" : [identityTransform()],
-                                "instanceNames" : ["instanceName"],
-                                "sketchPatternInfo" : "Some sketch pattern info" //hidden parameter of new feature pattern
-                            }, identityTransform());
-                }
+            // Check if an error occurred for this entity
+            const featureError = getFeatureError(context, id);
+            if (featureError != undefined || hadError)
+            {
+                failedEntities = append(failedEntities, targetQuery);
+                failureCount += 1;
+                
+                // Clear the error so we can continue processing other entities
+                clearFeatureStatus(context, id, {});
+            }
+            else
+            {
+                successCount += 1;
+            }
+        }
 
-            });
+        // Report overall status after processing all entities
+        if (failureCount > 0)
+        {
+            // Highlight all failed entities for user feedback
+            setErrorEntities(context, id, { "entities" : qUnion(failedEntities) });
+            
+            if (successCount > 0)
+            {
+                // Partial failure - some succeeded, some failed
+                reportFeatureInfo(context, id, ErrorStringEnum.PATTERN_FEATURE_FAILED);
+            }
+            else
+            {
+                // Complete failure - all entities failed
+                throw regenError(ErrorStringEnum.PATTERN_FEATURE_FAILED, qUnion(failedEntities));
+            }
+        }
     });
 
 
