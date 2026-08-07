@@ -18,7 +18,7 @@ FeatureScript 2878;
  *   - Optional manual connection definition with rip support
  * 
  * For detailed documentation, usage examples, and implementation notes, 
- * see TESSELLATED_LOFT_README.md in the custom-features directory.
+ * see docs/features/tessellated-loft/TESSELLATED_LOFT_README.md.
  */
 
 import(path : "onshape/std/common.fs", version : "2878.0");

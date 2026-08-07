@@ -1,5 +1,11 @@
 # Contributor Guide
 
+## Repository Layout
+- The repository root holds only the mirrored Onshape standard library `.fs` files, this file, the upstream `README.md`/`README.pdf`, and `LICENSE.txt`. Do not add specs, summaries, or other implementation markdown to the root.
+- `custom-features/` holds custom FeatureScript source only. It contains no markdown.
+- `docs/` holds every spec, guide, and feature document. See [docs/README.md](docs/README.md) for the index and for which subfolder new documentation belongs in.
+- Before working on sheet metal, ids, or geometry tracking, read the matching guide in `docs/featurescript-guides/`. When you write documentation for a feature, put it under `docs/` and point at it from the feature header by its repo-relative path.
+
 ## Dev Environment Tips
 - All functions in this github are a mirror of the Onshape Standard Library functions with version numbers stripped from the imports
 - The current version number of the Onshape standard library is 3029, replace the stars in the header with this

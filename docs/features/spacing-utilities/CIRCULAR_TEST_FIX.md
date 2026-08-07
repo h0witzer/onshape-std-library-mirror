@@ -49,7 +49,7 @@ function isFeaturePattern(patternType) returns boolean
 ## Files Changed
 
 - `custom-features/spacing_utilities/spacingUtils.fs` - Made function private
-- `custom-features/spacing_utilities/README.md` - Updated documentation
+- `docs/features/spacing-utilities/README.md` - Updated documentation
 - `REFACTORING_SUMMARY.md` - Updated to reflect internal utility
 - `CONSOLIDATION_SUMMARY.md` - Updated to reflect internal utility
 

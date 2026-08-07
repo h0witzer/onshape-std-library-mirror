@@ -861,7 +861,7 @@ export function convertSlicesToSheetMetal(context is Context, id is Id, trimmedS
     }
 
     // Step 4: Annotate the extracted surface bodies with sheet metal attributes
-    // CRITICAL: Use base id for queries, not extractSurfaceId (per SHEET_METAL_GOTCHAS.md)
+    // CRITICAL: Use base id for queries, not extractSurfaceId (per docs/featurescript-guides/SHEET_METAL_GOTCHAS.md)
     // After deleting original bodies, qCreatedBy(id, ...) only finds the extracted surfaces
     try
     {
@@ -902,7 +902,7 @@ export function convertSlicesToSheetMetal(context is Context, id is Id, trimmedS
     }
 
     // Step 5: Finalize sheet metal geometry with updateSheetMetalGeometry
-    // CRITICAL: Use base id for queries, not extractSurfaceId (per SHEET_METAL_GOTCHAS.md)
+    // CRITICAL: Use base id for queries, not extractSurfaceId (per docs/featurescript-guides/SHEET_METAL_GOTCHAS.md)
     // This matches the pattern from annotateConvertedFaces in sheetMetalStart.fs
     try
     {

@@ -10,7 +10,7 @@ Successfully converted Python kerf bending utilities to FeatureScript with **hig
 
 ### 1. Analytical Implementation: `kerfBendingAnalytical.fs`
 - **Lines of Code:** 433
-- **Location:** `custom-features/kerfBendingAnalytical.fs`
+- **Location:** `custom-features/kerf-bending/kerfBendingAnalytical.fs`
 - **Status:** Production ready
 
 **Key Features:**
@@ -23,7 +23,7 @@ Successfully converted Python kerf bending utilities to FeatureScript with **hig
 
 ### 2. Feature Implementation: `kerfBendingFeatureAnalytical.fs`
 - **Lines of Code:** 143
-- **Location:** `custom-features/kerfBendingFeatureAnalytical.fs`
+- **Location:** `custom-features/kerf-bending/kerfBendingFeatureAnalytical.fs`
 - **Status:** Production ready
 
 **Features:**
@@ -34,7 +34,7 @@ Successfully converted Python kerf bending utilities to FeatureScript with **hig
 - Console output with detailed statistics
 
 ### 3. User Documentation: `KERF_BENDING_README.md`
-- **Location:** `custom-features/KERF_BENDING_README.md`
+- **Location:** `docs/features/kerf-bending/KERF_BENDING_README.md`
 - **Contents:**
   - Overview of kerf bending technique
   - Analytical approach explanation

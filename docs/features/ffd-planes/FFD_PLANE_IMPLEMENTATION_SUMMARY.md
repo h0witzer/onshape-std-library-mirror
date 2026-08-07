@@ -209,7 +209,7 @@ Result: Smooth S-shaped bend
    - Interactive manipulators
    - Debug visualization
 
-2. **`custom-features/FFD_PLANE_MANIPULATION_README.md`** (139 lines)
+2. **`docs/features/ffd-planes/FFD_PLANE_MANIPULATION_README.md`** (139 lines)
    - User-facing documentation
    - Usage examples
    - Troubleshooting guide

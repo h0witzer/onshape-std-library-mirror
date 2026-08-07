@@ -9,7 +9,7 @@ This document summarizes the creation of a standalone tessellated loft feature b
 ### 1. `custom-features/tessellatedLoft.fs` (262 lines)
 The main feature implementation with all sheet metal logic removed.
 
-### 2. `custom-features/TESSELLATED_LOFT_README.md` 
+### 2. `docs/features/tessellated-loft/TESSELLATED_LOFT_README.md` 
 Comprehensive documentation explaining usage, parameters, and implementation details.
 
 ## What Was Kept from sheetMetalLoft.fs
