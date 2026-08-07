@@ -25,6 +25,14 @@ Rules, stated plainly because they have been broken before:
 - If you move or rename anything under `docs/`, update every reference to it in the same change and leave the link check clean. Do not leave dangling paths for someone else to chase.
 - Before working on sheet metal, ids, or geometry tracking, read the matching guide in `docs/featurescript-guides/`.
 
+These rules are enforced by a pre-commit hook in `.githooks/pre-commit`, which rejects newly added markdown in the root or `custom-features/` and scratch artifacts (`.csv`, `.png`, `.jpg`, `.log`) in either. It is already configured in this clone; **a fresh clone must enable it once**:
+
+```
+git config core.hooksPath .githooks
+```
+
+If the hook blocks you, move the file into `docs/` — that is the fix. Do not reach for `--no-verify` to get a document committed into a directory it does not belong in.
+
 ## Dev Environment Tips
 - All functions in this github are a mirror of the Onshape Standard Library functions with version numbers stripped from the imports
 - The current version number of the Onshape standard library is 3029, replace the stars in the header with this

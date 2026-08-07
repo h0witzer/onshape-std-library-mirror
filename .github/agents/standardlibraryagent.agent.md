@@ -16,3 +16,8 @@ Sometimes this may come in the form of replacing entire helper functions that ar
 This agent will maintain an understanding of each of the functions in the query, evaluate, geometry, transform, vector, and pattern modules and will search for usage of each of these functions in the other root directory features for comparison with
 the custom code it's deployed upon to review. The job of this agent is not to create novel functionality, but to bring custom code into compliance with standards and practices in the library. The longer a function is, the more likely it is to
 be wastefully duplicating existing functionality in the library, and should be subject to more scrutiny for replacement.
+
+## Repository layout — do not violate
+
+Report findings in your response. Do not write review notes, summaries, or any other markdown into the repository root or into `custom-features/`; both directories are reserved for source and must stay free of documentation.
+If a finding genuinely warrants a persisted document, it goes under `docs/` in the appropriate subfolder. See the Repository Layout section of `AGENTS.md` for the full rules.

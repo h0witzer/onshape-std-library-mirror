@@ -3,16 +3,26 @@
 All project documentation lives here. Nothing in this tree is part of the Onshape standard
 library, and nothing here is imported by FeatureScript.
 
+> **Keep this tree clean.** Markdown belongs in `docs/` and nowhere else — not in the
+> repository root, not in `custom-features/`. This was cleaned up once after two dozen loose
+> documents accumulated in both places; do not start that over. The full rules are in
+> [AGENTS.md](../AGENTS.md) under *Repository Layout*. Read them before creating a file.
+>
+> A pre-commit hook (`.githooks/pre-commit`) enforces this. Enable it once per clone with
+> `git config core.hooksPath .githooks`.
+
 ## Where things go
 
-| Location | Contents |
-| --- | --- |
-| Repository root | Mirrored Onshape standard library `.fs` files, `AGENTS.md` (agent instructions), `README.md` / `README.pdf` (upstream mirror README), `LICENSE.txt` |
-| `custom-features/` | Custom FeatureScript source only — no markdown |
-| `docs/` | Every spec, guide, and feature document |
+| Location | Contents | Markdown allowed? |
+| --- | --- | --- |
+| Repository root | Mirrored Onshape standard library `.fs` files, `AGENTS.md` (agent instructions), `README.md` / `README.pdf` (upstream mirror README), `LICENSE.txt` | **No** |
+| `custom-features/` | Custom FeatureScript source only | **No** |
+| `docs/` | Every spec, guide, and feature document | Yes |
 
 When a custom feature needs documentation, add it under `docs/` and reference it from the
-feature's header comment by its repo-relative path.
+feature's header comment by its repo-relative path. If a document on the topic already
+exists, update it rather than adding a second one beside it — and add a one-line entry to
+the lists below whenever you add a genuinely new document.
 
 ## featurescript-guides/
 
