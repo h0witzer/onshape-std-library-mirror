@@ -13,6 +13,8 @@ export import(path : "onshape/std/mateconnectoraxistype.gen.fs", version : "2815
 modifiedFormed::import(path : "5418313fd7f629d9c7f1ac10", version : "b97acafda22e3375bf349519"); //modifiedFormedUtils.fs
 import(path : "onshape/std/instantiator.fs", version : "2815.0");
 import(path : "onshape/std/vector.fs", version : "2815.0");
+import(path : "onshape/std/sheetMetalUtils.fs", version : "2815.0");
+import(path : "onshape/std/holeAttribute.fs", version : "2815.0");
 
 /**
  * Variable name used to store and retrieve the custom feature name for Amalgamate.
@@ -188,6 +190,9 @@ function addFormInstances(context is Context, id is Id, definition is map, insta
 
 /**
  * Apply the positive and negative form bodies to the selected target solids, then clean up helper geometry.
+ * When subtraction tool bodies carry HoleAttribute annotation data and the target is an active sheet metal
+ * model, propagates those hole attributes to the resulting sheet metal geometry to support hole tables
+ * and drawing annotations on sheet metal parts.
  */
 function performFormBooleans(context is Context, id is Id, subtractionTargets is Query, unionTargets is Query, allFormedBodies is Query, createNewBodies is boolean)
 {
@@ -203,12 +208,31 @@ function performFormBooleans(context is Context, id is Id, subtractionTargets is
         }
         //         debug(context, positiveBodies, DebugColor.YELLOW);
         // debug(context, subtractionTargets, DebugColor.GREEN);
+
+        // Determine whether any subtraction targets are active sheet metal bodies. If so, collect hole
+        // annotation attributes from the tool bodies before the boolean consumes them. These attributes
+        // will be propagated to the resulting sheet metal geometry after the boolean.
+        const smQueries = separateSheetMetalQueries(context, subtractionTargets);
+        const hasSheetMetalTargets = !isQueryEmpty(context, smQueries.sheetMetalQueries);
+        var holeAttributesFromTools = [];
+        if (hasSheetMetalTargets)
+        {
+            holeAttributesFromTools = getHoleAttributes(context, qOwnedByBody(negativeBodies, EntityType.FACE));
+        }
+
         booleanBodies(context, id + "formRemove", {
                     "tools" : negativeBodies,
                     "targets" : subtractionTargets,
                     "operationType" : BooleanOperationType.SUBTRACTION,
                     "targetsAndToolsNeedGrouping" : true
                 });
+
+        // After the subtraction, propagate hole attributes to any sheet metal targets whose corresponding
+        // tool bodies carried HoleAttribute annotation data (e.g. from a notHole.fs tool).
+        if (hasSheetMetalTargets && holeAttributesFromTools != [])
+        {
+            propagateHoleAttributesToSheetMetal(context, id + "formRemove", smQueries.sheetMetalQueries, holeAttributesFromTools, id);
+        }
     }
 
     if (!isQueryEmpty(context, positiveBodies))
@@ -277,4 +301,131 @@ function qBodiesWithAnyFormAttributes(queryToFilter is Query, attributes is arra
 {
     return qUnion([modifiedFormed::qBodiesWithFormAttributes(queryToFilter, attributes),
                 standardFormed::qBodiesWithFormAttributes(queryToFilter, attributes)]);
+}
+
+/**
+ * Propagates hole attributes from subtraction tool bodies to sheet metal targets after a boolean subtraction.
+ * Mirrors the attribute mapping behavior of the standard hole feature for sheet metal parts, ensuring that
+ * hole tables and drawing annotations are populated for holes cut via Amalgamate into sheet metal bodies.
+ *
+ * When booleanBodies subtracts a notHole.fs tool from a sheet metal solid, corresponding circular edges
+ * are created in the underlying SM definition (SHEET) bodies. This function finds those edges, resolves
+ * their associated SM faces via SM association attributes, evaluates the cylinder geometry to determine
+ * hole diameter, and applies the best-matching HoleAttribute from the original tool bodies.
+ *
+ * @param booleanId {Id} : Operation ID of the subtraction boolean, used to find newly created edges.
+ * @param sheetMetalTargets {Query} : Active sheet metal solid bodies that were subtracted from.
+ * @param holeAttributesFromTools {array} : HoleAttribute objects read from the negative tool body faces before the boolean.
+ * @param topLevelId {Id} : Top-level feature ID for error reporting context.
+ */
+function propagateHoleAttributesToSheetMetal(context is Context, booleanId is Id, sheetMetalTargets is Query,
+    holeAttributesFromTools is array, topLevelId is Id)
+{
+    // Collect the underlying SM definition (SHEET) bodies for all affected SM targets.
+    // These are the hidden master bodies that track the sheet metal geometry state.
+    var sheetMetalModels = qNothing();
+    for (var smBody in evaluateQuery(context, sheetMetalTargets))
+    {
+        sheetMetalModels = qUnion([sheetMetalModels, getSheetMetalModelForPart(context, smBody)]);
+    }
+
+    if (isQueryEmpty(context, sheetMetalModels))
+    {
+        return;
+    }
+
+    // When booleanBodies operates on an SM solid body, Onshape creates corresponding edges in the
+    // underlying SHEET definition body. Query for circular/arc edges created by this boolean in those models.
+    const createdEdges = qBodyType(qCreatedBy(booleanId, EntityType.EDGE), BodyType.SHEET);
+    const smEdges = qOwnedByBody(createdEdges, sheetMetalModels);
+    const circularEdges = qUnion([qGeometry(smEdges, GeometryType.CIRCLE), qGeometry(smEdges, GeometryType.ARC)]);
+
+    const circularEdgesEvaluated = evaluateQuery(context, circularEdges);
+    if (circularEdgesEvaluated == [])
+    {
+        return;
+    }
+
+    for (var circularEdge in circularEdgesEvaluated)
+    {
+        // SM association attributes link edges in the SHEET model to corresponding faces in the definition body.
+        // We use this to find the faces to attribute with hole data, mirroring assignSheetMetalHoleAttributes.
+        var associations = getSMAssociationAttributes(context, circularEdge);
+        for (var association in associations)
+        {
+            // Resolve associated SM faces. Includes private patch faces so attribute propagates downstream.
+            const holeFacesQ = qEntityFilter(qAttributeQuery(association), EntityType.FACE);
+            const holeFaces = evaluateQuery(context, holeFacesQ);
+            if (size(holeFaces) == 0)
+            {
+                continue;
+            }
+
+            // Evaluate the surface geometry of the associated face to get the cylinder radius.
+            // Sheet metal holes always produce cylindrical faces in the definition body.
+            var cylinder = evSurfaceDefinition(context, { "face" : holeFacesQ });
+            if (!(cylinder is Cylinder))
+            {
+                continue;
+            }
+            const holeDiameter = cylinder.radius * 2;
+
+            // Match the best HoleAttribute from the original tool bodies based on hole diameter.
+            // This correctly handles multiple tool bodies with different hole sizes in one Amalgamate operation.
+            const matchedAttribute = findMatchingHoleAttribute(holeAttributesFromTools, holeDiameter);
+            if (matchedAttribute == undefined)
+            {
+                continue;
+            }
+
+            // Apply the matched hole attribute to the circular edge and the associated SM faces.
+            // The attribute carries all annotation data needed for hole tables and drawing callouts.
+            try
+            {
+                setAttribute(context, {
+                            "entities" : qUnion([circularEdge, holeFacesQ]),
+                            "attribute" : matchedAttribute
+                        });
+            }
+            catch
+            {
+                reportFeatureInfo(context, topLevelId, ErrorStringEnum.HOLE_PARTIAL_FAILURE);
+            }
+        }
+    }
+}
+
+/**
+ * Returns the HoleAttribute from an array whose holeDiameter is closest to the given target diameter.
+ * When there is only one attribute (the common case), it is returned regardless of diameter.
+ * Returns undefined if the array is empty or no attributes contain a holeDiameter field.
+ *
+ * @param holeAttributes {array} : Array of HoleAttribute objects to search (from getHoleAttributes).
+ * @param targetDiameter {ValueWithUnits} : Hole diameter evaluated from the SM cylinder face geometry.
+ */
+function findMatchingHoleAttribute(holeAttributes is array, targetDiameter)
+{
+    if (size(holeAttributes) == 0)
+    {
+        return undefined;
+    }
+
+    var bestMatch = undefined;
+    var bestDiff = undefined;
+
+    for (var attribute in holeAttributes)
+    {
+        if (attribute.holeDiameter == undefined)
+        {
+            continue;
+        }
+        const diff = abs(attribute.holeDiameter - targetDiameter);
+        if (bestDiff == undefined || diff < bestDiff)
+        {
+            bestDiff = diff;
+            bestMatch = attribute;
+        }
+    }
+
+    return bestMatch;
 }
