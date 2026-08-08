@@ -41,6 +41,7 @@ Design documents for work that is planned or in progress. These describe intent 
 derivation; the code may not match them yet.
 
 - [DISPLACEMENT_MAP_TILING_SPEC.md](specs/DISPLACEMENT_MAP_TILING_SPEC.md) — tiling one image as a memoized unit cell via per-tile Boehm knot refinement, for `custom-features/displacementMap.fs`.
+- [SPLINE_REFINEMENT_UTILITY_SPEC.md](specs/SPLINE_REFINEMENT_UTILITY_SPEC.md) — a shared `splineRefinementUtils.fs` module for exact B-spline refinement (knot insertion, Bezier decomposition, degree elevation), replacing duplicated and broken copies in `displacementMap.fs`, `tweenSurfaces.fs`, and `tweenCurves.fs`, and underpinning an exact flex/deform feature.
 - [TIPPY_BUCKET_PIVOT_SPEC.md](specs/TIPPY_BUCKET_PIVOT_SPEC.md) — material-aware pivot placement from empty and filled centers of mass, for `custom-features/tippyBucketPivot.fs`.
 
 ## features/

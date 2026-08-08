@@ -1,18 +1,19 @@
-FeatureScript 2679;
+FeatureScript 3044;
 // Standard Library Imports
-import(path : "onshape/std/common.fs", version : "2679.0");
-import(path : "onshape/std/evaluate.fs", version : "2679.0");
-import(path : "onshape/std/geomOperations.fs", version : "2679.0");
-import(path : "onshape/std/query.fs", version : "2679.0");
-import(path : "onshape/std/vector.fs", version : "2679.0");
-import(path : "onshape/std/units.fs", version : "2679.0");
-import(path : "onshape/std/valueBounds.fs", version : "2679.0");
-import(path : "onshape/std/curveGeometry.fs", version : "2679.0"); // For bSplineCurve() constructor and BSplineCurve type
-import(path : "onshape/std/error.fs", version : "2679.0"); // For reportFeatureWarning
-import(path : "onshape/std/approximationUtils.fs", version : "2679.0");
-import(path : "onshape/std/splineUtils.fs", version : "2679.0");
-import(path : "onshape/std/containers.fs", version : "2679.0");
+import(path : "onshape/std/common.fs", version : "3044.0");
+import(path : "onshape/std/evaluate.fs", version : "3044.0");
+import(path : "onshape/std/geomOperations.fs", version : "3044.0");
+import(path : "onshape/std/query.fs", version : "3044.0");
+import(path : "onshape/std/vector.fs", version : "3044.0");
+import(path : "onshape/std/units.fs", version : "3044.0");
+import(path : "onshape/std/valueBounds.fs", version : "3044.0");
+import(path : "onshape/std/curveGeometry.fs", version : "3044.0"); // For bSplineCurve() constructor and BSplineCurve type
+import(path : "onshape/std/error.fs", version : "3044.0"); // For reportFeatureWarning
+import(path : "onshape/std/approximationUtils.fs", version : "3044.0");
+import(path : "onshape/std/splineUtils.fs", version : "3044.0");
+import(path : "onshape/std/containers.fs", version : "3044.0");
 import(path : "f42f46716945f2a9bda5a481/eabbc18661ba5776e0ba962d/97730412fb61f53dcd526c08", version : "a24da502290d2ae4706c631f"); // 3d Arc Utilities
+import(path : "eca0e7b6ed29c5239f39f868/aefe2c3fb406d62187bab0bc/9a2b77793cdc37bace6d915a", version : "f617b3153e05d226242ebab9"); // splineRefinementUtils.fs
 
 
 export const TWEEN_FRACTION_BOUNDS = { (unitless) : [0, 0.5, 1] } as RealBoundSpec;
@@ -51,37 +52,71 @@ export function tweenCurves(context is Context, id is Id,
     if (bSpline1 == undefined || bSpline2 == undefined)
         throw regenError("Could not get B-spline representation for input curves.");
 
-    // === DEGREE MATCHING ===
-    if (bSpline1.degree != bSpline2.degree)
+    // Captured before any compatibility processing below, which - for the non-periodic path -
+    // always clamps periodic input (splineRefinementUtils.fs's documented policy). The final
+    // isPeriodic/warning logic near the end of this function must reason about what the
+    // curves ORIGINALLY were, not what they became after that clamp.
+    const originalIsPeriodic1 = bSpline1.isPeriodic;
+    const originalIsPeriodic2 = bSpline2.isPeriodic;
+    const bothPeriodic = originalIsPeriodic1 && originalIsPeriodic2;
+
+    if (bothPeriodic)
     {
-        const targetDegree = max(bSpline1.degree, bSpline2.degree);
-        if (bSpline1.degree < targetDegree)
+        // Exact knot-vector sharing (makeSplinesCompatible, below) always clamps periodic
+        // input to produce a result - it has to, since genuine periodic-preserving refinement
+        // isn't implemented (see docs/specs/SPLINE_REFINEMENT_UTILITY_SPEC.md's periodic
+        // policy) - and clamping here would silently turn a tweened CLOSED curve into an OPEN
+        // one. Two closed curves therefore keep the original degree-elevation and
+        // approximation-based count-matching pipeline, unchanged, so periodicity survives.
+        // Only the open/mixed-periodicity path below gets the exact section 2.4 fix. This is a
+        // deliberately scoped gap, not an oversight - see the spec's Phase 3 notes.
+        if (bSpline1.degree != bSpline2.degree)
         {
-            bSpline1 = elevateDegree(bSpline1, targetDegree);
+            const targetDegree = max(bSpline1.degree, bSpline2.degree);
+            if (bSpline1.degree < targetDegree)
+            {
+                bSpline1 = elevateDegree(bSpline1, targetDegree);
+            }
+            if (bSpline2.degree < targetDegree)
+            {
+                bSpline2 = elevateDegree(bSpline2, targetDegree);
+            }
         }
-        if (bSpline2.degree < targetDegree)
+
+        if (size(bSpline1.controlPoints) != size(bSpline2.controlPoints))
         {
-            bSpline2 = elevateDegree(bSpline2, targetDegree);
+            const targetCount = max(size(bSpline1.controlPoints), size(bSpline2.controlPoints));
+            const cpFractions1 = computeControlPointFractions(bSpline1.controlPoints);
+            const cpFractions2 = computeControlPointFractions(bSpline2.controlPoints);
+
+            if (size(bSpline1.controlPoints) < targetCount)
+            {
+                bSpline1 = matchCPCount(context, bSpline1, targetCount,
+                        cpFractions2);
+            }
+            if (size(bSpline2.controlPoints) < targetCount)
+            {
+                bSpline2 = matchCPCount(context, bSpline2, targetCount,
+                        cpFractions1);
+            }
         }
     }
-
-    // === CONTROL POINT COUNT MATCHING ===
-    if (size(bSpline1.controlPoints) != size(bSpline2.controlPoints))
+    else
     {
-        const targetCount = max(size(bSpline1.controlPoints), size(bSpline2.controlPoints));
-        const cpFractions1 = computeControlPointFractions(bSpline1.controlPoints);
-        const cpFractions2 = computeControlPointFractions(bSpline2.controlPoints);
-
-        if (size(bSpline1.controlPoints) < targetCount)
-        {
-            bSpline1 = matchCPCount(context, bSpline1, targetCount,
-                    cpFractions2);
-        }
-        if (size(bSpline2.controlPoints) < targetCount)
-        {
-            bSpline2 = matchCPCount(context, bSpline2, targetCount,
-                    cpFractions1);
-        }
+        // Exact degree elevation AND knot-vector sharing (spec sections 2.4 and 3.1): both
+        // curves land on a common degree and a common knot vector, so blending control point i
+        // of curve A against control point i of curve B is exactly blending the curves
+        // themselves (spec section 3.2's affine argument) - not just "same degree, same
+        // count", which is necessary but not sufficient. Two curves can have the same degree
+        // and count while control point i means something different on each - a line's default
+        // [0, 1] domain against an arc-derived spline's own native parameterization, or two
+        // splines with different interior knot structure. makeSplinesCompatible remaps both
+        // domains to [0, 1] before merging, so mismatched domains are handled, not just
+        // mismatched degree/count. Replaces the old elevateDegree + matchCPCount pipeline
+        // (matchCPCount sampled and refit with approximateSpline - not exact) for this path.
+        const compatible = makeSplinesCompatible(bSpline1, bSpline2);
+        bSpline1 = compatible.a;
+        bSpline2 = compatible.b;
     }
 
     var cpList1 = bSpline1.controlPoints;
@@ -89,7 +124,7 @@ export function tweenCurves(context is Context, id is Id,
     var weights1 = bSpline1.weights; // undefined if not rational
     var weights2_orig = bSpline2.weights; // undefined if not rational
 
-    if (bSpline1.isPeriodic && bSpline2.isPeriodic && size(cpList1) == size(cpList2_orig))
+    if (bothPeriodic && size(cpList1) == size(cpList2_orig))
     {
         const shiftNormal = bestPeriodicShift(cpList1, cpList2_orig);
         const normalRot = rotateArray(cpList2_orig, -shiftNormal);
@@ -117,7 +152,7 @@ export function tweenCurves(context is Context, id is Id,
     }
 
     var autoDecidedFlip = false;
-    if (!(bSpline1.isPeriodic && bSpline2.isPeriodic))
+    if (!bothPeriodic)
     {
         try
         {
@@ -140,21 +175,24 @@ export function tweenCurves(context is Context, id is Id,
     var finalWeights2 = bSpline2.isRational && autoDecidedFlip ? reverse(weights2_orig) : weights2_orig;
 
     // === COMPATIBILITY CHECK ===
+    // makeSplinesCompatible guarantees these for the non-periodic path; the both-periodic path
+    // still goes through the original elevate/matchCPCount pipeline above, so this stays a
+    // genuine safety net for that path (and a defensive check against a module regression).
     if (bSpline1.degree != bSpline2.degree)
     {
         throw regenError("Failed to match curve degrees after elevation.", ["curve1", "curve2"]);
     }
     if (size(cpList1) != size(finalCpList2))
     {
-        throw regenError("Curves have different B-spline control point counts (" ~ size(cpList1) ~ " vs " ~ size(finalCpList2) ~ "). CP count matching is not auto-implemented. Please use curves with same CP count or enable point sampling fallback.", ["curve1", "curve2"]);
+        throw regenError("Curves have different B-spline control point counts (" ~ size(cpList1) ~ " vs " ~ size(finalCpList2) ~ ") after compatibility processing.", ["curve1", "curve2"]);
     }
     if (bSpline1.isRational != bSpline2.isRational)
     {
         throw regenError("Curves have different rationality. Both must be rational or non-rational.", ["curve1", "curve2"]);
     }
 
-    var tweenedCps = [];
-    var tweenedWeights = [];
+    var tweenedCps = makeArray(size(cpList1), cpList1[0]);
+    var tweenedWeights = makeArray(size(cpList1), 1);
 
     for (var i = 0; i < size(cpList1); i += 1)
     {
@@ -164,19 +202,19 @@ export function tweenCurves(context is Context, id is Id,
 
         const pos1 = cpList1[i];
         const pos2 = finalCpList2[i];
-        
+
         // For rational B-splines (NURBS), interpolate in homogeneous coordinates
         // Weighted CP = CP * weight, then interpolate, then divide by interpolated weight
         const weightedPos1 = pos1 * weight1;
         const weightedPos2 = pos2 * weight2;
         const blendedWeightedPos = weightedPos1 * (1 - fraction) + weightedPos2 * fraction;
 
-        tweenedCps = append(tweenedCps, blendedWeightedPos / blendedWeight);
-        tweenedWeights = append(tweenedWeights, blendedWeight);
+        tweenedCps[i] = blendedWeightedPos / blendedWeight;
+        tweenedWeights[i] = blendedWeight;
     }
 
-    var isPeriodicTween = bSpline1.isPeriodic;
-    if (bSpline1.isPeriodic != bSpline2.isPeriodic)
+    var isPeriodicTween = originalIsPeriodic1;
+    if (originalIsPeriodic1 != originalIsPeriodic2)
     {
         reportFeatureWarning(context, id, "Curves have different periodicity; tweened curve will adopt periodicity of the first curve.");
     }
