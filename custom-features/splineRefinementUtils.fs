@@ -685,8 +685,16 @@ export function refineKnotVector(controlPoints is array, knots is array, degree 
 // evaluateSpline (splineUtils.fs) is BSplineCurve-only, and the face evaluators
 // (evFaceTangentPlanes / evFaceCurvatures) require created geometry and re-normalize their
 // parameters to the face's parameter-space bounding box. These functions fill that one gap —
-// they exist per the AGENTS.md manual-math rule because no std function does the job. Curves
-// need no analog here: cast to BSplineCurve and use std evaluateSpline.
+// they exist per the AGENTS.md manual-math rule because no std function does the job.
+//
+// CURVES: do NOT reach for std evaluateSpline when the curve is (or may be) RATIONAL. The
+// kernel builtin behind it SILENTLY IGNORES WEIGHTS — proven live 2026-08-08, when a rational
+// circle evaluated to its unweighted control polygon's curve exactly (off-circle by ~30% of
+// the radius) and cost two tester runs to a false mismatch. For rational curves, evaluate
+// through bSplineBasisValues / findEvaluationSpanIndex with homogeneous accumulation (weights
+// times basis, divide at the end) — tweenCurves' evaluateNormalizedSplinePoint and the
+// tester's evaluateModuleBasisCurvePoint are the reference implementations. std evaluateSpline
+// remains fine for genuinely non-rational curves.
 
 /**
  * The `degree + 1` non-vanishing B-spline basis function values at `parameter`, for the span
@@ -1139,6 +1147,53 @@ function buildPeriodicKnotArray(fundamentalKnots is array, period is number, ori
 }
 
 /**
+ * The wrap-form STORED knot array equivalent to a CLOSED CLAMPED periodic curve's clamped
+ * knots: fundamental list = [seam at multiplicity `degree`, then the interior knots verbatim],
+ * wrap-padded. `pointCount` is the CLOSED-CLAMPED point count N (n_fundamental = N - 1).
+ *
+ * Why the seam carries multiplicity exactly `degree`: the closed clamped curve repeated
+ * end-to-end IS its own periodic extension (C0 by closure), and the concatenated clamped
+ * representation joins copies at multiplicity `degree` — so the periodic structure's per-period
+ * knot list is [seam^degree, interior], count degree + (N - degree - 1) = N - 1 = n, matching
+ * the fundamental point count identically. The closure's actual smoothness stays carried by the
+ * control point geometry, exactly as in the input. This is NURBS Book §12.1 (curve unclamping,
+ * Algorithm A12.1) in its periodic-identification form.
+ */
+function closedClampedPeriodicKnots(knots is array, degree is number, pointCount is number) returns array
+{
+    const n = pointCount - 1;
+    const domainStart = knots[degree];
+    const period = knots[pointCount] - domainStart;
+    var fundamentalKnots = makeArray(n, domainStart);
+    for (var interiorIndex = 0; interiorIndex < pointCount - degree - 1; interiorIndex += 1)
+    {
+        fundamentalKnots[degree + interiorIndex] = knots[degree + 1 + interiorIndex];
+    }
+    return buildPeriodicKnotArray(fundamentalKnots, period, degree, n + 2 * degree + 1);
+}
+
+/**
+ * Multiplicity of the knot AT THE SEAM of a stored periodic direction — the domain start,
+ * knots[degree]. This decides the legal EMISSION form: a wrap-form periodic surface/curve with
+ * seam multiplicity >= degree is rejected by the kernel as a non-smooth periodic seam, while
+ * the SAME curve in closed clamped form (the kernel's own output convention) is accepted, with
+ * the closure's smoothness judged from the control point geometry instead.
+ */
+export function seamKnotMultiplicity(knots is array, degree is number) returns number
+{
+    const seamValue = knots[degree];
+    var multiplicity = 0;
+    for (var knotIndex = 0; knotIndex < size(knots); knotIndex += 1)
+    {
+        if (abs(knots[knotIndex] - seamValue) <= KNOT_PARAMETER_TOLERANCE)
+        {
+            multiplicity += 1;
+        }
+    }
+    return multiplicity;
+}
+
+/**
  * Tile the infinite periodic structure into a finite window: the core period plus
  * `marginPoints` control points of margin on EACH side. Pure array construction — no operator,
  * no clamping — so it costs O(window size) and nothing more.
@@ -1152,6 +1207,109 @@ function buildPeriodicKnotArray(fundamentalKnots is array, period is number, ori
  * 316-point window instead of the 903-point one a whole-period margin would build — and it is
  * the window size that multiplies through everything downstream.
  */
+/**
+ * True when `knots` is genuinely wrap-padded: knots[i + n] == knots[i] + period for every valid
+ * i. This module's tile/operate/slice periodic construction is exact ONLY on this form; the
+ * other valid periodic convention (CLOSED CLAMPED — see normalizeSplineDefinition) is converted
+ * to this form at normalization, never operated on directly.
+ */
+export function isWrapPaddedPeriodicKnots(knots is array, degree is number, n is number) returns boolean
+{
+    const period = knots[degree + n] - knots[degree];
+    if (period <= KNOT_PARAMETER_TOLERANCE)
+    {
+        return false;
+    }
+    for (var knotIndex = 0; knotIndex < size(knots) - n; knotIndex += 1)
+    {
+        if (abs(knots[knotIndex + n] - (knots[knotIndex] + period)) > KNOT_PARAMETER_TOLERANCE)
+        {
+            return false;
+        }
+    }
+    return true;
+}
+
+/**
+ * Internal assertion: every real (non-identity) periodic operation runs on wrap-padded knots.
+ * After normalizeSplineDefinition/normalizeSurfaceDefinition — which convert the closed-clamped
+ * kernel convention to wrap form exactly — this should be unreachable; reaching it means a
+ * caller bypassed normalization with unconverted data.
+ */
+function verifyGenuinePeriodicPadding(knots is array, degree is number, n is number, period is number)
+{
+    if (!isWrapPaddedPeriodicKnots(knots, degree, n))
+    {
+        throw "splineRefinementUtils: internal error - a periodic operation received knots that are not " ~
+            "wrap-padded. All recognized periodic conventions are converted to wrap form by " ~
+            "normalizeSplineDefinition/normalizeSurfaceDefinition; reaching this means a caller bypassed " ~
+            "normalization. knots: " ~ knots;
+    }
+}
+
+/**
+ * How many knots at the TAIL of a wrap-form fundamental knot list are periodic images of the
+ * seam (values equal to fundamentalKnots[0] + period). A nonzero count means the seam's modular
+ * multiplicity run is SPLIT across the domain boundary — a VALID but NONCANONICAL stored form:
+ * the wrap relation still holds and evaluation is unaffected, but every consumer that compares
+ * knot STRUCTURE (directionSharingPlan's run merge, seamKnotMultiplicity, clamped emission)
+ * assumes the whole run sits contiguously at the domain start. Two spellings of one structure
+ * is exactly how a reversed revolve direction became unshareable with its unreversed partner:
+ * the run merge saw phantom extra knots at the seam's far image and demanded insertions above
+ * the multiplicity cap (live cone-to-cylinder failure, 2026-08-08). REVERSAL is the operation
+ * that manufactures the split — reflecting [seam x m, interior...] puts m - 1 seam images at
+ * the far end whenever m > 1 — while conversion from closed-clamped never does.
+ */
+function seamImageTailCount(fundamentalKnots is array, period is number) returns number
+{
+    const n = size(fundamentalKnots);
+    const seamImage = fundamentalKnots[0] + period;
+    var tailCount = 0;
+    while (tailCount < n - 1 && abs(fundamentalKnots[n - 1 - tailCount] - seamImage) <= KNOT_PARAMETER_TOLERANCE)
+    {
+        tailCount += 1;
+    }
+    return tailCount;
+}
+
+/**
+ * Re-cut one periodic point/weight cycle so it starts at fundamental index `shift`: the shared
+ * gather of rewindowPeriodicSpline / rewindowPeriodicSurfaceDirection, factored RAW (no
+ * normalization) so the normalize-time seam canonicalization can use it without recursing.
+ * `elements` may be the full stored array (n + degree entries) or just the fundamental — only
+ * the first n entries are read. Pure re-index; no arithmetic on values.
+ */
+function recutPeriodicCycle(elements is array, n is number, degree is number, shift is number) returns array
+{
+    var recut = makeArray(n + degree, elements[0]);
+    for (var index = 0; index < n + degree; index += 1)
+    {
+        const sourceIndex = shift + index;
+        const cycle = floor(sourceIndex / n);
+        recut[index] = elements[sourceIndex - cycle * n];
+    }
+    return recut;
+}
+
+/** The knot half of the same re-cut: gather the fundamental from index `shift`, wrapping with
+    + period per cycle, and re-pad. The re-cut window's domain starts at the gathered first
+    knot's value — for the canonicalization re-cut that is the seam's next periodic image, so
+    the domain shifts by up to one period, which is meaningless for a periodic direction. */
+function recutPeriodicKnots(knots is array, degree is number, shift is number) returns array
+{
+    const n = size(knots) - 2 * degree - 1;
+    const fundamentalKnots = subArray(knots, degree, degree + n);
+    const period = knots[degree + n] - knots[degree];
+    var newFundamentalKnots = makeArray(n, 0);
+    for (var knotIndex = 0; knotIndex < n; knotIndex += 1)
+    {
+        const sourceIndex = shift + knotIndex;
+        const cycle = floor(sourceIndex / n);
+        newFundamentalKnots[knotIndex] = fundamentalKnots[sourceIndex - cycle * n] + cycle * period;
+    }
+    return buildPeriodicKnotArray(newFundamentalKnots, period, degree, n + 2 * degree + 1);
+}
+
 function buildPeriodicWindow(controlPoints is array, knots is array, degree is number) returns map
 {
     const fundamental = extractFundamentalPeriodicCurveData(controlPoints, knots, degree);
@@ -1160,6 +1318,7 @@ function buildPeriodicWindow(controlPoints is array, knots is array, degree is n
     {
         throw "splineRefinementUtils: periodic operations need at least one control point per period, got " ~ n ~ ".";
     }
+    verifyGenuinePeriodicPadding(knots, degree, n, fundamental.period);
 
     const marginPoints = 2 * degree + 2;
     const windowPointCount = n + 2 * marginPoints;
@@ -1221,6 +1380,7 @@ function periodicWideClampedWindowPlan(knots is array, degree is number) returns
     }
     const fundamentalKnots = subArray(knots, degree, degree + n);
     const period = knots[degree + n] - knots[degree];
+    verifyGenuinePeriodicPadding(knots, degree, n, period);
     const marginPeriods = max(1, ceil((degree + 1) / n));
 
     const wideControlPointCount = (2 * marginPeriods + 1) * n + degree;
@@ -1412,8 +1572,31 @@ export function periodicRefinementOperator(knots is array, degree is number, par
             "n + 2*degree + 1 entries for n + degree control points); got " ~ size(knots) ~ " knots at degree " ~
             degree ~ ", implying n = " ~ n ~ ".";
     }
+
+    // Identity fast path, matching refinePeriodicPoints' own early return: with nothing to
+    // insert, the correct operator is identity on the INPUT exactly as given, knots included.
+    // Without this, the general path below still computes an outputCount == inputCount
+    // identity-valued operator, but reaches it via buildPeriodicKnotArray - which always
+    // reconstructs the outer padding by tiling the fundamental knots, discarding whatever the
+    // input's own padding was. That is wrong for the same reason normalizeSplineDefinition's
+    // rebuild was wrong (see its own doc comment): a periodic direction can validly arrive with
+    // CLAMPED padding (multiplicity degree + 1 at the literal ends) whose wraparound is carried
+    // by the overlap control points, not by knot values, and retiling it produces a different
+    // array from the one the caller is entitled to get back unchanged when no work was done.
+    if (size(parametersToInsert) == 0)
+    {
+        const identityCount = n + degree;
+        var identityRows = makeArray(identityCount, 0);
+        for (var rowIndex = 0; rowIndex < identityCount; rowIndex += 1)
+        {
+            identityRows[rowIndex] = [{ "index" : rowIndex, "weight" : 1 }];
+        }
+        return { "degree" : degree, "inputCount" : identityCount, "outputCount" : identityCount, "knots" : knots, "rows" : identityRows };
+    }
+
     const fundamentalKnots = subArray(knots, degree, degree + n);
     const period = knots[degree + n] - knots[degree];
+    verifyGenuinePeriodicPadding(knots, degree, n, period);
 
     const marginPoints = 2 * degree + 2;
     const windowPointCount = n + 2 * marginPoints;
@@ -1675,33 +1858,98 @@ export function normalizeSplineDefinition(spline is map) returns map
 {
     var normalized = spline;
 
-    // Periodic input: convert to the canonical STORED periodic form — n + degree control
-    // points (the degree-sized overlap tail included) with n + 2*degree + 1 periodic-padded
-    // knots — preserving periodicity. Exactly two input forms have defined semantics (they are
-    // the two overlap conventions bSplineCurve itself accepts, "degree or 0 overlapping
-    // control points"); each is recognized by exact counting and converted exactly. Anything
-    // else throws with the observed shape rather than guessing. (An earlier version ported
-    // std editCurve.fs's cleanUpPeriodicBSplineDefinition heuristics here, keyed partly on
-    // knots[0] != 0 — but every canonical periodic curve on a [0, 1] domain has knots[0] < 0
-    // by construction of the padding, so that heuristic fired on perfectly canonical input and
-    // destroyed it. Kernel-quirk forms, if they ever reach this module, should surface loudly
-    // through the throw below so they can be handled exactly, not silently reinterpreted.)
+    // Periodic input: normalize to the canonical wrap STORED periodic form — n + degree
+    // control points (overlap tail included) with n + 2*degree + 1 wrap-padded knots
+    // (knots[i + n] = knots[i] + period). THREE input forms have defined semantics, and they
+    // are discriminated by their DATA, never by array counts alone — the counts collide
+    // exactly, and count-based recognition shipped two real bugs here before this was learned:
+    //
+    //  1. Wrap-padded stored form: kept verbatim. Do NOT rebuild the padding — every downstream
+    //     periodic primitive derives fundamental knots and period from the core indices
+    //     [degree, degree + n) alone, so rebuilding buys nothing when the padding is genuine
+    //     and destroys the curve when the input is form 3.
+    //  2. Fundamental-only form (n points, n + 2*degree + 1 knots): overlap tail appended,
+    //     padding rebuilt — unambiguous, since there are no overlap points to disagree with.
+    //  3. CLOSED CLAMPED form — what evApproximateBSplineSurface actually returns for a
+    //     revolve's periodic direction, CONFIRMED by a full raw control-grid dump (2026-08-08):
+    //     ordinary clamped knots, and the LAST control point coincides with the FIRST. One
+    //     coincident point — NOT a degree-wide overlap; an earlier comment here claimed
+    //     otherwise from partial data (only row 0 of the raw grid was ever dumped), and the
+    //     fixture built on that claim was fiction. The full circle arrives as two rational
+    //     cubic Bezier arcs [P0, (r,2r), (-r,2r), (-r,0), (-r,-2r), (r,-2r), P0], weights
+    //     [1, 1/3, 1/3, 1, 1/3, 1/3, 1], knots [0 x4, .5 x3, 1 x4], with isPeriodic as
+    //     metadata for "this closure is smooth" (here C1: seam tangents (0,2r) on both sides
+    //     with symmetric spans). Converted exactly to form 1 below.
+    //
+    // Anything else throws with the observed shape rather than guessing.
     if (normalized.isPeriodic == true)
     {
         const degree = normalized.degree;
         const pointCount = size(normalized.controlPoints);
         const knotCount = size(normalized.knots);
+
+        // The form-3 conversion permutes points and weights together, so weights must exist
+        // before it runs (the general force-rational block sits below this branch).
+        if (normalized.isRational != true || normalized.weights == undefined)
+        {
+            normalized.weights = makeArray(pointCount, 1);
+            normalized.isRational = true;
+        }
+
         if (knotCount == pointCount + degree + 1 && pointCount > degree)
         {
-            // Already the stored form. Rebuild the outer padding from the domain knots (the
-            // only slots every producer agrees on) rather than trusting it: kernel-returned
-            // periodic curves can carry patched or arbitrary values in the outer pad slots,
-            // and everything downstream in this module derives structure from the fundamental
-            // knots anyway. Exactly idempotent for already-canonical input.
-            const n = pointCount - degree;
-            const fundamentalKnots = subArray(normalized.knots, degree, degree + n);
-            const period = normalized.knots[degree + n] - normalized.knots[degree];
-            normalized.knots = buildPeriodicKnotArray(fundamentalKnots, period, degree, n + 2 * degree + 1);
+            if (isWrapPaddedPeriodicKnots(normalized.knots, degree, pointCount - degree))
+            {
+                // Form 1 — keep the knots as given, EXCEPT canonicalizing a seam multiplicity
+                // run split across the domain boundary (reversal manufactures those; see
+                // seamImageTailCount). The re-cut is a pure re-index of the window — no
+                // arithmetic on point values — and shifts the domain by up to one period,
+                // which is meaningless for a periodic curve.
+                const n = pointCount - degree;
+                const tailCount = seamImageTailCount(subArray(normalized.knots, degree, degree + n),
+                        normalized.knots[degree + n] - normalized.knots[degree]);
+                if (tailCount > 0)
+                {
+                    normalized.controlPoints = recutPeriodicCycle(normalized.controlPoints, n, degree, n - tailCount);
+                    normalized.weights = recutPeriodicCycle(normalized.weights, n, degree, n - tailCount);
+                    normalized.knots = knotArray(recutPeriodicKnots(normalized.knots, degree, n - tailCount));
+                }
+            }
+            else if (isClampedKnotArray(normalized.knots, degree) &&
+                tolerantEquals(normalized.controlPoints[pointCount - 1], normalized.controlPoints[0]) &&
+                abs(normalized.weights[pointCount - 1] - normalized.weights[0]) < 1e-9)
+            {
+                // Form 3: closed clamped, N points of which n = N - 1 are distinct. The wrap
+                // stored form is a pure MODULAR GATHER — no arithmetic on point values:
+                //     stored[j] = P[(j + 1 - degree) mod n]
+                // with fundamental knots [seam x degree, interior verbatim] (see
+                // closedClampedPeriodicKnots for why the seam carries multiplicity exactly
+                // `degree`, and for the NURBS Book A12.1 grounding). Exactness: the closed
+                // curve repeated end-to-end IS its own periodic extension, the concatenated
+                // clamped representation carries exactly that fundamental list's tiled knot
+                // pattern, and slicing one period of de Boor points out of the middle of the
+                // tiling — extractPeriodicCoreAndRepad's local-linear-independence argument —
+                // collapses to this closed-form gather.
+                const fundamentalCount = pointCount - 1;
+                var gatheredPoints = makeArray(fundamentalCount + degree, normalized.controlPoints[0]);
+                var gatheredWeights = makeArray(fundamentalCount + degree, 1);
+                for (var storedIndex = 0; storedIndex < fundamentalCount + degree; storedIndex += 1)
+                {
+                    const shifted = storedIndex + 1 - degree;
+                    const sourceIndex = shifted - floor(shifted / fundamentalCount) * fundamentalCount;
+                    gatheredPoints[storedIndex] = normalized.controlPoints[sourceIndex];
+                    gatheredWeights[storedIndex] = normalized.weights[sourceIndex];
+                }
+                normalized.controlPoints = gatheredPoints;
+                normalized.weights = gatheredWeights;
+                normalized.knots = closedClampedPeriodicKnots(normalized.knots, degree, pointCount);
+            }
+            else
+            {
+                throw "splineRefinementUtils: periodic input matches the stored-form count but is neither " ~
+                    "wrap-padded nor closed-clamped-with-coincident-endpoints. Refusing to guess - report " ~
+                    "this shape so it can be handled exactly. knots: " ~ normalized.knots;
+            }
         }
         else if (knotCount == pointCount + 2 * degree + 1 && pointCount > degree)
         {
@@ -2266,9 +2514,19 @@ export function elevateSplineDegree(spline is map, targetDegree is number) retur
  * overlap condition survives — the reversed stored array satisfies R[j] = R[j + n] wherever
  * the original did.
  *
- * The resulting domain is [-domainEnd, -domainStart]. That is fine for every consumer here:
- * makeSplinesShareKnotVector remaps to a canonical domain before merging on both its clamped
- * and periodic branches, so absolute knot values never need to be comparable across splines.
+ * Periodic results are additionally re-CANONICALIZED: reflection splits a seam multiplicity
+ * run > 1 across the domain boundary (the run sat at the domain start; its mirror sits at the
+ * domain end), which is the same function in a noncanonical window — and noncanonical windows
+ * are two spellings of one knot structure, which breaks structure-comparing consumers (see
+ * seamImageTailCount). Re-normalizing performs that re-cut. The mult-1 seams of every earlier
+ * REVERSE fixture could never split, which is why this stayed invisible until Bezier-arc
+ * (multiplicity-degree) revolve structures arrived.
+ *
+ * The resulting domain is [-domainEnd, -domainStart], possibly shifted by one period by the
+ * canonicalization re-cut. That is fine for every consumer here: makeSplinesShareKnotVector
+ * remaps to a canonical domain before merging on both its clamped and periodic branches, and a
+ * periodic curve's window placement is pure labelling — so read the domain off the result
+ * rather than assuming it.
  */
 export function reverseSpline(spline is map) returns map
 {
@@ -2285,7 +2543,7 @@ export function reverseSpline(spline is map) returns map
     result.controlPoints = reverse(normalized.controlPoints);
     result.weights = reverse(normalized.weights);
     result.knots = knotArray(reversedKnots);
-    return result;
+    return normalizeSplineDefinition(result);
 }
 
 /**
@@ -2338,10 +2596,14 @@ export function rewindowPeriodicSpline(spline is map, seamParameter is number) r
 
     const fundamental = extractFundamentalPeriodicCurveData(normalized.controlPoints, normalized.knots, degree);
     const n = fundamental.n;
+    // FIRST index of the matching multiplicity run, deliberately: cutting at a later index of
+    // the run would strand the earlier copies at the window's far end — the split-seam
+    // noncanonical form seamImageTailCount describes. (This loop used to keep the LAST match,
+    // which did exactly that whenever the seam landed on a multiplicity > 1 knot.)
     var seamIndex = -1;
     for (var knotIndex = 0; knotIndex < n; knotIndex += 1)
     {
-        if (abs(fundamental.fundamentalKnots[knotIndex] - wrappedSeam) <= KNOT_PARAMETER_TOLERANCE)
+        if (seamIndex == -1 && abs(fundamental.fundamentalKnots[knotIndex] - wrappedSeam) <= KNOT_PARAMETER_TOLERANCE)
         {
             seamIndex = knotIndex;
         }
@@ -2452,6 +2714,36 @@ function rebuildPeriodicKnotPadding(knots is array, degree is number, n is numbe
     return buildPeriodicKnotArray(fundamentalKnots, knots[degree + n] - knots[degree], degree, n + 2 * degree + 1);
 }
 
+/** True when two ROWS of a control grid coincide elementwise, points and weights both — the
+    closed-clamped closure test for a U-periodic direction. */
+function surfaceRowsCoincide(controlPoints is array, weights is array, rowA is number, rowB is number) returns boolean
+{
+    for (var columnIndex = 0; columnIndex < size(controlPoints[0]); columnIndex += 1)
+    {
+        if (!tolerantEquals(controlPoints[rowA][columnIndex], controlPoints[rowB][columnIndex]) ||
+            abs(weights[rowA][columnIndex] - weights[rowB][columnIndex]) > 1e-9)
+        {
+            return false;
+        }
+    }
+    return true;
+}
+
+/** True when two COLUMNS of a control grid coincide in every row, points and weights both — the
+    closed-clamped closure test for a V-periodic direction. */
+function surfaceColumnsCoincide(controlPoints is array, weights is array, columnA is number, columnB is number) returns boolean
+{
+    for (var rowIndex = 0; rowIndex < size(controlPoints); rowIndex += 1)
+    {
+        if (!tolerantEquals(controlPoints[rowIndex][columnA], controlPoints[rowIndex][columnB]) ||
+            abs(weights[rowIndex][columnA] - weights[rowIndex][columnB]) > 1e-9)
+        {
+            return false;
+        }
+    }
+    return true;
+}
+
 /**
  * Surface analog of normalizeSplineDefinition: force rational (row-wise unit weights when not
  * already rational) and canonicalize each periodic direction, PRESERVING periodicity.
@@ -2482,6 +2774,13 @@ export function normalizeSurfaceDefinition(surface is map) returns map
         normalized.isRational = true;
     }
 
+    // Periodic directions are discriminated by DATA, never by array counts alone — see
+    // normalizeSplineDefinition's block comment for the three recognized forms and the raw-dump
+    // evidence behind form 3 (CLOSED CLAMPED: clamped knots, LAST row/column coinciding with the
+    // FIRST — one coincident row/column, not a degree-wide overlap; this is what
+    // evApproximateBSplineSurface returns for a revolve). Form 3 converts to wrap form by the
+    // same modular gather the curve version uses, applied to whole rows (U) or within every row
+    // (V), so the entire downstream periodic machinery sees one canonical form.
     if (normalized.isUPeriodic == true)
     {
         // U is the ROW direction: the overlap tail is `uDegree` extra ROWS.
@@ -2489,7 +2788,42 @@ export function normalizeSurfaceDefinition(surface is map) returns map
         const uKnotCount = size(normalized.uKnots);
         if (uKnotCount == rowCount + normalized.uDegree + 1)
         {
-            normalized.uKnots = rebuildPeriodicKnotPadding(normalized.uKnots, normalized.uDegree, rowCount - normalized.uDegree);
+            if (isWrapPaddedPeriodicKnots(normalized.uKnots, normalized.uDegree, rowCount - normalized.uDegree))
+            {
+                // Wrap form — keep uKnots as given, except canonicalizing a seam run split
+                // across the domain boundary (see seamImageTailCount): re-cut whole ROWS.
+                const n = rowCount - normalized.uDegree;
+                const tailCount = seamImageTailCount(subArray(normalized.uKnots, normalized.uDegree, normalized.uDegree + n),
+                        normalized.uKnots[normalized.uDegree + n] - normalized.uKnots[normalized.uDegree]);
+                if (tailCount > 0)
+                {
+                    normalized.controlPoints = recutPeriodicCycle(normalized.controlPoints, n, normalized.uDegree, n - tailCount);
+                    normalized.weights = recutPeriodicCycle(normalized.weights, n, normalized.uDegree, n - tailCount);
+                    normalized.uKnots = knotArray(recutPeriodicKnots(normalized.uKnots, normalized.uDegree, n - tailCount));
+                }
+            }
+            else if (isClampedKnotArray(normalized.uKnots, normalized.uDegree) &&
+                surfaceRowsCoincide(normalized.controlPoints, normalized.weights, rowCount - 1, 0))
+            {
+                const fundamentalCount = rowCount - 1;
+                var gatheredRows = makeArray(fundamentalCount + normalized.uDegree, normalized.controlPoints[0]);
+                var gatheredWeightRows = makeArray(fundamentalCount + normalized.uDegree, normalized.weights[0]);
+                for (var storedIndex = 0; storedIndex < fundamentalCount + normalized.uDegree; storedIndex += 1)
+                {
+                    const shifted = storedIndex + 1 - normalized.uDegree;
+                    const sourceRow = shifted - floor(shifted / fundamentalCount) * fundamentalCount;
+                    gatheredRows[storedIndex] = normalized.controlPoints[sourceRow];
+                    gatheredWeightRows[storedIndex] = normalized.weights[sourceRow];
+                }
+                normalized.controlPoints = gatheredRows;
+                normalized.weights = gatheredWeightRows;
+                normalized.uKnots = closedClampedPeriodicKnots(normalized.uKnots, normalized.uDegree, rowCount);
+            }
+            else
+            {
+                throw "splineRefinementUtils: U-periodic input matches the stored-form count but is neither " ~
+                    "wrap-padded nor closed-clamped-with-coincident-end-rows. Refusing to guess. uKnots: " ~ normalized.uKnots;
+            }
         }
         else if (uKnotCount == rowCount + 2 * normalized.uDegree + 1)
         {
@@ -2520,7 +2854,56 @@ export function normalizeSurfaceDefinition(surface is map) returns map
         const vKnotCount = size(normalized.vKnots);
         if (vKnotCount == columnCount + normalized.vDegree + 1)
         {
-            normalized.vKnots = rebuildPeriodicKnotPadding(normalized.vKnots, normalized.vDegree, columnCount - normalized.vDegree);
+            if (isWrapPaddedPeriodicKnots(normalized.vKnots, normalized.vDegree, columnCount - normalized.vDegree))
+            {
+                // Wrap form — keep vKnots as given, except canonicalizing a seam run split
+                // across the domain boundary (see seamImageTailCount): re-cut within EVERY row.
+                const n = columnCount - normalized.vDegree;
+                const tailCount = seamImageTailCount(subArray(normalized.vKnots, normalized.vDegree, normalized.vDegree + n),
+                        normalized.vKnots[normalized.vDegree + n] - normalized.vKnots[normalized.vDegree]);
+                if (tailCount > 0)
+                {
+                    var recutGrid = makeArray(size(normalized.controlPoints), 0);
+                    var recutWeightGrid = makeArray(size(normalized.weights), 0);
+                    for (var rowIndex = 0; rowIndex < size(normalized.controlPoints); rowIndex += 1)
+                    {
+                        recutGrid[rowIndex] = recutPeriodicCycle(normalized.controlPoints[rowIndex], n, normalized.vDegree, n - tailCount);
+                        recutWeightGrid[rowIndex] = recutPeriodicCycle(normalized.weights[rowIndex], n, normalized.vDegree, n - tailCount);
+                    }
+                    normalized.controlPoints = recutGrid;
+                    normalized.weights = recutWeightGrid;
+                    normalized.vKnots = knotArray(recutPeriodicKnots(normalized.vKnots, normalized.vDegree, n - tailCount));
+                }
+            }
+            else if (isClampedKnotArray(normalized.vKnots, normalized.vDegree) &&
+                surfaceColumnsCoincide(normalized.controlPoints, normalized.weights, columnCount - 1, 0))
+            {
+                const fundamentalCount = columnCount - 1;
+                var gatheredGrid = makeArray(size(normalized.controlPoints), 0);
+                var gatheredWeightGrid = makeArray(size(normalized.weights), 0);
+                for (var rowIndex = 0; rowIndex < size(normalized.controlPoints); rowIndex += 1)
+                {
+                    var row = makeArray(fundamentalCount + normalized.vDegree, normalized.controlPoints[rowIndex][0]);
+                    var weightRow = makeArray(fundamentalCount + normalized.vDegree, 1);
+                    for (var storedIndex = 0; storedIndex < fundamentalCount + normalized.vDegree; storedIndex += 1)
+                    {
+                        const shifted = storedIndex + 1 - normalized.vDegree;
+                        const sourceColumn = shifted - floor(shifted / fundamentalCount) * fundamentalCount;
+                        row[storedIndex] = normalized.controlPoints[rowIndex][sourceColumn];
+                        weightRow[storedIndex] = normalized.weights[rowIndex][sourceColumn];
+                    }
+                    gatheredGrid[rowIndex] = row;
+                    gatheredWeightGrid[rowIndex] = weightRow;
+                }
+                normalized.controlPoints = gatheredGrid;
+                normalized.weights = gatheredWeightGrid;
+                normalized.vKnots = closedClampedPeriodicKnots(normalized.vKnots, normalized.vDegree, columnCount);
+            }
+            else
+            {
+                throw "splineRefinementUtils: V-periodic input matches the stored-form count but is neither " ~
+                    "wrap-padded nor closed-clamped-with-coincident-end-columns. Refusing to guess. vKnots: " ~ normalized.vKnots;
+            }
         }
         else if (vKnotCount == columnCount + 2 * normalized.vDegree + 1)
         {
@@ -2687,6 +3070,412 @@ export function makeSurfacesShareKnotVectors(surfaceA is map, surfaceB is map) r
     const resultB = refineSurfaceOntoKnotVectors(normalizedB, uPlan.remappedB, vPlan.remappedB, uPlan.insertionsB, vPlan.insertionsB);
 
     return { "a" : resultA, "b" : resultB };
+}
+
+/**
+ * Re-cut a periodic surface direction's stored window so it starts at fundamental index
+ * `startIndex` instead of 0 — the surface analog of rewindowPeriodicSpline, and the operation
+ * that makes SEAM alignment between two closed surfaces exact.
+ *
+ * Restricted to integer fundamental indices, which makes it a pure RE-INDEX of both the control
+ * grid and the knot intervals: no knot insertion, no new control points, no arithmetic on point
+ * values at all. That restriction is deliberate. rewindowPeriodicSpline accepts an arbitrary
+ * seam parameter and inserts a knot when it has to, which is right for a curve where the caller
+ * has a continuous optimum in hand; a surface's seam only ever needs to line up with the OTHER
+ * surface's control structure, and the n integer positions are exactly the candidates worth
+ * considering. Snapping to them costs nothing and keeps the whole operation free.
+ *
+ * Geometry is untouched — a periodic surface is a finite window onto an infinite periodic
+ * structure, so which period-length window gets stored is pure labelling. Absolute parameters
+ * keep meaning what they meant: the direction's domain simply moves to start at the new seam.
+ *
+ * @param startIndex : any integer; wrapped into [0, n). 0 returns the surface unchanged.
+ */
+export function rewindowPeriodicSurfaceDirection(surface is map, isUDirection is boolean, startIndex is number) returns map
+{
+    var normalized = normalizeSurfaceDefinition(surface);
+    const degree = isUDirection ? normalized.uDegree : normalized.vDegree;
+    const knots = isUDirection ? normalized.uKnots : normalized.vKnots;
+    if (isUDirection ? normalized.isUPeriodic != true : normalized.isVPeriodic != true)
+    {
+        throw "splineRefinementUtils: rewindowPeriodicSurfaceDirection requires that direction to be periodic.";
+    }
+
+    const n = size(knots) - 2 * degree - 1;
+    const shift = startIndex - floor(startIndex / n) * n;
+    if (shift == 0)
+    {
+        return normalized;
+    }
+
+    const fundamentalKnots = subArray(knots, degree, degree + n);
+    const period = knots[degree + n] - knots[degree];
+    var newFundamentalKnots = makeArray(n, 0);
+    for (var knotIndex = 0; knotIndex < n; knotIndex += 1)
+    {
+        const sourceIndex = shift + knotIndex;
+        const cycle = floor(sourceIndex / n);
+        newFundamentalKnots[knotIndex] = fundamentalKnots[sourceIndex - cycle * n] + cycle * period;
+    }
+    const newKnots = knotArray(buildPeriodicKnotArray(newFundamentalKnots, period, degree, n + 2 * degree + 1));
+
+    var result = normalized;
+    if (isUDirection)
+    {
+        // U is the ROW direction: re-index rows, rebuilding the overlap tail by wrapping.
+        var newRows = makeArray(n + degree, normalized.controlPoints[0]);
+        var newWeightRows = makeArray(n + degree, normalized.weights[0]);
+        for (var rowIndex = 0; rowIndex < n + degree; rowIndex += 1)
+        {
+            const sourceIndex = shift + rowIndex;
+            const cycle = floor(sourceIndex / n);
+            newRows[rowIndex] = normalized.controlPoints[sourceIndex - cycle * n];
+            newWeightRows[rowIndex] = normalized.weights[sourceIndex - cycle * n];
+        }
+        result.controlPoints = newRows;
+        result.weights = newWeightRows;
+        result.uKnots = newKnots;
+        return result;
+    }
+
+    // V is the COLUMN direction: re-index within every row.
+    var newGrid = makeArray(size(normalized.controlPoints), 0);
+    var newWeightGrid = makeArray(size(normalized.weights), 0);
+    for (var rowIndex = 0; rowIndex < size(normalized.controlPoints); rowIndex += 1)
+    {
+        var row = makeArray(n + degree, normalized.controlPoints[rowIndex][0]);
+        var weightRow = makeArray(n + degree, normalized.weights[rowIndex][0]);
+        for (var columnIndex = 0; columnIndex < n + degree; columnIndex += 1)
+        {
+            const sourceIndex = shift + columnIndex;
+            const cycle = floor(sourceIndex / n);
+            row[columnIndex] = normalized.controlPoints[rowIndex][sourceIndex - cycle * n];
+            weightRow[columnIndex] = normalized.weights[rowIndex][sourceIndex - cycle * n];
+        }
+        newGrid[rowIndex] = row;
+        newWeightGrid[rowIndex] = weightRow;
+    }
+    result.controlPoints = newGrid;
+    result.weights = newWeightGrid;
+    result.vKnots = newKnots;
+    return result;
+}
+
+/**
+ * Reverse ONE direction of a surface exactly: rows (U) or every row's columns (V) reversed,
+ * with that direction's knots reflected about its own domain
+ * (newKnots[k] = domainStart + domainEnd - knots[M - 1 - k], keeping the domain in place).
+ * Pure permutation plus reflection — control points are never recomputed — so it is exact for
+ * clamped and periodic directions alike, by reverseSpline's own argument; like reverseSpline,
+ * the result is re-normalized, which canonicalizes the seam multiplicity run that reflection
+ * splits across the domain boundary on a periodic direction (see seamImageTailCount).
+ *
+ * This is the reversal to use on NORMALIZED (wrap-form) surfaces. tweenSurfaces' legacy
+ * applyAlignmentTransform flip — a hand-rolled `1 - knot` reflection — is exact only for the
+ * RAW kernel forms it predates (clamped and closed-clamped on a [0, 1] domain); on a wrap form
+ * it leaves the split seam run in place, which made a reversed revolve direction unshareable
+ * with its unreversed partner (the live cone-to-cylinder multiplicity-cap throw, 2026-08-08).
+ */
+export function reverseSurfaceDirection(surface is map, isUDirection is boolean) returns map
+{
+    var normalized = normalizeSurfaceDefinition(surface);
+    const degree = isUDirection ? normalized.uDegree : normalized.vDegree;
+    const knots = isUDirection ? normalized.uKnots : normalized.vKnots;
+    const knotCount = size(knots);
+    const domain = knotDomain(knots, degree);
+
+    var reflectedKnots = makeArray(knotCount, 0);
+    for (var knotIndex = 0; knotIndex < knotCount; knotIndex += 1)
+    {
+        reflectedKnots[knotIndex] = domain.start + domain.end - knots[knotCount - 1 - knotIndex];
+    }
+
+    var result = normalized;
+    if (isUDirection)
+    {
+        result.controlPoints = reverse(normalized.controlPoints);
+        result.weights = reverse(normalized.weights);
+        result.uKnots = knotArray(reflectedKnots);
+    }
+    else
+    {
+        var reversedGrid = makeArray(size(normalized.controlPoints), 0);
+        var reversedWeightGrid = makeArray(size(normalized.weights), 0);
+        for (var rowIndex = 0; rowIndex < size(normalized.controlPoints); rowIndex += 1)
+        {
+            reversedGrid[rowIndex] = reverse(normalized.controlPoints[rowIndex]);
+            reversedWeightGrid[rowIndex] = reverse(normalized.weights[rowIndex]);
+        }
+        result.controlPoints = reversedGrid;
+        result.weights = reversedWeightGrid;
+        result.vKnots = knotArray(reflectedKnots);
+    }
+    return normalizeSurfaceDefinition(result);
+}
+
+/**
+ * Align the seams of two surfaces that ALREADY share a knot vector in `isUDirection`, so that
+ * fundamental index i of A corresponds to index (i + relativeShift) of B — leaving BOTH surfaces
+ * with a multiplicity-1 (smooth) seam. (Implemented and covered by the BEZIER-SEAM tester
+ * vector, which fixed this signature and algorithm while the function was still a stub.)
+ *
+ * WHY ONE-SIDED RE-WINDOWING IS NOT ENOUGH — the thing that makes this hard, and the reason the
+ * naive version shipped broken: the kernel stores a revolve's circular direction as BEZIER ARCS,
+ * giving fundamental knots like [0, 0.5, 0.5, 0.5]. Indices 1, 2 and 3 all carry the SAME value,
+ * so every nonzero seam shift lands on the multiplicity-3 arc joint. A seam there is C0, which the
+ * kernel rejects (PERIODIC_BSPLINESURFACE_NOT_SMOOTH), while the same multiplicity is perfectly
+ * legal at an INTERIOR knot. So the required offset is reachable only by moving one seam onto a
+ * joint — unless both seams move.
+ *
+ * THE ALGORITHM:
+ *   1. Read the shared direction's fundamental knots, period, and n. The offset to realize is
+ *      offsetParameter = fundamentalKnots[relativeShift] - fundamentalKnots[0].
+ *   2. Find a seam parameter s such that BOTH s and (s + offsetParameter) mod period are "safe":
+ *      each is either an existing multiplicity-1 knot, or not an existing knot at all (so
+ *      inserting it yields multiplicity 1). Candidates worth trying, in order: the existing
+ *      multiplicity-1 knots, then the midpoints of the non-degenerate spans.
+ *   3. Insert both s and s + offsetParameter into BOTH surfaces, so they keep sharing a knot
+ *      vector. Insertion is exact (periodicRefinementOperator).
+ *   4. Re-window A to s and B to s + offsetParameter, via rewindowPeriodicSurfaceDirection at the
+ *      fundamental indices those parameters now occupy.
+ *   5. Re-share. Both contribute multiplicity 1 at the merged seam, so the seam stays smooth,
+ *      and the correspondence set up in step 4 is preserved because both were remapped from the
+ *      same shared domain.
+ *
+ * Worked example, from the revolve pair that exposed this: fundamental [0, 0.5, 0.5, 0.5],
+ * relativeShift 3, so offsetParameter = 0.5. s = 0 fails (0 + 0.5 = 0.5 is the multiplicity-3
+ * joint). s = 0.25 succeeds: 0.25 and 0.75 are both new knots, both land at multiplicity 1, and
+ * their difference is the required 0.5.
+ */
+export function alignPeriodicSurfaceSeams(surfaceA is map, surfaceB is map, isUDirection is boolean, relativeShift is number) returns map
+{
+    var normalizedA = normalizeSurfaceDefinition(surfaceA);
+    var normalizedB = normalizeSurfaceDefinition(surfaceB);
+    const degree = isUDirection ? normalizedA.uDegree : normalizedA.vDegree;
+    const knots = isUDirection ? normalizedA.uKnots : normalizedA.vKnots;
+    const n = size(knots) - 2 * degree - 1;
+    const fundamentalKnots = subArray(knots, degree, degree + n);
+    const period = knots[degree + n] - knots[degree];
+
+    const wrappedShift = relativeShift - floor(relativeShift / n) * n;
+    if (wrappedShift == 0)
+    {
+        return { "a" : normalizedA, "b" : normalizedB, "seamA" : fundamentalKnots[0], "seamB" : fundamentalKnots[0] };
+    }
+    const offsetParameter = fundamentalKnots[wrappedShift] - fundamentalKnots[0];
+
+    const seamPair = findSafeSeamPair(fundamentalKnots, period, offsetParameter);
+
+    // Insert only the seams that are not already knots. Inserting an existing multiplicity-1 knot
+    // would raise it to 2, defeating the entire point of choosing it.
+    var insertions = makeArray(2, 0);
+    var insertionCount = 0;
+    if (fundamentalKnotMultiplicity(fundamentalKnots, seamPair.seamA) == 0)
+    {
+        insertions[insertionCount] = seamPair.seamA;
+        insertionCount += 1;
+    }
+    if (fundamentalKnotMultiplicity(fundamentalKnots, seamPair.seamB) == 0)
+    {
+        insertions[insertionCount] = seamPair.seamB;
+        insertionCount += 1;
+    }
+    const actualInsertions = subArray(insertions, 0, insertionCount);
+    normalizedA = insertIntoPeriodicSurfaceDirection(normalizedA, isUDirection, actualInsertions);
+    normalizedB = insertIntoPeriodicSurfaceDirection(normalizedB, isUDirection, actualInsertions);
+
+    normalizedA = rewindowPeriodicSurfaceDirection(normalizedA, isUDirection,
+            periodicSurfaceFundamentalIndex(normalizedA, isUDirection, seamPair.seamA));
+    normalizedB = rewindowPeriodicSurfaceDirection(normalizedB, isUDirection,
+            periodicSurfaceFundamentalIndex(normalizedB, isUDirection, seamPair.seamB));
+
+    // Re-share. Both sides now contribute multiplicity 1 at their own seam, and the merge takes
+    // the maximum per value, so the merged seam stays multiplicity 1 — which is the whole
+    // objective. The correspondence set up by the two re-windows survives because both are
+    // remapped from the same shared domain by the same period.
+    const shared = makeSurfacesShareKnotVectors(normalizedA, normalizedB);
+    return { "a" : shared.a, "b" : shared.b, "seamA" : seamPair.seamA, "seamB" : seamPair.seamB };
+}
+
+/** How many times `value` occurs among one period's fundamental knots — 0 when it is not a knot
+    at all, which is the SAFEST case, since inserting there yields multiplicity exactly 1. */
+function fundamentalKnotMultiplicity(fundamentalKnots is array, value is number) returns number
+{
+    var multiplicity = 0;
+    for (var knotIndex = 0; knotIndex < size(fundamentalKnots); knotIndex += 1)
+    {
+        if (abs(fundamentalKnots[knotIndex] - value) <= KNOT_PARAMETER_TOLERANCE)
+        {
+            multiplicity += 1;
+        }
+    }
+    return multiplicity;
+}
+
+/**
+ * Find a pair of seam parameters (s, s + offset) that are BOTH safe to seat a seam on — each
+ * either absent from the knot vector or present exactly once, so that after insertion each
+ * carries multiplicity 1 and leaves its surface smooth across the seam.
+ *
+ * Candidates are tried cheapest-first: existing multiplicity-1 knots (no insertion needed), then
+ * span midpoints, then span quarter points. Only finitely many parameters are unsafe — the
+ * high-multiplicity knots — so a safe pair exists for any offset; the widening candidate ladder
+ * is about finding one without inserting more than necessary, not about whether one exists.
+ */
+function findSafeSeamPair(fundamentalKnots is array, period is number, offsetParameter is number) returns map
+{
+    const domainStart = fundamentalKnots[0];
+    const fractions = [0.5, 0.25, 0.75];
+
+    var candidates = makeArray(size(fundamentalKnots) * (1 + size(fractions)), 0);
+    var candidateCount = 0;
+    for (var knotIndex = 0; knotIndex < size(fundamentalKnots); knotIndex += 1)
+    {
+        if (fundamentalKnotMultiplicity(fundamentalKnots, fundamentalKnots[knotIndex]) == 1)
+        {
+            candidates[candidateCount] = fundamentalKnots[knotIndex];
+            candidateCount += 1;
+        }
+    }
+    for (var fraction in fractions)
+    {
+        for (var knotIndex = 0; knotIndex < size(fundamentalKnots); knotIndex += 1)
+        {
+            const spanEnd = knotIndex + 1 < size(fundamentalKnots) ? fundamentalKnots[knotIndex + 1] : domainStart + period;
+            if (spanEnd - fundamentalKnots[knotIndex] > KNOT_PARAMETER_TOLERANCE)
+            {
+                candidates[candidateCount] = fundamentalKnots[knotIndex] + (spanEnd - fundamentalKnots[knotIndex]) * fraction;
+                candidateCount += 1;
+            }
+        }
+    }
+
+    for (var candidateIndex = 0; candidateIndex < candidateCount; candidateIndex += 1)
+    {
+        const seamA = candidates[candidateIndex];
+        const rawSeamB = seamA + offsetParameter - domainStart;
+        const seamB = domainStart + (rawSeamB - floor(rawSeamB / period) * period);
+        if (fundamentalKnotMultiplicity(fundamentalKnots, seamA) <= 1 &&
+            fundamentalKnotMultiplicity(fundamentalKnots, seamB) <= 1 &&
+            abs(seamA - seamB) > KNOT_PARAMETER_TOLERANCE)
+        {
+            return { "seamA" : seamA, "seamB" : seamB };
+        }
+    }
+
+    throw "splineRefinementUtils: could not place two smooth seams an offset of " ~ offsetParameter ~
+        " apart in a period of " ~ period ~ ". Every candidate landed on a knot whose multiplicity " ~
+        "exceeds 1, which would make the seam C0 and the periodic surface invalid.";
+}
+
+/** Insert parameters into ONE periodic direction of a surface, exactly, via the periodic
+    refinement operator applied across the whole grid. */
+function insertIntoPeriodicSurfaceDirection(surface is map, isUDirection is boolean, parametersToInsert is array) returns map
+{
+    if (size(parametersToInsert) == 0)
+    {
+        return surface;
+    }
+    const degree = isUDirection ? surface.uDegree : surface.vDegree;
+    const knots = isUDirection ? surface.uKnots : surface.vKnots;
+    const refinementOperator = periodicRefinementOperator(knots, degree, parametersToInsert);
+
+    var homogeneousGrid = combineSurfaceControlPointsAndWeights(surface.controlPoints, surface.weights);
+    homogeneousGrid = isUDirection ? applyKnotRefinementOperatorDownColumns(refinementOperator, homogeneousGrid)
+        : applyKnotRefinementOperatorAcrossRows(refinementOperator, homogeneousGrid);
+    const separated = separateSurfaceControlPointsAndWeights(homogeneousGrid);
+
+    var result = surface;
+    result.controlPoints = separated.points;
+    result.weights = separated.weights;
+    if (isUDirection)
+    {
+        result.uKnots = knotArray(refinementOperator.knots);
+    }
+    else
+    {
+        result.vKnots = knotArray(refinementOperator.knots);
+    }
+    return result;
+}
+
+/** Fundamental index of `parameter` in a periodic surface direction; throws if it is not a knot,
+    since every caller here has just ensured that it is. */
+function periodicSurfaceFundamentalIndex(surface is map, isUDirection is boolean, parameter is number) returns number
+{
+    const degree = isUDirection ? surface.uDegree : surface.vDegree;
+    const knots = isUDirection ? surface.uKnots : surface.vKnots;
+    const n = size(knots) - 2 * degree - 1;
+    for (var knotIndex = 0; knotIndex < n; knotIndex += 1)
+    {
+        if (abs(knots[degree + knotIndex] - parameter) <= KNOT_PARAMETER_TOLERANCE)
+        {
+            return knotIndex;
+        }
+    }
+    throw "splineRefinementUtils: seam parameter " ~ parameter ~ " is not a knot of this periodic direction.";
+}
+
+/**
+ * Convert a wrap-form STORED periodic spline to the CLOSED CLAMPED representation for kernel
+ * emission: clamped extraction over one period, first and last control points coinciding at the
+ * seam point by construction, isPeriodic KEPT true. This is the kernel's own output convention
+ * for periodic geometry (confirmed by raw dump), and the form it accepts when the seam knot's
+ * multiplicity has reached `degree` — where wrap-form creation is rejected as a non-smooth
+ * periodic seam even though the geometry closes smoothly. Exact (clamped extraction), and the
+ * exact inverse of the closed-clamped-to-wrap conversion in normalizeSplineDefinition, so a
+ * no-op pipeline round-trips to the kernel's original arrays.
+ */
+export function toClosedClampedPeriodicForm(spline is map) returns map
+{
+    if (spline.isPeriodic != true)
+    {
+        return spline;
+    }
+    const degree = spline.degree;
+    const domain = knotDomain(spline.knots, degree);
+    const clamp = clampedSegmentOperator(spline.knots, degree, domain.start, domain.end);
+    const homogeneousPoints = combinePointsAndWeights(spline.controlPoints, spline.weights);
+    const clampedHomogeneous = applyKnotRefinementOperator(clamp, homogeneousPoints);
+    const separated = separatePointsAndWeights(clampedHomogeneous);
+
+    var result = spline;
+    result.controlPoints = separated.points;
+    result.weights = separated.weights;
+    result.knots = knotArray(clamp.knots);
+    return result;
+}
+
+/** Surface counterpart of toClosedClampedPeriodicForm for ONE direction: clamped extraction
+    tensor-applied over the grid, periodic flag KEPT true. */
+export function toClosedClampedSurfaceDirection(surface is map, isUDirection is boolean) returns map
+{
+    if (isUDirection ? surface.isUPeriodic != true : surface.isVPeriodic != true)
+    {
+        return surface;
+    }
+    const degree = isUDirection ? surface.uDegree : surface.vDegree;
+    const knots = isUDirection ? surface.uKnots : surface.vKnots;
+    const domain = knotDomain(knots, degree);
+    const clamp = clampedSegmentOperator(knots, degree, domain.start, domain.end);
+
+    var homogeneousGrid = combineSurfaceControlPointsAndWeights(surface.controlPoints, surface.weights);
+    homogeneousGrid = isUDirection ? applyKnotRefinementOperatorDownColumns(clamp, homogeneousGrid)
+        : applyKnotRefinementOperatorAcrossRows(clamp, homogeneousGrid);
+    const separated = separateSurfaceControlPointsAndWeights(homogeneousGrid);
+
+    var result = surface;
+    result.controlPoints = separated.points;
+    result.weights = separated.weights;
+    if (isUDirection)
+    {
+        result.uKnots = knotArray(clamp.knots);
+    }
+    else
+    {
+        result.vKnots = knotArray(clamp.knots);
+    }
+    return result;
 }
 
 /**

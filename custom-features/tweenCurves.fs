@@ -13,7 +13,7 @@ import(path : "onshape/std/approximationUtils.fs", version : "3044.0");
 import(path : "onshape/std/splineUtils.fs", version : "3044.0");
 import(path : "onshape/std/containers.fs", version : "3044.0");
 import(path : "f42f46716945f2a9bda5a481/eabbc18661ba5776e0ba962d/97730412fb61f53dcd526c08", version : "a24da502290d2ae4706c631f"); // 3d Arc Utilities
-import(path : "eca0e7b6ed29c5239f39f868/7182747cabf6b534da6a21d3/9a2b77793cdc37bace6d915a", version : "6af3b02bb9bbcbd0eccecd1e"); // splineRefinementUtils.fs
+import(path : "eca0e7b6ed29c5239f39f868/36185a3777394c9ecb0bfc3e/9a2b77793cdc37bace6d915a", version : "db7f981bb900fa1e8c01effc"); // splineRefinementUtils.fs
 
 
 export const TWEEN_FRACTION_BOUNDS = { (unitless) : [0, 0.5, 1] } as RealBoundSpec;
@@ -135,12 +135,31 @@ export function tweenCurves(context is Context, id is Id,
     // feature used to do - makes bSplineCurve synthesize a UNIFORM one, throwing away the
     // entire point of exact knot sharing: at fraction 0 the result would not reproduce curve 1
     // unless curve 1's knots happened to already be uniform.
-    const tweenedCurve = bSplineCurve({
+    var emittedSpline = {
             "degree" : finalSpline1.degree,
             "isPeriodic" : bothPeriodic,
+            "isRational" : true,
             "controlPoints" : tweenedControlPoints,
             "weights" : tweenedWeights,
             "knots" : finalSpline1.knots
+        };
+    // A closed curve whose seam knot has reached multiplicity == degree (a converted
+    // revolve-style circle, for instance) is rejected by the kernel as a non-smooth periodic
+    // WRAP seam - but the identical curve in CLOSED CLAMPED form (the kernel's own output
+    // convention: clamped knots, last control point coinciding with the first, isPeriodic kept)
+    // is accepted, with the closure judged from the control point geometry. Smooth-seam wrap
+    // output - the path validated live before this existed - is left untouched.
+    if (bothPeriodic && seamKnotMultiplicity(finalSpline1.knots, finalSpline1.degree) >= finalSpline1.degree)
+    {
+        emittedSpline = toClosedClampedPeriodicForm(emittedSpline);
+    }
+
+    const tweenedCurve = bSplineCurve({
+            "degree" : emittedSpline.degree,
+            "isPeriodic" : emittedSpline.isPeriodic,
+            "controlPoints" : emittedSpline.controlPoints,
+            "weights" : emittedSpline.weights,
+            "knots" : emittedSpline.knots is KnotArray ? emittedSpline.knots : knotArray(emittedSpline.knots)
         });
 
     opCreateBSplineCurve(context, id + "tweenedCpSpline", { "bSplineCurve" : tweenedCurve });
@@ -261,17 +280,32 @@ function periodicSplineDomain(spline is map) returns map
     return { "start" : domainStart, "period" : domainEnd - domainStart };
 }
 
-/** Build a kernel BSplineCurve from a normalized spline map, preserving its periodicity and
-    its exact knot vector, so std's own evaluator can be used on it. */
-function toKernelCurve(spline is map) returns BSplineCurve
+/** Evaluate a normalized spline map at one in-domain parameter, rational-aware, through the
+    refinement module's basis machinery (bSplineBasisValues / findEvaluationSpanIndex).
+
+    Deliberately NOT std evaluateSpline: the kernel builtin behind it silently IGNORES WEIGHTS
+    (proven live 2026-08-08 - a rational circle fixture came back as its unweighted control
+    polygon's curve, off-circle by ~30% of the radius; see the tester's
+    evaluateRationalCurvePoints for the full account). Alignment decisions made on
+    weight-stripped samples are phantom-geometry decisions for every rational input, and
+    revolve-derived profiles are always rational. Normalized splines always carry weights
+    (normalizeSplineDefinition's always-rational convention), so no unit-weight fallback is
+    needed. */
+function evaluateNormalizedSplinePoint(spline is map, parameter is number) returns Vector
 {
-    return bSplineCurve({
-                "degree" : spline.degree,
-                "isPeriodic" : spline.isPeriodic == true,
-                "controlPoints" : spline.controlPoints,
-                "weights" : spline.weights,
-                "knots" : spline.knots is KnotArray ? spline.knots : knotArray(spline.knots)
-            });
+    const spanIndex = findEvaluationSpanIndex(spline.knots, spline.degree, parameter);
+    const basisValues = bSplineBasisValues(spline.knots, spline.degree, spanIndex, parameter);
+    var weightedSum = undefined;
+    var weightSum = 0;
+    for (var basisIndex = 0; basisIndex <= spline.degree; basisIndex += 1)
+    {
+        const pointIndex = spanIndex - spline.degree + basisIndex;
+        const termWeight = basisValues[basisIndex] * spline.weights[pointIndex];
+        weightSum = weightSum + termWeight;
+        weightedSum = weightedSum == undefined ? termWeight * spline.controlPoints[pointIndex]
+            : weightedSum + termWeight * spline.controlPoints[pointIndex];
+    }
+    return weightedSum / weightSum;
 }
 
 /** Sample a periodic spline at `sampleCount` uniformly spaced parameters spanning exactly one
@@ -279,12 +313,12 @@ function toKernelCurve(spline is map) returns BSplineCurve
 function samplePeriodicSplineUniformly(spline is map, sampleCount is number) returns array
 {
     const domain = periodicSplineDomain(spline);
-    var parameters = makeArray(sampleCount, 0);
+    var points = makeArray(sampleCount);
     for (var sampleIndex = 0; sampleIndex < sampleCount; sampleIndex += 1)
     {
-        parameters[sampleIndex] = domain.start + domain.period * sampleIndex / sampleCount;
+        points[sampleIndex] = evaluateNormalizedSplinePoint(spline, domain.start + domain.period * sampleIndex / sampleCount);
     }
-    return evaluateSpline({ "spline" : toKernelCurve(spline), "parameters" : parameters })[0];
+    return points;
 }
 
 /**
@@ -309,11 +343,10 @@ function shouldReverseToMatchDirection(reference is map, candidate is map) retur
 function splineEndPoints(spline is map) returns map
 {
     const domain = periodicSplineDomain(spline);
-    const points = evaluateSpline({
-                "spline" : toKernelCurve(spline),
-                "parameters" : [domain.start, domain.start + domain.period]
-            })[0];
-    return { "start" : points[0], "end" : points[1] };
+    return {
+            "start" : evaluateNormalizedSplinePoint(spline, domain.start),
+            "end" : evaluateNormalizedSplinePoint(spline, domain.start + domain.period)
+        };
 }
 
 /**

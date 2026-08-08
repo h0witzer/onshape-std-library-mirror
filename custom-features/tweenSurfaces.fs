@@ -61,11 +61,8 @@ import(path : "onshape/std/splineUtils.fs", version : "3044.0");
 import(path : "onshape/std/nurbsUtils.fs", version : "3044.0");
 import(path : "onshape/std/math.fs", version : "3044.0");
 
-// splineRefinementUtils.fs — exact B-spline refinement, degree elevation, and periodic-preserving
-// knot sharing. NOTE: this version id must be bumped to the module's latest publish whenever the
-// module changes; unlike splineRefinementTester.fs, this feature lives in a DIFFERENT document, so
-// it pins whatever version it names rather than following the module's source.
-import(path : "eca0e7b6ed29c5239f39f868/5af0a6517c6c2a36b76de6b2/9a2b77793cdc37bace6d915a", version : "4ec63fc1540150aa04e32934");
+// splineRefinementUtils.fs — exact B-spline refinement, degree elevation, and periodic-preserving knot sharing
+import(path : "eca0e7b6ed29c5239f39f868/36185a3777394c9ecb0bfc3e/9a2b77793cdc37bace6d915a", version : "db7f981bb900fa1e8c01effc");
 
 
 export const SURFACE_TWEEN_FRACTION_BOUNDS = { (unitless) : [0, 0.5, 1] } as RealBoundSpec;
@@ -189,37 +186,167 @@ function createTweenedSurface(context is Context, id is Id,
         println("DEBUG: Initial second surface - uDegree=" ~ secondSurface.uDegree ~ ", vDegree=" ~ secondSurface.vDegree ~
                 ", controlPoints=" ~ size(secondSurface.controlPoints) ~ "x" ~ size(secondSurface.controlPoints[0]) ~
                 ", isUPeriodic=" ~ (secondSurface.isUPeriodic == true) ~ ", isVPeriodic=" ~ (secondSurface.isVPeriodic == true));
+        // RAW dump of the FULL grid, before ANY processing. Every row, not row 0 alone - the
+        // question this exists to answer is whether rows n..n+degree-1 of a kernel periodic
+        // surface are literal copies of rows 0..degree-1 (the wrap convention) or the second
+        // half of the closed shape with only the LAST row repeating the FIRST (the
+        // closed-clamped convention). Row 0 is identical under both, and a fixture was once
+        // built - wrongly - from less than the full picture.
+        for (var rowIndex = 0; rowIndex < size(firstSurface.controlPoints); rowIndex += 1)
+        {
+            println("DEBUG: RAW first row " ~ rowIndex ~ ": " ~ firstSurface.controlPoints[rowIndex] ~
+                (firstSurface.weights == undefined ? "" : " | weights " ~ firstSurface.weights[rowIndex]));
+        }
+        for (var rowIndex = 0; rowIndex < size(secondSurface.controlPoints); rowIndex += 1)
+        {
+            println("DEBUG: RAW second row " ~ rowIndex ~ ": " ~ secondSurface.controlPoints[rowIndex] ~
+                (secondSurface.weights == undefined ? "" : " | weights " ~ secondSurface.weights[rowIndex]));
+        }
+        println("DEBUG: RAW first surface uKnots: " ~ firstSurface.uKnots ~ ", vKnots: " ~ firstSurface.vKnots);
+        println("DEBUG: RAW second surface uKnots: " ~ secondSurface.uKnots ~ ", vKnots: " ~ secondSurface.vKnots);
     }
 
     // === ALIGNMENT ===
     // Which way the second surface's UV grid lays against the first is a genuine degree of
-    // freedom - there is no canonical correspondence between two surfaces - so this picks one by
-    // corner distance and applies it EXACTLY, as a flip/transpose of the control grid paired with
-    // the matching reversal of the knot vectors (applyAlignmentTransform). It must happen BEFORE
-    // compatibility: flipping a control grid after the two surfaces share a knot vector, without
-    // reversing that vector too, silently distorts the surface unless the vector is symmetric.
+    // freedom - there is no canonical correspondence between two surfaces - so this picks one and
+    // applies it EXACTLY. Every operation used is a reindexing of the control grid paired with the
+    // matching transform of the knot vectors, so the second surface's geometry never moves; only
+    // the labelling of which parameter is which changes, which is what decides control point
+    // (i, j) of one blends against (i, j) of the other. It must happen BEFORE compatibility:
+    // flipping a control grid after the two share a knot vector, without reversing that vector
+    // too, silently distorts the surface unless the vector happens to be symmetric.
+
+    // Step 1: UV swap. When the two surfaces' PERIODICITY PATTERNS differ - one wraps in U, the
+    // other in V - the swap is forced, and that is a far more reliable signal than corner
+    // geometry. When BOTH directions of both surfaces wrap (a torus against a torus) periodicity
+    // says nothing and neither do corners, so both orientations are carried forward and settled by
+    // the exact net comparison below. Otherwise corner control points decide, which is exact data
+    // for a clamped direction - a clamped direction's first control point IS the surface corner.
+    const firstUPeriodic = firstSurface.isUPeriodic == true;
+    const firstVPeriodic = firstSurface.isVPeriodic == true;
+    const secondUPeriodic = secondSurface.isUPeriodic == true;
+    const secondVPeriodic = secondSurface.isVPeriodic == true;
+    const periodicityIsDecisive = (firstUPeriodic != firstVPeriodic) && (secondUPeriodic != secondVPeriodic);
+    const bothDirectionsWrap = firstUPeriodic && firstVPeriodic && secondUPeriodic && secondVPeriodic;
+
     const preliminaryAlignmentResult = findPreliminaryAlignment(firstSurface.controlPoints, secondSurface.controlPoints);
-    if (definition.diagnosticSurfaceAlignment)
+    var swapCandidates = [preliminaryAlignmentResult.swapUV];
+    if (periodicityIsDecisive)
     {
-        println("DEBUG: Preliminary alignment - flipU: " ~ preliminaryAlignmentResult.flipU ~
-                ", flipV: " ~ preliminaryAlignmentResult.flipV ~
-                ", swapUV: " ~ preliminaryAlignmentResult.swapUV ~
-                ", corner distance: " ~ preliminaryAlignmentResult.distance);
+        swapCandidates = [firstUPeriodic != secondUPeriodic];
     }
-    if (preliminaryAlignmentResult.flipU || preliminaryAlignmentResult.flipV || preliminaryAlignmentResult.swapUV)
+    else if (bothDirectionsWrap)
     {
-        secondSurface = applyAlignmentTransform(secondSurface, preliminaryAlignmentResult.flipU,
-                preliminaryAlignmentResult.flipV, preliminaryAlignmentResult.swapUV);
-        if (definition.diagnosticSurfaceAlignment)
+        swapCandidates = [false, true];
+    }
+
+    // Steps 2-4: for each surviving orientation, settle the flips, make the pair compatible, and
+    // search the seams - then keep whichever orientation scored best. Compatibility has to happen
+    // inside the loop because it is what puts the two control nets in a shared basis, and that
+    // shared basis is the only thing that makes the seam comparison exact rather than sampled.
+    var bestScore = -1e30;
+    var bestPair = undefined;
+    var bestReport = "";
+    for (var swapUV in swapCandidates)
+    {
+        const oriented = swapUV ? applyAlignmentTransform(secondSurface, false, false, true) : secondSurface;
+
+        // A flip is only meaningful from corner geometry in a CLAMPED direction. In a periodic
+        // direction there are no corners - index 0 is an arbitrary seam - so the corner answer
+        // there is noise, and traversal direction is settled by the net search instead, jointly
+        // with the seam offset it cannot be separated from.
+        const uIsPeriodicPair = firstUPeriodic && (oriented.isUPeriodic == true);
+        const vIsPeriodicPair = firstVPeriodic && (oriented.isVPeriodic == true);
+        const cornerResult = swapUV ? findPreliminaryAlignment(firstSurface.controlPoints, oriented.controlPoints)
+            : preliminaryAlignmentResult;
+        const flipU = uIsPeriodicPair ? false : cornerResult.flipU;
+        const flipV = vIsPeriodicPair ? false : cornerResult.flipV;
+        const flipped = (flipU || flipV) ? applyAlignmentTransform(oriented, flipU, flipV, false) : oriented;
+
+        const sharedPair = makeSurfacesCompatible(firstSurface, flipped);
+        const seam = bestPeriodicNetAlignment(sharedPair.a, sharedPair.b, uIsPeriodicPair, vIsPeriodicPair);
+
+        if (seam.score > bestScore)
         {
-            println("DEBUG: After alignment, second surface - uDegree=" ~ secondSurface.uDegree ~
-                    ", vDegree=" ~ secondSurface.vDegree ~
-                    ", controlPoints=" ~ size(secondSurface.controlPoints) ~ "x" ~ size(secondSurface.controlPoints[0]));
+            bestScore = seam.score;
+            bestReport = "flipU=" ~ flipU ~ ", flipV=" ~ flipV ~ ", swapUV=" ~ swapUV ~
+                ", reverseU=" ~ seam.reverseU ~ ", reverseV=" ~ seam.reverseV ~
+                ", seam shift=(" ~ seam.shiftU ~ ", " ~ seam.shiftV ~ ")" ~
+                ", normalized net correlation=" ~ seam.score;
+
+            // Apply the winning reversal first. Reversing a direction also reverses its knot
+            // vector, so the pair stops sharing one and has to be re-shared before anything else
+            // can reason about corresponding indices.
+            //
+            // The reversal is the MODULE's reverseSurfaceDirection, NOT applyAlignmentTransform:
+            // pairB is a normalized wrap-form surface here, and the legacy hand-rolled
+            // `1 - knot` flip leaves a reversed periodic direction's seam multiplicity run
+            // split across the domain boundary — a noncanonical spelling of the same structure
+            // that made the re-share below demand phantom seam-image insertions above the
+            // multiplicity cap (the live cone-to-cylinder failure). applyAlignmentTransform
+            // remains correct for the RAW pre-normalization forms it is used on above.
+            var pairA = sharedPair.a;
+            var pairB = sharedPair.b;
+            if (seam.reverseU || seam.reverseV)
+            {
+                var reversedB = pairB;
+                if (seam.reverseU)
+                {
+                    reversedB = reverseSurfaceDirection(reversedB, true);
+                }
+                if (seam.reverseV)
+                {
+                    reversedB = reverseSurfaceDirection(reversedB, false);
+                }
+                const reshared = makeSurfacesShareKnotVectors(pairA, reversedB);
+                pairA = reshared.a;
+                pairB = reshared.b;
+            }
+
+            // Re-run the shift search on the post-reversal structure rather than reusing the
+            // indices found before it. Re-sharing can refine the knot vector, which changes what
+            // an index means; carrying a stale index across that boundary is a silent misalignment.
+            if (uIsPeriodicPair || vIsPeriodicPair)
+            {
+                const finalSeam = bestPeriodicNetAlignment(pairA, pairB, uIsPeriodicPair, vIsPeriodicPair);
+                // alignPeriodicSurfaceSeams moves BOTH seams, splitting the required offset between
+                // them so each lands on a multiplicity-1 knot. Re-windowing only surface B - the
+                // obvious approach, and the one that shipped broken - cannot do this: a revolve's
+                // circular direction is stored as Bezier arcs, so every nonzero seam position on
+                // one surface is the C0 arc joint, and a C0 seam makes the periodic surface
+                // invalid (PERIODIC_BSPLINESURFACE_NOT_SMOOTH).
+                if (finalSeam.shiftU != 0)
+                {
+                    const seamAligned = alignPeriodicSurfaceSeams(pairA, pairB, true, finalSeam.shiftU);
+                    pairA = seamAligned.a;
+                    pairB = seamAligned.b;
+                }
+                if (finalSeam.shiftV != 0)
+                {
+                    const seamAligned = alignPeriodicSurfaceSeams(pairA, pairB, false, finalSeam.shiftV);
+                    pairA = seamAligned.a;
+                    pairB = seamAligned.b;
+                }
+            }
+            bestPair = { "a" : pairA, "b" : pairB };
         }
     }
 
+    if (definition.diagnosticSurfaceAlignment)
+    {
+        println("DEBUG: Corner alignment suggested - flipU: " ~ preliminaryAlignmentResult.flipU ~
+                ", flipV: " ~ preliminaryAlignmentResult.flipV ~
+                ", swapUV: " ~ preliminaryAlignmentResult.swapUV ~
+                ", corner distance: " ~ preliminaryAlignmentResult.distance);
+        println("DEBUG: Resolved alignment - " ~ bestReport);
+    }
+
     // === EXACT COMPATIBILITY (spec sections 2.4 and 3.1) ===
-    // One call replaces the whole elevate-then-refine-then-hope pipeline this feature used to
+    // Already done, inside the alignment loop above - makeSurfacesCompatible had to run there
+    // because a shared basis is the precondition for comparing the two control nets exactly. The
+    // winning orientation's compatible pair is what comes out.
+    //
+    // That one call replaced the whole elevate-then-refine-then-hope pipeline this feature used to
     // run. It brings both surfaces to a common degree AND a common knot vector per direction, so
     // blending control point (i, j) of one against (i, j) of the other is exactly blending the
     // surfaces themselves (spec section 3.2's affine argument).
@@ -235,9 +362,12 @@ function createTweenedSurface(context is Context, id is Id,
     // in splineRefinementUtils.fs), so a cylinder, cone, or revolve keeps its seam closed instead
     // of being clamped open. Only a direction where ONE surface wraps and the other does not gets
     // clamped, because there "closed" has no shared meaning to preserve.
-    const compatible = makeSurfacesCompatible(firstSurface, secondSurface);
-    const first = compatible.a;
-    const second = compatible.b;
+    if (bestPair == undefined)
+    {
+        throw regenError("Internal error: no surface orientation was evaluated.", ["firstSurface", "secondSurface"]);
+    }
+    const first = bestPair.a;
+    const second = bestPair.b;
 
     if (definition.diagnosticSurfaceAlignment)
     {
@@ -335,19 +465,47 @@ function createTweenedSurface(context is Context, id is Id,
     }
 
     // The SHARED knot vectors are carried straight through to the result - not interpolated
-    // (see above), and not unpadded first. bSplineSurface takes a full padded knot array as-is
-    // whenever it is correctly sized; handing it a truncated one instead just makes it
-    // reconstruct padding, which for a periodic direction throws away the very structure that
-    // makes the direction periodic.
+    // (see above), and not unpadded first.
+    //
+    // Periodic directions are emitted in the CLOSED CLAMPED form: clamped knots over one
+    // period, last control point coinciding with the first, isPeriodic kept true. That is the
+    // convention the kernel itself returns for a revolve's periodic direction (confirmed by a
+    // full raw dump) and provably accepts (a raw creation probe on exactly that form
+    // succeeded), and it sidesteps the wrap-form seam-multiplicity restriction: a converted
+    // revolve's seam knot carries multiplicity == degree, which the kernel rejects as a
+    // non-smooth periodic WRAP seam while accepting the identical curve closed-clamped, judging
+    // the closure from the control point geometry instead. The conversion is exact (clamped
+    // extraction over one period), and it is the exact inverse of the input-side conversion in
+    // normalizeSurfaceDefinition - so a no-op tween emits the kernel's own original arrays.
+    var emitted = {
+            "uDegree" : first.uDegree,
+            "vDegree" : first.vDegree,
+            "isUPeriodic" : first.isUPeriodic == true,
+            "isVPeriodic" : first.isVPeriodic == true,
+            "isRational" : true,
+            "controlPoints" : tweenedControlPoints,
+            "weights" : tweenedWeights,
+            "uKnots" : first.uKnots,
+            "vKnots" : first.vKnots
+        };
+    if (emitted.isUPeriodic)
+    {
+        emitted = toClosedClampedSurfaceDirection(emitted, true);
+    }
+    if (emitted.isVPeriodic)
+    {
+        emitted = toClosedClampedSurfaceDirection(emitted, false);
+    }
+
     const tweenedSurfaceDefinition = bSplineSurface({
-                "uDegree" : first.uDegree,
-                "vDegree" : first.vDegree,
-                "isUPeriodic" : first.isUPeriodic == true,
-                "isVPeriodic" : first.isVPeriodic == true,
-                "controlPoints" : controlPointMatrix(tweenedControlPoints),
-                "weights" : matrix(tweenedWeights),
-                "uKnots" : first.uKnots,
-                "vKnots" : first.vKnots
+                "uDegree" : emitted.uDegree,
+                "vDegree" : emitted.vDegree,
+                "isUPeriodic" : emitted.isUPeriodic,
+                "isVPeriodic" : emitted.isVPeriodic,
+                "controlPoints" : controlPointMatrix(emitted.controlPoints),
+                "weights" : matrix(emitted.weights),
+                "uKnots" : emitted.uKnots is KnotArray ? emitted.uKnots : knotArray(emitted.uKnots),
+                "vKnots" : emitted.vKnots is KnotArray ? emitted.vKnots : knotArray(emitted.vKnots)
             });
 
     opCreateBSplineSurface(context, id, {
@@ -355,6 +513,146 @@ function createTweenedSurface(context is Context, id is Id,
             });
 }
 
+
+/**
+ * Choose the seam alignment for the periodic directions of an ALREADY-COMPATIBLE pair, and score
+ * it — exactly, with no sampling anywhere.
+ *
+ * Why this can be exact at all: makeSurfacesCompatible has put both surfaces' control points in
+ * the SAME basis, so control point (i, j) of one and (i, j) of the other are coefficients of the
+ * same basis function. Comparing them is arithmetic on exact data, and by partition of unity the
+ * distance between two control nets bounds the distance between the surfaces they describe. So the
+ * discrete question "which cyclic shift lines these nets up" answers the continuous question
+ * "which seam alignment lines these surfaces up", without evaluating either surface at a single
+ * point. An earlier version sampled rings of points and correlated those; this replaces it, and
+ * nothing downstream needs a tolerance or a sample count.
+ *
+ * Nets are CENTERED on their own centroid first, which is what lets two revolves of different
+ * radius and position be compared: a cylinder and a cone are neither concentric nor the same size,
+ * and uncentered distance would rank every rotation about equally. The score is a NORMALIZED
+ * correlation (cosine similarity), so it stays comparable across candidates whose grids differ in
+ * size — which matters when a UV swap is one of the candidates being weighed.
+ *
+ * Reversal is folded into the same search rather than decided separately, because a reversal and a
+ * seam shift are not independent: reversing a closed direction also moves where its seam lands, so
+ * choosing one without the other picks the wrong pair. Both directions are searched JOINTLY for the
+ * same reason (a torus tweened against a torus has two free seams, and the best pair is not
+ * generally the pair of individual bests).
+ *
+ * @returns {map} : { "shiftU", "shiftV", "reverseU", "reverseV", "score" }
+ */
+function bestPeriodicNetAlignment(reference is map, candidate is map, uIsPeriodicPair is boolean, vIsPeriodicPair is boolean) returns map
+{
+    const uDegree = reference.uDegree;
+    const vDegree = reference.vDegree;
+    const rowCount = size(reference.controlPoints);
+    const columnCount = size(reference.controlPoints[0]);
+    // A periodic direction stores `degree` overlap rows/columns beyond its fundamental period;
+    // those are copies, so including them would just weight part of the net twice.
+    const fundamentalRowCount = uIsPeriodicPair ? rowCount - uDegree : rowCount;
+    const fundamentalColumnCount = vIsPeriodicPair ? columnCount - vDegree : columnCount;
+
+    const referenceNet = centeredFundamentalNet(reference.controlPoints, fundamentalRowCount, fundamentalColumnCount);
+    const referenceMagnitude = netMagnitudeSquared(referenceNet);
+
+    var best = { "shiftU" : 0, "shiftV" : 0, "reverseU" : false, "reverseV" : false, "score" : -1e30 };
+
+    const reverseUOptions = uIsPeriodicPair ? [false, true] : [false];
+    const reverseVOptions = vIsPeriodicPair ? [false, true] : [false];
+    for (var reverseU in reverseUOptions)
+    {
+        for (var reverseV in reverseVOptions)
+        {
+            // Score the candidate through the SAME permutation applyAlignmentTransform will
+            // perform, rather than an equivalent-up-to-a-shift one: a reversal of the stored array
+            // lands the fundamental sequence offset by (degree - 1), and scoring one convention
+            // while applying another silently misaligns by exactly that much.
+            const orientedCandidate = (reverseU || reverseV)
+                ? applyAlignmentTransform(candidate, reverseU, reverseV, false) : candidate;
+            const candidateNet = centeredFundamentalNet(orientedCandidate.controlPoints,
+                    fundamentalRowCount, fundamentalColumnCount);
+            const candidateMagnitude = netMagnitudeSquared(candidateNet);
+            const normalizer = sqrt(referenceMagnitude * candidateMagnitude);
+
+            const shiftURange = uIsPeriodicPair ? fundamentalRowCount : 1;
+            const shiftVRange = vIsPeriodicPair ? fundamentalColumnCount : 1;
+            for (var shiftU = 0; shiftU < shiftURange; shiftU += 1)
+            {
+                for (var shiftV = 0; shiftV < shiftVRange; shiftV += 1)
+                {
+                    var correlation = 0 * meter * meter;
+                    for (var rowIndex = 0; rowIndex < fundamentalRowCount; rowIndex += 1)
+                    {
+                        var sourceRow = rowIndex + shiftU;
+                        if (sourceRow >= fundamentalRowCount)
+                        {
+                            sourceRow -= fundamentalRowCount;
+                        }
+                        for (var columnIndex = 0; columnIndex < fundamentalColumnCount; columnIndex += 1)
+                        {
+                            var sourceColumn = columnIndex + shiftV;
+                            if (sourceColumn >= fundamentalColumnCount)
+                            {
+                                sourceColumn -= fundamentalColumnCount;
+                            }
+                            correlation += dot(referenceNet[rowIndex][columnIndex], candidateNet[sourceRow][sourceColumn]);
+                        }
+                    }
+                    // Maximizing correlation minimizes squared distance between the centered nets,
+                    // since both magnitude terms are constant under a permutation of the same net.
+                    // Normalizing keeps candidates with different grid sizes comparable.
+                    const score = normalizer == 0 * meter * meter ? 0 : correlation / normalizer;
+                    if (score > best.score)
+                    {
+                        best = { "shiftU" : shiftU, "shiftV" : shiftV, "reverseU" : reverseU, "reverseV" : reverseV, "score" : score };
+                    }
+                }
+            }
+        }
+    }
+    return best;
+}
+
+/** The fundamental (non-overlap) part of a control net, translated so its centroid is the origin.
+    Centering is what makes two surfaces of different size and position comparable. */
+function centeredFundamentalNet(controlPoints is array, fundamentalRowCount is number, fundamentalColumnCount is number) returns array
+{
+    var centroid = vector(0, 0, 0) * meter;
+    for (var rowIndex = 0; rowIndex < fundamentalRowCount; rowIndex += 1)
+    {
+        for (var columnIndex = 0; columnIndex < fundamentalColumnCount; columnIndex += 1)
+        {
+            centroid += controlPoints[rowIndex][columnIndex];
+        }
+    }
+    centroid = centroid / (fundamentalRowCount * fundamentalColumnCount);
+
+    var net = makeArray(fundamentalRowCount, 0);
+    for (var rowIndex = 0; rowIndex < fundamentalRowCount; rowIndex += 1)
+    {
+        var row = makeArray(fundamentalColumnCount, vector(0, 0, 0) * meter);
+        for (var columnIndex = 0; columnIndex < fundamentalColumnCount; columnIndex += 1)
+        {
+            row[columnIndex] = controlPoints[rowIndex][columnIndex] - centroid;
+        }
+        net[rowIndex] = row;
+    }
+    return net;
+}
+
+/** Sum of squared magnitudes over a centered net — the normalizer for cosine similarity. */
+function netMagnitudeSquared(net is array) returns ValueWithUnits
+{
+    var total = 0 * meter * meter;
+    for (var rowIndex = 0; rowIndex < size(net); rowIndex += 1)
+    {
+        for (var columnIndex = 0; columnIndex < size(net[rowIndex]); columnIndex += 1)
+        {
+            total += squaredNorm(net[rowIndex][columnIndex]);
+        }
+    }
+    return total;
+}
 
 /**
  * Obtains a B-spline surface representation from a face.
@@ -746,7 +1044,14 @@ function findBestSurfaceAlignment(controlPoints1 is array, controlPoints2 is arr
  * 
  * This transforms the control points, weights, and knot vectors according to the
  * specified flips and swap operations to align the surface with a reference surface.
- * 
+ *
+ * RAW KERNEL FORMS ONLY. The flip's `1 - knot` reflection assumes a [0, 1] domain and is exact
+ * for the clamped and closed-clamped forms evApproximateBSplineSurface returns; on a NORMALIZED
+ * wrap-form periodic direction it leaves the reflected seam multiplicity run split across the
+ * domain boundary (a noncanonical form the sharing machinery rejects — the live cone-to-cylinder
+ * failure). For normalized surfaces use the module's reverseSurfaceDirection instead, as the
+ * post-net-search reversal above now does. The UV swap half is form-agnostic (a pure transpose).
+ *
  * @param surface {map} : B-spline surface definition with controlPoints, weights, knots, etc.
  * @param flipU {boolean} : Whether to flip the U direction
  * @param flipV {boolean} : Whether to flip the V direction

@@ -30,7 +30,9 @@ import(path : "9a2b77793cdc37bace6d915a", version : "7e8a1bdb8f400bfbcc839a00");
       Vector 3 - convex-combination invariant: every refinementOperator row has non-negative weights
                  summing to 1.
       Vector 4 - geometry preservation: a refined curve evaluates identically to its input
-                 (std evaluateSpline on BSplineCurve, pure, no Context needed).
+                 (std evaluateSpline on BSplineCurve, pure, no Context needed - safe THERE
+                 because the fixture is non-rational; the kernel builtin silently ignores
+                 weights, so rational comparisons use evaluateRationalCurvePoints instead).
       Vector 5 - refinementOperator path and direct path produce identical control points and knots.
       Vector 6 - (structural half) uniformPeriodExtractionOperator across degrees and span
                  counts: output count degree + spanCount, convex rows, identity interior rows.
@@ -124,6 +126,13 @@ export const splineRefinementTester = defineFeature(function(context is Context,
         runTightPeriodicSplineVector(passCount, failures, definition.printPassingChecks);
         runPeriodicOperatorVector(passCount, failures, definition.printPassingChecks);
         runSurfacePeriodicVector(passCount, failures, definition.printPassingChecks);
+        runSurfaceRewindowVector(passCount, failures, definition.printPassingChecks);
+        runBezierArcSeamVector(passCount, failures, definition.printPassingChecks);
+        runClosedClampedVector(passCount, failures, definition.printPassingChecks);
+        runClosedClampedSurfaceVector(passCount, failures, definition.printPassingChecks);
+        runReverseCanonicalVector(passCount, failures, definition.printPassingChecks);
+        runReverseCanonicalSurfaceVector(passCount, failures, definition.printPassingChecks);
+        runKernelWeightsProbeVector(passCount, failures, definition.printPassingChecks);
 
         const summary = passCount[] ~ " checks passed, " ~ size(failures[]) ~ " failed.";
         println("[splineRefinementTester] " ~ summary);
@@ -1018,6 +1027,95 @@ function makeClampedOpenTubeFixture() returns map
         };
 }
 
+/**
+ * A wrap-form periodic surface whose circular direction has BEZIER-ARC knot structure:
+ * fundamental knots [0, 0.5, 0.5, 0.5] — multiplicity 3, equal to the degree, at the arc joint.
+ * (The dimensions are revolve-inspired, but note this is NOT the kernel's own convention — a
+ * real revolve arrives CLOSED CLAMPED, see makeClosedClampedCylinderFixture. This fixture is a
+ * legitimate wrap-form object in its own right, and the arc-joint multiplicity pattern is what
+ * the seam-alignment machinery under test here has to survive; the same pattern is what a
+ * converted closed-clamped revolve carries after normalization.)
+ *
+ * This structure is the whole point of the fixture, and it breaks assumptions the uniform
+ * multiplicity-1 fixtures cannot:
+ *   - Fundamental knot indices 1, 2 and 3 ALL have value 0.5, so every nonzero seam shift lands
+ *     on the C0 arc joint. The seam is effectively immovable by re-windowing alone.
+ *   - A seam at a multiplicity-3 knot is C0, which the kernel rejects outright
+ *     (PERIODIC_BSPLINESURFACE_NOT_SMOOTH) — it is fine as an INTERIOR knot but not as a seam.
+ *   - The weights are non-uniform, so control point correspondence has to be right for the
+ *     rational geometry to survive blending. G1 across a C0 knot needs P4-P3 parallel to P3-P2,
+ *     which is a nonlinear condition and therefore only preserved by a linear blend when both
+ *     surfaces already agree there.
+ */
+function makeBezierArcPeriodicSurfaceFixture() returns map
+{
+    return makeBezierArcPeriodicSurfaceFixture(1);
+}
+
+/** Same structure at a scaled radius, for building a SECOND surface that shares the first's knot
+    vector by construction — which is what alignPeriodicSurfaceSeams requires of its inputs. */
+function makeBezierArcPeriodicSurfaceFixture(radiusScale is number) returns map
+{
+    // Two U rows (degree 1, clamped): a cone from radius 0.1034 to radius 0.0486.
+    const radii = [0.1034 * radiusScale, 0.0486 * radiusScale];
+    const heights = [0.3976, 0.4942];
+    var controlPoints = makeArray(2, 0);
+    var weights = makeArray(2, 0);
+    for (var rowIndex = 0; rowIndex < 2; rowIndex += 1)
+    {
+        const radius = radii[rowIndex];
+        const height = heights[rowIndex];
+        // Four fundamental points: a square circumscribing the circle, centred at (0, radius).
+        const fundamental = [
+                vector(-radius, 0, height),
+                vector(-radius, 2 * radius, height),
+                vector(radius, 2 * radius, height),
+                vector(radius, 0, height)
+            ];
+        const fundamentalWeights = [1, 2 / 3, 2 / 3, 1];
+        var row = makeArray(7, vector(0, 0, 0) * meter);
+        var weightRow = makeArray(7, 1);
+        for (var columnIndex = 0; columnIndex < 7; columnIndex += 1)
+        {
+            row[columnIndex] = fundamental[columnIndex % 4] * meter; // columns 4-6 ARE columns 0-2
+            weightRow[columnIndex] = fundamentalWeights[columnIndex % 4];
+        }
+        controlPoints[rowIndex] = row;
+        weights[rowIndex] = weightRow;
+    }
+    return {
+            "uDegree" : 1,
+            "vDegree" : 3,
+            "isRational" : true,
+            "isUPeriodic" : false,
+            "isVPeriodic" : true,
+            "controlPoints" : controlPoints,
+            "weights" : weights,
+            "uKnots" : [0, 0, 1, 1],
+            "vKnots" : [-0.5, -0.5, -0.5, 0, 0.5, 0.5, 0.5, 1, 1.5, 1.5, 1.5]
+        };
+}
+
+/**
+ * Multiplicity of the knot AT THE SEAM of a stored periodic direction — the domain start,
+ * knots[degree]. This is the number that decides whether the kernel will accept the surface at
+ * all: multiplicity equal to the degree means a C0 seam, and a periodic surface with a C0 seam is
+ * rejected. Interior knots may reach that multiplicity freely; the seam may not.
+ */
+function seamMultiplicity(knots is array, degree is number) returns number
+{
+    const seamValue = knots[degree];
+    var multiplicity = 0;
+    for (var knotIndex = 0; knotIndex < size(knots); knotIndex += 1)
+    {
+        if (abs(knots[knotIndex] - seamValue) <= KNOT_PARAMETER_TOLERANCE)
+        {
+            multiplicity += 1;
+        }
+    }
+    return multiplicity;
+}
+
 /** True if the control grid satisfies the overlap condition DOWN COLUMNS (the U direction):
     row i equals row n + i, elementwise, for i = 0..uDegree-1. */
 function columnOverlapConditionHolds(controlPoints is array, uDegree is number) returns boolean
@@ -1181,6 +1279,835 @@ function runSurfacePeriodicVector(passCount is box, failures is box, printPassin
     {
         recordCheck(passCount, failures, false, "SURFACE-PERIODIC: threw an error: " ~ error, printPassing);
     }
+}
+
+/**
+ * rewindowPeriodicSurfaceDirection re-cuts which period-length window a periodic direction stores.
+ * It is a pure reindex of grid and knot intervals, so the three things that must hold are: the
+ * grid does not grow, the overlap condition survives, and the surface evaluates identically at
+ * ABSOLUTE parameters (re-windowing relabels which window is stored, it does not move geometry or
+ * shift parameter values). Both directions are covered - U reindexes rows, V reindexes within
+ * every row, and those are separate code paths.
+ */
+function runSurfaceRewindowVector(passCount is box, failures is box, printPassing is boolean)
+{
+    try
+    {
+        // --- U direction (rows) ---
+        const tube = normalizeSurfaceDefinition(makeUPeriodicSurfaceFixture()); // n = 4, domain [2, 6], period 4
+        const rewoundU = rewindowPeriodicSurfaceDirection(tube, true, 1);
+
+        recordCheck(passCount, failures, size(rewoundU.controlPoints) == size(tube.controlPoints),
+            "SURFACE-REWINDOW: re-windowing U adds no rows (got " ~ size(rewoundU.controlPoints) ~ ")", printPassing);
+        recordCheck(passCount, failures, rewoundU.isUPeriodic == true,
+            "SURFACE-REWINDOW: the U direction is still periodic afterwards", printPassing);
+        recordCheck(passCount, failures, columnOverlapConditionHolds(rewoundU.controlPoints, rewoundU.uDegree),
+            "SURFACE-REWINDOW: the U overlap condition holds after re-windowing", printPassing);
+        recordCheck(passCount, failures, abs(rewoundU.uKnots[rewoundU.uDegree] - 3) <= KNOT_PARAMETER_TOLERANCE,
+            "SURFACE-REWINDOW: the U domain now starts at fundamental knot 1 (parameter 3)", printPassing);
+
+        // Overlap of the two domains: original [2, 6], re-wound [3, 7].
+        const sharedUSamples = [3, 3.7, 4.5, 5.2, 6];
+        const vSamples = [0, 0.5, 1];
+        recordCheck(passCount, failures, surfacesMatchOnGrid(tube, rewoundU, sharedUSamples, vSamples),
+            "SURFACE-REWINDOW: U geometry is identical at shared absolute parameters", printPassing);
+
+        // Re-windowing by a full period is the identity; by n + 1 it matches by 1 (indices wrap).
+        const rewoundFullPeriod = rewindowPeriodicSurfaceDirection(tube, true, 4);
+        recordCheck(passCount, failures, surfacesMatchOnGrid(tube, rewoundFullPeriod, [2.5, 3.5, 4.5, 5.5], vSamples),
+            "SURFACE-REWINDOW: re-windowing U by a whole period changes nothing", printPassing);
+        const rewoundWrapped = rewindowPeriodicSurfaceDirection(tube, true, 5);
+        recordCheck(passCount, failures, knotVectorsMatch(rewoundWrapped.uKnots, rewoundU.uKnots),
+            "SURFACE-REWINDOW: a start index past one period wraps (index 5 matches index 1)", printPassing);
+
+        // --- V direction (columns) ---
+        // Same tube transposed, so V is the periodic direction and the column code path runs.
+        var transposedGrid = makeArray(3, 0);
+        for (var rowIndex = 0; rowIndex < 3; rowIndex += 1)
+        {
+            var row = makeArray(6, vector(0, 0, 0) * centimeter);
+            for (var columnIndex = 0; columnIndex < 6; columnIndex += 1)
+            {
+                row[columnIndex] = tube.controlPoints[columnIndex][rowIndex];
+            }
+            transposedGrid[rowIndex] = row;
+        }
+        const vTube = normalizeSurfaceDefinition({
+                    "uDegree" : 2,
+                    "vDegree" : 2,
+                    "isRational" : false,
+                    "isUPeriodic" : false,
+                    "isVPeriodic" : true,
+                    "controlPoints" : transposedGrid,
+                    "uKnots" : [0, 0, 0, 1, 1, 1],
+                    "vKnots" : [0, 1, 2, 3, 4, 5, 6, 7, 8]
+                });
+        const rewoundV = rewindowPeriodicSurfaceDirection(vTube, false, 1);
+
+        recordCheck(passCount, failures, size(rewoundV.controlPoints[0]) == size(vTube.controlPoints[0]),
+            "SURFACE-REWINDOW: re-windowing V adds no columns (got " ~ size(rewoundV.controlPoints[0]) ~ ")", printPassing);
+        recordCheck(passCount, failures, rewoundV.isVPeriodic == true,
+            "SURFACE-REWINDOW: the V direction is still periodic afterwards", printPassing);
+        recordCheck(passCount, failures, abs(rewoundV.vKnots[rewoundV.vDegree] - 3) <= KNOT_PARAMETER_TOLERANCE,
+            "SURFACE-REWINDOW: the V domain now starts at fundamental knot 1 (parameter 3)", printPassing);
+        recordCheck(passCount, failures, surfacesMatchOnGrid(vTube, rewoundV, [0, 0.5, 1], sharedUSamples),
+            "SURFACE-REWINDOW: V geometry is identical at shared absolute parameters", printPassing);
+
+        // The V overlap condition, checked across rows rather than down columns.
+        var vOverlapHolds = true;
+        const vFundamentalCount = size(rewoundV.controlPoints[0]) - rewoundV.vDegree;
+        for (var rowIndex = 0; rowIndex < size(rewoundV.controlPoints); rowIndex += 1)
+        {
+            for (var overlapIndex = 0; overlapIndex < rewoundV.vDegree; overlapIndex += 1)
+            {
+                if (!pointsMatch(rewoundV.controlPoints[rowIndex][overlapIndex],
+                        rewoundV.controlPoints[rowIndex][vFundamentalCount + overlapIndex]))
+                {
+                    vOverlapHolds = false;
+                }
+            }
+        }
+        recordCheck(passCount, failures, vOverlapHolds,
+            "SURFACE-REWINDOW: the V overlap condition holds after re-windowing", printPassing);
+    }
+    catch (error)
+    {
+        recordCheck(passCount, failures, false, "SURFACE-REWINDOW: threw an error: " ~ error, printPassing);
+    }
+}
+
+/**
+ * The Bezier-arc seam problem, written as a test BEFORE the fix exists — so it is expected to
+ * report failures until two-sided seam alignment lands. Every other periodic fixture in this file
+ * uses uniform multiplicity-1 knots, which is exactly why they all passed while real revolves
+ * failed in Onshape; this vector exists so that class of bug cannot hide again.
+ *
+ * The invariant under test: whatever alignment is performed, BOTH surfaces must come out with a
+ * multiplicity-1 seam. Re-windowing one surface alone cannot satisfy that here, because every
+ * nonzero seam index of this structure lands on the multiplicity-3 arc joint. The fix has to move
+ * BOTH seams — inserting mid-span knots so that a relative offset can be split between them, with
+ * each landing somewhere smooth.
+ */
+function runBezierArcSeamVector(passCount is box, failures is box, printPassing is boolean)
+{
+    try
+    {
+        const cone = normalizeSurfaceDefinition(makeBezierArcPeriodicSurfaceFixture());
+
+        // Sanity: the fixture really does have the structure this vector is about.
+        recordCheck(passCount, failures, seamMultiplicity(cone.vKnots, cone.vDegree) == 1,
+            "BEZIER-SEAM: the fixture starts with a multiplicity-1 seam (got " ~
+            seamMultiplicity(cone.vKnots, cone.vDegree) ~ ")", printPassing);
+        const fundamentalVKnots = subArray(cone.vKnots, cone.vDegree, cone.vDegree + size(cone.controlPoints[0]) - cone.vDegree);
+        recordCheck(passCount, failures, size(distinctValueRunsForTest(fundamentalVKnots)) == 2,
+            "BEZIER-SEAM: the fixture's period has exactly two distinct knot values (arc-joint structure)", printPassing);
+
+        // Every nonzero re-window index lands on the multiplicity-3 arc joint. This documents WHY
+        // one-sided re-windowing cannot solve the alignment, rather than leaving it to be
+        // rediscovered from a kernel error message.
+        var everyNonzeroShiftBreaksTheSeam = true;
+        for (var startIndex = 1; startIndex < 4; startIndex += 1)
+        {
+            const rewound = rewindowPeriodicSurfaceDirection(cone, false, startIndex);
+            if (seamMultiplicity(rewound.vKnots, rewound.vDegree) == 1)
+            {
+                everyNonzeroShiftBreaksTheSeam = false;
+            }
+        }
+        recordCheck(passCount, failures, everyNonzeroShiftBreaksTheSeam,
+            "BEZIER-SEAM: as expected, EVERY nonzero one-sided seam shift lands on the C0 arc joint", printPassing);
+
+        // The alignment case itself. Surface B is a second cone at a different radius built on the
+        // SAME knot structure, which is what alignPeriodicSurfaceSeams requires - it aligns two
+        // surfaces that already share a knot vector, which is the state makeSurfacesCompatible
+        // leaves them in.
+        const otherCone = normalizeSurfaceDefinition(makeBezierArcPeriodicSurfaceFixture(0.35));
+        const aligned = alignPeriodicSurfaceSeams(cone, otherCone, false, 3);
+
+        recordCheck(passCount, failures, seamMultiplicity(aligned.a.vKnots, aligned.a.vDegree) == 1,
+            "BEZIER-SEAM: surface A comes out with a multiplicity-1 seam (got " ~
+            seamMultiplicity(aligned.a.vKnots, aligned.a.vDegree) ~ ")", printPassing);
+        recordCheck(passCount, failures, seamMultiplicity(aligned.b.vKnots, aligned.b.vDegree) == 1,
+            "BEZIER-SEAM: surface B comes out with a multiplicity-1 seam (got " ~
+            seamMultiplicity(aligned.b.vKnots, aligned.b.vDegree) ~ ")", printPassing);
+        recordCheck(passCount, failures, knotVectorsMatch(aligned.a.vKnots, aligned.b.vKnots),
+            "BEZIER-SEAM: both outputs still share an identical V knot vector", printPassing);
+        recordCheck(passCount, failures, aligned.a.isVPeriodic == true && aligned.b.isVPeriodic == true,
+            "BEZIER-SEAM: both outputs are still V-periodic", printPassing);
+
+        // The relative offset actually asked for must be realized. Fundamental knots are
+        // [0, 0.5, 0.5, 0.5], so a shift of 3 means an offset of 0.5 - and the two seams have to
+        // differ by exactly that, which is what makes the correspondence right.
+        recordCheck(passCount, failures, abs((aligned.seamB - aligned.seamA) - 0.5) <= KNOT_PARAMETER_TOLERANCE,
+            "BEZIER-SEAM: the two seams differ by exactly the requested offset (got " ~
+            (aligned.seamB - aligned.seamA) ~ ")", printPassing);
+        recordCheck(passCount, failures, seamMultiplicity(cone.vKnots, cone.vDegree) == 1,
+            "BEZIER-SEAM: neither seam landed on the multiplicity-3 arc joint at 0.5", printPassing);
+
+        // GEOMETRY: re-windowing and re-sharing must not move either surface. Both results live on
+        // a remapped [0, 1] V domain, so surface A at v corresponds to the original at
+        // seamA + v * period.
+        //
+        // That sum has to be WRAPPED back into the original's domain before evaluating.
+        // evaluateBSplineSurfacePoint deliberately does not wrap (see its own doc comment), and a
+        // seam near the end of the period pushes seam + fraction straight past the domain end -
+        // seamB is 0.75 here, so a fraction of 0.45 asks for 1.20. Wrapping is exact for a periodic
+        // direction, and unlike shrinking the sample range it keeps coverage across the whole
+        // period, which is where a seam bug would actually show up.
+        const uSamples = [0, 0.5, 1];
+        const vFractions = [0, 0.15, 0.3, 0.45, 0.6, 0.85];
+        var aPreserved = true;
+        var bPreserved = true;
+        for (var uParameter in uSamples)
+        {
+            for (var vFraction in vFractions)
+            {
+                const originalA = wrapIntoDomain(aligned.seamA + vFraction, 0, 1);
+                const originalB = wrapIntoDomain(aligned.seamB + vFraction, 0, 1);
+                if (!pointsMatch(evaluateBSplineSurfacePoint(aligned.a, uParameter, vFraction),
+                        evaluateBSplineSurfacePoint(cone, uParameter, originalA)))
+                {
+                    aPreserved = false;
+                }
+                if (!pointsMatch(evaluateBSplineSurfacePoint(aligned.b, uParameter, vFraction),
+                        evaluateBSplineSurfacePoint(otherCone, uParameter, originalB)))
+                {
+                    bPreserved = false;
+                }
+            }
+        }
+        recordCheck(passCount, failures, aPreserved,
+            "BEZIER-SEAM: surface A's geometry is unmoved by the seam alignment", printPassing);
+        recordCheck(passCount, failures, bPreserved,
+            "BEZIER-SEAM: surface B's geometry is unmoved by the seam alignment", printPassing);
+    }
+    catch (error)
+    {
+        recordCheck(passCount, failures, false, "BEZIER-SEAM: threw an error: " ~ error, printPassing);
+    }
+}
+
+/** Fold a parameter back into [domainStart, domainStart + period). Uses floor division rather
+    than `%`, which returns a NEGATIVE remainder in FeatureScript for a negative left operand. */
+function wrapIntoDomain(value is number, domainStart is number, period is number) returns number
+{
+    const offset = value - domainStart;
+    return domainStart + (offset - floor(offset / period) * period);
+}
+
+/**
+ * The REAL kernel periodic convention, CONFIRMED by a full raw control-grid dump from a live
+ * revolve (2026-08-08) — the only acceptable source for a fixture like this, after an earlier
+ * fixture built from post-processing output enshrined a convention that does not exist (a
+ * "degree-wide overlap with clamped knots", disproven by convex hull: those points could never
+ * have traced a full circle). A revolve's circular direction arrives CLOSED CLAMPED: the full
+ * circle as two rational cubic Bezier arcs, ordinary clamped knots, LAST control point
+ * coinciding with the FIRST (one coincident point), weights [1, 1/3, 1/3, 1, 1/3, 1/3, 1], and
+ * isPeriodic as metadata for the C1 closure. Numbers below are the logged cylinder verbatim:
+ * radius 0.0352842599367892 m.
+ */
+function makeClosedClampedCircleFixture() returns map
+{
+    const r = 0.0352842599367892;
+    return {
+            "degree" : 3,
+            "isPeriodic" : true,
+            "isRational" : true,
+            "controlPoints" : [
+                    vector(r, 0, 0) * meter,
+                    vector(r, 2 * r, 0) * meter,
+                    vector(-r, 2 * r, 0) * meter,
+                    vector(-r, 0, 0) * meter,
+                    vector(-r, -2 * r, 0) * meter,
+                    vector(r, -2 * r, 0) * meter,
+                    vector(r, 0, 0) * meter
+                ],
+            "weights" : [1, 1 / 3, 1 / 3, 1, 1 / 3, 1 / 3, 1],
+            "knots" : [0, 0, 0, 0, 0.5, 0.5, 0.5, 1, 1, 1, 1],
+            "radius" : r // the on-circle evaluator anchor in runClosedClampedVector needs it
+        };
+}
+
+/** Rational curve evaluation at in-domain parameters, through the MODULE's basis machinery.
+
+    Deliberately NOT std evaluateSpline. The kernel builtin behind it IGNORES WEIGHTS -
+    measured live 2026-08-08: on the rational circle fixture it returned the UNWEIGHTED
+    control polygon's curve, matching an unweighted de Boor replication to the last printed
+    digit ((0.6875r, 1.125r) at u = 0.125 where the true circle point is (0.8r, 0.6r)). The
+    KERNEL-WEIGHTS probe vector re-measures this every run against all three candidate
+    readings (rational / unweighted / premultiplied-homogeneous), on both isPeriodic flags -
+    added when the claim was challenged, since the original evidence was two call shapes from
+    one diagnostic dump. The gap is invisible for the non-rational fixtures elsewhere in this
+    tester and fatal for rational comparisons across a value-changing operation: a rational
+    curve and its knot-inserted refinement are the same TRUE curve but different unweighted
+    polygons, so kernel comparison reports a false mismatch - which burned two live runs before
+    the three-way diagnostic dump isolated it. The evaluator here is anchored to ground truth
+    by the on-circle checks (runClosedClampedVector's circle, KERNEL-WEIGHTS' quarter circle)
+    before any form comparison is trusted. */
+function evaluateRationalCurvePoints(controlPoints is array, weights is array, knots is array, degree is number, parameters is array) returns array
+{
+    var points = makeArray(size(parameters));
+    for (var parameterIndex = 0; parameterIndex < size(parameters); parameterIndex += 1)
+    {
+        points[parameterIndex] = evaluateModuleBasisCurvePoint(controlPoints, weights, knots, degree, parameters[parameterIndex]);
+    }
+    return points;
+}
+
+/** One rational evaluation through the module's exported bSplineBasisValues /
+    findEvaluationSpanIndex - kernel-free, so clamped and wrap forms evaluate identically.
+    Homogeneous accumulation; parameter must be inside the knot domain. */
+function evaluateModuleBasisCurvePoint(controlPoints is array, weights is array, knots is array, degree is number, parameter is number) returns Vector
+{
+    const spanIndex = findEvaluationSpanIndex(knots, degree, parameter);
+    const basisValues = bSplineBasisValues(knots, degree, spanIndex, parameter);
+    var weightedSum = undefined;
+    var weightSum = 0;
+    for (var basisIndex = 0; basisIndex <= degree; basisIndex += 1)
+    {
+        const pointIndex = spanIndex - degree + basisIndex;
+        const termWeight = basisValues[basisIndex] * weights[pointIndex];
+        weightSum = weightSum + termWeight;
+        weightedSum = weightedSum == undefined ? termWeight * controlPoints[pointIndex]
+            : weightedSum + termWeight * controlPoints[pointIndex];
+    }
+    return weightedSum / weightSum;
+}
+
+function runClosedClampedVector(passCount is box, failures is box, printPassing is boolean)
+{
+    try
+    {
+        const fixture = makeClosedClampedCircleFixture();
+        const normalized = normalizeSplineDefinition(fixture);
+
+        // n = N - 1 = 6 distinct points; stored wrap form = n + degree = 9.
+        recordCheck(passCount, failures, size(normalized.controlPoints) == 9,
+            "CLOSED-CLAMPED: conversion yields n + degree = 9 stored points (got " ~ size(normalized.controlPoints) ~ ")", printPassing);
+        recordCheck(passCount, failures, normalized.isPeriodic == true,
+            "CLOSED-CLAMPED: the curve stays periodic through conversion", printPassing);
+        recordCheck(passCount, failures, overlapConditionHolds(normalized.controlPoints, 3),
+            "CLOSED-CLAMPED: the overlap condition holds after conversion", printPassing);
+        recordCheck(passCount, failures, seamMultiplicity(normalized.knots, 3) == 3,
+            "CLOSED-CLAMPED: the converted seam knot carries multiplicity degree (got " ~
+            seamMultiplicity(normalized.knots, 3) ~ ")", printPassing);
+
+        var wrapPadded = true;
+        const n = size(normalized.controlPoints) - 3;
+        const period = normalized.knots[3 + n] - normalized.knots[3];
+        for (var knotIndex = 0; knotIndex + n < size(normalized.knots); knotIndex += 1)
+        {
+            if (abs(normalized.knots[knotIndex + n] - (normalized.knots[knotIndex] + period)) > KNOT_PARAMETER_TOLERANCE)
+            {
+                wrapPadded = false;
+            }
+        }
+        recordCheck(passCount, failures, wrapPadded,
+            "CLOSED-CLAMPED: converted knots are genuinely wrap-padded", printPassing);
+
+        // The modular gather stored[j] = P[(j + 1 - degree) mod n] puts the seam point P0 at
+        // stored index degree - 1 = 2.
+        recordCheck(passCount, failures, pointsMatch(normalized.controlPoints[2], fixture.controlPoints[0]),
+            "CLOSED-CLAMPED: the seam control point lands at stored index degree - 1", printPassing);
+
+        // GEOMETRY IDENTITY: the raw arrays evaluated literally as a clamped curve ARE the true
+        // circle; the converted wrap form must agree at the same absolute parameters.
+        const parameters = [0, 0.125, 0.25, 0.375, 0.5, 0.625, 0.75, 0.875];
+        const literalPoints = evaluateRationalCurvePoints(fixture.controlPoints, fixture.weights, fixture.knots, 3, parameters);
+
+        // EVALUATOR ANCHOR, before any form comparison is trusted: the fixture arrays are the
+        // kernel's own raw output for an exact circle of radius r about the origin, so every
+        // literal evaluation must land on that circle. This is the analytic ground truth that
+        // replaces kernel evaluateSpline as the oracle (see evaluateRationalCurvePoints for why
+        // the kernel is disqualified: it silently drops the weights). Tolerance is the
+        // first-order band |d(r^2)| = 2 r dr for a 1e-9 m radial deviation.
+        var literalOnCircle = true;
+        for (var sampleIndex = 0; sampleIndex < size(parameters); sampleIndex += 1)
+        {
+            if (abs(squaredNorm(literalPoints[sampleIndex]) - fixture.radius * fixture.radius * meter * meter) >
+                2 * fixture.radius * 1e-9 * meter * meter)
+            {
+                literalOnCircle = false;
+            }
+        }
+        recordCheck(passCount, failures, literalOnCircle,
+            "CLOSED-CLAMPED: evaluator anchor - literal evaluation lands on the exact circle", printPassing);
+
+        const convertedPoints = evaluateRationalCurvePoints(normalized.controlPoints, normalized.weights, normalized.knots, 3, parameters);
+        var conversionPreservesGeometry = true;
+        for (var sampleIndex = 0; sampleIndex < size(parameters); sampleIndex += 1)
+        {
+            if (!pointsMatch(literalPoints[sampleIndex], convertedPoints[sampleIndex]))
+            {
+                conversionPreservesGeometry = false;
+            }
+        }
+        recordCheck(passCount, failures, conversionPreservesGeometry,
+            "CLOSED-CLAMPED: conversion preserves the circle exactly at absolute parameters", printPassing);
+
+        // A REAL insertion - the operation this convention could previously only refuse - now
+        // succeeds and stays exact.
+        const homogeneousPoints = combinePointsAndWeights(normalized.controlPoints, normalized.weights);
+        const refined = refinePeriodicPoints(homogeneousPoints, normalized.knots, 3, [0.25]);
+        const separated = separatePointsAndWeights(refined.controlPoints);
+        recordCheck(passCount, failures, overlapConditionHolds(separated.points, 3),
+            "CLOSED-CLAMPED: the overlap condition holds after a real insertion", printPassing);
+
+        // The refined WRAP form must still be the circle. Compared through the anchored
+        // module-basis evaluator - clamped and wrap forms evaluate identically there, so this
+        // isolates the refinement itself. (An earlier version of this check compared through
+        // kernel evaluateSpline and failed two live runs in a row on arrays that were exact to
+        // machine epsilon - the kernel had silently dropped the weights, and a rational curve's
+        // knot-inserted refinement has a DIFFERENT unweighted polygon than the original.)
+        const refinedWrapPoints = evaluateRationalCurvePoints(separated.points, separated.weights, refined.knots, 3, parameters);
+        var insertionPreservesGeometry = true;
+        for (var sampleIndex = 0; sampleIndex < size(parameters); sampleIndex += 1)
+        {
+            if (!pointsMatch(literalPoints[sampleIndex], refinedWrapPoints[sampleIndex]))
+            {
+                insertionPreservesGeometry = false;
+            }
+        }
+        recordCheck(passCount, failures, insertionPreservesGeometry,
+            "CLOSED-CLAMPED: a real insertion on the converted circle preserves the geometry exactly", printPassing);
+
+        // And the refined curve must EMIT back to a valid closed clamped form carrying the same
+        // circle - refinement and emission composed, the exact chain every live feature output
+        // takes.
+        const emittedRefined = toClosedClampedPeriodicForm({
+                    "degree" : 3,
+                    "isPeriodic" : true,
+                    "isRational" : true,
+                    "controlPoints" : separated.points,
+                    "weights" : separated.weights,
+                    "knots" : refined.knots
+                });
+        const refinedFundamentalCount = size(separated.points) - 3;
+        recordCheck(passCount, failures,
+            size(emittedRefined.controlPoints) == refinedFundamentalCount + 1 &&
+            pointsMatch(emittedRefined.controlPoints[0], emittedRefined.controlPoints[refinedFundamentalCount]),
+            "CLOSED-CLAMPED: the refined curve emits as closed clamped (n + 1 points, last == first)", printPassing);
+        const emittedRefinedPoints = evaluateRationalCurvePoints(emittedRefined.controlPoints, emittedRefined.weights, emittedRefined.knots, 3, parameters);
+        var emissionPreservesGeometry = true;
+        for (var sampleIndex = 0; sampleIndex < size(parameters); sampleIndex += 1)
+        {
+            if (!pointsMatch(literalPoints[sampleIndex], emittedRefinedPoints[sampleIndex]))
+            {
+                emissionPreservesGeometry = false;
+            }
+        }
+        if (!insertionPreservesGeometry || !emissionPreservesGeometry)
+        {
+            // Failure-only diagnostics: dump every intermediate array verbatim plus the
+            // three-way evaluation so one run pins which stage diverges.
+            println("[CLOSED-CLAMPED DIAG] converted knots: " ~ normalized.knots);
+            for (var pointIndex = 0; pointIndex < size(normalized.controlPoints); pointIndex += 1)
+            {
+                println("[CLOSED-CLAMPED DIAG] converted[" ~ pointIndex ~ "] " ~ normalized.controlPoints[pointIndex] ~ " w=" ~ normalized.weights[pointIndex]);
+            }
+            println("[CLOSED-CLAMPED DIAG] refined knots: " ~ refined.knots);
+            for (var pointIndex = 0; pointIndex < size(separated.points); pointIndex += 1)
+            {
+                println("[CLOSED-CLAMPED DIAG] refined[" ~ pointIndex ~ "] " ~ separated.points[pointIndex] ~ " w=" ~ separated.weights[pointIndex]);
+            }
+            println("[CLOSED-CLAMPED DIAG] emitted knots: " ~ emittedRefined.knots);
+            for (var pointIndex = 0; pointIndex < size(emittedRefined.controlPoints); pointIndex += 1)
+            {
+                println("[CLOSED-CLAMPED DIAG] emitted[" ~ pointIndex ~ "] " ~ emittedRefined.controlPoints[pointIndex] ~ " w=" ~ emittedRefined.weights[pointIndex]);
+            }
+            for (var sampleIndex = 0; sampleIndex < size(parameters); sampleIndex += 1)
+            {
+                println("[CLOSED-CLAMPED DIAG] u=" ~ parameters[sampleIndex] ~
+                    " literal=" ~ literalPoints[sampleIndex] ~
+                    " refinedWrap=" ~ refinedWrapPoints[sampleIndex] ~
+                    " emitted=" ~ emittedRefinedPoints[sampleIndex]);
+            }
+        }
+        recordCheck(passCount, failures, emissionPreservesGeometry,
+            "CLOSED-CLAMPED: the emitted refined curve carries the same circle exactly", printPassing);
+
+        // ROUND TRIP: the emission form must reproduce the kernel's own input arrays exactly.
+        const emitted = toClosedClampedPeriodicForm(normalized);
+        recordCheck(passCount, failures, knotVectorsMatch(emitted.knots, fixture.knots),
+            "CLOSED-CLAMPED: emission reproduces the raw clamped knots", printPassing);
+        var roundTripMatches = size(emitted.controlPoints) == size(fixture.controlPoints);
+        if (roundTripMatches)
+        {
+            for (var pointIndex = 0; pointIndex < size(fixture.controlPoints); pointIndex += 1)
+            {
+                if (!pointsMatch(emitted.controlPoints[pointIndex], fixture.controlPoints[pointIndex]) ||
+                    abs(emitted.weights[pointIndex] - fixture.weights[pointIndex]) > 1e-9)
+                {
+                    roundTripMatches = false;
+                }
+            }
+        }
+        recordCheck(passCount, failures, roundTripMatches,
+            "CLOSED-CLAMPED: emission reproduces the raw control points and weights exactly", printPassing);
+    }
+    catch (error)
+    {
+        recordCheck(passCount, failures, false, "CLOSED-CLAMPED: threw an error: " ~ error, printPassing);
+    }
+
+    // Honesty preserved: a periodic curve whose knots are NEITHER wrap-padded NOR clamped must
+    // still refuse rather than guess.
+    try
+    {
+        normalizeSplineDefinition({
+                    "degree" : 2,
+                    "isPeriodic" : true,
+                    "controlPoints" : [vector(0, 0, 0) * meter, vector(1, 0, 0) * meter, vector(1, 1, 0) * meter, vector(0, 1, 0) * meter],
+                    "knots" : [0, 1, 2, 3.5, 4, 5, 7]
+                });
+        recordCheck(passCount, failures, false,
+            "CLOSED-CLAMPED: unrecognized periodic knots correctly refuse (they did not - this is now unguarded)", printPassing);
+    }
+    catch
+    {
+        recordCheck(passCount, failures, true,
+            "CLOSED-CLAMPED: unrecognized periodic knots still refuse rather than guess", printPassing);
+    }
+}
+
+/** The logged CYLINDER as a surface, verbatim: the closed-clamped circle swept between the two
+    logged heights. uDegree 3 U-periodic (closed clamped), vDegree 1 clamped, 2 columns. */
+function makeClosedClampedCylinderFixture() returns map
+{
+    const circle = makeClosedClampedCircleFixture();
+    const heights = [0.4039749626640555, 0.4606121628299273];
+    var controlPoints = makeArray(7, 0);
+    var weights = makeArray(7, 0);
+    for (var rowIndex = 0; rowIndex < 7; rowIndex += 1)
+    {
+        controlPoints[rowIndex] = [
+                circle.controlPoints[rowIndex] + vector(0, 0, heights[0]) * meter,
+                circle.controlPoints[rowIndex] + vector(0, 0, heights[1]) * meter
+            ];
+        weights[rowIndex] = [circle.weights[rowIndex], circle.weights[rowIndex]];
+    }
+    return {
+            "uDegree" : 3,
+            "vDegree" : 1,
+            "isRational" : true,
+            "isUPeriodic" : true,
+            "isVPeriodic" : false,
+            "controlPoints" : controlPoints,
+            "weights" : weights,
+            "uKnots" : circle.knots,
+            "vKnots" : [0, 0, 1, 1]
+        };
+}
+
+function runClosedClampedSurfaceVector(passCount is box, failures is box, printPassing is boolean)
+{
+    try
+    {
+        const fixture = makeClosedClampedCylinderFixture();
+        const normalized = normalizeSurfaceDefinition(fixture);
+
+        recordCheck(passCount, failures, size(normalized.controlPoints) == 9,
+            "CLOSED-CLAMPED-SURFACE: conversion yields 9 stored rows (got " ~ size(normalized.controlPoints) ~ ")", printPassing);
+        recordCheck(passCount, failures, normalized.isUPeriodic == true,
+            "CLOSED-CLAMPED-SURFACE: the surface stays U-periodic through conversion", printPassing);
+        recordCheck(passCount, failures, columnOverlapConditionHolds(normalized.controlPoints, 3),
+            "CLOSED-CLAMPED-SURFACE: the U overlap condition holds after conversion", printPassing);
+
+        // Geometry: the raw arrays evaluated literally ARE the cylinder; the converted form
+        // must agree pointwise on a grid.
+        const uSamples = [0, 0.2, 0.45, 0.7, 0.9];
+        const vSamples = [0, 0.5, 1];
+        recordCheck(passCount, failures, surfacesMatchOnGrid(fixture, normalized, uSamples, vSamples),
+            "CLOSED-CLAMPED-SURFACE: conversion preserves the cylinder exactly on a grid", printPassing);
+
+        // The self-pair through full compatibility - the first live failure case - must
+        // reproduce the same geometry.
+        const compatible = makeSurfacesCompatible(fixture, fixture);
+        recordCheck(passCount, failures, knotVectorsMatch(compatible.a.uKnots, compatible.b.uKnots),
+            "CLOSED-CLAMPED-SURFACE: the self-pair lands on identical U knots", printPassing);
+        recordCheck(passCount, failures, surfacesMatchOnGrid(fixture, compatible.a, uSamples, vSamples),
+            "CLOSED-CLAMPED-SURFACE: compatibility on a self-pair preserves the geometry exactly", printPassing);
+
+        // A REAL U insertion - previously the refusal case - now succeeds through the operator
+        // path and stays exact.
+        const refined = refineSurfaceToControlPointCounts(fixture, 10, 2);
+        recordCheck(passCount, failures, size(refined.controlPoints) == 10,
+            "CLOSED-CLAMPED-SURFACE: a real U insertion hits the target row count (got " ~ size(refined.controlPoints) ~ ")", printPassing);
+        recordCheck(passCount, failures, refined.isUPeriodic == true,
+            "CLOSED-CLAMPED-SURFACE: the refined surface is still U-periodic", printPassing);
+        recordCheck(passCount, failures, surfacesMatchOnGrid(fixture, refined, uSamples, vSamples),
+            "CLOSED-CLAMPED-SURFACE: a real U insertion preserves the geometry exactly", printPassing);
+
+        // Emission round trip: back to the kernel's own arrays.
+        const emitted = toClosedClampedSurfaceDirection(normalized, true);
+        recordCheck(passCount, failures, knotVectorsMatch(emitted.uKnots, fixture.uKnots),
+            "CLOSED-CLAMPED-SURFACE: emission reproduces the raw clamped U knots", printPassing);
+        var roundTripMatches = size(emitted.controlPoints) == size(fixture.controlPoints);
+        if (roundTripMatches)
+        {
+            for (var rowIndex = 0; rowIndex < size(fixture.controlPoints); rowIndex += 1)
+            {
+                for (var columnIndex = 0; columnIndex < size(fixture.controlPoints[0]); columnIndex += 1)
+                {
+                    if (!pointsMatch(emitted.controlPoints[rowIndex][columnIndex], fixture.controlPoints[rowIndex][columnIndex]) ||
+                        abs(emitted.weights[rowIndex][columnIndex] - fixture.weights[rowIndex][columnIndex]) > 1e-9)
+                    {
+                        roundTripMatches = false;
+                    }
+                }
+            }
+        }
+        recordCheck(passCount, failures, roundTripMatches,
+            "CLOSED-CLAMPED-SURFACE: emission reproduces the raw control grid and weights exactly", printPassing);
+    }
+    catch (error)
+    {
+        recordCheck(passCount, failures, false, "CLOSED-CLAMPED-SURFACE: threw an error: " ~ error, printPassing);
+    }
+}
+
+// ============================================================================================
+// REVERSE-CANONICAL — reversing a multiplicity-degree seam structure stays canonical and
+// SHAREABLE. Regression for the live cone-to-cylinder failure (2026-08-08): reversing one
+// revolve direction left its seam multiplicity run SPLIT across the domain boundary (reflection
+// mirrors the run to the far end), and the knot merge — which compares runs by literal value —
+// then demanded phantom seam-image insertions above the multiplicity cap. The pre-existing
+// REVERSE vectors could never catch this: their smooth uniform fixtures have multiplicity-1
+// seams, which cannot split.
+// ============================================================================================
+
+function runReverseCanonicalVector(passCount is box, failures is box, printPassing is boolean)
+{
+    try
+    {
+        const original = normalizeSplineDefinition(makeClosedClampedCircleFixture());
+        const reversed = reverseSpline(original);
+
+        recordCheck(passCount, failures, seamKnotMultiplicity(reversed.knots, 3) == 3,
+            "REVERSE-CANONICAL: the reversed circle's seam run stays contiguous at multiplicity degree (got " ~
+            seamKnotMultiplicity(reversed.knots, 3) ~ ")", printPassing);
+        recordCheck(passCount, failures, overlapConditionHolds(reversed.controlPoints, 3),
+            "REVERSE-CANONICAL: the overlap condition holds after reversal", printPassing);
+
+        // reverseSpline's contract is C_rev(t) == C(-t); canonicalization may shift the stored
+        // window by a whole period, which changes nothing about that identity mod period.
+        const originalDomain = knotDomain(original.knots, 3);
+        const originalPeriod = originalDomain.end - originalDomain.start;
+        const reversedDomain = knotDomain(reversed.knots, 3);
+        const reversedPeriod = reversedDomain.end - reversedDomain.start;
+        var reversalPreservesGeometry = true;
+        for (var sampleIndex = 0; sampleIndex < 8; sampleIndex += 1)
+        {
+            const reversedParameter = reversedDomain.start + reversedPeriod * sampleIndex / 8;
+            const reversedPoint = evaluateModuleBasisCurvePoint(reversed.controlPoints, reversed.weights, reversed.knots, 3, reversedParameter);
+            const originalPoint = evaluateModuleBasisCurvePoint(original.controlPoints, original.weights, original.knots, 3,
+                    wrapIntoDomain(-reversedParameter, originalDomain.start, originalPeriod));
+            if (!pointsMatch(reversedPoint, originalPoint))
+            {
+                reversalPreservesGeometry = false;
+            }
+        }
+        recordCheck(passCount, failures, reversalPreservesGeometry,
+            "REVERSE-CANONICAL: the reversed circle is the same circle traversed backwards, exactly", printPassing);
+
+        // THE REGRESSION: sharing the reversed and forward forms threw the multiplicity-cap
+        // error before canonicalization. It must succeed and land both on identical knots.
+        const shared = makeSplinesShareKnotVector(original, reversed);
+        recordCheck(passCount, failures, knotVectorsMatch(shared.a.knots, shared.b.knots),
+            "REVERSE-CANONICAL: forward and reversed forms share a knot vector after the merge", printPassing);
+    }
+    catch (error)
+    {
+        recordCheck(passCount, failures, false, "REVERSE-CANONICAL: threw an error: " ~ error, printPassing);
+    }
+}
+
+function runReverseCanonicalSurfaceVector(passCount is box, failures is box, printPassing is boolean)
+{
+    try
+    {
+        const original = normalizeSurfaceDefinition(makeClosedClampedCylinderFixture());
+        const reversed = reverseSurfaceDirection(original, true);
+
+        recordCheck(passCount, failures, seamKnotMultiplicity(reversed.uKnots, 3) == 3,
+            "REVERSE-CANONICAL-SURFACE: the reversed U seam run stays contiguous at multiplicity degree (got " ~
+            seamKnotMultiplicity(reversed.uKnots, 3) ~ ")", printPassing);
+        recordCheck(passCount, failures, reversed.isUPeriodic == true && size(reversed.controlPoints) == 9,
+            "REVERSE-CANONICAL-SURFACE: the reversed surface keeps its stored periodic U structure", printPassing);
+
+        // reverseSurfaceDirection's contract is S_rev(u, v) == S(uStart + uEnd - u, v), the
+        // reflection about the original's own U domain (mod period after canonicalization).
+        const originalUDomain = knotDomain(original.uKnots, 3);
+        const originalUPeriod = originalUDomain.end - originalUDomain.start;
+        const reversedUDomain = knotDomain(reversed.uKnots, 3);
+        const reversedUPeriod = reversedUDomain.end - reversedUDomain.start;
+        var reversalPreservesGeometry = true;
+        for (var sampleIndex = 0; sampleIndex < 6; sampleIndex += 1)
+        {
+            const reversedU = reversedUDomain.start + reversedUPeriod * sampleIndex / 6;
+            const originalU = wrapIntoDomain(originalUDomain.start + originalUDomain.end - reversedU,
+                    originalUDomain.start, originalUPeriod);
+            for (var vParameter in [0, 0.5, 1])
+            {
+                if (!pointsMatch(evaluateBSplineSurfacePoint(reversed, reversedU, vParameter),
+                        evaluateBSplineSurfacePoint(original, originalU, vParameter)))
+                {
+                    reversalPreservesGeometry = false;
+                }
+            }
+        }
+        recordCheck(passCount, failures, reversalPreservesGeometry,
+            "REVERSE-CANONICAL-SURFACE: reversal preserves the cylinder exactly", printPassing);
+
+        // THE REGRESSION, surface level - the exact composite that failed live on the
+        // cone-to-cylinder pair.
+        const shared = makeSurfacesShareKnotVectors(original, reversed);
+        recordCheck(passCount, failures, knotVectorsMatch(shared.a.uKnots, shared.b.uKnots),
+            "REVERSE-CANONICAL-SURFACE: forward and reversed surfaces share U knots after the merge", printPassing);
+    }
+    catch (error)
+    {
+        recordCheck(passCount, failures, false, "REVERSE-CANONICAL-SURFACE: threw an error: " ~ error, printPassing);
+    }
+}
+
+// ============================================================================================
+// KERNEL-WEIGHTS — direct probe of what std evaluateSpline actually computes for a RATIONAL
+// curve. The weights-ignored claim rests on the CLOSED-CLAMPED diagnostic dump (16-digit match
+// to the unweighted polygon value at u = 0.125/0.25), which measured exactly two call shapes;
+// when challenged ("a periodic curve with one weighted point tweened fine" - true but
+// nondiscriminating: weights only ever fed the alignment choice, and geometry CREATION
+// respects weights), this vector was added to settle it in isolation. It discriminates THREE
+// readings of the same arrays: standard rational (sum NwP / sum Nw), weights-ignored
+// (sum NP), and premultiplied-homogeneous (the kernel expecting P to already be w-scaled:
+// sum NP / sum Nw). Nothing in the std library calls evaluateSpline AT ALL (verified by grep
+// of the full mirror), so no std consumer exists that would ever have caught a rational gap.
+// ============================================================================================
+
+/** All three candidate readings of (controlPoints, weights) at `parameter`, via the module's
+    basis machinery. Whichever one the kernel's own result lands on is what the kernel
+    computes. */
+function threeWayEvaluation(controlPoints is array, weights is array, knots is array, degree is number, parameter is number) returns map
+{
+    const spanIndex = findEvaluationSpanIndex(knots, degree, parameter);
+    const basisValues = bSplineBasisValues(knots, degree, spanIndex, parameter);
+    var rationalNumerator = undefined;
+    var unweightedSum = undefined;
+    var weightSum = 0;
+    for (var basisIndex = 0; basisIndex <= degree; basisIndex += 1)
+    {
+        const pointIndex = spanIndex - degree + basisIndex;
+        const rationalTerm = (basisValues[basisIndex] * weights[pointIndex]) * controlPoints[pointIndex];
+        const unweightedTerm = basisValues[basisIndex] * controlPoints[pointIndex];
+        weightSum = weightSum + basisValues[basisIndex] * weights[pointIndex];
+        rationalNumerator = rationalNumerator == undefined ? rationalTerm : rationalNumerator + rationalTerm;
+        unweightedSum = unweightedSum == undefined ? unweightedTerm : unweightedSum + unweightedTerm;
+    }
+    return {
+            "rational" : rationalNumerator / weightSum,
+            "unweighted" : unweightedSum,
+            "premultiplied" : unweightedSum / weightSum
+        };
+}
+
+function evaluateCurvePointViaKernel(controlPoints is array, weights is array, knots is array, degree is number, isPeriodic is boolean, parameter is number) returns Vector
+{
+    const curve = bSplineCurve({
+                "degree" : degree,
+                "isPeriodic" : isPeriodic,
+                "controlPoints" : controlPoints,
+                "weights" : weights,
+                "knots" : knotArray(knots)
+            });
+    return evaluateSpline({ "spline" : curve, "parameters" : [parameter] })[0][0];
+}
+
+function printKernelProbeLine(controlPoints is array, weights is array, knots is array, degree is number, isPeriodic is boolean, parameter is number)
+{
+    const kernelPoint = evaluateCurvePointViaKernel(controlPoints, weights, knots, degree, isPeriodic, parameter);
+    const interpretations = threeWayEvaluation(controlPoints, weights, knots, degree, parameter);
+    println("[KERNEL-WEIGHTS PROBE]   u=" ~ parameter ~
+        " |kernel-rational|=" ~ sqrt(squaredNorm(kernelPoint - interpretations.rational)) ~
+        " |kernel-unweighted|=" ~ sqrt(squaredNorm(kernelPoint - interpretations.unweighted)) ~
+        " |kernel-premultiplied|=" ~ sqrt(squaredNorm(kernelPoint - interpretations.premultiplied)));
+}
+
+function runKernelWeightsProbeVector(passCount is box, failures is box, printPassing is boolean)
+{
+    try
+    {
+        // Analytic fixture where the weights matter heavily and the truth needs no oracle at
+        // all: the exact quarter circle as a degree-2 rational Bezier, weight sqrt(2)/2 on the
+        // corner. Every point of the TRUE curve satisfies |P| == R; the weights-ignored curve
+        // is the parabola through the same control points (~6% off-circle at midspan).
+        const quarterR = 0.05;
+        const quarterPoints = [vector(quarterR, 0, 0) * meter, vector(quarterR, quarterR, 0) * meter, vector(0, quarterR, 0) * meter];
+        const quarterWeights = [1, sqrt(2) / 2, 1];
+        const quarterKnots = [0, 0, 0, 1, 1, 1];
+
+        // Pass/fail HALF - module coverage only: the module's rational evaluation must trace
+        // the analytic circle. A second, weights-heavy analytic anchor for the evaluator.
+        var moduleOnCircle = true;
+        for (var parameter in [0.25, 0.5, 0.75])
+        {
+            const interpretations = threeWayEvaluation(quarterPoints, quarterWeights, quarterKnots, 2, parameter);
+            if (abs(squaredNorm(interpretations.rational) - quarterR * quarterR * meter * meter) >
+                2 * quarterR * 1e-9 * meter * meter)
+            {
+                moduleOnCircle = false;
+            }
+        }
+        recordCheck(passCount, failures, moduleOnCircle,
+            "KERNEL-WEIGHTS: the module's rational evaluation traces the analytic quarter circle exactly", printPassing);
+
+        // Probe HALF - printed every run, never pass/fail, because it measures KERNEL
+        // behavior rather than module correctness. Whichever delta column is ~0 is what the
+        // kernel computes. Covers isPeriodic false AND true, including the kernel's own
+        // closed-clamped convention, which the original diagnostic never measured with the
+        // true flag.
+        println("[KERNEL-WEIGHTS PROBE] quarter circle (degree 2, w=[1, 0.7071, 1]), isPeriodic false:");
+        for (var parameter in [0.25, 0.5, 0.75])
+        {
+            printKernelProbeLine(quarterPoints, quarterWeights, quarterKnots, 2, false, parameter);
+        }
+        const circle = makeClosedClampedCircleFixture();
+        println("[KERNEL-WEIGHTS PROBE] closed-clamped circle (degree 3, w thirds), isPeriodic false:");
+        for (var parameter in [0.125, 0.25])
+        {
+            printKernelProbeLine(circle.controlPoints, circle.weights, circle.knots, 3, false, parameter);
+        }
+        println("[KERNEL-WEIGHTS PROBE] closed-clamped circle, isPeriodic true (the kernel's own periodic convention):");
+        for (var parameter in [0.125, 0.25])
+        {
+            printKernelProbeLine(circle.controlPoints, circle.weights, circle.knots, 3, true, parameter);
+        }
+    }
+    catch (error)
+    {
+        recordCheck(passCount, failures, false, "KERNEL-WEIGHTS: threw an error: " ~ error, printPassing);
+    }
+}
+
+/** Local copy of the module's run-counting used only to describe a fixture's structure. */
+function distinctValueRunsForTest(values is array) returns array
+{
+    var distinctValues = [];
+    for (var valueIndex = 0; valueIndex < size(values); valueIndex += 1)
+    {
+        var alreadySeen = false;
+        for (var seenIndex = 0; seenIndex < size(distinctValues); seenIndex += 1)
+        {
+            if (abs(distinctValues[seenIndex] - values[valueIndex]) <= KNOT_PARAMETER_TOLERANCE)
+            {
+                alreadySeen = true;
+            }
+        }
+        if (!alreadySeen)
+        {
+            distinctValues = append(distinctValues, values[valueIndex]);
+        }
+    }
+    return distinctValues;
 }
 
 // ============================================================================================
@@ -1350,7 +2277,14 @@ function overlapConditionHolds(controlPoints is array, degree is number) returns
 /** Evaluate a STORED periodic curve at the given ABSOLUTE parameters, preserving
     isPeriodic:true (unlike evaluateCurvePoints, which always forces isPeriodic:false). Relies
     on std's own evaluateSpline/bSplineCurve to do the periodic evaluation - not something this
-    module implements itself. */
+    module implements itself.
+
+    NON-RATIONAL FIXTURES ONLY. The kernel builtin behind evaluateSpline silently IGNORES
+    WEIGHTS (measured live 2026-08-08 - see evaluateRationalCurvePoints for the full account,
+    including the false trail it laid first: the resulting mismatch was initially misread as
+    the kernel mis-evaluating C0-seam wrap forms, a claim now retracted). Every caller of this
+    function uses unit-weight fixtures, where the dropped weights change nothing. For rational
+    content use evaluateRationalCurvePoints, which never touches the kernel. */
 function evaluatePeriodicCurvePoints(controlPoints is array, knots is array, degree is number, parameters is array) returns array
 {
     const curve = bSplineCurve({

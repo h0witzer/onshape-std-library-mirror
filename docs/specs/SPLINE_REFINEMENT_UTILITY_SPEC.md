@@ -1,62 +1,93 @@
 # Spline Refinement Utility — Refactor Plan
 
-Status (2026-08-07): **Layers 1–2 AND every curve-level Layer 3 entry point are verified
-passing in Onshape — 78/78 checks, confirmed on a second live run after one bug fix.** Only the
-eight surface-level hooks remain unimplemented.
+Status (2026-08-08, end of the periodic-conventions arc): **Both tween features are fully
+migrated. Tween Surfaces is verified live through its hardest cases — self-pair, different
+radii, cones-to-cones, and cone-to-cylinder (opposite traversal + phase offset), all building
+correctly** through exact compatibility, exact periodic-preserving
+refinement/elevation/knot-sharing, exact reversal, and exact two-sided seam alignment. 230+
+tester checks passing. Three late discoveries closed this arc, each with its own subsection in
+§2.3: the kernel's CLOSED-CLAMPED periodic convention (§2.3.1), the canonical wrap-form seam
+invariant that reversal breaks (§2.3.2), and std `evaluateSpline` silently ignoring weights
+(§2.3.3).
+
+Remaining, in order: re-test the ROTATED periodic pairs live (the rewindow first-of-run fix in
+§2.3.2 is the prime suspect for their intermittent failures — unverified); bump Tween Curves'
+pinned module version and validate its rational-alignment path live (it shares every fix but
+has not run since); Phase 5 (displacementMap migration); the deformation feature (§9.1), not
+started.
 
 `custom-features/splineRefinementUtils.fs`, FeatureScript 3044:
-- **Verified passing in Onshape (78/78 checks, second live run):** Layers 1–2 (span
-  arithmetic, the operator builder, apply + tensor apply, clamped extraction, uniform period
-  extraction), direct insertion (`insertKnotOnce` / `refineKnotVector`), the pure surface
-  evaluator (`evaluateBSplineSurfacePoint`), and every curve-level Layer 3 entry point —
-  `normalizeSplineDefinition` (force-rational and genuine periodic clamping both),
-  `mergeKnotVectors`, `refineSplineToControlPointCount`, `makeSplinesShareKnotVector`,
-  `decomposeIntoBezierSegments`, `elevateSplineDegree` (four degree-pair cases including a
-  repeated-interior-knot one), `makeSplinesCompatible`, `prepareSplineForDeformation` — plus
-  the shared private helpers they're built from and one promoted to public API,
-  `insertionsToReach`. This is the entire dependency chain §7 called out as "curves first."
-  **Phase 3 (tweenCurves) and Phase 4's curve half are unblocked with zero remaining module
-  risk.**
-- **One bug found and fixed on the first live run of this batch:** `findKnotSpanIndex`'s
-  backward scan had no upper bound, so a parameter exactly equal to an array's own reported
-  domain end — which is exactly what `normalizeSplineDefinition`'s periodic clamp inserts at —
-  walked past the last valid span into whatever trailing structure exists beyond the domain (a
-  periodic wrap window's extra knots), indexing one past `buildRefinementCoefficients`'
-  control point array. Fixed with the missing half of NURBS Book Algorithm A2.1's `FindSpan`
-  (`u == U[n+1] -> n`), a one-sided special case (domain end only — the domain start side was
-  already safe by construction, and `findEvaluationSpanIndex`, the separate evaluator-side span
-  finder, never had this bug since its loop bounds were already correct). Confirmed fixed by
-  the second live run; did not change any previously-passing test's behavior.
-- **Still `HOOK(...)` stubs:** the eight surface-level entry points
-  (`refineSurfaceToControlPointCounts` through `prepareSurfaceForDeformation`). Each one's doc
-  comment names exactly which curve-level helper it generalizes and how — tensor-apply the
-  same operators via `applyKnotRefinementOperatorDownColumns`/`AcrossRows` instead of the flat
-  `applyKnotRefinementOperator` — since the hard math already exists and only needs a
-  grid-shaped sibling.
+- **Verified passing in Onshape (200+ checks across many live runs):** Layers 1–2, direct
+  insertion, the pure surface evaluator, every curve-level Layer 3 entry point, every
+  surface-level Layer 3 entry point, and — the majority of the module's total size —
+  **genuine periodic-preserving refinement, elevation, knot-sharing, reversal, and
+  re-windowing, for both curves and surfaces, including the two-sided seam alignment surfaces
+  need that curves do not.**
+- **The periodic policy changed completely partway through, and it is the single biggest
+  design shift in this module's history.** §11 decision 4 below ("clamp-and-report") is
+  **superseded** — it is preserved in place, struck through, because the reasoning that
+  replaced it is worth keeping visible. See the new §2.3 for what actually shipped and why
+  clamping was rejected outright partway through implementation.
+- **`findKnotSpanIndex` bug (2026-08-07, first live run of the curve batch):** fixed — see the
+  unchanged paragraph below this block for the mechanism. Not touched since.
+- **A second, more serious class of bug (2026-08-07, second half of the session):** an operator
+  built to be applied once — the whole point of the operator layer is amortization across many
+  point arrays — was being built for single-curve calls anyway, at O(M²) cost before a single
+  point was touched. On a 300-control-point direction this was measured as an 8-second `throw`
+  budget slowdown before profiling caught it. Fixed by using direct sequential insertion
+  (`refineKnotVector`) everywhere a refinement is applied to exactly one array, reserving
+  `knotRefinementOperator`/`periodicRefinementOperator` for the tensor (surface-grid) callers
+  that actually amortize. See [[knot-refinement-utility]] memory for the full postmortem —
+  worth reading before adding any new Layer 3 entry point, since the mistake is easy to repeat.
+- **A third class, orthogonal to both: `squaredNorm` vs `norm` in every distance-COMPARISON
+  site** (alignment search, best-shift selection). Measured 25% build-time reduction from this
+  alone in one hot path. See [[featurescript-squarednorm-vs-norm]] — the short version is
+  "compare distances, never take the sqrt," and the cross-correlation identity
+  (`argmax(A·B) == argmin(|A-B|²)` under a fixed permutation) removes even the squaring in the
+  inner loop of every alignment search in this module and in both tween features.
+- **The hardest bug, and the reason §2.3 exists:** a revolve's circular direction is stored by
+  the kernel as **Bezier arcs** — fundamental knots like `[0, 0.5, 0.5, 0.5]`, multiplicity 3 at
+  the arc joint, equal to the degree. Every nonzero one-sided seam shift on a surface with this
+  structure lands ON that joint, which the kernel rejects as a seam
+  (`PERIODIC_BSPLINESURFACE_NOT_SMOOTH`) even though the same multiplicity is perfectly legal as
+  an *interior* knot. No one-sided fix exists. The fix moves BOTH surfaces' seams by a split
+  offset, each landing on a knot the fixed side can afford — see §2.3 and
+  `alignPeriodicSurfaceSeams` in §4.
+
+**One gap from the original curve-only pass is now closed, not just resolved:**
+`normalizeSplineDefinition`'s old kernel-quirk port (verbatim from std `editCurve.fs`
+`cleanUpPeriodicBSplineDefinition`) was found to actively corrupt canonical input — its
+`knots[0] != 0` heuristic fires on every legitimately-padded periodic curve, since padding
+always makes `knots[0] < 0`. It was first replaced with form recognition by COUNTING, and that
+too proved insufficient — the stored-form and closed-clamped counts collide exactly, and a
+fixture built on the count-based reading enshrined a convention that does not exist (§2.3.1).
+What ships now is three-way discrimination by DATA (the wrap-padding relation on knot values;
+clamped ends plus a coincident endpoint), with an explicit throw — naming the observed shape —
+for anything else. No more silent reinterpretation of a shape nobody has inspected against a
+live kernel, and no more recognition by any property two different shapes can share.
 
 `custom-features/splineRefinementTester.fs` runs vectors 1–6 (structural), evaluator sanity,
-and eight curve-level vectors (normalization including genuine periodic clamping, merge,
-refine-to-count, share-knot-vector, Bezier decomposition, degree elevation — vector 7, four
-degree pairs — compatibility, and the elevate-then-refine composition). 78 checks, 0 failures,
-confirmed live.
+the curve-level Layer 3 suite, the surface-level Layer 3 suite (including genuine periodic
+preservation, not clamping), reversal, re-windowing, the periodic-vs-direct-insertion agreement
+vectors, and — the vector that mattered most — **`BEZIER-SEAM`**: a fixture built from a real
+Onshape revolve's actual control-point/knot numbers (fundamental knots `[0, 0.5, 0.5, 0.5]`,
+rational, non-uniform weights), asserting that a one-sided seam shift ALWAYS lands on the C0
+arc joint (a passing check that documents the bug's inevitability, not just its existence), and
+that the two-sided fix produces matching multiplicity-1 seams on both sides with geometry
+unmoved. 200+ checks, 0 failures, confirmed live. Every periodic vector rule: **a degree-1
+fixture is never sufficient coverage on its own** — degree-1 control points lie ON the curve,
+so a broken clamp-based extraction is value-neutral there, and a real bug survived two green
+runs before a degree ≥ 2 vector caught it.
 
-**Sequencing note:** §7 documents Phase 2 (tweenSurfaces) before Phase 3 (tweenCurves), on the
-rationale that surfaces would exercise the module more thoroughly before trusting it. That
-rationale is now moot — the curve-level run above already exercised
-elevation/refinement/merge/periodic/rational across 78 checks. tweenCurves is fully unblocked
-today; tweenSurfaces still needs the surface hooks first. Worth reconsidering the order (see
-open question added to §11).
-
-**One gap flagged, not resolved:** `normalizeSplineDefinition`'s periodic handling ports two
-things — a narrow kernel-quirk fix (verbatim from std `editCurve.fs`
-`cleanUpPeriodicBSplineDefinition`, for a specific single-overlapping-knot shape) and a new
-genuine periodic-to-clamped conversion this module adds (running `clampedSegmentOperator` over
-the spline's own domain — sound because Boehm insertion is a purely local array operation,
-independent of the periodic flag). The genuine-clamping half has a tester vector. The
-kernel-quirk half does not — its exact trigger shape could not be verified without a live
-kernel-returned periodic curve to inspect, so the tester vector was designed to route around it
-(construction with `knots[0] == 0` deliberately skips that branch). If a real periodic surface
-from `evApproximateBSplineSurface` trips it, treat that branch as unverified.
+**Sequencing note, resolved:** §7 originally documented Phase 2 (tweenSurfaces) before Phase 3
+(tweenCurves). §11's open question 9 asked whether to invert that once the module was proven by
+curves alone; the answer was yes — tweenCurves shipped first, and by the time tweenSurfaces'
+periodic story was built out, the curve-level periodic primitives were the direct template for
+their surface-level counterparts (see §2.3). The order that actually happened: Phase 1 → 1b →
+**Phase 3 (tweenCurves)** → periodic curve primitives → periodic SURFACE primitives (not in the
+original plan at all — see §2.3) → **Phase 2 (tweenSurfaces)** → Phase 4 (both, done as part of
+3 and 2 respectively, since `makeSplinesCompatible`/`makeSurfacesCompatible` fix 2.4 as a side
+effect of being called at all).
 
 **KnotArray discipline, worth restating here because it is easy to miss:** every curve-level
 function above casts its returned `knots` with `knotArray(...)` before returning, even though
@@ -227,24 +258,211 @@ isoparametric line; at `degree + 1` it comes apart. Boehm's formula itself stays
 `degree + 1` — clamped extraction (tiling spec §5.2) relies on exactly that — but a
 *refinement* entry point must never exceed `degree`, and this code has no guard at all.
 
-### 2.3 Periodic inputs are not handled
+### 2.3 Periodic inputs — genuinely handled, not clamped (superseding the original plan)
 
-Onshape's `KnotArray` is always `numControlPoints + degree + 1` long
-(`curveGeometry.fs:321`), but a **periodic** array carries wrap-around padding computed from
-the marginal knot differences at the far end (`makePeriodicKnotArrayPadding`, line 469), and
-`evCurveDefinition` can additionally hand back periodic curves with *overlapping control
-points* (`size(knots) == size(controlPoints) + 2*degree + 1`). Consequences:
+The original plan (§11 decision 4, struck through below) was **clamp a periodic input, say so
+in the return map.** That plan shipped, was used for a while, and was then rejected outright —
+not refined, rejected — after the person driving this project pushed back on exactly that
+tradeoff: *"I want working code. Not fallbacks to known nonworking code... We're making things
+better, not leaving silent levers to the broken past."* This section is the design that
+replaced it, and the reasoning for why clamping was never actually acceptable.
 
-- `tweenSurfaces.fs` re-wraps each refined isoparametric curve with
-  `isPeriodic : surface.isUPeriodic` while feeding it knots that no longer satisfy the periodic
-  padding relation.
-- Its `size(knots) != numControlPoints + degree + 1` guard throws outright on the
-  overlapping-control-point form.
-- `tweenSurfaces.fs`'s copy of `subdivideIntoBeziers` **dropped** the `knots[0] < 0`
-  (overlapping-knot) branch that std `editCurve.fs` and `tweenCurves.fs` both keep.
+**Why clamping is wrong, not just less convenient.** The stored periodic form is `n`
+fundamental control points plus `degree` literal COPIES of the first `degree` (the OVERLAP
+CONDITION, `P[i] == P[i+n]` — a constraint on control point VALUES, not just knot count; it is
+what tells the evaluator "wrap here"), paired with knots satisfying
+`knots[i+n] = knots[i] + PERIOD`. Clamped extraction computes NEW control points near a
+boundary via ordinary Boehm insertion, and nothing about that computation has any reason to
+satisfy the overlap condition. Re-flagging the clamped result as periodic afterward produces a
+curve or surface with a seam: position may hold, tangent and curvature will not. For a tween,
+that seam is exactly the visible defect — a "closed" surface with a crease where its two
+sampled halves disagree.
+
+**The construction that replaced it.** A periodic B-spline is a finite window onto an infinite
+periodically-extended structure (knots and control points both repeat every PERIOD). Boehm
+insertion and degree elevation are LOCAL — they touch only `degree` neighboring control points
+around wherever they operate. So: tile the infinite structure into a finite window wide enough
+that every relevant operation's local support stays clear of the window's own clamped edges,
+run the ordinary clamped-only machinery on that window, then slice the core period back out.
+The result is automatically overlap-consistent, because the infinite structure was never
+actually broken — only sliced from a window wide enough that slicing introduces no error.
+
+Two window shapes exist, deliberately not merged into one, because refinement and elevation
+have genuinely different requirements:
+
+- **Refinement** (`buildPeriodicWindow`): UNCLAMPED, margin measured in CONTROL POINTS
+  (`2*degree + 2`). Boehm insertion needs nothing but locality, so the margin only has to cover
+  the reach of one blend plus the seam-straddling points the final slice touches. This is also
+  why refinement can use direct sequential insertion (`refineKnotVector`) instead of building an
+  operator — see the perf note in the status block above.
+- **Elevation** (`buildPeriodicWideClampedWindow`): CLAMPED, margin of whole PERIODS
+  (`ceil((degree+1)/n)`, not hardcoded to 1 — this is what lets a "tight" periodic spline with
+  fewer control points per period than its degree go through the same exact path instead of
+  being rejected as degenerate). Bezier decomposition (which elevation goes through) rejects an
+  unclamped knot array outright, and its trailing `removeKnots` pass reasons globally across the
+  window, so every period must be an identical tile for its decisions to match across the wrap.
+
+**The extraction step is a raw index SLICE, never a `clampedSegmentOperator` call** — this was
+the one bug in the initial implementation that survived a live test run, because a
+`clampedSegmentOperator`-based extraction happens to be value-neutral at degree 1 (degree-1
+control points lie ON the curve) while being silently wrong at every degree ≥ 2. The
+justification for the slice: the wide window represents the same function as the periodic
+curve, with identically tiled interior knots, so by local linear independence of the B-spline
+basis, any control point whose support lies strictly inside the window is uniquely determined
+by that function — it MUST equal the infinite periodic structure's own point. Only the
+outermost `degree + 1` points on each end can deviate, and a guard throws (rather than
+returning something subtly wrong) if a slice would ever reach them. **Standing tester rule
+because of this:** every periodic vector needs a degree ≥ 2 case; degree 1 is a hand-checkable
+baseline, never sufficient coverage on its own.
+
+**Sharing a knot vector between two periodic curves/surfaces** additionally requires rescaling
+BOTH onto a canonical `[0,1)`-period domain FIRST (`remapKnotsToUnitDomain`), then merging
+there. An earlier version merged in normalized space but mapped insertions back to each side's
+own absolute period, which could never produce literally identical arrays for two curves with
+different periods — fixed before it shipped, but worth noting since it is the kind of bug that
+looks correct until you try two genuinely different periods against each other.
+
+**Surfaces add a second, harder problem that curves do not have: SEAM alignment**, and it is
+the reason this section grew far beyond the original one-paragraph "periodic inputs are not
+handled." Two closed curves or surfaces have no shared notion of "where the seam is" — their
+control nets can be rotated relative to one another by any amount, and no flip or swap can
+correct a rotation. Get this wrong and `makeSurfacesCompatible` still produces a
+knot-vector-valid result; it is just the WRONG correspondence, which blends control point (i,j)
+of one surface against the geometrically unrelated (i,j) of the other. This is invisible until
+the result fails a smoothness check the kernel actually enforces, which is exactly what
+happened:
+
+1. **The exact-comparison insight.** After `makeSurfacesCompatible`, both surfaces' control
+   points are coefficients over the SAME basis, so comparing them is arithmetic on exact data —
+   no evaluation, no sampling, no tolerance. By partition of unity, control-net distance bounds
+   surface distance, so the discrete question "which cyclic shift lines these nets up" answers
+   the continuous question "which seam alignment lines these surfaces up." An earlier version
+   sampled rings of points around each candidate seam and correlated those; it worked, but it
+   was rejected on sight as exactly the sludge the future deformation feature (§9.1) needs to
+   avoid, and replaced with the exact version the same session. Both directions are searched
+   JOINTLY (a torus tweened against a torus has two free seams, and the best pair is not
+   generally the pair of individual bests), and reversal is folded into the same search rather
+   than decided separately, because reversing a closed direction also moves where its seam
+   lands.
+2. **The seam CHOICE is not always realizable one-sided.** A revolve's circular direction is
+   stored by the kernel as Bezier arcs — fundamental knots like `[0, 0.5, 0.5, 0.5]`,
+   multiplicity 3 (equal to the degree) at the arc joint. Every nonzero seam position in that
+   structure IS the arc joint, so re-windowing one surface alone to the needed offset always
+   lands its seam on a knot the kernel will reject as non-smooth
+   (`PERIODIC_BSPLINESURFACE_NOT_SMOOTH`) — while leaving it at zero offset instead produces a
+   control-net correspondence that is actually wrong, which the kernel reports as
+   `BSPLINESURFACE_NOT_G1`. Both are the same underlying problem; no one-sided seam choice
+   escapes it. The fix (`alignPeriodicSurfaceSeams`) splits the required offset between BOTH
+   surfaces' seams, searching for a pair of parameters that are each either absent from the
+   knot vector or present exactly once — inserting there yields multiplicity exactly 1, which
+   is smooth — then inserts, re-windows each side to its own seam, and re-shares. Both sides
+   then contribute multiplicity 1 at the merged seam, satisfying the kernel's requirement, and
+   the correspondence set up by the two re-windows survives because both are remapped from the
+   same shared domain by the same period.
 
 `evApproximateBSplineSurface` returns periodic surfaces for cylinders, cones and revolves, so
-this is not an edge case for a feature that takes arbitrary face picks.
+none of this is an edge case for a feature that takes arbitrary face picks — it is the
+mainline, and it is now exact rather than clamped.
+
+#### 2.3.1 The kernel's periodic convention is CLOSED CLAMPED — confirmed, converted exactly
+
+Everything above operates on the wrap STORED form. What the kernel actually HANDS a feature is
+neither that form nor the "clamped knots + degree-wide control point overlap" an earlier
+comment claimed ("confirmed live") from partial data. A full raw control-grid dump
+(2026-08-08) settled it: a revolve's circular direction arrives **CLOSED CLAMPED** — the full
+circle as two rational cubic Bezier arcs `[P0, (r,2r), (−r,2r), (−r,0), (−r,−2r), (r,−2r), P0]`
+with weights `[1, ⅓, ⅓, 1, ⅓, ⅓, 1]`, ordinary clamped knots `[0×4, .5×3, 1×4]`, exactly ONE
+coincident point (last = first), and `isPeriodic` as metadata meaning "this closure is smooth."
+The overlap-convention fixture was disproven by convex hull before the dump confirmed it: its
+seven points all lay in `y ∈ [0, 2r]`, and no rational B-spline with non-negative weights can
+leave its control points' convex hull under ANY knots — those points could never have traced a
+circle reaching `y = −r`. They were the module's own corrupted output, mistaken for kernel
+data. **Standing rule from that mistake: fixtures come from RAW dumps only, never from
+post-processing views, and forms are discriminated by DATA, never by counts — the counts
+collide exactly.**
+
+Conversion in (`normalizeSplineDefinition` / `normalizeSurfaceDefinition`, form 3) is a pure
+**modular gather** — no arithmetic on point values: `stored[j] = P[(j + 1 − degree) mod n]`
+with `n = N − 1` fundamental points, fundamental knots `[seam × degree, interior verbatim]`.
+It is the concatenate-three-periods-and-slice construction (NURBS Book §12.1, Algorithm A12.1
+in its periodic-identification form) collapsed to closed form; the closed curve repeated
+end-to-end IS its own periodic extension. Emission back out
+(`toClosedClampedPeriodicForm` / `toClosedClampedSurfaceDirection`) is the exact inverse:
+clamped extraction over one period, `isPeriodic` kept true — the kernel's own output
+convention, which it provably accepts. A no-op round trip reproduces the kernel's arrays
+bit-for-bit, and the tester asserts exactly that. Emission policy: tweenSurfaces always
+clamp-emits periodic directions; tweenCurves clamp-emits only when the seam multiplicity has
+reached the degree (a wrap form with seam multiplicity ≥ degree is rejected at creation as
+`PERIODIC_BSPLINESURFACE_NOT_SMOOTH`; smooth-seam wrap emission remains valid and validated).
+
+#### 2.3.2 The wrap form is not unique — the canonical seam invariant
+
+The stored wrap form admits two spellings of the same modular knot structure: the seam's
+multiplicity run can sit contiguously at the domain start (`{0×3, .5×3}`) or SPLIT across the
+domain boundary (`{0×1, .5×3, 1×2}` — same structure, since `1 ≡ 0` mod period). Every
+structure-comparing consumer (the knot-sharing run merge, `seamKnotMultiplicity`, clamped
+emission) assumes the contiguous spelling. **REVERSAL manufactures the split one**: reflecting
+`[seam×m, interior…]` mirrors `m − 1` seam copies to the far end whenever `m > 1`. The
+pre-canonicalization symptom was a live cone-to-cylinder failure: the run merge, comparing by
+literal value, saw the two spellings as different structures and demanded seam-image
+insertions above the multiplicity cap. The mult-1 seams of every earlier REVERSE fixture could
+not split, which kept this invisible until Bezier-arc structures arrived.
+
+**Invariant now enforced at the normalization choke point**: no image of the seam value may
+remain at the fundamental's tail (`seamImageTailCount`); violations are re-cut by a pure
+window re-index (`recutPeriodicCycle`/`recutPeriodicKnots` — no arithmetic on point values,
+domain shifts by up to one period, which is meaningless for a periodic direction — but READ
+domains off results, never assume them). `reverseSpline` re-normalizes its output;
+`reverseSurfaceDirection` (new, the reversal for normalized surfaces) does the same;
+tweenSurfaces' legacy hand-rolled `1 − knot` flip remains valid only for the RAW
+pre-normalization forms it predates. `rewindowPeriodicSpline` cuts at the FIRST knot of a
+multiplicity run (it kept the LAST, splitting the run whenever an alignment landed exactly on
+an arc joint — the prime suspect for rotated-pair failures, pending live re-test). The
+REVERSE-CANONICAL(-SURFACE) tester vectors reproduce the live failure composite.
+
+#### 2.3.3 std `evaluateSpline` ignores weights — never an oracle for rational content
+
+Measured live to the last digit (2026-08-08): a rational `BSplineCurve` with a well-formed
+`weights` array evaluates through `@evaluateSpline` as if every weight were 1 — the returned
+points are the UNWEIGHTED control polygon's curve (the rational circle came back off-circle by
+~30% of r, matching an unweighted de Boor replication exactly). No error, no warning;
+invisible on unit-weight curves, garbage on rational ones. The original evidence was two call
+shapes from one diagnostic dump; when challenged, a standing **KERNEL-WEIGHTS probe vector**
+was added to the tester — an analytic quarter circle plus the closed-clamped circle on both
+`isPeriodic` flags, with the kernel's result printed every run against three candidate
+readings (standard rational, weights-ignored, and premultiplied-homogeneous, i.e. the kernel
+expecting `w·P` as control points — which would make the builtin usable by changing the
+feeding convention). The probe is println-only, never pass/fail: it measures kernel behavior,
+not module correctness. Nothing anywhere in the std library calls `evaluateSpline` at all
+(verified by grep of the full mirror), so no std consumer exists that would have caught this.
+**First probe run (2026-08-08, 236/236 checks green): weights-ignored CONFIRMED in every
+flavor** — |kernel − unweighted| ≤ 7e-18 m at every probed parameter across degree 2 and 3,
+clamped and closed-clamped forms, `isPeriodic` false and true, with the rational reading off
+by 3–19 mm and premultiplied by more. The probe stays in the tester permanently; it would
+immediately show if a future Onshape version fixes the builtin.
+
+**Final confirmation, fully independent (same day):** the tester probe was itself rejected as
+evidence — same author wrote the tests and the fixtures — so a standalone instrument was
+built: `custom-features/evaluateSplineWeightsProbe.fs`, std-imports-only, no fixtures, no hand
+mathematics. It reads a USER-DRAWN rational curve via `evCurveDefinition`, feeds the kernel's
+own returned object straight back into `evaluateSpline`, judges each returned point with
+`evDistance` against the actual drawn edge, and renders the points green/red on screen. Result
+on hand-drawn geometry: **points up to 22.6 mm off the curve, coinciding with the
+weights-omitted evaluation to exactly 0.** Kernel against kernel, user's own geometry. The
+probe feature is kept in `custom-features/` as a one-click re-verification against any future
+Onshape version. It burned two tester runs on a
+false mismatch (a rational curve and its knot-inserted refinement are the same true curve but
+different unweighted polygons) and one wrong intermediate theory (that the kernel mis-evaluates
+C⁰-seam wrap forms — retracted; the kernel's wrap evaluation matched exactly once weights were
+out of the comparison). It also silently corrupted tweenCurves' periodic alignment sampling for
+every rational input. Consequences shipped: the tester's rational comparisons run through the
+module's own basis machinery, anchored analytically by an on-circle check of the raw fixture
+before any form comparison is trusted; tweenCurves evaluates through
+`evaluateNormalizedSplinePoint` (module basis, rational-aware); geometry CREATION
+(`opCreateBSplineCurve`/`opCreateBSplineSurface`) respects weights fine — the defect is the
+evaluation builtin only. The debugging pattern that cracked all three discoveries in this
+section: a **failure-only diagnostic dump** (every intermediate array verbatim plus
+multi-oracle evaluations, printed only on mismatch) — keep one in every deep-math vector.
 
 ### 2.4 Matching control point counts is not the same as making two splines compatible
 
@@ -413,10 +631,13 @@ export function knotDomain(knots is array, degree is number) returns map;   // {
 
 export function isClampedKnotArray(knots is array, degree is number) returns boolean;
 
-/** Accepts a BSplineCurve, a raw evCurveDefinition map, or a hand-built map. Strips the
-    overlapping-control-point periodic form, forces a rational representation with unit
-    weights, and guarantees size(knots) == size(controlPoints) + degree + 1.
-    Port of the cleanUpPeriodicBSplineDefinition logic in std editCurve.fs. */
+/** Accepts a BSplineCurve, a raw evCurveDefinition map, or a hand-built map. Forces a
+    rational representation with unit weights, and guarantees
+    size(knots) == size(controlPoints) + degree + 1. PRESERVES periodicity (§2.3) — recognizes
+    the stored and fundamental-only overlap conventions exactly, by counting, and throws on
+    anything else rather than guessing. Does NOT port std editCurve.fs's
+    cleanUpPeriodicBSplineDefinition heuristic (an earlier version did; it was found to corrupt
+    canonical periodic input and was removed — see the status block). */
 export function normalizeSplineDefinition(spline is map) returns map;
 
 /** Union of two knot vectors over a shared domain, taking the max multiplicity of each
@@ -536,6 +757,59 @@ export function makeSurfacesCompatible(surfaceA is map, surfaceB is map) returns
     certification sampling. Documented here per the AGENTS.md manual-math rule: no std
     function does this job. Curves need no analog — std evaluateSpline covers them. */
 export function evaluateBSplineSurfacePoint(surface is map, u is number, v is number) returns Vector;
+
+// ---------- Layer 3: genuine periodic-preserving operations (§2.3) ----------
+// Every function below PRESERVES periodicity exactly — none of them clamp. This is the part of
+// the module that did not exist in the original plan; §11 decision 4 ("clamp-and-report") is
+// superseded by all of it.
+
+/** Insert parametersToInsert into a periodic direction (STORED form), exactly, via the
+    tile/operate/slice construction (§2.3). Direct sequential insertion under the hood — use
+    this, not periodicRefinementOperator, for a single point array. */
+export function refinePeriodicPoints(controlPoints is array, knots is array, degree is number,
+        parametersToInsert is array) returns map;                 // { controlPoints, knots }
+
+/** Operator form of refinePeriodicPoints: same map shape as knotRefinementOperator, so it
+    drops into applyKnotRefinementOperator and both tensor appliers with no special-casing.
+    Reuse this across every row/column of a surface's periodic direction; building it for one
+    array is the O(M^2)-for-nothing mistake documented in the status block above. */
+export function periodicRefinementOperator(knots is array, degree is number,
+        parametersToInsert is array) returns map;
+
+/** Elevate a periodic direction (STORED form) from degree to targetDegree, exactly. Runs the
+    clamped-whole-period window (not the cheaper unclamped one refinement uses — see §2.3) and
+    a removeKnots pass on it, which requires true 4D homogeneous points. */
+export function elevatePeriodicPointsRaw(controlPoints is array, knots is array, degree is number,
+        targetDegree is number) returns map;                      // { controlPoints, knots }
+
+/** Reverse a spline's direction exactly: C'(t) = C(-t). Works on clamped and periodic input
+    alike — control points are only permuted, never recomputed, so the overlap condition
+    survives on a periodic input. The exact replacement for rotating a control point array
+    in place, which only preserves geometry when the knot vector happens to be uniform. */
+export function reverseSpline(spline is map) returns map;
+
+/** Move a periodic spline's seam (domain start) to seamParameter, exactly. A pure relabelling
+    of which window onto the infinite periodic structure is stored — inserts a knot at the new
+    seam first (exact) if one is not already there. This is what makes seam alignment between
+    two closed curves an exact operation rather than an approximate rotation. */
+export function rewindowPeriodicSpline(spline is map, seamParameter is number) returns map;
+
+/** Surface analog of rewindowPeriodicSpline, restricted to INTEGER fundamental indices — a
+    pure re-index of the control grid and knot intervals, no knot insertion, no arithmetic on
+    point values. Surfaces only ever need to align to the OTHER surface's control structure, so
+    the n integer positions are exactly the candidates worth considering; snapping to them costs
+    nothing and keeps the operation free. */
+export function rewindowPeriodicSurfaceDirection(surface is map, isUDirection is boolean,
+        startIndex is number) returns map;
+
+/** The seam-alignment fix for the case rewindowPeriodicSurfaceDirection alone cannot solve
+    (§2.3): moves BOTH surfaces' seams by a split offset, each landing on a knot safe for that
+    surface, so both come out multiplicity-1 (smooth) at the seam. Requires that surfaceA and
+    surfaceB already share a knot vector in the given direction (i.e. have already gone through
+    makeSurfacesCompatible or makeSurfacesShareKnotVectors) — that shared basis is what makes
+    relativeShift's meaning well-defined and what makes re-sharing afterward exact. */
+export function alignPeriodicSurfaceSeams(surfaceA is map, surfaceB is map,
+        isUDirection is boolean, relativeShift is number) returns map;    // { a, b, seamA, seamB }
 ```
 
 Rational input is handled by converting to homogeneous coordinates with the std
@@ -558,8 +832,10 @@ operation. Both tween features want the latter.
 These are the things each site guessed at differently, so state them once, in the header:
 
 - **Knot array size is always `numControlPoints + degree + 1`**, clamped or periodic
-  (`knotArrayIsCorrectSize`). The overlapping-control-point periodic form from
-  `evCurveDefinition` is normalized away on entry.
+  (`knotArrayIsCorrectSize`). Periodic input is normalized ON ENTRY to the canonical wrap
+  STORED form via three-way discrimination by DATA (§2.3.1): wrap-padded kept (and
+  seam-canonicalized, §2.3.2), closed-clamped converted by the modular gather,
+  fundamental-only extended; anything else throws with the observed shape.
 - **Span rule:** largest `k` with `knots[k] <= u < knots[k+1]` **and** `knots[k] < knots[k+1]`.
   Half-open on the right, degenerate spans skipped. This is `displacementMap.fs`'s rule and it
   is what makes repeated insertion at the same parameter (needed for clamping) terminate
@@ -567,10 +843,21 @@ These are the things each site guessed at differently, so state them once, in th
 - **Multiplicity ceiling:** insertion is rejected once multiplicity would exceed `degree`.
   Clamping to `degree + 1` is reached via `clampedSegmentOperator`, which is allowed to go one
   higher by construction because it is slicing, not refining in place.
-- **Periodic refinement produces a clamped result.** Inserting into a periodic knot array
-  destroys the padding relation, so any Layer 3 entry point that refines a periodic spline
-  either clamps it first and says so in its return map, or throws. Silently handing a broken
-  periodic array to `bSplineCurve` is what 2.3 is about.
+- **Periodic refinement preserves periodicity exactly — it does NOT clamp.** Superseded from
+  the original plan (§2.3, §11 decision 4 struck through). Every periodic Layer 3 entry point
+  tiles the infinite periodic structure into a finite window, operates on the window with
+  ordinary clamped-only machinery, and slices the core period back out via a raw index slice
+  (never `clampedSegmentOperator` — see §2.3 for why that distinction is load-bearing, not
+  stylistic). The only place clamping still happens is the deliberate, narrow
+  mixed-periodicity case: blending a periodic direction against a genuinely open one, where
+  "closed" has no shared meaning to preserve regardless of what the module can do.
+- **Canonical wrap-form seam invariant (§2.3.2):** the seam's multiplicity run sits
+  contiguously at the domain start; no image of the seam value at the fundamental's tail.
+  Enforced at normalization; reversal and re-windowing re-canonicalize their outputs. Consumers
+  may compare fundamental knot structure by literal value ONLY because this holds.
+- **Rational evaluation never goes through std `evaluateSpline` (§2.3.3)** — the builtin
+  silently ignores weights. Homogeneous accumulation over the module's own basis machinery is
+  the rational evaluator, everywhere.
 - **Sparse weight cutoff:** `1e-12`, matching the current `extractionWeights`.
 - **Preallocate.** `makeArray` plus index assignment in every loop that grows with control
   point count. No `append` in the hot paths.
@@ -614,18 +901,29 @@ Vectors, in order of authority:
    interior knots and on periodic inputs. Elevation is where the existing implementations are
    correct but fragile, so this is the vector that protects the de-duplication.
    **Implemented** (four degree pairs including a repeated-interior-knot case; periodic input
-   not yet covered — see the periodic-quirk gap noted above).
+   covered separately, see below — degree elevation of a periodic input turned out to need its
+   own bug fix, not just a test).
 8. **Order independence where it should hold.** `elevate(refine(s))` and `refine(elevate(s))`
    must describe the same geometry (they will differ in control point count — that is §3.1's
    point, and the test asserts the geometry, not the net). **Not yet added.**
 
+**Periodic vectors (§2.3), added after vector 7 exposed that periodic input needed a genuine
+design, not a clamp:** `PERIODIC-REFINE` / `PERIODIC-ELEVATE` / `PERIODIC-SHARE` (curve-level,
+each with a degree-1 AND a degree ≥ 2 case — degree 1 alone hid the extraction bug described in
+§2.3), `REVERSE` / `REWINDOW` (the two exact reparameterizations), `TIGHT-PERIODIC` (fewer
+control points per period than the degree), `PERIODIC-OPERATOR` (operator-vs-direct-insertion
+agreement, exact, across four fixtures — this is what keeps the deliberate code duplication
+between `refinePeriodicPoints` and `periodicRefinementOperator` honest), `SURFACE-PERIODIC` /
+`SURFACE-REWINDOW` (the surface analogs), and `BEZIER-SEAM` (the vector that matters most: a
+fixture built from a real Onshape revolve's actual numbers, proving both that a one-sided seam
+fix is impossible for that structure and that the two-sided fix works). All passing live.
+
 Also implemented and passing curve-level checks not in the original numbered list: force-rational
-normalization, genuine periodic clamping (geometry-preservation form), `mergeKnotVectors`
-identity/union/refine-to-merge properties, exact-count refinement, knot-vector sharing across
-two differently-structured curves, Bezier decomposition against the parent curve, and the
-`makeSplinesCompatible` / `prepareSplineForDeformation` compositions. See
-`splineRefinementTester.fs`'s own header comment for the full current list — it is more
-current than this section.
+normalization, `mergeKnotVectors` identity/union/refine-to-merge properties, exact-count
+refinement, knot-vector sharing across two differently-structured curves, Bezier decomposition
+against the parent curve, and the `makeSplinesCompatible` / `prepareSplineForDeformation`
+compositions. See `splineRefinementTester.fs`'s own header comment for the full current list —
+it is more current than this section.
 
 ---
 
@@ -638,16 +936,17 @@ approximation questions the deformation work brings. If the module is wrong, twe
 immediately and cheaply. If tween is right, the only remaining unknown for §9.1 is the
 deformation map itself.
 
-**Superseded by how the work actually landed (2026-08-07):** the module was built curves-first
-(Layers 1–2, then every curve-level entry point including elevation), and that batch is now
-78/78 verified in Onshape. The "exercise the module before trusting it" rationale above is
-already satisfied — by curves, not surfaces. Surfaces still need their own eight hooks written.
-**Net effect: Phase 3 (tweenCurves) is ready to start today with zero remaining module risk;
-Phase 2 (tweenSurfaces) is not, until the surface hooks exist.** Whether to now do Phase 3
-before Phase 2 — inverting the original order — is an open question, see §11.
+**Superseded by how the work actually landed, and now fully resolved:** the module was built
+curves-first (Layers 1–2, then every curve-level entry point including elevation), so tweenCurves
+reached zero remaining module risk before tweenSurfaces did. §11's open question 9 asked whether
+to invert the original order on that basis; the answer was yes. **Both phases are now done** —
+see their entries below for what each actually required, which in both cases was substantially
+more than "call the module" once periodic input was taken seriously.
 
-Ordered so that risk arrives late and the payoff arrives early; read the phases below as
-depending on what's *actually* done (per §6) rather than assuming the numbering is chronology.
+Read the phase numbers below as labels, not chronology — Phase 3 finished before Phase 2 started
+in earnest, and the periodic-surface primitives that Phase 2 needed did not exist anywhere in
+the original plan; they were designed and built between the two phases, directly modeled on the
+periodic-curve primitives Phase 3 had just proven out.
 
 **Phase 1 — build and validate the module.** Write `splineRefinementUtils.fs` and
 `splineRefinementTester.fs`, refinement side only (Layers 1–2 plus the non-elevation Layer 3).
@@ -664,68 +963,73 @@ can be published and used while this lands. **Curve half done and verified
 `prepareSplineForDeformation`). Surface half (`elevateSurfaceDegrees`,
 `prepareSurfaceForDeformation`) still stubbed.**
 
-**Phase 2 — `tweenSurfaces.fs`, mechanical.** Delete `insertKnotBoehm`,
-`refineCurveControlPointCount`, `refineControlPointCount`, `elevateSurfaceDegree`,
-`subdivideIntoBeziers`, `splitAtFirstKnot`, `elevateBSplineCurve`, `makeUniformKnotVector`;
-call `refineSurfaceToControlPointCounts` and `elevateSurfaceDegrees`. Keeps existing behaviour
-and UI, fixes 2.1/2.2/2.3. This is the largest single-file deletion (~500 lines with elevation
-folded in) and where the visible warping should stop. **Blocked on the surface hooks.**
+**Phase 3 — `tweenCurves.fs`. DONE and verified live (2026-08-07/08).** Went through two
+distinct versions, and the difference between them is the whole point of §2.3.
 
-**Phase 3 — `tweenCurves.fs`. Done (2026-08-07), NOT yet tested live.** Originally scoped as
-"replace `matchCPCount`, delete the `editCurve.fs` copy block" — that turned out to be only
-correct for *open* (or mixed-periodicity) curve pairs. What actually shipped, and why the
-"delete ~250 lines" plan didn't survive contact with periodicity:
+*First version:* replaced the non-periodic path with `makeSplinesCompatible` and left the
+both-periodic path on its original `elevateDegree` + `matchCPCount` pipeline entirely
+untouched, on the grounds that `makeSplinesCompatible` clamped periodic input and clamping a
+closed curve open was unacceptable. This was explicitly challenged: *"I'm now suspicious that
+Tween Curves is [a fallback to working but incorrect]... Why can't we do exact knot sharing on
+periodic directions without clamping and what consequence does this have on the resulting
+geometry if applied?"* That question is what produced the periodic-preserving design in §2.3.
 
-`makeSplinesCompatible` — which both replaces `matchCPCount`'s approximation with exact
-refinement (Phase 3) AND fixes the knot-sharing bug (Phase 4) in one call — always clamps
-periodic input, because genuine periodic-preserving refinement isn't something this module
-implements (see the periodic policy in §5). Calling it on two genuinely periodic (closed)
-curves would silently convert the tweened result from closed to open. So `tweenCurves()` now
-branches on `bothPeriodic = curve1.isPeriodic && curve2.isPeriodic`:
+*What actually shipped:* `matchCPCount`, `elevateDegree`, `subdivideIntoBeziers`,
+`splitAtFirstKnot`, `elevateBSpline`, `isBezier`, `computeControlPointFractions`, and the local
+`cleanUpPeriodicBSplineDefinition` copy are **all deleted** (~215 lines) — there is no
+approximation branch left in the file, periodic or not. `tweenCurves()` now: normalizes both
+inputs → aligns (exact reversal via `reverseSpline` for open pairs; exact seam alignment via
+`rewindowPeriodicSpline` for closed pairs, chosen from sampled geometry since control points
+aren't comparable before a shared parameterization exists) → calls `makeSplinesCompatible`
+(periodic-preserving all the way through now) → blends in homogeneous coordinates → emits the
+SHARED knot vector (an earlier version emitted none, which silently forced the kernel's default
+uniform knots — the exact same class of bug as `tweenSurfaces.fs`'s knot-interpolation hack
+below). Alignment runs on sampled geometry using a sqrt-free cross-correlation
+(`bestCyclicAlignment`, §2.3's perf note) rather than the raw distance search the feature
+originally used.
 
-- **Not both periodic** (the common case — open splines, arcs, lines, any mix of them): calls
-  `makeSplinesCompatible`, which remaps both domains to `[0, 1]` before merging knots. This is
-  what makes an arc-derived spline's native parameterization and a line's default `[0, 1]`
-  domain compatible, not just same-degree-same-count. **Gets the full Phase 3 + Phase 4 fix.**
-- **Both periodic**: keeps the *original* `elevateDegree` + `matchCPCount` pipeline completely
-  unchanged, so closed curves stay closed. `elevateDegree`, `subdivideIntoBeziers`,
-  `splitAtFirstKnot`, `elevateBSpline`, `matchCPCount`, `isBezier`,
-  `computeControlPointFractions` are therefore **still present in the file, not deleted** — the
-  original Phase 3 plan to delete them was wrong once periodicity was accounted for.
-  **This path is untouched and gets none of the fixes.** A deliberately scoped gap, tracked
-  here rather than silently left.
+**Phase 2 — `tweenSurfaces.fs`. DONE and verified live (2026-08-08).** Much larger than
+"delete the broken insertion, call the module" turned out to require, for the same reason
+Phase 3 grew: periodic surfaces (cylinders, cones, revolves) are the mainline case, not an edge
+case, and getting them right needed the surface-level periodic primitives (§2.3) built from
+scratch — nothing in the original eight-hook plan anticipated seam alignment as its own
+problem.
 
-`isPeriodicTween` and the periodicity-mismatch warning now read from `originalIsPeriodic1/2`,
-captured before any compatibility processing — not from the post-processing spline maps, which
-are always non-periodic on the fixed path. Getting this wrong would have made even the warning
-logic silently misreport periodicity for the exact curves it exists to warn about.
+`insertKnotBoehm` (the original `Q[k+1]` bug, §2.1), `elevateSurfaceDegree`,
+`refineControlPointCount`, `refineCurveControlPointCount`, `subdivideIntoBeziers`,
+`splitAtFirstKnot`, `elevateBSplineCurve`, `makeUniformKnotVector`, and `isSingleSegmentBezierCurve`
+are all deleted — **1931 lines down to 808.** `createTweenedSurface` now: gets both B-spline
+surfaces → aligns (UV swap decided by periodicity pattern when it's decisive, corner points
+otherwise, both orientations tried and scored when a torus makes even periodicity silent) →
+`makeSurfacesCompatible` → the exact net-based seam search (`bestPeriodicNetAlignment`, §2.3) →
+`alignPeriodicSurfaceSeams` for the case one-sided re-windowing cannot solve → blend → emit the
+shared knot vectors UNCHANGED (the old code interpolated the two surfaces' knot vectors
+elementwise, which is a vector belonging to neither surface, and then unpadded the result before
+handing it to `bSplineSurface` — for a periodic direction that discards the very structure that
+makes it periodic; this is what made fraction=0 not reproduce the first surface unless both
+inputs happened to share a parameterization already).
 
-**Not yet run in Onshape.** Needs a live check against: an open arc-derived spline tweened with
-a line; an open arc-derived spline tweened with a genuine multi-segment spline of a different
-native parameter domain; and a closed/periodic pair (to confirm the untouched path still
-behaves exactly as before).
+Two live bugs found and fixed AFTER the tester was green, both revolve-only (a periodic curve
+pair can't exhibit either): `BSPLINESURFACE_NOT_G1` (seam correspondence wrong — fixed by seam
+alignment existing at all) and `PERIODIC_BSPLINESURFACE_NOT_SMOOTH` (one-sided re-windowing
+landing the seam on a revolve's Bezier-arc joint — fixed by `alignPeriodicSurfaceSeams`'s
+two-sided split). Both are documented in full in §2.3, since they are the reason that section
+is as long as it is.
 
-**Phase 4 — the tween correctness fix (§2.4).** For `tweenCurves.fs`: **done for the
-non-periodic path**, as part of Phase 3 above (`makeSplinesCompatible` does both at once — see
-why in §7's Phase 3 entry). Periodic curves do not get it (same gap). For `tweenSurfaces.fs`:
-still open — switch to `makeSurfacesCompatible` and drop the knot-interpolation block (lines
-~455–530). **This is the phase that makes Tween Surfaces mean something at fractions other
-than 0 and 1.** It changes results, so it wants its own before/after check on a real pair of
-faces.
+**Phase 4 — the tween correctness fix (§2.4). DONE for both features, as a side effect of
+Phase 3 and Phase 2 respectively** — `makeSplinesCompatible`/`makeSurfacesCompatible` fix 2.4
+by construction (a shared knot vector is the entire point of calling them), so there was never
+a separate Phase 4 change to make once Phases 2 and 3 were done properly. The knot-interpolation
+hacks in both files are gone, not patched.
 
-**Phase 5 — `displacementMap.fs`, last.** Replace `extractionWeights` / `applyExtraction` with
-`uniformPeriodExtractionOperator` / `applyKnotRefinementOperator`, gated on vector 6 passing.
-`refineTileSeed` becomes two operator builds plus the two tensor helpers. Pure de-duplication —
-this feature already works and is perf-tuned, so the acceptance bar is "seed control points
-identical and regen time not worse". The cached-seed format (`stripSeedForCache` /
-`rehydrateTiledSeed`) must not change, or every saved instance re-solves.
+**Phase 5 — `displacementMap.fs`, still not started.** Replace `extractionWeights` /
+`applyExtraction` with `uniformPeriodExtractionOperator` / `applyKnotRefinementOperator`, gated
+on vector 6 passing. Nothing about this phase changed; it remains last, independent of
+everything above, and the sign-off in §11 already clears it to proceed whenever picked up.
 
-Phases 2/3 and 5 are independent; 4 depends on 2, 3 and 1b. **Phase 4 is the ship point for
-Tween Surfaces** — that is the end of the first deliverable.
-
-The §9.1 deformation feature starts after that. It technically only depends on 1b and could be
-started in parallel, but running it behind tween buys a module that has been exercised on real
-surfaces first, which is worth more than the overlap saves.
+The §9.1 deformation feature is the only major piece of the original plan not started. Both
+tween features are now the exact, real-surface exercise that was supposed to justify building
+the module before starting on deformation — that condition is met.
 
 ---
 
@@ -1015,9 +1319,10 @@ is a rewrite of the generator rather than a substitution.
 
 Nailed down (as of 2026-08-07):
 
-1. **Ordering.** Tween Surfaces ships first (§7); the deformation feature follows. Modes ship
-   progressively — flow along surface first — behind a map interface present from day one
-   (§9.1).
+1. **Ordering.** ~~Tween Surfaces ships first (§7)~~ — **superseded by open question 9's
+   resolution below: Tween Curves shipped first instead, and both are now done.** The
+   deformation feature follows both. Modes ship progressively — flow along surface first —
+   behind a map interface present from day one (§9.1).
 2. **Phase 4 proceeds.** The knot-merge fix is the point of shipping tween. Its acceptance
    gate is a before/after check on a real pair of faces, because results change at
    intermediate fractions — that check is part of Phase 4, not a pre-condition for starting it.
@@ -1026,9 +1331,19 @@ Nailed down (as of 2026-08-07):
    Phase 1/1b rather than trickling in later. They are compositions over the operator layer,
    and front-loading them avoids a version-bump cascade across consumers when the deformation
    work starts.
-4. **Periodic policy: clamp-and-report.** Refining a periodic spline clamps it first and says
+4. ~~**Periodic policy: clamp-and-report.** Refining a periodic spline clamps it first and says
    so in the returned map. Friendlier than throwing and matches what
-   `evApproximateBSplineSurface` consumers actually hold; the flag keeps it honest.
+   `evApproximateBSplineSurface` consumers actually hold; the flag keeps it honest.~~
+   **SUPERSEDED (2026-08-07/08) — struck through rather than deleted, because the reasoning
+   that replaced it is worth keeping visible.** Rejected outright, not refined, after direct
+   pushback: *"I want working code. Not fallbacks to known nonworking code... We're making
+   things better, not leaving silent levers to the broken past."* Clamping computes new control
+   points at a boundary with no reason to satisfy the periodic overlap condition, so a
+   clamped-then-reflagged result carries a seam — position holds, tangent and curvature do not.
+   That is not "friendlier than throwing," it is a silent correctness bug with a friendly
+   name. Replaced by genuine periodic-preserving refinement/elevation/sharing/reversal/
+   re-windowing for both curves and surfaces, plus exact two-sided seam alignment for
+   surfaces — see §2.3 for the full design and why each piece exists.
 5. **Loop ownership.** The module owns the pure parts of §9.1.1 — steps 1–4 and the evaluator.
    The feature owns certification (steps 5–6), which needs `Context` and created geometry.
    Promote the loop into the module when FFD wants it too.
@@ -1050,15 +1365,22 @@ Both former sign-offs are resolved (2026-08-07):
 2. **Authoring version is 3044.** `AGENTS.md` has been updated to match. Why the auto-updater
    left it at 3029 is an open chore tracked outside this spec.
 
-**New open question (2026-08-07), not yet decided — this is the one the user needs to call:**
+**Open question 9, RESOLVED (2026-08-08):** *Does Phase 3 (tweenCurves) jump ahead of Phase 2
+(tweenSurfaces)?* — **Yes**, option (a) from the original framing. tweenCurves shipped first;
+its periodic-preserving primitives then became the direct template for tweenSurfaces' own
+periodic-surface primitives, which turned out not to exist anywhere in the original plan and
+had to be designed from scratch (§2.3) — seam alignment on a closed surface is a genuinely
+harder problem than on a closed curve, since a surface adds a UV-swap degree of freedom and,
+for revolves specifically, a seam position that is not always realizable one-sided. Both phases
+are now done (§7); this question has no remaining branches.
 
-9. **Does Phase 3 (tweenCurves) jump ahead of Phase 2 (tweenSurfaces)?** Decision 1 above said
-   tween SURFACES ships first; that was reasoned from "surfaces are the better proving ground
-   for the module." The module has since been proven — by curves, 78/78 checks, live in
-   Onshape — so that reasoning no longer favors either order. tweenCurves needs zero further
-   module work; tweenSurfaces needs all eight surface hooks first. Two honest options: (a) do
-   Phase 3 now for a fast, complete, real win, then write the surface hooks and do Phase 2; or
-   (b) write the surface hooks first, preserving the original order, and ship both tween
-   features close together. Recommendation: (a) — there is no remaining reason to wait, and
-   shipping something real is worth more than symmetry with a plan written before either path
-   was tried.
+**New open question (2026-08-08), not yet decided:**
+
+10. **Should `alignPeriodicSurfaceSeams`'s exact net-comparison technique (§2.3) be factored
+    out and reused for §9.1.1's certification loop, or for the deformation feature's own
+    alignment needs?** The insight — that two surfaces sharing a basis can be compared by
+    control-point arithmetic alone, with no evaluation — is more general than seam alignment.
+    It was discovered here first because tween's alignment problem forced it, but §9.1.1's
+    `delta` step already does a restricted version of the same thing (lifting one refinement
+    level onto another's knot vector and comparing control points). Worth a pass to see whether
+    one shared primitive covers both before the deformation feature grows its own copy.
