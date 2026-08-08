@@ -122,6 +122,8 @@ export const splineRefinementTester = defineFeature(function(context is Context,
         runReverseSplineVector(passCount, failures, definition.printPassingChecks);
         runRewindowPeriodicSplineVector(passCount, failures, definition.printPassingChecks);
         runTightPeriodicSplineVector(passCount, failures, definition.printPassingChecks);
+        runPeriodicOperatorVector(passCount, failures, definition.printPassingChecks);
+        runSurfacePeriodicVector(passCount, failures, definition.printPassingChecks);
 
         const summary = passCount[] ~ " checks passed, " ~ size(failures[]) ~ " failed.";
         println("[splineRefinementTester] " ~ summary);
@@ -946,19 +948,31 @@ function makeLowerDegreeSurfaceFixture() returns map
         };
 }
 
-/** U degree 2, uniform periodic-style knots [0..8] (domain [2, 6], with genuine wrap-padding
-    structure beyond it - the same shape that exposed the findKnotSpanIndex bug for curves), 6
-    rows; V degree 2, clamped Bezier, 3 columns. isUPeriodic:true, isVPeriodic:false - tests
-    that normalizeSurfaceDefinition clamps ONLY the periodic direction. */
+/**
+ * A GENUINELY U-periodic surface: a square tube. U degree 2 with 4 fundamental rows plus a
+ * 2-row overlap tail (6 stored rows, uniform knots [0..8], domain [2, 6], period 4); V degree 2
+ * clamped Bezier across 3 columns. isUPeriodic:true, isVPeriodic:false, so it also checks that
+ * only the periodic direction gets periodic treatment.
+ *
+ * The overlap tail is a LITERAL copy of the first two rows, which the whole periodic design
+ * rests on (P[i] == P[i + n] as VALUES). An earlier version of this fixture set every row from
+ * its index, so it was flagged periodic while failing the overlap condition — harmless while
+ * normalizeSurfaceDefinition clamped everything, and quietly meaningless once it started
+ * preserving periodicity, since refinement tiles from the fundamental rows and would have
+ * disagreed with the fixture's own tail.
+ */
 function makeUPeriodicSurfaceFixture() returns map
 {
+    // Four fundamental rows: corners of a square in XY, swept along Z by the V direction.
+    const corners = [vector(2, 2, 0), vector(-2, 2, 0), vector(-2, -2, 0), vector(2, -2, 0)];
     var controlPoints = makeArray(6, 0);
     for (var rowIndex = 0; rowIndex < 6; rowIndex += 1)
     {
+        const corner = corners[rowIndex % 4]; // rows 4 and 5 ARE rows 0 and 1 - the overlap
         var row = makeArray(3, vector(0, 0, 0) * centimeter);
         for (var columnIndex = 0; columnIndex < 3; columnIndex += 1)
         {
-            row[columnIndex] = vector(rowIndex, columnIndex, rowIndex - columnIndex) * centimeter;
+            row[columnIndex] = (corner + vector(0, 0, 3 * columnIndex)) * centimeter;
         }
         controlPoints[rowIndex] = row;
     }
@@ -972,6 +986,60 @@ function makeUPeriodicSurfaceFixture() returns map
             "uKnots" : [0, 1, 2, 3, 4, 5, 6, 7, 8],
             "vKnots" : [0, 0, 0, 1, 1, 1]
         };
+}
+
+/**
+ * An OPEN counterpart to makeUPeriodicSurfaceFixture: same U and V degrees (2 and 2) and same
+ * 3-column V structure, but a genuinely clamped U direction. Used for the mixed-periodicity
+ * case, where the degrees must match for makeSurfacesShareKnotVectors to get past its
+ * equal-degree guard and actually reach the clamping decision under test.
+ */
+function makeClampedOpenTubeFixture() returns map
+{
+    var controlPoints = makeArray(4, 0);
+    for (var rowIndex = 0; rowIndex < 4; rowIndex += 1)
+    {
+        var row = makeArray(3, vector(0, 0, 0) * centimeter);
+        for (var columnIndex = 0; columnIndex < 3; columnIndex += 1)
+        {
+            row[columnIndex] = vector(rowIndex, 2 - columnIndex, rowIndex * 0.5 + columnIndex) * centimeter;
+        }
+        controlPoints[rowIndex] = row;
+    }
+    return {
+            "uDegree" : 2,
+            "vDegree" : 2,
+            "isRational" : false,
+            "isUPeriodic" : false,
+            "isVPeriodic" : false,
+            "controlPoints" : controlPoints,
+            "uKnots" : [0, 0, 0, 0.5, 1, 1, 1],
+            "vKnots" : [0, 0, 0, 1, 1, 1]
+        };
+}
+
+/** True if the control grid satisfies the overlap condition DOWN COLUMNS (the U direction):
+    row i equals row n + i, elementwise, for i = 0..uDegree-1. */
+function columnOverlapConditionHolds(controlPoints is array, uDegree is number) returns boolean
+{
+    const n = size(controlPoints) - uDegree;
+    for (var overlapIndex = 0; overlapIndex < uDegree; overlapIndex += 1)
+    {
+        const firstRow = controlPoints[overlapIndex];
+        const wrappedRow = controlPoints[n + overlapIndex];
+        if (size(firstRow) != size(wrappedRow))
+        {
+            return false;
+        }
+        for (var columnIndex = 0; columnIndex < size(firstRow); columnIndex += 1)
+        {
+            if (!pointsMatch(firstRow[columnIndex], wrappedRow[columnIndex]))
+            {
+                return false;
+            }
+        }
+    }
+    return true;
 }
 
 /** Evaluate a surface's RAW arrays literally, ignoring its own periodic flags - the surface
@@ -1004,7 +1072,7 @@ function surfacesMatchOnGrid(surfaceA is map, surfaceB is map, uParameters is ar
 }
 
 // ============================================================================================
-// SURFACE-NORM — normalizeSurfaceDefinition: force-rational, per-direction periodic clamping
+// SURFACE-NORM — normalizeSurfaceDefinition: force-rational, periodicity PRESERVED per direction
 // ============================================================================================
 
 function runSurfaceNormalizationVector(passCount is box, failures is box, printPassing is boolean)
@@ -1014,12 +1082,14 @@ function runSurfaceNormalizationVector(passCount is box, failures is box, printP
 
     recordCheck(passCount, failures, normalized.isRational == true,
         "SURFACE-NORM: a non-rational surface becomes isRational:true", printPassing);
-    recordCheck(passCount, failures, normalized.isUPeriodic == false,
-        "SURFACE-NORM: the U-periodic direction is clamped to isUPeriodic:false", printPassing);
+    recordCheck(passCount, failures, normalized.isUPeriodic == true,
+        "SURFACE-NORM: the U-periodic direction stays isUPeriodic:true (preserved, not clamped)", printPassing);
     recordCheck(passCount, failures, normalized.isVPeriodic == false,
         "SURFACE-NORM: V was already non-periodic and stays that way", printPassing);
-    recordCheck(passCount, failures, normalized.wasClampedFromPeriodic == true,
-        "SURFACE-NORM: reports wasClampedFromPeriodic when U needed clamping", printPassing);
+    recordCheck(passCount, failures, columnOverlapConditionHolds(normalized.controlPoints, normalized.uDegree),
+        "SURFACE-NORM: the U overlap condition survives normalization", printPassing);
+    recordCheck(passCount, failures, size(normalized.controlPoints) == 6 && size(normalized.controlPoints[0]) == 3,
+        "SURFACE-NORM: an already-stored periodic form is left at its own dimensions", printPassing);
 
     const uSamples = [2, 3.5, 4.5, 6]; // U domain [2, 6], matching the curve NORM vector
     const vSamples = [0, 0.5, 1];
@@ -1029,15 +1099,88 @@ function runSurfaceNormalizationVector(passCount is box, failures is box, printP
         for (var vParameter in vSamples)
         {
             const literalPoint = evaluateSurfaceLiterally(fixture, uParameter, vParameter);
-            const clampedPoint = evaluateBSplineSurfacePoint(normalized, uParameter, vParameter);
-            if (!pointsMatch(literalPoint, clampedPoint))
+            const normalizedPoint = evaluateBSplineSurfacePoint(normalized, uParameter, vParameter);
+            if (!pointsMatch(literalPoint, normalizedPoint))
             {
                 geometryPreserved = false;
             }
         }
     }
     recordCheck(passCount, failures, geometryPreserved,
-        "SURFACE-NORM: periodic clamp reproduces the original array's own geometry on its domain", printPassing);
+        "SURFACE-NORM: normalizing a periodic surface reproduces its own geometry on its domain", printPassing);
+}
+
+// ============================================================================================
+// SURFACE-PERIODIC — the periodic direction survives refinement, elevation, and knot sharing.
+// Every check pairs an OVERLAP CONDITION assertion (down columns, since U is the periodic
+// direction here) with a geometry assertion: a result can preserve one and lose the other, and
+// losing the overlap is the failure that would put a seam in a tweened cylinder.
+// ============================================================================================
+
+function runSurfacePeriodicVector(passCount is box, failures is box, printPassing is boolean)
+{
+    try
+    {
+        const fixture = makeUPeriodicSurfaceFixture();
+        const uSamples = [2, 2.8, 3.5, 4.4, 5.2, 6];
+        const vSamples = [0, 0.5, 1];
+
+        // --- Refinement in the periodic direction ---
+        const refined = refineSurfaceToControlPointCounts(fixture, 9, 3);
+        recordCheck(passCount, failures, refined.isUPeriodic == true,
+            "SURFACE-PERIODIC: refinement leaves the surface U-periodic", printPassing);
+        recordCheck(passCount, failures, size(refined.controlPoints) == 9,
+            "SURFACE-PERIODIC: refinement hits the exact stored U row count (got " ~ size(refined.controlPoints) ~ ")", printPassing);
+        recordCheck(passCount, failures, columnOverlapConditionHolds(refined.controlPoints, refined.uDegree),
+            "SURFACE-PERIODIC: the U overlap condition holds after refinement", printPassing);
+        recordCheck(passCount, failures, surfacesMatchOnGrid(normalizeSurfaceDefinition(fixture), refined, uSamples, vSamples),
+            "SURFACE-PERIODIC: geometry is unchanged by refining the periodic direction", printPassing);
+
+        // --- Elevation in the periodic direction ---
+        const elevated = elevateSurfaceDegrees(fixture, 4, 2);
+        recordCheck(passCount, failures, elevated.isUPeriodic == true && elevated.uDegree == 4,
+            "SURFACE-PERIODIC: elevation reaches U degree 4 and stays U-periodic", printPassing);
+        recordCheck(passCount, failures, columnOverlapConditionHolds(elevated.controlPoints, elevated.uDegree),
+            "SURFACE-PERIODIC: the U overlap condition holds after elevation", printPassing);
+        recordCheck(passCount, failures, surfacesMatchOnGrid(normalizeSurfaceDefinition(fixture), elevated, uSamples, vSamples),
+            "SURFACE-PERIODIC: geometry is unchanged by elevating the periodic direction", printPassing);
+
+        // --- Sharing knot vectors between two periodic surfaces ---
+        // The second surface is the same tube refined to a different U structure, so the merge
+        // has genuinely different fundamental knots to reconcile rather than a no-op.
+        const otherFixture = refineSurfaceToControlPointCounts(fixture, 7, 3);
+        const shared = makeSurfacesShareKnotVectors(fixture, otherFixture);
+        recordCheck(passCount, failures, shared.a.isUPeriodic == true && shared.b.isUPeriodic == true,
+            "SURFACE-PERIODIC: both shared surfaces are still U-periodic", printPassing);
+        recordCheck(passCount, failures, knotVectorsMatch(shared.a.uKnots, shared.b.uKnots),
+            "SURFACE-PERIODIC: both shared surfaces land on an identical U knot vector", printPassing);
+        recordCheck(passCount, failures, size(shared.a.controlPoints) == size(shared.b.controlPoints),
+            "SURFACE-PERIODIC: both shared surfaces land on the same row count", printPassing);
+        recordCheck(passCount, failures, columnOverlapConditionHolds(shared.a.controlPoints, shared.a.uDegree),
+            "SURFACE-PERIODIC: surface A's U overlap condition holds after sharing", printPassing);
+        recordCheck(passCount, failures, columnOverlapConditionHolds(shared.b.controlPoints, shared.b.uDegree),
+            "SURFACE-PERIODIC: surface B's U overlap condition holds after sharing", printPassing);
+
+        // Sharing remaps onto a canonical domain, so compare at the same PROPORTIONAL position:
+        // the shared pair lives on U in [0, 1] while the fixture lives on [2, 6].
+        const sharedUSamples = [0, 0.2, 0.375, 0.6, 0.8, 1];
+        recordCheck(passCount, failures, surfacesMatchOnGrid(shared.a, shared.b, sharedUSamples, vSamples),
+            "SURFACE-PERIODIC: the two shared surfaces agree pointwise (they are the same tube)", printPassing);
+
+        // --- Mixed periodicity falls back to clamping, honestly and only then ---
+        // A genuinely clamped surface, not the periodic fixture with its flag flipped: flipping
+        // the flag would leave unclamped knots behind, which the clamped merge path correctly
+        // refuses. Matching degrees and V structure, so U periodicity is the only difference.
+        const mixed = makeSurfacesShareKnotVectors(fixture, makeClampedOpenTubeFixture());
+        recordCheck(passCount, failures, mixed.a.isUPeriodic == false && mixed.b.isUPeriodic == false,
+            "SURFACE-PERIODIC: a periodic/open U pair is clamped on BOTH sides, not silently mismatched", printPassing);
+        recordCheck(passCount, failures, knotVectorsMatch(mixed.a.uKnots, mixed.b.uKnots),
+            "SURFACE-PERIODIC: the clamped mixed pair still lands on an identical U knot vector", printPassing);
+    }
+    catch (error)
+    {
+        recordCheck(passCount, failures, false, "SURFACE-PERIODIC: threw an error: " ~ error, printPassing);
+    }
 }
 
 // ============================================================================================
@@ -1661,5 +1804,116 @@ function runTightPeriodicSplineVector(passCount is box, failures is box, printPa
     catch (error)
     {
         recordCheck(passCount, failures, false, "TIGHT-PERIODIC: threw an error: " ~ error, printPassing);
+    }
+}
+
+/**
+ * periodicRefinementOperator is a deliberate second implementation of refinePeriodicPoints'
+ * math - operator form for surface grids (one build amortized over every row), direct insertion
+ * for single arrays. Two implementations of one result is a standing correctness risk, so the
+ * first thing checked here is that they agree EXACTLY, on every fixture, not merely that each
+ * looks plausible on its own.
+ */
+function runPeriodicOperatorVector(passCount is box, failures is box, printPassing is boolean)
+{
+    try
+    {
+        const fixtures = [
+                { "fixture" : makePeriodicTriangleFixture(), "insertions" : [1.5], "label" : "degree-1 triangle" },
+                { "fixture" : makePeriodicPentagonFixture(), "insertions" : [2.5], "label" : "degree-2 pentagon" },
+                { "fixture" : makePeriodicPentagonFixture(), "insertions" : [0.5, 2.5, 3.5], "label" : "degree-2 pentagon, three insertions" },
+                { "fixture" : makePeriodicSquareFixture(), "insertions" : [3.5], "label" : "degree-2 square" }
+            ];
+
+        for (var caseIndex = 0; caseIndex < size(fixtures); caseIndex += 1)
+        {
+            const fixture = fixtures[caseIndex].fixture;
+            const insertions = fixtures[caseIndex].insertions;
+            const label = fixtures[caseIndex].label;
+            const degree = fixture.degree;
+
+            const direct = refinePeriodicPoints(fixture.controlPoints, fixture.knots, degree, insertions);
+            const refinementOperator = periodicRefinementOperator(fixture.knots, degree, insertions);
+            const viaOperator = applyKnotRefinementOperator(refinementOperator, fixture.controlPoints);
+
+            recordCheck(passCount, failures, refinementOperator.inputCount == size(fixture.controlPoints),
+                "PERIODIC-OPERATOR: " ~ label ~ ": operator consumes the stored control point count", printPassing);
+            recordCheck(passCount, failures, size(viaOperator) == size(direct.controlPoints),
+                "PERIODIC-OPERATOR: " ~ label ~ ": operator and direct insertion agree on control point count", printPassing);
+            recordCheck(passCount, failures, knotVectorsMatch(refinementOperator.knots, direct.knots),
+                "PERIODIC-OPERATOR: " ~ label ~ ": operator and direct insertion agree on the knot vector", printPassing);
+
+            var pointsAgree = size(viaOperator) == size(direct.controlPoints);
+            if (pointsAgree)
+            {
+                for (var pointIndex = 0; pointIndex < size(viaOperator); pointIndex += 1)
+                {
+                    if (!pointsMatch(viaOperator[pointIndex], direct.controlPoints[pointIndex]))
+                    {
+                        pointsAgree = false;
+                    }
+                }
+            }
+            recordCheck(passCount, failures, pointsAgree,
+                "PERIODIC-OPERATOR: " ~ label ~ ": operator and direct insertion agree on every control point", printPassing);
+            recordCheck(passCount, failures, overlapConditionHolds(viaOperator, degree),
+                "PERIODIC-OPERATOR: " ~ label ~ ": the overlap condition holds in the operator's output", printPassing);
+
+            // Rows must still be convex combinations - the fold onto stored indices accumulates
+            // several window weights into one column, so this is a real check, not a formality.
+            var rowsAreConvex = true;
+            for (var rowIndex = 0; rowIndex < refinementOperator.outputCount; rowIndex += 1)
+            {
+                var weightSum = 0;
+                for (var term in refinementOperator.rows[rowIndex])
+                {
+                    if (term.weight < -1e-10)
+                    {
+                        rowsAreConvex = false;
+                    }
+                    weightSum += term.weight;
+                }
+                if (abs(weightSum - 1) > 1e-9)
+                {
+                    rowsAreConvex = false;
+                }
+            }
+            recordCheck(passCount, failures, rowsAreConvex,
+                "PERIODIC-OPERATOR: " ~ label ~ ": every folded operator row is a convex combination", printPassing);
+        }
+
+        // The whole point of the operator form: one build, applied to many rows. Applying it
+        // down the columns of a two-row grid must match applying it to each row separately.
+        const pentagon = makePeriodicPentagonFixture();
+        var secondRow = makeArray(size(pentagon.controlPoints), vector(0, 0, 0) * centimeter);
+        for (var pointIndex = 0; pointIndex < size(pentagon.controlPoints); pointIndex += 1)
+        {
+            secondRow[pointIndex] = pentagon.controlPoints[pointIndex] + vector(0, 0, 4) * centimeter;
+        }
+        const gridOperator = periodicRefinementOperator(pentagon.knots, pentagon.degree, [2.5]);
+        const refinedGrid = applyKnotRefinementOperatorAcrossRows(gridOperator, [pentagon.controlPoints, secondRow]);
+        const refinedFirst = applyKnotRefinementOperator(gridOperator, pentagon.controlPoints);
+        const refinedSecond = applyKnotRefinementOperator(gridOperator, secondRow);
+
+        var gridAgrees = size(refinedGrid) == 2 && size(refinedGrid[0]) == size(refinedFirst);
+        if (gridAgrees)
+        {
+            for (var pointIndex = 0; pointIndex < size(refinedFirst); pointIndex += 1)
+            {
+                if (!pointsMatch(refinedGrid[0][pointIndex], refinedFirst[pointIndex]) ||
+                    !pointsMatch(refinedGrid[1][pointIndex], refinedSecond[pointIndex]))
+                {
+                    gridAgrees = false;
+                }
+            }
+        }
+        recordCheck(passCount, failures, gridAgrees,
+            "PERIODIC-OPERATOR: one operator applied across a grid's rows matches per-row application", printPassing);
+        recordCheck(passCount, failures, overlapConditionHolds(refinedGrid[1], pentagon.degree),
+            "PERIODIC-OPERATOR: the overlap condition holds in every refined grid row", printPassing);
+    }
+    catch (error)
+    {
+        recordCheck(passCount, failures, false, "PERIODIC-OPERATOR: threw an error: " ~ error, printPassing);
     }
 }

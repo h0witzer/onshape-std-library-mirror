@@ -740,24 +740,26 @@ export function findEvaluationSpanIndex(knots is array, degree is number, parame
  * arithmetic; rational-aware (homogeneous accumulation when `isRational` with `weights`).
  *
  * Expects the definition shape produced by evSurfaceDefinition / evApproximateBSplineSurface /
- * bSplineSurface: controlPoints[uIndex][vIndex] with uKnots sized to the row count. CLAMPED
- * surfaces only — periodic knot padding wraps control point indices this function does not
- * wrap, so periodic inputs must be clamped first (see the module's periodic policy). Throws on
- * periodic input rather than returning silently wrong points.
+ * bSplineSurface: controlPoints[uIndex][vIndex] with uKnots sized to the row count.
+ *
+ * PERIODIC directions are fine, WITHIN THEIR OWN DOMAIN. A stored periodic direction
+ * (n + degree control points against n + 2*degree + 1 knots) is already a complete, ordinary
+ * B-spline representation across [knots[degree], knots[n + degree]] — the padding supplies every
+ * knot de Boor needs there — so no periodic-aware arithmetic is required and none is done. What
+ * this function does NOT do is wrap: a parameter outside that domain is not folded back into it,
+ * so keep parameters in-domain for periodic input. (This used to throw on periodic surfaces
+ * outright, which made sense only while normalizeSurfaceDefinition clamped every periodic
+ * direction; now that periodicity is preserved, that guard would reject exactly the surfaces the
+ * module is built to handle.)
  *
  * @param surface {map} : { uDegree, vDegree, controlPoints, uKnots, vKnots,
- *      isRational (optional), weights (required when rational),
- *      isUPeriodic / isVPeriodic (must be false / absent) }
+ *      isRational (optional), weights (required when rational) }
  * @param uParameter {number} : raw value in the uKnots domain
  * @param vParameter {number} : raw value in the vKnots domain
  * @returns {Vector} : the 3D point (with the control points' length units)
  */
 export function evaluateBSplineSurfacePoint(surface is map, uParameter is number, vParameter is number) returns Vector
 {
-    if (surface.isUPeriodic == true || surface.isVPeriodic == true)
-    {
-        throw "splineRefinementUtils: evaluateBSplineSurfacePoint requires a clamped (non-periodic) surface - clamp first per the module's periodic policy.";
-    }
 
     const uSpanIndex = findEvaluationSpanIndex(surface.uKnots, surface.uDegree, uParameter);
     const vSpanIndex = findEvaluationSpanIndex(surface.vKnots, surface.vDegree, vParameter);
@@ -1202,42 +1204,67 @@ function buildPeriodicWindow(controlPoints is array, knots is array, degree is n
  * (n <= degree — a degree-3 closed curve with only 3 distinct control points, say) go through
  * the same exact path instead of being rejected as degenerate.
  */
-function buildPeriodicWideClampedWindow(controlPoints is array, knots is array, degree is number) returns map
+/**
+ * The knots-only half of buildPeriodicWideClampedWindow: everything that depends on
+ * (knots, degree) alone and NOT on the control points, so a surface can build it once and reuse
+ * it down every column. The clamp operator is the expensive part (a full operator build over the
+ * wide window), and it is identical for every column of a periodic direction — rebuilding it per
+ * column is exactly the amortization mistake the operator layer exists to avoid.
+ */
+function periodicWideClampedWindowPlan(knots is array, degree is number) returns map
 {
-    const fundamental = extractFundamentalPeriodicCurveData(controlPoints, knots, degree);
-    const n = fundamental.n;
+    const n = size(knots) - 2 * degree - 1;
     if (n < 1)
     {
-        throw "splineRefinementUtils: periodic operations need at least one control point per period, got " ~ n ~ ".";
+        throw "splineRefinementUtils: periodic operations need a STORED periodic knot array with at least " ~
+            "one control point per period; got " ~ size(knots) ~ " knots at degree " ~ degree ~ ", implying n = " ~ n ~ ".";
     }
+    const fundamentalKnots = subArray(knots, degree, degree + n);
+    const period = knots[degree + n] - knots[degree];
     const marginPeriods = max(1, ceil((degree + 1) / n));
 
     const wideControlPointCount = (2 * marginPeriods + 1) * n + degree;
-    const wideKnotCount = wideControlPointCount + degree + 1;
-    var wideControlPoints = makeArray(wideControlPointCount, controlPoints[0]);
-    for (var pointIndex = 0; pointIndex < wideControlPointCount; pointIndex += 1)
-    {
-        const cycle = floor(pointIndex / n);
-        const index = pointIndex - cycle * n;
-        wideControlPoints[pointIndex] = fundamental.fundamentalControlPoints[index];
-    }
     // Control point `marginPeriods * n` is fundamental point 0, so its knot — fundamental knot
     // 0, the core's domain start — must land at knot index degree + marginPeriods * n.
-    const rawWideKnots = buildPeriodicKnotArray(fundamental.fundamentalKnots, fundamental.period,
-            degree + marginPeriods * n, wideKnotCount);
+    const rawWideKnots = buildPeriodicKnotArray(fundamentalKnots, period,
+            degree + marginPeriods * n, wideControlPointCount + degree + 1);
 
-    const domainStart = fundamental.fundamentalKnots[0];
-    const domainEnd = domainStart + fundamental.period;
-    const marginWidth = marginPeriods * fundamental.period;
-    const clampOperator = clampedSegmentOperator(rawWideKnots, degree, domainStart - marginWidth, domainEnd + marginWidth);
-    const clampedWidePoints = applyKnotRefinementOperator(clampOperator, wideControlPoints);
+    const domainStart = fundamentalKnots[0];
+    const domainEnd = domainStart + period;
+    const marginWidth = marginPeriods * period;
 
     return {
-            "controlPoints" : clampedWidePoints,
-            "knots" : clampOperator.knots,
-            "period" : fundamental.period,
+            "n" : n,
+            "wideControlPointCount" : wideControlPointCount,
+            "clampOperator" : clampedSegmentOperator(rawWideKnots, degree, domainStart - marginWidth, domainEnd + marginWidth),
+            "period" : period,
             "coreStart" : domainStart,
             "coreEnd" : domainEnd
+        };
+}
+
+/** Tile one point array through a plan's window and clamp it, giving the wide clamped points. */
+function applyPeriodicWideClampedWindow(plan is map, controlPoints is array) returns array
+{
+    const n = plan.n;
+    var wideControlPoints = makeArray(plan.wideControlPointCount, controlPoints[0]);
+    for (var pointIndex = 0; pointIndex < plan.wideControlPointCount; pointIndex += 1)
+    {
+        const cycle = floor(pointIndex / n);
+        wideControlPoints[pointIndex] = controlPoints[pointIndex - cycle * n];
+    }
+    return applyKnotRefinementOperator(plan.clampOperator, wideControlPoints);
+}
+
+function buildPeriodicWideClampedWindow(controlPoints is array, knots is array, degree is number) returns map
+{
+    const plan = periodicWideClampedWindowPlan(knots, degree);
+    return {
+            "controlPoints" : applyPeriodicWideClampedWindow(plan, controlPoints),
+            "knots" : plan.clampOperator.knots,
+            "period" : plan.period,
+            "coreStart" : plan.coreStart,
+            "coreEnd" : plan.coreEnd
         };
 }
 
@@ -1353,6 +1380,238 @@ export function refinePeriodicPoints(controlPoints is array, knots is array, deg
     const refined = refineKnotVector(window.controlPoints, window.knots, degree, subArray(candidateImages, 0, imageCount));
 
     return extractPeriodicCoreAndRepad(refined.controlPoints, refined.knots, degree, window.coreStart, window.coreEnd, window.period);
+}
+
+/**
+ * Periodic analog of knotRefinementOperator: a reusable linear map from a periodic direction's
+ * STORED control points (n + degree of them) to the refined stored control points
+ * (n' + degree), carrying the refined stored knot vector. Same map shape as
+ * knotRefinementOperator, so it feeds applyKnotRefinementOperator and BOTH tensor appliers with
+ * no special casing — a periodic surface direction refines exactly like a clamped one.
+ *
+ * This is the operator form of refinePeriodicPoints, and it exists for the reason the operator
+ * layer exists at all: a surface applies ONE refinement to every row (or column), so the
+ * O(window^2) build amortizes and per-row cost drops to a handful of terms. For a single point
+ * array, refinePeriodicPoints' direct insertion is cheaper — use that. The two must agree
+ * exactly; the tester asserts it.
+ *
+ * Construction is the same tile / operate / slice as refinePeriodicPoints, composed into one
+ * map instead of run on values: the tiling makes window input p read stored input
+ * (p - margin) mod n, so each sliced output row is rebuilt by folding its window-index weights
+ * back onto stored indices, ACCUMULATING where several window images of the same stored point
+ * contribute. The overlap condition comes out of that fold for free — output rows j and j + n'
+ * fold to identical stored-index weight sets, because shifting an output by one refined period
+ * shifts its window inputs by exactly one input period, and those are the same stored points.
+ */
+export function periodicRefinementOperator(knots is array, degree is number, parametersToInsert is array) returns map
+{
+    const n = size(knots) - 2 * degree - 1;
+    if (n < 1)
+    {
+        throw "splineRefinementUtils: periodicRefinementOperator expects a STORED periodic knot array (" ~
+            "n + 2*degree + 1 entries for n + degree control points); got " ~ size(knots) ~ " knots at degree " ~
+            degree ~ ", implying n = " ~ n ~ ".";
+    }
+    const fundamentalKnots = subArray(knots, degree, degree + n);
+    const period = knots[degree + n] - knots[degree];
+
+    const marginPoints = 2 * degree + 2;
+    const windowPointCount = n + 2 * marginPoints;
+    const windowKnots = buildPeriodicKnotArray(fundamentalKnots, period, degree + marginPoints,
+            windowPointCount + degree + 1);
+
+    const coreStart = fundamentalKnots[0];
+    const coreEnd = coreStart + period;
+    const windowDomainStart = windowKnots[degree];
+    const windowDomainEnd = windowKnots[windowPointCount];
+
+    // Same image filter as refinePeriodicPoints — see there for why domain membership is the
+    // exact rule rather than an approximation of "insert all images".
+    var candidateImages = makeArray(3 * size(parametersToInsert), 0);
+    var imageCount = 0;
+    for (var parameterIndex = 0; parameterIndex < size(parametersToInsert); parameterIndex += 1)
+    {
+        for (var cycle = -1; cycle <= 1; cycle += 1)
+        {
+            const image = parametersToInsert[parameterIndex] + cycle * period;
+            if (image > windowDomainStart + KNOT_PARAMETER_TOLERANCE &&
+                image < windowDomainEnd - KNOT_PARAMETER_TOLERANCE)
+            {
+                candidateImages[imageCount] = image;
+                imageCount += 1;
+            }
+        }
+    }
+
+    const refinement = buildRefinementCoefficients(windowKnots, degree, subArray(candidateImages, 0, imageCount), degree);
+
+    var coreStartIndex = -1;
+    var newN = 0;
+    for (var knotIndex = 0; knotIndex < size(refinement.knots); knotIndex += 1)
+    {
+        if (refinement.knots[knotIndex] > coreStart - KNOT_PARAMETER_TOLERANCE &&
+            refinement.knots[knotIndex] < coreEnd - KNOT_PARAMETER_TOLERANCE)
+        {
+            if (coreStartIndex == -1)
+            {
+                coreStartIndex = knotIndex;
+            }
+            newN += 1;
+        }
+    }
+    const sliceStart = coreStartIndex - degree;
+    const outputCount = newN + degree;
+    if (sliceStart < degree + 1 || sliceStart + outputCount > size(refinement.rows) - degree - 1)
+    {
+        throw "splineRefinementUtils: periodic operator extraction would reach into the window's boundary " ~
+            "region (slice [" ~ sliceStart ~ ", " ~ (sliceStart + outputCount) ~ ") of " ~ size(refinement.rows) ~
+            " rows at degree " ~ degree ~ "). The window's margin is too narrow for this period and degree.";
+    }
+
+    var foldedRows = makeArray(outputCount, 0);
+    for (var outputIndex = 0; outputIndex < outputCount; outputIndex += 1)
+    {
+        const windowRow = refinement.rows[sliceStart + outputIndex];
+        var storedRow = makeArray(n + degree, 0);
+        for (var windowIndex = 0; windowIndex < windowPointCount; windowIndex += 1)
+        {
+            if (abs(windowRow[windowIndex]) > SPARSE_WEIGHT_CUTOFF)
+            {
+                const shifted = windowIndex - marginPoints;
+                const cycle = floor(shifted / n);
+                const storedIndex = shifted - cycle * n;
+                storedRow[storedIndex] = storedRow[storedIndex] + windowRow[windowIndex];
+            }
+        }
+        foldedRows[outputIndex] = storedRow;
+    }
+
+    const newFundamentalKnots = subArray(refinement.knots, coreStartIndex, coreStartIndex + newN);
+
+    return {
+            "degree" : degree,
+            "inputCount" : n + degree,
+            "outputCount" : outputCount,
+            "knots" : buildPeriodicKnotArray(newFundamentalKnots, period, degree, newN + 2 * degree + 1),
+            "rows" : sparsifyCoefficientRows(foldedRows)
+        };
+}
+
+// ============================================================================================
+// Per-direction dispatchers.
+//
+// A surface direction is periodic or it is not, and every Layer 3 surface entry point has to
+// branch on that. These four helpers absorb the branch ONCE so the surface functions read the
+// same whether a direction wraps or not — which matters because the alternative is the same
+// two-way branch written out four times, where a periodic case silently missing from one of them
+// is exactly the kind of gap that ships. They also work unchanged for curves, since a curve is
+// just a single point array in one direction.
+//
+// The payoff of periodicRefinementOperator matching knotRefinementOperator's map shape lands
+// here: directionRefinementOperator returns one or the other and NOTHING downstream cares.
+// ============================================================================================
+
+/** Refinement operator for a direction, periodic or clamped. Same map shape either way. */
+function directionRefinementOperator(knots is array, degree is number, isPeriodic is boolean, parametersToInsert is array) returns map
+{
+    return isPeriodic ? periodicRefinementOperator(knots, degree, parametersToInsert)
+        : knotRefinementOperator(knots, degree, parametersToInsert);
+}
+
+/**
+ * Parameters to insert to grow a direction by `numToInsert` control points, choosing widest
+ * spans. The periodic chooser additionally considers the WRAP span, which a plain array of
+ * fundamental knots does not represent. Growing a STORED periodic direction by k control points
+ * grows its period by k too (stored count is n + degree), so callers pass the same
+ * target-minus-current either way.
+ */
+function directionWidestSpanInsertions(knots is array, degree is number, isPeriodic is boolean, numToInsert is number) returns array
+{
+    if (!isPeriodic)
+    {
+        return widestSpanMidpointInsertions(knots, numToInsert);
+    }
+    const n = size(knots) - 2 * degree - 1;
+    return widestPeriodicSpanMidpointInsertions(subArray(knots, degree, degree + n), knots[degree + n] - knots[degree], numToInsert);
+}
+
+/**
+ * Given two knot arrays for the same direction and degree, produce each one's insertions onto a
+ * common refined structure, along with the domain-remapped knots those insertions apply to.
+ * Both branches remap to a canonical domain FIRST so the two sides land on a literally identical
+ * knot vector rather than a merely proportional one.
+ *
+ * The periodic branch merges FUNDAMENTAL knot runs (one period's worth) rather than whole knot
+ * arrays: the padding is derived, so merging it would double-count the wrap.
+ */
+function directionSharingPlan(knotsA is array, knotsB is array, degree is number, isPeriodic is boolean) returns map
+{
+    const remappedA = remapKnotsToUnitDomain(knotsA, degree);
+    const remappedB = remapKnotsToUnitDomain(knotsB, degree);
+
+    if (!isPeriodic)
+    {
+        const merged = mergeKnotVectors(remappedA, remappedB, degree);
+        return {
+                "remappedA" : remappedA,
+                "remappedB" : remappedB,
+                "insertionsA" : insertionsToReach(remappedA, merged, degree),
+                "insertionsB" : insertionsToReach(remappedB, merged, degree)
+            };
+    }
+
+    const nA = size(remappedA) - 2 * degree - 1;
+    const nB = size(remappedB) - 2 * degree - 1;
+    const runsA = distinctValueRuns(subArray(remappedA, degree, degree + nA));
+    const runsB = distinctValueRuns(subArray(remappedB, degree, degree + nB));
+    const merged = mergeValueRuns(runsA, runsB);
+    return {
+            "remappedA" : remappedA,
+            "remappedB" : remappedB,
+            "insertionsA" : insertionsFromMergedRuns(runsA, merged),
+            "insertionsB" : insertionsFromMergedRuns(runsB, merged)
+        };
+}
+
+/**
+ * Elevate every point array in `pointArrays` — all sharing one knot vector, i.e. all the columns
+ * or all the rows of one surface direction — from `degree` to `targetDegree`, returning the
+ * single knot vector they all land on.
+ *
+ * NO removeKnots simplification on either branch. That is load-bearing, not an oversight:
+ * removeKnots decides removability from the actual point VALUES, so two columns with identical
+ * knots but different points can simplify to DIFFERENT knot vectors, and a surface whose columns
+ * disagree about their knot vector is not a surface. The cost is an unminimized (always exactly
+ * correct) result. elevateSplineDegree does simplify, because a lone curve has nothing to stay
+ * consistent with.
+ */
+function elevatePointArraysSharingKnots(pointArrays is array, knots is array, degree is number, targetDegree is number, isPeriodic is boolean) returns map
+{
+    var elevated = makeArray(size(pointArrays), 0);
+    var sharedKnots = undefined;
+
+    if (isPeriodic)
+    {
+        // One plan for the whole direction — see periodicWideClampedWindowPlan.
+        const plan = periodicWideClampedWindowPlan(knots, degree);
+        for (var arrayIndex = 0; arrayIndex < size(pointArrays); arrayIndex += 1)
+        {
+            const wide = applyPeriodicWideClampedWindow(plan, pointArrays[arrayIndex]);
+            const raw = elevateHomogeneousPointsRaw(wide, plan.clampOperator.knots, degree, targetDegree);
+            const core = extractPeriodicCoreAndRepad(raw.points, raw.knots, targetDegree, plan.coreStart, plan.coreEnd, plan.period);
+            elevated[arrayIndex] = core.controlPoints;
+            sharedKnots = core.knots;
+        }
+        return { "pointArrays" : elevated, "knots" : sharedKnots };
+    }
+
+    for (var arrayIndex = 0; arrayIndex < size(pointArrays); arrayIndex += 1)
+    {
+        const raw = elevateHomogeneousPointsRaw(pointArrays[arrayIndex], knots, degree, targetDegree);
+        elevated[arrayIndex] = raw.points;
+        sharedKnots = raw.knots;
+    }
+    return { "pointArrays" : elevated, "knots" : sharedKnots };
 }
 
 /**
@@ -1733,22 +1992,12 @@ function insertionsFromMergedRuns(runs is array, merged is map) returns array
 function makePeriodicSplinesShareKnotVector(splineA is map, splineB is map) returns map
 {
     const degree = splineA.degree;
-    const remappedKnotsA = remapKnotsToUnitDomain(splineA.knots, degree);
-    const remappedKnotsB = remapKnotsToUnitDomain(splineB.knots, degree);
-
-    const fundamentalA = extractFundamentalPeriodicCurveData(splineA.controlPoints, remappedKnotsA, degree);
-    const fundamentalB = extractFundamentalPeriodicCurveData(splineB.controlPoints, remappedKnotsB, degree);
-
-    const runsA = distinctValueRuns(fundamentalA.fundamentalKnots);
-    const runsB = distinctValueRuns(fundamentalB.fundamentalKnots);
-    const merged = mergeValueRuns(runsA, runsB);
-    const insertionsA = insertionsFromMergedRuns(runsA, merged);
-    const insertionsB = insertionsFromMergedRuns(runsB, merged);
+    const plan = directionSharingPlan(splineA.knots, splineB.knots, degree, true);
 
     const homogeneousA = combinePointsAndWeights(splineA.controlPoints, splineA.weights);
     const homogeneousB = combinePointsAndWeights(splineB.controlPoints, splineB.weights);
-    const refinedA = refinePeriodicPoints(homogeneousA, remappedKnotsA, degree, insertionsA);
-    const refinedB = refinePeriodicPoints(homogeneousB, remappedKnotsB, degree, insertionsB);
+    const refinedA = refinePeriodicPoints(homogeneousA, plan.remappedA, degree, plan.insertionsA);
+    const refinedB = refinePeriodicPoints(homogeneousB, plan.remappedB, degree, plan.insertionsB);
 
     const separatedA = separatePointsAndWeights(refinedA.controlPoints);
     const separatedB = separatePointsAndWeights(refinedB.controlPoints);
@@ -2192,14 +2441,31 @@ function separateSurfaceControlPointsAndWeights(homogeneousGrid is array) return
 }
 
 /**
+ * Rebuild a STORED periodic direction's outer knot padding from its own domain knots — the
+ * surface counterpart of what normalizeSplineDefinition does per curve. Exactly idempotent for
+ * already-canonical input; the point is not to trust padding slots that different producers
+ * fill differently, since everything downstream derives structure from the fundamental knots.
+ */
+function rebuildPeriodicKnotPadding(knots is array, degree is number, n is number) returns array
+{
+    const fundamentalKnots = subArray(knots, degree, degree + n);
+    return buildPeriodicKnotArray(fundamentalKnots, knots[degree + n] - knots[degree], degree, n + 2 * degree + 1);
+}
+
+/**
  * Surface analog of normalizeSplineDefinition: force rational (row-wise unit weights when not
- * already rational), and genuinely clamp any periodic direction (U and/or V independently, via
- * clampedSegmentOperator over that direction's own domain, tensor-applied) — same reasoning as
- * the curve version: Boehm insertion is a purely local array operation, so clamping a periodic
- * direction over its own reported domain reproduces the surface exactly as a genuinely clamped
- * one, with no periodic-aware math needed. Directions are independent — a cylinder's U-periodic,
- * V-clamped surface only clamps U. Result map gains "wasClampedFromPeriodic" : boolean (true if
- * either direction needed it).
+ * already rational) and canonicalize each periodic direction, PRESERVING periodicity.
+ *
+ * This used to clamp periodic directions instead, which was wrong for the same reason it was
+ * wrong for curves: clamping recomputes control points at a boundary, and nothing about that
+ * computation satisfies the overlap condition a genuinely periodic representation needs, so a
+ * clamped-then-reflagged cylinder carries a seam. Directions are independent — a cylinder is
+ * U-periodic and V-clamped, and only U gets the periodic treatment.
+ *
+ * The two recognized periodic forms per direction, both converted exactly by counting: the
+ * STORED form (n + degree control points, n + 2*degree + 1 knots) and the fundamental-only form
+ * (n control points, n + 2*degree + 1 knots), the latter gaining its overlap rows/columns back.
+ * Anything else throws with the observed shape rather than being guessed at.
  */
 export function normalizeSurfaceDefinition(surface is map) returns map
 {
@@ -2216,35 +2482,77 @@ export function normalizeSurfaceDefinition(surface is map) returns map
         normalized.isRational = true;
     }
 
-    var homogeneousGrid = combineSurfaceControlPointsAndWeights(normalized.controlPoints, normalized.weights);
-    var wasClampedFromPeriodic = false;
-
     if (normalized.isUPeriodic == true)
     {
-        const domain = knotDomain(normalized.uKnots, normalized.uDegree);
-        const clamp = clampedSegmentOperator(normalized.uKnots, normalized.uDegree, domain.start, domain.end);
-        homogeneousGrid = applyKnotRefinementOperatorDownColumns(clamp, homogeneousGrid);
-        normalized.uKnots = clamp.knots;
-        normalized.isUPeriodic = false;
-        wasClampedFromPeriodic = true;
+        // U is the ROW direction: the overlap tail is `uDegree` extra ROWS.
+        const rowCount = size(normalized.controlPoints);
+        const uKnotCount = size(normalized.uKnots);
+        if (uKnotCount == rowCount + normalized.uDegree + 1)
+        {
+            normalized.uKnots = rebuildPeriodicKnotPadding(normalized.uKnots, normalized.uDegree, rowCount - normalized.uDegree);
+        }
+        else if (uKnotCount == rowCount + 2 * normalized.uDegree + 1)
+        {
+            var extendedPoints = makeArray(rowCount + normalized.uDegree, normalized.controlPoints[0]);
+            var extendedWeights = makeArray(rowCount + normalized.uDegree, normalized.weights[0]);
+            for (var rowIndex = 0; rowIndex < rowCount + normalized.uDegree; rowIndex += 1)
+            {
+                extendedPoints[rowIndex] = normalized.controlPoints[rowIndex % rowCount];
+                extendedWeights[rowIndex] = normalized.weights[rowIndex % rowCount];
+            }
+            normalized.controlPoints = extendedPoints;
+            normalized.weights = extendedWeights;
+            normalized.uKnots = rebuildPeriodicKnotPadding(normalized.uKnots, normalized.uDegree, rowCount);
+        }
+        else
+        {
+            throw "splineRefinementUtils: unrecognized U-periodic surface form - " ~ rowCount ~ " rows with " ~
+                uKnotCount ~ " U knots at U degree " ~ normalized.uDegree ~
+                ". Expected the stored form (n + degree rows, n + 2*degree + 1 knots) or the fundamental-only " ~
+                "form (n rows, n + 2*degree + 1 knots).";
+        }
     }
+
     if (normalized.isVPeriodic == true)
     {
-        const domain = knotDomain(normalized.vKnots, normalized.vDegree);
-        const clamp = clampedSegmentOperator(normalized.vKnots, normalized.vDegree, domain.start, domain.end);
-        homogeneousGrid = applyKnotRefinementOperatorAcrossRows(clamp, homogeneousGrid);
-        normalized.vKnots = clamp.knots;
-        normalized.isVPeriodic = false;
-        wasClampedFromPeriodic = true;
+        // V is the COLUMN direction: the overlap tail is `vDegree` extra entries in EVERY row.
+        const columnCount = size(normalized.controlPoints[0]);
+        const vKnotCount = size(normalized.vKnots);
+        if (vKnotCount == columnCount + normalized.vDegree + 1)
+        {
+            normalized.vKnots = rebuildPeriodicKnotPadding(normalized.vKnots, normalized.vDegree, columnCount - normalized.vDegree);
+        }
+        else if (vKnotCount == columnCount + 2 * normalized.vDegree + 1)
+        {
+            var extendedGrid = makeArray(size(normalized.controlPoints), 0);
+            var extendedWeightGrid = makeArray(size(normalized.weights), 0);
+            for (var rowIndex = 0; rowIndex < size(normalized.controlPoints); rowIndex += 1)
+            {
+                var row = makeArray(columnCount + normalized.vDegree, normalized.controlPoints[rowIndex][0]);
+                var weightRow = makeArray(columnCount + normalized.vDegree, normalized.weights[rowIndex][0]);
+                for (var columnIndex = 0; columnIndex < columnCount + normalized.vDegree; columnIndex += 1)
+                {
+                    row[columnIndex] = normalized.controlPoints[rowIndex][columnIndex % columnCount];
+                    weightRow[columnIndex] = normalized.weights[rowIndex][columnIndex % columnCount];
+                }
+                extendedGrid[rowIndex] = row;
+                extendedWeightGrid[rowIndex] = weightRow;
+            }
+            normalized.controlPoints = extendedGrid;
+            normalized.weights = extendedWeightGrid;
+            normalized.vKnots = rebuildPeriodicKnotPadding(normalized.vKnots, normalized.vDegree, columnCount);
+        }
+        else
+        {
+            throw "splineRefinementUtils: unrecognized V-periodic surface form - " ~ columnCount ~ " columns with " ~
+                vKnotCount ~ " V knots at V degree " ~ normalized.vDegree ~
+                ". Expected the stored form (n + degree columns, n + 2*degree + 1 knots) or the fundamental-only " ~
+                "form (n columns, n + 2*degree + 1 knots).";
+        }
     }
 
-    const separated = separateSurfaceControlPointsAndWeights(homogeneousGrid);
-    normalized.controlPoints = separated.points;
-    normalized.weights = separated.weights;
-    normalized.wasClampedFromPeriodic = wasClampedFromPeriodic;
-
-    // KnotArray discipline (see the block comment above) applies on every path, not just the
-    // just-clamped one - a caller may hand in a plain array for uKnots/vKnots.
+    // KnotArray discipline (see the block comment above) applies on every path - a caller may
+    // hand in a plain array for uKnots/vKnots.
     normalized.uKnots = normalized.uKnots is KnotArray ? normalized.uKnots : knotArray(normalized.uKnots);
     normalized.vKnots = normalized.vKnots is KnotArray ? normalized.vKnots : knotArray(normalized.vKnots);
 
@@ -2275,15 +2583,19 @@ export function refineSurfaceToControlPointCounts(surface is map, targetUCount i
 
     if (size(normalized.controlPoints) < targetUCount)
     {
-        const insertions = widestSpanMidpointInsertions(normalized.uKnots, targetUCount - size(normalized.controlPoints));
-        const uOperator = knotRefinementOperator(normalized.uKnots, normalized.uDegree, insertions);
+        const isPeriodic = normalized.isUPeriodic == true;
+        const insertions = directionWidestSpanInsertions(normalized.uKnots, normalized.uDegree, isPeriodic,
+                targetUCount - size(normalized.controlPoints));
+        const uOperator = directionRefinementOperator(normalized.uKnots, normalized.uDegree, isPeriodic, insertions);
         homogeneousGrid = applyKnotRefinementOperatorDownColumns(uOperator, homogeneousGrid);
         normalized.uKnots = knotArray(uOperator.knots);
     }
     if (size(normalized.controlPoints[0]) < targetVCount)
     {
-        const insertions = widestSpanMidpointInsertions(normalized.vKnots, targetVCount - size(normalized.controlPoints[0]));
-        const vOperator = knotRefinementOperator(normalized.vKnots, normalized.vDegree, insertions);
+        const isPeriodic = normalized.isVPeriodic == true;
+        const insertions = directionWidestSpanInsertions(normalized.vKnots, normalized.vDegree, isPeriodic,
+                targetVCount - size(normalized.controlPoints[0]));
+        const vOperator = directionRefinementOperator(normalized.vKnots, normalized.vDegree, isPeriodic, insertions);
         homogeneousGrid = applyKnotRefinementOperatorAcrossRows(vOperator, homogeneousGrid);
         normalized.vKnots = knotArray(vOperator.knots);
     }
@@ -2316,16 +2628,15 @@ export function refineSurfaceToSpanDensity(surface is map, uSpanBoundaries is ar
  * domain-remapped to match a target) onto targetUKnots/targetVKnots via insertionsToReach per
  * direction, tensor-applied. Shared by makeSurfacesShareKnotVectors for both input surfaces.
  */
-function refineSurfaceOntoKnotVectors(normalized is map, currentUKnots is array, currentVKnots is array, targetUKnots is array, targetVKnots is array) returns map
+function refineSurfaceOntoKnotVectors(normalized is map, currentUKnots is array, currentVKnots is array,
+    insertionsU is array, insertionsV is array) returns map
 {
     var homogeneousGrid = combineSurfaceControlPointsAndWeights(normalized.controlPoints, normalized.weights);
 
-    const insertionsU = insertionsToReach(currentUKnots, targetUKnots, normalized.uDegree);
-    const uOperator = knotRefinementOperator(currentUKnots, normalized.uDegree, insertionsU);
+    const uOperator = directionRefinementOperator(currentUKnots, normalized.uDegree, normalized.isUPeriodic == true, insertionsU);
     homogeneousGrid = applyKnotRefinementOperatorDownColumns(uOperator, homogeneousGrid);
 
-    const insertionsV = insertionsToReach(currentVKnots, targetVKnots, normalized.vDegree);
-    const vOperator = knotRefinementOperator(currentVKnots, normalized.vDegree, insertionsV);
+    const vOperator = directionRefinementOperator(currentVKnots, normalized.vDegree, normalized.isVPeriodic == true, insertionsV);
     homogeneousGrid = applyKnotRefinementOperatorAcrossRows(vOperator, homogeneousGrid);
 
     const separated = separateSurfaceControlPointsAndWeights(homogeneousGrid);
@@ -2347,25 +2658,73 @@ function refineSurfaceOntoKnotVectors(normalized is map, currentUKnots is array,
  */
 export function makeSurfacesShareKnotVectors(surfaceA is map, surfaceB is map) returns map
 {
-    const normalizedA = normalizeSurfaceDefinition(surfaceA);
-    const normalizedB = normalizeSurfaceDefinition(surfaceB);
+    var normalizedA = normalizeSurfaceDefinition(surfaceA);
+    var normalizedB = normalizeSurfaceDefinition(surfaceB);
     if (normalizedA.uDegree != normalizedB.uDegree || normalizedA.vDegree != normalizedB.vDegree)
     {
         throw "splineRefinementUtils: makeSurfacesShareKnotVectors requires equal U and V degrees - elevate first, or use makeSurfacesCompatible.";
     }
 
-    const remappedUKnotsA = remapKnotsToUnitDomain(normalizedA.uKnots, normalizedA.uDegree);
-    const remappedUKnotsB = remapKnotsToUnitDomain(normalizedB.uKnots, normalizedB.uDegree);
-    const remappedVKnotsA = remapKnotsToUnitDomain(normalizedA.vKnots, normalizedA.vDegree);
-    const remappedVKnotsB = remapKnotsToUnitDomain(normalizedB.vKnots, normalizedB.vDegree);
+    // Mixed periodicity IN A DIRECTION: a closed direction blended against an open one has no
+    // shared notion of "closed" to preserve, so the periodic side is clamped down to a single
+    // non-wrapping period — per direction, independently, exactly as the curve path does. When
+    // both sides agree, periodicity is preserved end to end.
+    if ((normalizedA.isUPeriodic == true) != (normalizedB.isUPeriodic == true))
+    {
+        normalizedA = clampSurfaceDirectionForMixedUse(normalizedA, true);
+        normalizedB = clampSurfaceDirectionForMixedUse(normalizedB, true);
+    }
+    if ((normalizedA.isVPeriodic == true) != (normalizedB.isVPeriodic == true))
+    {
+        normalizedA = clampSurfaceDirectionForMixedUse(normalizedA, false);
+        normalizedB = clampSurfaceDirectionForMixedUse(normalizedB, false);
+    }
 
-    const mergedUKnots = mergeKnotVectors(remappedUKnotsA, remappedUKnotsB, normalizedA.uDegree);
-    const mergedVKnots = mergeKnotVectors(remappedVKnotsA, remappedVKnotsB, normalizedA.vDegree);
+    const uPlan = directionSharingPlan(normalizedA.uKnots, normalizedB.uKnots, normalizedA.uDegree, normalizedA.isUPeriodic == true);
+    const vPlan = directionSharingPlan(normalizedA.vKnots, normalizedB.vKnots, normalizedA.vDegree, normalizedA.isVPeriodic == true);
 
-    const resultA = refineSurfaceOntoKnotVectors(normalizedA, remappedUKnotsA, remappedVKnotsA, mergedUKnots, mergedVKnots);
-    const resultB = refineSurfaceOntoKnotVectors(normalizedB, remappedUKnotsB, remappedVKnotsB, mergedUKnots, mergedVKnots);
+    const resultA = refineSurfaceOntoKnotVectors(normalizedA, uPlan.remappedA, vPlan.remappedA, uPlan.insertionsA, vPlan.insertionsA);
+    const resultB = refineSurfaceOntoKnotVectors(normalizedB, uPlan.remappedB, vPlan.remappedB, uPlan.insertionsB, vPlan.insertionsB);
 
     return { "a" : resultA, "b" : resultB };
+}
+
+/**
+ * Clamp ONE direction of a surface to a single non-wrapping period, leaving the other alone.
+ * A no-op when that direction is already clamped, so callers can apply it unconditionally to
+ * both sides of a mixed pair. Surface counterpart of clampPeriodicSplineForMixedUse.
+ */
+function clampSurfaceDirectionForMixedUse(normalized is map, isUDirection is boolean) returns map
+{
+    const degree = isUDirection ? normalized.uDegree : normalized.vDegree;
+    const knots = isUDirection ? normalized.uKnots : normalized.vKnots;
+    if (isUDirection ? normalized.isUPeriodic != true : normalized.isVPeriodic != true)
+    {
+        return normalized;
+    }
+
+    const domain = knotDomain(knots, degree);
+    const clamp = clampedSegmentOperator(knots, degree, domain.start, domain.end);
+    var homogeneousGrid = combineSurfaceControlPointsAndWeights(normalized.controlPoints, normalized.weights);
+    homogeneousGrid = isUDirection ? applyKnotRefinementOperatorDownColumns(clamp, homogeneousGrid)
+        : applyKnotRefinementOperatorAcrossRows(clamp, homogeneousGrid);
+
+    const separated = separateSurfaceControlPointsAndWeights(homogeneousGrid);
+    var result = normalized;
+    result.controlPoints = separated.points;
+    result.weights = separated.weights;
+    result.wasClampedFromPeriodic = true;
+    if (isUDirection)
+    {
+        result.uKnots = knotArray(clamp.knots);
+        result.isUPeriodic = false;
+    }
+    else
+    {
+        result.vKnots = knotArray(clamp.knots);
+        result.isVPeriodic = false;
+    }
+    return result;
 }
 
 /**
@@ -2386,8 +2745,7 @@ export function elevateSurfaceDegrees(surface is map, targetUDegree is number, t
     {
         const rowCount = size(homogeneousGrid);
         const columnCount = size(homogeneousGrid[0]);
-        var elevatedColumns = makeArray(columnCount, 0);
-        var newUKnots = undefined;
+        var columns = makeArray(columnCount, 0);
         for (var columnIndex = 0; columnIndex < columnCount; columnIndex += 1)
         {
             var column = makeArray(rowCount, homogeneousGrid[0][0]);
@@ -2395,39 +2753,34 @@ export function elevateSurfaceDegrees(surface is map, targetUDegree is number, t
             {
                 column[rowIndex] = homogeneousGrid[rowIndex][columnIndex];
             }
-            const raw = elevateHomogeneousPointsRaw(column, normalized.uKnots, normalized.uDegree, targetUDegree);
-            elevatedColumns[columnIndex] = raw.points;
-            newUKnots = raw.knots; // identical for every column by construction - see elevateHomogeneousPointsRaw's own comment
+            columns[columnIndex] = column;
         }
 
-        const newRowCount = size(elevatedColumns[0]);
+        const elevated = elevatePointArraysSharingKnots(columns, normalized.uKnots, normalized.uDegree,
+                targetUDegree, normalized.isUPeriodic == true);
+
+        const newRowCount = size(elevated.pointArrays[0]);
         var reassembledGrid = makeArray(newRowCount, 0);
         for (var rowIndex = 0; rowIndex < newRowCount; rowIndex += 1)
         {
-            var row = makeArray(columnCount, elevatedColumns[0][0]);
+            var row = makeArray(columnCount, elevated.pointArrays[0][0]);
             for (var columnIndex = 0; columnIndex < columnCount; columnIndex += 1)
             {
-                row[columnIndex] = elevatedColumns[columnIndex][rowIndex];
+                row[columnIndex] = elevated.pointArrays[columnIndex][rowIndex];
             }
             reassembledGrid[rowIndex] = row;
         }
         homogeneousGrid = reassembledGrid;
-        normalized.uKnots = knotArray(newUKnots);
+        normalized.uKnots = knotArray(elevated.knots);
         normalized.uDegree = targetUDegree;
     }
 
     if (normalized.vDegree < targetVDegree)
     {
-        var elevatedRows = makeArray(size(homogeneousGrid), 0);
-        var newVKnots = undefined;
-        for (var rowIndex = 0; rowIndex < size(homogeneousGrid); rowIndex += 1)
-        {
-            const raw = elevateHomogeneousPointsRaw(homogeneousGrid[rowIndex], normalized.vKnots, normalized.vDegree, targetVDegree);
-            elevatedRows[rowIndex] = raw.points;
-            newVKnots = raw.knots;
-        }
-        homogeneousGrid = elevatedRows;
-        normalized.vKnots = knotArray(newVKnots);
+        const elevated = elevatePointArraysSharingKnots(homogeneousGrid, normalized.vKnots, normalized.vDegree,
+                targetVDegree, normalized.isVPeriodic == true);
+        homogeneousGrid = elevated.pointArrays;
+        normalized.vKnots = knotArray(elevated.knots);
         normalized.vDegree = targetVDegree;
     }
 
