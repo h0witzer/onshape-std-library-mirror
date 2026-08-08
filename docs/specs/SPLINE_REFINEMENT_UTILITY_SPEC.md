@@ -115,7 +115,9 @@ essentially that chapter's exact half. A copy is in the repo at
 `whitepaper-references/The NURBS Book-1-341.pdf`.
 
 Related: [DISPLACEMENT_MAP_TILING_SPEC.md](DISPLACEMENT_MAP_TILING_SPEC.md) (§5.1–5.4 are the
-mathematical reference for the insertion core, and §5.3 is its primary test vector).
+mathematical reference for the insertion core, and §5.3 is its primary test vector);
+[T_SPLINE_SUPPORT_SPEC.md](T_SPLINE_SUPPORT_SPEC.md) (the downstream pipeline that reuses
+Layers 1–2, the periodic machinery, and the evaluator as its extraction engine — see §9.5).
 
 ---
 
@@ -1297,6 +1299,19 @@ Per §1.1: replace `opFitSpline`-on-resampled-points with `opCreateBSplineCurve`
 net, so periodic loops close by construction and control point density is chosen rather than
 negotiated with a fitter. Worth doing after the tween features prove the module out, since it
 is a rewrite of the generator rather than a substitution.
+
+### 9.5 T-spline surfaces
+
+Spec'd in full as a companion document: [T_SPLINE_SUPPORT_SPEC.md](T_SPLINE_SUPPORT_SPEC.md).
+The short version of the dependency: T-spline→NURBS extraction is knot refinement expressed as
+a linear operator on basis functions — exactly what Layer 2 computes on unit-basis rows — so
+this module's Layers 1–2, the Bezier decomposition entry points, the §2.3 periodic machinery,
+and `evaluateBSplineSurfacePoint` are that pipeline's numerical core, already built and
+verified. Elevation and the tween compatibility family are not on that path. It also closes
+§9.1.1's honest ceiling ("genuine local refinement needs T-splines and is out of scope") — that
+line item is the companion spec's reason to exist. One small addition lands in this module when
+that work starts: a single-basis-function evaluator over an arbitrary local knot vector
+(`singleBasisFunctionValues`), the one-function sibling of `bSplineBasisValues`.
 
 ---
 
