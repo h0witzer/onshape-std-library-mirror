@@ -889,8 +889,14 @@ function interiorRunsAndInsertionPlan(knots is array, degree is number) returns 
 function decomposeIntoSegmentsCore(points is array, knots is array, degree is number) returns map
 {
     const plan = interiorRunsAndInsertionPlan(knots, degree);
-    const refinementOperator = knotRefinementOperator(knots, degree, plan.insertions);
-    const refinedPoints = applyKnotRefinementOperator(refinementOperator, points);
+    // Direct sequential insertion, NOT knotRefinementOperator. The operator earns its keep only
+    // when the SAME refinement is applied to many point arrays (every row and column of a
+    // surface grid), because building it costs O(M^2) unconditionally — buildRefinementCoefficients
+    // starts from a dense M x M identity basis and each insertion runs scaledRowSum across
+    // full-length rows. Here it would be built and thrown away after a single application, so
+    // that entire M^2 term is pure overhead; refineKnotVector produces the identical result in
+    // O(insertions x M).
+    const refinedPoints = refineKnotVector(points, knots, degree, plan.insertions).controlPoints;
 
     var segmentPointArrays = makeArray(plan.numSegments, 0);
     for (var segmentIndex = 0; segmentIndex < plan.numSegments; segmentIndex += 1)
@@ -1070,18 +1076,29 @@ export function insertionsToReach(knots is array, mergedKnots is array, degree i
 // The fix: a periodic B-spline is the finite window onto an INFINITE periodically-extended
 // structure (knots and control points both repeating every PERIOD). Boehm insertion and degree
 // elevation are LOCAL — they only touch `degree` neighboring control points around wherever
-// they operate. So: insert the same knot (or run elevation) simultaneously at every periodic
-// image within a window spanning enough periods that no single operation's local support
-// reaches the window's own outer edge — three periods (one full margin period on each side of
-// the one being refined) is provably enough whenever there are more control points per period
-// than the degree, true for any real periodic curve or surface direction. Extracting the
-// middle period back out then gives a result that is automatically overlap-consistent with its
-// (identically treated) neighbors, because the infinite periodic structure was never actually
-// broken — only sliced from a window wide enough that the slicing itself introduces no error.
+// they operate. So: tile that structure into a finite window, apply the same operation at every
+// periodic image that reaches into the core, then slice the core period back out. The result is
+// automatically overlap-consistent with its (identically treated) neighbours, because the
+// infinite periodic structure was never actually broken — only sliced from a window wide enough
+// that the slicing itself introduces no error.
 //
-// Precondition throughout: fundamental control point count n > degree. Violated only by
-// pathological inputs (e.g. a degree-3 periodic curve with 2 control points) that would
-// already be invalid B-splines; not a real-world case.
+// TWO windows, because the two operations have genuinely different requirements — do not merge
+// them back together:
+//   * buildPeriodicWindow (refinement): UNCLAMPED, margin measured in CONTROL POINTS
+//     (2*degree + 2). Insertion needs nothing but locality, so the margin only has to cover the
+//     reach of a blend plus the seam-straddling points the extraction slices.
+//   * buildPeriodicWideClampedWindow (elevation): CLAMPED, margin of whole PERIODS. Bezier
+//     decomposition rejects an unclamped knot array, and its trailing removeKnots pass reasons
+//     globally, so every period must be an identical tile for decisions to match across the wrap.
+//     The period count is computed as ceil((degree + 1) / n) rather than fixed at 1, so tight
+//     periodic splines (fewer control points per period than the degree) still work.
+//
+// COST: refinement uses refineKnotVector (direct sequential insertion), NOT
+// knotRefinementOperator. The operator's dense-basis build is O(M^2) before a single point is
+// touched, which only pays off when the same refinement is reused across many point arrays —
+// true for a surface grid's rows and columns, false for one curve. At a 300-point period that is
+// the difference between a 316-point window refined in O(insertions x M) and a 903-point window
+// costing millions of entry operations.
 // ============================================================================================
 
 /**
@@ -1120,24 +1137,82 @@ function buildPeriodicKnotArray(fundamentalKnots is array, period is number, ori
 }
 
 /**
- * Build a CLAMPED representation spanning three periods (one margin period before the core,
- * the core itself, one margin period after) from a stored periodic (controlPoints, knots)
- * pair. Any clamped-only operation (knot insertion via knotRefinementOperator, degree
- * elevation via elevateHomogeneousPointsRaw) applied to this window and then extracted back
- * via extractPeriodicCoreAndRepad is exact and overlap-consistent — see the block comment
- * above for why three periods of margin suffices.
+ * Tile the infinite periodic structure into a finite window: the core period plus
+ * `marginPoints` control points of margin on EACH side. Pure array construction — no operator,
+ * no clamping — so it costs O(window size) and nothing more.
+ *
+ * Margin is measured in CONTROL POINTS, not whole periods, because that is what the locality
+ * argument actually needs. Boehm insertion at a parameter only rewrites control points whose
+ * support contains it (at most `degree` of them, each a blend of two neighbours), so the core's
+ * refined points are exact as soon as every input within `degree` of the core is present, plus
+ * `degree` more knots of reach on each side for the seam-straddling points the extraction
+ * slices. `2 * degree + 2` covers both with slack. For a 300-point period at degree 3 that is a
+ * 316-point window instead of the 903-point one a whole-period margin would build — and it is
+ * the window size that multiplies through everything downstream.
+ */
+function buildPeriodicWindow(controlPoints is array, knots is array, degree is number) returns map
+{
+    const fundamental = extractFundamentalPeriodicCurveData(controlPoints, knots, degree);
+    const n = fundamental.n;
+    if (n < 1)
+    {
+        throw "splineRefinementUtils: periodic operations need at least one control point per period, got " ~ n ~ ".";
+    }
+
+    const marginPoints = 2 * degree + 2;
+    const windowPointCount = n + 2 * marginPoints;
+    var windowPoints = makeArray(windowPointCount, controlPoints[0]);
+    for (var pointIndex = 0; pointIndex < windowPointCount; pointIndex += 1)
+    {
+        const sourceIndex = pointIndex - marginPoints;
+        const cycle = floor(sourceIndex / n);
+        windowPoints[pointIndex] = fundamental.fundamentalControlPoints[sourceIndex - cycle * n];
+    }
+    // Control point p pairs with knot degree + p, and windowPoints[marginPoints] is fundamental
+    // point 0, so fundamental knot 0 must land at knot index degree + marginPoints.
+    const windowKnots = buildPeriodicKnotArray(fundamental.fundamentalKnots, fundamental.period,
+            degree + marginPoints, windowPointCount + degree + 1);
+
+    return {
+            "controlPoints" : windowPoints,
+            "knots" : windowKnots,
+            "period" : fundamental.period,
+            "coreStart" : fundamental.fundamentalKnots[0],
+            "coreEnd" : fundamental.fundamentalKnots[0] + fundamental.period
+        };
+}
+
+/**
+ * Build a CLAMPED representation spanning the core period plus `marginPeriods` whole margin
+ * periods on EACH side, from a stored periodic (controlPoints, knots) pair.
+ *
+ * Only DEGREE ELEVATION needs this. Elevation goes through Bezier decomposition, whose
+ * interiorKnotRun step rejects an unclamped knot array outright, and its per-segment
+ * computation plus the trailing removeKnots pass both reason about the whole window — which is
+ * why the margin here stays a whole period (so every period is an identical tile and removeKnots
+ * makes identical decisions across the wrap) rather than the few control points
+ * buildPeriodicWindow gets away with. Plain refinement has neither constraint and uses that
+ * cheaper window instead.
+ *
+ * The margin must be wide enough that the clamped ends' contamination (the outermost
+ * degree + 1 control points, per extractPeriodicCoreAndRepad's local-linear-independence
+ * argument) cannot reach the core. One margin period contributes n control points, so
+ * ceil((degree + 1) / n) periods always suffice. That is 1 for every ordinary periodic curve,
+ * where n > degree; computing it rather than hardcoding 1 is what lets tight periodic splines
+ * (n <= degree — a degree-3 closed curve with only 3 distinct control points, say) go through
+ * the same exact path instead of being rejected as degenerate.
  */
 function buildPeriodicWideClampedWindow(controlPoints is array, knots is array, degree is number) returns map
 {
     const fundamental = extractFundamentalPeriodicCurveData(controlPoints, knots, degree);
     const n = fundamental.n;
-    if (n <= degree)
+    if (n < 1)
     {
-        throw "splineRefinementUtils: periodic operations require more control points per period (" ~ n ~
-            ") than the degree (" ~ degree ~ ") - got a degenerate periodic spline.";
+        throw "splineRefinementUtils: periodic operations need at least one control point per period, got " ~ n ~ ".";
     }
+    const marginPeriods = max(1, ceil((degree + 1) / n));
 
-    const wideControlPointCount = 3 * n + degree;
+    const wideControlPointCount = (2 * marginPeriods + 1) * n + degree;
     const wideKnotCount = wideControlPointCount + degree + 1;
     var wideControlPoints = makeArray(wideControlPointCount, controlPoints[0]);
     for (var pointIndex = 0; pointIndex < wideControlPointCount; pointIndex += 1)
@@ -1146,11 +1221,15 @@ function buildPeriodicWideClampedWindow(controlPoints is array, knots is array, 
         const index = pointIndex - cycle * n;
         wideControlPoints[pointIndex] = fundamental.fundamentalControlPoints[index];
     }
-    const rawWideKnots = buildPeriodicKnotArray(fundamental.fundamentalKnots, fundamental.period, degree + n, wideKnotCount);
+    // Control point `marginPeriods * n` is fundamental point 0, so its knot — fundamental knot
+    // 0, the core's domain start — must land at knot index degree + marginPeriods * n.
+    const rawWideKnots = buildPeriodicKnotArray(fundamental.fundamentalKnots, fundamental.period,
+            degree + marginPeriods * n, wideKnotCount);
 
     const domainStart = fundamental.fundamentalKnots[0];
     const domainEnd = domainStart + fundamental.period;
-    const clampOperator = clampedSegmentOperator(rawWideKnots, degree, domainStart - fundamental.period, domainEnd + fundamental.period);
+    const marginWidth = marginPeriods * fundamental.period;
+    const clampOperator = clampedSegmentOperator(rawWideKnots, degree, domainStart - marginWidth, domainEnd + marginWidth);
     const clampedWidePoints = applyKnotRefinementOperator(clampOperator, wideControlPoints);
 
     return {
@@ -1213,11 +1292,11 @@ function extractPeriodicCoreAndRepad(widePoints is array, wideKnots is array, de
     const sliceStart = coreStartIndex - degree;
     if (sliceStart < degree + 1 || sliceStart + newN + degree > size(widePoints) - degree - 1)
     {
-        throw "splineRefinementUtils: periodic core extraction would reach into the wide window's clamped " ~
-            "boundary region (slice [" ~ sliceStart ~ ", " ~ (sliceStart + newN + degree) ~ ") of " ~
-            size(widePoints) ~ " points at degree " ~ degree ~ "). This period has too few knots relative " ~
-            "to the degree for a one-period margin window; the operation cannot be performed exactly without " ~
-            "a wider margin.";
+        throw "splineRefinementUtils: periodic core extraction would reach into the window's boundary " ~
+            "region, where control points are either clamp-recomputed or short of the inputs that would " ~
+            "have refined them (slice [" ~ sliceStart ~ ", " ~ (sliceStart + newN + degree) ~ ") of " ~
+            size(widePoints) ~ " points at degree " ~ degree ~ "). The window's margin is too narrow for " ~
+            "this period and degree; widen it rather than accepting an inexact result.";
     }
 
     const newControlPoints = subArray(widePoints, sliceStart, sliceStart + newN + degree);
@@ -1232,7 +1311,7 @@ function extractPeriodicCoreAndRepad(widePoints is array, wideKnots is array, de
  * parameter within one period, i.e. within [domainStart, domainStart + period) — matching
  * every other insertion function in this module), preserving periodicity EXACTLY: the overlap
  * condition holds for the result, not just the knot count. See the module section's block
- * comment for the three-period-window argument this relies on.
+ * comment for the windowing argument this relies on.
  */
 export function refinePeriodicPoints(controlPoints is array, knots is array, degree is number, parametersToInsert is array) returns map
 {
@@ -1241,28 +1320,46 @@ export function refinePeriodicPoints(controlPoints is array, knots is array, deg
         return { "controlPoints" : controlPoints, "knots" : knots };
     }
 
-    const wide = buildPeriodicWideClampedWindow(controlPoints, knots, degree);
+    const window = buildPeriodicWindow(controlPoints, knots, degree);
+    const windowDomainStart = window.knots[degree];
+    const windowDomainEnd = window.knots[size(window.knots) - degree - 1];
 
-    var wideInsertions = makeArray(3 * size(parametersToInsert), 0);
-    var writeIndex = 0;
+    // Each parameter is inserted at every periodic image that lands inside this window's own
+    // domain. That filter is exactly the right rule, not an approximation of "insert all three
+    // images": an image only changes a control point whose support contains it, and the window
+    // reaches just far enough past the core for those to be the only ones that matter. So an
+    // image near the period boundary IS included (it does reach a point the extraction slices),
+    // while one from the middle of an adjacent period falls outside the domain and is correctly
+    // skipped — which is what makes the margin shrinkable in the first place.
+    var candidateImages = makeArray(3 * size(parametersToInsert), 0);
+    var imageCount = 0;
     for (var parameterIndex = 0; parameterIndex < size(parametersToInsert); parameterIndex += 1)
     {
-        const coreParameter = parametersToInsert[parameterIndex];
-        wideInsertions[writeIndex] = coreParameter - wide.period;
-        wideInsertions[writeIndex + 1] = coreParameter;
-        wideInsertions[writeIndex + 2] = coreParameter + wide.period;
-        writeIndex += 3;
+        for (var cycle = -1; cycle <= 1; cycle += 1)
+        {
+            const image = parametersToInsert[parameterIndex] + cycle * window.period;
+            if (image > windowDomainStart + KNOT_PARAMETER_TOLERANCE &&
+                image < windowDomainEnd - KNOT_PARAMETER_TOLERANCE)
+            {
+                candidateImages[imageCount] = image;
+                imageCount += 1;
+            }
+        }
     }
 
-    const refinementOperator = knotRefinementOperator(wide.knots, degree, wideInsertions);
-    const refinedWidePoints = applyKnotRefinementOperator(refinementOperator, wide.controlPoints);
+    // Direct sequential insertion rather than knotRefinementOperator — the operator's O(M^2)
+    // dense-basis build would be thrown away after one application here. See
+    // decomposeIntoSegmentsCore for the same reasoning.
+    const refined = refineKnotVector(window.controlPoints, window.knots, degree, subArray(candidateImages, 0, imageCount));
 
-    return extractPeriodicCoreAndRepad(refinedWidePoints, refinementOperator.knots, degree, wide.coreStart, wide.coreEnd, wide.period);
+    return extractPeriodicCoreAndRepad(refined.controlPoints, refined.knots, degree, window.coreStart, window.coreEnd, window.period);
 }
 
 /**
  * Elevate a periodic spline (STORED form) from `degree` to `targetDegree`, preserving
- * periodicity exactly, via the same three-period-window technique as refinePeriodicPoints.
+ * periodicity exactly, via the same tile-operate-extract technique as refinePeriodicPoints —
+ * but over the CLAMPED whole-period window, which elevation genuinely needs and plain
+ * refinement does not (see buildPeriodicWideClampedWindow).
  *
  * Unlike elevateSurfaceDegrees's raw-and-unsimplified use of elevateHomogeneousPointsRaw, this
  * runs a removeKnots pass on the wide window before extracting, so the result carries minimal
@@ -1746,15 +1843,16 @@ export function refineSplineToControlPointCount(spline is map, targetCount is nu
     }
 
     const insertions = widestSpanMidpointInsertions(normalized.knots, targetCount - size(normalized.controlPoints));
-    const refinementOperator = knotRefinementOperator(normalized.knots, normalized.degree, insertions);
     const homogeneousPoints = combinePointsAndWeights(normalized.controlPoints, normalized.weights);
-    const refinedHomogeneous = applyKnotRefinementOperator(refinementOperator, homogeneousPoints);
-    const separated = separatePointsAndWeights(refinedHomogeneous);
+    // Direct insertion, not the operator — one point array, so the operator's O(M^2) dense-basis
+    // build would be discarded after a single application (see decomposeIntoSegmentsCore).
+    const refined = refineKnotVector(homogeneousPoints, normalized.knots, normalized.degree, insertions);
+    const separated = separatePointsAndWeights(refined.controlPoints);
 
     var result = normalized;
     result.controlPoints = separated.points;
     result.weights = separated.weights;
-    result.knots = knotArray(refinementOperator.knots);
+    result.knots = knotArray(refined.knots);
     return result;
 }
 
@@ -1903,6 +2001,134 @@ export function elevateSplineDegree(spline is map, targetDegree is number) retur
     result.weights = separated.weights;
     result.knots = knotArray(simplified.knots);
     result.degree = targetDegree;
+    return result;
+}
+
+/**
+ * Reverse a spline's direction exactly: C'(t) = C(-t). Control points and weights are
+ * reversed; knots are reversed AND negated (newKnots[k] = -knots[M - 1 - k]), which is what
+ * keeps every control point paired with its own support interval — control point P[j], whose
+ * support is [knots[j], knots[j + degree + 1]], becomes P'[m - 1 - j] with support
+ * [-knots[j + degree + 1], -knots[j]].
+ *
+ * Exact for clamped and periodic alike, because control points are only PERMUTED, never
+ * recomputed: clamped end multiplicities mirror onto the opposite end, and periodic padding is
+ * preserved (knots[i + n] = knots[i] + period implies the same for the reversed array), so the
+ * overlap condition survives — the reversed stored array satisfies R[j] = R[j + n] wherever
+ * the original did.
+ *
+ * The resulting domain is [-domainEnd, -domainStart]. That is fine for every consumer here:
+ * makeSplinesShareKnotVector remaps to a canonical domain before merging on both its clamped
+ * and periodic branches, so absolute knot values never need to be comparable across splines.
+ */
+export function reverseSpline(spline is map) returns map
+{
+    const normalized = normalizeSplineDefinition(spline);
+    const knotCount = size(normalized.knots);
+
+    var reversedKnots = makeArray(knotCount, 0);
+    for (var knotIndex = 0; knotIndex < knotCount; knotIndex += 1)
+    {
+        reversedKnots[knotIndex] = -normalized.knots[knotCount - 1 - knotIndex];
+    }
+
+    var result = normalized;
+    result.controlPoints = reverse(normalized.controlPoints);
+    result.weights = reverse(normalized.weights);
+    result.knots = knotArray(reversedKnots);
+    return result;
+}
+
+/**
+ * Move a periodic spline's seam (its domain start) to `seamParameter`, exactly.
+ *
+ * A periodic B-spline is a finite window onto an infinite periodic structure, so WHICH
+ * period-length window is stored is a pure labelling choice — re-cutting it changes nothing
+ * geometric, and absolute parameter values keep meaning exactly what they meant before
+ * (C'(t) == C(t) everywhere both are defined). `seamParameter` is wrapped into the spline's own
+ * domain; if it does not already land on a knot, one is inserted there first via
+ * refinePeriodicPoints (exact), so the window has somewhere to be cut.
+ *
+ * This is what makes seam alignment between two closed curves an exact operation. Rotating a
+ * periodic spline's control point array in place — the obvious shortcut, and what tweenCurves
+ * did historically — only preserves geometry when the knot vector is uniform, because it moves
+ * control points relative to knots that did not move with them.
+ */
+export function rewindowPeriodicSpline(spline is map, seamParameter is number) returns map
+{
+    var normalized = normalizeSplineDefinition(spline);
+    if (normalized.isPeriodic != true)
+    {
+        throw "splineRefinementUtils: rewindowPeriodicSpline requires a periodic spline - got a clamped one.";
+    }
+    const degree = normalized.degree;
+
+    const initial = extractFundamentalPeriodicCurveData(normalized.controlPoints, normalized.knots, degree);
+    const period = initial.period;
+    const domainStart = initial.fundamentalKnots[0];
+    const offsetIntoPeriod = seamParameter - domainStart;
+    const wrappedSeam = domainStart + (offsetIntoPeriod - floor(offsetIntoPeriod / period) * period);
+
+    var seamIsAlreadyAKnot = false;
+    for (var knotIndex = 0; knotIndex < initial.n; knotIndex += 1)
+    {
+        if (abs(initial.fundamentalKnots[knotIndex] - wrappedSeam) <= KNOT_PARAMETER_TOLERANCE)
+        {
+            seamIsAlreadyAKnot = true;
+        }
+    }
+    if (!seamIsAlreadyAKnot)
+    {
+        const homogeneousPoints = combinePointsAndWeights(normalized.controlPoints, normalized.weights);
+        const refined = refinePeriodicPoints(homogeneousPoints, normalized.knots, degree, [wrappedSeam]);
+        const separated = separatePointsAndWeights(refined.controlPoints);
+        normalized.controlPoints = separated.points;
+        normalized.weights = separated.weights;
+        normalized.knots = knotArray(refined.knots);
+    }
+
+    const fundamental = extractFundamentalPeriodicCurveData(normalized.controlPoints, normalized.knots, degree);
+    const n = fundamental.n;
+    var seamIndex = -1;
+    for (var knotIndex = 0; knotIndex < n; knotIndex += 1)
+    {
+        if (abs(fundamental.fundamentalKnots[knotIndex] - wrappedSeam) <= KNOT_PARAMETER_TOLERANCE)
+        {
+            seamIndex = knotIndex;
+        }
+    }
+    if (seamIndex == -1)
+    {
+        throw "splineRefinementUtils: rewindowPeriodicSpline could not locate seam parameter " ~ wrappedSeam ~
+            " among the fundamental knots after insertion.";
+    }
+    if (seamIndex == 0)
+    {
+        return normalized;
+    }
+
+    // Re-cut the window starting at seamIndex, reading the infinite structure through its own
+    // tiling rules: control points wrap plainly, knots wrap with + period per cycle.
+    var newFundamentalKnots = makeArray(n, 0);
+    var newControlPoints = makeArray(n + degree, normalized.controlPoints[0]);
+    var newWeights = makeArray(n + degree, 1);
+    for (var pointIndex = 0; pointIndex < n + degree; pointIndex += 1)
+    {
+        const sourceIndex = seamIndex + pointIndex;
+        const cycle = floor(sourceIndex / n);
+        const wrappedIndex = sourceIndex - cycle * n;
+        newControlPoints[pointIndex] = fundamental.fundamentalControlPoints[wrappedIndex];
+        newWeights[pointIndex] = normalized.weights[wrappedIndex];
+        if (pointIndex < n)
+        {
+            newFundamentalKnots[pointIndex] = fundamental.fundamentalKnots[wrappedIndex] + cycle * period;
+        }
+    }
+
+    var result = normalized;
+    result.controlPoints = newControlPoints;
+    result.weights = newWeights;
+    result.knots = knotArray(buildPeriodicKnotArray(newFundamentalKnots, period, degree, n + 2 * degree + 1));
     return result;
 }
 

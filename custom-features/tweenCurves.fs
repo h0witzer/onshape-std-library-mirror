@@ -13,7 +13,7 @@ import(path : "onshape/std/approximationUtils.fs", version : "3044.0");
 import(path : "onshape/std/splineUtils.fs", version : "3044.0");
 import(path : "onshape/std/containers.fs", version : "3044.0");
 import(path : "f42f46716945f2a9bda5a481/eabbc18661ba5776e0ba962d/97730412fb61f53dcd526c08", version : "a24da502290d2ae4706c631f"); // 3d Arc Utilities
-import(path : "eca0e7b6ed29c5239f39f868/aefe2c3fb406d62187bab0bc/9a2b77793cdc37bace6d915a", version : "f617b3153e05d226242ebab9"); // splineRefinementUtils.fs
+import(path : "eca0e7b6ed29c5239f39f868/7182747cabf6b534da6a21d3/9a2b77793cdc37bace6d915a", version : "6af3b02bb9bbcbd0eccecd1e"); // splineRefinementUtils.fs
 
 
 export const TWEEN_FRACTION_BOUNDS = { (unitless) : [0, 0.5, 1] } as RealBoundSpec;
@@ -46,188 +46,290 @@ export function tweenCurves(context is Context, id is Id,
         return;
     }
 
-    var bSpline1 = getBSplineFromInput(context, curve1);
-    var bSpline2 = getBSplineFromInput(context, curve2);
+    const rawSpline1 = getBSplineFromInput(context, curve1);
+    const rawSpline2 = getBSplineFromInput(context, curve2);
 
-    if (bSpline1 == undefined || bSpline2 == undefined)
+    if (rawSpline1 == undefined || rawSpline2 == undefined)
         throw regenError("Could not get B-spline representation for input curves.");
 
-    // Captured before any compatibility processing below, which - for the non-periodic path -
-    // always clamps periodic input (splineRefinementUtils.fs's documented policy). The final
-    // isPeriodic/warning logic near the end of this function must reason about what the
-    // curves ORIGINALLY were, not what they became after that clamp.
-    const originalIsPeriodic1 = bSpline1.isPeriodic;
-    const originalIsPeriodic2 = bSpline2.isPeriodic;
-    const bothPeriodic = originalIsPeriodic1 && originalIsPeriodic2;
+    // Canonical form up front: always rational, periodicity preserved (never silently
+    // clamped), knot padding rebuilt from the domain knots. Everything below reasons about
+    // these, not about whatever shape the kernel happened to hand back.
+    var spline1 = normalizeSplineDefinition(rawSpline1);
+    var spline2 = normalizeSplineDefinition(rawSpline2);
 
+    const bothPeriodic = spline1.isPeriodic == true && spline2.isPeriodic == true;
+    if ((spline1.isPeriodic == true) != (spline2.isPeriodic == true))
+    {
+        reportFeatureWarning(context, id, "Curves have different periodicity. The closed curve is opened so the two can be matched, and the tweened curve is open.");
+    }
+
+    // === ALIGNMENT ===
+    // How curve 2 lays against curve 1 is a genuine degree of freedom, not an approximation -
+    // there is no canonical correspondence between two curves. What matters is that whatever
+    // is chosen gets APPLIED exactly, as a reparameterization that leaves curve 2's geometry
+    // untouched, and that it happens BEFORE the knot vectors are merged. Reversing or rotating
+    // control point arrays AFTER merging - which this feature used to do - silently distorts
+    // the curve unless the shared knot vector happens to be uniform, because it moves control
+    // points relative to knots that did not move with them.
     if (bothPeriodic)
     {
-        // Exact knot-vector sharing (makeSplinesCompatible, below) always clamps periodic
-        // input to produce a result - it has to, since genuine periodic-preserving refinement
-        // isn't implemented (see docs/specs/SPLINE_REFINEMENT_UTILITY_SPEC.md's periodic
-        // policy) - and clamping here would silently turn a tweened CLOSED curve into an OPEN
-        // one. Two closed curves therefore keep the original degree-elevation and
-        // approximation-based count-matching pipeline, unchanged, so periodicity survives.
-        // Only the open/mixed-periodicity path below gets the exact section 2.4 fix. This is a
-        // deliberately scoped gap, not an oversight - see the spec's Phase 3 notes.
-        if (bSpline1.degree != bSpline2.degree)
-        {
-            const targetDegree = max(bSpline1.degree, bSpline2.degree);
-            if (bSpline1.degree < targetDegree)
-            {
-                bSpline1 = elevateDegree(bSpline1, targetDegree);
-            }
-            if (bSpline2.degree < targetDegree)
-            {
-                bSpline2 = elevateDegree(bSpline2, targetDegree);
-            }
-        }
-
-        if (size(bSpline1.controlPoints) != size(bSpline2.controlPoints))
-        {
-            const targetCount = max(size(bSpline1.controlPoints), size(bSpline2.controlPoints));
-            const cpFractions1 = computeControlPointFractions(bSpline1.controlPoints);
-            const cpFractions2 = computeControlPointFractions(bSpline2.controlPoints);
-
-            if (size(bSpline1.controlPoints) < targetCount)
-            {
-                bSpline1 = matchCPCount(context, bSpline1, targetCount,
-                        cpFractions2);
-            }
-            if (size(bSpline2.controlPoints) < targetCount)
-            {
-                bSpline2 = matchCPCount(context, bSpline2, targetCount,
-                        cpFractions1);
-            }
-        }
+        spline2 = alignPeriodicSplineToReference(spline1, spline2);
     }
-    else
+    else if (shouldReverseToMatchDirection(spline1, spline2))
     {
-        // Exact degree elevation AND knot-vector sharing (spec sections 2.4 and 3.1): both
-        // curves land on a common degree and a common knot vector, so blending control point i
-        // of curve A against control point i of curve B is exactly blending the curves
-        // themselves (spec section 3.2's affine argument) - not just "same degree, same
-        // count", which is necessary but not sufficient. Two curves can have the same degree
-        // and count while control point i means something different on each - a line's default
-        // [0, 1] domain against an arc-derived spline's own native parameterization, or two
-        // splines with different interior knot structure. makeSplinesCompatible remaps both
-        // domains to [0, 1] before merging, so mismatched domains are handled, not just
-        // mismatched degree/count. Replaces the old elevateDegree + matchCPCount pipeline
-        // (matchCPCount sampled and refit with approximateSpline - not exact) for this path.
-        const compatible = makeSplinesCompatible(bSpline1, bSpline2);
-        bSpline1 = compatible.a;
-        bSpline2 = compatible.b;
+        spline2 = reverseSpline(spline2);
     }
 
-    var cpList1 = bSpline1.controlPoints;
-    var cpList2_orig = bSpline2.controlPoints;
-    var weights1 = bSpline1.weights; // undefined if not rational
-    var weights2_orig = bSpline2.weights; // undefined if not rational
+    // === EXACT COMPATIBILITY (spec sections 2.4 and 3.1) ===
+    // Both curves land on a common degree AND a common knot vector, so blending control point
+    // i of curve 1 against control point i of curve 2 is exactly blending the curves
+    // themselves (spec section 3.2's affine argument). "Same degree, same count" is necessary
+    // but not sufficient: two curves can have both while control point i means something
+    // different on each - a line's default [0, 1] domain against an arc-derived spline's own
+    // native parameterization, or two splines with different interior knot structure.
+    // makeSplinesCompatible remaps both domains before merging, so mismatched domains are
+    // handled too. Periodic pairs stay periodic all the way through (the exact
+    // periodic-preserving refinement in splineRefinementUtils.fs); mixed pairs are clamped,
+    // which is what the warning above is about. Replaces the old elevateDegree + matchCPCount
+    // pipeline entirely - matchCPCount sampled and refit through approximateSpline, so it was
+    // never exact, and it only ever ran on the both-periodic path.
+    const compatible = makeSplinesCompatible(spline1, spline2);
+    const finalSpline1 = compatible.a;
+    const finalSpline2 = compatible.b;
 
-    if (bothPeriodic && size(cpList1) == size(cpList2_orig))
+    // Defensive only: makeSplinesCompatible guarantees both. Reaching either throw means a
+    // module regression, not bad input.
+    if (finalSpline1.degree != finalSpline2.degree)
     {
-        const shiftNormal = bestPeriodicShift(cpList1, cpList2_orig);
-        const normalRot = rotateArray(cpList2_orig, -shiftNormal);
-        var normalWeightRot = weights2_orig == undefined ? undefined : rotateArray(weights2_orig, -shiftNormal);
-        const distNormal = sumDistances(cpList1, normalRot);
-
-        const reversed = reverse(cpList2_orig);
-        const shiftRev = bestPeriodicShift(cpList1, reversed);
-        const revRot = rotateArray(reversed, -shiftRev);
-        var revWeightRot = weights2_orig == undefined ? undefined : rotateArray(reverse(weights2_orig), -shiftRev);
-        const distRev = sumDistances(cpList1, revRot);
-
-        if (distRev < distNormal)
-        {
-            cpList2_orig = revRot;
-            if (weights2_orig != undefined)
-                weights2_orig = revWeightRot;
-        }
-        else
-        {
-            cpList2_orig = normalRot;
-            if (weights2_orig != undefined)
-                weights2_orig = normalWeightRot;
-        }
+        throw regenError("Internal error: curve degrees still differ after compatibility processing.", ["curve1", "curve2"]);
+    }
+    if (size(finalSpline1.controlPoints) != size(finalSpline2.controlPoints))
+    {
+        throw regenError("Internal error: curves have different B-spline control point counts (" ~
+                size(finalSpline1.controlPoints) ~ " vs " ~ size(finalSpline2.controlPoints) ~
+                ") after compatibility processing.", ["curve1", "curve2"]);
     }
 
-    var autoDecidedFlip = false;
-    if (!bothPeriodic)
-    {
-        try
-        {
-            if (size(cpList1) > 1 && size(cpList2_orig) > 1)
-            {
-                var dir1 = normalize(cpList1[1] - cpList1[0]);
-                var dir2 = normalize(cpList2_orig[1] - cpList2_orig[0]);
-                if (dot(dir1, dir2) < 0)
-                {
-                    autoDecidedFlip = true;
-                }
-            }
-        }
-        catch
-        { /* autoDecidedFlip remains false */
-        }
-    }
+    const controlPointCount = size(finalSpline1.controlPoints);
+    var tweenedControlPoints = makeArray(controlPointCount, finalSpline1.controlPoints[0]);
+    var tweenedWeights = makeArray(controlPointCount, 1);
 
-    var finalCpList2 = autoDecidedFlip ? reverse(cpList2_orig) : cpList2_orig;
-    var finalWeights2 = bSpline2.isRational && autoDecidedFlip ? reverse(weights2_orig) : weights2_orig;
-
-    // === COMPATIBILITY CHECK ===
-    // makeSplinesCompatible guarantees these for the non-periodic path; the both-periodic path
-    // still goes through the original elevate/matchCPCount pipeline above, so this stays a
-    // genuine safety net for that path (and a defensive check against a module regression).
-    if (bSpline1.degree != bSpline2.degree)
+    for (var pointIndex = 0; pointIndex < controlPointCount; pointIndex += 1)
     {
-        throw regenError("Failed to match curve degrees after elevation.", ["curve1", "curve2"]);
-    }
-    if (size(cpList1) != size(finalCpList2))
-    {
-        throw regenError("Curves have different B-spline control point counts (" ~ size(cpList1) ~ " vs " ~ size(finalCpList2) ~ ") after compatibility processing.", ["curve1", "curve2"]);
-    }
-    if (bSpline1.isRational != bSpline2.isRational)
-    {
-        throw regenError("Curves have different rationality. Both must be rational or non-rational.", ["curve1", "curve2"]);
-    }
-
-    var tweenedCps = makeArray(size(cpList1), cpList1[0]);
-    var tweenedWeights = makeArray(size(cpList1), 1);
-
-    for (var i = 0; i < size(cpList1); i += 1)
-    {
-        const weight1 = weights1[i];
-        const weight2 = finalWeights2[i];
+        const weight1 = finalSpline1.weights[pointIndex];
+        const weight2 = finalSpline2.weights[pointIndex];
         const blendedWeight = weight1 * (1 - fraction) + weight2 * fraction;
 
-        const pos1 = cpList1[i];
-        const pos2 = finalCpList2[i];
+        // Rational splines interpolate in homogeneous coordinates: weight each control point,
+        // blend, then divide back out by the blended weight.
+        const weightedPosition1 = finalSpline1.controlPoints[pointIndex] * weight1;
+        const weightedPosition2 = finalSpline2.controlPoints[pointIndex] * weight2;
+        const blendedWeightedPosition = weightedPosition1 * (1 - fraction) + weightedPosition2 * fraction;
 
-        // For rational B-splines (NURBS), interpolate in homogeneous coordinates
-        // Weighted CP = CP * weight, then interpolate, then divide by interpolated weight
-        const weightedPos1 = pos1 * weight1;
-        const weightedPos2 = pos2 * weight2;
-        const blendedWeightedPos = weightedPos1 * (1 - fraction) + weightedPos2 * fraction;
-
-        tweenedCps[i] = blendedWeightedPos / blendedWeight;
-        tweenedWeights[i] = blendedWeight;
+        tweenedControlPoints[pointIndex] = blendedWeightedPosition / blendedWeight;
+        tweenedWeights[pointIndex] = blendedWeight;
     }
 
-    var isPeriodicTween = originalIsPeriodic1;
-    if (originalIsPeriodic1 != originalIsPeriodic2)
-    {
-        reportFeatureWarning(context, id, "Curves have different periodicity; tweened curve will adopt periodicity of the first curve.");
-    }
-
-    var newBSplineDef = bSplineCurve({
-            "degree" : bSpline1.degree,
-            "controlPoints" : tweenedCps,
-            "isPeriodic" : isPeriodicTween,
-            "isRational" : bSpline1.isRational,
-            "weights" : tweenedWeights
+    // The shared knot vector is carried through to the result. Omitting it - which this
+    // feature used to do - makes bSplineCurve synthesize a UNIFORM one, throwing away the
+    // entire point of exact knot sharing: at fraction 0 the result would not reproduce curve 1
+    // unless curve 1's knots happened to already be uniform.
+    const tweenedCurve = bSplineCurve({
+            "degree" : finalSpline1.degree,
+            "isPeriodic" : bothPeriodic,
+            "controlPoints" : tweenedControlPoints,
+            "weights" : tweenedWeights,
+            "knots" : finalSpline1.knots
         });
 
-    opCreateBSplineCurve(context, id + "tweenedCpSpline", { "bSplineCurve" : newBSplineDef });
+    opCreateBSplineCurve(context, id + "tweenedCpSpline", { "bSplineCurve" : tweenedCurve });
+}
+
+// Bounds on the geometric sample count used to choose a periodic seam alignment. The search is
+// O(count^2), so this is the feature's single most performance-sensitive number. The count is
+// taken from the curves' own control point counts - matching the resolution this feature has
+// always aligned at, since it used to search over control point indices directly - and then
+// clamped: the floor keeps very simple curves from aligning on too little evidence, and the
+// ceiling keeps a dense curve from quadratically blowing up regeneration time, which the
+// control-point-index search had no protection against at all.
+const PERIODIC_ALIGNMENT_MIN_SAMPLES = 16;
+const PERIODIC_ALIGNMENT_MAX_SAMPLES = 48;
+
+/**
+ * Choose how curve 2's period lays against curve 1's, and apply that choice EXACTLY.
+ *
+ * Both candidate operations - reversal, and moving the seam - are exact reparameterizations
+ * (see reverseSpline and rewindowPeriodicSpline), so curve 2's geometry is untouched. Only the
+ * labelling of which parameter is "the start" changes, and that is precisely what decides
+ * which control point of curve 1 blends against which control point of curve 2 once
+ * makeSplinesCompatible has merged the knot vectors.
+ *
+ * The choice is made on SAMPLED GEOMETRY rather than on control points. Control point arrays
+ * are only comparable between two curves that already share a parameterization - which is
+ * exactly what has not been established yet at this point in the pipeline - whereas sampled
+ * points are comparable always.
+ */
+function alignPeriodicSplineToReference(reference is map, candidate is map) returns map
+{
+    const complexity = max(size(reference.controlPoints), size(candidate.controlPoints));
+    const sampleCount = min(PERIODIC_ALIGNMENT_MAX_SAMPLES, max(PERIODIC_ALIGNMENT_MIN_SAMPLES, complexity));
+
+    const referenceSamples = samplePeriodicSplineUniformly(reference, sampleCount);
+    const forwardSamples = samplePeriodicSplineUniformly(candidate, sampleCount);
+    // The reversed candidate's samples are a cyclic reversal of the forward ones, so they need
+    // no third evaluation pass: reverseSpline maps t to -t, so sampling the reversed spline at
+    // its own domainStart + T*j/N evaluates the original at a + T*(N - j)/N.
+    const reversedSamples = cyclicReverse(forwardSamples);
+
+    const forward = bestCyclicAlignment(referenceSamples, forwardSamples);
+    const reversed = bestCyclicAlignment(referenceSamples, reversedSamples);
+
+    // Correlations are directly comparable between the two directions - see
+    // bestCyclicAlignment - so no follow-up distance sums are needed to break the tie.
+    const useReversed = reversed.correlation > forward.correlation;
+    const chosen = useReversed ? reverseSpline(candidate) : candidate;
+    const chosenShift = useReversed ? reversed.shift : forward.shift;
+
+    // Shift m means "curve 1 at fraction j/N corresponds to curve 2 at fraction (j + m)/N", so
+    // curve 2's seam moves forward by that same fraction of its own period.
+    const domain = periodicSplineDomain(chosen);
+    return rewindowPeriodicSpline(chosen, domain.start + domain.period * chosenShift / sampleCount);
+}
+
+/**
+ * Best cyclic alignment of `candidate` onto `reference` (equal-length arrays of uniformly
+ * spaced samples): the shift s maximizing the circular cross-correlation
+ * sum_j (reference[j] . candidate[(j + s) mod N]), returned with that correlation.
+ *
+ * Maximizing correlation is equivalent to minimizing the sum of SQUARED distances, because
+ * sum|A_j - B_(j+s)|^2 = sum|A_j|^2 + sum|B_j|^2 - 2*sum(A_j . B_(j+s)), and both leading terms
+ * are independent of s - a cyclic shift only permutes which points get summed. That identity is
+ * what makes this affordable: the inner loop is a dot product rather than a norm, so an O(N^2)
+ * search costs no square roots at all. Choosing least squares over sum-of-distances is a
+ * deliberate change of criterion (it is the standard registration criterion), not a silent
+ * substitution of one for the other - see the squaredNorm-vs-norm caveat about summed metrics.
+ *
+ * Correlations are comparable across the forward and reversed candidates for the same reason:
+ * reversal permutes the same multiset of points, leaving both constant terms untouched.
+ */
+function bestCyclicAlignment(reference is array, candidate is array) returns map
+{
+    const count = size(reference);
+    var bestShift = 0;
+    var bestCorrelation = -1e30 * meter * meter;
+    for (var shift = 0; shift < count; shift += 1)
+    {
+        var correlation = 0 * meter * meter;
+        for (var index = 0; index < count; index += 1)
+        {
+            var sourceIndex = index + shift;
+            if (sourceIndex >= count)
+            {
+                sourceIndex -= count;
+            }
+            correlation += dot(reference[index], candidate[sourceIndex]);
+        }
+        if (correlation > bestCorrelation)
+        {
+            bestCorrelation = correlation;
+            bestShift = shift;
+        }
+    }
+    return { "shift" : bestShift, "correlation" : bestCorrelation };
+}
+
+/** Reverse a cyclic sample array in place of its parameterization: result[j] is
+    elements[(N - j) mod N], so element 0 (the seam) stays put and the rest run backwards. */
+function cyclicReverse(elements is array) returns array
+{
+    const count = size(elements);
+    var reversed = makeArray(count, elements[0]);
+    for (var index = 1; index < count; index += 1)
+    {
+        reversed[index] = elements[count - index];
+    }
+    return reversed;
+}
+
+/** A spline's parameter domain: [start, start + period], read off the knot array's clamped or
+    periodic domain positions (both live at the same indices). */
+function periodicSplineDomain(spline is map) returns map
+{
+    const domainStart = spline.knots[spline.degree];
+    const domainEnd = spline.knots[size(spline.knots) - spline.degree - 1];
+    return { "start" : domainStart, "period" : domainEnd - domainStart };
+}
+
+/** Build a kernel BSplineCurve from a normalized spline map, preserving its periodicity and
+    its exact knot vector, so std's own evaluator can be used on it. */
+function toKernelCurve(spline is map) returns BSplineCurve
+{
+    return bSplineCurve({
+                "degree" : spline.degree,
+                "isPeriodic" : spline.isPeriodic == true,
+                "controlPoints" : spline.controlPoints,
+                "weights" : spline.weights,
+                "knots" : spline.knots is KnotArray ? spline.knots : knotArray(spline.knots)
+            });
+}
+
+/** Sample a periodic spline at `sampleCount` uniformly spaced parameters spanning exactly one
+    period, excluding the wrap-around duplicate at the far end. */
+function samplePeriodicSplineUniformly(spline is map, sampleCount is number) returns array
+{
+    const domain = periodicSplineDomain(spline);
+    var parameters = makeArray(sampleCount, 0);
+    for (var sampleIndex = 0; sampleIndex < sampleCount; sampleIndex += 1)
+    {
+        parameters[sampleIndex] = domain.start + domain.period * sampleIndex / sampleCount;
+    }
+    return evaluateSpline({ "spline" : toKernelCurve(spline), "parameters" : parameters })[0];
+}
+
+/**
+ * For two curves that are not both closed, decide whether curve 2 should be reversed so the
+ * pair runs the same way. Compares the two possible endpoint pairings: start-to-start plus
+ * end-to-end, against start-to-end plus end-to-start. Endpoints are evaluated rather than read
+ * off the control point array so this works whatever form each spline is in (a periodic
+ * spline's first control point is not its start point); a closed curve's two endpoints
+ * coincide, making both pairings equal, so it correctly abstains rather than reversing on
+ * noise.
+ */
+function shouldReverseToMatchDirection(reference is map, candidate is map) returns boolean
+{
+    const referenceEnds = splineEndPoints(reference);
+    const candidateEnds = splineEndPoints(candidate);
+    const sameDirection = squaredNorm(referenceEnds.start - candidateEnds.start) + squaredNorm(referenceEnds.end - candidateEnds.end);
+    const reversedDirection = squaredNorm(referenceEnds.start - candidateEnds.end) + squaredNorm(referenceEnds.end - candidateEnds.start);
+    return reversedDirection < sameDirection;
+}
+
+/** A spline's two domain-endpoint positions. */
+function splineEndPoints(spline is map) returns map
+{
+    const domain = periodicSplineDomain(spline);
+    const points = evaluateSpline({
+                "spline" : toKernelCurve(spline),
+                "parameters" : [domain.start, domain.start + domain.period]
+            })[0];
+    return { "start" : points[0], "end" : points[1] };
+}
+
+/**
+ * rotateArray with a guaranteed non-negative step. `rotateArray(elements, -shift)` is the
+ * natural spelling, but FeatureScript's `%` returns a NEGATIVE remainder for a negative left
+ * operand, so a negative step makes rotateArray compute a backwards subArray range internally.
+ * Rotating by `count - shift` is the same rotation with a positive step.
+ */
+function rotateArrayForward(elements is array, shift is number) returns array
+{
+    const count = size(elements);
+    if (count == 0 || shift % count == 0)
+    {
+        return elements;
+    }
+    return rotateArray(elements, count - (shift % count));
 }
 
 //==================================================================
@@ -290,322 +392,66 @@ function getBSplineFromInput(context is Context, definition is map) returns map
             }
         }
     }
-    // Since weights can be modified, it's either to make every curve rational and default the weights to all 1s.
-    if (!bspline.isRational)
-    {
-        bspline.weights = makeArray(size(bspline.controlPoints), 1);
-        bspline.isRational = true;
-    }
-    return cleanUpPeriodicBSplineDefinition(bspline);
-}
-
-// There are a few ways that periodic NURBS are handled, the can have no overlaps, overlapping knots or onverlapping knots and control points.
-// For our purposes, if a curve has overlapping knots and overlapping control points, we remove the overlapping control points.
-function cleanUpPeriodicBSplineDefinition(bspline is map) returns map
-{
-    if (!bspline.isPeriodic || bspline.knots[0] == 0 || size(bspline.controlPoints) + 2 * bspline.degree + 1 == size(bspline.knots))
-    {
-        return bspline;
-    }
-    const numOverlappingKnots = indexOf(bspline.knots, 0);
-    // In certain cases, we get periodic curves with only the first control point overlapping and a single knot overlap.
-    // For our bspline creation code this is the same as having no overlapping knots so we clamp the knot vector to [0;1] to avoid issues with elevation.
-    if (numOverlappingKnots == 1)
-    {
-        bspline.knots[0] = 0;
-        bspline.knots[size(bspline.knots) - 1] = 1;
-        return bspline;
-    }
-    // If we're here, we have repeated knots AND repeated control points. We only want the knots.
-    const lastIndex = size(bspline.controlPoints) - bspline.degree;
-    bspline.controlPoints = subArray(bspline.controlPoints, 0, lastIndex);
-    if (bspline.weights != undefined)
-    {
-        bspline.weights = subArray(bspline.weights, 0, lastIndex);
-    }
+    // Canonicalization (force-rational, periodic form) is normalizeSplineDefinition's job now,
+    // and the caller runs it immediately. This used to additionally call a local copy of std
+    // editCurve.fs's cleanUpPeriodicBSplineDefinition, which was removed rather than kept: its
+    // "knots[0] != 0 means this needs reinterpreting" heuristic corrupts a perfectly canonical
+    // periodic curve (every one of them has knots[0] < 0 from its own padding), and for
+    // degree 1 it would rewrite the knot vector's ends outright.
     return bspline;
 }
 
-//==================================================================
-//=========================== Elevation ============================
-//==================================================================
-
-function subdivideIntoBeziers(points is array, knots is array, curveDegree is number) returns array
-{
-    var numSplits = 0;
-    for (var i = curveDegree + 1; i < size(knots) - curveDegree - 1; i += 1)
-    {
-        if (knots[i] != knots[i + 1])
-        {
-            numSplits += 1;
-        }
-    }
-    const overlappingKnots = knots[0] < 0;
-    if (overlappingKnots)
-    {
-        numSplits += 2;
-        for (var i = 0; i < curveDegree + 2; i += 1)
-        {
-            points = append(points, points[i]);
-        }
-    }
-    var currentKnots = knots;
-    var currentPoints = points;
-    var beziers = makeArray(numSplits + 1);
-
-    for (var i = 0; i < numSplits; i += 1)
-    {
-        const bezierAndSpline = splitAtFirstKnot(currentPoints, currentKnots, curveDegree);
-        beziers[i] = bezierAndSpline.bezier;
-        currentPoints = bezierAndSpline.bspline;
-        currentKnots = bezierAndSpline.knots;
-    }
-    beziers[numSplits] = currentPoints;
-    if (overlappingKnots)
-    {
-        beziers = subArray(beziers, 1, size(beziers) - 1);
-    }
-    return beziers;
-}
-
-// Returns the first bezier subdivision and the rest of the curve.
-// We apply DeBoor's algorithm, which gives the segment subdivision of the bspline.
-// The Bezier points are the first points of each level of segmentation.
-// The last points of each level of segmentation are prepended to the bspline.
-// See https://doi.org/10.1007/978-3-642-59223-2
-function splitAtFirstKnot(points is array, knots is array, curveDegree is number) returns map
-{
-    if (size(points) == curveDegree + 1)
-    {
-        // This is a Bezier curve, no need to do anything.
-        return {};
-    }
-    // first knot's index (k) is d + 1
-    var k = curveDegree + 1;
-    // Value of first knot
-    const u = knots[k];
-    // multiplicity of the knot
-    var s = 1;
-    for (var i = k + 1; i < size(knots); i += 1)
-    {
-        if (knots[i] != knots[k])
-        {
-            break;
-        }
-        s += 1;
-        k += 1;
-    }
-    // De boor
-    const h = curveDegree - s;
-    var result = makeArray(h + 1);
-    result[0] = subArray(points, k - curveDegree, k - s + 1);
-    for (var r = 1; r <= h; r += 1)
-    {
-        result[r] = makeArray(curveDegree - s - r + 1);
-        for (var i = 0; i <= curveDegree - s - r; i += 1)
-        {
-            const knotIndex = i + k - curveDegree + r;
-            const alpha = (u - knots[knotIndex]) / (knots[knotIndex + curveDegree - r + 1] - knots[knotIndex]);
-            result[r][i] = (1 - alpha) * result[r - 1][i] + alpha * result[r - 1][i + 1];
-        }
-    }
-    // Extracting the bezier points from the segmentation
-    const bezierPointsBeforeDeBoor = subArray(points, 0, k - curveDegree);
-    const bsplinePointsAfterDeBoor = subArray(points, k - s + 1, size(points));
-    var bezierPointsInDeBoor = makeArray(h + 1);
-    var bsplinePontsInDeBoor = makeArray(h + 1);
-    for (var r = 0; r <= h; r += 1)
-    {
-        bezierPointsInDeBoor[r] = result[r][0];
-        bsplinePontsInDeBoor[r] = result[h - r][size(result[h - r]) - 1];
-    }
-    const bezier = concatenateArrays([bezierPointsBeforeDeBoor, bezierPointsInDeBoor]);
-    const bspline = concatenateArrays([bsplinePontsInDeBoor, bsplinePointsAfterDeBoor]);
-    const newKnots = concatenateArrays([makeArray(curveDegree + 1, u), subArray(knots, k + 1, size(knots))]);
-    return { "bezier" : bezier, "bspline" : bspline, "knots" : newKnots };
-}
-
-function elevateDegree(bspline is map, newDegree is number) returns map
-{
-    const weightedPoints = combinePointsAndWeights(bspline.controlPoints, bspline.weights);
-
-    var newPoints;
-    if (isBezier(bspline.controlPoints, bspline.degree, bspline.knots))
-    {
-        newPoints = elevateBezierDegree(weightedPoints, newDegree);
-        bspline.knots = makeUniformKnotArray(newDegree, size(newPoints), false);
-    }
-    else
-    {
-        const pointsAndKnots = elevateBSpline(weightedPoints, bspline.knots, bspline.degree, newDegree);
-        newPoints = pointsAndKnots.points;
-        bspline.knots = pointsAndKnots.knots as KnotArray;
-    }
-
-    const pointsAndWeights = separatePointsAndWeights(newPoints);
-    bspline.controlPoints = pointsAndWeights.points;
-    bspline.weights = pointsAndWeights.weights;
-    bspline.degree = newDegree;
-
-    return bspline;
-}
-
-function elevateBSpline(originalPoints is array, originalKnots is array, originalDegree is number, newDegree is number) returns map
-{
-    // First we subdivide the bspline into bezier curves
-    var beziers = subdivideIntoBeziers(originalPoints, originalKnots, originalDegree);
-
-    // Then we elevate each bezier curve separately
-    for (var i = 0; i < size(beziers); i += 1)
-    {
-        beziers[i] = elevateBezierDegree(beziers[i], newDegree);
-    }
-    // Then we combine the beziers into one bspline
-    var points = [beziers[0][0]];
-    for (var i = 0; i < size(beziers); i += 1)
-    {
-        for (var j = 1; j < size(beziers[i]); j += 1)
-        {
-            points = append(points, beziers[i][j]);
-        }
-    }
-    // We make the corresponding knot vector, which is the same knot vector but with added multiplicity
-    const lastKnot = originalKnots[size(originalKnots) - originalDegree - 1];
-    var i = originalDegree + 1;
-    var currentKnot = originalKnots[i];
-    var newKnots = makeArray(newDegree + 1, originalKnots[i - 1]);
-    while (currentKnot != lastKnot)
-    {
-        newKnots = concatenateArrays([newKnots, makeArray(newDegree, currentKnot)]);
-        // We skip identical knots
-        while (originalKnots[i] == currentKnot)
-        {
-            i += 1;
-        }
-        currentKnot = originalKnots[i];
-    }
-    newKnots = concatenateArrays([newKnots, makeArray(newDegree + 1, lastKnot)]);
-    // Then we simplify
-    return removeKnots(points, newKnots, newDegree);
-}
-
-// Refine a B-spline so that it has exactly `targetCount` control points.
-// Uses sampling and spline approximation to preserve the original shape.
-function matchCPCount(context is Context, bspline is map, targetCount is number, refFractions is array) returns map
-{
-    if (size(bspline.controlPoints) >= targetCount)
-    {
-        // If the curve already has the desired number of points or more,
-        // leave it unchanged.
-        return bspline;
-    }
-
-    const startParam = bspline.knots[bspline.degree];
-    const endParam = bspline.knots[size(bspline.knots) - bspline.degree - 1];
-    var params = [];
-    for (var i = 0; i < targetCount; i += 1)
-    {
-        var fraction = i / (targetCount - 1);
-        if (refFractions != undefined && size(refFractions) == targetCount)
-        {
-            fraction = refFractions[i];
-        }
-        params = append(params, startParam + (endParam - startParam) * fraction);
-    }
-    const positions = evaluateSpline({ "spline" : bspline, "parameters" : params })[0];
-    const target = approximationTarget({ 'positions' : positions });
-    var refined = approximateSpline(context, {
-                "degree" : bspline.degree,
-                "tolerance" : 1e-8 * meter,
-                "isPeriodic" : bspline.isPeriodic,
-                "targets" : [target],
-                "parameters" : params,
-                "maxControlPoints" : targetCount
-            })[0];
-    if (size(refined.controlPoints) != targetCount)
-    {
-        refined = bSplineCurve({
-                    "degree" : bspline.degree,
-                    "isPeriodic" : bspline.isPeriodic,
-                    "isRational" : bspline.isRational,
-                    "controlPoints" : positions,
-                    "weights" : bspline.isRational ? makeArray(targetCount, 1) : undefined
-                });
-    }
-    else if (bspline.isRational && !refined.isRational)
-    {
-        refined.isRational = true;
-        refined.weights = makeArray(size(refined.controlPoints), 1);
-    }
-    return refined;
-}
 
 
 //==================================================================
 //=========================== Utilities ============================
 //==================================================================
 
-function isBezier(points is array, curveDegree is number, knots is array) returns boolean
-{
-    return size(points) == curveDegree + 1 && knots[0] == 0;
-}
-
-
 function getAllEdgesQuery(query is Query) returns Query
 {
     return qUnion([qEntityFilter(query, EntityType.EDGE), qEntityFilter(query, EntityType.BODY)->qOwnedByBody(EntityType.EDGE)]);
 }
 
-// Compute the sum of point distances between two control point arrays
-function sumDistances(points1 is array, points2 is array) returns ValueWithUnits
+/**
+ * Sum of SQUARED point distances between two equal-length point arrays — the least-squares
+ * registration residual. Squared throughout, matching bestPeriodicShift, so the shift and the
+ * forward-vs-reversed decision in alignCircleToCurve are chosen under one criterion rather than
+ * two. No square roots: nothing here is ever reported, only compared.
+ */
+function sumSquaredDistances(points1 is array, points2 is array) returns ValueWithUnits
 {
-    var total = 0 * meter;
+    var total = 0 * meter ^ 2;
     for (var i = 0; i < size(points1); i += 1)
     {
-        total += norm(points1[i] - points2[i]);
+        total += squaredNorm(points1[i] - points2[i]);
     }
     return total;
 }
 
-// Compute cumulative fractions along a control point list
-function computeControlPointFractions(points is array) returns array
-{
-    if (size(points) == 0)
-    {
-        return [];
-    }
-    var fractions = makeArray(size(points));
-    // Use a distance value so that divisions by the total length
-    // later yield dimensionless fractions.
-    fractions[0] = 0 * meter;
-    var total = 0 * meter;
-    for (var i = 1; i < size(points); i += 1)
-    {
-        total += norm(points[i] - points[i - 1]);
-        fractions[i] = total;
-    }
-    if (total == 0 * meter)
-    {
-        return makeArray(size(points), 0);
-    }
-    for (var i = 0; i < size(points); i += 1)
-    {
-        fractions[i] /= total;
-    }
-    return fractions;
-}
-
-
-// Find the rotation of `candidate` that best matches `reference`
+/**
+ * Find the rotation of `candidate` that best matches `reference`: the shift s minimizing the
+ * total SQUARED distance between reference[i] and candidate[(i + s) mod n], which is the same
+ * pairing rotateArrayForward(candidate, s) produces. Indexes directly rather than building each
+ * rotated array, since this is O(n^2) terms and allocating an n-element array per candidate
+ * shift dominates otherwise.
+ */
 function bestPeriodicShift(reference is array, candidate is array) returns number
 {
-    const n = size(reference);
+    const count = size(reference);
     var bestShift = 0;
-    var bestDistance = 1e30 * meter;
-    for (var shift = 0; shift < n; shift += 1)
+    var bestDistance = 1e30 * meter^2;
+    for (var shift = 0; shift < count; shift += 1)
     {
-        const rotated = rotateArray(candidate, -shift);
-        const distance = sumDistances(reference, rotated);
+        var distance = 0 * meter^2;
+        for (var index = 0; index < count; index += 1)
+        {
+            var sourceIndex = index + shift;
+            if (sourceIndex >= count)
+            {
+                sourceIndex -= count;
+            }
+            distance += squaredNorm(reference[index] - candidate[sourceIndex]);
+        }
         if (distance < bestDistance)
         {
             bestDistance = distance;
@@ -636,16 +482,16 @@ function alignCircleToCurve(context is Context, circleEdge is Query, otherEdge i
         =>line.origin);
 
     const normalShift = bestPeriodicShift(circlePts, otherPts);
-    const normalRot = rotateArray(circlePts, -normalShift);
+    const normalRot = rotateArrayForward(circlePts, normalShift);
     const reversed = reverse(circlePts);
     const revShift = bestPeriodicShift(reversed, otherPts);
-    const revRot = rotateArray(reversed, -revShift);
-    const distNorm = sumDistances(normalRot, otherPts);
-    const distRev = sumDistances(revRot, otherPts);
+    const revRot = rotateArrayForward(reversed, revShift);
+    const distNorm = sumSquaredDistances(normalRot, otherPts);
+    const distRev = sumSquaredDistances(revRot, otherPts);
 
     if (distRev < distNorm)
-        return rotateArray(reverse(baseParams), -revShift);
-    return rotateArray(baseParams, -normalShift);
+        return rotateArrayForward(reverse(baseParams), revShift);
+    return rotateArrayForward(baseParams, normalShift);
 }
 
 function tweenCircleOrLine(context is Context, id is Id, edge1 is Query, edge2 is Query, fraction is number)

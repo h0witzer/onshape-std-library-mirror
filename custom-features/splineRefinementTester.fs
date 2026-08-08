@@ -119,6 +119,9 @@ export const splineRefinementTester = defineFeature(function(context is Context,
         runPeriodicRefinementVector(passCount, failures, definition.printPassingChecks);
         runPeriodicElevationVector(passCount, failures, definition.printPassingChecks);
         runPeriodicShareKnotVectorVector(passCount, failures, definition.printPassingChecks);
+        runReverseSplineVector(passCount, failures, definition.printPassingChecks);
+        runRewindowPeriodicSplineVector(passCount, failures, definition.printPassingChecks);
+        runTightPeriodicSplineVector(passCount, failures, definition.printPassingChecks);
 
         const summary = passCount[] ~ " checks passed, " ~ size(failures[]) ~ " failed.";
         println("[splineRefinementTester] " ~ summary);
@@ -1441,5 +1444,222 @@ function runPeriodicShareKnotVectorVector(passCount is box, failures is box, pri
     catch (error)
     {
         recordCheck(passCount, failures, false, "PERIODIC-SHARE: threw an error: " ~ error, printPassing);
+    }
+}
+
+// ============================================================================================
+// REVERSE / REWINDOW — the two exact reparameterizations. Both change only WHICH parameter
+// labels which point, never the geometry, which is what lets tweenCurves choose a
+// correspondence between two closed curves without approximating anything.
+// ============================================================================================
+
+function runReverseSplineVector(passCount is box, failures is box, printPassing is boolean)
+{
+    try
+    {
+        // Clamped case: reversing maps parameter t to -t, so the reversed curve at -t must be
+        // the original at t.
+        const degree = 3;
+        const knots = makeClampedCubicKnots();
+        const fixturePoints = makeSixPointFixture();
+        const spline = { "degree" : degree, "isPeriodic" : false, "controlPoints" : fixturePoints, "knots" : knotArray(knots) };
+        const reversed = reverseSpline(spline);
+
+        recordCheck(passCount, failures, size(reversed.controlPoints) == size(fixturePoints),
+            "REVERSE: control point count is unchanged", printPassing);
+        recordCheck(passCount, failures, pointsMatch(reversed.controlPoints[0], fixturePoints[size(fixturePoints) - 1]),
+            "REVERSE: the reversed curve's first control point is the original's last", printPassing);
+
+        const sampleParameters = makeUnitSampleParameters();
+        var mirroredParameters = makeArray(size(sampleParameters), 0);
+        for (var sampleIndex = 0; sampleIndex < size(sampleParameters); sampleIndex += 1)
+        {
+            mirroredParameters[sampleIndex] = -sampleParameters[sampleIndex];
+        }
+        const originalPoints = evaluateCurvePoints(fixturePoints, knots, degree, sampleParameters);
+        const reversedPoints = evaluateCurvePoints(reversed.controlPoints, reversed.knots, degree, mirroredParameters);
+        var clampedGeometryPreserved = true;
+        for (var sampleIndex = 0; sampleIndex < size(sampleParameters); sampleIndex += 1)
+        {
+            if (!pointsMatch(originalPoints[sampleIndex], reversedPoints[sampleIndex]))
+            {
+                clampedGeometryPreserved = false;
+            }
+        }
+        recordCheck(passCount, failures, clampedGeometryPreserved,
+            "REVERSE: clamped geometry is preserved (reversed curve at -t equals original at t)", printPassing);
+
+        // Periodic case: the overlap condition must survive, since control points are only
+        // permuted. Degree 2, per the block header's degree >= 2 rule.
+        const pentagon = makePeriodicPentagonFixture();
+        const periodicSpline = { "degree" : 2, "isPeriodic" : true, "controlPoints" : pentagon.controlPoints, "knots" : knotArray(pentagon.knots) };
+        const reversedPeriodic = reverseSpline(periodicSpline);
+
+        recordCheck(passCount, failures, reversedPeriodic.isPeriodic == true,
+            "REVERSE: a periodic spline stays periodic", printPassing);
+        recordCheck(passCount, failures, overlapConditionHolds(reversedPeriodic.controlPoints, 2),
+            "REVERSE: the overlap condition holds after reversing a periodic spline", printPassing);
+
+        const periodicParameters = [0, 0.7, 1.4, 2.1, 2.8, 3.5, 4.2, 4.9];
+        var mirroredPeriodicParameters = makeArray(size(periodicParameters), 0);
+        for (var sampleIndex = 0; sampleIndex < size(periodicParameters); sampleIndex += 1)
+        {
+            mirroredPeriodicParameters[sampleIndex] = -periodicParameters[sampleIndex];
+        }
+        const originalPeriodicPoints = evaluatePeriodicCurvePoints(pentagon.controlPoints, pentagon.knots, 2, periodicParameters);
+        const reversedPeriodicPoints = evaluatePeriodicCurvePoints(reversedPeriodic.controlPoints, reversedPeriodic.knots, 2, mirroredPeriodicParameters);
+        var periodicGeometryPreserved = true;
+        for (var sampleIndex = 0; sampleIndex < size(periodicParameters); sampleIndex += 1)
+        {
+            if (!pointsMatch(originalPeriodicPoints[sampleIndex], reversedPeriodicPoints[sampleIndex]))
+            {
+                periodicGeometryPreserved = false;
+            }
+        }
+        recordCheck(passCount, failures, periodicGeometryPreserved,
+            "REVERSE: periodic geometry is preserved (reversed curve at -t equals original at t)", printPassing);
+    }
+    catch (error)
+    {
+        recordCheck(passCount, failures, false, "REVERSE: threw an error: " ~ error, printPassing);
+    }
+}
+
+function runRewindowPeriodicSplineVector(passCount is box, failures is box, printPassing is boolean)
+{
+    try
+    {
+        const pentagon = makePeriodicPentagonFixture(); // degree 2, fundamental knots [0..4], period 5
+        const spline = { "degree" : 2, "isPeriodic" : true, "controlPoints" : pentagon.controlPoints, "knots" : knotArray(pentagon.knots) };
+
+        // Case 1: seam moved ONTO an existing knot (3) - no insertion needed, so the control
+        // point count must not grow.
+        const onKnot = rewindowPeriodicSpline(spline, 3);
+        recordCheck(passCount, failures, size(onKnot.controlPoints) == size(pentagon.controlPoints),
+            "REWINDOW: moving the seam onto an existing knot does not add control points (got " ~ size(onKnot.controlPoints) ~ ")", printPassing);
+        recordCheck(passCount, failures, abs(onKnot.knots[2] - 3) <= KNOT_PARAMETER_TOLERANCE,
+            "REWINDOW: the new domain start is the requested seam parameter", printPassing);
+        recordCheck(passCount, failures, overlapConditionHolds(onKnot.controlPoints, 2),
+            "REWINDOW: the overlap condition holds after re-windowing onto a knot", printPassing);
+
+        // Re-windowing relabels which window is stored; it does NOT shift parameter values, so
+        // the curve evaluates identically at the same ABSOLUTE parameters.
+        const sampleParameters = [3, 3.6, 4.2, 4.8, 5.4, 6, 6.6, 7.2];
+        const originalPoints = evaluatePeriodicCurvePoints(pentagon.controlPoints, pentagon.knots, 2, sampleParameters);
+        const onKnotPoints = evaluatePeriodicCurvePoints(onKnot.controlPoints, onKnot.knots, 2, sampleParameters);
+        var onKnotGeometryPreserved = true;
+        for (var sampleIndex = 0; sampleIndex < size(sampleParameters); sampleIndex += 1)
+        {
+            if (!pointsMatch(originalPoints[sampleIndex], onKnotPoints[sampleIndex]))
+            {
+                onKnotGeometryPreserved = false;
+            }
+        }
+        recordCheck(passCount, failures, onKnotGeometryPreserved,
+            "REWINDOW: geometry is preserved at absolute parameters after re-windowing onto a knot", printPassing);
+
+        // Case 2: seam moved BETWEEN knots (2.5) - one exact insertion, so exactly one more
+        // control point, and the geometry still must not move.
+        const offKnot = rewindowPeriodicSpline(spline, 2.5);
+        recordCheck(passCount, failures, size(offKnot.controlPoints) == size(pentagon.controlPoints) + 1,
+            "REWINDOW: moving the seam between knots adds exactly one control point (got " ~ size(offKnot.controlPoints) ~ ")", printPassing);
+        recordCheck(passCount, failures, abs(offKnot.knots[2] - 2.5) <= KNOT_PARAMETER_TOLERANCE,
+            "REWINDOW: the new domain start is the requested off-knot seam parameter", printPassing);
+        recordCheck(passCount, failures, overlapConditionHolds(offKnot.controlPoints, 2),
+            "REWINDOW: the overlap condition holds after re-windowing between knots", printPassing);
+
+        const offKnotPoints = evaluatePeriodicCurvePoints(offKnot.controlPoints, offKnot.knots, 2, sampleParameters);
+        var offKnotGeometryPreserved = true;
+        for (var sampleIndex = 0; sampleIndex < size(sampleParameters); sampleIndex += 1)
+        {
+            if (!pointsMatch(originalPoints[sampleIndex], offKnotPoints[sampleIndex]))
+            {
+                offKnotGeometryPreserved = false;
+            }
+        }
+        recordCheck(passCount, failures, offKnotGeometryPreserved,
+            "REWINDOW: geometry is preserved at absolute parameters after re-windowing between knots", printPassing);
+
+        // A seam parameter outside the domain must wrap, landing on the same window as its
+        // in-domain equivalent one period earlier.
+        const wrapped = rewindowPeriodicSpline(spline, 2.5 + 5);
+        recordCheck(passCount, failures, abs(wrapped.knots[2] - 2.5) <= KNOT_PARAMETER_TOLERANCE,
+            "REWINDOW: a seam parameter beyond one period wraps into the domain", printPassing);
+    }
+    catch (error)
+    {
+        recordCheck(passCount, failures, false, "REWINDOW: threw an error: " ~ error, printPassing);
+    }
+}
+
+/**
+ * A "tight" periodic spline has FEWER control points per period than its degree (n <= degree).
+ * These used to be rejected outright as degenerate, because the wide window hardcoded a
+ * one-period margin, which is not enough for the clamped ends to stay clear of the core when a
+ * period is that short. The margin is now computed as ceil((degree + 1) / n) periods, so these
+ * take the identical exact path. Degree 3 with n = 3 needs a 2-period margin; degree 4 with
+ * n = 2 needs 3.
+ */
+function runTightPeriodicSplineVector(passCount is box, failures is box, printPassing is boolean)
+{
+    try
+    {
+        // Degree 3, n = 3 (stored: 3 + 3 = 6 control points, 3 + 2*3 + 1 = 10 knots).
+        const f0 = vector(3, 0, 0) * centimeter;
+        const f1 = vector(-1.5, 2.6, 0) * centimeter;
+        const f2 = vector(-1.5, -2.6, 0) * centimeter;
+        const fundamentalPoints = [f0, f1, f2];
+        var controlPoints = makeArray(6, f0);
+        for (var pointIndex = 0; pointIndex < 6; pointIndex += 1)
+        {
+            controlPoints[pointIndex] = fundamentalPoints[pointIndex % 3];
+        }
+        const knots = [-3, -2, -1, 0, 1, 2, 3, 4, 5, 6];
+        const degree = 3;
+
+        const refined = refinePeriodicPoints(controlPoints, knots, degree, [1.5]);
+        recordCheck(passCount, failures, size(refined.controlPoints) == 7,
+            "TIGHT-PERIODIC: refining a degree-3, 3-point-per-period spline yields 7 control points (got " ~ size(refined.controlPoints) ~ ")", printPassing);
+        recordCheck(passCount, failures, overlapConditionHolds(refined.controlPoints, degree),
+            "TIGHT-PERIODIC: the overlap condition holds after refining a tight periodic spline", printPassing);
+
+        const sampleParameters = [0, 0.4, 0.8, 1.2, 1.6, 2, 2.4, 2.8, 3.4];
+        const originalPoints = evaluatePeriodicCurvePoints(controlPoints, knots, degree, sampleParameters);
+        const refinedPoints = evaluatePeriodicCurvePoints(refined.controlPoints, refined.knots, degree, sampleParameters);
+        var geometryPreserved = true;
+        for (var sampleIndex = 0; sampleIndex < size(sampleParameters); sampleIndex += 1)
+        {
+            if (!pointsMatch(originalPoints[sampleIndex], refinedPoints[sampleIndex]))
+            {
+                geometryPreserved = false;
+            }
+        }
+        recordCheck(passCount, failures, geometryPreserved,
+            "TIGHT-PERIODIC: geometry preserved after refining a tight periodic spline", printPassing);
+
+        // Same fixture through degree elevation, which routes through the same wide window.
+        const unitWeights = makeArray(size(controlPoints), 1);
+        const homogeneousPoints = combinePointsAndWeights(controlPoints, unitWeights);
+        const elevated = elevatePeriodicPointsRaw(homogeneousPoints, knots, degree, 5);
+        const separatedElevated = separatePointsAndWeights(elevated.controlPoints);
+
+        recordCheck(passCount, failures, overlapConditionHolds(separatedElevated.points, 5),
+            "TIGHT-PERIODIC: the overlap condition holds after elevating a tight periodic spline to degree 5", printPassing);
+
+        const elevatedPoints = evaluatePeriodicCurvePoints(separatedElevated.points, elevated.knots, 5, sampleParameters);
+        var elevationPreserved = true;
+        for (var sampleIndex = 0; sampleIndex < size(sampleParameters); sampleIndex += 1)
+        {
+            if (!pointsMatch(originalPoints[sampleIndex], elevatedPoints[sampleIndex]))
+            {
+                elevationPreserved = false;
+            }
+        }
+        recordCheck(passCount, failures, elevationPreserved,
+            "TIGHT-PERIODIC: geometry preserved after elevating a tight periodic spline degree 3 -> 5", printPassing);
+    }
+    catch (error)
+    {
+        recordCheck(passCount, failures, false, "TIGHT-PERIODIC: threw an error: " ~ error, printPassing);
     }
 }
