@@ -10,11 +10,72 @@ tester checks passing. Three late discoveries closed this arc, each with its own
 invariant that reversal breaks (§2.3.2), and std `evaluateSpline` silently ignoring weights
 (§2.3.3).
 
-Remaining, in order: re-test the ROTATED periodic pairs live (the rewindow first-of-run fix in
-§2.3.2 is the prime suspect for their intermittent failures — unverified); bump Tween Curves'
-pinned module version and validate its rational-alignment path live (it shares every fix but
-has not run since); Phase 5 (displacementMap migration); the deformation feature (§9.1), not
-started.
+**The module has no stubs left, and every entry point is verified live (2026-08-08).** The last
+five — the four surface hooks (`refineSurfaceToSpanDensity`, `decomposeSurfaceIntoBezierPatches`,
+`extractSubSurface`, `prepareSurfaceForDeformation`) plus `refineSplineToSpanDensity`, which §4
+had documented as public API without it ever existing — **passed on their first run**, vectors
+`SURFACE-PREPARE`, `SUB-SURFACE`, `SURFACE-BEZIER`, `SPAN-DENSITY`. Nothing in the module is
+implemented-but-unrun any more. Design notes worth keeping:
+
+- **`refine*ToSpanDensity` defines density exactly**: a cell holding `d` distinct interior knot
+  values carries `d + 1` polynomial pieces, hence `d + 1` control-point degrees of freedom over
+  that cell, so reaching `m` needs `m - 1 - d` new knots. Cell-local, monotone, no cross-cell
+  bookkeeping. Insertions are widest-gap midpoints *within the cell* — never blind even spacing,
+  which collides with existing knots on uniformly parameterized input (§2.2).
+- **A periodic direction's boundary list is cyclic**, so the wrap cell (last boundary → first
+  boundary + period) is refined like any other; its chosen parameters fold back into one period
+  before reaching `refinePeriodicPoints`. Omitting that cell would leave an under-refined band
+  straddling the seam that no caller would ever notice.
+- **Cell boundaries are deliberately NOT inserted as knots.** Density and continuity are separate
+  questions, exactly as degree and tolerance are in §9.1.1 — a map that is only C⁰ across its
+  lattice boundaries needs multiplicity `degree` there, and no amount of density substitutes.
+  That is the caller's call because only the caller knows its map's continuity.
+- **`decomposeSurfaceIntoBezierPatches` clamps a closed direction over one full period**, and
+  that is not the clamping §2.3 rejects. §2.3 rejects clamping and then re-flagging the result as
+  periodic, which manufactures a seam under a claim of smoothness. Here periodicity is
+  deliberately spent — a Bezier patch is open by definition — and the union of patches reproduces
+  the closed surface exactly, seam span included.
+- **`extractSubSurface` leaves a whole-domain request alone** rather than running an identity
+  extraction, so asking for the full range of a closed direction does not silently spend its
+  closed representation. Any direction actually narrowed comes back clamped and flagged
+  non-periodic, because a sub-rectangle of a closed surface genuinely is an open patch. A range
+  that WRAPS the seam throws and names the exact route (`rewindowPeriodicSurfaceDirection` first).
+
+**Remaining. Note the distinction — the tester proves the MODULE, and neither of the first two
+items is a tester vector.** Both need a real model with real faces:
+
+1. **The ROTATED periodic pairs**, in Tween Surfaces. The `rewindowPeriodicSpline` first-of-run
+   fix (§2.3.2) is the prime suspect for their intermittent failures and is still unverified
+   against them. If one fails, capture the error text and roughly where the seam sat relative to
+   the rotation.
+2. **Tween Curves' rational-alignment path.** Its pinned module version is already bumped and it
+   shares every fix, but the feature has not been built since; the case that matters is a
+   reversal on rational closed curves, whose old kernel-sampled alignment was weights-stripped
+   garbage (§2.3.3) and whose reversal path had the split-seam bug.
+3. **The DERIVATIVE layer, implemented and tester-covered but not yet run** (vector
+   `SURFACE-DERIV`). Added ahead of the deformation feature because §9.1 needs three things
+   point evaluation cannot give: point-to-parameter Newton **inversion**, exact **normals** for
+   the offset step, and **curvature** for §9.1.1's seeding. The kernel alternative was weighed
+   and rejected on two counts, both recorded in the code: `evDistance(point, face)` is one
+   kernel call per control point — 1600 per level on a refined 40×40 net — and its parameter is
+   in `evFaceTangentPlane`'s form, **normalized to the face's parameter-space bounding box**, not
+   knot values, so reading it as a definition parameter is a silent mismatch.
+
+   The rational half is the part that can go wrong invisibly: `S = A/w`, so every order needs the
+   quotient rule (A4.4), and skipping it is the exact shape of the `evaluateSpline` weights bug
+   (§2.3.3) — perfect agreement on non-rational input, silently wrong on every revolve. The
+   tester answers that with three independent tiers, because no one of them is sufficient: an
+   analytic **polynomial** patch built to be `S = (u, v, u²+v²)` exactly; an analytic **rational**
+   anchor (a circle's tangent is perpendicular to its radius, checked to zero — a property no
+   weights-dropping implementation can fake, plus cylinder curvature: Gaussian exactly 0,
+   minimum radius exactly r); and **finite differences** on a fixture whose weights vary in BOTH
+   directions, which is the only tier that loads A4.4's mixed terms at all — the paraboloid is
+   not rational, and the cylinder's weight function is independent of v, so every `w^(0,j)` and
+   `w^(i,j)` term vanishes on it.
+
+4. The deformation feature (§9.1) — not started, and the main line of work once the derivative
+   layer is confirmed.
+5. Phase 5 (displacementMap migration), independent of everything above and doable any time.
 
 `custom-features/splineRefinementUtils.fs`, FeatureScript 3044:
 - **Verified passing in Onshape (200+ checks across many live runs):** Layers 1–2, direct
@@ -100,12 +161,89 @@ Every surface hook must do the same for `uKnots`/`vKnots`.
 Consumers to migrate: `custom-features/displacementMap.fs`, `custom-features/tweenSurfaces.fs`,
 `custom-features/tweenCurves.fs`.
 
-**Scope: exact refinement.** Every operation here adds representational degrees of freedom
-while leaving the geometry bit-for-bit unchanged — knot insertion, knot refinement, Bezier
-decomposition, and **degree elevation**. The lossy inverses (knot removal, degree reduction,
-approximation) are out; std already exports `removeKnots` and `approximateSpline` for those.
-That line is what makes the module safe to call speculatively: refining never costs accuracy,
-so a consumer can refine first and ask questions later.
+**Scope: exact refinement, plus one measured exception.** Almost every operation here adds
+representational degrees of freedom while leaving the geometry bit-for-bit unchanged — knot
+insertion, knot refinement, Bezier decomposition, and **degree elevation**. That line is what makes
+the module safe to call speculatively: refining never costs accuracy, so a consumer can refine
+first and ask questions later.
+
+**Amended 2026-08-09 — `simplifySurfaceToControlPointCounts` is deliberately LOSSY.** The original
+exclusion said lossy inverses were out because "std already exports `removeKnots` and
+`approximateSpline` for those". For surfaces that justification is simply false, in both halves,
+and it was checked before being overturned:
+
+- **There is no surface approximation or fitting routine anywhere in std.**
+  `evApproximateBSplineSurface` takes a tolerance and offers no control over control point count;
+  `approximationUtils`' routines are Path/curve based (they are what `editCurve`'s "Maximum control
+  points" drives); `opFitSpline` is curves. A library-wide grep for a surface fitter returns nothing.
+- **`nurbsUtils.removeKnots` cannot substitute, for two independent reasons.** Its candidate list
+  (`knotsLastIndicesAndMultiplicities`) only ever offers knots of multiplicity ≥ 2, so it
+  structurally cannot reduce an ordinary net whose interior knots are simple — it exists to clean up
+  after Bezier decomposition. And it decides removability from actual point *values*, so run per row
+  it removes different knots in different rows, and rows that disagree about their knot vector are
+  not a surface (the same trap already documented against `elevateSurfaceDegrees`).
+
+So removal is implemented here, with removability decided **for a whole knot line at once** — the
+deviation is the worst across every row, and a knot goes only if the whole line can afford it. That
+one change is what makes NURBS Book A5.8 a surface algorithm rather than a curve one. Selection is
+greedy least-error, re-evaluated each round.
+
+### 2.2.1 A5.8 has to be *finished* before it can be used lossily (2026-08-09)
+
+A second divergence from the book, found while chasing a one-sided lean in Edit Surface's merged
+patches and larger than it looks. A5.8 walks its removal window from **both** ends and meets in the
+middle. When the window has even length — `degree − multiplicity` odd — the two ends do not land on a
+shared slot: they produce **two different answers** for the one control point that survives, and the
+gap between them is exactly what this module reports as `deviation`.
+
+In the book that gap is never spent. A5.8 is only ever entered after `dist <= TOL` has proved the
+knot removable, so the two answers agree and which one is kept is invisible and unspecified. **This
+module removes knots that are not removable on purpose** — that is the whole point of returning a
+deviation instead of a boolean — which promotes an unspecified choice into a load-bearing one. The
+transcription inherited the book's shift, so the surviving point was whichever slot index parity left
+standing, and **100% of the removal error landed on the same side every time**.
+
+Consequences, measured:
+
+| | keep an end (before) | midpoint (now) |
+|---|---|---|
+| mirror error, symmetric net | 0.300 | **0.000** |
+| worst deviation from the original | 0.192 | **0.067** (2.9×) |
+| same geometry fed in mirrored | 1.48 vs 0.74 (2.0× apart) | **0.62 vs 0.62** |
+| tester's own `SIMPLIFY` fixture, V direction | 0.348 | **0.131** (2.7×) |
+
+The two answers bracket the truth, so **an endpoint is the worst available choice**; the midpoint is
+minimax on the control-point displacement this function reports and halves the error rather than
+relocating it. Centring is done in **homogeneous** coordinates, since the recurrence is linear there,
+and the reported deviation becomes the displacement actually incurred — half the gap — which keeps it
+commensurable with the odd-window branch so the greedy still compares like with like.
+
+Affected everywhere `degree − multiplicity` is odd: **every simple-knot removal at degree 2 and 4**,
+and **the last removal of every degree-3 seam heal**, which is why a merge hit it without fail while
+ordinary degree-3 simplification (odd window) never did. Symmetry falls out of minimizing the error;
+there is no symmetry rule anywhere in the module, which is the point.
+
+Vector: `SIMPLIFY` gained a handedness check on an **asymmetric** fixture — reduction must commute
+with `reverseSurfaceDirection` — so it tests the operator rather than the data, plus the symmetric
+statement of the same property and the halved deviation.
+
+**Two neighbouring suspects were investigated and cleared, and both stay as they are.** The greedy's
+`<` tie-break, which gives ties to the lowest index, is *self-correcting across rounds*: removing one
+twin of a mirror pair makes the other the cheapest candidate immediately, so pairs come out together
+and every even removal count already lands exactly symmetric. Forcing whole-tie-group removal changed
+12 outcomes in 348 reduction cases and was **worse in all 12, better in none** (mean deviation on
+symmetric fixtures 0.081 → 0.124), because overriding a greedy's next choice sends it somewhere else.
+Likewise `balancedOnly`'s habit of returning *no* insertions when the budget is smaller than the first
+tie group: serving a split or rounded-up group instead buys a sharper corner (0.33 → 0.24 → 0.15) and
+pays for it in symmetry (0.000 → 0.033 → 0.066 mirror error), which is the wrong trade for the flag
+whose job is symmetry. Both reverts are recorded at their call sites so they are not re-attempted.
+
+The exception is admissible because the price is **measured and returned**: the result carries
+`deviation`, the worst control-point displacement incurred, which by partition of unity bounds the
+surface displacement. Where knots are exactly removable — every knot this module's own refinement
+inserted — it comes back at exactly zero and the round trip is exact, which is the `SIMPLIFY`
+vector's anchor. Periodic directions throw pending the wide-window construction periodic refinement
+already uses; that is the next piece, not an impossibility.
 
 Elevation was initially scoped out and is now **in** — see §3.1 for why that is forced rather
 than convenient.
@@ -699,6 +837,20 @@ export function insertionsToReach(knots is array, mergedKnots is array, degree i
 
 export function makeSurfacesShareKnotVectors(surfaceA is map, surfaceB is map) returns map;
 
+/** Insertion parameters are chosen by ARC LENGTH, not parameter width, and by ALLOCATE-THEN-
+    SUBDIVIDE rather than repeated bisection: each existing span is allotted a piece count
+    greedily (next insertion to whichever span has the longest current piece — the allocation
+    minimizing the longest piece), then cut into that many equal-arc-length pieces at once.
+    Bisection is arc-length aware and still quantizes to powers of two, which is what left a
+    refined cylinder with a flat 2:1 spacing variation around its perimeter at nearly every
+    target count. Placement is a pure heuristic and cannot introduce error — insertion is exact
+    wherever it lands — which is what licenses numerical arc length here and nowhere else.
+
+    Even knot spacing is NOT even control point spacing. A control point sits at its Greville
+    abscissa, the mean of `degree` consecutive knots, so a knot of multiplicity == degree puts one
+    control point on the knot and crowds its neighbours in against it. An exact rational circle
+    requires those multiple knots (its homogeneous curve genuinely corners there), so a cylinder
+    keeps a tight pair at each arc joint however the knots between them are placed. */
 export function refineSurfaceToControlPointCounts(surface is map,
         targetUCount is number, targetVCount is number) returns map;
 
@@ -759,6 +911,52 @@ export function makeSurfacesCompatible(surfaceA is map, surfaceB is map) returns
     certification sampling. Documented here per the AGENTS.md manual-math rule: no std
     function does this job. Curves need no analog — std evaluateSpline covers them. */
 export function evaluateBSplineSurfacePoint(surface is map, u is number, v is number) returns Vector;
+
+/** Every partial derivative up to (maxUOrder, maxVOrder), as result[uOrder][vOrder]. Exact,
+    rational-aware (Algorithm A4.4's quotient rule — the numerator's derivative is NOT the
+    rational surface's derivative), no Context. result[0][0] equals evaluateBSplineSurfacePoint.
+    §9.1 needs these for point-to-parameter Newton inversion, exact normals, and §9.1.1's
+    curvature seeding; the kernel's evDistance cannot serve because it costs one call per point
+    and returns a face-bbox-normalized parameter rather than a knot-domain one. */
+export function evaluateBSplineSurfaceDerivatives(surface is map, uParameter is number,
+        vParameter is number, maxUOrder is number, maxVOrder is number) returns array;
+
+export function evaluateBSplineSurfaceDerivative(surface is map, uParameter is number,
+        vParameter is number, uOrder is number, vOrder is number) returns Vector;
+
+/** normalize(Su x Sv). Throws at a degenerate parameter (cone apex, sphere pole) rather than
+    returning an arbitrary direction; the degeneracy test is on the sine of the angle between
+    the tangents, so it is scale-free. */
+export function evaluateBSplineSurfaceNormal(surface is map, uParameter is number,
+        vParameter is number) returns Vector;
+
+/** { normal, principalCurvatures, gaussianCurvature, meanCurvature, minimumRadius } from the
+    first and second fundamental forms. `minimumRadius` is undefined at a flat point — a plane
+    has no finite radius, and a large sentinel would misread as a tight curve's opposite. */
+export function evaluateBSplineSurfaceCurvature(surface is map, uParameter is number,
+        vParameter is number) returns map;
+
+/** Curve form, result[order]; result[0] is the point. For §9.1's bend-along-curve moving
+    frame. Nothing calls it yet. */
+export function evaluateBSplineCurveDerivatives(spline is map, parameter is number,
+        maxOrder is number) returns array;
+
+// ---------- Interpolation (NURBS Book ch. 9) — the module's only CONSTRUCTIVE entry points ----------
+// Everything else transforms a spline that already exists; these build one through given points.
+// Here because EDIT_SURFACE_SPEC §5A (merge several faces into one patch) needs a surface fitter
+// and std has none. Chord-length parameters, averaged knots (eq. 9.8 — the placement that makes the
+// system provably nonsingular). Both return the `parameters` the data landed on.
+//
+// The operator shape repeats one chapter later: the interpolation matrix depends only on
+// (parameters, knots, degree), never on the points, so its inverse is built ONCE per direction and
+// applied to every row and column. That is what makes the surface case separable — n one-dimensional
+// solves per direction rather than one (rows*columns) system, i.e. two 40x40 inverses instead of one
+// 1600x1600.
+
+export function interpolateBSplineCurveThroughPoints(points is array, degree is number) returns map;
+
+export function interpolateBSplineSurfaceThroughGrid(grid is array,
+        uDegree is number, vDegree is number) returns map;
 
 // ---------- Layer 3: genuine periodic-preserving operations (§2.3) ----------
 // Every function below PRESERVES periodicity exactly — none of them clamp. This is the part of
@@ -960,10 +1158,11 @@ Nothing else changes; nothing needs republishing. Ends when vectors 1–6 pass i
 algorithm is lifted from the existing correct copies (std `editCurve.fs` is the cleanest, since
 `tweenCurves.fs` is verbatim from it and keeps the periodic branch that `tweenSurfaces.fs`
 dropped). Ends when vectors 7–8 pass. Kept separate from Phase 1 only so the refinement half
-can be published and used while this lands. **Curve half done and verified
+can be published and used while this lands. **DONE, both halves. Curve half verified live
 (`decomposeIntoBezierSegments`, `elevateSplineDegree`, `makeSplinesCompatible`,
-`prepareSplineForDeformation`). Surface half (`elevateSurfaceDegrees`,
-`prepareSurfaceForDeformation`) still stubbed.**
+`prepareSplineForDeformation`); `elevateSurfaceDegrees` verified live with tweenSurfaces;
+`prepareSurfaceForDeformation` implemented with the `SURFACE-PREPARE` vector, awaiting its
+first run.**
 
 **Phase 3 — `tweenCurves.fs`. DONE and verified live (2026-08-07/08).** Went through two
 distinct versions, and the difference between them is the whole point of §2.3.
@@ -1094,9 +1293,40 @@ step 3:
 
 Against `opFlex.fs` that removes the split, the per-edge sampling, the per-edge `opFitSpline`,
 and the `opLoft` / `opFillSurface` rebuild — four approximation stages down to one that
-converges and can be measured. Against `deformPascoe.fs` it adds step 2 and swaps
-`boundaryBSplineCurves` trimming, which cannot express holes, for `opReplaceFace`, which
-already handles them in `displacementMap.fs`.
+converges and can be measured.
+
+#### Step 5 is `opReplaceFace` for ONE face and cannot be for a whole body
+
+Raised 2026-08-09 and correct. `opReplaceFace` works for a single-face edit (Edit Surface uses it,
+`displacementMap.fs` uses it) and is a **dead end for the engine core**, because it re-derives the
+replaced face's boundary by **intersecting with its neighbours**. Deform a whole solid and every
+face moves, but for a non-affine map the intersection of two deformed faces is *not* the
+deformation of their original intersection — so replace-face would recompute, one face at a time
+and against neighbours that have not moved yet, trims that we already know exactly. Order-dependent
+and subtly wrong.
+
+**The alternative, and the reason it is clean: UV trim curves are invariant under the deformation.**
+The map acts on 3D control points and never touches the parameterization, so the loops that trim the
+original face trim the deformed face equally well, *in the same coordinates*. Trimming becomes a
+one-time extraction problem instead of a per-deformation one, and the in/out question a downstream
+trimming operation would otherwise have to re-resolve is already answered by the original
+definition. So the engine's steps 4–5 become: **emit each face as a trimmed sheet carrying its own
+extracted loops, then knit** — no direct editing anywhere.
+
+**The consequence that lands on §9.1.1's tolerance, and is new.** Two adjacent faces share a 3D
+edge that appears as a UV curve in each of their own parameter spaces. After deformation, face A's
+edge is `S̃_A(uvA)` and face B's is `S̃_B(uvB)`, and each reproduces `φ(edge)` only to within that
+face's own control-net error `ε`. **The gap at a shared edge is therefore bounded by about `2ε`, so
+the certification tolerance directly controls whether the result knits at all.** Refinement is no
+longer only about fidelity to the intended shape; below some level the body will not close. The
+loop in §9.1.1 should take the knit tolerance as a floor on its own, and report when it is the
+binding constraint rather than the user's tolerance.
+
+Holes need care in this route: `opCreateBSplineSurface`'s `boundaryBSplineCurves` takes a single
+closed loop (see [EDIT_SURFACE_SPEC.md](EDIT_SURFACE_SPEC.md) §2.1), while
+`evApproximateBSplineSurface` returns inner loops separately — each of which is individually a legal
+single loop, which is what makes a per-hole patch strategy possible. Being measured now via Edit
+Surface's trim probe.
 
 **The map is the plug point.** A deformation map is a point function `Vector -> Vector` plus a
 hint about how non-linear it is, so step 2 can pick a refinement level. That one interface
@@ -1115,6 +1345,27 @@ once per control point. Worth crediting — **`opFlex.fs` already had this archi
 taper / twist / deform checkboxes compose into a single `convertFunction` applied by
 `convertPoint`. The composition idea was right. It was applied to tessellated sample points
 instead of a control net, and that one choice is what made everything downstream approximate.
+
+#### `opWrap` also UNWRAPS — an exact oracle for this mode (found 2026-08-09)
+
+`opWrap`'s doc: *"Wraps or unwraps faces from one surface onto another… supports wrapping from a
+plane onto a cylinder or a cone, **and unwrapping from a cylinder or a cone onto a plane**."* There
+is no direction flag; it is decided by which `WrapSurface` goes in `source` vs `destination`.
+`wrap.fs` conceals this purely in its **filters** (Tools is `GeometryType.PLANE`, Target is
+`CYLINDER || CONE`), and `WrapSurface` itself accepts `face`, `plane`, `cylinder` or `cone` on
+either side.
+
+Two consequences, the second more valuable than the first:
+
+1. **Exact kernel-side flattening for developables**, which is most of what §9.3 wants for cylinders
+   and cones — no per-patch subdivision needed for those cases.
+2. **An independent oracle for flow-along-surface.** Unwrap(source → plane) followed by
+   wrap(plane → destination) *is* flow along surface. So on the cylinder/cone case the kernel
+   computes the same map this feature will, by a completely different route — which makes it ground
+   truth for validating the general B-spline implementation, exactly the
+   "build the instrument whose every component the challenger already trusts" move that settled the
+   `evaluateSpline` weights argument (§2.3.3). Flow-along-surface's certification should include a
+   cylinder case checked against `opWrap` before it is trusted on arbitrary targets.
 
 **UX target: generalize std Wrap's vocabulary rather than invent one.** `wrap.fs` already reads
 as Flow Along Surface with the target restricted to cylinder and cone: `Tools` (source faces) →

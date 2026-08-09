@@ -118,6 +118,18 @@ export const splineRefinementTester = defineFeature(function(context is Context,
         runSurfaceElevateDegreesVector(passCount, failures, definition.printPassingChecks);
         runSurfaceShareKnotVectorsVector(passCount, failures, definition.printPassingChecks);
         runSurfaceMakeSurfacesCompatibleVector(passCount, failures, definition.printPassingChecks);
+        runSurfacePrepareForDeformationVector(passCount, failures, definition.printPassingChecks);
+        runExtractSubSurfaceVector(passCount, failures, definition.printPassingChecks);
+        runDecomposeSurfaceIntoBezierPatchesVector(passCount, failures, definition.printPassingChecks);
+        runSpanDensityVector(passCount, failures, definition.printPassingChecks);
+        runSurfaceDerivativeVector(passCount, failures, definition.printPassingChecks);
+        runSimplifySurfaceVector(passCount, failures, definition.printPassingChecks);
+        runInterpolationVector(passCount, failures, definition.printPassingChecks);
+        runArcLengthPlacementVector(passCount, failures, definition.printPassingChecks);
+        runRedundantKnotVector(passCount, failures, definition.printPassingChecks);
+        runIsocurveVector(passCount, failures, definition.printPassingChecks);
+        runConcatenationVector(passCount, failures, definition.printPassingChecks);
+        runLoftVector(passCount, failures, definition.printPassingChecks);
         runPeriodicRefinementVector(passCount, failures, definition.printPassingChecks);
         runPeriodicElevationVector(passCount, failures, definition.printPassingChecks);
         runPeriodicShareKnotVectorVector(passCount, failures, definition.printPassingChecks);
@@ -2194,6 +2206,1548 @@ function runSurfaceMakeSurfacesCompatibleVector(passCount is box, failures is bo
         "SURFACE-COMPATIBLE: surface A's geometry is unchanged after becoming compatible", printPassing);
     recordCheck(passCount, failures, surfacesMatchOnGrid(fixtureB, compatible.b, uSamples, vSamples),
         "SURFACE-COMPATIBLE: surface B's geometry is unchanged after elevating and sharing", printPassing);
+}
+
+// ============================================================================================
+// SURFACE-PREPARE / SUB-SURFACE / SURFACE-BEZIER / SPAN-DENSITY — the last four entry points,
+// closed together because they are exactly what the deformation pipeline's step 2 calls
+// (spec section 9.1). Shared helpers first.
+// ============================================================================================
+
+/** Wrap one patch from decomposeSurfaceIntoBezierPatches as a standalone surface definition:
+    clamped knots of multiplicity degree + 1 at each end of its own rectangle. */
+function bezierPatchAsSurface(patch is map) returns map
+{
+    var uKnots = makeArray(2 * (patch.uDegree + 1), patch.uDomainStart);
+    for (var index = patch.uDegree + 1; index < size(uKnots); index += 1)
+    {
+        uKnots[index] = patch.uDomainEnd;
+    }
+    var vKnots = makeArray(2 * (patch.vDegree + 1), patch.vDomainStart);
+    for (var index = patch.vDegree + 1; index < size(vKnots); index += 1)
+    {
+        vKnots[index] = patch.vDomainEnd;
+    }
+    return {
+            "uDegree" : patch.uDegree,
+            "vDegree" : patch.vDegree,
+            "isRational" : true,
+            "isUPeriodic" : false,
+            "isVPeriodic" : false,
+            "controlPoints" : patch.controlPoints,
+            "weights" : patch.weights,
+            "uKnots" : uKnots,
+            "vKnots" : vKnots
+        };
+}
+
+/**
+ * Count distinct knot VALUES strictly inside (cellStart, cellEnd), computed INDEPENDENTLY of the
+ * module rather than by calling its own counter — this is the number the density contract is
+ * stated in, so a shared helper would let one bug satisfy both sides.
+ *
+ * Periodic directions are counted over the infinite tiling {fundamental + k * period}, which is
+ * the true knot set of a closed direction and a strict superset of the two-period window the
+ * module happens to build. A cell straddling the seam therefore gets counted the same way whether
+ * or not the module folded it correctly.
+ */
+function distinctKnotsStrictlyInside(knots is array, degree is number, isPeriodic is boolean, cellStart is number, cellEnd is number) returns number
+{
+    const domain = knotDomain(knots, degree);
+    const period = domain.end - domain.start;
+    const cycleLimit = isPeriodic ? 2 : 0;
+    var seen = [];
+    for (var knotIndex = 0; knotIndex < size(knots); knotIndex += 1)
+    {
+        for (var cycle = -cycleLimit; cycle <= cycleLimit; cycle += 1)
+        {
+            const value = knots[knotIndex] + cycle * period;
+            if (value > cellStart + KNOT_PARAMETER_TOLERANCE && value < cellEnd - KNOT_PARAMETER_TOLERANCE)
+            {
+                var alreadySeen = false;
+                for (var seenValue in seen)
+                {
+                    if (abs(seenValue - value) <= KNOT_PARAMETER_TOLERANCE)
+                    {
+                        alreadySeen = true;
+                    }
+                }
+                if (!alreadySeen)
+                {
+                    seen = append(seen, value);
+                }
+            }
+        }
+    }
+    return size(seen);
+}
+
+// ============================================================================================
+// SURFACE-PREPARE — prepareSurfaceForDeformation: elevate THEN refine, and neither step shrinks
+// anything. The order is the point: elevating a 3-segment U direction to degree 4 already lands
+// on 13 control points, so a target below that must be left alone rather than "achieved" by
+// refining first and elevating a bigger net afterwards.
+// ============================================================================================
+
+function runSurfacePrepareForDeformationVector(passCount is box, failures is box, printPassing is boolean)
+{
+    const fixture = makeClampedSurfaceFixture(); // uDegree 3 / 6 rows / interior {1/3, 2/3}; vDegree 2 / 4 columns / interior {0.5}
+    const uSamples = [0, 0.25, 0.5, 0.75, 1];
+    const vSamples = [0, 0.5, 1];
+
+    // Elevation alone: U 3 segments -> 3 * 4 + 1 = 13 rows, V 2 segments -> 2 * 3 + 1 = 7 columns.
+    const elevatedOnly = prepareSurfaceForDeformation(fixture, 4, 3, 5, 5);
+    recordCheck(passCount, failures, elevatedOnly.uDegree == 4 && elevatedOnly.vDegree == 3,
+        "SURFACE-PREPARE: both directions reach the target degree", printPassing);
+    recordCheck(passCount, failures, size(elevatedOnly.controlPoints) == 13 && size(elevatedOnly.controlPoints[0]) == 7,
+        "SURFACE-PREPARE: a control point target already met by elevation refines no further (got " ~
+        size(elevatedOnly.controlPoints) ~ " x " ~ size(elevatedOnly.controlPoints[0]) ~ ", expected 13 x 7)", printPassing);
+    recordCheck(passCount, failures, surfacesMatchOnGrid(fixture, elevatedOnly, uSamples, vSamples),
+        "SURFACE-PREPARE: geometry preserved through elevation", printPassing);
+
+    const prepared = prepareSurfaceForDeformation(fixture, 4, 3, 16, 10);
+    recordCheck(passCount, failures, size(prepared.controlPoints) == 16 && size(prepared.controlPoints[0]) == 10,
+        "SURFACE-PREPARE: hits the exact target counts when they exceed the elevated ones (got " ~
+        size(prepared.controlPoints) ~ " x " ~ size(prepared.controlPoints[0]) ~ ")", printPassing);
+    recordCheck(passCount, failures, prepared.uDegree == 4 && prepared.vDegree == 3,
+        "SURFACE-PREPARE: refinement does not disturb the elevated degrees", printPassing);
+    recordCheck(passCount, failures, surfacesMatchOnGrid(fixture, prepared, uSamples, vSamples),
+        "SURFACE-PREPARE: geometry preserved through elevation AND refinement", printPassing);
+
+    const untouched = prepareSurfaceForDeformation(fixture, 3, 2, 6, 4);
+    recordCheck(passCount, failures, untouched.uDegree == 3 && untouched.vDegree == 2 &&
+        size(untouched.controlPoints) == 6 && size(untouched.controlPoints[0]) == 4,
+        "SURFACE-PREPARE: a request already satisfied changes nothing", printPassing);
+
+    // Periodic input must come back periodic — the deformation pipeline hands whole revolved
+    // faces to this function, and a silently clamped cylinder is the failure mode section 2.3
+    // exists to prevent.
+    const periodicFixture = makeUPeriodicSurfaceFixture();
+    const preparedPeriodic = prepareSurfaceForDeformation(periodicFixture, 3, 2, 14, 6);
+    recordCheck(passCount, failures, preparedPeriodic.isUPeriodic == true,
+        "SURFACE-PREPARE: a U-periodic input stays U-periodic through elevate + refine", printPassing);
+    recordCheck(passCount, failures, columnOverlapConditionHolds(preparedPeriodic.controlPoints, preparedPeriodic.uDegree),
+        "SURFACE-PREPARE: the U overlap condition survives elevate + refine", printPassing);
+    recordCheck(passCount, failures, surfacesMatchOnGrid(periodicFixture, preparedPeriodic, [2, 3.5, 4.5, 6], [0, 0.5, 1]),
+        "SURFACE-PREPARE: periodic geometry preserved through elevate + refine", printPassing);
+}
+
+// ============================================================================================
+// SUB-SURFACE — extractSubSurface: the piece reproduces the parent across its own rectangle,
+// exactly, with clamped knot vectors on the requested domain.
+// ============================================================================================
+
+function runExtractSubSurfaceVector(passCount is box, failures is box, printPassing is boolean)
+{
+    const fixture = makeClampedSurfaceFixture();
+
+    // A rectangle whose bounds are existing interior knots and which contains none: one Bezier
+    // patch per direction, so the counts are hand-checkable (uDegree + 1 by vDegree + 1).
+    const bezierPiece = extractSubSurface(fixture, 1 / 3, 2 / 3, 0, 0.5);
+    const bezierUDomain = knotDomain(bezierPiece.uKnots, bezierPiece.uDegree);
+    const bezierVDomain = knotDomain(bezierPiece.vKnots, bezierPiece.vDegree);
+    recordCheck(passCount, failures, abs(bezierUDomain.start - 1 / 3) <= KNOT_PARAMETER_TOLERANCE &&
+        abs(bezierUDomain.end - 2 / 3) <= KNOT_PARAMETER_TOLERANCE &&
+        abs(bezierVDomain.start) <= KNOT_PARAMETER_TOLERANCE && abs(bezierVDomain.end - 0.5) <= KNOT_PARAMETER_TOLERANCE,
+        "SUB-SURFACE: the piece's domain is exactly the requested rectangle", printPassing);
+    recordCheck(passCount, failures, isClampedKnotArray(bezierPiece.uKnots, bezierPiece.uDegree) &&
+        isClampedKnotArray(bezierPiece.vKnots, bezierPiece.vDegree),
+        "SUB-SURFACE: both of the piece's knot vectors are clamped", printPassing);
+    recordCheck(passCount, failures, size(bezierPiece.controlPoints) == 4 && size(bezierPiece.controlPoints[0]) == 3,
+        "SUB-SURFACE: a knot-to-knot rectangle with no interior knots is one Bezier patch (got " ~
+        size(bezierPiece.controlPoints) ~ " x " ~ size(bezierPiece.controlPoints[0]) ~ ", expected 4 x 3)", printPassing);
+    recordCheck(passCount, failures, surfacesMatchOnGrid(fixture, bezierPiece, [1 / 3, 0.5, 2 / 3], [0, 0.25, 0.5]),
+        "SUB-SURFACE: the piece reproduces the parent across its rectangle", printPassing);
+
+    // A rectangle whose bounds are NOT knots and which straddles interior knots — the case that
+    // actually exercises boundary insertion on both sides.
+    const straddlingPiece = extractSubSurface(fixture, 0.25, 1, 0.25, 1);
+    recordCheck(passCount, failures, size(straddlingPiece.controlPoints) == 6 && size(straddlingPiece.controlPoints[0]) == 4,
+        "SUB-SURFACE: a range straddling interior knots keeps them (got " ~ size(straddlingPiece.controlPoints) ~
+        " x " ~ size(straddlingPiece.controlPoints[0]) ~ ", expected 6 x 4)", printPassing);
+    recordCheck(passCount, failures, surfacesMatchOnGrid(fixture, straddlingPiece, [0.25, 0.5, 0.75, 1], [0.25, 0.6, 1]),
+        "SUB-SURFACE: geometry preserved for a range whose bounds are not knots", printPassing);
+
+    // Periodic parent. A narrowed closed direction genuinely becomes an open patch; a request for
+    // the WHOLE domain must not spend the closed representation to say so.
+    const periodicFixture = makeUPeriodicSurfaceFixture(); // U periodic, domain [2, 6]
+    const narrowed = extractSubSurface(periodicFixture, 3, 5, 0, 1);
+    recordCheck(passCount, failures, narrowed.isUPeriodic == false,
+        "SUB-SURFACE: narrowing a periodic direction returns an open patch, flagged honestly", printPassing);
+    recordCheck(passCount, failures, isClampedKnotArray(narrowed.uKnots, narrowed.uDegree),
+        "SUB-SURFACE: the narrowed periodic direction comes back clamped", printPassing);
+    recordCheck(passCount, failures, surfacesMatchOnGrid(periodicFixture, narrowed, [3, 3.5, 4, 4.5, 5], [0, 0.5, 1]),
+        "SUB-SURFACE: the piece of a periodic parent reproduces it across the extracted range", printPassing);
+
+    const wholeDomain = extractSubSurface(periodicFixture, 2, 6, 0, 1);
+    recordCheck(passCount, failures, wholeDomain.isUPeriodic == true,
+        "SUB-SURFACE: requesting the whole domain leaves a periodic direction periodic", printPassing);
+    recordCheck(passCount, failures, columnOverlapConditionHolds(wholeDomain.controlPoints, wholeDomain.uDegree),
+        "SUB-SURFACE: the untouched periodic direction keeps its overlap condition", printPassing);
+}
+
+// ============================================================================================
+// SURFACE-BEZIER — decomposeSurfaceIntoBezierPatches: the patch GRID tiles the parent, and every
+// patch reproduces it across its own rectangle. Includes a periodic parent, whose closed
+// direction is deliberately spent (a Bezier patch is open by definition) — the check is that the
+// union still reproduces the closed surface, seam included.
+// ============================================================================================
+
+function runDecomposeSurfaceIntoBezierPatchesVector(passCount is box, failures is box, printPassing is boolean)
+{
+    const fixture = makeClampedSurfaceFixture(); // U interior {1/3, 2/3} -> 3 segments; V interior {0.5} -> 2 segments
+    const patches = decomposeSurfaceIntoBezierPatches(fixture);
+
+    recordCheck(passCount, failures, size(patches) == 3 && size(patches[0]) == 2,
+        "SURFACE-BEZIER: the patch grid is (distinct U interior knots + 1) x (distinct V interior knots + 1) (got " ~
+        size(patches) ~ " x " ~ size(patches[0]) ~ ", expected 3 x 2)", printPassing);
+
+    var everyPatchIsBezier = true;
+    var domainsTile = true;
+    var patchGeometryMatches = true;
+    for (var uSegment = 0; uSegment < size(patches); uSegment += 1)
+    {
+        for (var vSegment = 0; vSegment < size(patches[uSegment]); vSegment += 1)
+        {
+            const patch = patches[uSegment][vSegment];
+            if (size(patch.controlPoints) != patch.uDegree + 1 || size(patch.controlPoints[0]) != patch.vDegree + 1)
+            {
+                everyPatchIsBezier = false;
+            }
+            // Adjacent patches must share a boundary exactly, and the outermost bounds must be
+            // the parent's own domain — otherwise the patches are individually fine and
+            // collectively not a decomposition.
+            if (uSegment > 0 && abs(patch.uDomainStart - patches[uSegment - 1][vSegment].uDomainEnd) > KNOT_PARAMETER_TOLERANCE)
+            {
+                domainsTile = false;
+            }
+            if (vSegment > 0 && abs(patch.vDomainStart - patches[uSegment][vSegment - 1].vDomainEnd) > KNOT_PARAMETER_TOLERANCE)
+            {
+                domainsTile = false;
+            }
+
+            const patchSurface = bezierPatchAsSurface(patch);
+            for (var uFraction in [0, 0.3, 0.7, 1])
+            {
+                for (var vFraction in [0, 0.5, 1])
+                {
+                    const uParameter = patch.uDomainStart + uFraction * (patch.uDomainEnd - patch.uDomainStart);
+                    const vParameter = patch.vDomainStart + vFraction * (patch.vDomainEnd - patch.vDomainStart);
+                    if (!pointsMatch(evaluateBSplineSurfacePoint(patchSurface, uParameter, vParameter),
+                            evaluateBSplineSurfacePoint(fixture, uParameter, vParameter)))
+                    {
+                        patchGeometryMatches = false;
+                    }
+                }
+            }
+        }
+    }
+    recordCheck(passCount, failures, everyPatchIsBezier,
+        "SURFACE-BEZIER: every patch is exactly (uDegree + 1) x (vDegree + 1) control points", printPassing);
+    recordCheck(passCount, failures, domainsTile,
+        "SURFACE-BEZIER: adjacent patch domains meet exactly, so the grid tiles the parent", printPassing);
+    recordCheck(passCount, failures, patchGeometryMatches,
+        "SURFACE-BEZIER: every patch reproduces the parent across its own rectangle, corners included", printPassing);
+    recordCheck(passCount, failures, abs(patches[0][0].uDomainStart) <= KNOT_PARAMETER_TOLERANCE &&
+        abs(patches[2][1].uDomainEnd - 1) <= KNOT_PARAMETER_TOLERANCE &&
+        abs(patches[0][0].vDomainStart) <= KNOT_PARAMETER_TOLERANCE &&
+        abs(patches[2][1].vDomainEnd - 1) <= KNOT_PARAMETER_TOLERANCE,
+        "SURFACE-BEZIER: the outer patch bounds are the parent's own domain", printPassing);
+
+    // Periodic parent: U uniform over domain [2, 6] with interior {3, 4, 5} once clamped, so four
+    // U segments and one V segment. The seam patch [5, 6] is the one that could not exist if the
+    // full-period clamp were wrong.
+    const periodicFixture = makeUPeriodicSurfaceFixture();
+    const periodicPatches = decomposeSurfaceIntoBezierPatches(periodicFixture);
+    recordCheck(passCount, failures, size(periodicPatches) == 4 && size(periodicPatches[0]) == 1,
+        "SURFACE-BEZIER: a closed U direction decomposes into one patch per period span (got " ~
+        size(periodicPatches) ~ " x " ~ size(periodicPatches[0]) ~ ", expected 4 x 1)", printPassing);
+
+    var periodicGeometryMatches = true;
+    for (var uSegment = 0; uSegment < size(periodicPatches); uSegment += 1)
+    {
+        const patch = periodicPatches[uSegment][0];
+        const patchSurface = bezierPatchAsSurface(patch);
+        for (var uFraction in [0, 0.25, 0.5, 0.75, 1])
+        {
+            for (var vFraction in [0, 0.5, 1])
+            {
+                const uParameter = patch.uDomainStart + uFraction * (patch.uDomainEnd - patch.uDomainStart);
+                const vParameter = patch.vDomainStart + vFraction * (patch.vDomainEnd - patch.vDomainStart);
+                if (!pointsMatch(evaluateBSplineSurfacePoint(patchSurface, uParameter, vParameter),
+                        evaluateSurfaceLiterally(periodicFixture, uParameter, vParameter)))
+                {
+                    periodicGeometryMatches = false;
+                }
+            }
+        }
+    }
+    recordCheck(passCount, failures, periodicGeometryMatches,
+        "SURFACE-BEZIER: the patches of a closed direction reproduce it across every span, seam span included", printPassing);
+}
+
+// ============================================================================================
+// SPAN-DENSITY — refineSurfaceToSpanDensity. The count checks alone would pass an implementation
+// that inserted the right NUMBER of knots in the WRONG cells, so the assertion that matters is
+// the per-cell RECOUNT afterwards, computed independently of the module (see
+// distinctKnotsStrictlyInside). The periodic case deliberately forces the wrap cell to choose a
+// parameter past the domain end, exercising the fold back into one period.
+// ============================================================================================
+
+function runSpanDensityVector(passCount is box, failures is box, printPassing is boolean)
+{
+    const fixture = makeClampedSurfaceFixture(); // U interior {1/3, 2/3}, 6 rows; V interior {0.5}, 4 columns
+    const uBoundaries = [0, 0.5, 1];
+    const vBoundaries = [0, 1];
+    const refined = refineSurfaceToSpanDensity(fixture, uBoundaries, vBoundaries, 4);
+
+    // U: each of [0, 0.5] and [0.5, 1] holds one interior knot, so 2 control points -> 2 more
+    // each. V: [0, 1] holds one, so 2 more. 6 + 4 = 10 rows, 4 + 2 = 6 columns.
+    recordCheck(passCount, failures, size(refined.controlPoints) == 10 && size(refined.controlPoints[0]) == 6,
+        "SPAN-DENSITY: inserts exactly the deficit, no more (got " ~ size(refined.controlPoints) ~ " x " ~
+        size(refined.controlPoints[0]) ~ ", expected 10 x 6)", printPassing);
+
+    var everyCellSatisfied = true;
+    for (var cellIndex = 0; cellIndex < size(uBoundaries) - 1; cellIndex += 1)
+    {
+        if (distinctKnotsStrictlyInside(refined.uKnots, refined.uDegree, false, uBoundaries[cellIndex], uBoundaries[cellIndex + 1]) + 1 < 4)
+        {
+            everyCellSatisfied = false;
+        }
+    }
+    if (distinctKnotsStrictlyInside(refined.vKnots, refined.vDegree, false, 0, 1) + 1 < 4)
+    {
+        everyCellSatisfied = false;
+    }
+    recordCheck(passCount, failures, everyCellSatisfied,
+        "SPAN-DENSITY: every cell actually reaches the requested density (recounted independently)", printPassing);
+    recordCheck(passCount, failures, surfacesMatchOnGrid(fixture, refined, [0, 0.25, 0.5, 0.75, 1], [0, 0.5, 1]),
+        "SPAN-DENSITY: geometry preserved", printPassing);
+
+    const alreadyDense = refineSurfaceToSpanDensity(fixture, uBoundaries, vBoundaries, 2);
+    recordCheck(passCount, failures, size(alreadyDense.controlPoints) == 6 && size(alreadyDense.controlPoints[0]) == 4,
+        "SPAN-DENSITY: a requirement already met inserts nothing", printPassing);
+
+    const untouchedDirection = refineSurfaceToSpanDensity(fixture, [], vBoundaries, 4);
+    recordCheck(passCount, failures, size(untouchedDirection.controlPoints) == 6 && size(untouchedDirection.controlPoints[0]) == 6,
+        "SPAN-DENSITY: an empty boundary list leaves that direction alone", printPassing);
+
+    // Periodic U over domain [2, 6], fundamental knots {2, 3, 4, 5}. Boundaries [3, 5] make the
+    // cells [3, 5] and — cyclically — [5, 7]. At a requirement of 4, the wrap cell's second pick
+    // is the midpoint of [6, 7] = 6.5, which is PAST the domain end and only lands correctly if
+    // it is folded back to 2.5.
+    const periodicFixture = makeUPeriodicSurfaceFixture();
+    const periodicRefined = refineSurfaceToSpanDensity(periodicFixture, [3, 5], [], 4);
+
+    recordCheck(passCount, failures, periodicRefined.isUPeriodic == true,
+        "SPAN-DENSITY: the periodic direction stays periodic", printPassing);
+    recordCheck(passCount, failures, columnOverlapConditionHolds(periodicRefined.controlPoints, periodicRefined.uDegree),
+        "SPAN-DENSITY: the U overlap condition survives targeted refinement", printPassing);
+    recordCheck(passCount, failures, size(periodicRefined.controlPoints) == 10,
+        "SPAN-DENSITY: 4 periodic insertions grow the stored count by 4 (got " ~
+        size(periodicRefined.controlPoints) ~ ", expected 10)", printPassing);
+    recordCheck(passCount, failures,
+        distinctKnotsStrictlyInside(periodicRefined.uKnots, periodicRefined.uDegree, true, 3, 5) + 1 >= 4,
+        "SPAN-DENSITY: the ordinary periodic cell [3, 5] reaches the requested density", printPassing);
+    recordCheck(passCount, failures,
+        distinctKnotsStrictlyInside(periodicRefined.uKnots, periodicRefined.uDegree, true, 5, 7) + 1 >= 4,
+        "SPAN-DENSITY: the WRAP cell [5, 7] reaches it too — the fold past the domain end landed correctly", printPassing);
+    recordCheck(passCount, failures, surfacesMatchOnGrid(periodicFixture, periodicRefined, [2, 2.6, 3.5, 4.5, 5.5, 6], [0, 0.5, 1]),
+        "SPAN-DENSITY: periodic geometry preserved across the whole period", printPassing);
+
+    // Curve sibling, same contract and same helpers, different application (direct insertion
+    // rather than an operator). Degree 3 over [0, 1] with interior {1/3, 2/3}: one interior knot
+    // per half, so a requirement of 4 needs two more in each.
+    const curveDegree = 3;
+    const curveKnots = makeClampedCubicKnots();
+    const curvePoints = makeSixPointFixture();
+    const curve = { "degree" : curveDegree, "isPeriodic" : false, "controlPoints" : curvePoints, "knots" : knotArray(curveKnots) };
+    const denseCurve = refineSplineToSpanDensity(curve, [0, 0.5, 1], 4);
+
+    recordCheck(passCount, failures, size(denseCurve.controlPoints) == 10,
+        "SPAN-DENSITY: the curve form inserts exactly the deficit (got " ~ size(denseCurve.controlPoints) ~ ", expected 10)", printPassing);
+    recordCheck(passCount, failures,
+        distinctKnotsStrictlyInside(denseCurve.knots, curveDegree, false, 0, 0.5) + 1 >= 4 &&
+        distinctKnotsStrictlyInside(denseCurve.knots, curveDegree, false, 0.5, 1) + 1 >= 4,
+        "SPAN-DENSITY: both curve cells reach the requested density (recounted independently)", printPassing);
+
+    const curveSamples = makeUnitSampleParameters();
+    const curveBefore = evaluateCurvePoints(curvePoints, curveKnots, curveDegree, curveSamples);
+    const curveAfter = evaluateCurvePoints(denseCurve.controlPoints, denseCurve.knots, curveDegree, curveSamples);
+    var curveGeometryPreserved = true;
+    for (var sampleIndex = 0; sampleIndex < size(curveSamples); sampleIndex += 1)
+    {
+        if (!pointsMatch(curveBefore[sampleIndex], curveAfter[sampleIndex]))
+        {
+            curveGeometryPreserved = false;
+        }
+    }
+    recordCheck(passCount, failures, curveGeometryPreserved,
+        "SPAN-DENSITY: curve geometry preserved", printPassing);
+}
+
+// ============================================================================================
+// INTERPOLATE — the constructive entry points. Unlike everything else here there is no input
+// spline to compare against, so the anchor is the DEFINING PROPERTY: the result passes exactly
+// through the data. That is checkable to full tolerance, which is what makes this testable at all.
+//
+// A second, stronger anchor covers the space between the data points, where "passes through" says
+// nothing: interpolation builds each control point as an affine combination of the data points, so
+// data lying in a PLANE must produce a surface lying entirely in that plane — everywhere, not just
+// at the samples. Any error in the operator or the solve breaks that immediately.
+// ============================================================================================
+
+function runInterpolationVector(passCount is box, failures is box, printPassing is boolean)
+{
+    // ---- Curve: through every point ----
+    const curvePoints = makeSixPointFixture();
+    const curve = interpolateBSplineCurveThroughPoints(curvePoints, 3);
+
+    recordCheck(passCount, failures, size(curve.controlPoints) == size(curvePoints),
+        "INTERPOLATE: the curve has one control point per data point", printPassing);
+
+    var curvePassesThrough = true;
+    for (var index = 0; index < size(curvePoints); index += 1)
+    {
+        const evaluated = evaluateBSplineCurveDerivatives(curve, curve.parameters[index], 0)[0];
+        if (!pointsMatch(evaluated, curvePoints[index]))
+        {
+            curvePassesThrough = false;
+        }
+    }
+    recordCheck(passCount, failures, curvePassesThrough,
+        "INTERPOLATE: the curve passes exactly through every data point at its own parameter", printPassing);
+
+    // ---- Surface: sample a known surface, interpolate, pass through every sample ----
+    const source = normalizeSurfaceDefinition(makeClampedSurfaceFixture());
+    const uSampleParameters = [0, 0.2, 0.5, 0.8, 1];
+    const vSampleParameters = [0, 0.4, 0.7, 1];
+    var grid = makeArray(size(uSampleParameters), 0);
+    for (var i = 0; i < size(uSampleParameters); i += 1)
+    {
+        var row = makeArray(size(vSampleParameters), vector(0, 0, 0) * meter);
+        for (var j = 0; j < size(vSampleParameters); j += 1)
+        {
+            row[j] = evaluateBSplineSurfacePoint(source, uSampleParameters[i], vSampleParameters[j]);
+        }
+        grid[i] = row;
+    }
+
+    const interpolated = interpolateBSplineSurfaceThroughGrid(grid, 3, 2);
+    recordCheck(passCount, failures, size(interpolated.controlPoints) == size(uSampleParameters) &&
+        size(interpolated.controlPoints[0]) == size(vSampleParameters),
+        "INTERPOLATE: the surface has one control point per grid node (got " ~ size(interpolated.controlPoints) ~
+        " x " ~ size(interpolated.controlPoints[0]) ~ ", expected 5 x 4)", printPassing);
+    recordCheck(passCount, failures, interpolated.uDegree == 3 && interpolated.vDegree == 2,
+        "INTERPOLATE: the surface carries the requested degrees", printPassing);
+
+    var surfacePassesThrough = true;
+    for (var i = 0; i < size(uSampleParameters); i += 1)
+    {
+        for (var j = 0; j < size(vSampleParameters); j += 1)
+        {
+            const evaluated = evaluateBSplineSurfacePoint(interpolated, interpolated.uParameters[i], interpolated.vParameters[j]);
+            if (!pointsMatch(evaluated, grid[i][j]))
+            {
+                surfacePassesThrough = false;
+            }
+        }
+    }
+    recordCheck(passCount, failures, surfacePassesThrough,
+        "INTERPOLATE: the surface passes exactly through every grid node", printPassing);
+
+    // ---- Planar anchor: covers the space BETWEEN the data, which "passes through" does not ----
+    // Deliberately non-uniform spacing and a tilted plane, so chord-length parameterization is
+    // doing real work rather than degenerating to uniform.
+    const planeOrigin = vector(1, 2, 3) * centimeter;
+    const planeU = normalize(vector(1, 1, 0));
+    const planeV = normalize(vector(-1, 1, 1));
+    const planeNormal = normalize(cross(planeU, planeV));
+    const uOffsets = [0, 0.7, 1.9, 3.6, 5.0];
+    const vOffsets = [0, 1.3, 2.1, 4.4];
+    var planarGrid = makeArray(size(uOffsets), 0);
+    for (var i = 0; i < size(uOffsets); i += 1)
+    {
+        var row = makeArray(size(vOffsets), planeOrigin);
+        for (var j = 0; j < size(vOffsets); j += 1)
+        {
+            row[j] = planeOrigin + uOffsets[i] * centimeter * planeU + vOffsets[j] * centimeter * planeV;
+        }
+        planarGrid[i] = row;
+    }
+
+    const planarSurface = interpolateBSplineSurfaceThroughGrid(planarGrid, 3, 2);
+    var staysInPlane = true;
+    for (var uParameter in [0, 0.13, 0.37, 0.62, 0.85, 1])
+    {
+        for (var vParameter in [0, 0.29, 0.55, 0.91, 1])
+        {
+            const evaluated = evaluateBSplineSurfacePoint(planarSurface, uParameter, vParameter);
+            if (abs(dot(evaluated - planeOrigin, planeNormal)) > 1e-9 * meter)
+            {
+                staysInPlane = false;
+            }
+        }
+    }
+    recordCheck(passCount, failures, staysInPlane,
+        "INTERPOLATE: planar data gives a surface lying in that plane EVERYWHERE, not only at the nodes", printPassing);
+
+    // Interpolating too few points for the requested degree is impossible, not merely awkward, and
+    // must say so rather than producing a singular solve full of infinities.
+    const tooFew = try silent(interpolateBSplineCurveThroughPoints(makeThreePointFixture(), 5));
+    recordCheck(passCount, failures, tooFew == undefined,
+        "INTERPOLATE: refuses to interpolate fewer points than the degree needs", printPassing);
+}
+
+// ============================================================================================
+// ARCLENGTH — arc-length knot placement and affine domain rescaling.
+//
+// The measured quantity is ARC LENGTH BETWEEN CONSECUTIVE KNOTS, which is exactly what the
+// placement controls. Allocating pieces per span and then cutting each span into that many equal
+// pieces at once bounds the result far more tightly than the greedy halving it replaced: halving
+// can only ever divide a span in powers of two, so any piece count that is not a power of two comes
+// out at a flat 2:1 no matter how carefully each individual split was located. The two cylinder
+// checks below are the regression test for that — it is why their thresholds are near one rather
+// than near two.
+//
+// AN EARLIER VERSION OF THIS VECTOR MEASURED THE WRONG THING and failed on correct code — worth
+// recording so it is not reintroduced. It compared ANGULAR GAPS BETWEEN CONTROL POINTS around the
+// cylinder, which cannot be even for this fixture at any knot spacing: refinement only adds knots,
+// so the arc joints keep their multiplicity-3 knots, and at multiplicity == degree the curve
+// interpolates its control point while the neighbours crowd in against it. The lopsidedness it
+// detected was a property of the fixture's C0 joints, not of the placement.
+//
+// Placement can never affect geometry (insertion is exact wherever it lands), so the geometry
+// checks here guard the plumbing, not the heuristic.
+// ============================================================================================
+
+/** Arc length of each span between consecutive DISTINCT knots of one direction, measured by
+    sub-sampled chords along a representative isocurve. */
+function arcLengthSpansOfDirection(surface is map, isUDirection is boolean, station is number) returns array
+{
+    const degree = isUDirection ? surface.uDegree : surface.vDegree;
+    const knots = isUDirection ? surface.uKnots : surface.vKnots;
+    const domain = knotDomain(knots, degree);
+
+    var breaks = [domain.start];
+    for (var knotIndex = 0; knotIndex < size(knots); knotIndex += 1)
+    {
+        const value = knots[knotIndex];
+        if (value > breaks[size(breaks) - 1] + KNOT_PARAMETER_TOLERANCE && value < domain.end - KNOT_PARAMETER_TOLERANCE)
+        {
+            breaks = append(breaks, value);
+        }
+    }
+    breaks = append(breaks, domain.end);
+
+    const subSamples = 8;
+    var spans = makeArray(size(breaks) - 1, 0 * meter);
+    for (var spanIndex = 0; spanIndex < size(breaks) - 1; spanIndex += 1)
+    {
+        var spanLength = 0 * meter;
+        var previous = isUDirection ? evaluateBSplineSurfacePoint(surface, breaks[spanIndex], station)
+            : evaluateBSplineSurfacePoint(surface, station, breaks[spanIndex]);
+        for (var step = 1; step <= subSamples; step += 1)
+        {
+            const parameter = breaks[spanIndex] + (breaks[spanIndex + 1] - breaks[spanIndex]) * step / subSamples;
+            const point = isUDirection ? evaluateBSplineSurfacePoint(surface, parameter, station)
+                : evaluateBSplineSurfacePoint(surface, station, parameter);
+            spanLength += norm(point - previous);
+            previous = point;
+        }
+        spans[spanIndex] = spanLength;
+    }
+    return spans;
+}
+
+/**
+ * Whether a knot vector reads the same forwards as backwards about its own domain — the exact
+ * statement of "this refinement treated both sides alike", and the only property that catches an
+ * allocation bias without asserting anything about WHERE the knots went.
+ */
+function knotVectorIsPalindromic(knots is array) returns boolean
+{
+    const count = size(knots);
+    const endsSum = knots[0] + knots[count - 1];
+    for (var index = 0; index < count; index += 1)
+    {
+        if (abs(knots[index] + knots[count - 1 - index] - endsSum) > KNOT_PARAMETER_TOLERANCE)
+        {
+            return false;
+        }
+    }
+    return true;
+}
+
+/**
+ * A mirror-symmetric surface: a parabola in u (even in x, so every span has a mirror twin of
+ * identical arc length) extruded straight along v, on a palindromic knot vector with a
+ * multiplicity-2 interior knot at the middle.
+ *
+ * This is the configuration a lowest-index tie-break biases, and it is the shape of the case that
+ * found the bug live — two equal faces of a cube merged into one patch, whose elevated knot vector
+ * is exactly this: two equal spans meeting at a raised-multiplicity knot in the middle.
+ */
+function makeMirrorSymmetricSurfaceFixture() returns map
+{
+    const xValues = [-1, -0.6, -0.2, 0.2, 0.6, 1];
+    var controlPoints = makeArray(6, 0);
+    var weights = makeArray(6, 0);
+    for (var index = 0; index < 6; index += 1)
+    {
+        const x = xValues[index];
+        controlPoints[index] = [vector(x, 0, x * x) * meter, vector(x, 1, x * x) * meter];
+        weights[index] = [1, 1];
+    }
+    return {
+            "uDegree" : 3,
+            "vDegree" : 1,
+            "isRational" : false,
+            "isUPeriodic" : false,
+            "isVPeriodic" : false,
+            "controlPoints" : controlPoints,
+            "weights" : weights,
+            "uKnots" : [0, 0, 0, 0, 1, 1, 2, 2, 2, 2],
+            "vKnots" : [0, 0, 1, 1]
+        };
+}
+
+/** Ratio of the longest span to the shortest — the evenness measure. */
+function spanLengthRatio(spans is array) returns number
+{
+    var shortest = spans[0];
+    var longest = spans[0];
+    for (var span in spans)
+    {
+        shortest = min(shortest, span);
+        longest = max(longest, span);
+    }
+    return shortest <= 0 * meter ? 1e9 : longest / shortest;
+}
+
+function runArcLengthPlacementVector(passCount is box, failures is box, printPassing is boolean)
+{
+    const cylinder = normalizeSurfaceDefinition(makeClosedClampedCylinderFixture());
+    const fundamentalBefore = size(cylinder.controlPoints) - cylinder.uDegree;
+    const targetFundamental = 24;
+    const refined = refineSurfaceToControlPointCounts(cylinder, targetFundamental + cylinder.uDegree,
+            size(cylinder.controlPoints[0]));
+
+    recordCheck(passCount, failures, size(refined.controlPoints) == targetFundamental + cylinder.uDegree,
+        "ARCLENGTH: the periodic direction reaches its target stored count (got " ~ size(refined.controlPoints) ~
+        ", expected " ~ (targetFundamental + cylinder.uDegree) ~ ", from " ~ fundamentalBefore ~
+        " editable points by " ~ (targetFundamental - fundamentalBefore) ~ " insertions)", printPassing);
+    recordCheck(passCount, failures, columnOverlapConditionHolds(refined.controlPoints, refined.uDegree),
+        "ARCLENGTH: the overlap condition survives arc-length refinement", printPassing);
+
+    // The knots must divide the PERIMETER evenly, which is what arc-length placement promises.
+    // This fixture is the two-arc rational cubic circle, so its wrap form has TWO equal half spans
+    // (the multiplicity-3 knot at the half-way point is the only interior one). Six editable points
+    // to twenty-four is eighteen insertions, hence twenty pieces, ten per half — dead even, and the
+    // only spread left is quadrature error in the profile.
+    //
+    // Note ten pieces is not a power of two, so bisection cannot reach it evenly either: it lands on
+    // six quarter-spans and four eighths and reports 2:1. This threshold is what catches that.
+    const cylinderRatio = spanLengthRatio(arcLengthSpansOfDirection(refined, true, 0.5));
+    recordCheck(passCount, failures, cylinderRatio < 1.15,
+        "ARCLENGTH: knots divide the cylinder's perimeter evenly (longest/shortest span " ~ cylinderRatio ~
+        ", an even allocation puts this at 1)", printPassing);
+
+    // The same check where the piece count cannot split evenly BETWEEN the spans either. Fifteen
+    // editable points is eleven pieces over two spans — 6/5, a 6:5 ratio, the best any insertion-only
+    // placement can do, since existing knots are never removed.
+    const unevenTarget = 15;
+    const unevenlyRefined = refineSurfaceToControlPointCounts(cylinder, unevenTarget + cylinder.uDegree,
+            size(cylinder.controlPoints[0]));
+    const unevenRatio = spanLengthRatio(arcLengthSpansOfDirection(unevenlyRefined, true, 0.5));
+    recordCheck(passCount, failures, unevenRatio < 1.35,
+        "ARCLENGTH: an indivisible target still spreads evenly (longest/shortest span " ~ unevenRatio ~
+        ", 6/5 pieces puts this at 1.2 and quantized halving at 2)", printPassing);
+
+    var geometryHeld = true;
+    const cylinderDomain = knotDomain(cylinder.uKnots, cylinder.uDegree);
+    for (var fraction in [0, 0.17, 0.4, 0.63, 0.91])
+    {
+        const uParameter = cylinderDomain.start + fraction * (cylinderDomain.end - cylinderDomain.start);
+        for (var vParameter in [0, 0.5, 1])
+        {
+            if (!pointsMatch(evaluateBSplineSurfacePoint(refined, uParameter, vParameter),
+                    evaluateBSplineSurfacePoint(cylinder, uParameter, vParameter)))
+            {
+                geometryHeld = false;
+            }
+        }
+    }
+    recordCheck(passCount, failures, geometryHeld,
+        "ARCLENGTH: refinement is still exact - placement changes distribution, never geometry", printPassing);
+
+    // VARIABLE EXISTING DENSITY — the case reported as globally questionable. A direction whose
+    // knots are already clustered at one end must still come out evenly divided, and this is what
+    // per-span profile sampling exists for: sampling the profile uniformly across the domain gives
+    // a span occupying one percent of the range one or two samples, so both its measured length
+    // and any parameter located inside it are guesswork.
+    // Same control net, but with both interior knots crowded into the first twentieth of the
+    // domain — a legal knot vector describing a wildly non-uniform parameterization.
+    var clustered = makeClampedSurfaceFixture();
+    clustered.uKnots = [0, 0, 0, 0, 0.03, 0.06, 1, 1, 1, 1];
+    clustered = normalizeSurfaceDefinition(clustered);
+    const denselyRefined = refineSurfaceToControlPointCounts(clustered, 20, size(clustered.controlPoints[0]));
+    const variableRatio = spanLengthRatio(arcLengthSpansOfDirection(denselyRefined, true, 0.5));
+    recordCheck(passCount, failures, variableRatio < 2.5,
+        "ARCLENGTH: a direction refined heavily still divides evenly by arc length (longest/shortest span " ~
+        variableRatio ~ ")", printPassing);
+
+    var denseGeometryHeld = true;
+    for (var uParameter in [0, 0.2, 0.45, 0.7, 1])
+    {
+        for (var vParameter in [0, 0.5, 1])
+        {
+            if (!pointsMatch(evaluateBSplineSurfacePoint(denselyRefined, uParameter, vParameter),
+                    evaluateBSplineSurfacePoint(clustered, uParameter, vParameter)))
+            {
+                denseGeometryHeld = false;
+            }
+        }
+    }
+    recordCheck(passCount, failures, denseGeometryHeld,
+        "ARCLENGTH: heavy refinement of a variable-density direction is still exact", printPassing);
+
+    // BALANCE — the allocation must not prefer one side of a mirror-symmetric shape.
+    //
+    // The failure this catches is not a parity accident. "Give the insertion to the longest piece",
+    // with ties broken by array order, picks the LOWER INDEX every single time; on a symmetric shape
+    // every span ties with its mirror, so every allocation that cannot divide evenly lands on the
+    // same side, at every count. That systematic lean is what put knots preferentially on one side
+    // of a merged fillet strip, and — because the merge then removes a knot at the seam, reading the
+    // spacing on BOTH sides as it goes — it came out as a geometric artifact rather than merely an
+    // uneven net.
+    const symmetric = normalizeSurfaceDefinition(makeMirrorSymmetricSurfaceFixture());
+    const symmetricCount = size(symmetric.controlPoints);
+    const symmetricColumns = size(symmetric.controlPoints[0]);
+    recordCheck(passCount, failures, knotVectorIsPalindromic(symmetric.uKnots),
+        "ARCLENGTH: the mirror-symmetric fixture starts palindromic", printPassing);
+
+    // One insertion cannot be split between two equal spans, so the balanced allocation declines it
+    // rather than picking a side. Coming in UNDER the target is the contract, not a shortfall.
+    const balancedOdd = refineSurfaceToControlPointCounts(symmetric, symmetricCount + 1, symmetricColumns, true);
+    recordCheck(passCount, failures, knotVectorIsPalindromic(balancedOdd.uKnots),
+        "ARCLENGTH: balanced refinement stays palindromic when the target cannot divide evenly", printPassing);
+    recordCheck(passCount, failures, size(balancedOdd.controlPoints) <= symmetricCount + 1,
+        "ARCLENGTH: balanced refinement never overshoots its target (got " ~ size(balancedOdd.controlPoints) ~
+        ", asked at most " ~ (symmetricCount + 1) ~ ")", printPassing);
+
+    // Two CAN be split, so the whole tie group is served and the target is reached exactly.
+    const balancedEven = refineSurfaceToControlPointCounts(symmetric, symmetricCount + 2, symmetricColumns, true);
+    recordCheck(passCount, failures, knotVectorIsPalindromic(balancedEven.uKnots) &&
+        size(balancedEven.controlPoints) == symmetricCount + 2,
+        "ARCLENGTH: balanced refinement serves a whole tie group and reaches the target", printPassing);
+
+    var balancedExact = true;
+    for (var uParameter in [0, 0.4, 1, 1.6, 2])
+    {
+        for (var vParameter in [0, 0.5, 1])
+        {
+            if (!pointsMatch(evaluateBSplineSurfacePoint(balancedEven, uParameter, vParameter),
+                    evaluateBSplineSurfacePoint(symmetric, uParameter, vParameter)))
+            {
+                balancedExact = false;
+            }
+        }
+    }
+    recordCheck(passCount, failures, balancedExact,
+        "ARCLENGTH: balanced refinement is still exact - it changes the count, never the surface", printPassing);
+
+    // The plain overload keeps its exact-count contract and pays for it by picking a side. BOTH
+    // halves matter: making balance the default would silently break every caller that asked for a
+    // number, and a balanced flag that changed nothing would be worse than no flag.
+    const exactOdd = refineSurfaceToControlPointCounts(symmetric, symmetricCount + 1, symmetricColumns);
+    recordCheck(passCount, failures, size(exactOdd.controlPoints) == symmetricCount + 1,
+        "ARCLENGTH: the plain overload still hits its exact target", printPassing);
+    recordCheck(passCount, failures, !knotVectorIsPalindromic(exactOdd.uKnots),
+        "ARCLENGTH: the plain overload does pick a side - the two overloads genuinely differ", printPassing);
+
+    // Affine domain rescale: geometry identical at proportional parameters, knots on the new span.
+    const fixture = normalizeSurfaceDefinition(makeClampedSurfaceFixture());
+    const rescaled = rescaleSurfaceDirectionDomain(fixture, true, 5, 9);
+    const rescaledDomain = knotDomain(rescaled.uKnots, rescaled.uDegree);
+    recordCheck(passCount, failures, abs(rescaledDomain.start - 5) < KNOT_PARAMETER_TOLERANCE &&
+        abs(rescaledDomain.end - 9) < KNOT_PARAMETER_TOLERANCE,
+        "ARCLENGTH: rescaleSurfaceDirectionDomain lands the domain exactly where asked", printPassing);
+
+    var rescaleExact = true;
+    for (var fraction in [0, 0.25, 0.5, 0.75, 1])
+    {
+        for (var vParameter in [0, 0.5, 1])
+        {
+            if (!pointsMatch(evaluateBSplineSurfacePoint(rescaled, 5 + 4 * fraction, vParameter),
+                    evaluateBSplineSurfacePoint(fixture, fraction, vParameter)))
+            {
+                rescaleExact = false;
+            }
+        }
+    }
+    recordCheck(passCount, failures, rescaleExact,
+        "ARCLENGTH: rescaling the domain moves no geometry - it is an affine reparameterization", printPassing);
+
+    const arcLength = approximateDirectionArcLength(rescaled, true);
+    recordCheck(passCount, failures, abs(arcLength / approximateDirectionArcLength(fixture, true) - 1) < 1e-6,
+        "ARCLENGTH: measured arc length is a property of the shape, unchanged by reparameterization", printPassing);
+}
+
+// ============================================================================================
+// REDUNDANT — removeRedundantSurfaceKnots, including the PERIODIC removal it needed.
+//
+// The anchor is the exact round trip: refine a CLAMPED direction (insertion only, so every added
+// knot is by construction exactly removable), then clean — the added knots must come back out at
+// zero cost and the surface must not move.
+//
+// PERIODIC DIRECTIONS MUST COME BACK UNTOUCHED, and that is a real checked contract rather than an
+// omission. A first implementation did clean them, through the tile / operate / slice window that
+// refinement and elevation use, and it MOVED THE GEOMETRY — a cylinder came back a bean while the
+// deviation it reported stayed small. Both of these checks caught it. The window construction is
+// sound for insertion and elevation, which are local and forward; removal is the SOLVE that inverts
+// them, and running that inside a clamped window does not reproduce the infinite periodic answer.
+// It was removed rather than flagged off: a lumpy exact net beats a smooth wrong one.
+// ============================================================================================
+
+function runRedundantKnotVector(passCount is box, failures is box, printPassing is boolean)
+{
+    const cylinder = normalizeSurfaceDefinition(makeClosedClampedCylinderFixture());
+    const radius = makeClosedClampedCircleFixture().radius * meter;
+
+    const refinedCylinder = refineSurfaceToControlPointCounts(cylinder, size(cylinder.controlPoints) + 8,
+            size(cylinder.controlPoints[0]));
+    const cleanedCylinder = removeRedundantSurfaceKnots(refinedCylinder, 1e-9 * meter);
+
+    recordCheck(passCount, failures, size(cleanedCylinder.controlPoints) == size(refinedCylinder.controlPoints) &&
+        knotVectorsMatch(cleanedCylinder.uKnots, refinedCylinder.uKnots),
+        "REDUNDANT: a periodic direction is returned untouched, not best-effort cleaned", printPassing);
+    recordCheck(passCount, failures, cleanedCylinder.isUPeriodic == true &&
+        columnOverlapConditionHolds(cleanedCylinder.controlPoints, cleanedCylinder.uDegree),
+        "REDUNDANT: closure and the overlap condition survive", printPassing);
+
+    // The check that caught the bean: whatever cleaning does or declines to do, the closed
+    // direction must still BE the exact circle afterwards.
+    const axis = vector(0, 0, 1);
+    var stillACircle = true;
+    const cleanedDomain = knotDomain(cleanedCylinder.uKnots, cleanedCylinder.uDegree);
+    for (var fraction in [0, 0.13, 0.37, 0.62, 0.88])
+    {
+        const uParameter = cleanedDomain.start + fraction * (cleanedDomain.end - cleanedDomain.start);
+        const point = evaluateBSplineSurfacePoint(cleanedCylinder, uParameter, 0.5);
+        const radial = point - dot(point, axis) * axis;
+        if (abs(norm(radial) / radius - 1) > 1e-9)
+        {
+            stillACircle = false;
+        }
+    }
+    recordCheck(passCount, failures, stillACircle,
+        "REDUNDANT: the closed direction is still the exact circle", printPassing);
+
+    // A clamped direction with deliberately doubled interior knots: the duplicates are redundant
+    // on a smooth surface and must go, without moving it.
+    var doubled = makeClampedSurfaceFixture();
+    doubled.uKnots = [0, 0, 0, 0, 1 / 3, 1 / 3, 2 / 3, 1, 1, 1, 1];
+    var doubledPoints = makeArray(7, 0);
+    for (var rowIndex = 0; rowIndex < 7; rowIndex += 1)
+    {
+        doubledPoints[rowIndex] = doubled.controlPoints[min(rowIndex, 5)];
+    }
+    doubled.controlPoints = doubledPoints;
+    const refinedDoubled = refineSurfaceToControlPointCounts(normalizeSurfaceDefinition(doubled), 11, 4);
+    const cleanedClamped = removeRedundantSurfaceKnots(refinedDoubled, 1e-9 * meter);
+    recordCheck(passCount, failures, size(cleanedClamped.controlPoints) < size(refinedDoubled.controlPoints),
+        "REDUNDANT: a clamped direction sheds its removable knots too (" ~ size(refinedDoubled.controlPoints) ~
+        " -> " ~ size(cleanedClamped.controlPoints) ~ ")", printPassing);
+    recordCheck(passCount, failures, surfacesMatchOnGrid(cleanedClamped, refinedDoubled,
+            [0, 0.25, 0.5, 0.75, 1], [0, 0.5, 1]),
+        "REDUNDANT: cleaning a clamped direction moves no geometry", printPassing);
+}
+
+// ============================================================================================
+// ISOCURVE — extractIsoparametricCurve. The anchor is agreement with the surface evaluator at
+// matched parameters, which is checkable to full tolerance, plus the standing rational anchor:
+// an isocurve of the real cylinder around its closed direction IS the circle, radius exact —
+// a weights-dropping extraction cannot fake that.
+// ============================================================================================
+
+function runIsocurveVector(passCount is box, failures is box, printPassing is boolean)
+{
+    const fixture = normalizeSurfaceDefinition(makeClampedSurfaceFixture());
+
+    const vCurve = extractIsoparametricCurve(fixture, true, 0.4); // fix u -> curve in v
+    var vCurveMatches = true;
+    for (var vParameter in [0, 0.3, 0.5, 0.8, 1])
+    {
+        if (!pointsMatch(evaluateBSplineCurveDerivatives(vCurve, vParameter, 0)[0],
+                evaluateBSplineSurfacePoint(fixture, 0.4, vParameter)))
+        {
+            vCurveMatches = false;
+        }
+    }
+    recordCheck(passCount, failures, vCurveMatches,
+        "ISOCURVE: fixing u gives the curve the surface traces in v, exactly", printPassing);
+    recordCheck(passCount, failures, vCurve.degree == fixture.vDegree && knotVectorsMatch(vCurve.knots, fixture.vKnots),
+        "ISOCURVE: the v-curve inherits the v degree and knot vector verbatim", printPassing);
+
+    const uCurve = extractIsoparametricCurve(fixture, false, 0.3); // fix v -> curve in u
+    var uCurveMatches = true;
+    for (var uParameter in [0, 0.25, 0.5, 0.75, 1])
+    {
+        if (!pointsMatch(evaluateBSplineCurveDerivatives(uCurve, uParameter, 0)[0],
+                evaluateBSplineSurfacePoint(fixture, uParameter, 0.3)))
+        {
+            uCurveMatches = false;
+        }
+    }
+    recordCheck(passCount, failures, uCurveMatches,
+        "ISOCURVE: fixing v gives the curve the surface traces in u, exactly", printPassing);
+
+    // Rational + periodic: around the real cylinder, the isocurve IS the circle.
+    const cylinder = normalizeSurfaceDefinition(makeClosedClampedCylinderFixture());
+    const radius = makeClosedClampedCircleFixture().radius * meter;
+    const circle = extractIsoparametricCurve(cylinder, false, 0.5); // fix v -> closed curve in u
+    recordCheck(passCount, failures, circle.isPeriodic == true,
+        "ISOCURVE: an isocurve around a closed direction is itself closed", printPassing);
+
+    const axis = vector(0, 0, 1);
+    var staysOnCircle = true;
+    var matchesSurface = true;
+    const cylinderDomain = knotDomain(cylinder.uKnots, cylinder.uDegree);
+    for (var fraction in [0, 0.125, 0.3, 0.6, 0.9])
+    {
+        const uParameter = cylinderDomain.start + fraction * (cylinderDomain.end - cylinderDomain.start);
+        const point = evaluateBSplineCurveDerivatives(circle, uParameter, 0)[0];
+        const radial = point - dot(point, axis) * axis;
+        if (abs(norm(radial) / radius - 1) > 1e-9)
+        {
+            staysOnCircle = false;
+        }
+        if (!pointsMatch(point, evaluateBSplineSurfacePoint(cylinder, uParameter, 0.5)))
+        {
+            matchesSurface = false;
+        }
+    }
+    recordCheck(passCount, failures, staysOnCircle,
+        "ISOCURVE: the cylinder's isocurve lies on the true circle - weights were NOT dropped", printPassing);
+    recordCheck(passCount, failures, matchesSurface,
+        "ISOCURVE: the closed isocurve agrees with the surface evaluator everywhere sampled", printPassing);
+}
+
+// ============================================================================================
+// CONCAT — concatenateBSplineCurves / concatenateBSplineSurfaces, plus the targeted removal that
+// heals the seams. The anchor is the full split -> concatenate -> heal round trip: pieces of ONE
+// underlying spline must reassemble into geometry identical to the original, and healing the
+// seams must cost EXACTLY zero and recover the original knot vectors — the exact-merge case is
+// this pipeline reporting 0, not a separate code path.
+// ============================================================================================
+
+/** A Bezier segment from decomposeIntoBezierSegments as a standalone clamped curve. */
+function bezierSegmentAsCurve(segment is map) returns map
+{
+    var segmentKnots = makeArray(2 * (segment.degree + 1), segment.domainStart);
+    for (var index = segment.degree + 1; index < size(segmentKnots); index += 1)
+    {
+        segmentKnots[index] = segment.domainEnd;
+    }
+    return {
+            "degree" : segment.degree,
+            "isPeriodic" : false,
+            "isRational" : true,
+            "controlPoints" : segment.controlPoints,
+            "weights" : segment.weights,
+            "knots" : knotArray(segmentKnots)
+        };
+}
+
+function runConcatenationVector(passCount is box, failures is box, printPassing is boolean)
+{
+    // ---- Curves: decompose into Beziers, chain them back, heal the seams ----
+    const degree = 3;
+    const originalKnots = makeClampedCubicKnots();
+    const originalPoints = makeSixPointFixture();
+    const original = { "degree" : degree, "isPeriodic" : false, "controlPoints" : originalPoints, "knots" : knotArray(originalKnots) };
+
+    const segments = decomposeIntoBezierSegments(original);
+    var segmentCurves = makeArray(size(segments), 0);
+    for (var index = 0; index < size(segments); index += 1)
+    {
+        segmentCurves[index] = bezierSegmentAsCurve(segments[index]);
+    }
+
+    const chained = concatenateBSplineCurves(segmentCurves, 1e-7 * meter);
+    recordCheck(passCount, failures, size(chained.seamParameters) == 2 &&
+        abs(chained.seamParameters[0] - 1 / 3) < KNOT_PARAMETER_TOLERANCE &&
+        abs(chained.seamParameters[1] - 2 / 3) < KNOT_PARAMETER_TOLERANCE,
+        "CONCAT: the chain reports its seam parameters, at the original breakpoints", printPassing);
+
+    var chainMatches = true;
+    for (var parameter in makeUnitSampleParameters())
+    {
+        if (!pointsMatch(evaluateBSplineCurveDerivatives(chained, parameter, 0)[0],
+                evaluateCurvePoints(originalPoints, originalKnots, degree, [parameter])[0]))
+        {
+            chainMatches = false;
+        }
+    }
+    recordCheck(passCount, failures, chainMatches,
+        "CONCAT: chaining a curve's own Bezier pieces reproduces it exactly, parameterization included", printPassing);
+
+    // Heal: each seam sits at multiplicity == degree; the original had multiplicity 1, so remove
+    // degree - 1 instances at each. The pieces come from one curve, so this must be free.
+    var healed = removeSplineKnot(chained, 1 / 3, degree - 1);
+    const firstHealDeviation = healed.deviation;
+    healed = removeSplineKnot(healed, 2 / 3, degree - 1);
+    recordCheck(passCount, failures, firstHealDeviation < 1e-9 * meter && healed.deviation < 1e-9 * meter,
+        "CONCAT: healing seams between pieces of ONE curve costs exactly zero", printPassing);
+    recordCheck(passCount, failures, knotVectorsMatch(healed.knots, originalKnots),
+        "CONCAT: healing recovers the original knot vector, not merely the original shape", printPassing);
+
+    // ---- Surfaces: split with extractSubSurface, chain, heal ----
+    const fixture = normalizeSurfaceDefinition(makeClampedSurfaceFixture());
+    const uSamples = [0, 0.25, 0.4, 0.7, 1];
+    const vSamples = [0, 0.5, 1];
+
+    const pieceA = extractSubSurface(fixture, 0, 0.4, 0, 1);
+    const pieceB = extractSubSurface(fixture, 0.4, 1, 0, 1);
+    const joined = concatenateBSplineSurfaces([pieceA, pieceB], true, 1e-7 * meter);
+    recordCheck(passCount, failures, size(joined.seamParameters) == 1 &&
+        abs(joined.seamParameters[0] - 0.4) < KNOT_PARAMETER_TOLERANCE,
+        "CONCAT: the surface chain reports its seam at the split parameter", printPassing);
+    recordCheck(passCount, failures, surfacesMatchOnGrid(joined, fixture, uSamples, vSamples),
+        "CONCAT: two pieces of one surface reassemble into it exactly", printPassing);
+
+    const healedSurface = removeSurfaceKnotLine(joined, true, 0.4, fixture.uDegree);
+    recordCheck(passCount, failures, healedSurface.deviation < 1e-9 * meter,
+        "CONCAT: healing the surface seam costs exactly zero (got " ~ toString(healedSurface.deviation) ~ ")", printPassing);
+    recordCheck(passCount, failures, knotVectorsMatch(healedSurface.uKnots, fixture.uKnots),
+        "CONCAT: the healed surface recovers the original U knot vector", printPassing);
+    recordCheck(passCount, failures, surfacesMatchOnGrid(healedSurface, fixture, uSamples, vSamples),
+        "CONCAT: split -> concatenate -> heal is a perfect round trip", printPassing);
+
+    // V-direction chaining exercises the transpose conjugation.
+    const pieceC = extractSubSurface(fixture, 0, 1, 0, 0.6);
+    const pieceD = extractSubSurface(fixture, 0, 1, 0.6, 1);
+    const joinedV = concatenateBSplineSurfaces([pieceC, pieceD], false, 1e-7 * meter);
+    recordCheck(passCount, failures, surfacesMatchOnGrid(joinedV, fixture, [0, 0.5, 1], [0, 0.3, 0.6, 0.8, 1]),
+        "CONCAT: chaining in V (via transposition) reassembles exactly too", printPassing);
+
+    var transposeMatches = true;
+    const flipped = transposeSurface(fixture);
+    for (var uParameter in [0, 0.4, 1])
+    {
+        for (var vParameter in [0, 0.7, 1])
+        {
+            if (!pointsMatch(evaluateBSplineSurfacePoint(flipped, vParameter, uParameter),
+                    evaluateBSplineSurfacePoint(fixture, uParameter, vParameter)))
+            {
+                transposeMatches = false;
+            }
+        }
+    }
+    recordCheck(passCount, failures, transposeMatches,
+        "CONCAT: transposeSurface swaps the directions exactly, S'(v, u) == S(u, v)", printPassing);
+}
+
+// ============================================================================================
+// LOFT — loftBSplineSurfaceThroughCurves. The decisive anchor is UNISOLVENCE: lofting a surface's
+// own isocurves, taken at the Greville abscissae of its own knot vector, back onto that knot
+// vector must reproduce the surface EXACTLY — not approximately — because the interpolation
+// system has exactly one solution and the original control net is it (Schoenberg–Whitney).
+// ============================================================================================
+
+function runLoftVector(passCount is box, failures is box, printPassing is boolean)
+{
+    const fixture = normalizeSurfaceDefinition(makeClampedSurfaceFixture());
+    const sectionCount = size(fixture.controlPoints);
+
+    var stations = makeArray(sectionCount, 0);
+    for (var index = 0; index < sectionCount; index += 1)
+    {
+        var total = 0;
+        for (var j = 1; j <= fixture.uDegree; j += 1)
+        {
+            total += fixture.uKnots[index + j];
+        }
+        stations[index] = total / fixture.uDegree;
+    }
+
+    var sections = makeArray(sectionCount, 0);
+    for (var index = 0; index < sectionCount; index += 1)
+    {
+        sections[index] = extractIsoparametricCurve(fixture, true, stations[index]);
+    }
+
+    const rebuilt = loftBSplineSurfaceThroughCurves(sections, fixture.uDegree, stations, fixture.uKnots);
+    recordCheck(passCount, failures, knotVectorsMatch(rebuilt.uKnots, fixture.uKnots),
+        "LOFT: the prescribed-knot loft carries the surface's own U knot vector", printPassing);
+    recordCheck(passCount, failures, surfacesMatchOnGrid(rebuilt, fixture, [0, 0.2, 0.5, 0.8, 1], [0, 0.4, 1]),
+        "LOFT: lofting a surface's own isocurves at its Greville abscissae reproduces it EXACTLY (unisolvence)", printPassing);
+
+    // Default-station overload: whatever stations it picks, it must pass through every section there.
+    const lofted = loftBSplineSurfaceThroughCurves(sections, fixture.uDegree);
+    var passesThroughSections = true;
+    for (var index = 0; index < sectionCount; index += 1)
+    {
+        for (var vParameter in [0, 0.5, 1])
+        {
+            if (!pointsMatch(evaluateBSplineSurfacePoint(lofted, lofted.uParameters[index], vParameter),
+                    evaluateBSplineCurveDerivatives(sections[index], vParameter, 0)[0]))
+            {
+                passesThroughSections = false;
+            }
+        }
+    }
+    recordCheck(passCount, failures, passesThroughSections,
+        "LOFT: the default-station loft passes exactly through every section at its own station", printPassing);
+
+    // Closed rational sections: lofting circles of the real cylinder. The overlap condition and
+    // the weights must both survive columnwise interpolation.
+    const cylinder = normalizeSurfaceDefinition(makeClosedClampedCylinderFixture());
+    const radius = makeClosedClampedCircleFixture().radius * meter;
+    var circles = makeArray(3, 0);
+    for (var index = 0; index < 3; index += 1)
+    {
+        circles[index] = extractIsoparametricCurve(cylinder, false, index * 0.5);
+    }
+    const ring = loftBSplineSurfaceThroughCurves(circles, 2);
+    recordCheck(passCount, failures, ring.isVPeriodic == true,
+        "LOFT: closed sections give a surface closed in the section direction", printPassing);
+
+    const axis = vector(0, 0, 1);
+    var ringOnCylinder = true;
+    const ringVDomain = knotDomain(ring.vKnots, ring.vDegree);
+    for (var uParameter in [0, 0.5, 1])
+    {
+        for (var fraction in [0, 0.2, 0.55, 0.85])
+        {
+            const vParameter = ringVDomain.start + fraction * (ringVDomain.end - ringVDomain.start);
+            const point = evaluateBSplineSurfacePoint(ring, uParameter, vParameter);
+            const radial = point - dot(point, axis) * axis;
+            if (abs(norm(radial) / radius - 1) > 1e-9)
+            {
+                ringOnCylinder = false;
+            }
+        }
+    }
+    recordCheck(passCount, failures, ringOnCylinder,
+        "LOFT: lofted circles stay on the true cylinder - rational sections survive lofting", printPassing);
+
+    // Identical sections have no loft direction; that must be said, not solved with infinities.
+    const degenerate = try silent(loftBSplineSurfaceThroughCurves([sections[0], sections[0], sections[0], sections[0]], 3));
+    recordCheck(passCount, failures, degenerate == undefined,
+        "LOFT: refuses a family of identical sections rather than dividing by zero spacing", printPassing);
+}
+
+// ============================================================================================
+// SIMPLIFY — simplifySurfaceToControlPointCounts, the module's one lossy operation.
+//
+// The anchor is a ROUND TRIP that must be EXACT, not approximate: knots this module's own
+// refinement inserted are by construction exactly removable, so refining a surface and simplifying
+// straight back to its original count must return the original geometry with a reported deviation
+// of exactly zero. That turns a lossy algorithm into one with an exactly-checkable case, which is
+// worth far more than only testing it where the answer is fuzzy.
+//
+// The genuinely lossy case is checked separately, and on the only terms that mean anything for a
+// lossy operation: the count target is met, the reported deviation is honest (the net really did
+// move by no more than it claims), and the broad shape survives.
+// ============================================================================================
+
+function runSimplifySurfaceVector(passCount is box, failures is box, printPassing is boolean)
+{
+    const fixture = normalizeSurfaceDefinition(makeClampedSurfaceFixture()); // 6 x 4, degrees 3 and 2
+    const uSamples = [0, 0.25, 0.5, 0.75, 1];
+    const vSamples = [0, 0.5, 1];
+
+    // ---- Exact round trip: refine, then simplify back ----
+    const refined = refineSurfaceToControlPointCounts(fixture, 12, 8);
+    recordCheck(passCount, failures, size(refined.controlPoints) == 12 && size(refined.controlPoints[0]) == 8,
+        "SIMPLIFY: setup — refinement reached 12 x 8", printPassing);
+
+    const roundTripped = simplifySurfaceToControlPointCounts(refined, 6, 4);
+    recordCheck(passCount, failures, size(roundTripped.controlPoints) == 6 && size(roundTripped.controlPoints[0]) == 4,
+        "SIMPLIFY: round trip returns to the original counts (got " ~ size(roundTripped.controlPoints) ~ " x " ~
+        size(roundTripped.controlPoints[0]) ~ ", expected 6 x 4)", printPassing);
+    recordCheck(passCount, failures, roundTripped.deviation < 1e-9 * meter,
+        "SIMPLIFY: round trip reports ZERO deviation — every inserted knot was exactly removable (got " ~
+        roundTripped.deviation ~ ")", printPassing);
+    recordCheck(passCount, failures, surfacesMatchOnGrid(fixture, roundTripped, uSamples, vSamples),
+        "SIMPLIFY: round trip reproduces the original surface exactly", printPassing);
+    recordCheck(passCount, failures, knotVectorsMatch(roundTripped.uKnots, fixture.uKnots) &&
+        knotVectorsMatch(roundTripped.vKnots, fixture.vKnots),
+        "SIMPLIFY: round trip recovers the original knot vectors, not merely the original counts", printPassing);
+
+    // ---- Genuinely lossy: below what the surface can represent exactly ----
+    const reduced = simplifySurfaceToControlPointCounts(fixture, 4, 3);
+    recordCheck(passCount, failures, size(reduced.controlPoints) == 4 && size(reduced.controlPoints[0]) == 3,
+        "SIMPLIFY: reaches a target BELOW the input count (got " ~ size(reduced.controlPoints) ~ " x " ~
+        size(reduced.controlPoints[0]) ~ ", expected 4 x 3)", printPassing);
+    recordCheck(passCount, failures, reduced.deviation >= 0 * meter,
+        "SIMPLIFY: a lossy reduction reports a deviation rather than claiming exactness", printPassing);
+
+    // The reported deviation must be HONEST: it claims to bound how far the control net moved, and
+    // by partition of unity that bounds how far the surface moved. Checking the surface against
+    // that claim is what stops the number from being decorative.
+    var withinClaimedDeviation = true;
+    const claimed = reduced.deviation + 1e-9 * meter;
+    for (var uParameter in uSamples)
+    {
+        for (var vParameter in vSamples)
+        {
+            const before = evaluateBSplineSurfacePoint(fixture, uParameter, vParameter);
+            const after = evaluateBSplineSurfacePoint(reduced, uParameter, vParameter);
+            if (norm(before - after) > claimed)
+            {
+                withinClaimedDeviation = false;
+            }
+        }
+    }
+    recordCheck(passCount, failures, withinClaimedDeviation,
+        "SIMPLIFY: the surface really does stay within the deviation the reduction reported", printPassing);
+
+    // A direction already at or below its target must be untouched, and a target of 0 must mean
+    // "no request" rather than "reduce to nothing".
+    const untouched = simplifySurfaceToControlPointCounts(fixture, 6, 0);
+    recordCheck(passCount, failures, size(untouched.controlPoints) == 6 && size(untouched.controlPoints[0]) == 4 &&
+        untouched.deviation == 0 * meter,
+        "SIMPLIFY: targets already met, and a 0 target, leave the surface alone", printPassing);
+
+    // Degree must be untouched — simplification removes knots, never lowers the continuity ceiling.
+    recordCheck(passCount, failures, reduced.uDegree == fixture.uDegree && reduced.vDegree == fixture.vDegree,
+        "SIMPLIFY: degrees are unchanged — this reduces control points, not smoothness", printPassing);
+
+    // ---- HANDEDNESS: removal must not care which end of the knot vector it was handed ----
+    //
+    // The discriminating property for the one-sided lean, and deliberately checked on an ASYMMETRIC
+    // fixture so it tests the OPERATOR rather than the data. Reducing a direction, and reducing that
+    // direction reversed and then un-reversing, must give the same surface: reversal is exact, so any
+    // difference between the two is handedness inside the removal itself.
+    //
+    // This failed before removeKnotFromPointArrays centred its ambiguous point. Where the removal
+    // window is even — degree - multiplicity odd, which is every simple-knot removal at degree 2 and
+    // 4, and the last removal of every degree-3 seam heal — A5.8's forward and backward recurrences
+    // produce two different answers for the surviving control point, and the shift kept whichever one
+    // index parity left standing. That put the entire removal error on one side, so the same geometry
+    // fed in mirrored came back measurably different: 1.48 against 0.74 worst deviation on a
+    // two-span crease, from inputs that were reflections of each other.
+    //
+    // V is the direction under test because this fixture is degree 2 there, which is the even-window
+    // case; U is degree 3 with simple knots, an ODD window, where the recurrences meet on a shared
+    // slot and there was never an ambiguity to resolve.
+    const reducedV = simplifySurfaceToControlPointCounts(fixture, 0, 3);
+    const throughReversal = reverseSurfaceDirection(
+            simplifySurfaceToControlPointCounts(reverseSurfaceDirection(fixture, false), 0, 3), false);
+    recordCheck(passCount, failures, surfacesMatchOnGrid(reducedV, throughReversal, uSamples, vSamples),
+        "SIMPLIFY: reduction commutes with reversing the direction — the removal has no handedness", printPassing);
+    recordCheck(passCount, failures, abs(reducedV.deviation - throughReversal.deviation) < 1e-9 * meter,
+        "SIMPLIFY: and it reports the same deviation either way round (got " ~ toString(reducedV.deviation) ~
+        " and " ~ toString(throughReversal.deviation) ~ ")", printPassing);
+
+    // ---- The same property stated on symmetric data, where it is checkable by eye ----
+    //
+    // makeMirrorSymmetricSurfaceFixture is a parabola on [0,0,0,0,1,1,2,2,2,2]: degree 3 with the
+    // interior knot at multiplicity 2, so removing it is exactly the even-window case, and it is
+    // structurally the elevated two-cube-face merge whose seam heal reported the hooked surface.
+    //
+    // The forward recurrence answers x = +0.2 for the surviving control point and the backward one
+    // answers x = -0.2. Either alone puts a symmetric surface's control point off the symmetry plane
+    // by 0.2 m; their midpoint is x = 0, which is where the geometry says it belongs. The reported
+    // deviation halves with it — 0.4 m to 0.2 m — because that number is the displacement actually
+    // incurred, and centring genuinely halves it rather than relocating it.
+    const symmetricInput = normalizeSurfaceDefinition(makeMirrorSymmetricSurfaceFixture());
+    const symmetricReduced = simplifySurfaceToControlPointCounts(symmetricInput, 5, 0);
+    var symmetricNet = size(symmetricReduced.controlPoints) == 5;
+    for (var rowIndex = 0; rowIndex < size(symmetricReduced.controlPoints); rowIndex += 1)
+    {
+        const mirrorIndex = size(symmetricReduced.controlPoints) - 1 - rowIndex;
+        for (var columnIndex = 0; columnIndex < size(symmetricReduced.controlPoints[0]); columnIndex += 1)
+        {
+            const point = symmetricReduced.controlPoints[rowIndex][columnIndex];
+            const mirrored = symmetricReduced.controlPoints[mirrorIndex][columnIndex];
+            if (!pointsMatch(point, vector(-mirrored[0], mirrored[1], mirrored[2])))
+            {
+                symmetricNet = false;
+            }
+        }
+    }
+    recordCheck(passCount, failures, symmetricNet,
+        "SIMPLIFY: an even-window removal on a mirror-symmetric net returns a mirror-symmetric net", printPassing);
+    recordCheck(passCount, failures, knotVectorIsPalindromic(symmetricReduced.uKnots),
+        "SIMPLIFY: and a palindromic knot vector", printPassing);
+    recordCheck(passCount, failures, abs(symmetricReduced.deviation - 0.2 * meter) < 1e-9 * meter,
+        "SIMPLIFY: the centred removal reports HALF the gap between the two recurrences, because that " ~
+        "is what it actually cost (got " ~ toString(symmetricReduced.deviation) ~ ", expected 0.2 m)", printPassing);
+}
+
+// ============================================================================================
+// SURFACE-DERIV — exact derivative evaluation. Structured as three independent tiers, because
+// no one of them is sufficient:
+//
+//   (1) ANALYTIC POLYNOMIAL. A patch built to be S(u,v) = (u, v, u^2 + v^2) exactly, so every
+//       derivative is known in closed form and checked to full tolerance. Catches any error in
+//       the basis-derivative recurrence (A2.3), which is where the dense index arithmetic is.
+//   (2) ANALYTIC RATIONAL. A circle's tangent is perpendicular to its radius — a property no
+//       weights-dropping implementation can fake, since the unweighted control polygon's curve
+//       is a different curve with a different tangent. This is the same class of anchor that
+//       finally settled the evaluateSpline weights bug, and it is checked to zero, not to a
+//       tolerance on a magnitude. Curvature on the same cylinder is equally analytic: Gaussian
+//       exactly 0, minimum radius exactly r.
+//   (3) FINITE DIFFERENCE, on a fixture whose weights vary in BOTH directions. Tiers 1 and 2
+//       between them never exercise the mixed rational terms of A4.4 — the paraboloid is not
+//       rational, and the cylinder's weight function is independent of v, so every w^(0,j) and
+//       w^(i,j) term vanishes on it. A dropped or mis-weighted binomial in that recursion would
+//       survive both. Tolerances here are deliberately loose (1e-4 / 1e-3 relative): the target
+//       is a missing TERM, which is an error of order 1, not the last digit of a difference
+//       quotient.
+// ============================================================================================
+
+/**
+ * A degree-(2,2) Bezier patch that IS S(u, v) = (u, v, u^2 + v^2) on [0,1]^2, exactly.
+ *
+ * Construction, so it can be re-derived rather than trusted: on the degree-2 Bernstein basis the
+ * coefficients of `u` are [0, 0.5, 1] and of `u^2` are [0, 0, 1]. Setting the x component of
+ * every control point from its ROW index makes the x sum telescope to `u` by partition of unity
+ * over the v basis, and symmetrically for y from the column index; the z component is the sum of
+ * the two square-coefficient vectors, giving u^2 + v^2.
+ */
+function makeAnalyticParaboloidPatchFixture() returns map
+{
+    const linearCoefficients = [0, 0.5, 1];
+    const squareCoefficients = [0, 0, 1];
+    var controlPoints = makeArray(3, 0);
+    for (var rowIndex = 0; rowIndex < 3; rowIndex += 1)
+    {
+        var row = makeArray(3, vector(0, 0, 0) * centimeter);
+        for (var columnIndex = 0; columnIndex < 3; columnIndex += 1)
+        {
+            row[columnIndex] = vector(linearCoefficients[rowIndex], linearCoefficients[columnIndex],
+                    squareCoefficients[rowIndex] + squareCoefficients[columnIndex]) * centimeter;
+        }
+        controlPoints[rowIndex] = row;
+    }
+    return {
+            "uDegree" : 2,
+            "vDegree" : 2,
+            "isRational" : false,
+            "isUPeriodic" : false,
+            "isVPeriodic" : false,
+            "controlPoints" : controlPoints,
+            "uKnots" : [0, 0, 0, 1, 1, 1],
+            "vKnots" : [0, 0, 0, 1, 1, 1]
+        };
+}
+
+/** makeClampedSurfaceFixture given weights that vary in BOTH directions, so the rational
+    quotient rule's mixed terms are actually loaded. No analytic form — it exists purely as a
+    finite-difference subject, which needs none. All weights are positive by inspection
+    (minimum 0.4 at row 0, column 3). */
+function makeBidirectionalRationalSurfaceFixture() returns map
+{
+    var fixture = makeClampedSurfaceFixture();
+    var weights = makeArray(6, 0);
+    for (var rowIndex = 0; rowIndex < 6; rowIndex += 1)
+    {
+        var weightRow = makeArray(4, 1);
+        for (var columnIndex = 0; columnIndex < 4; columnIndex += 1)
+        {
+            weightRow[columnIndex] = 1 + 0.3 * rowIndex - 0.2 * columnIndex + 0.1 * rowIndex * columnIndex;
+        }
+        weights[rowIndex] = weightRow;
+    }
+    fixture.weights = weights;
+    fixture.isRational = true;
+    return fixture;
+}
+
+/** Relative agreement between two length Vectors, scaled by the larger magnitude. For
+    finite-difference comparisons only — exact equality is meaningless against a difference
+    quotient, and an absolute tolerance would be wrong at both ends of the scale range. */
+function vectorsAgreeRelatively(actual is Vector, expected is Vector, relativeTolerance is number) returns boolean
+{
+    const scale = max(norm(actual), norm(expected));
+    if (scale / meter == 0)
+    {
+        return true; // both exactly zero, which agrees at any tolerance
+    }
+    return norm(actual - expected) <= relativeTolerance * scale;
+}
+
+function runSurfaceDerivativeVector(passCount is box, failures is box, printPassing is boolean)
+{
+    // ---- Tier 1: the analytic polynomial patch ----
+    const paraboloid = makeAnalyticParaboloidPatchFixture();
+    var analyticMatches = true;
+    var thirdOrderVanishes = true;
+    for (var uParameter in [0, 0.3, 0.5, 1])
+    {
+        for (var vParameter in [0, 0.25, 0.7, 1])
+        {
+            const derivatives = evaluateBSplineSurfaceDerivatives(paraboloid, uParameter, vParameter, 3, 3);
+            if (!pointsMatch(derivatives[0][0], vector(uParameter, vParameter, uParameter * uParameter + vParameter * vParameter) * centimeter) ||
+                !pointsMatch(derivatives[1][0], vector(1, 0, 2 * uParameter) * centimeter) ||
+                !pointsMatch(derivatives[0][1], vector(0, 1, 2 * vParameter) * centimeter) ||
+                !pointsMatch(derivatives[2][0], vector(0, 0, 2) * centimeter) ||
+                !pointsMatch(derivatives[0][2], vector(0, 0, 2) * centimeter) ||
+                !pointsMatch(derivatives[1][1], vector(0, 0, 0) * centimeter))
+            {
+                analyticMatches = false;
+            }
+            // Order 3 exceeds degree 2, so it is identically zero — not approximately.
+            if (!pointsMatch(derivatives[3][0], vector(0, 0, 0) * centimeter) ||
+                !pointsMatch(derivatives[0][3], vector(0, 0, 0) * centimeter))
+            {
+                thirdOrderVanishes = false;
+            }
+        }
+    }
+    recordCheck(passCount, failures, analyticMatches,
+        "SURFACE-DERIV: every derivative of S(u,v) = (u, v, u^2 + v^2) matches its closed form", printPassing);
+    recordCheck(passCount, failures, thirdOrderVanishes,
+        "SURFACE-DERIV: derivatives above the degree are exactly zero", printPassing);
+    recordCheck(passCount, failures,
+        pointsMatch(evaluateBSplineSurfaceDerivatives(paraboloid, 0.4, 0.6, 0, 0)[0][0],
+            evaluateBSplineSurfacePoint(paraboloid, 0.4, 0.6)),
+        "SURFACE-DERIV: order (0, 0) reproduces evaluateBSplineSurfacePoint", printPassing);
+
+    // ---- Tier 2: the analytic rational cylinder ----
+    // Circle in XY centered on the origin, swept along Z; the axis is the Z axis, so the radial
+    // vector at any point is simply (x, y, 0).
+    const cylinder = makeClosedClampedCylinderFixture();
+    const radius = makeClosedClampedCircleFixture().radius * meter;
+    const axialSpan = (0.4606121628299273 - 0.4039749626640555) * meter;
+
+    var tangentIsPerpendicularToRadius = true;
+    var axialTangentIsExact = true;
+    var normalIsRadial = true;
+    for (var uParameter in [0, 0.125, 0.25, 0.5, 0.75, 1])
+    {
+        for (var vParameter in [0, 0.5, 1])
+        {
+            const derivatives = evaluateBSplineSurfaceDerivatives(cylinder, uParameter, vParameter, 1, 1);
+            const point = derivatives[0][0];
+            // The component of the position perpendicular to the Z axis — the radius vector.
+            // Written as a projection rather than by rebuilding a Vector component-wise, which
+            // would mix a raw length into vector().
+            const axis = vector(0, 0, 1);
+            const radial = point - dot(point, axis) * axis;
+
+            // |P|^2 = r^2 along the circle, so differentiating gives 2 P . P_u = 0 EXACTLY. An
+            // implementation that dropped the weights would return the unweighted polygon's
+            // tangent here, which is not perpendicular to anything in particular.
+            if (abs(dot(derivatives[1][0], radial)) > 1e-9 * norm(derivatives[1][0]) * norm(radial))
+            {
+                tangentIsPerpendicularToRadius = false;
+            }
+            // V is a degree-1 sweep with column-independent weights, so S_v is the exact
+            // difference of the two column heights.
+            if (!pointsMatch(derivatives[0][1], vector(0 * meter, 0 * meter, axialSpan)))
+            {
+                axialTangentIsExact = false;
+            }
+            const normal = evaluateBSplineSurfaceNormal(cylinder, uParameter, vParameter);
+            if (abs(abs(dot(normal, radial)) / norm(radial) - 1) > 1e-9)
+            {
+                normalIsRadial = false;
+            }
+        }
+    }
+    recordCheck(passCount, failures, tangentIsPerpendicularToRadius,
+        "SURFACE-DERIV: the rational circle's tangent is perpendicular to its radius (weights are NOT dropped)", printPassing);
+    recordCheck(passCount, failures, axialTangentIsExact,
+        "SURFACE-DERIV: the cylinder's axial tangent is exactly the column height difference", printPassing);
+    recordCheck(passCount, failures, normalIsRadial,
+        "SURFACE-DERIV: the cylinder's normal is exactly radial", printPassing);
+
+    var curvatureIsCylindrical = true;
+    for (var uParameter in [0, 0.125, 0.375, 0.75])
+    {
+        const curvature = evaluateBSplineSurfaceCurvature(cylinder, uParameter, 0.5);
+        const flattest = min(abs(curvature.principalCurvatures[0]), abs(curvature.principalCurvatures[1]));
+        const sharpest = max(abs(curvature.principalCurvatures[0]), abs(curvature.principalCurvatures[1]));
+        if (curvature.minimumRadius == undefined ||
+            abs(curvature.gaussianCurvature) * radius * radius > 1e-9 ||
+            flattest * radius > 1e-9 ||
+            abs(sharpest * radius - 1) > 1e-9 ||
+            abs(curvature.minimumRadius / radius - 1) > 1e-9)
+        {
+            curvatureIsCylindrical = false;
+        }
+    }
+    recordCheck(passCount, failures, curvatureIsCylindrical,
+        "SURFACE-DERIV: cylinder curvature is analytic — Gaussian 0, one principal 0, minimum radius r", printPassing);
+
+    // ---- Tier 3: finite differences against weights that vary in both directions ----
+    const generalRational = makeBidirectionalRationalSurfaceFixture();
+    const firstStep = 1e-4;
+    const secondStep = 1e-3;
+    var firstDerivativesAgree = true;
+    var secondDerivativesAgree = true;
+    var mixedDerivativeAgrees = true;
+    for (var uParameter in [0.2, 0.45, 0.8])
+    {
+        for (var vParameter in [0.25, 0.6])
+        {
+            const derivatives = evaluateBSplineSurfaceDerivatives(generalRational, uParameter, vParameter, 2, 2);
+
+            const uForward = evaluateBSplineSurfacePoint(generalRational, uParameter + firstStep, vParameter);
+            const uBackward = evaluateBSplineSurfacePoint(generalRational, uParameter - firstStep, vParameter);
+            const vForward = evaluateBSplineSurfacePoint(generalRational, uParameter, vParameter + firstStep);
+            const vBackward = evaluateBSplineSurfacePoint(generalRational, uParameter, vParameter - firstStep);
+            if (!vectorsAgreeRelatively((uForward - uBackward) / (2 * firstStep), derivatives[1][0], 1e-4) ||
+                !vectorsAgreeRelatively((vForward - vBackward) / (2 * firstStep), derivatives[0][1], 1e-4))
+            {
+                firstDerivativesAgree = false;
+            }
+
+            const centre = evaluateBSplineSurfacePoint(generalRational, uParameter, vParameter);
+            const uForwardWide = evaluateBSplineSurfacePoint(generalRational, uParameter + secondStep, vParameter);
+            const uBackwardWide = evaluateBSplineSurfacePoint(generalRational, uParameter - secondStep, vParameter);
+            const vForwardWide = evaluateBSplineSurfacePoint(generalRational, uParameter, vParameter + secondStep);
+            const vBackwardWide = evaluateBSplineSurfacePoint(generalRational, uParameter, vParameter - secondStep);
+            if (!vectorsAgreeRelatively((uForwardWide - 2 * centre + uBackwardWide) / (secondStep * secondStep), derivatives[2][0], 1e-3) ||
+                !vectorsAgreeRelatively((vForwardWide - 2 * centre + vBackwardWide) / (secondStep * secondStep), derivatives[0][2], 1e-3))
+            {
+                secondDerivativesAgree = false;
+            }
+
+            const plusPlus = evaluateBSplineSurfacePoint(generalRational, uParameter + secondStep, vParameter + secondStep);
+            const plusMinus = evaluateBSplineSurfacePoint(generalRational, uParameter + secondStep, vParameter - secondStep);
+            const minusPlus = evaluateBSplineSurfacePoint(generalRational, uParameter - secondStep, vParameter + secondStep);
+            const minusMinus = evaluateBSplineSurfacePoint(generalRational, uParameter - secondStep, vParameter - secondStep);
+            if (!vectorsAgreeRelatively((plusPlus - plusMinus - minusPlus + minusMinus) / (4 * secondStep * secondStep),
+                    derivatives[1][1], 1e-3))
+            {
+                mixedDerivativeAgrees = false;
+            }
+        }
+    }
+    recordCheck(passCount, failures, firstDerivativesAgree,
+        "SURFACE-DERIV: S_u and S_v match central differences on bidirectionally-weighted rational input", printPassing);
+    recordCheck(passCount, failures, secondDerivativesAgree,
+        "SURFACE-DERIV: S_uu and S_vv match second differences on the same", printPassing);
+    recordCheck(passCount, failures, mixedDerivativeAgrees,
+        "SURFACE-DERIV: S_uv matches its mixed difference — the A4.4 cross terms tiers 1 and 2 cannot reach", printPassing);
+
+    // ---- Curve sibling: the same rational anchor, one dimension down ----
+    const circle = makeClosedClampedCircleFixture();
+    var curveTangentIsPerpendicular = true;
+    var curveStaysOnCircle = true;
+    for (var parameter in [0, 0.125, 0.25, 0.5, 0.875])
+    {
+        const derivatives = evaluateBSplineCurveDerivatives(circle, parameter, 2);
+        if (abs(norm(derivatives[0]) / (circle.radius * meter) - 1) > 1e-9)
+        {
+            curveStaysOnCircle = false;
+        }
+        if (abs(dot(derivatives[1], derivatives[0])) > 1e-9 * norm(derivatives[1]) * norm(derivatives[0]))
+        {
+            curveTangentIsPerpendicular = false;
+        }
+    }
+    recordCheck(passCount, failures, curveStaysOnCircle,
+        "SURFACE-DERIV: evaluateBSplineCurveDerivatives order 0 lands on the circle, radius exact", printPassing);
+    recordCheck(passCount, failures, curveTangentIsPerpendicular,
+        "SURFACE-DERIV: the rational circle CURVE's tangent is perpendicular to its radius", printPassing);
 }
 
 // ============================================================================================

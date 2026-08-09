@@ -66,32 +66,28 @@ import(path : "onshape/std/nurbsUtils.fs", version : "3044.0");      // removeKn
         (tweenSurfaces.fs has its own defensive cast for the same reason).
 
     STATUS (see docs/specs/SPLINE_REFINEMENT_UTILITY_SPEC.md section 7 for the phased plan):
-      Layers 1-2, direct insertion, and the surface evaluator: implemented AND tester-verified
-        passing in Onshape.
-      Curve-level Layer 3 (normalizeSplineDefinition through prepareSplineForDeformation, plus
-        their shared private helpers): implemented, NOT yet run in Onshape — needs a tester
-        pass (add vectors per each function's doc comment) before anything downstream (Phase 3
-        tweenCurves, Phase 4's curve half) treats it as trustworthy.
-      Surface-level Layer 3 (refineSurfaceToControlPointCounts through
-        prepareSurfaceForDeformation): still HOOK stubs. Each one's doc comment now describes
-        exactly which curve-level helper it generalizes and how — the hard math already exists,
-        this is "tensor-apply the same operators via applyKnotRefinementOperatorDownColumns /
-        AcrossRows instead of the flat applyKnotRefinementOperator."
+      NO STUBS REMAIN — every exported function is implemented. Layers 1-2, direct insertion,
+        the surface evaluator, all of curve-level Layer 3, and the periodic machinery (refine,
+        elevate, share, reverse, re-window, two-sided seam alignment, closed-clamped conversion)
+        are implemented AND tester-verified passing in Onshape across many live runs.
+      Confirmed live through 2026-08-09, each batch on its first run: the derivative layer
+        (SURFACE-DERIV), simplification (SIMPLIFY), interpolation (INTERPOLATE), and the ASSEMBLY
+        layer (ISOCURVE, CONCAT, LOFT) — isocurve extraction, transposition, curve and surface
+        concatenation, targeted seam-knot removal, and lofting, including the unisolvence
+        reconstruction anchor and the split -> concatenate -> heal exact round trip. Every entry
+        point in this module is now live-verified.
 
-    HOOKS — instructions for implementing a remaining stubbed function:
-      Stubs are marked "HOOK(functionName)" in their doc comment and throw a descriptive error.
-      To implement one:
-        1. Read its doc comment contract and the spec section it cites. Do not change any
-           function signature, and do not modify already-implemented functions to make a hook
-           pass — if an implemented function seems wrong, stop and flag it instead.
-        2. Follow the conventions block above, especially preallocation, scalar-on-left, and
-           the KnotArray-casting discipline on every return.
-        3. A hook is DONE when the tester vector named in its comment passes in Onshape, not
-           before. Add the vector to splineRefinementTester.fs if it is not already there.
-      Remaining recommended order (all curve-level dependencies now exist):
-        refineSurfaceToControlPointCounts -> makeSurfacesShareKnotVectors ->
-        elevateSurfaceDegrees -> makeSurfacesCompatible -> refineSurfaceToSpanDensity ->
-        decomposeSurfaceIntoBezierPatches -> extractSubSurface -> prepareSurfaceForDeformation.
+    ADDING A NEW ENTRY POINT — the standing rules, learned the hard way:
+      1. Read the spec section it cites first. Do not change an existing function's signature,
+         and do not modify an already-verified function to make a new one pass — if a verified
+         function looks wrong, stop and flag it instead.
+      2. Follow the conventions block above, especially preallocation, scalar-on-left, and the
+         KnotArray-casting discipline on every return.
+      3. knotRefinementOperator / periodicRefinementOperator ONLY where the same refinement runs
+         across many point arrays (a surface's rows or columns). For a single array use
+         refineKnotVector — the operator's O(M^2) build is pure overhead otherwise.
+      4. It is DONE when its tester vector passes in Onshape, not when it compiles. Every
+         periodic vector needs a degree >= 2 case; degree 1 hides an entire class of bug.
 */
 
 // ============================================================================================
@@ -110,8 +106,6 @@ export const KNOT_PARAMETER_TOLERANCE = 1e-10;
  * this refinementOperator formulation was extracted from.
  */
 export const SPARSE_WEIGHT_CUTOFF = 1e-12;
-
-const NOT_IMPLEMENTED_MESSAGE = "splineRefinementUtils: not yet implemented (see HOOK notes in the source): ";
 
 /**
  * The algorithm used to build a refinement refinementOperator. BOEHM inserts the requested parameters
@@ -796,6 +790,440 @@ export function evaluateBSplineSurfacePoint(surface is map, uParameter is number
         }
     }
     return isRational ? weightedPointSum / weightSum : weightedPointSum;
+}
+
+// ============================================================================================
+// Layer 3 — EXACT DERIVATIVE EVALUATION (The NURBS Book ch. 3-4).
+//
+// Why this exists, since it is the module's first block that is not about refinement: the
+// deformation feature (spec section 9.1) needs three things no amount of point evaluation
+// provides — point-to-parameter INVERSION (Newton on the distance function, section 6.1 of the
+// book, which needs first AND second derivatives), exact surface NORMALS for the offset step of
+// flow-along-surface, and CURVATURE for section 9.1.1's refinement seeding, which sizes the
+// first refinement level from the target's minimum curvature radius. Every one of those is a
+// derivative question.
+//
+// The alternative was the kernel: evDistance(point, face) does closest-point projection and
+// returns a face parameter. Two problems, both disqualifying for a per-control-point inner loop.
+// It is one kernel call per point, so a refined 40x40 net costs 1600 calls per refinement level.
+// And its parameter is in evFaceTangentPlane's form, NORMALIZED TO THE FACE'S PARAMETER-SPACE
+// BOUNDING BOX rather than expressed in knot values — feeding a definition-side knot parameter
+// to it, or reading its result as one, is a silent mismatch (the same trap recorded against
+// evFaceTangentPlanes elsewhere). Definition-side derivatives have neither problem: pure
+// arithmetic, no Context, exact, and in the definition's own parameterization by construction.
+//
+// RATIONAL SURFACES ARE NOT THE HOMOGENEOUS NUMERATOR'S DERIVATIVE. S = A/w, so every order
+// needs the quotient rule (Algorithm A4.4), and the mixed partials bring in every lower-order
+// derivative of both A and w. Skipping that is the exact shape of the evaluateSpline
+// weights-ignoring bug (section 2.3.3): it agrees perfectly on non-rational input and is
+// silently wrong on every revolve-derived surface in existence. The tester anchors this on a
+// property no weights-dropping implementation can fake — a circle's tangent is perpendicular to
+// its radius, checked to zero.
+// ============================================================================================
+
+/**
+ * Derivatives of the (degree + 1) nonvanishing basis functions at `parameter`, orders 0 through
+ * maxOrder: `result[order][functionIndex]`, where functionIndex 0..degree corresponds to control
+ * point (spanIndex - degree + functionIndex). Row 0 is exactly bSplineBasisValues' output.
+ *
+ * NURBS Book Algorithm A2.3 (DersBasisFuns). The insight worth stating, because the code reads
+ * as dense index arithmetic otherwise: the triangular recurrence bSplineBasisValues already runs
+ * computes every knot difference it needs along the way and then throws them away. A2.3 keeps
+ * them — basis functions in `ndu`'s upper triangle, knot differences in its lower triangle — and
+ * the derivative loop is then a second recurrence over that saved table, with no re-evaluation
+ * of anything.
+ *
+ * Orders above `degree` are returned as zeros rather than computed, which is not a shortcut: a
+ * degree-p piecewise polynomial's (p+1)-th derivative IS identically zero.
+ */
+function bSplineBasisDerivatives(knots is array, degree is number, spanIndex is number, parameter is number, maxOrder is number) returns array
+{
+    var ndu = makeArray(degree + 1, 0);
+    for (var rowIndex = 0; rowIndex <= degree; rowIndex += 1)
+    {
+        ndu[rowIndex] = makeArray(degree + 1, 0);
+    }
+    var leftDistances = makeArray(degree + 1, 0);
+    var rightDistances = makeArray(degree + 1, 0);
+    ndu[0][0] = 1;
+    for (var level = 1; level <= degree; level += 1)
+    {
+        leftDistances[level] = parameter - knots[spanIndex + 1 - level];
+        rightDistances[level] = knots[spanIndex + level] - parameter;
+        var saved = 0;
+        for (var functionIndex = 0; functionIndex < level; functionIndex += 1)
+        {
+            // Lower triangle: the knot difference this step divides by. Upper triangle: the
+            // basis function itself. bSplineBasisValues computes the same two quantities but
+            // keeps only the second.
+            ndu[level][functionIndex] = rightDistances[functionIndex + 1] + leftDistances[level - functionIndex];
+            const shared = ndu[functionIndex][level - 1] / ndu[level][functionIndex];
+            ndu[functionIndex][level] = saved + rightDistances[functionIndex + 1] * shared;
+            saved = leftDistances[level - functionIndex] * shared;
+        }
+        ndu[level][level] = saved;
+    }
+
+    var derivatives = makeArray(maxOrder + 1, 0);
+    for (var order = 0; order <= maxOrder; order += 1)
+    {
+        derivatives[order] = makeArray(degree + 1, 0);
+    }
+    for (var functionIndex = 0; functionIndex <= degree; functionIndex += 1)
+    {
+        derivatives[0][functionIndex] = ndu[functionIndex][degree];
+    }
+
+    const effectiveMaxOrder = min(maxOrder, degree);
+    for (var functionIndex = 0; functionIndex <= degree; functionIndex += 1)
+    {
+        // Two alternating rows of coefficients, rebuilt per functionIndex. The book ping-pongs
+        // two rows of one array without clearing them between outer iterations; allocating fresh
+        // zeroed rows here is equivalent wherever the book is correct (each order's reads are
+        // covered by the previous order's writes) and cannot carry a stale value across.
+        var previousCoefficients = makeArray(degree + 2, 0);
+        var currentCoefficients = makeArray(degree + 2, 0);
+        previousCoefficients[0] = 1;
+        for (var order = 1; order <= effectiveMaxOrder; order += 1)
+        {
+            var accumulated = 0;
+            const shiftedIndex = functionIndex - order;
+            const reducedDegree = degree - order;
+            if (functionIndex >= order)
+            {
+                currentCoefficients[0] = previousCoefficients[0] / ndu[reducedDegree + 1][shiftedIndex];
+                accumulated = currentCoefficients[0] * ndu[shiftedIndex][reducedDegree];
+            }
+            const firstTerm = shiftedIndex >= -1 ? 1 : -shiftedIndex;
+            const lastTerm = (functionIndex - 1 <= reducedDegree) ? order - 1 : degree - functionIndex;
+            for (var termIndex = firstTerm; termIndex <= lastTerm; termIndex += 1)
+            {
+                currentCoefficients[termIndex] = (previousCoefficients[termIndex] - previousCoefficients[termIndex - 1]) /
+                    ndu[reducedDegree + 1][shiftedIndex + termIndex];
+                accumulated += currentCoefficients[termIndex] * ndu[shiftedIndex + termIndex][reducedDegree];
+            }
+            if (functionIndex <= reducedDegree)
+            {
+                currentCoefficients[order] = -previousCoefficients[order - 1] / ndu[reducedDegree + 1][functionIndex];
+                accumulated += currentCoefficients[order] * ndu[functionIndex][reducedDegree];
+            }
+            derivatives[order][functionIndex] = accumulated;
+
+            const swapRow = previousCoefficients;
+            previousCoefficients = currentCoefficients;
+            currentCoefficients = swapRow;
+        }
+    }
+
+    // The recurrence above produces the derivatives up to a factorial-like factor
+    // degree * (degree - 1) * ... * (degree - order + 1), applied here in one pass.
+    var factor = degree;
+    for (var order = 1; order <= effectiveMaxOrder; order += 1)
+    {
+        for (var functionIndex = 0; functionIndex <= degree; functionIndex += 1)
+        {
+            derivatives[order][functionIndex] = factor * derivatives[order][functionIndex];
+        }
+        factor = factor * (degree - order);
+    }
+    return derivatives;
+}
+
+/** Binomial coefficients C(n, k) for n, k <= maxN, by Pascal's triangle. Needed by the rational
+    quotient rule, where the order-(k, l) derivative mixes every lower order weighted by C(k, i)
+    and C(l, j). */
+function binomialCoefficientTable(maxN is number) returns array
+{
+    var table = makeArray(maxN + 1, 0);
+    for (var n = 0; n <= maxN; n += 1)
+    {
+        var row = makeArray(maxN + 2, 0);
+        row[0] = 1;
+        for (var k = 1; k <= n; k += 1)
+        {
+            row[k] = table[n - 1][k - 1] + table[n - 1][k];
+        }
+        table[n] = row;
+    }
+    return table;
+}
+
+/**
+ * Every partial derivative of a B-spline surface up to `maxUOrder` in U and `maxVOrder` in V,
+ * as `result[uOrder][vOrder]` — a Vector in the control points' own length units. Exact, rational
+ * aware, no Context, no created geometry.
+ *
+ * result[0][0] equals evaluateBSplineSurfacePoint. result[1][0] and result[0][1] are the
+ * isoparametric tangents; their cross product is the (unnormalized) normal.
+ *
+ * Two deliberate choices:
+ *
+ * The full RECTANGLE of orders is computed, not the book's total-order triangle (k + l <= d).
+ * The rectangle is what the rational recursion reads from anyway, and asking for exactly the
+ * five derivatives Newton point-inversion needs — S_u, S_v, S_uu, S_uv, S_vv — is then one call
+ * with maxUOrder = maxVOrder = 2 rather than an order budget the caller has to reason about.
+ *
+ * The U sum is FACTORED OUT of the V sum (Algorithm A3.6's `temp` array) rather than written as
+ * one direct double sum over the control net. At degree 3 and order 2 that is 84 multiply-adds
+ * against 144, and this is the deformation feature's innermost loop — once per control point per
+ * Newton iteration per refinement level. The same amortization argument as the operator layer,
+ * one level down.
+ */
+export function evaluateBSplineSurfaceDerivatives(surface is map, uParameter is number, vParameter is number,
+    maxUOrder is number, maxVOrder is number) returns array
+{
+    const uSpanIndex = findEvaluationSpanIndex(surface.uKnots, surface.uDegree, uParameter);
+    const vSpanIndex = findEvaluationSpanIndex(surface.vKnots, surface.vDegree, vParameter);
+    const uBasisDerivatives = bSplineBasisDerivatives(surface.uKnots, surface.uDegree, uSpanIndex, uParameter, maxUOrder);
+    const vBasisDerivatives = bSplineBasisDerivatives(surface.vKnots, surface.vDegree, vSpanIndex, vParameter, maxVOrder);
+    const firstURowIndex = uSpanIndex - surface.uDegree;
+    const firstVColumnIndex = vSpanIndex - surface.vDegree;
+    const isRational = surface.isRational == true && surface.weights != undefined;
+
+    // A zero in the control points' own units — the module's alternative to accumulating from
+    // the first term, which does not generalize to a grid of accumulators.
+    const zeroVector = 0 * surface.controlPoints[0][0];
+
+    var numeratorDerivatives = makeArray(maxUOrder + 1, 0);
+    var weightDerivatives = makeArray(maxUOrder + 1, 0);
+    for (var uOrder = 0; uOrder <= maxUOrder; uOrder += 1)
+    {
+        // Collapse the U direction once per uOrder: rowSums[s] is the weighted control point of
+        // column s blended by this order's U basis derivatives. Independent of vOrder, which is
+        // exactly why it hoists.
+        var rowSums = makeArray(surface.vDegree + 1, zeroVector);
+        var rowWeightSums = makeArray(surface.vDegree + 1, 0);
+        for (var vBasisIndex = 0; vBasisIndex <= surface.vDegree; vBasisIndex += 1)
+        {
+            var pointSum = zeroVector;
+            var weightSum = 0;
+            for (var uBasisIndex = 0; uBasisIndex <= surface.uDegree; uBasisIndex += 1)
+            {
+                const rowIndex = firstURowIndex + uBasisIndex;
+                const columnIndex = firstVColumnIndex + vBasisIndex;
+                var blendValue = uBasisDerivatives[uOrder][uBasisIndex];
+                if (isRational)
+                {
+                    blendValue = blendValue * surface.weights[rowIndex][columnIndex];
+                    weightSum += blendValue;
+                }
+                pointSum = pointSum + blendValue * surface.controlPoints[rowIndex][columnIndex];
+            }
+            rowSums[vBasisIndex] = pointSum;
+            rowWeightSums[vBasisIndex] = weightSum;
+        }
+
+        var numeratorRow = makeArray(maxVOrder + 1, zeroVector);
+        var weightRow = makeArray(maxVOrder + 1, 0);
+        for (var vOrder = 0; vOrder <= maxVOrder; vOrder += 1)
+        {
+            var combinedPointSum = zeroVector;
+            var combinedWeightSum = 0;
+            for (var vBasisIndex = 0; vBasisIndex <= surface.vDegree; vBasisIndex += 1)
+            {
+                combinedPointSum = combinedPointSum + vBasisDerivatives[vOrder][vBasisIndex] * rowSums[vBasisIndex];
+                combinedWeightSum += vBasisDerivatives[vOrder][vBasisIndex] * rowWeightSums[vBasisIndex];
+            }
+            numeratorRow[vOrder] = combinedPointSum;
+            weightRow[vOrder] = combinedWeightSum;
+        }
+        numeratorDerivatives[uOrder] = numeratorRow;
+        weightDerivatives[uOrder] = weightRow;
+    }
+
+    if (!isRational)
+    {
+        return numeratorDerivatives;
+    }
+
+    // Algorithm A4.4 (RatSurfaceDerivs), rectangle form. Every term reads a strictly lower order
+    // in U or in V, so the ascending double loop has each one already computed.
+    const binomials = binomialCoefficientTable(max(maxUOrder, maxVOrder));
+    var surfaceDerivatives = makeArray(maxUOrder + 1, 0);
+    for (var uOrder = 0; uOrder <= maxUOrder; uOrder += 1)
+    {
+        surfaceDerivatives[uOrder] = makeArray(maxVOrder + 1, zeroVector);
+    }
+    for (var uOrder = 0; uOrder <= maxUOrder; uOrder += 1)
+    {
+        for (var vOrder = 0; vOrder <= maxVOrder; vOrder += 1)
+        {
+            var accumulated = numeratorDerivatives[uOrder][vOrder];
+            for (var vTerm = 1; vTerm <= vOrder; vTerm += 1)
+            {
+                accumulated = accumulated -
+                    binomials[vOrder][vTerm] * weightDerivatives[0][vTerm] * surfaceDerivatives[uOrder][vOrder - vTerm];
+            }
+            for (var uTerm = 1; uTerm <= uOrder; uTerm += 1)
+            {
+                accumulated = accumulated -
+                    binomials[uOrder][uTerm] * weightDerivatives[uTerm][0] * surfaceDerivatives[uOrder - uTerm][vOrder];
+                var mixedSum = zeroVector;
+                for (var vTerm = 1; vTerm <= vOrder; vTerm += 1)
+                {
+                    mixedSum = mixedSum +
+                        binomials[vOrder][vTerm] * weightDerivatives[uTerm][vTerm] * surfaceDerivatives[uOrder - uTerm][vOrder - vTerm];
+                }
+                accumulated = accumulated - binomials[uOrder][uTerm] * mixedSum;
+            }
+            surfaceDerivatives[uOrder][vOrder] = accumulated / weightDerivatives[0][0];
+        }
+    }
+    return surfaceDerivatives;
+}
+
+/** One partial derivative of a surface. Convenience over evaluateBSplineSurfaceDerivatives; when
+    more than one order is wanted, call that directly — it computes the whole rectangle for very
+    little more than one corner of it. */
+export function evaluateBSplineSurfaceDerivative(surface is map, uParameter is number, vParameter is number,
+    uOrder is number, vOrder is number) returns Vector
+{
+    return evaluateBSplineSurfaceDerivatives(surface, uParameter, vParameter, uOrder, vOrder)[uOrder][vOrder];
+}
+
+/**
+ * Throw when the two isoparametric tangents do not span a plane, i.e. the surface has no normal
+ * at this parameter — a degenerate point such as a cone apex or a sphere pole, or a fully
+ * degenerate isoparametric line.
+ *
+ * The test is on the SINE of the angle between the tangents (|Su x Sv| against |Su||Sv|), not on
+ * the cross product's own magnitude, so it is scale free: a millimetre-scale patch and a
+ * metre-scale one degenerate at the same geometric configuration rather than at the same number.
+ */
+function verifyNonDegenerateTangents(uTangent is Vector, vTangent is Vector, crossProduct is Vector,
+    uParameter is number, vParameter is number)
+{
+    if (squaredNorm(crossProduct) <= 1e-20 * squaredNorm(uTangent) * squaredNorm(vTangent))
+    {
+        throw "splineRefinementUtils: the surface is degenerate at (" ~ uParameter ~ ", " ~ vParameter ~
+            ") - its two isoparametric tangents are parallel or vanishing, so no normal or curvature exists " ~
+            "there. This is a real property of the surface (a cone apex or sphere pole behaves this way), not " ~
+            "a numerical failure; a caller sampling a whole surface should avoid its degenerate parameters " ~
+            "rather than expect a value here.";
+    }
+}
+
+/** Unit surface normal, normalize(Su x Sv). Throws at a degenerate point rather than returning a
+    direction that is arbitrary — see verifyNonDegenerateTangents. */
+export function evaluateBSplineSurfaceNormal(surface is map, uParameter is number, vParameter is number) returns Vector
+{
+    const derivatives = evaluateBSplineSurfaceDerivatives(surface, uParameter, vParameter, 1, 1);
+    const uTangent = derivatives[1][0];
+    const vTangent = derivatives[0][1];
+    const crossProduct = cross(uTangent, vTangent);
+    verifyNonDegenerateTangents(uTangent, vTangent, crossProduct, uParameter, vParameter);
+    return normalize(crossProduct);
+}
+
+/**
+ * Principal, Gaussian and mean curvature at a parameter, from the first and second fundamental
+ * forms. What spec section 9.1.1's SEEDING consumes: it sizes the first refinement level from
+ * the target's minimum curvature radius, since a span of arc length s deviates from the surface
+ * by about s^2 / (8R).
+ *
+ * Returns { normal, principalCurvatures (two, ascending), gaussianCurvature, meanCurvature,
+ * minimumRadius }. `minimumRadius` is `undefined` where both principal curvatures vanish — a
+ * genuinely flat point has no finite radius, and reporting some large number instead would make
+ * a plane look like a tight curve's opposite rather than like the special case it is. Callers
+ * seeding a refinement level should read undefined as "curvature imposes no requirement here".
+ */
+export function evaluateBSplineSurfaceCurvature(surface is map, uParameter is number, vParameter is number) returns map
+{
+    const derivatives = evaluateBSplineSurfaceDerivatives(surface, uParameter, vParameter, 2, 2);
+    const uTangent = derivatives[1][0];
+    const vTangent = derivatives[0][1];
+    const crossProduct = cross(uTangent, vTangent);
+    verifyNonDegenerateTangents(uTangent, vTangent, crossProduct, uParameter, vParameter);
+    const normal = normalize(crossProduct);
+
+    // First fundamental form (lengths squared) and second (lengths, the normal being unitless).
+    const formE = dot(uTangent, uTangent);
+    const formF = dot(uTangent, vTangent);
+    const formG = dot(vTangent, vTangent);
+    const formL = dot(derivatives[2][0], normal);
+    const formM = dot(derivatives[1][1], normal);
+    const formN = dot(derivatives[0][2], normal);
+
+    const discriminant = formE * formG - formF * formF; // == squaredNorm(crossProduct), by Lagrange
+    const gaussianCurvature = (formL * formN - formM * formM) / discriminant;
+    const meanCurvature = (formE * formN - 2 * formF * formM + formG * formL) / (2 * discriminant);
+
+    // k = H +/- sqrt(H^2 - K). The radicand is >= 0 exactly (it is the squared half-difference of
+    // the principal curvatures) and reaches 0 at an umbilic, where rounding can carry it just
+    // below; the floor handles that arithmetic artifact and nothing else.
+    const radicand = max(0 / meter / meter, meanCurvature * meanCurvature - gaussianCurvature);
+    const spread = sqrt(radicand);
+    const firstCurvature = meanCurvature - spread;
+    const secondCurvature = meanCurvature + spread;
+
+    // Stripped to a plain number purely so the flat case can be tested against a literal 0; a
+    // truly planar surface gives it EXACTLY 0, since its second derivatives all lie in the
+    // tangent plane and dot to zero against the normal.
+    const largestMagnitude = max(abs(firstCurvature), abs(secondCurvature));
+    const largestMagnitudePerMeter = largestMagnitude * meter;
+    return {
+            "normal" : normal,
+            "principalCurvatures" : [firstCurvature, secondCurvature],
+            "gaussianCurvature" : gaussianCurvature,
+            "meanCurvature" : meanCurvature,
+            "minimumRadius" : largestMagnitudePerMeter == 0 ? undefined : 1 / largestMagnitude
+        };
+}
+
+/**
+ * Curve form: every derivative of a B-spline curve up to `maxOrder`, as `result[order]`.
+ * result[0] is the point. Same rational quotient rule as the surface (Algorithm A4.2), same
+ * reason it cannot be skipped.
+ *
+ * Here for the same reason every other curve/surface sibling in this module is: spec section
+ * 9.1's bend-along-curve map needs a moving frame, which is derivatives. Nothing calls it yet.
+ */
+export function evaluateBSplineCurveDerivatives(spline is map, parameter is number, maxOrder is number) returns array
+{
+    const spanIndex = findEvaluationSpanIndex(spline.knots, spline.degree, parameter);
+    const basisDerivatives = bSplineBasisDerivatives(spline.knots, spline.degree, spanIndex, parameter, maxOrder);
+    const firstControlPointIndex = spanIndex - spline.degree;
+    const isRational = spline.isRational == true && spline.weights != undefined;
+    const zeroVector = 0 * spline.controlPoints[0];
+
+    var numeratorDerivatives = makeArray(maxOrder + 1, zeroVector);
+    var weightDerivatives = makeArray(maxOrder + 1, 0);
+    for (var order = 0; order <= maxOrder; order += 1)
+    {
+        var pointSum = zeroVector;
+        var weightSum = 0;
+        for (var basisIndex = 0; basisIndex <= spline.degree; basisIndex += 1)
+        {
+            const controlPointIndex = firstControlPointIndex + basisIndex;
+            var blendValue = basisDerivatives[order][basisIndex];
+            if (isRational)
+            {
+                blendValue = blendValue * spline.weights[controlPointIndex];
+                weightSum += blendValue;
+            }
+            pointSum = pointSum + blendValue * spline.controlPoints[controlPointIndex];
+        }
+        numeratorDerivatives[order] = pointSum;
+        weightDerivatives[order] = weightSum;
+    }
+
+    if (!isRational)
+    {
+        return numeratorDerivatives;
+    }
+
+    const binomials = binomialCoefficientTable(maxOrder);
+    var curveDerivatives = makeArray(maxOrder + 1, zeroVector);
+    for (var order = 0; order <= maxOrder; order += 1)
+    {
+        var accumulated = numeratorDerivatives[order];
+        for (var term = 1; term <= order; term += 1)
+        {
+            accumulated = accumulated - binomials[order][term] * weightDerivatives[term] * curveDerivatives[order - term];
+        }
+        curveDerivatives[order] = accumulated / weightDerivatives[0];
+    }
+    return curveDerivatives;
 }
 
 // ============================================================================================
@@ -1699,23 +2127,6 @@ function directionRefinementOperator(knots is array, degree is number, isPeriodi
 {
     return isPeriodic ? periodicRefinementOperator(knots, degree, parametersToInsert)
         : knotRefinementOperator(knots, degree, parametersToInsert);
-}
-
-/**
- * Parameters to insert to grow a direction by `numToInsert` control points, choosing widest
- * spans. The periodic chooser additionally considers the WRAP span, which a plain array of
- * fundamental knots does not represent. Growing a STORED periodic direction by k control points
- * grows its period by k too (stored count is n + degree), so callers pass the same
- * target-minus-current either way.
- */
-function directionWidestSpanInsertions(knots is array, degree is number, isPeriodic is boolean, numToInsert is number) returns array
-{
-    if (!isPeriodic)
-    {
-        return widestSpanMidpointInsertions(knots, numToInsert);
-    }
-    const n = size(knots) - 2 * degree - 1;
-    return widestPeriodicSpanMidpointInsertions(subArray(knots, degree, degree + n), knots[degree + n] - knots[degree], numToInsert);
 }
 
 /**
@@ -2656,9 +3067,9 @@ export function prepareSplineForDeformation(spline is map, targetDegree is numbe
 }
 
 // ============================================================================================
-// Layer 3 — SURFACE HOOKS. Still stubbed: they need the tensor (grid) generalization of the
-// curve-level helpers just above, which now all exist and are ready to reuse. See each note.
-// A hook is done when its tester vector passes in Onshape.
+// Layer 3 — SURFACE ENTRY POINTS. Each is the tensor (grid) generalization of a curve-level
+// helper just above: same operators, applied via applyKnotRefinementOperatorDownColumns /
+// AcrossRows instead of the flat applyKnotRefinementOperator.
 //
 // KNOTARRAY DISCIPLINE — every curve-level function above casts its returned uKnots/vKnots
 // analog with `knotArray(...)` (or the `is KnotArray ? ... : knotArray(...)` idiom in
@@ -2961,14 +3372,38 @@ export function normalizeSurfaceDefinition(surface is map) returns map
  */
 export function refineSurfaceToControlPointCounts(surface is map, targetUCount is number, targetVCount is number) returns map
 {
+    return refineSurfaceToControlPointCounts(surface, targetUCount, targetVCount, false);
+}
+
+/**
+ * Balance-aware overload. With `balancedOnly` true the refinement stops short of the target rather
+ * than SPLITTING A TIE — see arcLengthSpanInsertions for what that means and why it matters — so the
+ * result may come back with fewer control points than asked for, never more.
+ *
+ * WHEN TO USE WHICH. The plain overload is right whenever the count itself is the contract: a user
+ * typing "40 control points" wants forty, and the last one landing on one side of a symmetric shape
+ * costs nothing, because INSERTION IS EXACT and cannot mark the surface.
+ *
+ * `balancedOnly` is for refinement that FEEDS A LOSSY STEP. Knot removal reads the spacing on both
+ * sides of the knot it removes, so a net refined with one extra knot on one side heals lopsidedly,
+ * and that asymmetry IS in the geometry — it survives as a visible artifact. Refine balanced first,
+ * do the lossy work on an even net, then refine exactly to the count afterwards where the parity
+ * cannot hurt anything. The multi-face merge does exactly this.
+ */
+export function refineSurfaceToControlPointCounts(surface is map, targetUCount is number, targetVCount is number, balancedOnly is boolean) returns map
+{
     var normalized = normalizeSurfaceDefinition(surface);
     var homogeneousGrid = combineSurfaceControlPointsAndWeights(normalized.controlPoints, normalized.weights);
 
+    // Insertion parameters are chosen by ARC LENGTH, not parameter width. Parameter width is a
+    // poor proxy on anything whose parameterization is not uniform-speed — a rational circle
+    // being the standard example, where it piles control points onto one side of the cylinder.
+    // Placement is a heuristic and insertion is exact wherever it lands, so this changes only the
+    // distribution, never the geometry.
     if (size(normalized.controlPoints) < targetUCount)
     {
         const isPeriodic = normalized.isUPeriodic == true;
-        const insertions = directionWidestSpanInsertions(normalized.uKnots, normalized.uDegree, isPeriodic,
-                targetUCount - size(normalized.controlPoints));
+        const insertions = arcLengthSpanInsertions(normalized, true, targetUCount - size(normalized.controlPoints), balancedOnly);
         const uOperator = directionRefinementOperator(normalized.uKnots, normalized.uDegree, isPeriodic, insertions);
         homogeneousGrid = applyKnotRefinementOperatorDownColumns(uOperator, homogeneousGrid);
         normalized.uKnots = knotArray(uOperator.knots);
@@ -2976,8 +3411,12 @@ export function refineSurfaceToControlPointCounts(surface is map, targetUCount i
     if (size(normalized.controlPoints[0]) < targetVCount)
     {
         const isPeriodic = normalized.isVPeriodic == true;
-        const insertions = directionWidestSpanInsertions(normalized.vKnots, normalized.vDegree, isPeriodic,
-                targetVCount - size(normalized.controlPoints[0]));
+        // Re-normalize so the profile is measured on the grid as it stands after any U pass.
+        var afterU = normalized;
+        const separatedForProfile = separateSurfaceControlPointsAndWeights(homogeneousGrid);
+        afterU.controlPoints = separatedForProfile.points;
+        afterU.weights = separatedForProfile.weights;
+        const insertions = arcLengthSpanInsertions(afterU, false, targetVCount - size(normalized.controlPoints[0]), balancedOnly);
         const vOperator = directionRefinementOperator(normalized.vKnots, normalized.vDegree, isPeriodic, insertions);
         homogeneousGrid = applyKnotRefinementOperatorAcrossRows(vOperator, homogeneousGrid);
         normalized.vKnots = knotArray(vOperator.knots);
@@ -2990,20 +3429,2263 @@ export function refineSurfaceToControlPointCounts(surface is map, targetUCount i
 }
 
 /**
- * Guarantee at least minimumControlPointsPerSpan control points across every span of the given
- * parameter partitions, refining only where the requirement is not met — the targeted
- * refinement a lattice-driven FFD wants (spec section 9.2).
+ * The sorted, distinct knot VALUES that count toward density in one direction.
  *
- * HOOK(refineSurfaceToSpanDensity) — normalizeSurfaceDefinition + the row-wise combine/separate
- * helpers above now exist, so this is: for each direction, for each partition cell count
- * existing DISTINCT interior knots strictly inside the cell (interiorKnotRun's counting
- * pattern, scoped to a sub-range); if below the requirement, insert evenly-spaced NEW
- * midpoints inside just that cell (safe: the cell was just confirmed low-density). One
- * refinementOperator per direction, applied via the tensor appliers as above.
+ * For a clamped direction that is just its distinct knot values. For a periodic direction the
+ * stored array's outer padding is derived rather than independent, so the meaningful set is ONE
+ * period's fundamental values together with their next-period images — which puts both the seam
+ * (domain start) and its image (domain end) in the list. That inclusion is load-bearing, not
+ * incidental: it is what stops a wrap-straddling cell from ever proposing an insertion on top of
+ * the seam, since every parameter this file chooses is the midpoint of a gap between two
+ * consecutive listed values.
+ */
+function densityBreakValues(knots is array, degree is number, isPeriodic is boolean) returns array
+{
+    // For the stored periodic form (n + 2*degree + 1 knots) this slice is exactly the
+    // fundamental knots [domain.start, domain.end), the domain end excluded as a duplicate image
+    // of the domain start — it is re-added below with the rest of the second period.
+    const source = isPeriodic ? subArray(knots, degree, size(knots) - degree - 1) : knots;
+
+    var distinctCount = 0;
+    for (var index = 0; index < size(source); index += 1)
+    {
+        if (index == 0 || abs(source[index] - source[index - 1]) > KNOT_PARAMETER_TOLERANCE)
+        {
+            distinctCount += 1;
+        }
+    }
+    var distinct = makeArray(distinctCount, 0);
+    var writeIndex = 0;
+    for (var index = 0; index < size(source); index += 1)
+    {
+        if (index == 0 || abs(source[index] - source[index - 1]) > KNOT_PARAMETER_TOLERANCE)
+        {
+            distinct[writeIndex] = source[index];
+            writeIndex += 1;
+        }
+    }
+    if (!isPeriodic)
+    {
+        return distinct;
+    }
+
+    // Ascending by construction: every fundamental value is < domain.end, and every image is
+    // >= domain.end.
+    const domain = knotDomain(knots, degree);
+    const period = domain.end - domain.start;
+    var withImages = makeArray(2 * distinctCount, 0);
+    for (var index = 0; index < distinctCount; index += 1)
+    {
+        withImages[index] = distinct[index];
+        withImages[index + distinctCount] = distinct[index] + period;
+    }
+    return withImages;
+}
+
+/** The entries of a sorted array strictly inside (rangeStart, rangeEnd), tolerance-guarded. */
+function valuesStrictlyInside(sortedValues is array, rangeStart is number, rangeEnd is number) returns array
+{
+    var count = 0;
+    for (var value in sortedValues)
+    {
+        if (value > rangeStart + KNOT_PARAMETER_TOLERANCE && value < rangeEnd - KNOT_PARAMETER_TOLERANCE)
+        {
+            count += 1;
+        }
+    }
+    var inside = makeArray(count, 0);
+    var writeIndex = 0;
+    for (var value in sortedValues)
+    {
+        if (value > rangeStart + KNOT_PARAMETER_TOLERANCE && value < rangeEnd - KNOT_PARAMETER_TOLERANCE)
+        {
+            inside[writeIndex] = value;
+            writeIndex += 1;
+        }
+    }
+    return inside;
+}
+
+/**
+ * The cells a density requirement applies to, as { start, end } pairs, with the boundary list
+ * validated first.
+ *
+ * A periodic direction's boundary list is CYCLIC, so the wrap cell (last boundary -> first
+ * boundary + period) is a cell like any other. Omitting it would leave a silently under-refined
+ * band straddling the seam — invisible to a lattice-driven caller, which is exactly why it is
+ * built here rather than left to each caller to remember.
+ */
+function spanDensityCells(boundaries is array, domain is map, isPeriodic is boolean, contextName is string) returns array
+{
+    for (var index = 0; index < size(boundaries); index += 1)
+    {
+        if (boundaries[index] < domain.start - KNOT_PARAMETER_TOLERANCE ||
+            boundaries[index] > domain.end + KNOT_PARAMETER_TOLERANCE)
+        {
+            throw "splineRefinementUtils: " ~ contextName ~ " boundary " ~ boundaries[index] ~
+                " lies outside the domain [" ~ domain.start ~ ", " ~ domain.end ~ "].";
+        }
+        if (index > 0 && boundaries[index] - boundaries[index - 1] <= KNOT_PARAMETER_TOLERANCE)
+        {
+            throw "splineRefinementUtils: " ~ contextName ~ " needs strictly increasing boundaries; got " ~
+                boundaries[index - 1] ~ " then " ~ boundaries[index] ~ ".";
+        }
+    }
+
+    if (!isPeriodic)
+    {
+        if (size(boundaries) < 2)
+        {
+            throw "splineRefinementUtils: " ~ contextName ~ " needs at least two boundaries to bound a cell on a " ~
+                "clamped (non-closed) input; got " ~ size(boundaries) ~ ".";
+        }
+        var clampedCells = makeArray(size(boundaries) - 1, 0);
+        for (var index = 0; index < size(boundaries) - 1; index += 1)
+        {
+            clampedCells[index] = { "start" : boundaries[index], "end" : boundaries[index + 1] };
+        }
+        return clampedCells;
+    }
+
+    // On a closed direction the domain end IS the domain start, so a boundary given there would
+    // make the wrap cell degenerate. Say so rather than producing an empty-width cell.
+    const lastBoundary = boundaries[size(boundaries) - 1];
+    if (lastBoundary > domain.end - KNOT_PARAMETER_TOLERANCE)
+    {
+        throw "splineRefinementUtils: " ~ contextName ~ " is periodic, so its domain end (" ~ domain.end ~
+            ") is the same location as its domain start (" ~ domain.start ~ "). Give that boundary once, as the " ~
+            "domain start; the wrap cell back to it is added automatically.";
+    }
+    var cells = makeArray(size(boundaries), 0);
+    for (var index = 0; index < size(boundaries) - 1; index += 1)
+    {
+        cells[index] = { "start" : boundaries[index], "end" : boundaries[index + 1] };
+    }
+    cells[size(boundaries) - 1] = { "start" : lastBoundary, "end" : boundaries[0] + (domain.end - domain.start) };
+    return cells;
+}
+
+/**
+ * Choose `numToInsert` new parameters strictly inside (cellStart, cellEnd) by repeated
+ * widest-gap-midpoint splitting of the cell's EXISTING structure (its bounds plus whatever
+ * distinct knot values already sit inside it).
+ *
+ * Same construction as widestSpanMidpointInsertions, scoped to one cell, and for the same reason
+ * (spec section 2.2): a midpoint of a nonzero-width gap can never equal one of the gap's own
+ * endpoints, so no chosen parameter ever collides with an existing knot and silently raises its
+ * multiplicity. Blind even spacing across the cell has exactly that failure mode whenever the
+ * input is itself uniformly parameterized.
+ */
+function cellMidpointInsertions(cellStart is number, cellEnd is number, interiorValues is array, numToInsert is number) returns array
+{
+    var breaks = makeArray(size(interiorValues) + 2, cellStart);
+    for (var index = 0; index < size(interiorValues); index += 1)
+    {
+        breaks[index + 1] = interiorValues[index];
+    }
+    breaks[size(interiorValues) + 1] = cellEnd;
+
+    var insertions = makeArray(numToInsert, 0);
+    for (var insertIndex = 0; insertIndex < numToInsert; insertIndex += 1)
+    {
+        var widestIndex = 0;
+        var widestWidth = breaks[1] - breaks[0];
+        for (var gapIndex = 1; gapIndex < size(breaks) - 1; gapIndex += 1)
+        {
+            const width = breaks[gapIndex + 1] - breaks[gapIndex];
+            if (width > widestWidth)
+            {
+                widestWidth = width;
+                widestIndex = gapIndex;
+            }
+        }
+        const midpoint = (breaks[widestIndex] + breaks[widestIndex + 1]) / 2;
+        insertions[insertIndex] = midpoint;
+
+        var updatedBreaks = makeArray(size(breaks) + 1, 0);
+        for (var index = 0; index <= widestIndex; index += 1)
+        {
+            updatedBreaks[index] = breaks[index];
+        }
+        updatedBreaks[widestIndex + 1] = midpoint;
+        for (var index = widestIndex + 1; index < size(breaks); index += 1)
+        {
+            updatedBreaks[index + 1] = breaks[index];
+        }
+        breaks = updatedBreaks;
+    }
+    return insertions;
+}
+
+/**
+ * The parameters one direction must gain to satisfy the density requirement over `boundaries`.
+ *
+ * THE DENSITY DEFINITION, stated once because everything else follows from it: a cell containing
+ * `d` distinct interior knot values carries `d + 1` polynomial pieces across that cell, and each
+ * piece is one independent degree of freedom the deformation map can express there — so
+ * "control points in the cell" means `d + 1`, and reaching `m` of them needs `m - 1 - d` new
+ * knots. That count is exact, monotone under insertion, and cell-local, which is what lets each
+ * cell be handled independently without any cross-cell bookkeeping.
+ *
+ * Insertions land STRICTLY INSIDE their own cell, so two adjacent cells can never collide on the
+ * boundary they share, and the boundaries themselves are never inserted (see the entry point's
+ * own comment for why that is the caller's separate decision).
+ */
+function spanDensityInsertions(knots is array, degree is number, isPeriodic is boolean, boundaries is array,
+    minimumControlPointsPerSpan is number, contextName is string) returns array
+{
+    if (size(boundaries) == 0)
+    {
+        return [];
+    }
+
+    const domain = knotDomain(knots, degree);
+    const cells = spanDensityCells(boundaries, domain, isPeriodic, contextName);
+    const breaks = densityBreakValues(knots, degree, isPeriodic);
+
+    var perCellInsertions = makeArray(size(cells), []);
+    var totalCount = 0;
+    for (var cellIndex = 0; cellIndex < size(cells); cellIndex += 1)
+    {
+        const interior = valuesStrictlyInside(breaks, cells[cellIndex].start, cells[cellIndex].end);
+        const needed = minimumControlPointsPerSpan - 1 - size(interior);
+        if (needed > 0)
+        {
+            perCellInsertions[cellIndex] = cellMidpointInsertions(cells[cellIndex].start, cells[cellIndex].end, interior, needed);
+            totalCount += needed;
+        }
+    }
+
+    // The wrap cell runs past the domain end, but refinePeriodicPoints (and therefore
+    // periodicRefinementOperator) documents its parameters as absolute values within ONE period.
+    // Fold those images back. Order does not matter to either — each parameter is expanded to
+    // its own periodic images and inserted independently — so no sort is needed here.
+    const period = domain.end - domain.start;
+    var insertions = makeArray(totalCount, 0);
+    var writeIndex = 0;
+    for (var cellIndex = 0; cellIndex < size(cells); cellIndex += 1)
+    {
+        for (var parameter in perCellInsertions[cellIndex])
+        {
+            insertions[writeIndex] = (isPeriodic && parameter > domain.end - KNOT_PARAMETER_TOLERANCE) ? parameter - period : parameter;
+            writeIndex += 1;
+        }
+    }
+    return insertions;
+}
+
+/**
+ * Curve form of the same contract: at least `minimumControlPointsPerSpan` control points across
+ * every cell of `spanBoundaries`, geometry unchanged, periodicity preserved.
+ *
+ * Placed here beside its surface sibling rather than up in the curve section, because it shares
+ * every helper above and the density DEFINITION (see spanDensityInsertions) is the part worth
+ * reading once. The only real difference is the application: one point array, so direct
+ * insertion, never an operator — the O(M^2) build would be discarded after a single use.
+ */
+export function refineSplineToSpanDensity(spline is map, spanBoundaries is array, minimumControlPointsPerSpan is number) returns map
+{
+    if (minimumControlPointsPerSpan < 1)
+    {
+        throw "splineRefinementUtils: refineSplineToSpanDensity needs minimumControlPointsPerSpan >= 1 (got " ~
+            minimumControlPointsPerSpan ~ "); every cell already carries at least one.";
+    }
+
+    var normalized = normalizeSplineDefinition(spline);
+    const isPeriodic = normalized.isPeriodic == true;
+    const insertions = spanDensityInsertions(normalized.knots, normalized.degree, isPeriodic, spanBoundaries,
+            minimumControlPointsPerSpan, "refineSplineToSpanDensity");
+    if (size(insertions) == 0)
+    {
+        return normalized;
+    }
+
+    const homogeneousPoints = combinePointsAndWeights(normalized.controlPoints, normalized.weights);
+    const refined = isPeriodic
+        ? refinePeriodicPoints(homogeneousPoints, normalized.knots, normalized.degree, insertions)
+        : refineKnotVector(homogeneousPoints, normalized.knots, normalized.degree, insertions);
+    const separated = separatePointsAndWeights(refined.controlPoints);
+
+    normalized.controlPoints = separated.points;
+    normalized.weights = separated.weights;
+    normalized.knots = knotArray(refined.knots);
+    return normalized;
+}
+
+// ============================================================================================
+// Layer 3 — INTERPOLATION (NURBS Book ch. 9). Construct the B-spline that passes exactly THROUGH
+// a given set of points, rather than one derived from an existing spline.
+//
+// This is the module's first constructive entry point — everything else transforms a spline that
+// already exists. It is here because merging several faces into one patch (EDIT_SURFACE_SPEC
+// section 5A) needs it and std has nothing equivalent: there is no surface fitter anywhere in the
+// library, as established when simplification was added.
+//
+// THE OPERATOR SHAPE REPEATS. The interpolation matrix depends only on (parameters, knots, degree)
+// — never on the points — so its inverse is built ONCE per direction and applied to every row or
+// column of a grid. That is the same amortization argument as the refinement operator layer, one
+// chapter later in the same book, and it is what makes the surface case n one-dimensional solves
+// per direction instead of one enormous two-dimensional one.
+// ============================================================================================
+
+/**
+ * Chord-length parameters in [0, 1] for a point sequence: each point gets the fraction of total
+ * polyline length at which it sits.
+ *
+ * Chord length rather than uniform spacing because uniform parameters over unevenly spaced data
+ * produce the classic interpolation overshoot — the curve loops out past widely separated points
+ * trying to keep a constant speed it was never given.
+ */
+function chordLengthParameters(points is array) returns array
+{
+    const count = size(points);
+    var distances = makeArray(count, 0 * meter);
+    var totalLength = 0 * meter;
+    for (var index = 1; index < count; index += 1)
+    {
+        distances[index] = norm(points[index] - points[index - 1]);
+        totalLength += distances[index];
+    }
+    if (totalLength <= 0 * meter)
+    {
+        throw "splineRefinementUtils: cannot parameterize a point sequence of zero total length - every point is " ~
+            "coincident, so there is no curve to interpolate.";
+    }
+
+    var parameters = makeArray(count, 0);
+    for (var index = 1; index < count - 1; index += 1)
+    {
+        parameters[index] = parameters[index - 1] + distances[index] / totalLength;
+    }
+    parameters[count - 1] = 1;
+    return parameters;
+}
+
+/** Elementwise average of several parameter arrays of equal length — how a surface reconciles the
+    differing chord-length parameterizations of its own rows into one shared direction parameter
+    (NURBS Book Algorithm A9.4). */
+function averagedParameters(parameterSets is array) returns array
+{
+    const count = size(parameterSets[0]);
+    var averaged = makeArray(count, 0);
+    for (var index = 0; index < count; index += 1)
+    {
+        var total = 0;
+        for (var set in parameterSets)
+        {
+            total += set[index];
+        }
+        averaged[index] = total / size(parameterSets);
+    }
+    return averaged;
+}
+
+/**
+ * The knot vector for interpolation at the given parameters, by averaging (NURBS Book eq. 9.8).
+ *
+ * Averaging rather than any other placement because it is what makes the interpolation matrix
+ * banded and, in Piegl & Tiller's phrasing, totally positive — i.e. guaranteed nonsingular. A knot
+ * vector chosen any other way can produce a system with no solution at all.
+ */
+function averagedInterpolationKnots(parameters is array, degree is number) returns array
+{
+    const count = size(parameters);
+    if (count < degree + 1)
+    {
+        throw "splineRefinementUtils: interpolating " ~ count ~ " points at degree " ~ degree ~ " is impossible - a " ~
+            "degree-" ~ degree ~ " B-spline needs at least " ~ (degree + 1) ~ " control points, so it cannot be made " ~
+            "to pass through fewer points than that. Lower the degree or supply more points.";
+    }
+
+    // Clamps at the parameters' OWN ends, not literal 0 and 1 — chord-length parameters happen to
+    // span [0, 1], but prescribed parameters (the lofting and unisolvence cases) span whatever
+    // domain the caller's data lives in, and the knot vector must match it.
+    const knotCount = count + degree + 1;
+    var knots = makeArray(knotCount, parameters[0]);
+    for (var index = knotCount - degree - 1; index < knotCount; index += 1)
+    {
+        knots[index] = parameters[count - 1];
+    }
+    for (var j = 1; j <= count - degree - 1; j += 1)
+    {
+        var total = 0;
+        for (var i = j; i <= j + degree - 1; i += 1)
+        {
+            total += parameters[i];
+        }
+        knots[j + degree] = total / degree;
+    }
+    return knots;
+}
+
+/**
+ * The INVERSE of the interpolation matrix, as plain rows, plus the knots it belongs to.
+ *
+ * Built once and applied to many point arrays — the whole reason the surface case is affordable.
+ * Row k of the forward matrix holds the degree+1 nonzero basis values at parameter k; inverting it
+ * turns "these control points give those data points" into "those data points require these control
+ * points", which is the direction we actually need.
+ */
+function interpolationOperator(parameters is array, knots is array, degree is number) returns map
+{
+    const count = size(parameters);
+    for (var index = 1; index < count; index += 1)
+    {
+        if (parameters[index] - parameters[index - 1] <= KNOT_PARAMETER_TOLERANCE)
+        {
+            throw "splineRefinementUtils: interpolation parameters must strictly increase; entries " ~ (index - 1) ~
+                " and " ~ index ~ " are equal to within tolerance, which makes the interpolation system singular. " ~
+                "Two data points are coincident or nearly so.";
+        }
+    }
+
+    var forwardRows = makeArray(count, 0);
+    for (var k = 0; k < count; k += 1)
+    {
+        var row = makeArray(count, 0);
+        const spanIndex = findEvaluationSpanIndex(knots, degree, parameters[k]);
+        const basisValues = bSplineBasisValues(knots, degree, spanIndex, parameters[k]);
+        for (var i = 0; i <= degree; i += 1)
+        {
+            row[spanIndex - degree + i] = basisValues[i];
+        }
+        forwardRows[k] = row;
+    }
+
+    return { "inverseRows" : inverse(matrix(forwardRows)), "knots" : knots, "degree" : degree, "count" : count };
+}
+
+/** Apply an interpolation operator: control points = inverse(N) * data points. Works on any
+    addable/scalable point type, so length vectors of any dimension ride through unchanged. */
+function applyInterpolationOperator(interpolationOp is map, points is array) returns array
+{
+    const count = interpolationOp.count;
+    var controlPoints = makeArray(count, 0 * points[0]);
+    for (var i = 0; i < count; i += 1)
+    {
+        var accumulated = 0 * points[0];
+        for (var k = 0; k < count; k += 1)
+        {
+            accumulated = accumulated + interpolationOp.inverseRows[i][k] * points[k];
+        }
+        controlPoints[i] = accumulated;
+    }
+    return controlPoints;
+}
+
+/**
+ * The B-spline curve of the given degree passing exactly through `points`, in order.
+ * NURBS Book Algorithm A9.1. Returns the spline plus the `parameters` at which each input point
+ * sits on it — the caller needs those to verify or to sample where the data was.
+ */
+export function interpolateBSplineCurveThroughPoints(points is array, degree is number) returns map
+{
+    return interpolateCurveCore(points, degree, chordLengthParameters(points));
+}
+
+/**
+ * Same, at PRESCRIBED parameters — the caller says where along the curve each point must sit
+ * rather than accepting the chord-length default. The lofting and exact-reconstruction cases need
+ * this: reproducing an existing spline requires interpolating at ITS parameters, not at ones
+ * invented from the data's spacing.
+ */
+export function interpolateBSplineCurveThroughPoints(points is array, degree is number, parameters is array) returns map
+{
+    if (size(parameters) != size(points))
+    {
+        throw "splineRefinementUtils: " ~ size(points) ~ " points but " ~ size(parameters) ~
+            " prescribed parameters - each point needs exactly one.";
+    }
+    return interpolateCurveCore(points, degree, parameters);
+}
+
+function interpolateCurveCore(points is array, degree is number, parameters is array) returns map
+{
+    const knots = averagedInterpolationKnots(parameters, degree);
+    const interpolationOp = interpolationOperator(parameters, knots, degree);
+    return {
+            "degree" : degree,
+            "isPeriodic" : false,
+            "isRational" : false,
+            "controlPoints" : applyInterpolationOperator(interpolationOp, points),
+            "knots" : knotArray(knots),
+            "parameters" : parameters
+        };
+}
+
+/**
+ * The tensor-product B-spline surface passing exactly through a rectangular grid of points.
+ * NURBS Book Algorithm A9.4.
+ *
+ * SEPARABLE, which is the point: interpolate every COLUMN in u, then interpolate the resulting
+ * coefficient rows in v. Two operators, each inverted once, applied across the grid — rather than
+ * one (rows*columns) square system, which at a 40x40 grid would be a 1600x1600 inverse instead of
+ * two 40x40 ones.
+ *
+ * `grid[i][j]` is indexed u by i and v by j. Returns the surface plus the `uParameters` and
+ * `vParameters` the data landed on. The result is non-rational: interpolation through points is a
+ * polynomial construction, and there is nothing to make rational.
+ */
+export function interpolateBSplineSurfaceThroughGrid(grid is array, uDegree is number, vDegree is number) returns map
+{
+    const rowCount = size(grid);
+    const columnCount = size(grid[0]);
+
+    // Each column has its own chord-length parameterization; the direction gets their average, so
+    // one shared parameter list serves every column (A9.4). Same across rows for v.
+    var uParameterSets = makeArray(columnCount, 0);
+    for (var columnIndex = 0; columnIndex < columnCount; columnIndex += 1)
+    {
+        var column = makeArray(rowCount, grid[0][0]);
+        for (var rowIndex = 0; rowIndex < rowCount; rowIndex += 1)
+        {
+            column[rowIndex] = grid[rowIndex][columnIndex];
+        }
+        uParameterSets[columnIndex] = chordLengthParameters(column);
+    }
+    var vParameterSets = makeArray(rowCount, 0);
+    for (var rowIndex = 0; rowIndex < rowCount; rowIndex += 1)
+    {
+        vParameterSets[rowIndex] = chordLengthParameters(grid[rowIndex]);
+    }
+
+    const uParameters = averagedParameters(uParameterSets);
+    const vParameters = averagedParameters(vParameterSets);
+    const uKnots = averagedInterpolationKnots(uParameters, uDegree);
+    const vKnots = averagedInterpolationKnots(vParameters, vDegree);
+    const uOperator = interpolationOperator(uParameters, uKnots, uDegree);
+    const vOperator = interpolationOperator(vParameters, vKnots, vDegree);
+
+    // Stage 1 — down every column, in u.
+    var intermediate = makeArray(rowCount, 0);
+    for (var rowIndex = 0; rowIndex < rowCount; rowIndex += 1)
+    {
+        intermediate[rowIndex] = makeArray(columnCount, grid[0][0]);
+    }
+    for (var columnIndex = 0; columnIndex < columnCount; columnIndex += 1)
+    {
+        var column = makeArray(rowCount, grid[0][0]);
+        for (var rowIndex = 0; rowIndex < rowCount; rowIndex += 1)
+        {
+            column[rowIndex] = grid[rowIndex][columnIndex];
+        }
+        const interpolatedColumn = applyInterpolationOperator(uOperator, column);
+        for (var rowIndex = 0; rowIndex < rowCount; rowIndex += 1)
+        {
+            intermediate[rowIndex][columnIndex] = interpolatedColumn[rowIndex];
+        }
+    }
+
+    // Stage 2 — across every row of stage 1's coefficients, in v.
+    var controlPoints = makeArray(rowCount, 0);
+    for (var rowIndex = 0; rowIndex < rowCount; rowIndex += 1)
+    {
+        controlPoints[rowIndex] = applyInterpolationOperator(vOperator, intermediate[rowIndex]);
+    }
+
+    return {
+            "uDegree" : uDegree,
+            "vDegree" : vDegree,
+            "isRational" : false,
+            "isUPeriodic" : false,
+            "isVPeriodic" : false,
+            "controlPoints" : controlPoints,
+            "uKnots" : knotArray(uKnots),
+            "vKnots" : knotArray(vKnots),
+            "uParameters" : uParameters,
+            "vParameters" : vParameters
+        };
+}
+
+// ============================================================================================
+// Layer 3 — ARC-LENGTH REPARAMETERIZATION. Where to PUT a knot, and how long a piece's parameter
+// domain should be.
+//
+// WHY MEASURING ARC LENGTH NUMERICALLY IS LEGITIMATE HERE, given how much of this module exists
+// to avoid sampling: knot placement is a pure HEURISTIC. Insertion is exact wherever you insert,
+// so a badly chosen parameter costs distribution, never accuracy. That is categorically different
+// from sampling which determines geometry, and it is why quadrature is allowed in this section
+// and nowhere else.
+//
+// WHY IT IS NEEDED (both found live 2026-08-09): parameter width is not arc length.
+//   - A rational circle's Bezier-arc parameterization has strongly varying speed, so splitting
+//     the widest span BY PARAMETER piles control points onto one side of a cylinder instead of
+//     spreading them around it.
+//   - Concatenation translates each piece's domain without rescaling, so a long wall and a small
+//     fillet keep parameter lengths unrelated to their physical size, and every later
+//     parameter-driven decision inherits that distortion.
+// ============================================================================================
+
+/**
+ * A monotone parameter -> arc length table for one direction, averaged over representative
+ * isocurves of the other direction so a single unusual station cannot skew it.
+ *
+ * Chord-sum quadrature on a dense uniform sample. It underestimates true arc length slightly, and
+ * that is irrelevant: every use compares or bisects these numbers, so a consistent scale factor
+ * cancels out.
+ */
+/** The distinct knot values bounding a direction's spans: domain start, every distinct interior
+    knot, domain end. For a periodic direction the domain end is the wrap image of the start, so
+    the wrap span appears here like any other. */
+function directionBreakValues(knots is array, degree is number) returns array
+{
+    const domain = knotDomain(knots, degree);
+    var breaks = [domain.start];
+    for (var knotIndex = 0; knotIndex < size(knots); knotIndex += 1)
+    {
+        const value = knots[knotIndex];
+        if (value > breaks[size(breaks) - 1] + KNOT_PARAMETER_TOLERANCE &&
+            value < domain.end - KNOT_PARAMETER_TOLERANCE)
+        {
+            breaks = append(breaks, value);
+        }
+    }
+    return append(breaks, domain.end);
+}
+
+function directionArcLengthProfile(surface is map, isUDirection is boolean) returns map
+{
+    const degree = isUDirection ? surface.uDegree : surface.vDegree;
+    const knots = isUDirection ? surface.uKnots : surface.vKnots;
+    const domain = knotDomain(knots, degree);
+
+    const otherDegree = isUDirection ? surface.vDegree : surface.uDegree;
+    const otherDomain = knotDomain(isUDirection ? surface.vKnots : surface.uKnots, otherDegree);
+    const otherSpan = otherDomain.end - otherDomain.start;
+    const stations = [otherDomain.start + 0.25 * otherSpan, otherDomain.start + 0.5 * otherSpan,
+            otherDomain.start + 0.75 * otherSpan];
+
+    // Sample PER EXISTING SPAN, not uniformly across the domain. Uniform sampling gives a span
+    // occupying one percent of the parameter range one or two samples, so both its arc length and
+    // any parameter located inside it become guesswork — and variable knot density is precisely
+    // where that misleads. Per-span sampling resolves every span equally regardless of width, at
+    // the cost of a non-uniform grid the lookups below have to search rather than index.
+    const breaks = directionBreakValues(knots, degree);
+    const samplesPerSpan = 24;
+    var parameters = makeArray((size(breaks) - 1) * samplesPerSpan + 1, domain.start);
+    var writeIndex = 0;
+    for (var spanIndex = 0; spanIndex < size(breaks) - 1; spanIndex += 1)
+    {
+        for (var step = 0; step < samplesPerSpan; step += 1)
+        {
+            parameters[writeIndex] = breaks[spanIndex] +
+                (breaks[spanIndex + 1] - breaks[spanIndex]) * step / samplesPerSpan;
+            writeIndex += 1;
+        }
+    }
+    parameters[writeIndex] = domain.end;
+
+    const sampleCount = size(parameters);
+    var cumulative = makeArray(sampleCount, 0 * meter);
+    var previousPoints = makeArray(size(stations), WORLD_ORIGIN);
+    for (var stationIndex = 0; stationIndex < size(stations); stationIndex += 1)
+    {
+        previousPoints[stationIndex] = isUDirection
+            ? evaluateBSplineSurfacePoint(surface, parameters[0], stations[stationIndex])
+            : evaluateBSplineSurfacePoint(surface, stations[stationIndex], parameters[0]);
+    }
+    for (var index = 1; index < sampleCount; index += 1)
+    {
+        var stepLength = 0 * meter;
+        for (var stationIndex = 0; stationIndex < size(stations); stationIndex += 1)
+        {
+            const point = isUDirection
+                ? evaluateBSplineSurfacePoint(surface, parameters[index], stations[stationIndex])
+                : evaluateBSplineSurfacePoint(surface, stations[stationIndex], parameters[index]);
+            stepLength += norm(point - previousPoints[stationIndex]);
+            previousPoints[stationIndex] = point;
+        }
+        cumulative[index] = cumulative[index - 1] + stepLength / size(stations);
+    }
+    return { "parameters" : parameters, "cumulative" : cumulative, "domain" : domain };
+}
+
+/** Arc length at an arbitrary parameter, by binary search and linear interpolation. Binary search
+    rather than indexing because the profile grid is per-span and therefore non-uniform. */
+function arcLengthAt(profile is map, parameter is number) returns ValueWithUnits
+{
+    const sampleCount = size(profile.parameters);
+    if (parameter <= profile.parameters[0])
+    {
+        return profile.cumulative[0];
+    }
+    if (parameter >= profile.parameters[sampleCount - 1])
+    {
+        return profile.cumulative[sampleCount - 1];
+    }
+    var low = 0;
+    var high = sampleCount - 1;
+    while (high - low > 1)
+    {
+        const middle = floor((low + high) / 2);
+        if (profile.parameters[middle] <= parameter)
+        {
+            low = middle;
+        }
+        else
+        {
+            high = middle;
+        }
+    }
+    const spanWidth = profile.parameters[high] - profile.parameters[low];
+    const fraction = spanWidth <= 0 ? 0 : (parameter - profile.parameters[low]) / spanWidth;
+    return profile.cumulative[low] + fraction * (profile.cumulative[high] - profile.cumulative[low]);
+}
+
+/** The parameter at a given arc length, by the same interpolation run backwards — the step that
+    turns "cut this span into equal pieces" from a parameter statement into a geometric one. */
+function parameterAtArcLength(profile is map, targetLength is ValueWithUnits) returns number
+{
+    const sampleCount = size(profile.parameters);
+    for (var index = 1; index < sampleCount; index += 1)
+    {
+        if (profile.cumulative[index] >= targetLength)
+        {
+            const spanLength = profile.cumulative[index] - profile.cumulative[index - 1];
+            const fraction = spanLength <= 0 * meter ? 0.5
+                : (targetLength - profile.cumulative[index - 1]) / spanLength;
+            return profile.parameters[index - 1] +
+                fraction * (profile.parameters[index] - profile.parameters[index - 1]);
+        }
+    }
+    return profile.parameters[sampleCount - 1];
+}
+
+/**
+ * Relative width within which two spans count as THE SAME LENGTH for allocation. Exact equality is
+ * the wrong test: mirror-image spans of a symmetric shape are equal in exact arithmetic and differ
+ * in the last bit or two once their lengths have been through chord-sum quadrature, and a tie
+ * detector that misses by one ulp reintroduces exactly the bias it exists to remove.
+ */
+const ALLOCATION_TIE_TOLERANCE = 1e-9;
+
+/**
+ * `count` members of a tie group of `groupSize`, as indices into that group, SPREAD across it
+ * rather than clustered at its front.
+ *
+ * Used where a tie group cannot be served whole and something has to give. There is by definition no
+ * geometric basis for choosing between tied members — that is what makes them tied — so the only
+ * honest goal left is to stop the leftover reading as a DIRECTION. Serving `tiedSpans` front-to-back,
+ * which is what the allocator used to do, hands the remainder to a contiguous run of the lowest
+ * indices: a twelve-span net with eleven leftover insertions put every one of them in the first
+ * eleven spans, which is a solid block down one side and is exactly the "it fills the left first"
+ * report. The same remainder spread through the group is invisible.
+ *
+ * Half-open midpoint sampling, so a single leftover lands in the MIDDLE of the group rather than at
+ * either end, and `count == groupSize` returns every member in order.
+ */
+function spreadTieGroupSelection(groupSize is number, count is number) returns array
+{
+    var selected = makeArray(count, 0);
+    for (var index = 0; index < count; index += 1)
+    {
+        selected[index] = floor((index + 0.5) * groupSize / count);
+    }
+    return selected;
+}
+
+/**
+ * Choose up to `numToInsert` parameters for a surface direction so the resulting spans come out as
+ * EQUAL IN ARC LENGTH as insertion allows.
+ *
+ * ALLOCATE, THEN SUBDIVIDE — not repeated bisection. The predecessor split whichever span was
+ * longest at its arc-length midpoint, once per insertion. That is arc-length aware and still
+ * structurally coarse, because a span can only ever be halved, quartered, eighthed: spreading 21
+ * insertions over four equal spans yields sixths and quarters, and the perimeter carries a
+ * TWO-TO-ONE spacing variation whatever the target count is. Greedy halving bounds the ratio at
+ * two and, for most targets, achieves it. That two-to-one is what a cylinder refined to a round
+ * number of control points looks like, and it is why "the knots go kind of wherever" survived the
+ * first arc-length pass — the placement was measuring the right quantity and then quantizing it.
+ *
+ * So: first decide how many PIECES each existing span should end up cut into — greedily, giving
+ * each insertion to whichever span currently has the longest piece, which is the allocation that
+ * minimizes the longest piece overall — then cut each span into that many EQUAL-ARC-LENGTH pieces
+ * in one go. Four equal spans and 21 insertions become 6/6/6/7 pieces, a spacing ratio of 7:6.
+ *
+ * WHAT THIS CANNOT FIX, because it is not placement: existing knots are never removed, so a
+ * direction arriving with one span far shorter than the ideal piece keeps it, and the ratio that
+ * forces is a property of the input. Nor does even knot spacing imply evenly spaced CONTROL POINTS
+ * — a control point sits at its Greville abscissa, the average of `degree` consecutive knots, so at
+ * a knot of multiplicity == degree one control point lands exactly on the knot and its neighbours
+ * crowd in at a fraction of the surrounding spacing. An exact rational circle REQUIRES those
+ * multiple knots (its homogeneous curve genuinely corners there), so a cylinder's net keeps a tight
+ * pair or triple at each arc joint no matter how the knots between them are placed.
+ *
+ * BALANCE, and the bias `balancedOnly` removes. "Give the insertion to the longest current piece"
+ * with ties broken by array order picks the LOWER INDEX every single time. On a symmetric shape
+ * every span ties with its mirror, so every allocation that cannot divide evenly lands on the same
+ * side, for the same reason, at every count — not a parity accident but a systematic directional
+ * lean, and what put knots preferentially on one side of a merged fillet strip. So the allocation
+ * serves a WHOLE TIE GROUP at a time, which makes it invariant under any relabelling of equally-long
+ * spans, the mirror relabelling included. `balancedOnly` then says what to do when the remaining
+ * budget cannot cover a whole group: stop, returning FEWER than `numToInsert`, rather than pick a
+ * side. Callers that need the count leave it false; callers feeding a LOSSY step set it, because
+ * knot removal reads the spacing on both sides of the knot it takes out and an uneven net heals
+ * lopsidedly — which lands in the geometry, where an uneven set of handles does not.
+ *
+ * When the PLAIN overload splits a group — which it must, since its contract is the exact count —
+ * the spans served are SPREAD across the group rather than taken off its front, per
+ * spreadTieGroupSelection. Front-loading is what turned an unavoidable remainder into a visible block
+ * of extra knots down one side, and it is the placement half of the "it fills the left first"
+ * report. It changes only WHICH tied spans take the remainder, never how many pieces exist, so every
+ * spacing-ratio property is untouched; and insertion is exact, so it cannot move the surface either
+ * way. This is cosmetic in the strict sense and is worth doing for exactly that reason — a defect
+ * that is only in the handles should be fixed where it lives, not by making the geometry pay.
+ *
+ * Works uniformly for clamped and periodic directions: the break list is the distinct knot values
+ * inside the domain plus the domain end, which for a periodic direction is the wrap image of the
+ * start, so the wrap span participates like any other. Every returned parameter is strictly
+ * interior to a span, so it can never collide with an existing knot and raise a multiplicity.
+ */
+function arcLengthSpanInsertions(surface is map, isUDirection is boolean, numToInsert is number, balancedOnly is boolean) returns array
+{
+    if (numToInsert <= 0)
+    {
+        return [];
+    }
+
+    const degree = isUDirection ? surface.uDegree : surface.vDegree;
+    const knots = isUDirection ? surface.uKnots : surface.vKnots;
+    const profile = directionArcLengthProfile(surface, isUDirection);
+
+    const breaks = directionBreakValues(knots, degree);
+    const spanCount = size(breaks) - 1;
+    var breakLengths = makeArray(size(breaks), 0 * meter);
+    for (var index = 0; index < size(breaks); index += 1)
+    {
+        breakLengths[index] = arcLengthAt(profile, breaks[index]);
+    }
+
+    // A direction the profile measures as having no length at all — a fully degenerate patch —
+    // carries no arc-length information to allocate by, so it falls back to parameter width. That
+    // is the one case where the two measures cannot disagree, since there is nothing to disagree
+    // about, and it keeps the greedy below from handing every insertion to span zero.
+    const measuredTotal = breakLengths[spanCount] - breakLengths[0];
+    var spanLengths = makeArray(spanCount, 0 * meter);
+    for (var spanIndex = 0; spanIndex < spanCount; spanIndex += 1)
+    {
+        spanLengths[spanIndex] = measuredTotal > 0 * meter
+            ? breakLengths[spanIndex + 1] - breakLengths[spanIndex]
+            : (breaks[spanIndex + 1] - breaks[spanIndex]) * meter;
+    }
+
+    // Allocate a piece count per span, a WHOLE TIE GROUP at a time. Serving the group together is
+    // what makes the allocation blind to array order among equally-long spans; serving it one span
+    // at a time gives identical results whenever the group is served completely, and silently
+    // favours the lowest index whenever it is not.
+    var pieces = makeArray(spanCount, 1);
+    var allocated = 0;
+    while (allocated < numToInsert)
+    {
+        var longestPiece = -1 * meter;
+        for (var spanIndex = 0; spanIndex < spanCount; spanIndex += 1)
+        {
+            longestPiece = max(longestPiece, spanLengths[spanIndex] / pieces[spanIndex]);
+        }
+
+        var tiedSpans = [];
+        for (var spanIndex = 0; spanIndex < spanCount; spanIndex += 1)
+        {
+            if (spanLengths[spanIndex] / pieces[spanIndex] >= longestPiece * (1 - ALLOCATION_TIE_TOLERANCE))
+            {
+                tiedSpans = append(tiedSpans, spanIndex);
+            }
+        }
+
+        const remainingBudget = numToInsert - allocated;
+        if (size(tiedSpans) <= remainingBudget)
+        {
+            for (var tiedSpan in tiedSpans)
+            {
+                pieces[tiedSpan] += 1;
+                allocated += 1;
+            }
+            continue;
+        }
+
+        // The group cannot be served whole, so `balancedOnly` stops rather than pick a side — even
+        // when that means returning NOTHING, which happens whenever the budget is smaller than the
+        // very first tie group.
+        //
+        // Returning nothing looks like it should be wrong, and a floor that served the first group
+        // anyway (split, or rounded up past the target) was written and then reverted on measurement.
+        // On the merged cube corner the three policies differ in exactly one configuration — a budget
+        // one control point above the concatenated count — and there serving nothing is the only one
+        // that stays mirror-symmetric: 0.000 mirror error against 0.033 for a split group and 0.066
+        // for a rounded-up one. The extra handles do buy accuracy (0.33 -> 0.24 -> 0.15 deviation
+        // from the true corner), but they buy it by overshooting the post-heal target and handing the
+        // surplus to the lossy reduce, which then takes one knot off a tied pair. Trading the
+        // symmetry this flag exists to protect for a sharper corner is not this flag's call to make;
+        // a caller who wants the sharper corner has a budget control and can raise it.
+        if (balancedOnly)
+        {
+            break;
+        }
+
+        // Split the group by spreading rather than by taking a run off its front — see
+        // spreadTieGroupSelection. This is the last decision in the allocator that array order used
+        // to make, and the one the "it fills the left side first" report was actually about.
+        const spread = spreadTieGroupSelection(size(tiedSpans), remainingBudget);
+        for (var selected in spread)
+        {
+            pieces[tiedSpans[selected]] += 1;
+            allocated += 1;
+        }
+    }
+
+    var insertions = makeArray(allocated, 0);
+    var writeIndex = 0;
+    for (var spanIndex = 0; spanIndex < spanCount; spanIndex += 1)
+    {
+        const cutCount = pieces[spanIndex] - 1;
+        if (cutCount < 1)
+        {
+            continue;
+        }
+
+        // Locate every cut by arc length, then accept the set only if it is strictly increasing
+        // and strictly inside the span. Checking the SET rather than each cut on its own matters:
+        // a profile too coarse to separate two nearby cuts would otherwise hand back a duplicate
+        // parameter, and a duplicate raises a multiplicity instead of adding a span — fatal at
+        // degree 1, where any multiplicity above one is illegal.
+        var spanCuts = makeArray(cutCount, 0);
+        var usable = true;
+        var previous = breaks[spanIndex];
+        for (var cutIndex = 1; cutIndex <= cutCount; cutIndex += 1)
+        {
+            const targetLength = breakLengths[spanIndex] + spanLengths[spanIndex] * cutIndex / pieces[spanIndex];
+            const parameter = parameterAtArcLength(profile, targetLength);
+            if (parameter <= previous + KNOT_PARAMETER_TOLERANCE ||
+                parameter >= breaks[spanIndex + 1] - KNOT_PARAMETER_TOLERANCE)
+            {
+                usable = false;
+            }
+            spanCuts[cutIndex - 1] = parameter;
+            previous = parameter;
+        }
+        if (!usable)
+        {
+            for (var cutIndex = 1; cutIndex <= cutCount; cutIndex += 1)
+            {
+                spanCuts[cutIndex - 1] = breaks[spanIndex] +
+                    (breaks[spanIndex + 1] - breaks[spanIndex]) * cutIndex / pieces[spanIndex];
+            }
+        }
+
+        for (var cut in spanCuts)
+        {
+            insertions[writeIndex] = cut;
+            writeIndex += 1;
+        }
+    }
+    return insertions;
+}
+
+/**
+ * Affinely rescale one direction's parameter domain to [newStart, newEnd]. EXACT — an affine
+ * parameter change moves no geometry; only knot VALUES change, never control points or weights.
+ *
+ * The assembly counterpart of arc-length placement: before concatenating a strip, give each piece
+ * a domain length proportional to its physical extent, so the merged surface's parameterization
+ * reflects the shape rather than whatever domains its pieces happened to arrive with.
+ */
+export function rescaleSurfaceDirectionDomain(surface is map, isUDirection is boolean, newStart is number, newEnd is number) returns map
+{
+    var normalized = normalizeSurfaceDefinition(surface);
+    const degree = isUDirection ? normalized.uDegree : normalized.vDegree;
+    const knots = isUDirection ? normalized.uKnots : normalized.vKnots;
+    const domain = knotDomain(knots, degree);
+    const currentSpan = domain.end - domain.start;
+    if (currentSpan <= 0 || newEnd - newStart <= 0)
+    {
+        throw "splineRefinementUtils: rescaleSurfaceDirectionDomain needs positive domains - got [" ~ domain.start ~
+            ", " ~ domain.end ~ "] mapping to [" ~ newStart ~ ", " ~ newEnd ~ "].";
+    }
+
+    const scale = (newEnd - newStart) / currentSpan;
+    var rescaled = makeArray(size(knots), 0);
+    for (var knotIndex = 0; knotIndex < size(knots); knotIndex += 1)
+    {
+        rescaled[knotIndex] = newStart + (knots[knotIndex] - domain.start) * scale;
+    }
+    if (isUDirection)
+    {
+        normalized.uKnots = knotArray(rescaled);
+    }
+    else
+    {
+        normalized.vKnots = knotArray(rescaled);
+    }
+    return normalized;
+}
+
+/**
+ * The approximate arc length of one direction, averaged over representative isocurves — what a
+ * caller needs to size that direction's domain proportionally before assembly.
+ */
+export function approximateDirectionArcLength(surface is map, isUDirection is boolean) returns ValueWithUnits
+{
+    const profile = directionArcLengthProfile(normalizeSurfaceDefinition(surface), isUDirection);
+    return profile.cumulative[size(profile.cumulative) - 1];
+}
+
+// ============================================================================================
+// Layer 3 — ASSEMBLY: exact isocurve extraction, transposition, concatenation, targeted knot
+// removal, and lofting. Built 2026-08-09 as the foundation of the multi-face merge
+// (EDIT_SURFACE_SPEC section 5A) after the projection-and-raycast approach failed structurally —
+// its coverage precondition (the selection's projected outline must BE a rectangle) is
+// unsatisfiable for almost any real selection, a single circular face included.
+//
+// The principle these share: the faces being merged already ARE B-splines with exactly known
+// seams, so a merge should ASSEMBLE their definitions and then remove the seam knots with
+// measured deviation — not rediscover everything from sampled points. Concatenation produces the
+// C0 composite exactly (seam knots at multiplicity == degree, kinks preserved); the knot-removal
+// machinery from the simplification layer then IS the smoothing, and its deviation IS the price
+// of the smoothing. One consequence worth stating because it collapses a spec section: pieces of
+// the SAME underlying surface concatenate and seam-remove at zero deviation, recovering the
+// original surface — so "exact merge of a split face" needs no special path, it is just this
+// pipeline reporting 0.
+// ============================================================================================
+
+/**
+ * The isoparametric curve of a surface at a fixed parameter: fix u, get the B-spline curve the
+ * surface traces in v (or the reverse). EXACT — an isocurve's control points are the one-direction
+ * de Boor combination of the net, Q_j = sum_i N_i(u0) * P_ij, computed in homogeneous coordinates
+ * so rational surfaces ride through with their weights intact.
+ *
+ * The curve inherits the free direction's knots, degree and periodicity verbatim, so an isocurve
+ * of a closed direction is a genuinely closed curve in the module's own canonical form.
+ */
+export function extractIsoparametricCurve(surface is map, isUFixed is boolean, parameter is number) returns map
+{
+    const normalized = normalizeSurfaceDefinition(surface);
+    const grid = combineSurfaceControlPointsAndWeights(normalized.controlPoints, normalized.weights);
+    const fixedDegree = isUFixed ? normalized.uDegree : normalized.vDegree;
+    const fixedKnots = isUFixed ? normalized.uKnots : normalized.vKnots;
+    const spanIndex = findEvaluationSpanIndex(fixedKnots, fixedDegree, parameter);
+    const basisValues = bSplineBasisValues(fixedKnots, fixedDegree, spanIndex, parameter);
+    const firstIndex = spanIndex - fixedDegree;
+
+    const resultCount = isUFixed ? size(grid[0]) : size(grid);
+    var homogeneousPoints = makeArray(resultCount, 0 * grid[0][0]);
+    for (var resultIndex = 0; resultIndex < resultCount; resultIndex += 1)
+    {
+        var accumulated = 0 * grid[0][0];
+        for (var basisIndex = 0; basisIndex <= fixedDegree; basisIndex += 1)
+        {
+            const source = isUFixed ? grid[firstIndex + basisIndex][resultIndex]
+                : grid[resultIndex][firstIndex + basisIndex];
+            accumulated = accumulated + basisValues[basisIndex] * source;
+        }
+        homogeneousPoints[resultIndex] = accumulated;
+    }
+
+    const separated = separatePointsAndWeights(homogeneousPoints);
+    return {
+            "degree" : isUFixed ? normalized.vDegree : normalized.uDegree,
+            "isPeriodic" : isUFixed ? normalized.isVPeriodic == true : normalized.isUPeriodic == true,
+            "isRational" : true,
+            "controlPoints" : separated.points,
+            "weights" : separated.weights,
+            "knots" : knotArray(isUFixed ? normalized.vKnots : normalized.uKnots)
+        };
+}
+
+/**
+ * Swap a surface's two directions: S'(v, u) = S(u, v). Exact bookkeeping — the control net is
+ * transposed and every u field trades places with its v counterpart. Exists so direction-specific
+ * algorithms can be written once for one direction and applied to the other by conjugation, and so
+ * a merge caller can align pieces whose chain direction is v.
+ */
+export function transposeSurface(surface is map) returns map
+{
+    var result = normalizeSurfaceDefinition(surface);
+    const rowCount = size(result.controlPoints);
+    const columnCount = size(result.controlPoints[0]);
+
+    var transposedPoints = makeArray(columnCount, 0);
+    var transposedWeights = makeArray(columnCount, 0);
+    for (var columnIndex = 0; columnIndex < columnCount; columnIndex += 1)
+    {
+        var pointRow = makeArray(rowCount, result.controlPoints[0][0]);
+        var weightRow = makeArray(rowCount, 1);
+        for (var rowIndex = 0; rowIndex < rowCount; rowIndex += 1)
+        {
+            pointRow[rowIndex] = result.controlPoints[rowIndex][columnIndex];
+            weightRow[rowIndex] = result.weights[rowIndex][columnIndex];
+        }
+        transposedPoints[columnIndex] = pointRow;
+        transposedWeights[columnIndex] = weightRow;
+    }
+
+    const swappedDegree = result.uDegree;
+    const swappedKnots = result.uKnots;
+    const swappedPeriodic = result.isUPeriodic == true;
+    result.uDegree = result.vDegree;
+    result.uKnots = result.vKnots;
+    result.isUPeriodic = result.isVPeriodic == true;
+    result.vDegree = swappedDegree;
+    result.vKnots = swappedKnots;
+    result.isVPeriodic = swappedPeriodic;
+    result.controlPoints = transposedPoints;
+    result.weights = transposedWeights;
+    return result;
+}
+
+/**
+ * Join a sequence of curves end-to-start into ONE B-spline, exactly: each piece keeps its own
+ * parameterization (domains are translated to abut, never rescaled), and each junction becomes a
+ * knot of multiplicity == degree — a C0 joint that PRESERVES the kink. This is deliberate: the
+ * composite is the honest representation of the chain, and smoothing a junction is a separate,
+ * measured act (removeSplineKnot at the seam), not something assembly does behind the caller's
+ * back.
+ *
+ * Pieces must be ordered and oriented so each one ends where the next begins, within
+ * `joinTolerance`; the two coincident endpoint control points collapse to their average, and the
+ * worst gap so absorbed is returned as `joinDeviation`. Rational pieces are reconciled by a global
+ * projective rescale of each piece's weights (multiplying every homogeneous point of a piece by
+ * one constant changes nothing about its geometry or parameterization), which can always match the
+ * single shared endpoint weight.
+ *
+ * Returns the curve plus `seamParameters` — the junction parameters, exactly what targeted knot
+ * removal needs next.
+ */
+export function concatenateBSplineCurves(curves is array, joinTolerance is ValueWithUnits) returns map
+{
+    if (size(curves) == 0)
+    {
+        throw "splineRefinementUtils: concatenateBSplineCurves needs at least one curve.";
+    }
+
+    var pieces = makeArray(size(curves), 0);
+    var targetDegree = 0;
+    for (var index = 0; index < size(curves); index += 1)
+    {
+        const normalized = normalizeSplineDefinition(curves[index]);
+        if (normalized.isPeriodic == true)
+        {
+            throw "splineRefinementUtils: piece " ~ index ~ " is a closed curve - a closed piece has no free " ~
+                "endpoints to chain through, so it cannot participate in a concatenation.";
+        }
+        pieces[index] = normalized;
+        targetDegree = max(targetDegree, normalized.degree);
+    }
+    for (var index = 0; index < size(pieces); index += 1)
+    {
+        if (pieces[index].degree < targetDegree)
+        {
+            pieces[index] = elevateSplineDegree(pieces[index], targetDegree);
+        }
+    }
+
+    if (size(pieces) == 1)
+    {
+        var single = pieces[0];
+        single.seamParameters = [];
+        single.joinDeviation = 0 * meter;
+        return single;
+    }
+
+    const degree = targetDegree;
+    var totalPointCount = 0;
+    for (var piece in pieces)
+    {
+        totalPointCount += size(piece.controlPoints);
+    }
+    totalPointCount -= size(pieces) - 1;
+
+    const firstHomogeneous = combinePointsAndWeights(pieces[0].controlPoints, pieces[0].weights);
+    var assembledPoints = makeArray(totalPointCount, 0 * firstHomogeneous[0]);
+    var assembledKnots = makeArray(totalPointCount + degree + 1, 0);
+    var seamParameters = makeArray(size(pieces) - 1, 0);
+    var joinDeviation = 0 * meter;
+
+    for (var pointIndex = 0; pointIndex < size(firstHomogeneous); pointIndex += 1)
+    {
+        assembledPoints[pointIndex] = firstHomogeneous[pointIndex];
+    }
+    var pointWriteIndex = size(firstHomogeneous);
+
+    // Piece 0's knots minus ONE trailing end-clamp value: the junction value ends at multiplicity
+    // degree instead of degree + 1, which is exactly the C0 interior knot the composite needs there.
+    var knotWriteIndex = 0;
+    for (var knotIndex = 0; knotIndex < size(pieces[0].knots) - 1; knotIndex += 1)
+    {
+        assembledKnots[knotWriteIndex] = pieces[0].knots[knotIndex];
+        knotWriteIndex += 1;
+    }
+    var domainEnd = knotDomain(pieces[0].knots, degree).end;
+
+    for (var pieceIndex = 1; pieceIndex < size(pieces); pieceIndex += 1)
+    {
+        var pieceHomogeneous = combinePointsAndWeights(pieces[pieceIndex].controlPoints, pieces[pieceIndex].weights);
+
+        // Weight continuity by global projective rescale — the only weight change that alters nothing.
+        const previousEndWeight = assembledPoints[pointWriteIndex - 1][3];
+        const rescale = previousEndWeight / pieceHomogeneous[0][3];
+        for (var pointIndex = 0; pointIndex < size(pieceHomogeneous); pointIndex += 1)
+        {
+            pieceHomogeneous[pointIndex] = rescale * pieceHomogeneous[pointIndex];
+        }
+
+        const seamPair = separatePointsAndWeights([assembledPoints[pointWriteIndex - 1], pieceHomogeneous[0]]);
+        const gap = norm(seamPair.points[0] - seamPair.points[1]);
+        if (gap > joinTolerance)
+        {
+            throw "splineRefinementUtils: pieces " ~ (pieceIndex - 1) ~ " and " ~ pieceIndex ~ " do not meet - the " ~
+                "gap between them is " ~ toString(gap) ~ ", over the join tolerance. Pieces must be ordered and " ~
+                "oriented so each one ends where the next begins.";
+        }
+        joinDeviation = max(joinDeviation, gap);
+
+        assembledPoints[pointWriteIndex - 1] = (assembledPoints[pointWriteIndex - 1] + pieceHomogeneous[0]) / 2;
+        for (var pointIndex = 1; pointIndex < size(pieceHomogeneous); pointIndex += 1)
+        {
+            assembledPoints[pointWriteIndex] = pieceHomogeneous[pointIndex];
+            pointWriteIndex += 1;
+        }
+
+        // Translate this piece's domain to start at the running end, keeping its parameterization.
+        const pieceDomain = knotDomain(pieces[pieceIndex].knots, degree);
+        const shift = domainEnd - pieceDomain.start;
+        seamParameters[pieceIndex - 1] = domainEnd;
+
+        const pieceKnots = pieces[pieceIndex].knots;
+        for (var knotIndex = degree + 1; knotIndex < size(pieceKnots) - degree - 1; knotIndex += 1)
+        {
+            assembledKnots[knotWriteIndex] = pieceKnots[knotIndex] + shift;
+            knotWriteIndex += 1;
+        }
+        domainEnd = pieceDomain.end + shift;
+        const endMultiplicity = pieceIndex == size(pieces) - 1 ? degree + 1 : degree;
+        for (var repeatIndex = 0; repeatIndex < endMultiplicity; repeatIndex += 1)
+        {
+            assembledKnots[knotWriteIndex] = domainEnd;
+            knotWriteIndex += 1;
+        }
+    }
+
+    if (pointWriteIndex != totalPointCount || knotWriteIndex != size(assembledKnots))
+    {
+        throw "splineRefinementUtils: internal error - concatenation produced " ~ pointWriteIndex ~ " points and " ~
+            knotWriteIndex ~ " knots where " ~ totalPointCount ~ " and " ~ size(assembledKnots) ~ " were expected.";
+    }
+
+    const separated = separatePointsAndWeights(assembledPoints);
+    return {
+            "degree" : degree,
+            "isPeriodic" : false,
+            "isRational" : true,
+            "controlPoints" : separated.points,
+            "weights" : separated.weights,
+            "knots" : knotArray(assembledKnots),
+            "seamParameters" : seamParameters,
+            "joinDeviation" : joinDeviation
+        };
+}
+
+/**
+ * The surface form: join a strip of surfaces along their shared edges into ONE B-spline surface,
+ * exactly, with each seam at multiplicity == uDegree (C0, kink preserved — smoothing is
+ * removeSurfaceKnotLine's separate, measured job). `isUDirection` names the CHAIN direction;
+ * pieces must be ordered and oriented so each one's final row of control points coincides with the
+ * next one's first row, within `joinTolerance`.
+ *
+ * The transverse direction is reconciled exactly before assembly: every piece is elevated to the
+ * common degrees, each piece's transverse knots are affinely remapped to [0, 1], and all pieces
+ * are refined onto the n-way merged transverse knot vector — insertion only, geometry unchanged.
+ *
+ * TWO NAMED LIMITS, both thrown rather than fudged:
+ * - No direction may be periodic: a closed chain direction has no ends to chain, and a periodic
+ *   transverse direction needs the periodic knot-sharing path this function does not yet drive.
+ * - After the per-piece projective rescale, the two sides of each seam must agree in WEIGHTS
+ *   column-for-column, not just in 3D position. If they do not, the faces parameterize their
+ *   shared edge differently (a rational reparameterization gap), and joining them needs seam
+ *   reparameterization machinery that does not exist yet. Silently averaging mismatched weights
+ *   would build a surface whose seam column means two different things to its two sides.
+ */
+export function concatenateBSplineSurfaces(surfaces is array, isUDirection is boolean, joinTolerance is ValueWithUnits) returns map
+{
+    if (size(surfaces) == 0)
+    {
+        throw "splineRefinementUtils: concatenateBSplineSurfaces needs at least one surface.";
+    }
+    if (!isUDirection)
+    {
+        var transposed = makeArray(size(surfaces), 0);
+        for (var index = 0; index < size(surfaces); index += 1)
+        {
+            transposed[index] = transposeSurface(surfaces[index]);
+        }
+        return transposeSurface(concatenateBSplineSurfaces(transposed, true, joinTolerance));
+    }
+
+    var pieces = makeArray(size(surfaces), 0);
+    var targetUDegree = 0;
+    var targetVDegree = 0;
+    for (var index = 0; index < size(surfaces); index += 1)
+    {
+        const normalized = normalizeSurfaceDefinition(surfaces[index]);
+        if (normalized.isUPeriodic == true)
+        {
+            throw "splineRefinementUtils: piece " ~ index ~ " is closed in the chain direction - it has no ends to " ~
+                "chain through.";
+        }
+        if (normalized.isVPeriodic == true)
+        {
+            throw "splineRefinementUtils: piece " ~ index ~ " is periodic transverse to the chain. Concatenating " ~
+                "closed-section strips needs the periodic knot-sharing path, which this function does not drive yet.";
+        }
+        pieces[index] = normalized;
+        targetUDegree = max(targetUDegree, normalized.uDegree);
+        targetVDegree = max(targetVDegree, normalized.vDegree);
+    }
+    for (var index = 0; index < size(pieces); index += 1)
+    {
+        if (pieces[index].uDegree < targetUDegree || pieces[index].vDegree < targetVDegree)
+        {
+            pieces[index] = elevateSurfaceDegrees(pieces[index], targetUDegree, targetVDegree);
+        }
+    }
+
+    if (size(pieces) == 1)
+    {
+        var single = pieces[0];
+        single.seamParameters = [];
+        single.joinDeviation = 0 * meter;
+        return single;
+    }
+
+    // Transverse compatibility: remap every piece's v-knots to [0, 1], merge them all, refine each
+    // piece onto the merged vector. Exact — insertion only.
+    var remappedVKnots = makeArray(size(pieces), 0);
+    var mergedVKnots = undefined;
+    for (var index = 0; index < size(pieces); index += 1)
+    {
+        remappedVKnots[index] = remapKnotsToUnitDomain(pieces[index].vKnots, targetVDegree);
+        mergedVKnots = mergedVKnots == undefined ? remappedVKnots[index]
+            : mergeKnotVectors(mergedVKnots, remappedVKnots[index], targetVDegree);
+    }
+    var pieceGrids = makeArray(size(pieces), 0);
+    for (var index = 0; index < size(pieces); index += 1)
+    {
+        var homogeneousGrid = combineSurfaceControlPointsAndWeights(pieces[index].controlPoints, pieces[index].weights);
+        const insertions = insertionsToReach(remappedVKnots[index], mergedVKnots, targetVDegree);
+        if (size(insertions) > 0)
+        {
+            const vOperator = knotRefinementOperator(remappedVKnots[index], targetVDegree, insertions);
+            homogeneousGrid = applyKnotRefinementOperatorAcrossRows(vOperator, homogeneousGrid);
+        }
+        pieceGrids[index] = homogeneousGrid;
+    }
+    const sharedColumnCount = size(pieceGrids[0][0]);
+
+    var totalRowCount = 0;
+    for (var grid in pieceGrids)
+    {
+        totalRowCount += size(grid);
+    }
+    totalRowCount -= size(pieces) - 1;
+
+    var assembledGrid = makeArray(totalRowCount, 0);
+    var assembledUKnots = makeArray(totalRowCount + targetUDegree + 1, 0);
+    var seamParameters = makeArray(size(pieces) - 1, 0);
+    var joinDeviation = 0 * meter;
+
+    for (var rowIndex = 0; rowIndex < size(pieceGrids[0]); rowIndex += 1)
+    {
+        assembledGrid[rowIndex] = pieceGrids[0][rowIndex];
+    }
+    var rowWriteIndex = size(pieceGrids[0]);
+
+    var knotWriteIndex = 0;
+    for (var knotIndex = 0; knotIndex < size(pieces[0].uKnots) - 1; knotIndex += 1)
+    {
+        assembledUKnots[knotWriteIndex] = pieces[0].uKnots[knotIndex];
+        knotWriteIndex += 1;
+    }
+    var domainEnd = knotDomain(pieces[0].uKnots, targetUDegree).end;
+
+    for (var pieceIndex = 1; pieceIndex < size(pieces); pieceIndex += 1)
+    {
+        var grid = pieceGrids[pieceIndex];
+
+        // One projective rescale per piece, anchored at the seam's first column.
+        const previousSeamRow = assembledGrid[rowWriteIndex - 1];
+        const rescale = previousSeamRow[0][3] / grid[0][0][3];
+        for (var rowIndex = 0; rowIndex < size(grid); rowIndex += 1)
+        {
+            for (var columnIndex = 0; columnIndex < sharedColumnCount; columnIndex += 1)
+            {
+                grid[rowIndex][columnIndex] = rescale * grid[rowIndex][columnIndex];
+            }
+        }
+
+        var averagedSeamRow = makeArray(sharedColumnCount, previousSeamRow[0]);
+        for (var columnIndex = 0; columnIndex < sharedColumnCount; columnIndex += 1)
+        {
+            const seamPair = separatePointsAndWeights([previousSeamRow[columnIndex], grid[0][columnIndex]]);
+            const gap = norm(seamPair.points[0] - seamPair.points[1]);
+            if (gap > joinTolerance)
+            {
+                throw "splineRefinementUtils: pieces " ~ (pieceIndex - 1) ~ " and " ~ pieceIndex ~ " do not meet at " ~
+                    "transverse column " ~ columnIndex ~ " - the gap is " ~ toString(gap) ~ ", over the join " ~
+                    "tolerance. Pieces must be ordered and oriented so each ends where the next begins, with their " ~
+                    "transverse directions aligned.";
+            }
+            const weightGap = abs(seamPair.weights[0] - seamPair.weights[1]);
+            if (weightGap > 1e-6 * max(seamPair.weights[0], seamPair.weights[1]))
+            {
+                throw "splineRefinementUtils: pieces " ~ (pieceIndex - 1) ~ " and " ~ pieceIndex ~ " agree in position " ~
+                    "but not in WEIGHT at transverse column " ~ columnIndex ~ " - their two parameterizations of the " ~
+                    "shared edge differ rationally, and joining them exactly needs seam reparameterization that is " ~
+                    "not built yet.";
+            }
+            joinDeviation = max(joinDeviation, gap);
+            averagedSeamRow[columnIndex] = (previousSeamRow[columnIndex] + grid[0][columnIndex]) / 2;
+        }
+        assembledGrid[rowWriteIndex - 1] = averagedSeamRow;
+        for (var rowIndex = 1; rowIndex < size(grid); rowIndex += 1)
+        {
+            assembledGrid[rowWriteIndex] = grid[rowIndex];
+            rowWriteIndex += 1;
+        }
+
+        const pieceDomain = knotDomain(pieces[pieceIndex].uKnots, targetUDegree);
+        const shift = domainEnd - pieceDomain.start;
+        seamParameters[pieceIndex - 1] = domainEnd;
+
+        const pieceUKnots = pieces[pieceIndex].uKnots;
+        for (var knotIndex = targetUDegree + 1; knotIndex < size(pieceUKnots) - targetUDegree - 1; knotIndex += 1)
+        {
+            assembledUKnots[knotWriteIndex] = pieceUKnots[knotIndex] + shift;
+            knotWriteIndex += 1;
+        }
+        domainEnd = pieceDomain.end + shift;
+        const endMultiplicity = pieceIndex == size(pieces) - 1 ? targetUDegree + 1 : targetUDegree;
+        for (var repeatIndex = 0; repeatIndex < endMultiplicity; repeatIndex += 1)
+        {
+            assembledUKnots[knotWriteIndex] = domainEnd;
+            knotWriteIndex += 1;
+        }
+    }
+
+    if (rowWriteIndex != totalRowCount || knotWriteIndex != size(assembledUKnots))
+    {
+        throw "splineRefinementUtils: internal error - surface concatenation produced " ~ rowWriteIndex ~ " rows and " ~
+            knotWriteIndex ~ " chain knots where " ~ totalRowCount ~ " and " ~ size(assembledUKnots) ~ " were expected.";
+    }
+
+    const separated = separateSurfaceControlPointsAndWeights(assembledGrid);
+    return {
+            "uDegree" : targetUDegree,
+            "vDegree" : targetVDegree,
+            "isRational" : true,
+            "isUPeriodic" : false,
+            "isVPeriodic" : false,
+            "controlPoints" : separated.points,
+            "weights" : separated.weights,
+            "uKnots" : knotArray(assembledUKnots),
+            "vKnots" : knotArray(mergedVKnots),
+            "seamParameters" : seamParameters,
+            "joinDeviation" : joinDeviation
+        };
+}
+
+/**
+ * Remove `timesToRemove` instances of the knot at `parameter` from a curve, measuring the price.
+ * This is the SMOOTHING primitive for concatenated chains: a seam sits at multiplicity == degree
+ * (C0); each removal raises the continuity there by one order and moves the curve by an amount
+ * this function measures and returns as `deviation`. Removing a knot that is exactly removable —
+ * a seam between pieces of the same underlying curve — costs exactly zero.
+ */
+export function removeSplineKnot(spline is map, parameter is number, timesToRemove is number) returns map
+{
+    var normalized = normalizeSplineDefinition(spline);
+    if (normalized.isPeriodic == true)
+    {
+        throw "splineRefinementUtils: removeSplineKnot does not yet handle periodic curves - removal there must " ~
+            "preserve the overlap condition, which needs the periodic wide-window construction.";
+    }
+
+    var points = combinePointsAndWeights(normalized.controlPoints, normalized.weights);
+    var workingKnots = normalized.knots;
+    var worstDeviation = 0 * meter;
+    for (var removalIndex = 0; removalIndex < timesToRemove; removalIndex += 1)
+    {
+        const candidate = findRemovalCandidateAt(workingKnots, normalized.degree, parameter,
+                timesToRemove - removalIndex);
+        const removed = removeKnotFromPointArrays([points], workingKnots, normalized.degree,
+                candidate.index, candidate.multiplicity);
+        points = removed.pointArrays[0];
+        workingKnots = removed.knots;
+        worstDeviation = max(worstDeviation, removed.deviation);
+    }
+
+    const separated = separatePointsAndWeights(points);
+    normalized.controlPoints = separated.points;
+    normalized.weights = separated.weights;
+    normalized.knots = knotArray(workingKnots);
+    normalized.deviation = worstDeviation;
+    return normalized;
+}
+
+/**
+ * The surface form: remove `timesToRemove` instances of the knot LINE at `parameter` in the given
+ * direction, deciding each removal across the whole line at once (the same whole-line rule as
+ * simplification, for the same reason — rows that disagree about their knots are not a surface).
+ * The seam-smoothing step of the multi-face merge.
+ */
+export function removeSurfaceKnotLine(surface is map, isUDirection is boolean, parameter is number, timesToRemove is number) returns map
+{
+    if (isUDirection)
+    {
+        return transposeSurface(removeSurfaceKnotLine(transposeSurface(surface), false, parameter, timesToRemove));
+    }
+
+    var normalized = normalizeSurfaceDefinition(surface);
+    if (normalized.isVPeriodic == true)
+    {
+        throw "splineRefinementUtils: removeSurfaceKnotLine does not yet handle a periodic direction - removal " ~
+            "there must preserve the overlap condition, which needs the periodic wide-window construction.";
+    }
+
+    var homogeneousGrid = combineSurfaceControlPointsAndWeights(normalized.controlPoints, normalized.weights);
+    var workingKnots = normalized.vKnots;
+    var worstDeviation = 0 * meter;
+    for (var removalIndex = 0; removalIndex < timesToRemove; removalIndex += 1)
+    {
+        const candidate = findRemovalCandidateAt(workingKnots, normalized.vDegree, parameter,
+                timesToRemove - removalIndex);
+        const removed = removeKnotFromPointArrays(homogeneousGrid, workingKnots, normalized.vDegree,
+                candidate.index, candidate.multiplicity);
+        homogeneousGrid = removed.pointArrays;
+        workingKnots = removed.knots;
+        worstDeviation = max(worstDeviation, removed.deviation);
+    }
+
+    const separated = separateSurfaceControlPointsAndWeights(homogeneousGrid);
+    normalized.controlPoints = separated.points;
+    normalized.weights = separated.weights;
+    normalized.vKnots = knotArray(workingKnots);
+    normalized.deviation = worstDeviation;
+    return normalized;
+}
+
+/** Locate the removal candidate for one specific knot value, or throw naming what was found — a
+    targeted removal must never quietly remove some OTHER knot. */
+function findRemovalCandidateAt(knots is array, degree is number, parameter is number, remainingToRemove is number) returns map
+{
+    const candidates = interiorKnotRemovalCandidates(knots, degree);
+    for (var candidate in candidates)
+    {
+        if (abs(knots[candidate.index] - parameter) <= KNOT_PARAMETER_TOLERANCE)
+        {
+            return candidate;
+        }
+    }
+    throw "splineRefinementUtils: no interior knot at parameter " ~ parameter ~ " with " ~ remainingToRemove ~
+        " removal(s) still requested - either the value is not a knot of this spline, or its multiplicity is " ~
+        "already exhausted.";
+}
+
+/**
+ * LOFT (skin) through a family of section curves: the B-spline surface that passes exactly through
+ * every section, built by interpolating the sections' control points column-by-column in the loft
+ * direction. The interpolation operator is built ONCE and applied to every column — chapter 9's
+ * version of the operator-amortization rule the whole module runs on.
+ *
+ * Sections must already share degree, knots and periodicity (they do by construction when they are
+ * isocurves of one chain, or the columns of one assembly); this function checks and throws rather
+ * than repairing, because repair would move geometry a caller believes is exact. CLOSED sections
+ * are welcome: interpolation is columnwise, wrap columns are equal per section, and interpolating
+ * equal values reproduces them exactly — so the overlap condition survives lofting verbatim.
+ *
+ * The loft direction becomes u; sections keep their own parameterization as v. Returns
+ * `uParameters`, the station of each section on the result.
+ */
+export function loftBSplineSurfaceThroughCurves(sectionCurves is array, loftDegree is number) returns map
+{
+    return loftCore(sectionCurves, loftDegree, undefined, undefined);
+}
+
+/**
+ * Loft at PRESCRIBED stations, optionally onto a PRESCRIBED loft-direction knot vector. The exact
+ * reconstruction case: lofting a surface's own isocurves, taken at the Greville abscissae of its
+ * own knots, onto those same knots, reproduces the surface EXACTLY (Schoenberg–Whitney
+ * unisolvence) — the tester's anchor for this whole layer.
+ */
+export function loftBSplineSurfaceThroughCurves(sectionCurves is array, loftDegree is number,
+    stationParameters is array, loftKnots is array) returns map
+{
+    return loftCore(sectionCurves, loftDegree, stationParameters, loftKnots);
+}
+
+function loftCore(sectionCurves is array, loftDegree is number, stationParameters, loftKnots) returns map
+{
+    if (size(sectionCurves) < loftDegree + 1)
+    {
+        throw "splineRefinementUtils: lofting " ~ size(sectionCurves) ~ " sections at degree " ~ loftDegree ~
+            " is impossible - the loft direction needs at least " ~ (loftDegree + 1) ~ " sections.";
+    }
+
+    var sections = makeArray(size(sectionCurves), 0);
+    for (var index = 0; index < size(sectionCurves); index += 1)
+    {
+        sections[index] = normalizeSplineDefinition(sectionCurves[index]);
+        if (index > 0)
+        {
+            if (sections[index].degree != sections[0].degree ||
+                (sections[index].isPeriodic == true) != (sections[0].isPeriodic == true) ||
+                size(sections[index].knots) != size(sections[0].knots))
+            {
+                throw "splineRefinementUtils: section " ~ index ~ " does not match section 0 in degree, periodicity " ~
+                    "or knot count - sections must be made compatible before lofting (makeSplinesCompatible, or " ~
+                    "build them from one source).";
+            }
+            for (var knotIndex = 0; knotIndex < size(sections[0].knots); knotIndex += 1)
+            {
+                if (abs(sections[index].knots[knotIndex] - sections[0].knots[knotIndex]) > KNOT_PARAMETER_TOLERANCE)
+                {
+                    throw "splineRefinementUtils: section " ~ index ~ "'s knot vector differs from section 0's at " ~
+                        "index " ~ knotIndex ~ " - sections must share one knot vector exactly before lofting.";
+                }
+            }
+        }
+    }
+
+    const columnCount = size(sections[0].controlPoints);
+    var homogeneousSections = makeArray(size(sections), 0);
+    for (var index = 0; index < size(sections); index += 1)
+    {
+        homogeneousSections[index] = combinePointsAndWeights(sections[index].controlPoints, sections[index].weights);
+    }
+
+    var stations = stationParameters;
+    if (stations == undefined)
+    {
+        // Default stations: chord-length parameters of each control column's 3D polyline, averaged
+        // over the columns (A9.4's rule) — skipping columns the sections share verbatim, whose
+        // zero-length polylines carry no spacing information.
+        var parameterSets = [];
+        for (var columnIndex = 0; columnIndex < columnCount; columnIndex += 1)
+        {
+            var column = makeArray(size(sections), sections[0].controlPoints[columnIndex]);
+            var columnLength = 0 * meter;
+            for (var index = 0; index < size(sections); index += 1)
+            {
+                column[index] = sections[index].controlPoints[columnIndex];
+                if (index > 0)
+                {
+                    columnLength += norm(column[index] - column[index - 1]);
+                }
+            }
+            if (columnLength > 0 * meter)
+            {
+                parameterSets = append(parameterSets, chordLengthParameters(column));
+            }
+        }
+        if (size(parameterSets) == 0)
+        {
+            throw "splineRefinementUtils: every section is identical - there is no loft direction to build.";
+        }
+        stations = averagedParameters(parameterSets);
+    }
+    else if (size(stations) != size(sections))
+    {
+        throw "splineRefinementUtils: " ~ size(sections) ~ " sections but " ~ size(stations) ~
+            " station parameters - each section needs exactly one.";
+    }
+
+    const knots = loftKnots == undefined ? averagedInterpolationKnots(stations, loftDegree) : loftKnots;
+    if (size(knots) != size(sections) + loftDegree + 1)
+    {
+        throw "splineRefinementUtils: the prescribed loft knot vector has " ~ size(knots) ~ " entries; " ~
+            (size(sections) + loftDegree + 1) ~ " are required for " ~ size(sections) ~ " sections at degree " ~
+            loftDegree ~ ".";
+    }
+    const loftOperator = interpolationOperator(stations, knots, loftDegree);
+
+    var lofted = makeArray(size(sections), 0);
+    for (var index = 0; index < size(sections); index += 1)
+    {
+        lofted[index] = makeArray(columnCount, homogeneousSections[0][0]);
+    }
+    for (var columnIndex = 0; columnIndex < columnCount; columnIndex += 1)
+    {
+        var column = makeArray(size(sections), homogeneousSections[0][columnIndex]);
+        for (var index = 0; index < size(sections); index += 1)
+        {
+            column[index] = homogeneousSections[index][columnIndex];
+        }
+        const loftedColumn = applyInterpolationOperator(loftOperator, column);
+        for (var index = 0; index < size(sections); index += 1)
+        {
+            lofted[index][columnIndex] = loftedColumn[index];
+        }
+    }
+
+    const separated = separateSurfaceControlPointsAndWeights(lofted);
+    for (var row in separated.weights)
+    {
+        for (var weight in row)
+        {
+            if (weight <= 0)
+            {
+                throw "splineRefinementUtils: lofting produced a non-positive weight - the sections' weights vary " ~
+                    "too sharply for these stations. Add sections where the weight variation is fastest.";
+            }
+        }
+    }
+
+    return {
+            "uDegree" : loftDegree,
+            "vDegree" : sections[0].degree,
+            "isRational" : true,
+            "isUPeriodic" : false,
+            "isVPeriodic" : sections[0].isPeriodic == true,
+            "controlPoints" : separated.points,
+            "weights" : separated.weights,
+            "uKnots" : knotArray(knots),
+            "vKnots" : knotArray(sections[0].knots),
+            "uParameters" : stations
+        };
+}
+
+// ============================================================================================
+// Layer 3 — SIMPLIFICATION (knot removal). The module's first deliberately LOSSY operation, and
+// the scope note at the top of this file is amended accordingly: it said lossy inverses are out
+// because "std already exports removeKnots and approximateSpline for those". For SURFACES that is
+// simply false, and both halves of it are false:
+//
+//   - There is NO surface approximation or fitting routine anywhere in std. evApproximateBSplineSurface
+//     takes a tolerance and gives no control over control point count; approximationUtils' routines
+//     are Path/curve based (they are what editCurve's "Maximum control points" drives); opFitSpline
+//     is curves. Grepping the whole library for a surface fitter returns nothing.
+//   - nurbsUtils' removeKnots cannot substitute, for TWO independent reasons. First, its candidate
+//     list (knotsLastIndicesAndMultiplicities) only ever offers knots with multiplicity >= 2, so it
+//     structurally cannot simplify an ordinary surface whose interior knots are all simple — it
+//     exists to clean up after Bezier decomposition, not to reduce a net. Second, and this is the
+//     trap already documented against elevateSurfaceDegrees: it decides removability from the actual
+//     point VALUES, so run per row it would remove DIFFERENT knots in different rows, and rows that
+//     disagree about their knot vector are not a surface.
+//
+// So removability here is decided FOR A WHOLE KNOT LINE AT ONCE — the deviation is the worst across
+// every row (or column), and the knot goes only if the whole line can afford it. That single change
+// is what makes A5.8 a surface algorithm instead of a curve one.
+// ============================================================================================
+
+/**
+ * Geometric distance between two homogeneous control points, in length units.
+ *
+ * Not the 4D norm: a homogeneous point is (w*x, w*y, w*z, w), mixing lengths with a unitless
+ * weight, so its norm is not a length and not a meaningful error. separatePointsAndWeights divides
+ * the weight back out, which gives the actual displacement of the control point being compared.
+ */
+function homogeneousPointDeviation(pointA is Vector, pointB is Vector) returns ValueWithUnits
+{
+    const separated = separatePointsAndWeights([pointA, pointB]);
+    return norm(separated.points[0] - separated.points[1]);
+}
+
+/**
+ * Try removing ONE instance of the knot at `knotIndex` from every point array at once, all of them
+ * sharing `knots`. NURBS Book Algorithm A5.8, transcribed from std's own removeKnot (proven code)
+ * with TWO structural changes, both forced by the same fact — this module removes knots that are
+ * not removable, where the book only ever removes knots it has already proved removable:
+ *
+ *   1. Instead of a per-array boolean removability test it returns the WORST deviation across all
+ *      arrays, leaving the accept/reject decision to the caller.
+ *   2. Where the recurrence produces two competing answers for the surviving control point, it
+ *      takes their MIDPOINT rather than whichever one the shift happens to leave standing. See the
+ *      even-window branch in the body; this is the fix for the one-sided lean, and it improves
+ *      accuracy rather than only symmetry.
+ *
+ * Returns { deviation, pointArrays, knots }. The returned arrays are the post-removal candidate;
+ * the caller decides whether the deviation is affordable before adopting them.
+ */
+function removeKnotFromPointArrays(pointArrays is array, knots is array, degree is number, knotIndex is number, multiplicity is number) returns map
+{
+    const knotValue = knots[knotIndex];
+    const knotCount = size(knots);
+    const pointCount = size(pointArrays[0]);
+    const first = knotIndex - degree;
+    const last = knotIndex - multiplicity;
+    const off = first - 1;
+
+    var worstDeviation = 0 * meter;
+    var candidateArrays = makeArray(size(pointArrays), 0);
+
+    for (var arrayIndex = 0; arrayIndex < size(pointArrays); arrayIndex += 1)
+    {
+        const points = pointArrays[arrayIndex];
+        var temp = makeArray(last - off + 2, points[0]);
+        temp[0] = points[off];
+        temp[last + 1 - off] = points[last + 1];
+
+        var i = first;
+        var j = last;
+        var ii = 1;
+        var jj = last - off;
+        while (j - i > 0)
+        {
+            const alphaI = (knotValue - knots[i]) / (knots[i + degree + 1] - knots[i]);
+            const alphaJ = (knotValue - knots[j]) / (knots[j + degree + 1] - knots[j]);
+            temp[ii] = (points[i] - (1 - alphaI) * temp[ii - 1]) / alphaI;
+            temp[jj] = (points[j] - alphaJ * temp[jj + 1]) / (1 - alphaJ);
+            i += 1;
+            ii += 1;
+            j -= 1;
+            jj -= 1;
+        }
+
+        // The removal is exact when the two ends of the recurrence meet; the gap between them (or,
+        // in the odd case, the distance from the original point to its reconstruction) IS the error
+        // removing this knot would introduce.
+        var deviation = 0 * meter;
+        if (j - i < 0)
+        {
+            // EVEN WINDOW (degree - multiplicity odd): the forward and backward recurrences pass
+            // each other instead of landing on a shared slot, so they produce TWO answers for the
+            // one control point that survives. They agree exactly when the knot is removable, which
+            // is the only case A5.8 was ever written to handle — the NURBS Book tests `dist <= TOL`
+            // and only then proceeds, so which answer it keeps is invisible there and unspecified.
+            //
+            // THIS MODULE REMOVES KNOTS THAT ARE NOT REMOVABLE, deliberately: seam healing and
+            // simplification both hand the caller a deviation instead of a boolean. That turns an
+            // unspecified choice into a load-bearing one, and taking either answer verbatim dumps
+            // the WHOLE disagreement onto the side whose reconstruction was discarded. The shift
+            // below keeps whichever slot index parity leaves standing, so the error always landed
+            // the same way round: measured on a mirror-symmetric net, a symmetric input came back
+            // lopsided by half the reported deviation, and the same geometry fed in mirrored gave a
+            // materially different answer. That is the one-sided lean, and its home is here rather
+            // than in any placement heuristic.
+            //
+            // The two answers bracket the truth, so an endpoint is the WORST available choice. The
+            // midpoint is exactly minimax on the control-point displacement this function reports:
+            // it halves the error rather than merely relocating it (measured 2.9x closer to the
+            // original curve on the symmetric two-face crease). Symmetry then falls out of
+            // minimizing the error, which is why there is no symmetry rule anywhere in this file.
+            //
+            // Centring in HOMOGENEOUS coordinates, not Cartesian, because the whole recurrence is
+            // linear there — the midpoint of the two homogeneous answers is the point that a
+            // subsequent re-insertion treats consistently. For a non-rational direction the two are
+            // identical anyway.
+            //
+            // Both slots take the centred value so the parity of the shift below stops mattering:
+            // whichever one survives carries the same point, and no caller has to reason about it.
+            const forwardAnswer = temp[ii - 1];
+            const backwardAnswer = temp[jj + 1];
+            const centeredAnswer = 0.5 * (forwardAnswer + backwardAnswer);
+            temp[ii - 1] = centeredAnswer;
+            temp[jj + 1] = centeredAnswer;
+
+            // The displacement ACTUALLY incurred, which is half the gap and is what a caller should
+            // be told it paid. Reported as the worse of the two sides rather than assumed even: the
+            // homogeneous midpoint of two points with different weights need not project to the
+            // Cartesian midpoint, so on a rational direction the two halves differ slightly. This
+            // keeps the number commensurable with the odd-window branch below, which likewise
+            // measures how far the net moved, so the greedy in simplifyDirection still compares
+            // like with like.
+            deviation = max(homogeneousPointDeviation(forwardAnswer, centeredAnswer),
+                    homogeneousPointDeviation(backwardAnswer, centeredAnswer));
+        }
+        else
+        {
+            const alphaI = (knotValue - knots[i]) / (knots[i + degree + 1] - knots[i]);
+            deviation = homogeneousPointDeviation(points[i], alphaI * temp[ii + 1] + (1 - alphaI) * temp[ii - 1]);
+        }
+        worstDeviation = max(worstDeviation, deviation);
+
+        // Build this array's post-removal points: the recurrence's interior values written back,
+        // then everything past the removed point shifted down one.
+        var updated = points;
+        var writeI = first;
+        var writeJ = last;
+        while (writeJ - writeI > 0)
+        {
+            updated[writeI] = temp[writeI - off];
+            updated[writeJ] = temp[writeJ - off];
+            writeI += 1;
+            writeJ -= 1;
+        }
+        const firstOut = floor((2 * knotIndex - multiplicity - degree) / 2);
+        for (var k = firstOut + 1; k < pointCount; k += 1)
+        {
+            updated[k - 1] = updated[k];
+        }
+        candidateArrays[arrayIndex] = subArray(updated, 0, pointCount - 1);
+    }
+
+    var updatedKnots = knots;
+    for (var k = knotIndex + 1; k < knotCount; k += 1)
+    {
+        updatedKnots[k - 1] = updatedKnots[k];
+    }
+
+    return {
+            "deviation" : worstDeviation,
+            "pointArrays" : candidateArrays,
+            "knots" : subArray(updatedKnots, 0, knotCount - 1)
+        };
+}
+
+/**
+ * Every distinct interior knot of a clamped vector, as { index, multiplicity } where `index` is the
+ * LAST position holding that value — the index A5.8 wants.
+ *
+ * Unlike std's knotsLastIndicesAndMultiplicities this returns SIMPLE knots too. That omission is
+ * exactly why std's removeKnots cannot reduce an ordinary net: a surface read from a face has
+ * multiplicity-1 interior knots almost everywhere, and skipping them leaves nothing to remove.
+ */
+function interiorKnotRemovalCandidates(knots is array, degree is number) returns array
+{
+    const runs = interiorKnotRun(knots, degree);
+    var candidates = makeArray(size(runs), 0);
+    var searchFrom = degree + 1;
+    for (var runIndex = 0; runIndex < size(runs); runIndex += 1)
+    {
+        var lastIndex = searchFrom;
+        for (var knotIndex = searchFrom; knotIndex < size(knots); knotIndex += 1)
+        {
+            if (abs(knots[knotIndex] - runs[runIndex].value) <= KNOT_PARAMETER_TOLERANCE)
+            {
+                lastIndex = knotIndex;
+            }
+        }
+        candidates[runIndex] = { "index" : lastIndex, "multiplicity" : runs[runIndex].multiplicity };
+        searchFrom = lastIndex + 1;
+    }
+    return candidates;
+}
+
+/**
+ * Reduce one direction to `targetCount` control points by repeatedly removing the CHEAPEST knot —
+ * the one whose removal displaces the control net least, measured across the whole knot line.
+ *
+ * Greedy least-error selection, re-evaluated every round because removing one knot changes what the
+ * others cost. Returns the arrays, the knots, and the WORST deviation incurred, which the caller is
+ * expected to report rather than swallow: this is the module's one lossy operation and the whole
+ * basis for allowing it is that the price is measured and stated.
+ *
+ * Stops early — short of the target — if no candidate remains, rather than mangling the surface to
+ * hit a number.
+ *
+ * THE `<` TIE-BREAK BELOW IS DELIBERATE AND WAS MEASURED. It gives the first — lowest-index, i.e.
+ * leftmost — candidate every tie, which reads exactly like the one-sided lean removeKnotFromPointArrays
+ * really did have, and an earlier pass here replaced it with whole-tie-group removal on that
+ * suspicion. THAT CHANGE WAS WRONG AND IS REVERTED. Do not re-attempt it without new evidence:
+ *
+ *   - The greedy is ALREADY self-correcting across rounds. Removing the left twin of a mirror pair
+ *     makes the right twin the cheapest candidate in the very next round, so pairs come out together
+ *     without anyone arranging it. On a mirror-symmetric fixture every EVEN removal count lands
+ *     exactly symmetric under the existing code.
+ *   - What is left at ODD removal counts is not a bias but arithmetic: one knot of a tied pair has to
+ *     go, and no rule makes that symmetric. Its magnitude is the removal cost the caller already
+ *     accepted and had reported.
+ *   - Group commitment measured strictly worse. Across 348 reduction cases it changed the outcome in
+ *     12 and was worse in all 12, never better; mean deviation on symmetric fixtures rose from 0.081
+ *     to 0.124, and the results were LESS mirror-symmetric, not more, because overriding the greedy's
+ *     next choice sends the trajectory somewhere else and a greedy is chaotic downstream of a tie.
+ *
+ * The lean this function was accused of lives in removeKnotFromPointArrays' even-window branch, where
+ * it was real, avoidable and is now fixed. Fixing it there is what makes the tie-break here harmless.
+ */
+function simplifyDirection(pointArrays is array, knots is array, degree is number, targetCount is number) returns map
+{
+    var currentArrays = pointArrays;
+    var currentKnots = knots;
+    var worstDeviation = 0 * meter;
+
+    while (size(currentArrays[0]) > targetCount)
+    {
+        const candidates = interiorKnotRemovalCandidates(currentKnots, degree);
+        if (size(candidates) == 0)
+        {
+            break;
+        }
+
+        var bestResult = undefined;
+        for (var candidate in candidates)
+        {
+            const attempt = removeKnotFromPointArrays(currentArrays, currentKnots, degree, candidate.index, candidate.multiplicity);
+            if (bestResult == undefined || attempt.deviation < bestResult.deviation)
+            {
+                bestResult = attempt;
+            }
+        }
+
+        currentArrays = bestResult.pointArrays;
+        currentKnots = bestResult.knots;
+        worstDeviation = max(worstDeviation, bestResult.deviation);
+    }
+
+    return { "pointArrays" : currentArrays, "knots" : currentKnots, "deviation" : worstDeviation };
+}
+
+/**
+ * Remove every knot whose removal moves the surface by less than `tolerance` — CLEANUP of redundant
+ * representation, not reduction toward a budget. CLAMPED DIRECTIONS ONLY; a periodic direction is
+ * returned untouched (see the body for why, and why untouched is the right answer rather than a
+ * best effort).
+ *
+ * A knot is removed only if it is genuinely free at the given tolerance; anything that would move
+ * the surface further is kept. The worst deviation actually incurred comes back in `deviation`.
+ *
+ * The motivating case — a kernel cylinder whose Bezier arc joints carry multiplicity == degree,
+ * dragging Greville abscissae together so a refined cylinder's control points bunch at the joints —
+ * is exactly the case this CANNOT yet serve, because that cylinder is periodic. Fixing periodic
+ * removal is what would unlock it; nothing else here does.
+ */
+export function removeRedundantSurfaceKnots(surface is map, tolerance is ValueWithUnits) returns map
+{
+    var normalized = normalizeSurfaceDefinition(surface);
+    var homogeneousGrid = combineSurfaceControlPointsAndWeights(normalized.controlPoints, normalized.weights);
+    var worstDeviation = 0 * meter;
+
+    for (var isUDirection in [true, false])
+    {
+        const degree = isUDirection ? normalized.uDegree : normalized.vDegree;
+        const isPeriodic = isUDirection ? normalized.isUPeriodic == true : normalized.isVPeriodic == true;
+        var workingKnots = isUDirection ? normalized.uKnots : normalized.vKnots;
+
+        // A PERIODIC direction is left exactly alone. A first attempt did clean it, through the
+        // tile / operate / slice window that refinement and elevation use, and it MOVED THE
+        // GEOMETRY — a cylinder came back as a bean while the deviation it reported stayed small.
+        // The window construction is sound for insertion and elevation, which are local and
+        // forward; knot removal is a SOLVE that inverts them, and something about running it inside
+        // a clamped window does not reproduce the infinite periodic answer. That was removed rather
+        // than left behind a flag: silently wrong geometry is the worst failure this module can
+        // have, and a lumpy but exact net beats a smooth wrong one every time.
+        if (isPeriodic)
+        {
+            continue;
+        }
+
+        // U runs down columns, so work on the transposed view and put it back.
+        var arrays = homogeneousGrid;
+        if (isUDirection)
+        {
+            arrays = makeArray(size(homogeneousGrid[0]), 0);
+            for (var columnIndex = 0; columnIndex < size(homogeneousGrid[0]); columnIndex += 1)
+            {
+                var column = makeArray(size(homogeneousGrid), homogeneousGrid[0][0]);
+                for (var rowIndex = 0; rowIndex < size(homogeneousGrid); rowIndex += 1)
+                {
+                    column[rowIndex] = homogeneousGrid[rowIndex][columnIndex];
+                }
+                arrays[columnIndex] = column;
+            }
+        }
+
+        var madeProgress = true;
+        while (madeProgress)
+        {
+            madeProgress = false;
+            // A periodic direction must keep at least one control point per period; a clamped one
+            // at least degree + 1. Below that there is no spline left to remove from.
+            if (size(arrays[0]) <= degree + 1)
+            {
+                break;
+            }
+            // Candidates come from a DIFFERENT list per form, and conflating them is what made an
+            // earlier version throw: interiorKnotRemovalCandidates rests on interiorKnotRun, which
+            // requires a CLAMPED array with degree-known ends. A periodic direction's stored array
+            // is wrap-padded and unclamped, so its candidates are the distinct FUNDAMENTAL knot
+            // values instead — where every entry is interior and there are no clamped ends at all.
+            for (var candidate in interiorKnotRemovalCandidates(workingKnots, degree))
+            {
+                const attempt = try silent(removeKnotFromPointArrays(arrays, workingKnots, degree,
+                            candidate.index, candidate.multiplicity));
+                if (attempt != undefined && attempt.deviation <= tolerance)
+                {
+                    arrays = attempt.pointArrays;
+                    workingKnots = attempt.knots;
+                    worstDeviation = max(worstDeviation, attempt.deviation);
+                    madeProgress = true;
+                    break;
+                }
+            }
+        }
+
+        if (isUDirection)
+        {
+            const newRowCount = size(arrays[0]);
+            var rebuilt = makeArray(newRowCount, 0);
+            for (var rowIndex = 0; rowIndex < newRowCount; rowIndex += 1)
+            {
+                var row = makeArray(size(arrays), arrays[0][0]);
+                for (var columnIndex = 0; columnIndex < size(arrays); columnIndex += 1)
+                {
+                    row[columnIndex] = arrays[columnIndex][rowIndex];
+                }
+                rebuilt[rowIndex] = row;
+            }
+            homogeneousGrid = rebuilt;
+            normalized.uKnots = knotArray(workingKnots);
+        }
+        else
+        {
+            homogeneousGrid = arrays;
+            normalized.vKnots = knotArray(workingKnots);
+        }
+    }
+
+    const separated = separateSurfaceControlPointsAndWeights(homogeneousGrid);
+    normalized.controlPoints = separated.points;
+    normalized.weights = separated.weights;
+    normalized.deviation = worstDeviation;
+    return normalized;
+}
+
+/**
+ * Reduce a surface to at most the target control point counts per direction, keeping its broad
+ * shape — the inverse of refineSurfaceToControlPointCounts, and the operation that lets a user
+ * simplify an over-dense net rather than only add to it.
+ *
+ * LOSSY BY CONSTRUCTION, and that is the point: removing a knot that is not exactly removable moves
+ * the surface. The returned map carries `deviation`, the worst control-point displacement incurred,
+ * and callers are expected to surface it. Where the knots ARE exactly removable — every knot this
+ * module's own refinement inserted, for instance — the deviation comes back at zero and the
+ * round trip is exact.
+ *
+ * A direction already at or below its target is left completely alone. A target of 0 means "no
+ * request", matching refineSurfaceToControlPointCounts' convention.
+ *
+ * PERIODIC DIRECTIONS THROW rather than being silently clamped or skipped. Knot removal on a
+ * wrap-padded array has to preserve the overlap condition, which needs the same tile / operate /
+ * slice window this module already uses for periodic refinement (buildPeriodicWindow →
+ * extractPeriodicCoreAndRepad). That construction is understood and not yet built here; it is the
+ * next piece, not an impossibility.
+ */
+export function simplifySurfaceToControlPointCounts(surface is map, targetUCount is number, targetVCount is number) returns map
+{
+    var normalized = normalizeSurfaceDefinition(surface);
+    var worstDeviation = 0 * meter;
+
+    const wantsU = targetUCount > 0 && size(normalized.controlPoints) > targetUCount;
+    const wantsV = targetVCount > 0 && size(normalized.controlPoints[0]) > targetVCount;
+    if (!wantsU && !wantsV)
+    {
+        normalized.deviation = worstDeviation;
+        return normalized;
+    }
+    if ((wantsU && normalized.isUPeriodic == true) || (wantsV && normalized.isVPeriodic == true))
+    {
+        throw "splineRefinementUtils: simplifySurfaceToControlPointCounts cannot yet reduce a PERIODIC direction. " ~
+            "Knot removal there must preserve the overlap condition P[i] == P[i+n], which needs the same wide-window " ~
+            "construction periodic refinement uses (buildPeriodicWindow / extractPeriodicCoreAndRepad). Refinement of " ~
+            "a periodic direction is unaffected.";
+    }
+
+    var homogeneousGrid = combineSurfaceControlPointsAndWeights(normalized.controlPoints, normalized.weights);
+
+    if (wantsU)
+    {
+        // U runs down columns, so transpose into per-column arrays, simplify, and transpose back —
+        // the same extract/scatter shape elevateSurfaceDegrees uses for its own U pass.
+        const rowCount = size(homogeneousGrid);
+        const columnCount = size(homogeneousGrid[0]);
+        var columns = makeArray(columnCount, 0);
+        for (var columnIndex = 0; columnIndex < columnCount; columnIndex += 1)
+        {
+            var column = makeArray(rowCount, homogeneousGrid[0][0]);
+            for (var rowIndex = 0; rowIndex < rowCount; rowIndex += 1)
+            {
+                column[rowIndex] = homogeneousGrid[rowIndex][columnIndex];
+            }
+            columns[columnIndex] = column;
+        }
+
+        const simplified = simplifyDirection(columns, normalized.uKnots, normalized.uDegree, targetUCount);
+        worstDeviation = max(worstDeviation, simplified.deviation);
+
+        const newRowCount = size(simplified.pointArrays[0]);
+        var rebuiltGrid = makeArray(newRowCount, 0);
+        for (var rowIndex = 0; rowIndex < newRowCount; rowIndex += 1)
+        {
+            var row = makeArray(columnCount, simplified.pointArrays[0][0]);
+            for (var columnIndex = 0; columnIndex < columnCount; columnIndex += 1)
+            {
+                row[columnIndex] = simplified.pointArrays[columnIndex][rowIndex];
+            }
+            rebuiltGrid[rowIndex] = row;
+        }
+        homogeneousGrid = rebuiltGrid;
+        normalized.uKnots = knotArray(simplified.knots);
+    }
+
+    if (wantsV)
+    {
+        // V runs across rows, which the grid already stores directly — no transpose needed.
+        const simplified = simplifyDirection(homogeneousGrid, normalized.vKnots, normalized.vDegree, targetVCount);
+        worstDeviation = max(worstDeviation, simplified.deviation);
+        homogeneousGrid = simplified.pointArrays;
+        normalized.vKnots = knotArray(simplified.knots);
+    }
+
+    const separated = separateSurfaceControlPointsAndWeights(homogeneousGrid);
+    normalized.controlPoints = separated.points;
+    normalized.weights = separated.weights;
+    normalized.deviation = worstDeviation;
+    return normalized;
+}
+
+/**
+ * Guarantee at least `minimumControlPointsPerSpan` control points across every cell of the given
+ * parameter partitions, refining only where the requirement is not met — the targeted refinement
+ * a lattice-driven FFD wants (spec section 9.2), as opposed to refineSurfaceToControlPointCounts'
+ * blanket growth. Geometry unchanged, as everywhere in this module. Periodicity is PRESERVED:
+ * both directions go through directionRefinementOperator, so a closed direction refines closed.
+ *
+ * Cells come from consecutive boundaries, plus — on a periodic direction — the wrap cell back to
+ * the first boundary. Boundaries need not be knots and need not cover the whole domain; a
+ * direction whose boundary list is empty is left alone.
+ *
+ * NOT done here, deliberately: the boundaries are never themselves inserted as knots. Density and
+ * CONTINUITY are separate questions, the same way degree and tolerance are separate in spec
+ * section 9.1.1 — a caller whose deformation map is only C0 across its lattice cell boundaries
+ * needs a knot of multiplicity `degree` at each boundary to represent the crease, and no amount
+ * of density substitutes for it. That is one directionRefinementOperator call with each boundary
+ * repeated `degree` times, and it belongs to the caller that knows its map's continuity, not to a
+ * function whose contract is density.
  */
 export function refineSurfaceToSpanDensity(surface is map, uSpanBoundaries is array, vSpanBoundaries is array, minimumControlPointsPerSpan is number) returns map
 {
-    throw NOT_IMPLEMENTED_MESSAGE ~ "refineSurfaceToSpanDensity";
+    if (minimumControlPointsPerSpan < 1)
+    {
+        throw "splineRefinementUtils: refineSurfaceToSpanDensity needs minimumControlPointsPerSpan >= 1 (got " ~
+            minimumControlPointsPerSpan ~ "); every cell already carries at least one.";
+    }
+
+    var normalized = normalizeSurfaceDefinition(surface);
+    const uInsertions = spanDensityInsertions(normalized.uKnots, normalized.uDegree, normalized.isUPeriodic == true,
+            uSpanBoundaries, minimumControlPointsPerSpan, "refineSurfaceToSpanDensity's U direction");
+    const vInsertions = spanDensityInsertions(normalized.vKnots, normalized.vDegree, normalized.isVPeriodic == true,
+            vSpanBoundaries, minimumControlPointsPerSpan, "refineSurfaceToSpanDensity's V direction");
+    if (size(uInsertions) == 0 && size(vInsertions) == 0)
+    {
+        return normalized;
+    }
+
+    var homogeneousGrid = combineSurfaceControlPointsAndWeights(normalized.controlPoints, normalized.weights);
+    if (size(uInsertions) > 0)
+    {
+        const uOperator = directionRefinementOperator(normalized.uKnots, normalized.uDegree, normalized.isUPeriodic == true, uInsertions);
+        homogeneousGrid = applyKnotRefinementOperatorDownColumns(uOperator, homogeneousGrid);
+        normalized.uKnots = knotArray(uOperator.knots);
+    }
+    if (size(vInsertions) > 0)
+    {
+        const vOperator = directionRefinementOperator(normalized.vKnots, normalized.vDegree, normalized.isVPeriodic == true, vInsertions);
+        homogeneousGrid = applyKnotRefinementOperatorAcrossRows(vOperator, homogeneousGrid);
+        normalized.vKnots = knotArray(vOperator.knots);
+    }
+
+    const separated = separateSurfaceControlPointsAndWeights(homogeneousGrid);
+    normalized.controlPoints = separated.points;
+    normalized.weights = separated.weights;
+    return normalized;
 }
 
 /**
@@ -3602,18 +6284,104 @@ export function makeSurfacesCompatible(surfaceA is map, surfaceB is map) returns
  * flat one, in both directions, then sliced into a 2D array of patches. The per-patch entry
  * point for flattening work (spec section 9.3).
  *
- * HOOK(decomposeSurfaceIntoBezierPatches) — normalizeSurfaceDefinition now exists to start
- * from. Build a grid-aware sibling of decomposeIntoSegmentsCore that takes an isDownColumns
- * flag and calls applyKnotRefinementOperatorDownColumns/AcrossRows instead of
- * applyKnotRefinementOperator; slicing along a row direction is a direct subArray of the outer
- * grid (same as the flat case), slicing along a column direction needs a per-row subArray. Run
- * once per direction, nesting the second pass inside each first-pass region. Returns a 2D array
- * of patches, each { "controlPoints", "weights", "uDegree", "vDegree", "uDomainStart/End",
- * "vDomainStart/End" }.
+ * Returns a 2D array indexed [uSegment][vSegment], each patch
+ * { "controlPoints", "weights", "uDegree", "vDegree", "uDomainStart/End", "vDomainStart/End" }.
+ *
+ * A CLOSED direction is clamped over one full period first, and that is not the clamping this
+ * module rejects elsewhere — the distinction matters enough to state outright. What section 2.3
+ * rejects is clamping and then re-flagging the result as periodic, which manufactures a seam
+ * where the representation claims smoothness. Here the periodicity is being deliberately spent:
+ * a Bezier patch is an open object by definition, and the union of the patches reproduces the
+ * closed surface exactly, seam included, because the clamped extraction over the full period is
+ * itself exact. Nothing downstream is told the pieces are still closed.
  */
 export function decomposeSurfaceIntoBezierPatches(surface is map) returns array
 {
-    throw NOT_IMPLEMENTED_MESSAGE ~ "decomposeSurfaceIntoBezierPatches";
+    var normalized = normalizeSurfaceDefinition(surface);
+    normalized = clampSurfaceDirectionForMixedUse(normalized, true);
+    normalized = clampSurfaceDirectionForMixedUse(normalized, false);
+
+    const uPlan = interiorRunsAndInsertionPlan(normalized.uKnots, normalized.uDegree);
+    const vPlan = interiorRunsAndInsertionPlan(normalized.vKnots, normalized.vDegree);
+
+    // knotRefinementOperator, NOT refineKnotVector, on both directions — the opposite of
+    // decomposeIntoSegmentsCore's choice, and for the reason stated there: the same refinement
+    // runs down every column (and then across every row), so the O(M^2) build amortizes instead
+    // of being discarded after one application.
+    var homogeneousGrid = combineSurfaceControlPointsAndWeights(normalized.controlPoints, normalized.weights);
+    if (size(uPlan.insertions) > 0)
+    {
+        homogeneousGrid = applyKnotRefinementOperatorDownColumns(
+                knotRefinementOperator(normalized.uKnots, normalized.uDegree, uPlan.insertions), homogeneousGrid);
+    }
+    if (size(vPlan.insertions) > 0)
+    {
+        homogeneousGrid = applyKnotRefinementOperatorAcrossRows(
+                knotRefinementOperator(normalized.vKnots, normalized.vDegree, vPlan.insertions), homogeneousGrid);
+    }
+
+    // Every interior knot now sits at multiplicity == degree in both directions, so the grid is
+    // numSegments * degree + 1 per direction and patch (i, j) is the (degree + 1) x (degree + 1)
+    // block starting at (i * uDegree, j * vDegree) — adjacent patches sharing their boundary row
+    // or column, exactly as the curve-level slice does.
+    var patches = makeArray(uPlan.numSegments, 0);
+    for (var uSegment = 0; uSegment < uPlan.numSegments; uSegment += 1)
+    {
+        var patchRow = makeArray(vPlan.numSegments, 0);
+        for (var vSegment = 0; vSegment < vPlan.numSegments; vSegment += 1)
+        {
+            var patchGrid = makeArray(normalized.uDegree + 1, 0);
+            for (var rowOffset = 0; rowOffset <= normalized.uDegree; rowOffset += 1)
+            {
+                patchGrid[rowOffset] = subArray(homogeneousGrid[uSegment * normalized.uDegree + rowOffset],
+                        vSegment * normalized.vDegree, vSegment * normalized.vDegree + normalized.vDegree + 1);
+            }
+            const separated = separateSurfaceControlPointsAndWeights(patchGrid);
+            patchRow[vSegment] = {
+                    "controlPoints" : separated.points,
+                    "weights" : separated.weights,
+                    "uDegree" : normalized.uDegree,
+                    "vDegree" : normalized.vDegree,
+                    "uDomainStart" : uPlan.breakpoints[uSegment],
+                    "uDomainEnd" : uPlan.breakpoints[uSegment + 1],
+                    "vDomainStart" : vPlan.breakpoints[vSegment],
+                    "vDomainEnd" : vPlan.breakpoints[vSegment + 1]
+                };
+        }
+        patches[uSegment] = patchRow;
+    }
+    return patches;
+}
+
+/** True when [rangeStart, rangeEnd] is the direction's entire domain, to knot tolerance. */
+function coversWholeDomain(domain is map, rangeStart is number, rangeEnd is number) returns boolean
+{
+    return abs(rangeStart - domain.start) <= KNOT_PARAMETER_TOLERANCE &&
+        abs(rangeEnd - domain.end) <= KNOT_PARAMETER_TOLERANCE;
+}
+
+/**
+ * Reject an extraction range that is not a positive-width sub-range of the direction's own domain.
+ *
+ * The periodic case gets its own sentence because the obvious reading of "extract [0.8, 0.2] from
+ * a closed direction" is a range that WRAPS the seam, and that is not expressible as a slice of
+ * the stored window at all. The exact route exists — move the seam first — so name it instead of
+ * silently reinterpreting the arguments.
+ */
+function validateExtractionRange(domain is map, rangeStart is number, rangeEnd is number, isPeriodic is boolean, directionName is string)
+{
+    if (rangeStart < domain.start - KNOT_PARAMETER_TOLERANCE || rangeEnd > domain.end + KNOT_PARAMETER_TOLERANCE)
+    {
+        throw "splineRefinementUtils: extractSubSurface's " ~ directionName ~ " range [" ~ rangeStart ~ ", " ~ rangeEnd ~
+            "] is not inside that direction's domain [" ~ domain.start ~ ", " ~ domain.end ~ "].";
+    }
+    if (rangeEnd - rangeStart <= KNOT_PARAMETER_TOLERANCE)
+    {
+        throw "splineRefinementUtils: extractSubSurface needs a positive-width " ~ directionName ~ " range (got [" ~
+            rangeStart ~ ", " ~ rangeEnd ~ "])." ~ (isPeriodic ?
+            " A range that WRAPS past a periodic direction's seam is not a sub-rectangle of the stored window: move " ~
+            "the seam with rewindowPeriodicSurfaceDirection until the range is contiguous, then extract." : "");
+    }
 }
 
 /**
@@ -3621,16 +6389,57 @@ export function decomposeSurfaceIntoBezierPatches(surface is map) returns array
  * tensor-applied. The general form of the displacement map's tile extraction; the entry point
  * flattening and local-patch work call (spec section 9.3).
  *
- * HOOK(extractSubSurface) — normalizeSurfaceDefinition + combine/separateSurfaceControlPointsAndWeights
- * now exist. Build clampedSegmentOperator for [uStart, uEnd] on uKnots and [vStart, vEnd] on
- * vKnots; applyKnotRefinementOperatorDownColumns then AcrossRows; return a full clamped
- * surface map (piece knot vectors come from the refinementOperators, cast via knotArray(...)).
- * Tester: piece evaluates identically to the parent across its rectangle
- * (evaluateBSplineSurfacePoint both sides).
+ * A direction whose requested range is its WHOLE domain is left untouched rather than run through
+ * an identity extraction — which matters for a periodic direction, where clamping over the full
+ * period would throw away a closed representation the caller never asked to give up. Any direction
+ * that IS narrowed comes back clamped and flagged non-periodic, because a sub-rectangle of a
+ * closed surface genuinely is an open patch.
  */
 export function extractSubSurface(surface is map, uStart is number, uEnd is number, vStart is number, vEnd is number) returns map
 {
-    throw NOT_IMPLEMENTED_MESSAGE ~ "extractSubSurface";
+    var normalized = normalizeSurfaceDefinition(surface);
+    const uDomain = knotDomain(normalized.uKnots, normalized.uDegree);
+    const vDomain = knotDomain(normalized.vKnots, normalized.vDegree);
+    validateExtractionRange(uDomain, uStart, uEnd, normalized.isUPeriodic == true, "U");
+    validateExtractionRange(vDomain, vStart, vEnd, normalized.isVPeriodic == true, "V");
+
+    const narrowsU = !coversWholeDomain(uDomain, uStart, uEnd);
+    const narrowsV = !coversWholeDomain(vDomain, vStart, vEnd);
+    if (!narrowsU && !narrowsV)
+    {
+        return normalized;
+    }
+
+    // Both operators are built from the ORIGINAL knot vectors: refining down columns does not
+    // touch vKnots and vice versa, so the two directions are independent and the order is free.
+    var homogeneousGrid = combineSurfaceControlPointsAndWeights(normalized.controlPoints, normalized.weights);
+    if (narrowsU)
+    {
+        const uClamp = clampedSegmentOperator(normalized.uKnots, normalized.uDegree, uStart, uEnd);
+        homogeneousGrid = applyKnotRefinementOperatorDownColumns(uClamp, homogeneousGrid);
+        normalized.uKnots = knotArray(uClamp.knots);
+        if (normalized.isUPeriodic == true)
+        {
+            normalized.isUPeriodic = false;
+            normalized.wasClampedFromPeriodic = true;
+        }
+    }
+    if (narrowsV)
+    {
+        const vClamp = clampedSegmentOperator(normalized.vKnots, normalized.vDegree, vStart, vEnd);
+        homogeneousGrid = applyKnotRefinementOperatorAcrossRows(vClamp, homogeneousGrid);
+        normalized.vKnots = knotArray(vClamp.knots);
+        if (normalized.isVPeriodic == true)
+        {
+            normalized.isVPeriodic = false;
+            normalized.wasClampedFromPeriodic = true;
+        }
+    }
+
+    const separated = separateSurfaceControlPointsAndWeights(homogeneousGrid);
+    normalized.controlPoints = separated.points;
+    normalized.weights = separated.weights;
+    return normalized;
 }
 
 /**
@@ -3638,10 +6447,16 @@ export function extractSubSurface(surface is map, uStart is number, uEnd is numb
  * directions. This is step 2 of the deformation pipeline (spec section 9.1); the adaptive
  * tolerance loop of section 9.1.1 drives the counts and lives in the calling feature.
  *
- * HOOK(prepareSurfaceForDeformation) — composition of elevateSurfaceDegrees and
- * refineSurfaceToControlPointCounts, in that order; both now exist.
+ * The order is load-bearing and is the surface statement of prepareSplineForDeformation's own:
+ * elevating AFTER refining multiplies the control point count for nothing, since elevation adds
+ * points in proportion to the segment count it is handed. Either step is skipped when already
+ * satisfied, per direction — refineSurfaceToControlPointCounts makes that decision itself.
  */
 export function prepareSurfaceForDeformation(surface is map, targetUDegree is number, targetVDegree is number, targetUCount is number, targetVCount is number) returns map
 {
-    throw NOT_IMPLEMENTED_MESSAGE ~ "prepareSurfaceForDeformation";
+    const normalized = normalizeSurfaceDefinition(surface);
+    const elevated = (normalized.uDegree < targetUDegree || normalized.vDegree < targetVDegree)
+        ? elevateSurfaceDegrees(normalized, targetUDegree, targetVDegree) : normalized;
+    return (size(elevated.controlPoints) < targetUCount || size(elevated.controlPoints[0]) < targetVCount)
+        ? refineSurfaceToControlPointCounts(elevated, targetUCount, targetVCount) : elevated;
 }
