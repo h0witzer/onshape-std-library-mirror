@@ -73,8 +73,10 @@ items is a tester vector.** Both need a real model with real faces:
    not rational, and the cylinder's weight function is independent of v, so every `w^(0,j)` and
    `w^(i,j)` term vanishes on it.
 
-4. The deformation feature (§9.1) — not started, and the main line of work once the derivative
-   layer is confirmed.
+4. **The deformation feature (§9.1) — begun.** The FFD consolidation (§9.2) is its first instance
+   and exercises steps 1, 2, 4 and 5 of the pipeline plus the whole of §9.1.1's refine-and-certify
+   loop, with a lattice as the map. Built, not yet run. The remaining maps in §9.1's table — bend,
+   twist, taper, flow along surface — plug into the same steps.
 5. Phase 5 (displacementMap migration), independent of everything above and doable any time.
 
 `custom-features/splineRefinementUtils.fs`, FeatureScript 3044:
@@ -187,6 +189,58 @@ So removal is implemented here, with removability decided **for a whole knot lin
 deviation is the worst across every row, and a knot goes only if the whole line can afford it. That
 one change is what makes NURBS Book A5.8 a surface algorithm rather than a curve one. Selection is
 greedy least-error, re-evaluated each round.
+
+### 2.2.0 Periodic simplification is a projection, not a removal (2026-08-10)
+
+A5.8 does not extend to periodic directions, and `removeRedundantSurfaceKnots` records why it was
+withdrawn: the window construction "MOVED THE GEOMETRY — a cylinder came back as a bean while the
+deviation it reported stayed small." That diagnosis is right, and the reason is structural rather
+than a bug to be found. **A5.8 is a local bidirectional recurrence anchored by control points it
+assumes are unchanged.** On a periodic spline those anchors are themselves periodic images of points
+the true answer *does* change, so a clamped window solves the wrong system — and reports only its
+own local residual, which is exactly why a wrong shape came back with a small number attached.
+
+`simplifySurfacePeriodicDirections` takes a different route, and the difference is where the solve
+lives. Given a target knot vector `U_tgt` with every multiplicity 1:
+
+1. Form the common refinement `U_com = U_cur ∪ U_tgt` (per-value max multiplicity). Both `S(U_cur)`
+   and `S(U_tgt)` are subspaces of `S(U_com)`, because one spline space contains another exactly when
+   its knot vector is a sub-multiset.
+2. Lift the current points into `S(U_com)` **exactly**, by periodic knot insertion.
+3. Solve `min ‖A·Q − P_com‖₂`, where `A : S(U_tgt) → S(U_com)` is the refinement operator.
+
+`A` comes straight from `periodicRefinementOperator`, which already folds its window rows back onto
+stored indices — its own comment notes "the overlap condition comes out of that fold for free" — so
+it arrives cyclically banded with the wrap consistent. **The clamped window is used only to harvest
+forward, local, exact refinement coefficients**, the operation `extractPeriodicCoreAndRepad`'s
+local-linear-independence argument already covers. The solve is global and cyclic over the true
+periodic unknowns. That is the whole difference from the attempt that produced the bean.
+
+Two properties follow that an approximating refit does not have, and the tester asserts both:
+
+- **Exact when exactness is possible.** If the spline really lies in `S(U_tgt)`, the residual is
+  identically zero and `Q` is recovered exactly, because a refinement operator between nested spline
+  spaces is injective. This is a strict generalization of knot removal, not a substitute for it. The
+  `PERIODIC-SIMPLIFY` fixture is built by *raising* an all-simple pentagon to multiplicity `degree`,
+  precisely so the coarse space provably still contains it and "exactly" is a testable claim.
+- **The error bound is structural, not sampled.** Both splines end up in the same basis `S(U_com)`,
+  and B-splines are non-negative and partition unity, so
+  `‖S_tgt(t) − S_cur(t)‖ ≤ max_i ‖R_i‖` for every `t`, with `R = A·Q − P_com`. A sup bound over the
+  whole domain from control points alone. The tester samples only to *audit* that bound — never to
+  produce the answer — which is the direct guard against the bean's failure mode.
+
+The unknowns are the `n` fundamental control points, so `A`'s stored columns are folded modulo `n`
+before the normal equations are formed. Rows are folded the other way, by **truncation** to the first
+`n_common`: rows `r` and `r + n_common` are identical equations against identical right-hand sides,
+so keeping both would weight the first `degree` equations double and tilt the fit. The normal matrix
+is symmetric positive definite and small, factored by a local Cholesky rather than `matrix.fs` so the
+module keeps its standing property of being pure arithmetic over plain arrays, and so a non-positive
+pivot throws with a diagnosis instead of returning a quietly wrong inverse.
+
+This is the module's **first genuinely lossy periodic operation**, and the reason it earns its place
+despite §10's general preference is that no exact alternative exists: a NURBS circle is genuinely
+only C⁰ at its arc joins in homogeneous space, the projected curve being smooth solely through weight
+cancellation. A deformer needs C¹-by-structure, and no exact operation can supply it.
 
 ### 2.2.1 A5.8 has to be *finished* before it can be used lossily (2026-08-09)
 
@@ -1228,9 +1282,11 @@ hacks in both files are gone, not patched.
 on vector 6 passing. Nothing about this phase changed; it remains last, independent of
 everything above, and the sign-off in §11 already clears it to proceed whenever picked up.
 
-The §9.1 deformation feature is the only major piece of the original plan not started. Both
-tween features are now the exact, real-surface exercise that was supposed to justify building
-the module before starting on deformation — that condition is met.
+The §9.1 deformation feature is now started: the FFD consolidation (§9.2,
+[FREE_FORM_DEFORMATION_SPEC.md](FREE_FORM_DEFORMATION_SPEC.md)) is the pipeline's first instance and
+the first consumer of §9.1.1's refine-and-certify loop. Both tween features were the exact,
+real-surface exercise that was supposed to justify building the module before starting on
+deformation — that condition was met before it began.
 
 ---
 
@@ -1502,10 +1558,17 @@ in the dialog.
 
 ### 9.2 Free-form deformation
 
-`freeFormDeformation.fs` (and `freeFormDeformationPlanes.fs`) push each surface control point
-through a trivariate Bernstein lattice and rebuild the surface with the **original knot vectors
-and the original control point count** (`freeFormDeformation.fs:344-353`). That is the classic
-FFD ceiling: **the deformation can only be as detailed as the surface's existing control net.**
+**Built, 2026-08-09 — the first consumer of §9.1's pipeline.** `freeFormDeformation.fs` now runs
+steps 1, 2, 4 and 5 as described here with a lattice map at step 3, and the two old features have
+been consolidated into it. Full design, including the parts of this section that turned out not to
+apply, in [FREE_FORM_DEFORMATION_SPEC.md](FREE_FORM_DEFORMATION_SPEC.md). Verified against a live
+build 2026-08-10. The rest of this section is the analysis that drove that work, kept because it is
+the reasoning, not the changelog.
+
+The pre-refactor feature pushed each surface control point through a trivariate Bernstein lattice and
+rebuilt the surface with the **original knot vectors and the original control point count**. That is
+the classic FFD ceiling: **the deformation can only be as detailed as the surface's existing control
+net.**
 Feed it a 4×4 Bezier patch and a 6×6×6 lattice and the extra lattice spans do nothing
 representable — the surface has 16 degrees of freedom to express a field sampled far more
 finely. Symptomatically this reads as "cranking up lattice resolution stops helping" or as a
@@ -1513,22 +1576,37 @@ deformation that looks subtly wrong near lattice cell boundaries.
 
 Knot refinement is the standard fix, and it is exact: refine the control net **before**
 deforming, and the undeformed surface is bit-for-bit unchanged while gaining the degrees of
-freedom to represent the field. This is what `refineSurfaceToSpanDensity` exists for — the
-caller passes the lattice cell boundaries in surface parameter space and a minimum control
-point count per cell, and only under-resolved regions are refined. A blanket "double every
-control point" would work too and cost far more.
+freedom to represent the field.
 
 Per §3.2 there is a second reason on top of the degrees-of-freedom one: the trivariate
 Bernstein map is non-affine, so refinement is also what makes the deformation *converge*.
-Today's FFD has no refinement step at all, so it has neither.
+The old FFD had no refinement step at all, so it had neither.
 
-Structurally, FFD is §9.1's pipeline with a lattice map — it should share steps 1, 2, 4 and 5
-rather than growing its own copy.
+**Correction to this section's original guidance, found while building it.** This said the
+refinement should be `refineSurfaceToSpanDensity`, with the caller passing "the lattice cell
+boundaries in surface parameter space and a minimum control point count per cell". **A classic
+Sederberg & Parry lattice has no cells.** It is a *single* trivariate Bernstein polynomial over the
+whole volume — the basis spans the entire lattice, there are no interior boundaries, and there is
+nothing piecewise to resolve. The premise was wrong, not the function. What the feature does instead
+is run §9.1.1's tolerance loop directly, which is map-agnostic and needs no boundaries at all.
+`refineSurfaceToSpanDensity` becomes the right primitive the moment a **B-spline** lattice is added —
+which is what would make local lattice control possible — and it is waiting for that.
 
-This also makes FFD's periodic handling honest: today it re-wraps with
-`isUPeriodic : surfaceDefinition.isUPeriodic` and the untouched knot array, which is fine
-because it never changes the knot vector. Once refinement enters, the §5 periodic policy
-applies.
+Also worth recording, because it is unique to this map in the family: **FFD is polynomial, so exact
+composition is definable.** A bidegree `(p, q)` patch through a lattice of span counts `(l, m, n)`
+composes to bidegree `(Dp, Dq)` with `D = l + m + n`. It is unusable in general — a bicubic patch
+through a 2×2×2 lattice lands at degree 18, past `MAX_DEGREE` — but it means FFD is the one mode
+where "no tolerance anywhere" is not merely aspirational for small cases. Derived in
+[FREE_FORM_DEFORMATION_SPEC.md](FREE_FORM_DEFORMATION_SPEC.md) §5.
+
+Structurally, FFD is §9.1's pipeline with a lattice map — it shares steps 1, 2, 4 and 5 rather than
+growing its own copy.
+
+This also makes FFD's periodic handling honest: the old version re-wrapped with
+`isUPeriodic : surfaceDefinition.isUPeriodic` and the untouched knot array, which was fine
+because it never changed the knot vector. With refinement in, the §5 periodic policy applies — and
+the deformation itself preserves the overlap condition for free, since the map is a pure function of
+position and the padding rows are literal copies.
 
 ### 9.3 Surface flattening without the analysis tool
 

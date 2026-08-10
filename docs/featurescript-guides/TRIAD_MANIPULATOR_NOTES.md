@@ -178,7 +178,7 @@ if (rotationMatrix != undefined && size(rotationMatrix) == 9)
 
 - **routingCurve.fs**: Uses fullTriadManipulator with rotationMatrix storage pattern
 - **triadTransform.fs**: Uses fullTriadManipulator with Euler angle storage pattern
-- **freeFormDeformationPlanes.fs**: Uses fullTriadManipulator with rotationMatrix storage for plane manipulation
+- **freeFormDeformation.fs**: Uses fullTriadManipulator with flat-rotationMatrix storage to translate and rotate a multi-point lattice selection. Because the manipulator reports a *cumulative* transform rather than an increment, it keeps that transform live and applies it at regeneration, baking it into per-point offsets exactly once when the selection changes — see `docs/specs/FREE_FORM_DEFORMATION_SPEC.md` §6.5 for why that two-stage storage is what a cumulative transform forces.
 
 ## References
 

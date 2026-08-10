@@ -41,6 +41,7 @@ Design documents for work that is planned or in progress. These describe intent 
 derivation; the code may not match them yet.
 
 - [DISPLACEMENT_MAP_TILING_SPEC.md](specs/DISPLACEMENT_MAP_TILING_SPEC.md) — tiling one image as a memoized unit cell via per-tile Boehm knot refinement, for `custom-features/displacementMap.fs`.
+- [FREE_FORM_DEFORMATION_SPEC.md](specs/FREE_FORM_DEFORMATION_SPEC.md) — consolidating the point-lattice and plane-manipulation FFD features into one `custom-features/freeFormDeformation.fs`: UVN naming, multi-select selection scopes, and the refinement-before-deformation pipeline that removes the classic FFD detail ceiling.
 - [SPLINE_REFINEMENT_UTILITY_SPEC.md](specs/SPLINE_REFINEMENT_UTILITY_SPEC.md) — a shared `splineRefinementUtils.fs` module for exact B-spline refinement (knot insertion, Bezier decomposition, degree elevation), replacing duplicated and broken copies in `displacementMap.fs`, `tweenSurfaces.fs`, and `tweenCurves.fs`, and underpinning an exact flex/deform feature.
 - [T_SPLINE_SUPPORT_SPEC.md](specs/T_SPLINE_SUPPORT_SPEC.md) — companion to the spline refinement spec: T-spline surfaces via exact NURBS extraction and knit, including full arbitrary topology — star points handled by exact subdivision rings plus Karčiauskas–Peters G² caps. Design stage; nothing built.
 - [TIPPY_BUCKET_PIVOT_SPEC.md](specs/TIPPY_BUCKET_PIVOT_SPEC.md) — material-aware pivot placement from empty and filled centers of mass, for `custom-features/tippyBucketPivot.fs`.
@@ -49,7 +50,7 @@ derivation; the code may not match them yet.
 
 Documentation tied to a single custom feature or feature group.
 
-- [ffd-planes/](features/ffd-planes/) — plane-based free-form deformation (`custom-features/freeFormDeformationPlanes.fs`): user README, implementation summary, and a visual guide to the lattice model.
+- [free-form-deformation/](features/free-form-deformation/) — lattice free-form deformation (`custom-features/freeFormDeformation.fs`): user guide to the UVN lattice, selection scopes, accuracy controls, and deformation recipes.
 - [kerf-bending/](features/kerf-bending/) — analytical kerf bend spacing (`custom-features/kerf-bending/`): user README and project summary.
 - [label-placement/](features/label-placement/) — research on deterministic label placement in non-convex planar faces, backing `custom-features/label-placement-experiment/`.
 - [query-variable-plus/](features/query-variable-plus/) — how to extend Query Variable Plus (`custom-features/queryVariablePlus.fs`) with new query types.
