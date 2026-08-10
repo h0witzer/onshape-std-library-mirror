@@ -12,10 +12,16 @@ import(path : "onshape/std/nurbsUtils.fs", version : "3044.0");      // removeKn
 
     Exact B-spline refinement as a shared, importable module: knot insertion, knot refinement,
     clamped segment extraction, Bezier decomposition, and degree elevation. Every operation in
-    this module adds representational degrees of freedom while leaving the geometry bit-for-bit
-    unchanged. The lossy inverses (knot removal as a simplification service, degree reduction,
-    approximation) are deliberately NOT here — the standard library's nurbsUtils.fs and
-    splineUtils.fs already provide removeKnots and approximateSpline for those jobs.
+    that core adds representational degrees of freedom while leaving the geometry bit-for-bit
+    unchanged.
+
+    The LOSSY operations that did land here are the ones std cannot do at all, and each carries a
+    measured `deviation` rather than a boolean: simplification to a control point count, redundant
+    knot removal across a whole knot line at once (spec section 2.2 — deciding removability for a
+    line rather than a curve is what makes A5.8 a surface algorithm), and periodic simplification by
+    cyclic projection (spec section 2.2.0 — the one operation with no exact alternative, since a
+    NURBS circle is genuinely only C0 at its arc joins in homogeneous space). Plain single-curve
+    removal and approximation are still std's job, via nurbsUtils.fs and splineUtils.fs.
 
     Design, migration plan, validation vectors, and the mathematical references live in
     docs/specs/SPLINE_REFINEMENT_UTILITY_SPEC.md. The insertion arithmetic is validated against
@@ -106,6 +112,19 @@ export const KNOT_PARAMETER_TOLERANCE = 1e-10;
  * this refinementOperator formulation was extracted from.
  */
 export const SPARSE_WEIGHT_CUTOFF = 1e-12;
+
+/**
+ * The largest target control point count per period periodic simplification will attempt before
+ * giving up and returning the best result it reached, WITH that result's true deviation.
+ *
+ * A ceiling on n rather than on doublings because the projection's cost is governed by n: the
+ * normal matrix is n x n and its factorization is O(n^3), so an unbounded doubling schedule reaches
+ * an unusable solve long before it reaches an interesting tolerance. 128 is far past where accuracy
+ * stops being the binding constraint — a uniform periodic cubic on a circle carries radial error
+ * about r*(2*pi/n)^4/384, so n = 24 already lands near a micron on a 100 mm part. This is a guard
+ * against a tolerance no representation could meet, not a working limit.
+ */
+export const PERIODIC_SIMPLIFICATION_MAX_CONTROL_POINTS = 128;
 
 /**
  * The algorithm used to build a refinement refinementOperator. BOEHM inserts the requested parameters
@@ -5628,6 +5647,615 @@ export function simplifySurfaceToControlPointCounts(surface is map, targetUCount
     normalized.controlPoints = separated.points;
     normalized.weights = separated.weights;
     normalized.deviation = worstDeviation;
+    return normalized;
+}
+
+// ============================================================================================
+// PERIODIC SIMPLIFICATION BY CYCLIC PROJECTION.
+//
+// The one lossy operation in this module that a PERIODIC direction can actually use, and the
+// reason it exists: a kernel-native closed surface is C0 at knots the deformation then creases.
+//
+// A revolve arrives as a circle stored in rational Bezier arcs — degree 3 with every join at
+// multiplicity 3. A knot of multiplicity m in a degree-d direction leaves the surface C^(d-m), so
+// m == d leaves it C0: FREE TO CREASE. Such a surface is G1 across those joins only because its
+// control points happen to be arranged for it, collinear with matching weight ratios. Nothing in
+// the STRUCTURE requires it, and any nonlinear map on control points — an FFD lattice, say —
+// destroys the arrangement. opCreateBSplineSurface then refuses the body outright:
+// PERIODIC_BSPLINESURFACE_NOT_SMOOTH when the offending join is the seam, BSPLINESURFACE_NOT_G1
+// when it is interior. Measured 2026-08-10, with refinement and elevation both disabled, so
+// neither is implicated.
+//
+// Knot INSERTION cannot fix this — it only ever raises multiplicity. Knot REMOVAL cannot either:
+// removeRedundantSurfaceKnots' own comment records a periodic attempt that returned a cylinder
+// "as a bean" while reporting a small deviation, and the diagnosis there is right. A5.8 is a
+// LOCAL BIDIRECTIONAL RECURRENCE anchored by control points it assumes are unchanged; on a
+// periodic spline those anchors are themselves images of points the true answer does change, so a
+// clamped window solves the wrong system and reports only a local residual. Exact removal is
+// impossible anyway: a NURBS circle genuinely is C0 at its arc joins in HOMOGENEOUS space, the
+// projected curve being smooth only through weight cancellation.
+//
+// So this takes the one remaining route, and takes it as linear algebra rather than as a fit.
+// Given a target knot vector U_tgt with every multiplicity 1:
+//
+//   1. Form the common refinement U_com = U_cur union U_tgt (per-value max multiplicity). Both
+//      S(U_cur) and S(U_tgt) are subspaces of S(U_com), because a spline space is contained in
+//      another exactly when its knot vector is a sub-multiset of the other's.
+//   2. Lift the current points into S(U_com) EXACTLY, by periodic knot insertion.
+//   3. Solve min ||A*Q - P_com|| where A is the refinement operator S(U_tgt) -> S(U_com).
+//
+// THE SURFACE IS NEVER EVALUATED. No sample points, no parameterization choice, no interpolation
+// conditions — which is what separates this from approximating the face and lofting it back. Two
+// properties follow that a fit does not have:
+//
+//   - EXACT WHEN EXACTNESS IS POSSIBLE. If the spline really does lie in S(U_tgt), the residual is
+//     identically zero and Q is recovered exactly, because A has full column rank. This is a
+//     strict generalization of knot removal, not a substitute for it.
+//   - THE ERROR BOUND IS STRUCTURAL, not sampled. Both splines end up expressed in the SAME basis
+//     S(U_com), and B-splines are non-negative and partition unity, so for every t
+//         ||S_tgt(t) - S_cur(t)|| = ||sum_i N_i(t) * R_i|| <= max_i ||R_i||,  R = A*Q - P_com.
+//     A sup bound over the whole domain, computed from control points alone.
+//
+// And the periodic case is native rather than patched. periodicRefinementOperator ALREADY folds
+// its window rows back onto stored indices (see its own comment: "the overlap condition comes out
+// of that fold for free"), so A arrives cyclically banded with the wrap already consistent. The
+// clamped window is used only to harvest FORWARD, LOCAL, EXACT refinement coefficients — the
+// operation extractPeriodicCoreAndRepad's local-linear-independence argument covers — and the
+// SOLVE is global over the true cyclic unknowns. That is the whole difference from the attempt
+// that produced the bean.
+// ============================================================================================
+
+/** One period's knots as `{value, multiplicity}` runs, ascending. The fundamental array is
+    non-decreasing, and normalizeSplineDefinition has already canonicalized any run straddling the
+    stored window's ends, so consecutive scanning is the whole job.
+
+    @param fundamentalKnots {array} : one period's knots
+    @returns {array} : maps with `value` and `multiplicity` */
+function fundamentalKnotRuns(fundamentalKnots is array) returns array
+{
+    var runs = [];
+    var index = 0;
+    while (index < size(fundamentalKnots))
+    {
+        var runLength = 1;
+        while (index + runLength < size(fundamentalKnots) &&
+            abs(fundamentalKnots[index + runLength] - fundamentalKnots[index]) <= KNOT_PARAMETER_TOLERANCE)
+        {
+            runLength += 1;
+        }
+        runs = append(runs, { "value" : fundamentalKnots[index], "multiplicity" : runLength });
+        index += runLength;
+    }
+    return runs;
+}
+
+/** The highest multiplicity anywhere in one period. On a periodic direction EVERY knot is
+    interior — there are no clamped ends — so this alone decides whether the direction can crease.
+
+    @param knots {array} : STORED periodic knot array
+    @param degree {number}
+    @returns {number} */
+export function periodicMaximumKnotMultiplicity(knots is array, degree is number) returns number
+{
+    const n = size(knots) - 2 * degree - 1;
+    if (n < 1)
+    {
+        return 0;
+    }
+    var worst = 0;
+    for (var run in fundamentalKnotRuns(subArray(knots, degree, degree + n)))
+    {
+        worst = max(worst, run.multiplicity);
+    }
+    return worst;
+}
+
+/** True when a deformation applied to this direction's control points could crease it — i.e. some
+    knot sits at multiplicity `degree` or above, leaving the direction only C0 there. At
+    multiplicity degree - 1 and below the direction is C1 or better FOR ANY CONTROL POINTS, which
+    is precisely the property a deformer needs and cannot otherwise obtain.
+
+    @param knots {array} : STORED periodic knot array
+    @param degree {number}
+    @returns {boolean} */
+export function periodicDirectionCanCrease(knots is array, degree is number) returns boolean
+{
+    return periodicMaximumKnotMultiplicity(knots, degree) >= degree;
+}
+
+/** Every span of one period bisected, keeping the existing breakpoints. Balanced by construction —
+    the module's own warning on refineSurfaceToControlPointCounts(..., balancedOnly) is that
+    lopsided refinement feeding a LOSSY step leaves an asymmetry that survives in the geometry, and
+    this is a lossy step. The wrap span from the last breakpoint back to the first plus a period is
+    bisected like any other, which is what keeps the result symmetric across the seam.
+
+    @param breakpoints {array} : distinct, ascending, within one period
+    @param period {number}
+    @returns {array} : twice as many, still ascending and within one period */
+function bisectPeriodicBreakpoints(breakpoints is array, period is number) returns array
+{
+    var bisected = makeArray(2 * size(breakpoints), 0);
+    for (var index = 0; index < size(breakpoints); index += 1)
+    {
+        const nextValue = index + 1 < size(breakpoints) ? breakpoints[index + 1] : breakpoints[0] + period;
+        bisected[2 * index] = breakpoints[index];
+        bisected[2 * index + 1] = 0.5 * (breakpoints[index] + nextValue);
+    }
+    return bisected;
+}
+
+/** The insertions that take one period's knots up to another's: for each value, the shortfall in
+    multiplicity. Both arrays must be ascending and over the same period, and `target` must dominate
+    `source` value by value — which it does by construction, `target` being a union.
+
+    @param sourceRuns {array} : from fundamentalKnotRuns
+    @param targetRuns {array} : from fundamentalKnotRuns
+    @returns {array} : plain parameters, repeats included */
+function fundamentalInsertionList(sourceRuns is array, targetRuns is array) returns array
+{
+    var insertions = [];
+    for (var targetRun in targetRuns)
+    {
+        var sourceMultiplicity = 0;
+        for (var sourceRun in sourceRuns)
+        {
+            if (abs(sourceRun.value - targetRun.value) <= KNOT_PARAMETER_TOLERANCE)
+            {
+                sourceMultiplicity = sourceRun.multiplicity;
+            }
+        }
+        for (var extra = sourceMultiplicity; extra < targetRun.multiplicity; extra += 1)
+        {
+            insertions = append(insertions, targetRun.value);
+        }
+    }
+    return insertions;
+}
+
+/** The per-value maximum of two periods' knot runs — the common refinement U_cur union U_tgt.
+
+    @returns {array} : runs, ascending */
+function mergeFundamentalRuns(runsA is array, runsB is array) returns array
+{
+    var merged = runsA;
+    for (var runB in runsB)
+    {
+        var found = false;
+        for (var index = 0; index < size(merged); index += 1)
+        {
+            if (abs(merged[index].value - runB.value) <= KNOT_PARAMETER_TOLERANCE)
+            {
+                found = true;
+                if (runB.multiplicity > merged[index].multiplicity)
+                {
+                    merged[index] = { "value" : merged[index].value, "multiplicity" : runB.multiplicity };
+                }
+            }
+        }
+        if (!found)
+        {
+            merged = append(merged, runB);
+        }
+    }
+
+    // Insertion sort: `merged` is at most a few dozen entries and already nearly ordered.
+    for (var outer = 1; outer < size(merged); outer += 1)
+    {
+        var moving = merged[outer];
+        var inner = outer - 1;
+        while (inner >= 0 && merged[inner].value > moving.value)
+        {
+            merged[inner + 1] = merged[inner];
+            inner -= 1;
+        }
+        merged[inner + 1] = moving;
+    }
+    return merged;
+}
+
+/** Runs expanded back into a flat ascending knot list.
+
+    @returns {array} */
+function expandFundamentalRuns(runs is array) returns array
+{
+    var total = 0;
+    for (var run in runs)
+    {
+        total += run.multiplicity;
+    }
+    var expanded = makeArray(total, 0);
+    var writeIndex = 0;
+    for (var run in runs)
+    {
+        for (var copy = 0; copy < run.multiplicity; copy += 1)
+        {
+            expanded[writeIndex] = run.value;
+            writeIndex += 1;
+        }
+    }
+    return expanded;
+}
+
+/**
+ * Cholesky factorization of a symmetric positive definite matrix of plain numbers, returning the
+ * lower triangle L with A == L * transpose(L).
+ *
+ * Rolled here rather than pulled from matrix.fs so this module keeps its standing property of
+ * being pure arithmetic over plain arrays, and so a non-positive pivot can throw with a diagnosis
+ * instead of returning a quietly wrong inverse. A non-positive pivot means the normal matrix is
+ * singular, which for a refinement operator means the target space was not genuinely coarser —
+ * a caller error worth naming rather than absorbing.
+ */
+function choleskyFactor(normalMatrix is array) returns array
+{
+    const count = size(normalMatrix);
+    var lower = makeArray(count, 0);
+    for (var row = 0; row < count; row += 1)
+    {
+        lower[row] = makeArray(count, 0);
+    }
+    for (var row = 0; row < count; row += 1)
+    {
+        for (var column = 0; column <= row; column += 1)
+        {
+            var sum = normalMatrix[row][column];
+            for (var back = 0; back < column; back += 1)
+            {
+                sum = sum - lower[row][back] * lower[column][back];
+            }
+            if (row == column)
+            {
+                if (sum <= 0)
+                {
+                    throw "splineRefinementUtils: periodic simplification's normal matrix is not positive definite " ~
+                        "(pivot " ~ sum ~ " at index " ~ row ~ "). The target knot vector does not span a genuinely " ~
+                        "coarser subspace of the common refinement.";
+                }
+                lower[row][column] = sqrt(sum);
+            }
+            else
+            {
+                lower[row][column] = sum / lower[column][column];
+            }
+        }
+    }
+    return lower;
+}
+
+/** Solve `L * transpose(L) * X = rightHandSides` for X, one column per right-hand side, by forward
+    then back substitution.
+
+    @param lower {array} : from choleskyFactor
+    @param rightHandSides {array} : rows x columns of plain numbers
+    @returns {array} : same shape */
+function choleskySolve(lower is array, rightHandSides is array) returns array
+{
+    const count = size(lower);
+    const columnCount = size(rightHandSides[0]);
+    var solution = makeArray(count, 0);
+    for (var row = 0; row < count; row += 1)
+    {
+        solution[row] = makeArray(columnCount, 0);
+    }
+
+    for (var column = 0; column < columnCount; column += 1)
+    {
+        var intermediate = makeArray(count, 0);
+        for (var row = 0; row < count; row += 1)
+        {
+            var sum = rightHandSides[row][column];
+            for (var back = 0; back < row; back += 1)
+            {
+                sum = sum - lower[row][back] * intermediate[back];
+            }
+            intermediate[row] = sum / lower[row][row];
+        }
+        for (var row = count - 1; row >= 0; row -= 1)
+        {
+            var sum = intermediate[row];
+            for (var forward = row + 1; forward < count; forward += 1)
+            {
+                sum = sum - lower[forward][row] * solution[forward][column];
+            }
+            solution[row][column] = sum / lower[row][row];
+        }
+    }
+    return solution;
+}
+
+/**
+ * The three operators that carry one periodic direction from its current knot vector onto
+ * `targetFundamentalKnots` (which must be all-simple, one period, ascending, same domain start).
+ *
+ * Returns:
+ *   `toCommon`   — current stored points -> common-refinement stored points. EXACT.
+ *   `simplify`   — common-refinement stored points -> target stored points. The projection.
+ *   `backToCommon` — target stored points -> common-refinement stored points. EXACT, and only for
+ *                    measuring the residual: applying it after `simplify` lands back in the space
+ *                    `toCommon`'s output lives in, which is what makes the two directly comparable.
+ *
+ * All three carry the module's standard operator shape, so every existing applier — including both
+ * tensor appliers — drives them with no special casing.
+ *
+ * THE CYCLIC FOLD is the step worth understanding. periodicRefinementOperator's map is stated over
+ * STORED points (n + degree of them, the last `degree` being wrap images of the first `degree`), so
+ * its columns carry the same unknown more than once. The projection's unknowns are the n
+ * FUNDAMENTAL points, so columns are folded modulo n before the normal equations are formed —
+ * accumulating, exactly as periodicRefinementOperator folds its own window columns. Rows are folded
+ * the other way, by TRUNCATION to the first n_common: rows r and r + n_common are identical
+ * equations against identical right-hand sides, so keeping both would silently weight the first
+ * `degree` equations double and tilt the fit.
+ */
+function periodicSimplificationOperators(knots is array, degree is number, targetFundamentalKnots is array) returns map
+{
+    const currentN = size(knots) - 2 * degree - 1;
+    const currentFundamental = subArray(knots, degree, degree + currentN);
+    const period = knots[degree + currentN] - knots[degree];
+
+    const currentRuns = fundamentalKnotRuns(currentFundamental);
+    const targetRuns = fundamentalKnotRuns(targetFundamentalKnots);
+    const commonRuns = mergeFundamentalRuns(currentRuns, targetRuns);
+    const commonFundamental = expandFundamentalRuns(commonRuns);
+
+    const targetN = size(targetFundamentalKnots);
+    const commonN = size(commonFundamental);
+
+    const targetKnots = buildPeriodicKnotArray(targetFundamentalKnots, period, degree, targetN + 2 * degree + 1);
+    const toCommon = periodicRefinementOperator(knots, degree, fundamentalInsertionList(currentRuns, commonRuns));
+    const backToCommon = periodicRefinementOperator(targetKnots, degree, fundamentalInsertionList(targetRuns, commonRuns));
+
+    // Both operators must land in the SAME space, or the residual below compares points that do not
+    // correspond and the reported deviation is meaningless — the exact failure mode that made the
+    // previous periodic knot removal report a small number for a cylinder shaped like a bean. The
+    // two insertion lists are built independently from the same merge, so this is a genuine
+    // cross-check of that merge and not a restatement of it.
+    if (toCommon.outputCount != commonN + degree || backToCommon.outputCount != commonN + degree)
+    {
+        throw "splineRefinementUtils: periodic simplification's two refinements disagree on the common space (" ~
+            toCommon.outputCount ~ " and " ~ backToCommon.outputCount ~ ", expected " ~ (commonN + degree) ~ ").";
+    }
+
+    // Dense cyclic A: commonN equations over targetN unknowns.
+    var cyclicA = makeArray(commonN, 0);
+    for (var row = 0; row < commonN; row += 1)
+    {
+        var denseRow = makeArray(targetN, 0);
+        for (var term in backToCommon.rows[row])
+        {
+            const folded = term.index - floor(term.index / targetN) * targetN;
+            denseRow[folded] = denseRow[folded] + term.weight;
+        }
+        cyclicA[row] = denseRow;
+    }
+
+    // Normal equations. transpose(A)*A is targetN x targetN, symmetric, cyclically banded, and
+    // positive definite because a refinement operator between nested spline spaces is injective.
+    var normalMatrix = makeArray(targetN, 0);
+    for (var i = 0; i < targetN; i += 1)
+    {
+        var normalRow = makeArray(targetN, 0);
+        for (var j = 0; j < targetN; j += 1)
+        {
+            var sum = 0;
+            for (var row = 0; row < commonN; row += 1)
+            {
+                sum = sum + cyclicA[row][i] * cyclicA[row][j];
+            }
+            normalRow[j] = sum;
+        }
+        normalMatrix[i] = normalRow;
+    }
+
+    var transposedA = makeArray(targetN, 0);
+    for (var i = 0; i < targetN; i += 1)
+    {
+        var transposedRow = makeArray(commonN, 0);
+        for (var row = 0; row < commonN; row += 1)
+        {
+            transposedRow[row] = cyclicA[row][i];
+        }
+        transposedA[i] = transposedRow;
+    }
+
+    // pseudoInverse = inverse(transpose(A)*A) * transpose(A), built once and reused down every
+    // row or column of the grid — the amortization the whole operator layer exists for.
+    const pseudoInverse = choleskySolve(choleskyFactor(normalMatrix), transposedA);
+
+    var simplifyRows = makeArray(targetN + degree, 0);
+    for (var row = 0; row < targetN + degree; row += 1)
+    {
+        // The trailing `degree` rows are the wrap: literal copies, so the overlap condition
+        // Q[i] == Q[i + n] holds by construction rather than by arithmetic coincidence.
+        const sourceRow = row < targetN ? row : row - targetN;
+        var denseRow = makeArray(commonN + degree, 0);
+        for (var column = 0; column < commonN; column += 1)
+        {
+            denseRow[column] = pseudoInverse[sourceRow][column];
+        }
+        simplifyRows[row] = denseRow;
+    }
+
+    return {
+            "toCommon" : toCommon,
+            "backToCommon" : backToCommon,
+            "commonN" : commonN,
+            "simplify" : {
+                    "degree" : degree,
+                    "inputCount" : commonN + degree,
+                    "outputCount" : targetN + degree,
+                    "knots" : knotArray(targetKnots),
+                    "rows" : sparsifyCoefficientRows(simplifyRows)
+                }
+        };
+}
+
+/**
+ * Project one periodic direction's point arrays onto an all-simple knot vector, refining the target
+ * until the certified deviation fits `tolerance`.
+ *
+ * `pointArrays` is a list of same-length HOMOGENEOUS arrays sharing this direction's knot vector —
+ * one per row (or column) of a surface grid, or a single array for a curve. They are simplified
+ * JOINTLY through one operator, which is what keeps every row landing on an identical knot vector.
+ *
+ * Returns `{ pointArrays, knots, deviation, changed }`. A direction that cannot crease is returned
+ * untouched with zero deviation, so this is safe to call unconditionally.
+ *
+ * The target starts at the direction's own distinct breakpoints with every multiplicity collapsed
+ * to 1 and DOUBLES until it fits. Starting there rather than at a uniform vector keeps the
+ * surface's own structure — a revolve's arc joins stay knot lines — and doubling keeps every pass
+ * balanced. If the cap is reached the best result so far is returned WITH its true deviation, for
+ * the caller to warn about; silently returning something further out than requested is the one
+ * outcome this must not have.
+ */
+function simplifyPeriodicDirectionToTolerance(pointArrays is array, knots is array, degree is number,
+    tolerance is ValueWithUnits) returns map
+{
+    if (!periodicDirectionCanCrease(knots, degree))
+    {
+        return { "pointArrays" : pointArrays, "knots" : knots, "deviation" : 0 * meter, "changed" : false };
+    }
+
+    const currentN = size(knots) - 2 * degree - 1;
+    const period = knots[degree + currentN] - knots[degree];
+    const currentRuns = fundamentalKnotRuns(subArray(knots, degree, degree + currentN));
+
+    var breakpoints = makeArray(size(currentRuns), 0);
+    for (var index = 0; index < size(currentRuns); index += 1)
+    {
+        breakpoints[index] = currentRuns[index].value;
+    }
+
+    var best = undefined;
+    while (size(breakpoints) <= PERIODIC_SIMPLIFICATION_MAX_CONTROL_POINTS)
+    {
+        // A degree-d periodic direction needs more than d control points per period before the
+        // basis is even locally independent, so a target below that is not worth solving.
+        if (size(breakpoints) > degree)
+        {
+            const operators = periodicSimplificationOperators(knots, degree, breakpoints);
+
+            var simplifiedArrays = makeArray(size(pointArrays), 0);
+            var worstDeviation = 0 * meter;
+            for (var arrayIndex = 0; arrayIndex < size(pointArrays); arrayIndex += 1)
+            {
+                const common = applyKnotRefinementOperator(operators.toCommon, pointArrays[arrayIndex]);
+                const simplified = applyKnotRefinementOperator(operators.simplify, common);
+                simplifiedArrays[arrayIndex] = simplified;
+
+                // The residual, measured in the shared basis S(U_common) — the partition-of-unity
+                // bound. Only the FUNDAMENTAL rows are measured; the wrap rows are their images and
+                // would report the same numbers twice.
+                const rebuilt = applyKnotRefinementOperator(operators.backToCommon, simplified);
+                for (var row = 0; row < operators.commonN; row += 1)
+                {
+                    worstDeviation = max(worstDeviation, homogeneousPointDeviation(rebuilt[row], common[row]));
+                }
+            }
+
+            best = {
+                    "pointArrays" : simplifiedArrays,
+                    "knots" : operators.simplify.knots,
+                    "deviation" : worstDeviation,
+                    "changed" : true
+                };
+            if (worstDeviation <= tolerance)
+            {
+                return best;
+            }
+        }
+        breakpoints = bisectPeriodicBreakpoints(breakpoints, period);
+    }
+
+    if (best == undefined)
+    {
+        return { "pointArrays" : pointArrays, "knots" : knots, "deviation" : 0 * meter, "changed" : false };
+    }
+    return best;
+}
+
+/**
+ * Make every PERIODIC direction of a surface safe to deform: no knot left at multiplicity `degree`,
+ * so the direction is C1 or better everywhere FOR ANY CONTROL POINTS and no deformation can crease
+ * it. See this section's block comment for why that is the requirement and why insertion and
+ * removal both cannot meet it.
+ *
+ * A direction that is not periodic, or that already cannot crease, is left completely alone — so
+ * this is safe to call on any surface and costs one knot scan when there is nothing to do. The
+ * returned map carries `deviation` (worst certified control-point displacement, zero when the
+ * simplification was exact) and `simplified` (whether anything changed), matching the convention on
+ * simplifySurfaceToControlPointCounts and removeRedundantSurfaceKnots.
+ *
+ * NOT applied to clamped directions, deliberately. The same C0 hazard exists there — an elevated or
+ * Bezier-decomposed clamped direction creases under deformation too — but a clamped direction's
+ * ends are legitimately at multiplicity degree + 1 and its interior candidates need the clamped
+ * removal machinery that already exists. Periodic is where the hazard is unavoidable, because a
+ * revolve is always delivered this way.
+ */
+export function simplifySurfacePeriodicDirections(surface is map, tolerance is ValueWithUnits) returns map
+{
+    var normalized = normalizeSurfaceDefinition(surface);
+    var homogeneousGrid = combineSurfaceControlPointsAndWeights(normalized.controlPoints, normalized.weights);
+    var worstDeviation = 0 * meter;
+    var anySimplified = false;
+
+    if (normalized.isVPeriodic == true)
+    {
+        // V runs across rows, which the grid already stores directly — no transpose needed.
+        const simplified = simplifyPeriodicDirectionToTolerance(homogeneousGrid, normalized.vKnots,
+                normalized.vDegree, tolerance);
+        if (simplified.changed)
+        {
+            homogeneousGrid = simplified.pointArrays;
+            normalized.vKnots = knotArray(simplified.knots);
+            worstDeviation = max(worstDeviation, simplified.deviation);
+            anySimplified = true;
+        }
+    }
+
+    if (normalized.isUPeriodic == true)
+    {
+        // U runs down columns, so work on the transposed view and put it back — the same
+        // extract/scatter shape simplifySurfaceToControlPointCounts uses for its own U pass.
+        const rowCount = size(homogeneousGrid);
+        const columnCount = size(homogeneousGrid[0]);
+        var columns = makeArray(columnCount, 0);
+        for (var columnIndex = 0; columnIndex < columnCount; columnIndex += 1)
+        {
+            var column = makeArray(rowCount, homogeneousGrid[0][0]);
+            for (var rowIndex = 0; rowIndex < rowCount; rowIndex += 1)
+            {
+                column[rowIndex] = homogeneousGrid[rowIndex][columnIndex];
+            }
+            columns[columnIndex] = column;
+        }
+
+        const simplified = simplifyPeriodicDirectionToTolerance(columns, normalized.uKnots,
+                normalized.uDegree, tolerance);
+        if (simplified.changed)
+        {
+            const newRowCount = size(simplified.pointArrays[0]);
+            var rebuilt = makeArray(newRowCount, 0);
+            for (var rowIndex = 0; rowIndex < newRowCount; rowIndex += 1)
+            {
+                var row = makeArray(columnCount, simplified.pointArrays[0][0]);
+                for (var columnIndex = 0; columnIndex < columnCount; columnIndex += 1)
+                {
+                    row[columnIndex] = simplified.pointArrays[columnIndex][rowIndex];
+                }
+                rebuilt[rowIndex] = row;
+            }
+            homogeneousGrid = rebuilt;
+            normalized.uKnots = knotArray(simplified.knots);
+            worstDeviation = max(worstDeviation, simplified.deviation);
+            anySimplified = true;
+        }
+    }
+
+    const separated = separateSurfaceControlPointsAndWeights(homogeneousGrid);
+    normalized.controlPoints = separated.points;
+    normalized.weights = separated.weights;
+    normalized.deviation = worstDeviation;
+    normalized.simplified = anySimplified;
     return normalized;
 }
 

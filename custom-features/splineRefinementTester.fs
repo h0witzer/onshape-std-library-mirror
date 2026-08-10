@@ -137,6 +137,7 @@ export const splineRefinementTester = defineFeature(function(context is Context,
         runRewindowPeriodicSplineVector(passCount, failures, definition.printPassingChecks);
         runTightPeriodicSplineVector(passCount, failures, definition.printPassingChecks);
         runPeriodicOperatorVector(passCount, failures, definition.printPassingChecks);
+        runPeriodicSimplificationVector(passCount, failures, definition.printPassingChecks);
         runSurfacePeriodicVector(passCount, failures, definition.printPassingChecks);
         runSurfaceRewindowVector(passCount, failures, definition.printPassingChecks);
         runBezierArcSeamVector(passCount, failures, definition.printPassingChecks);
@@ -4292,6 +4293,144 @@ function runTightPeriodicSplineVector(passCount is box, failures is box, printPa
     catch (error)
     {
         recordCheck(passCount, failures, false, "TIGHT-PERIODIC: threw an error: " ~ error, printPassing);
+    }
+}
+
+/** Wrap a stored periodic point array as a two-row surface whose V direction is that array, so the
+    surface-level periodic entry points can be driven from the curve fixtures. The second row is the
+    first lifted in Z, which keeps every row's V structure identical while making a genuine grid.
+
+    @param controlPoints {array} : stored periodic form
+    @param knots {array} : stored periodic knot array
+    @param degree {number} : the V degree
+    @returns {map} : a surface definition, U clamped degree 1 with two rows */
+function twoRowPeriodicSurface(controlPoints is array, knots is array, degree is number) returns map
+{
+    var secondRow = makeArray(size(controlPoints), controlPoints[0]);
+    var unitWeights = makeArray(size(controlPoints), 1);
+    for (var pointIndex = 0; pointIndex < size(controlPoints); pointIndex += 1)
+    {
+        secondRow[pointIndex] = controlPoints[pointIndex] + vector(0, 0, 4) * centimeter;
+    }
+    return {
+            "uDegree" : 1,
+            "vDegree" : degree,
+            "isUPeriodic" : false,
+            "isVPeriodic" : true,
+            "controlPoints" : [controlPoints, secondRow],
+            "weights" : [unitWeights, unitWeights],
+            "isRational" : true,
+            "uKnots" : [0, 0, 1, 1],
+            "vKnots" : knots
+        };
+}
+
+/**
+ * Periodic simplification: the projection that gets a closed direction off its C0 knots so a
+ * deformation cannot crease it.
+ *
+ * The FIRST check is the one that separates this from a fit, and it is why the fixture is built by
+ * RAISING an all-simple pentagon to multiplicity degree rather than by inventing a C0 spline. Doing
+ * it that way means the raised spline provably still lies in the coarse all-simple space it came
+ * from, so the projection is obliged to recover the original control points EXACTLY and report zero
+ * deviation. An approximating refit would land close and report something small; only a genuine
+ * generalization of knot removal lands exactly.
+ *
+ * The LAST check is the guard against the failure that killed the previous periodic knot removal —
+ * a cylinder returned "as a bean" while the reported deviation stayed small. Sampling is used here
+ * ONLY to audit the reported bound, never to produce the answer.
+ */
+function runPeriodicSimplificationVector(passCount is box, failures is box, printPassing is boolean)
+{
+    try
+    {
+        const pentagon = makePeriodicPentagonFixture();
+        const degree = pentagon.degree;
+
+        // Raise every breakpoint to multiplicity `degree`. Exact insertion, so the geometry is
+        // unchanged and the spline still lies in the all-simple space it started in - which is
+        // exactly the hypothesis the exactness check below tests.
+        const raised = refinePeriodicPoints(pentagon.controlPoints, pentagon.knots, degree, [0, 1, 2, 3, 4]);
+
+        recordCheck(passCount, failures, periodicDirectionCanCrease(raised.knots, degree),
+            "PERIODIC-SIMPLIFY: the multiplicity-raised fixture is recognized as able to crease", printPassing);
+        recordCheck(passCount, failures, !periodicDirectionCanCrease(pentagon.knots, degree),
+            "PERIODIC-SIMPLIFY: the all-simple pentagon is recognized as safe and left alone", printPassing);
+
+        const raisedSurface = twoRowPeriodicSurface(raised.controlPoints, raised.knots, degree);
+        const simplified = simplifySurfacePeriodicDirections(raisedSurface, 1e-6 * meter);
+
+        recordCheck(passCount, failures, simplified.simplified,
+            "PERIODIC-SIMPLIFY: a creasable direction is reported as simplified", printPassing);
+        recordCheck(passCount, failures, simplified.deviation < 1e-9 * meter,
+            "PERIODIC-SIMPLIFY: EXACT recovery reports zero deviation (got " ~ toString(simplified.deviation) ~ ")", printPassing);
+        recordCheck(passCount, failures, knotVectorsMatch(simplified.vKnots, pentagon.knots),
+            "PERIODIC-SIMPLIFY: exact recovery lands back on the original knot vector", printPassing);
+        recordCheck(passCount, failures, !periodicDirectionCanCrease(simplified.vKnots, degree),
+            "PERIODIC-SIMPLIFY: no knot is left at multiplicity degree or above", printPassing);
+        recordCheck(passCount, failures, overlapConditionHolds(simplified.controlPoints[0], degree),
+            "PERIODIC-SIMPLIFY: the overlap condition holds in the simplified output", printPassing);
+
+        var exactPoints = size(simplified.controlPoints[0]) == size(pentagon.controlPoints);
+        if (exactPoints)
+        {
+            for (var pointIndex = 0; pointIndex < size(pentagon.controlPoints); pointIndex += 1)
+            {
+                if (!pointsMatch(simplified.controlPoints[0][pointIndex], pentagon.controlPoints[pointIndex]))
+                {
+                    exactPoints = false;
+                }
+            }
+        }
+        recordCheck(passCount, failures, exactPoints,
+            "PERIODIC-SIMPLIFY: exact recovery reproduces every original control point", printPassing);
+
+        // Now a case that genuinely CANNOT be represented exactly: perturb one control point of the
+        // raised form so the spline leaves the all-simple space, then audit the reported bound by
+        // sampling. This is the bean guard.
+        var perturbedPoints = raised.controlPoints;
+        const perturbedN = size(raised.controlPoints) - degree;
+        perturbedPoints[2] = perturbedPoints[2] + vector(0.7, -0.4, 0) * centimeter;
+        for (var overlapIndex = 0; overlapIndex < degree; overlapIndex += 1)
+        {
+            // Keep the fixture a legal periodic array: the overlap tail must track its images.
+            perturbedPoints[perturbedN + overlapIndex] = perturbedPoints[overlapIndex];
+        }
+
+        const perturbedSurface = twoRowPeriodicSurface(perturbedPoints, raised.knots, degree);
+        const approximated = simplifySurfacePeriodicDirections(perturbedSurface, 1e-5 * meter);
+
+        recordCheck(passCount, failures, !periodicDirectionCanCrease(approximated.vKnots, degree),
+            "PERIODIC-SIMPLIFY: the inexact case also lands with no multiplicity at or above degree", printPassing);
+        recordCheck(passCount, failures, overlapConditionHolds(approximated.controlPoints[0], degree),
+            "PERIODIC-SIMPLIFY: the overlap condition holds in the inexact case too", printPassing);
+
+        // Both curves are non-rational unit-weight fixtures over the SAME domain and period
+        // (simplification preserves both), so identical absolute parameters compare like for like.
+        const domainStart = raised.knots[degree];
+        const period = raised.knots[degree + perturbedN] - raised.knots[degree];
+        var parameters = makeArray(60, 0);
+        for (var sampleIndex = 0; sampleIndex < 60; sampleIndex += 1)
+        {
+            parameters[sampleIndex] = domainStart + period * sampleIndex / 60;
+        }
+        const beforePoints = evaluatePeriodicCurvePoints(perturbedPoints, raised.knots, degree, parameters);
+        const afterPoints = evaluatePeriodicCurvePoints(approximated.controlPoints[0], approximated.vKnots, degree, parameters);
+
+        var worstSampled = 0 * meter;
+        for (var sampleIndex = 0; sampleIndex < size(parameters); sampleIndex += 1)
+        {
+            worstSampled = max(worstSampled, norm(beforePoints[sampleIndex] - afterPoints[sampleIndex]));
+        }
+        recordCheck(passCount, failures, worstSampled <= approximated.deviation + 1e-9 * meter,
+            "PERIODIC-SIMPLIFY: sampled surface deviation (" ~ toString(worstSampled) ~ ") never exceeds the " ~
+            "reported control-point bound (" ~ toString(approximated.deviation) ~ ")", printPassing);
+        recordCheck(passCount, failures, worstSampled > 0 * meter,
+            "PERIODIC-SIMPLIFY: the inexact fixture really does move, so the bound check is not vacuous", printPassing);
+    }
+    catch (error)
+    {
+        recordCheck(passCount, failures, false, "PERIODIC-SIMPLIFY: threw an error: " ~ error, printPassing);
     }
 }
 
