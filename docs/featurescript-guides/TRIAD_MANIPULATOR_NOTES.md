@@ -178,7 +178,13 @@ if (rotationMatrix != undefined && size(rotationMatrix) == 9)
 
 - **routingCurve.fs**: Uses fullTriadManipulator with rotationMatrix storage pattern
 - **triadTransform.fs**: Uses fullTriadManipulator with Euler angle storage pattern
-- **freeFormDeformation.fs**: Uses fullTriadManipulator with flat-rotationMatrix storage to translate and rotate a multi-point lattice selection. Because the manipulator reports a *cumulative* transform rather than an increment, it keeps that transform live and applies it at regeneration, baking it into per-point offsets exactly once when the selection changes — see `docs/specs/FREE_FORM_DEFORMATION_SPEC.md` §6.5 for why that two-stage storage is what a cumulative transform forces.
+- **freeFormDeformation.fs**: Uses fullTriadManipulator with flat-rotationMatrix storage to translate and rotate a multi-point lattice selection. Because the manipulator reports a *cumulative* transform rather than an increment, it keeps that transform live and applies it at regeneration, baking it into per-point offsets exactly once — when the selection changes, when the lattice itself changes, or when the dialog is opened. See `docs/specs/FREE_FORM_DEFORMATION_SPEC.md` §6.5 for why that two-stage storage is what a cumulative transform forces, and for the two ways it leaks: a live transform is invisible (it lives in `ALWAYS_HIDDEN` parameters, so a dialog closed with one live reopens showing a deformed surface and an empty offsets list), and a bake performed in the manipulator change function is reverted by any editing logic that then copies an array parameter wholesale out of `oldDefinition`.
+
+### Pitfall: editing logic runs *after* the manipulator change function
+
+Onshape calls the editing logic function on top of whatever the manipulator change function returned, and hands it an `oldDefinition` that predates those writes. Editing logic that reconstructs a parameter from `oldDefinition` — the natural thing to do when you need to interpret state against the frame it was authored in — therefore silently reverts the manipulator handler's work.
+
+The split that works: take from `oldDefinition` only what the *interpretation* depends on (the selection, the geometry a stored transform was measured against), and take the *stored values themselves* from the current definition. `routingCurve.fs` and `editSurface.fs` sidestep this entirely by only ever mutating `definition` in place and never assigning an array parameter across from `oldDefinition`.
 
 ## References
 

@@ -50,7 +50,7 @@ import(path : "9a2b77793cdc37bace6d915a", version : "6b2f05959547b5e81628762a");
  * settled on UVN, and STU only ever existed because the 1986 paper needed three letters. The
  * collision this creates is real and is handled by NAMING, not by hoping: the deformed SURFACE also
  * has u and v parameters, so everything belonging to the lattice says so — `latticeSpanCountU`,
- * `latticeParametersOfPoint`, "lattice U" in the dialog — and everything belonging to a surface
+ * `latticeFlatIndex`, "lattice U" in the dialog — and everything belonging to a surface
  * stays `uDegree`, `uKnots`, `uParameter`. Where both appear in one function the comment says which
  * is which.
  *
@@ -472,6 +472,10 @@ export const freeFormDeformation = defineFeature(function(context is Context, id
         const disambiguatedId = getDisambiguatedIncrementingId(context, id + "op");
 
         const tolerance = deformationTolerance(definition, lattice);
+        // Compiled ONCE for every face and every refinement level, which is the point of it — see
+        // compileLatticeForDeformation. Built after the manipulators and the cage, so it captures
+        // the lattice in exactly the state those drew.
+        const compiledLattice = compileLatticeForDeformation(lattice);
         var worstCertifiedDeviation = 0 * meter;
         var worstControlPointCount = 0;
         var anyBudgetHit = false;
@@ -487,7 +491,7 @@ export const freeFormDeformation = defineFeature(function(context is Context, id
                     return disambiguatedId(face);
                 };
 
-            const outcome = deformOneFace(context, id, idGenerator, definition, lattice,
+            const outcome = deformOneFace(context, id, idGenerator, definition, compiledLattice,
                 sourceSurfaces[faceIndex], face, tolerance);
             anyTrimDropped = anyTrimDropped || outcome.trimDropped;
             anyElevationBlocked = anyElevationBlocked || outcome.elevationBlocked;
@@ -738,8 +742,8 @@ function periodicBlockedElevation(continuity is FFDContinuity, sourceDegree is n
 /**
  * The lattice's coordinate system: world axes unless the user picked a mate connector to orient it.
  *
- * An oriented lattice is nearly free here because latticeParametersOfPoint solves for parameters
- * with scalar triple products rather than assuming an axis-aligned box, so a rotated — or even a
+ * An oriented lattice is nearly free here because the parameter solve in deformPointThroughLattice
+ * uses scalar triple products rather than assuming an axis-aligned box, so a rotated — or even a
  * sheared — axis triple works without a special case. The old features hardcoded world X/Y/Z, which
  * meant deforming anything whose natural directions were not the global ones started by fighting
  * the lattice.
@@ -1125,29 +1129,83 @@ function selectionBaseCoordSystem(points is array, selectedCells is array, latti
 //==================================================================
 
 /**
- * Solve a world point for its lattice parameters (u, v, n), each running 0 to 1 across the lattice.
+ * Flatten the lattice into the plain-number form the deformation map actually reads.
  *
- * This is Sederberg & Parry's inversion, which is exact and direct rather than iterative because
- * the lattice's axes are a linear frame: for each axis, the scalar triple product against the other
- * two axes projects out that axis's parameter and cancels the other two. It works for any
- * non-degenerate axis triple, including a rotated or sheared one, which is what lets the lattice be
- * oriented to a mate connector for free.
+ * THIS IS A PERFORMANCE STRUCTURE AND NOTHING ELSE. It holds exactly the numbers the lattice holds,
+ * rearranged so that the innermost loop of the feature touches no map, no Vector and no
+ * ValueWithUnits. `deformPointThroughLattice` runs once per surface control point per refinement
+ * level, and its inner body once more per lattice point on top of that — a 4x4x4 lattice deforming a
+ * 60x60 net over four refinement levels executes it something like half a million times, which is
+ * where the regeneration time was going.
  *
- * No epsilon guard on the denominators, unlike the version this replaces. A denominator here is the
- * lattice's signed volume, which latticeStructure has already made non-zero by inflating any
- * degenerate direction; guarding it a second time would only hide a genuinely broken frame.
+ * Three separate costs are removed, and they are worth naming because each one looks free at the
+ * call site:
  *
- * @param worldPoint {Vector} : a point with length units
- * @param lattice {map}
- * @returns {Vector} : unitless (u, v, n)
+ *   1. THE FLAT INDEX. `latticeFlatIndex(indexU, indexV, indexN, lattice)` is a function call plus
+ *      three map lookups, and it was in the innermost loop. But the loops run U, then V, then N, and
+ *      N is the fastest-varying index of that very packing — so the flat index is simply a counter
+ *      that increments once per iteration, and no arithmetic is needed at all.
+ *
+ *   2. THE UNITS. A `Vector * number` over lengths allocates three ValueWithUnits and carries a unit
+ *      map through each one. Splitting the control points into three plain-number arrays makes the
+ *      accumulation ordinary floating point, and the units are put back once, at the end, on the one
+ *      vector that leaves the function.
+ *
+ *   3. THE DENOMINATORS. `dot(crossU, axisU)` is a property of the LATTICE, not of the point being
+ *      solved, and the previous parameter solve recomputed all three of them — three dot products
+ *      over united values — for every point it was handed.
+ *
+ * Units bookkeeping: crossU is an area and dot(crossU, axisU) a volume, so the ratio is a reciprocal
+ * length, and dividing the point offsets by metre to match leaves the parameters unitless exactly as
+ * they were. `meter` is FeatureScript's base length unit, so every division here is by one and no
+ * value's bits change — the compiled lattice is bit-for-bit the lattice.
+ *
+ * @param lattice {map} : a fully built lattice, control points already final
+ * @returns {map} : the compiled form, which is all the deformation map reads
  */
-function latticeParametersOfPoint(worldPoint is Vector, lattice is map) returns Vector
+function compileLatticeForDeformation(lattice is map) returns map
 {
-    const fromOrigin = worldPoint - lattice.origin;
-    return vector(
-            dot(lattice.crossU, fromOrigin) / dot(lattice.crossU, lattice.axisU),
-            dot(lattice.crossV, fromOrigin) / dot(lattice.crossV, lattice.axisV),
-            dot(lattice.crossN, fromOrigin) / dot(lattice.crossN, lattice.axisN));
+    const pointCount = lattice.totalPointCount;
+    var pointsX = makeArray(pointCount, 0);
+    var pointsY = makeArray(pointCount, 0);
+    var pointsZ = makeArray(pointCount, 0);
+    for (var index = 0; index < pointCount; index += 1)
+    {
+        const point = lattice.controlPoints[index];
+        pointsX[index] = point[0] / meter;
+        pointsY[index] = point[1] / meter;
+        pointsZ[index] = point[2] / meter;
+    }
+
+    const squareMetre = meter * meter;
+    const cubicMetre = squareMetre * meter;
+    return {
+            "originX" : lattice.origin[0] / meter,
+            "originY" : lattice.origin[1] / meter,
+            "originZ" : lattice.origin[2] / meter,
+            // The parameter solve's three numerator vectors and their three constant denominators.
+            "crossUx" : lattice.crossU[0] / squareMetre,
+            "crossUy" : lattice.crossU[1] / squareMetre,
+            "crossUz" : lattice.crossU[2] / squareMetre,
+            "crossVx" : lattice.crossV[0] / squareMetre,
+            "crossVy" : lattice.crossV[1] / squareMetre,
+            "crossVz" : lattice.crossV[2] / squareMetre,
+            "crossNx" : lattice.crossN[0] / squareMetre,
+            "crossNy" : lattice.crossN[1] / squareMetre,
+            "crossNz" : lattice.crossN[2] / squareMetre,
+            "denominatorU" : dot(lattice.crossU, lattice.axisU) / cubicMetre,
+            "denominatorV" : dot(lattice.crossV, lattice.axisV) / cubicMetre,
+            "denominatorN" : dot(lattice.crossN, lattice.axisN) / cubicMetre,
+            "spanCountU" : lattice.spanCountU,
+            "spanCountV" : lattice.spanCountV,
+            "spanCountN" : lattice.spanCountN,
+            "pointCountU" : lattice.pointCountU,
+            "pointCountV" : lattice.pointCountV,
+            "pointCountN" : lattice.pointCountN,
+            "pointsX" : pointsX,
+            "pointsY" : pointsY,
+            "pointsZ" : pointsZ
+        };
 }
 
 /**
@@ -1200,33 +1258,82 @@ function bernsteinBasisValues(degree is number, parameter is number) returns arr
  * when reading a result: a surface that moved under an unedited lattice indicates a broken frame,
  * not a tolerance problem.
  *
+ * THE PARAMETER SOLVE IS INLINED HERE rather than kept as its own function, and that is the one
+ * readability cost this optimization pass charged. It is Sederberg & Parry's inversion, exact and
+ * direct rather than iterative because the lattice's axes are a linear frame: for each axis, the
+ * scalar triple product against the other two projects out that axis's parameter and cancels the
+ * other two. It works for any non-degenerate axis triple, including a rotated or sheared one, which
+ * is what lets the lattice be oriented to a mate connector for free.
+ *
+ * No epsilon guard on the denominators. A denominator here is the lattice's signed volume, which
+ * latticeStructure has already made non-zero by inflating any degenerate direction; guarding it a
+ * second time would only hide a genuinely broken frame.
+ *
  * @param worldPoint {Vector} : a point with length units
- * @param lattice {map}
+ * @param compiled {map} : from compileLatticeForDeformation, whose block comment explains the shape
  * @returns {Vector} : the deformed point, with length units
  */
-function deformPointThroughLattice(worldPoint is Vector, lattice is map) returns Vector
+function deformPointThroughLattice(worldPoint is Vector, compiled is map) returns Vector
 {
-    const parameters = latticeParametersOfPoint(worldPoint, lattice);
-    const basisU = bernsteinBasisValues(lattice.spanCountU, parameters[0]);
-    const basisV = bernsteinBasisValues(lattice.spanCountV, parameters[1]);
-    const basisN = bernsteinBasisValues(lattice.spanCountN, parameters[2]);
+    const fromOriginX = worldPoint[0] / meter - compiled.originX;
+    const fromOriginY = worldPoint[1] / meter - compiled.originY;
+    const fromOriginZ = worldPoint[2] / meter - compiled.originZ;
 
-    var deformed = WORLD_ORIGIN;
-    for (var indexU = 0; indexU < lattice.pointCountU; indexU += 1)
+    const basisU = bernsteinBasisValues(compiled.spanCountU,
+        (compiled.crossUx * fromOriginX + compiled.crossUy * fromOriginY + compiled.crossUz * fromOriginZ) /
+        compiled.denominatorU);
+    const basisV = bernsteinBasisValues(compiled.spanCountV,
+        (compiled.crossVx * fromOriginX + compiled.crossVy * fromOriginY + compiled.crossVz * fromOriginZ) /
+        compiled.denominatorV);
+    const basisN = bernsteinBasisValues(compiled.spanCountN,
+        (compiled.crossNx * fromOriginX + compiled.crossNy * fromOriginY + compiled.crossNz * fromOriginZ) /
+        compiled.denominatorN);
+
+    // Hoisted out of the loops: every one of these is a map lookup, and the innermost body below is
+    // the most-executed statement in the feature.
+    const pointCountU = compiled.pointCountU;
+    const pointCountV = compiled.pointCountV;
+    const pointCountN = compiled.pointCountN;
+    const pointsX = compiled.pointsX;
+    const pointsY = compiled.pointsY;
+    const pointsZ = compiled.pointsZ;
+
+    var accumulatedX = 0;
+    var accumulatedY = 0;
+    var accumulatedZ = 0;
+    // N is the fastest-varying index of latticeFlatIndex's packing and these loops run in exactly
+    // that order, so the flat index is a counter rather than a computation. This walks the control
+    // point arrays strictly front to back.
+    var flatIndex = 0;
+    for (var indexU = 0; indexU < pointCountU; indexU += 1)
     {
-        var slice = WORLD_ORIGIN;
-        for (var indexV = 0; indexV < lattice.pointCountV; indexV += 1)
+        var sliceX = 0;
+        var sliceY = 0;
+        var sliceZ = 0;
+        for (var indexV = 0; indexV < pointCountV; indexV += 1)
         {
-            var row = WORLD_ORIGIN;
-            for (var indexN = 0; indexN < lattice.pointCountN; indexN += 1)
+            var rowX = 0;
+            var rowY = 0;
+            var rowZ = 0;
+            for (var indexN = 0; indexN < pointCountN; indexN += 1)
             {
-                row += lattice.controlPoints[latticeFlatIndex(indexU, indexV, indexN, lattice)] * basisN[indexN];
+                const weightN = basisN[indexN];
+                rowX += pointsX[flatIndex] * weightN;
+                rowY += pointsY[flatIndex] * weightN;
+                rowZ += pointsZ[flatIndex] * weightN;
+                flatIndex += 1;
             }
-            slice += row * basisV[indexV];
+            const weightV = basisV[indexV];
+            sliceX += rowX * weightV;
+            sliceY += rowY * weightV;
+            sliceZ += rowZ * weightV;
         }
-        deformed += slice * basisU[indexU];
+        const weightU = basisU[indexU];
+        accumulatedX += sliceX * weightU;
+        accumulatedY += sliceY * weightU;
+        accumulatedZ += sliceZ * weightU;
     }
-    return deformed;
+    return vector(accumulatedX, accumulatedY, accumulatedZ) * meter;
 }
 
 /**
@@ -1241,21 +1348,34 @@ function deformPointThroughLattice(worldPoint is Vector, lattice is map) returns
  * the surface closed cannot be broken here. (editSurface.fs has to work for this because a USER can
  * move one copy without its twin; a deformation map cannot.)
  *
+ * THE GRID IS REBUILT ROW BY ROW rather than written into in place, and that is a performance
+ * decision with a real magnitude behind it. FeatureScript values are immutable, so
+ * `deformed.controlPoints[row][column] = point` is not a store — it rebuilds the row, then the grid,
+ * then the map, once per control point. Assembling each row in a local array and assigning the
+ * finished grid ONCE turns an O(rows x columns) sequence of structural rebuilds into one.
+ *
  * @param surface {map} : a normalized B-spline surface definition
- * @param lattice {map}
+ * @param compiled {map} : from compileLatticeForDeformation
  * @returns {map} : the same definition with deformed control points
  */
-function deformControlNet(surface is map, lattice is map) returns map
+function deformControlNet(surface is map, compiled is map) returns map
 {
-    var deformed = surface;
-    for (var rowIndex = 0; rowIndex < size(surface.controlPoints); rowIndex += 1)
+    const rowCount = size(surface.controlPoints);
+    var deformedRows = makeArray(rowCount, 0);
+    for (var rowIndex = 0; rowIndex < rowCount; rowIndex += 1)
     {
-        for (var columnIndex = 0; columnIndex < size(surface.controlPoints[rowIndex]); columnIndex += 1)
+        const sourceRow = surface.controlPoints[rowIndex];
+        const columnCount = size(sourceRow);
+        var deformedRow = makeArray(columnCount, WORLD_ORIGIN);
+        for (var columnIndex = 0; columnIndex < columnCount; columnIndex += 1)
         {
-            deformed.controlPoints[rowIndex][columnIndex] =
-                deformPointThroughLattice(surface.controlPoints[rowIndex][columnIndex], lattice);
+            deformedRow[columnIndex] = deformPointThroughLattice(sourceRow[columnIndex], compiled);
         }
+        deformedRows[rowIndex] = deformedRow;
     }
+
+    var deformed = surface;
+    deformed.controlPoints = deformedRows;
     return deformed;
 }
 
@@ -1271,19 +1391,19 @@ function deformControlNet(surface is map, lattice is map) returns map
  * @param id {Id} : the feature id, for reporting
  * @param idGenerator {function} : zero-argument disambiguated id source for every operation
  * @param definition {map}
- * @param lattice {map}
+ * @param compiledLattice {map} : from compileLatticeForDeformation
  * @param sourceRecord {map} : the face's readSourceSurfaces record — `surface`, `outerLoop`, `innerLoops`
  * @param face {Query} : the face itself, for REPLACE_FACE
  * @param tolerance {ValueWithUnits}
  * @returns {map} : `certifiedDeviation` {ValueWithUnits}, `controlPointCount` {number},
  *                  `budgetHit` {boolean}, `trimDropped` {boolean}
  */
-function deformOneFace(context is Context, id is Id, idGenerator is function, definition is map, lattice is map,
-    sourceRecord is map, face is Query, tolerance is ValueWithUnits) returns map
+function deformOneFace(context is Context, id is Id, idGenerator is function, definition is map,
+    compiledLattice is map, sourceRecord is map, face is Query, tolerance is ValueWithUnits) returns map
 {
     const sourceSurface = sourceRecord.surface;
     const domainBefore = surfaceParameterDomains(sourceSurface);
-    const converged = deformToTolerance(context, id, definition, lattice, sourceSurface, tolerance);
+    const converged = deformToTolerance(context, id, definition, compiledLattice, sourceSurface, tolerance);
 
     if (definition.showControlNet)
     {
@@ -1345,7 +1465,7 @@ function deformOneFace(context is Context, id is Id, idGenerator is function, de
     const certificationTarget = certificationTwinId == undefined ?
         qCreatedBy(templateId, EntityType.BODY) : qCreatedBy(certificationTwinId, EntityType.BODY);
 
-    const certifiedDeviation = certifiedDeviationOfDeformation(context, converged.undeformed, lattice,
+    const certifiedDeviation = certifiedDeviationOfDeformation(context, converged.undeformed, compiledLattice,
         certificationTarget);
 
     if (certificationTwinId != undefined)
@@ -1443,13 +1563,13 @@ function parameterDomainsAgree(first is map, second is map) returns boolean
  * @param context {Context}
  * @param id {Id}
  * @param definition {map}
- * @param lattice {map}
+ * @param compiledLattice {map} : from compileLatticeForDeformation
  * @param sourceSurface {map}
  * @param tolerance {ValueWithUnits}
  * @returns {map} : `undeformed` and `deformed` at the final level, `delta` {ValueWithUnits},
  *                  `passes` {number}, `budgetHit` {boolean}
  */
-function deformToTolerance(context is Context, id is Id, definition is map, lattice is map,
+function deformToTolerance(context is Context, id is Id, definition is map, compiledLattice is map,
     sourceSurface is map, tolerance is ValueWithUnits) returns map
 {
     // STEP ZERO, and the one that makes a revolve deformable at all: get every closed direction off
@@ -1487,7 +1607,7 @@ function deformToTolerance(context is Context, id is Id, definition is map, latt
     // prepareSurfaceForDeformation treats as "already satisfied" and skips.
     var undeformed = prepareSurfaceForDeformation(preparedSource, targetUDegree, targetVDegree,
         size(preparedSource.controlPoints), size(preparedSource.controlPoints[0]));
-    var deformed = deformControlNet(undeformed, lattice);
+    var deformed = deformControlNet(undeformed, compiledLattice);
 
     var delta = 0 * meter;
     var passes = 0;
@@ -1511,10 +1631,23 @@ function deformToTolerance(context is Context, id is Id, definition is map, latt
             break;
         }
 
-        const nextUndeformed = refineSurfaceToControlPointCounts(undeformed, nextUCount, nextVCount);
-        const nextDeformed = deformControlNet(nextUndeformed, lattice);
+        // The operators are kept, not discarded, and that is what makes the comparison below cheap.
+        // They carry THIS level's knot vectors onto the next level's, so the previous level's
+        // already-deformed net can be lifted into the finer space by exactly the refinement that
+        // created that space — instead of asking makeSurfacesShareKnotVectors to rediscover a
+        // nesting relationship that is already in hand.
+        const refinement = refineSurfaceToControlPointCountsWithOperators(undeformed, nextUCount, nextVCount, false);
+        const nextUndeformed = refinement.surface;
+        const nextDeformed = deformControlNet(nextUndeformed, compiledLattice);
 
-        delta = maximumControlNetDeviation(deformed, nextDeformed);
+        // Deform-then-refine, not refine-then-deform: this is the PREVIOUS level's deformation
+        // expressed on the current level's knots, which is precisely what the two levels have to
+        // disagree about for the loop to mean anything. (The two orders are equal only for an affine
+        // lattice, which is the degenerate case where there is nothing to converge.)
+        const previousOnSharedKnots = applySurfaceDirectionOperators(deformed, refinement.uOperator,
+            refinement.vOperator);
+
+        delta = maximumControlNetDeviation(previousOnSharedKnots, nextDeformed);
         undeformed = nextUndeformed;
         deformed = nextDeformed;
         passes += 1;
@@ -1556,7 +1689,7 @@ function nextStoredControlPointCount(storedCount is number, degree is number, bu
 
 /**
  * The free measure the loop runs on: the largest distance between corresponding control points of
- * two deformed surfaces, once both are on a common knot vector.
+ * two deformed surfaces ALREADY ON A COMMON KNOT VECTOR.
  *
  * This bounds the true surface deviation without evaluating either surface. Both the polynomial
  * basis and the rational basis are non-negative and sum to 1, so the difference of two splines
@@ -1564,24 +1697,42 @@ function nextStoredControlPointCount(storedCount is number, degree is number, bu
  *
  *     ‖S_a(t) - S_b(t)‖ <= max_i ‖P_a,i - P_b,i‖
  *
- * makeSurfacesShareKnotVectors is what earns the "and weights" clause — it refines both surfaces
- * onto the merged knot vectors with the same composed operators, so the weights match rather than
- * merely being close.
+ * THE SHARED VECTOR IS THE CALLER'S JOB, and used to be this function's: it called
+ * makeSurfacesShareKnotVectors on the pair. That was correct and wasteful. The refinement loop is
+ * the only caller, and it holds the operators that MADE the finer level, so lifting the coarse net
+ * with those is exact and costs one application — where the general merge re-normalized both
+ * surfaces, rediscovered a nesting it was already being handed, and refined the fine grid by nothing
+ * at all. The mismatched-shape check below is what keeps that shortcut honest: a caller that lifted
+ * the wrong grid, or forgot to, gets an error rather than a meaningless small number from comparing
+ * points that do not correspond.
  *
- * @param coarse {map} : the deformed surface at level k
+ * The "and weights" clause is earned the same way it was before — the operators act on the
+ * homogeneous grid, so the weights are refined by the identical arithmetic as the points.
+ *
+ * @param coarse {map} : the level-k deformed surface, lifted onto the level-(k+1) knot vectors
  * @param fine {map} : the deformed surface at level k+1
  * @returns {ValueWithUnits} : the bound, a length
  */
 function maximumControlNetDeviation(coarse is map, fine is map) returns ValueWithUnits
 {
-    const shared = makeSurfacesShareKnotVectors(coarse, fine);
-    var worst = 0 * meter;
-    for (var rowIndex = 0; rowIndex < size(shared.a.controlPoints); rowIndex += 1)
+    const gridA = coarse.controlPoints;
+    const gridB = fine.controlPoints;
+    if (size(gridA) != size(gridB) || size(gridA[0]) != size(gridB[0]))
     {
-        for (var columnIndex = 0; columnIndex < size(shared.a.controlPoints[rowIndex]); columnIndex += 1)
+        throw "freeFormDeformation: the two refinement levels are not on a common knot vector (" ~
+            size(gridA) ~ "x" ~ size(gridA[0]) ~ " against " ~ size(gridB) ~ "x" ~ size(gridB[0]) ~
+            "). The coarse net must be lifted with the operators that produced the fine one.";
+    }
+    var worst = 0 * meter;
+    for (var rowIndex = 0; rowIndex < size(gridA); rowIndex += 1)
+    {
+        // Fetched once per row rather than twice per cell: on the last refinement pass this grid is
+        // the largest one the feature ever holds, and the row lookups alone were four per point.
+        const rowA = gridA[rowIndex];
+        const rowB = gridB[rowIndex];
+        for (var columnIndex = 0; columnIndex < size(rowA); columnIndex += 1)
         {
-            worst = max(worst, norm(shared.a.controlPoints[rowIndex][columnIndex] -
-                        shared.b.controlPoints[rowIndex][columnIndex]));
+            worst = max(worst, norm(rowA[columnIndex] - rowB[columnIndex]));
         }
     }
     return worst;
@@ -1605,11 +1756,11 @@ function maximumControlNetDeviation(coarse is map, fine is map) returns ValueWit
  *
  * @param context {Context}
  * @param undeformed {map} : the refined undeformed surface
- * @param lattice {map}
+ * @param compiled {map} : from compileLatticeForDeformation
  * @param targetBodies {Query} : the untrimmed body the true points are measured against
  * @returns {ValueWithUnits} : the worst deviation, a length
  */
-function certifiedDeviationOfDeformation(context is Context, undeformed is map, lattice is map,
+function certifiedDeviationOfDeformation(context is Context, undeformed is map, compiled is map,
     targetBodies is Query) returns ValueWithUnits
 {
     const uSamples = spanMidpointParameters(undeformed.uKnots, undeformed.uDegree);
@@ -1619,13 +1770,19 @@ function certifiedDeviationOfDeformation(context is Context, undeformed is map, 
         return 0 * meter;
     }
 
-    var truePoints = [];
+    // Preallocated rather than appended to. The sample count is known exactly — up to 400 with
+    // MAXIMUM_CERTIFICATION_SAMPLES_PER_DIRECTION at 20 — and `append` on an immutable array rebuilds
+    // it, so growing one 400 times is quadratic in a loop whose per-item work is otherwise a surface
+    // evaluation.
+    var truePoints = makeArray(size(uSamples) * size(vSamples), WORLD_ORIGIN);
+    var writeIndex = 0;
     for (var uParameter in uSamples)
     {
         for (var vParameter in vSamples)
         {
-            truePoints = append(truePoints,
-                deformPointThroughLattice(evaluateBSplineSurfacePoint(undeformed, uParameter, vParameter), lattice));
+            truePoints[writeIndex] =
+                deformPointThroughLattice(evaluateBSplineSurfacePoint(undeformed, uParameter, vParameter), compiled);
+            writeIndex += 1;
         }
     }
 
@@ -2040,6 +2197,11 @@ function showTransformManipulator(context is Context, id is Id, definition is ma
  * drag in TRANSLATE mode never reads a face. Only the TRANSFORM bake does, and only when the
  * selection actually changes — once per selection, not once per drag frame.
  *
+ * THIS IS NOT THE LAST WORD ON THE DEFINITION. freeFormDeformationEditLogic runs after this returns,
+ * with an `oldDefinition` that predates everything written here — so anything it copies wholesale out
+ * of that old state silently reverts this function's work. bakeAgainstPreviousState documents the
+ * split that keeps the two in step; it is worth re-reading before adding a branch here.
+ *
  * @param context {Context}
  * @param definition {map}
  * @param newManipulators {map}
@@ -2086,16 +2248,26 @@ export function onFreeFormDeformationManipulatorChange(context is Context, defin
  *
  * This is the counterpart of applySelectionTransform and MUST agree with it point for point — both
  * go through selectionTransformInWorld for exactly that reason. It is the one place in the
- * manipulator path that reads geometry, because the transform acts on world positions and those
- * come from the bounding box; it runs once per selection change rather than once per drag frame.
+ * manipulator path that reads geometry, because the transform acts on world positions and those come
+ * from the bounding box; it runs when the selection changes and when the dialog opens, never once per
+ * drag frame.
  *
- * If the lattice cannot be rebuilt — no valid selection, an empty or unreadable face selection, a
- * face that needs the approximation toggle — the transform is dropped rather than silently
- * misapplied to whatever the next selection happens to be.
+ * AN UNREADABLE LATTICE LEAVES THE TRANSFORM ALONE. A face selection that is empty, not yet
+ * resolvable, or in need of the approximation toggle gives no geometry to bake against. The transform
+ * is then KEPT rather than reset, because resetting it there does not defer the deformation, it
+ * deletes it: the offsets never received it and the live parameters no longer hold it.
+ *
+ * This used to drop it instead, on the reasoning that a transform belonging to a selection that is
+ * about to change should not latch onto the next one. That trade is the wrong way round. Reaching
+ * this path at all requires the lattice to be unreadable, and an unreadable lattice is one the
+ * feature body cannot regenerate either — so the misapplication it guards against can only happen in
+ * a state the user is already being shown an error for, while the work it destroys is real and
+ * silent. An empty SELECTION is a different matter and still resets: there is nothing for the
+ * transform to act on, so it is dead weight that would otherwise attach itself to the next selection.
  *
  * @param context {Context}
  * @param definition {map}
- * @returns {map} : the updated definition, with the transform reset
+ * @returns {map} : the updated definition, with the transform reset unless it could not be baked
  */
 function bakeSelectionTransform(context is Context, definition is map) returns map
 {
@@ -2105,22 +2277,25 @@ function bakeSelectionTransform(context is Context, definition is map) returns m
     }
 
     const lattice = try silent(latticeForManipulatorHandling(context, definition));
-    if (lattice != undefined)
+    if (lattice == undefined)
     {
-        const selectedCells = validSelectedCells(definition.selectedIndices, lattice);
-        if (size(selectedCells) > 0)
+        return definition;
+    }
+
+    // An EMPTY selection falls through to the reset below rather than returning early: there is
+    // nothing for the transform to act on, so it is dead weight, and leaving it live would attach it
+    // to whatever gets selected next. selectionTransformInWorld is not called at all in that case —
+    // its base is the selection's centroid, which needs at least one point to average.
+    const selectedCells = validSelectedCells(definition.selectedIndices, lattice);
+    if (size(selectedCells) > 0)
+    {
+        const worldTransform = selectionTransformInWorld(lattice.controlPoints, selectedCells, lattice, definition);
+        for (var cell in selectedCells)
         {
-            const worldTransform = selectionTransformInWorld(lattice.controlPoints, selectedCells, lattice, definition);
-            if (worldTransform != undefined)
-            {
-                for (var cell in selectedCells)
-                {
-                    const flatIndex = latticeFlatIndex(cell.uIndexValue, cell.vIndexValue, cell.nIndexValue, lattice);
-                    const moved = worldTransform * lattice.controlPoints[flatIndex];
-                    definition = addToPointOffset(definition, cell.uIndexValue, cell.vIndexValue, cell.nIndexValue,
-                        moved - lattice.controlPoints[flatIndex]);
-                }
-            }
+            const flatIndex = latticeFlatIndex(cell.uIndexValue, cell.vIndexValue, cell.nIndexValue, lattice);
+            const moved = worldTransform * lattice.controlPoints[flatIndex];
+            definition = addToPointOffset(definition, cell.uIndexValue, cell.vIndexValue, cell.nIndexValue,
+                moved - lattice.controlPoints[flatIndex]);
         }
     }
 
@@ -2370,14 +2545,30 @@ function cellIsInScope(uIndex is number, vIndex is number, nIndex is number, cel
 /**
  * Editing logic.
  *
- * Two jobs. The first is the Planarize button, which arrives here as `clickedButton`.
+ * Every job here is the same job: the live selection transform is about to stop meaning what it
+ * meant, so bake it into offsets while the state it was measured against still exists. The stored
+ * numbers are relative to a base — the selection's centroid, in the lattice's frame — and ANYTHING
+ * that moves that base silently redefines them.
  *
- * The second is catching the live selection transform being about to mean something different, and
- * baking it before that happens: specifically, the selection changing through the DIALOG rather than
- * through the manipulator, which has its own bake in onFreeFormDeformationManipulatorChange. This is
- * why the array's reordering is turned off — the bake is positional.
+ * Three moments qualify, plus the Planarize button, which arrives as `clickedButton` and does its
+ * own bake:
  *
- * There used to be a third case, an edit-mode change, back when a translate-only manipulator could
+ *   1. THE DIALOG IS OPENED (`oldDefinition == {}`). A transform left live when the dialog was last
+ *      closed lives entirely in ALWAYS_HIDDEN parameters, so the surface comes back deformed while
+ *      the "Lattice point offsets" list shows nothing that accounts for it. Baking on open is exactly
+ *      geometry-preserving — it is the same arithmetic applySelectionTransform was already applying
+ *      at every regeneration, through the same selectionTransformInWorld — so the only thing that
+ *      changes is that the deformation becomes VISIBLE and editable as offsets.
+ *
+ *   2. THE SELECTION CHANGES through the dialog. The manipulator path has its own bake in
+ *      onFreeFormDeformationManipulatorChange; this covers the array being edited by hand. It is why
+ *      the array's reordering is turned off — the bake is positional.
+ *
+ *   3. THE LATTICE ITSELF CHANGES. Span counts, orientation and the face selection all move the grid
+ *      the base is computed from, so a transform surviving one of those describes a different
+ *      displacement afterwards than it did before.
+ *
+ * There used to be a fourth case, an edit-mode change, back when a translate-only manipulator could
  * take over from the full triad while a transform was still live. Making the full triad
  * unconditional deleted the mode and the whole class of bug with it: one manipulator now owns the
  * selection, so there is no second writer to reconcile against.
@@ -2392,34 +2583,125 @@ function cellIsInScope(uIndex is number, vIndex is number, nIndex is number, cel
 export function freeFormDeformationEditLogic(context is Context, id is Id, oldDefinition is map, definition is map,
     isCreating is boolean, clickedButton is string) returns map
 {
-    if (oldDefinition == {} || !definition.editLattice)
+    if (!definition.editLattice)
     {
         return definition;
     }
 
-    // Checked before the selection test below, not after: a button press is not a selection change
-    // that test would see, and planarizeSelection does its own bake anyway.
+    // Case 1. There is no previous state to bake against, and none is needed: nothing has moved yet
+    // this edit round, so the transform still means what it meant when it was stored and the current
+    // definition IS the state it was measured in.
+    if (oldDefinition == {})
+    {
+        return bakeSelectionTransform(context, definition);
+    }
+
+    // Checked before the tests below, not after: a button press is not a selection change those
+    // tests would see, and planarizeSelection does its own bake anyway.
     if (clickedButton == "planarizeSelection")
     {
         return planarizeSelection(context, definition);
     }
 
-    if (selectionsMatch(oldDefinition.selectedIndices, definition.selectedIndices))
+    // Cases 2 and 3.
+    if (!selectionsMatch(oldDefinition.selectedIndices, definition.selectedIndices) ||
+        latticeDefinitionChanged(context, oldDefinition, definition))
+    {
+        return bakeAgainstPreviousState(context, oldDefinition, definition);
+    }
+    return definition;
+}
+
+/**
+ * Bake the live selection transform against the state it was authored in, and return the CURRENT
+ * definition carrying the result with the transform cleared.
+ *
+ * Which definition supplies what is the entire content of this function, and getting it wrong is how
+ * offsets go missing:
+ *
+ *   - the OLD definition supplies the SELECTION and the lattice geometry — span counts, orientation,
+ *     faces — because those are what the stored numbers are measured against;
+ *   - the CURRENT definition supplies the OFFSETS, because something may already have written to
+ *     them this edit round and rolling that back would destroy it.
+ *
+ * The second point is not hypothetical, and it was the bug: onFreeFormDeformationManipulatorChange
+ * bakes on its own before it swaps the selection in, and this editing logic then runs on top of that
+ * with an `oldDefinition` predating the bake. Sourcing offsets from `oldDefinition` therefore
+ * overwrote the freshly baked array with the pre-bake one every single time a selection change
+ * arrived through the manipulator — the drag vanished from the list AND from the geometry, because
+ * the manipulator had already reset the live transform that was carrying it.
+ *
+ * When the manipulator has already baked, the transform copied across is the identity, so
+ * bakeSelectionTransform short-circuits and this is a no-op on the offsets it just wrote. That is
+ * the intended interaction between the two paths rather than a coincidence.
+ *
+ * @param context {Context}
+ * @param oldDefinition {map} : the state the transform was measured against
+ * @param definition {map} : the current state, whose offsets are authoritative
+ * @returns {map} : the current definition, offsets baked and transform reset — or untouched and the
+ *                  transform still live, if the old lattice could not be read
+ */
+function bakeAgainstPreviousState(context is Context, oldDefinition is map, definition is map) returns map
+{
+    var previous = oldDefinition;
+    previous.latticePointOffsets = definition.latticePointOffsets;
+    previous.selectionRotation = definition.selectionRotation;
+    previous.selectionTranslateX = definition.selectionTranslateX;
+    previous.selectionTranslateY = definition.selectionTranslateY;
+    previous.selectionTranslateZ = definition.selectionTranslateZ;
+
+    const bakedPrevious = bakeSelectionTransform(context, previous);
+    definition.latticePointOffsets = bakedPrevious.latticePointOffsets;
+
+    // A transform still live on the way back out means the bake could not run — see
+    // bakeSelectionTransform, which keeps it rather than deleting it. Resetting here would undo that
+    // and lose the drag. It takes an unreadable OLD lattice to get here, and the old lattice is the
+    // one that regenerated a moment ago, so in practice this is the already-erroring feature.
+    if (storedSelectionTransform(bakedPrevious) != undefined)
     {
         return definition;
     }
-
-    // Bake against the OLD selection, which is the one the stored transform belongs to, then let
-    // the new selection start from the identity.
-    var baked = oldDefinition;
-    baked.selectionRotation = definition.selectionRotation;
-    baked.selectionTranslateX = definition.selectionTranslateX;
-    baked.selectionTranslateY = definition.selectionTranslateY;
-    baked.selectionTranslateZ = definition.selectionTranslateZ;
-    baked = bakeSelectionTransform(context, baked);
-
-    definition.latticePointOffsets = baked.latticePointOffsets;
     return resetSelectionTransform(definition);
+}
+
+/**
+ * Whether anything that DEFINES the lattice has changed, and so whether a live selection transform
+ * has stopped describing the displacement it described before.
+ *
+ * The base the transform is measured against is the selection's centroid in the lattice frame, and
+ * every input listed here feeds it: the span counts decide where the grid points are, the
+ * orientation decides the frame, and the face selection and its reading mode decide the bounding box
+ * the grid is laid out inside. `result` is in the list because NEW_BODY_TRIMMED reads faces through
+ * evApproximateBSplineSurface rather than evSurfaceDefinition, which is a different control net and
+ * therefore a different box.
+ *
+ * @param context {Context}
+ * @param oldDefinition {map}
+ * @param definition {map}
+ * @returns {boolean}
+ */
+function latticeDefinitionChanged(context is Context, oldDefinition is map, definition is map) returns boolean
+{
+    if (definition.latticeSpanCountU != oldDefinition.latticeSpanCountU ||
+        definition.latticeSpanCountV != oldDefinition.latticeSpanCountV ||
+        definition.latticeSpanCountN != oldDefinition.latticeSpanCountN ||
+        definition.orientLattice != oldDefinition.orientLattice ||
+        definition.approximate != oldDefinition.approximate ||
+        definition.result != oldDefinition.result)
+    {
+        return true;
+    }
+    // Guarded rather than compared unconditionally: `latticeOrientation` is declared inside
+    // `if (definition.orientLattice)`, so it is legitimately absent, and areQueriesEquivalent needs
+    // two actual Queries. The toggle itself is already covered above.
+    if (definition.orientLattice &&
+        definition.latticeOrientation is Query && oldDefinition.latticeOrientation is Query &&
+        !areQueriesEquivalent(context, definition.latticeOrientation, oldDefinition.latticeOrientation))
+    {
+        return true;
+    }
+    return definition.surfacesToDeform is Query && oldDefinition.surfacesToDeform is Query &&
+        !areQueriesEquivalent(context, definition.surfacesToDeform, oldDefinition.surfacesToDeform);
 }
 
 /**
@@ -2593,25 +2875,39 @@ function showLatticeCage(context is Context, lattice is map)
  * Draw the deformed control net, in the same U/V colours editSurface.fs uses, so a refinement level
  * can be read off the screen rather than inferred from the reported counts.
  *
+ * EXPECT THIS TO BE ONE OF THE MOST EXPENSIVE THINGS THE FEATURE DOES when it is turned on, and
+ * understand why before trying to fix it: the net it draws is the REFINED one, so it emits close to
+ * two debug lines per control point — a 60x60 net is about seven thousand debug entities, each an
+ * individual call. std offers no polyline debug entity to batch them into, so the cost is
+ * irreducible at this resolution; what is reducible is the per-cell bookkeeping around it, which is
+ * why the rows are hoisted below rather than re-indexed four times per point.
+ *
+ * The practical consequence, which belongs in a profile reading rather than in the code: a
+ * regeneration timed with "Show deformed control net" on is not measuring the deformation. Turn it
+ * off before drawing conclusions about anything else.
+ *
  * @param context {Context}
  * @param surface {map} : a deformed surface definition
  */
 function showDeformedControlNet(context is Context, surface is map)
 {
-    const rowCount = size(surface.controlPoints);
-    const columnCount = size(surface.controlPoints[0]);
+    const grid = surface.controlPoints;
+    const rowCount = size(grid);
+    const columnCount = size(grid[0]);
     for (var rowIndex = 0; rowIndex < rowCount; rowIndex += 1)
     {
+        const row = grid[rowIndex];
+        const nextRow = rowIndex + 1 < rowCount ? grid[rowIndex + 1] : undefined;
         for (var columnIndex = 0; columnIndex < columnCount; columnIndex += 1)
         {
-            const point = surface.controlPoints[rowIndex][columnIndex];
-            if (rowIndex + 1 < rowCount && !tolerantEquals(point, surface.controlPoints[rowIndex + 1][columnIndex]))
+            const point = row[columnIndex];
+            if (nextRow != undefined && !tolerantEquals(point, nextRow[columnIndex]))
             {
-                addDebugLine(context, point, surface.controlPoints[rowIndex + 1][columnIndex], DebugColor.MAGENTA);
+                addDebugLine(context, point, nextRow[columnIndex], DebugColor.MAGENTA);
             }
-            if (columnIndex + 1 < columnCount && !tolerantEquals(point, surface.controlPoints[rowIndex][columnIndex + 1]))
+            if (columnIndex + 1 < columnCount && !tolerantEquals(point, row[columnIndex + 1]))
             {
-                addDebugLine(context, point, surface.controlPoints[rowIndex][columnIndex + 1], DebugColor.CYAN);
+                addDebugLine(context, point, row[columnIndex + 1], DebugColor.CYAN);
             }
         }
     }

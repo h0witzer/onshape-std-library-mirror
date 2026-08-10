@@ -300,9 +300,34 @@ So the transform has two stages:
 - **Live.** Stored decomposed (flat nine-value rotation behind `isAnything`, plus three lengths —
   the only shape that round-trips through a precondition, as `routingCurve.fs` and the old planes
   feature both concluded) and applied at regeneration on top of the committed offsets.
-- **Baked.** Committed into per-point offsets exactly once, when the selection changes, and reset to
-  the identity. Two doors reach that state: the manipulator handler for a selection change by click,
-  and the editing logic function for a selection change through the dialog.
+- **Baked.** Committed into per-point offsets exactly once and reset to the identity. Four moments
+  reach that state, all of them points at which the live transform is about to stop describing the
+  displacement it described before: a selection change by click (the manipulator handler), a
+  selection change through the dialog, a change to anything that *defines* the lattice — span counts,
+  orientation, the faces — and the dialog being **opened**.
+
+  The last two were added after the symptom "my lattice point offsets aren't showing up" was traced
+  to them. A live transform is invisible: it lives entirely in `ALWAYS_HIDDEN` parameters, so a dialog
+  closed while one is live reopens showing a deformed surface and an empty offsets list. Baking on
+  open is exactly geometry-preserving — it is the same `selectionTransformInWorld` arithmetic
+  `applySelectionTransform` was already applying at every regeneration — so the only thing that
+  changes is that the deformation becomes visible and editable. Baking on a lattice change is a
+  correctness fix rather than a cosmetic one: the base is the selection's centroid in the lattice
+  frame, so changing the span counts under a live transform silently *redefines* it.
+
+  **The bake must not be rolled back by the editing logic that follows it.** The manipulator handler
+  bakes before it swaps the selection in, and Onshape then runs the editing logic function on top,
+  with an `oldDefinition` that predates that bake. The old definition is the right source for the
+  *selection* and the *lattice geometry* the transform was measured against, and the wrong source for
+  the *offsets* — taking those from it too reverted the bake on every manipulator-driven selection
+  change, so the drag disappeared from the list and from the geometry at once. This was the original
+  form of the bug above, and `bakeAgainstPreviousState` exists to hold that split in one place.
+
+  **A bake that cannot run keeps the transform** rather than resetting it. Resetting a transform that
+  was never committed does not defer the deformation, it deletes it. Reaching that path needs an
+  unreadable lattice, which is a state the feature body cannot regenerate from either — so the
+  misapplication it would guard against can only occur where the user is already seeing an error,
+  while the work it destroys is real and silent.
 
 **The full triad is unconditional, and that is what keeps this to two doors.** An earlier version put
 it behind an edit-mode selector opposite a translate-only `triadManipulator`, which was wrong twice

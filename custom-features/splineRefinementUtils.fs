@@ -91,7 +91,7 @@ import(path : "onshape/std/nurbsUtils.fs", version : "3044.0");      // removeKn
          KnotArray-casting discipline on every return.
       3. knotRefinementOperator / periodicRefinementOperator ONLY where the same refinement runs
          across many point arrays (a surface's rows or columns). For a single array use
-         refineKnotVector — the operator's O(M^2) build is pure overhead otherwise.
+         refineKnotVector — an operator built for one array is reuse that never happens.
       4. It is DONE when its tester vector passes in Onshape, not when it compiles. Every
          periodic vector needs a degree >= 2 case; degree 1 hides an entire class of bug.
 */
@@ -255,18 +255,135 @@ export function isClampedKnotArray(knots is array, degree is number) returns boo
 // to 1. The tester asserts this invariant (vector 3); it is what guarantees refined control
 // points never leave the convex hull of the originals.
 
+// --------------------------------------------------------------------------------------------
+// BANDED COEFFICIENT ROWS — the representation buildRefinementCoefficients accumulates in.
+//
+// A row is `{ "start" : number, "weights" : array }`, meaning input index `start + k` carries
+// weight `weights[k]` and every index outside that window carries zero. It is the sparse form the
+// operator ends in, minus the per-term map, which is what makes it usable as an ACCUMULATOR.
+//
+// This replaced a dense `inputCount`-wide array per row, and the reason is a complexity one rather
+// than a tidiness one. A discrete B-spline coefficient row has at most `degree + 1` nonzero terms
+// NO MATTER HOW MANY KNOTS ARE INSERTED — local support survives refinement — so the dense form
+// spent O(inputCount) on every blend, every identity row, and every sparsify scan to carry
+// `degree + 1` real numbers. The whole builder was O(insertions * degree * inputCount + inputCount^2)
+// to produce O(insertions * degree) worth of coefficients. Banded rows make it
+// O(insertions * degree^2), which is independent of the control point count entirely.
+//
+// THE ARITHMETIC IS UNCHANGED, deliberately and checkably. Every blend below zero-fills the union
+// window and evaluates the identical two-term expression the dense version evaluated at that index,
+// in the same order — a position present in only one row contributes `scale * 0`, which is exactly
+// zero, and adding it changes no bits. This function is upstream of every refinement in the module,
+// so it is the last place a "small" numerical drift would be acceptable.
+// --------------------------------------------------------------------------------------------
+
 /**
- * Elementwise firstScale * firstRow + secondScale * secondRow over plain-number coefficient
- * rows. Used only while building refinementOperators on the unit basis.
+ * Drop leading and trailing EXACT zeros from a banded row, keeping at least one entry.
+ *
+ * This is the width control. A blend's union window can come out one wider than either input, since
+ * the two rows are offset by one; discrete B-spline locality says the operator's rows never exceed
+ * `degree + 1` nonzeros however many knots are inserted, so the surplus end position is a
+ * structural zero, and dropping it keeps the width at the bound instead of letting it ratchet up
+ * one per insertion.
+ *
+ * WHAT IS AND IS NOT GUARANTEED, because the difference decides how much to trust the bound. Trimming
+ * an exact zero is unconditionally safe: every later reader multiplies the entry by something and
+ * adds it, and `scale * 0` contributes zero whether the entry is stored or implied. What is NOT
+ * asserted here is that the surplus position always lands on exactly 0.0 in floating point rather
+ * than on something tiny. If it ever does not, this row keeps one extra entry and the next blend
+ * starts from a slightly wider window — the result stays exactly right and the function stays
+ * correct, it just costs more. So the `degree + 1` width is the expected case and the performance
+ * argument above rests on it; nothing here rests on it for correctness.
+ *
+ * @param start {number} : the window's first input index
+ * @param weights {array} : plain numbers
+ * @returns {map} : a banded row
  */
-function scaledRowSum(firstScale is number, firstRow is array, secondScale is number, secondRow is array) returns array
+function trimBandedRow(start is number, weights is array) returns map
 {
-    var combined = makeArray(size(firstRow), 0);
-    for (var entryIndex = 0; entryIndex < size(firstRow); entryIndex += 1)
+    var firstOffset = 0;
+    while (firstOffset < size(weights) - 1 && weights[firstOffset] == 0)
     {
-        combined[entryIndex] = firstScale * firstRow[entryIndex] + secondScale * secondRow[entryIndex];
+        firstOffset += 1;
     }
-    return combined;
+    var endOffset = size(weights);
+    while (endOffset > firstOffset + 1 && weights[endOffset - 1] == 0)
+    {
+        endOffset -= 1;
+    }
+    if (firstOffset == 0 && endOffset == size(weights))
+    {
+        return { "start" : start, "weights" : weights };
+    }
+    return { "start" : start + firstOffset, "weights" : subArray(weights, firstOffset, endOffset) };
+}
+
+/**
+ * `firstScale * firstRow + secondScale * secondRow` over banded coefficient rows — the Boehm blend,
+ * and the innermost statement of the whole refinement layer.
+ *
+ * The union window is zero-filled rather than special-cased so that every position evaluates the
+ * same two-term expression, which is what makes this bit-for-bit identical to the dense elementwise
+ * version it replaces.
+ */
+function blendBandedRows(firstScale is number, firstRow is map, secondScale is number, secondRow is map) returns map
+{
+    const firstStart = firstRow.start;
+    const secondStart = secondRow.start;
+    const firstWeights = firstRow.weights;
+    const secondWeights = secondRow.weights;
+    const firstCount = size(firstWeights);
+    const secondCount = size(secondWeights);
+
+    const start = min(firstStart, secondStart);
+    const width = max(firstStart + firstCount, secondStart + secondCount) - start;
+
+    var blended = makeArray(width, 0);
+    for (var offset = 0; offset < width; offset += 1)
+    {
+        const absoluteIndex = start + offset;
+        const firstOffset = absoluteIndex - firstStart;
+        const secondOffset = absoluteIndex - secondStart;
+        const firstValue = (firstOffset >= 0 && firstOffset < firstCount) ? firstWeights[firstOffset] : 0;
+        const secondValue = (secondOffset >= 0 && secondOffset < secondCount) ? secondWeights[secondOffset] : 0;
+        blended[offset] = firstScale * firstValue + secondScale * secondValue;
+    }
+    return trimBandedRow(start, blended);
+}
+
+/**
+ * Compact banded coefficient rows to the sparse { "index", "weight" } term lists the operator
+ * representation uses, applying the same SPARSE_WEIGHT_CUTOFF the dense compactor applies — so a
+ * row's surviving terms, and their order, are exactly what the dense path produced.
+ */
+function sparsifyBandedRows(bandedRows is array) returns array
+{
+    var sparseRows = makeArray(size(bandedRows), 0);
+    for (var rowIndex = 0; rowIndex < size(bandedRows); rowIndex += 1)
+    {
+        const bandedRow = bandedRows[rowIndex];
+        const weights = bandedRow.weights;
+        var termCount = 0;
+        for (var offset = 0; offset < size(weights); offset += 1)
+        {
+            if (abs(weights[offset]) > SPARSE_WEIGHT_CUTOFF)
+            {
+                termCount += 1;
+            }
+        }
+        var terms = makeArray(termCount, 0);
+        var termIndex = 0;
+        for (var offset = 0; offset < size(weights); offset += 1)
+        {
+            if (abs(weights[offset]) > SPARSE_WEIGHT_CUTOFF)
+            {
+                terms[termIndex] = { "index" : bandedRow.start + offset, "weight" : weights[offset] };
+                termIndex += 1;
+            }
+        }
+        sparseRows[rowIndex] = terms;
+    }
+    return sparseRows;
 }
 
 /**
@@ -285,7 +402,8 @@ function scaledRowSum(firstScale is number, firstRow is array, secondScale is nu
  *
  * @param maximumFinalMultiplicity : `degree` for refinement (shape-safe),
  *      `degree + 1` for clamped extraction (deliberate slicing).
- * @returns {map} : { "rows" : dense coefficient rows, "knots" : refined knot vector }
+ * @returns {map} : { "rows" : BANDED coefficient rows (see the banded-row block above),
+ *      "knots" : refined knot vector }
  */
 function buildRefinementCoefficients(knots is array, degree is number, parametersToInsert is array, maximumFinalMultiplicity is number) returns map
 {
@@ -296,13 +414,13 @@ function buildRefinementCoefficients(knots is array, degree is number, parameter
             " (need at least " ~ (degree + 1) ~ ").";
     }
 
-    // Identity to start: coefficientRows[i] is the length-inputCount unit row for input i.
+    // Identity to start: row i is the single unit weight at input i. One entry, not a row of
+    // inputCount entries of which one is 1 — the identity alone used to be an inputCount^2 build,
+    // paid in full even when nothing was inserted.
     var coefficientRows = makeArray(inputCount, 0);
     for (var inputIndex = 0; inputIndex < inputCount; inputIndex += 1)
     {
-        var unitRow = makeArray(inputCount, 0);
-        unitRow[inputIndex] = 1;
-        coefficientRows[inputIndex] = unitRow;
+        coefficientRows[inputIndex] = { "start" : inputIndex, "weights" : [1] };
     }
 
     // Ascending insertion order keeps span searches and multiplicity counts simple.
@@ -337,7 +455,7 @@ function buildRefinementCoefficients(knots is array, degree is number, parameter
             {
                 const denominator = currentKnots[outputIndex + degree] - currentKnots[outputIndex];
                 const alpha = denominator == 0 ? 0 : (parameterToInsert - currentKnots[outputIndex]) / denominator;
-                refinedRows[outputIndex] = scaledRowSum(alpha, coefficientRows[outputIndex], 1 - alpha, coefficientRows[outputIndex - 1]);
+                refinedRows[outputIndex] = blendBandedRows(alpha, coefficientRows[outputIndex], 1 - alpha, coefficientRows[outputIndex - 1]);
             }
         }
         coefficientRows = refinedRows;
@@ -429,7 +547,7 @@ export function knotRefinementOperator(knots is array, degree is number, paramet
             "inputCount" : size(knots) - degree - 1,
             "outputCount" : size(built.rows),
             "knots" : built.knots,
-            "rows" : sparsifyCoefficientRows(built.rows)
+            "rows" : sparsifyBandedRows(built.rows)
         };
 }
 
@@ -575,7 +693,7 @@ export function clampedSegmentOperator(knots is array, degree is number, startPa
             "inputCount" : size(knots) - degree - 1,
             "outputCount" : pieceControlPointCount,
             "knots" : subArray(refinedKnots, firstStartIndex, lastEndIndex + 1),
-            "rows" : sparsifyCoefficientRows(pieceRows)
+            "rows" : sparsifyBandedRows(pieceRows)
         };
 }
 
@@ -1346,13 +1464,16 @@ function interiorRunsAndInsertionPlan(knots is array, degree is number) returns 
 function decomposeIntoSegmentsCore(points is array, knots is array, degree is number) returns map
 {
     const plan = interiorRunsAndInsertionPlan(knots, degree);
-    // Direct sequential insertion, NOT knotRefinementOperator. The operator earns its keep only
-    // when the SAME refinement is applied to many point arrays (every row and column of a
-    // surface grid), because building it costs O(M^2) unconditionally — buildRefinementCoefficients
-    // starts from a dense M x M identity basis and each insertion runs scaledRowSum across
-    // full-length rows. Here it would be built and thrown away after a single application, so
-    // that entire M^2 term is pure overhead; refineKnotVector produces the identical result in
-    // O(insertions x M).
+    // Direct sequential insertion, NOT knotRefinementOperator. The operator earns its keep when the
+    // SAME refinement is applied to many point arrays (every row and column of a surface grid);
+    // built for one array it is work done and thrown away, and refineKnotVector produces the
+    // identical result in O(insertions x M).
+    //
+    // The MARGIN here used to be much larger and is worth restating, since the old note is what a
+    // reader may remember: buildRefinementCoefficients once carried a dense M-wide row per output
+    // and cost an unconditional O(M^2) before a single point was touched. Banded rows removed that
+    // term, so the operator is now within a constant factor of direct insertion even for one array.
+    // The choice below stands on "no reuse, so do the simple thing", not on a complexity gap.
     const refinedPoints = refineKnotVector(points, knots, degree, plan.insertions).controlPoints;
 
     var segmentPointArrays = makeArray(plan.numSegments, 0);
@@ -1551,11 +1672,12 @@ export function insertionsToReach(knots is array, mergedKnots is array, degree i
 //     periodic splines (fewer control points per period than the degree) still work.
 //
 // COST: refinement uses refineKnotVector (direct sequential insertion), NOT
-// knotRefinementOperator. The operator's dense-basis build is O(M^2) before a single point is
-// touched, which only pays off when the same refinement is reused across many point arrays —
-// true for a surface grid's rows and columns, false for one curve. At a 300-point period that is
-// the difference between a 316-point window refined in O(insertions x M) and a 903-point window
-// costing millions of entry operations.
+// knotRefinementOperator, because an operator built for a single point array is reuse that never
+// happens. The WINDOW WIDTH is the cost that actually matters here and is why two windows exist at
+// all: at a 300-point period, the refinement window is 316 points against the clamped elevation
+// window's 903, and everything downstream is linear in that. (The operator itself was once an
+// unconditional O(M^2) build on top of this, which made the choice lopsided; banded coefficient
+// rows removed that term, so it is now a mild preference rather than a large one.)
 // ============================================================================================
 
 /**
@@ -1981,9 +2103,9 @@ export function refinePeriodicPoints(controlPoints is array, knots is array, deg
         }
     }
 
-    // Direct sequential insertion rather than knotRefinementOperator — the operator's O(M^2)
-    // dense-basis build would be thrown away after one application here. See
-    // decomposeIntoSegmentsCore for the same reasoning.
+    // Direct sequential insertion rather than knotRefinementOperator — the operator would be built
+    // and thrown away after one application here. See decomposeIntoSegmentsCore for the full
+    // reasoning, including how much smaller this margin became once coefficient rows went banded.
     const refined = refineKnotVector(window.controlPoints, window.knots, degree, subArray(candidateImages, 0, imageCount));
 
     return extractPeriodicCoreAndRepad(refined.controlPoints, refined.knots, degree, window.coreStart, window.coreEnd, window.period);
@@ -2098,19 +2220,25 @@ export function periodicRefinementOperator(knots is array, degree is number, par
             " rows at degree " ~ degree ~ "). The window's margin is too narrow for this period and degree.";
     }
 
+    // The fold walks each row's OWN band rather than the whole window. It used to test every one of
+    // the window's control point slots for every output row — an outputCount x windowPointCount
+    // scan to find the handful of terms a banded row actually carries. Ascending order is preserved
+    // (a band's offsets ascend, and so did the window indices), so the accumulation rounds
+    // identically.
     var foldedRows = makeArray(outputCount, 0);
     for (var outputIndex = 0; outputIndex < outputCount; outputIndex += 1)
     {
         const windowRow = refinement.rows[sliceStart + outputIndex];
         var storedRow = makeArray(n + degree, 0);
-        for (var windowIndex = 0; windowIndex < windowPointCount; windowIndex += 1)
+        for (var offset = 0; offset < size(windowRow.weights); offset += 1)
         {
-            if (abs(windowRow[windowIndex]) > SPARSE_WEIGHT_CUTOFF)
+            const weight = windowRow.weights[offset];
+            if (abs(weight) > SPARSE_WEIGHT_CUTOFF)
             {
-                const shifted = windowIndex - marginPoints;
+                const shifted = windowRow.start + offset - marginPoints;
                 const cycle = floor(shifted / n);
                 const storedIndex = shifted - cycle * n;
-                storedRow[storedIndex] = storedRow[storedIndex] + windowRow[windowIndex];
+                storedRow[storedIndex] = storedRow[storedIndex] + weight;
             }
         }
         foldedRows[outputIndex] = storedRow;
@@ -2771,8 +2899,8 @@ export function refineSplineToControlPointCount(spline is map, targetCount is nu
 
     const insertions = widestSpanMidpointInsertions(normalized.knots, targetCount - size(normalized.controlPoints));
     const homogeneousPoints = combinePointsAndWeights(normalized.controlPoints, normalized.weights);
-    // Direct insertion, not the operator — one point array, so the operator's O(M^2) dense-basis
-    // build would be discarded after a single application (see decomposeIntoSegmentsCore).
+    // Direct insertion, not the operator — one point array, so the operator build would be
+    // discarded after a single application (see decomposeIntoSegmentsCore).
     const refined = refineKnotVector(homogeneousPoints, normalized.knots, normalized.degree, insertions);
     const separated = separatePointsAndWeights(refined.controlPoints);
 
@@ -3411,8 +3539,38 @@ export function refineSurfaceToControlPointCounts(surface is map, targetUCount i
  */
 export function refineSurfaceToControlPointCounts(surface is map, targetUCount is number, targetVCount is number, balancedOnly is boolean) returns map
 {
+    return refineSurfaceToControlPointCountsWithOperators(surface, targetUCount, targetVCount, balancedOnly).surface;
+}
+
+/**
+ * The same refinement, with the two direction operators HANDED BACK so a caller can carry a SECOND
+ * grid onto the identical knot vectors for free.
+ *
+ * This exists for one caller shape, and it is worth stating because the operators are otherwise an
+ * implementation detail nobody should need: a loop that refines a surface, transforms the refined
+ * net somehow, and then wants to compare the transformed result against the PREVIOUS level's
+ * transformed result. The convex-hull bound that makes such a comparison meaningful requires both
+ * nets to sit on one knot vector, and the obvious way to get there — makeSurfacesShareKnotVectors —
+ * re-derives from scratch what this function has just finished computing: it re-normalizes both
+ * surfaces, re-merges knot vectors that are already nested, rebuilds both operators, and then runs a
+ * full tensor pass over the FINE grid to refine it by nothing at all. Handing the operators back
+ * replaces all of that with one application to the coarse grid, which is the only work there ever
+ * was. The free-refinement loop in freeFormDeformation.fs is the caller this was extracted for.
+ *
+ * Either operator is `undefined` when its direction already met the target and was left alone;
+ * applySurfaceDirectionOperators takes that as "this direction does not move" and skips it, which is
+ * the whole saving in the common case where only one direction still has room to grow.
+ *
+ * @returns {map} : `surface` {map} — exactly what the plain overload returns — plus `uOperator` and
+ *                  `vOperator`, each an operator map or `undefined`
+ */
+export function refineSurfaceToControlPointCountsWithOperators(surface is map, targetUCount is number,
+    targetVCount is number, balancedOnly is boolean) returns map
+{
     var normalized = normalizeSurfaceDefinition(surface);
     var homogeneousGrid = combineSurfaceControlPointsAndWeights(normalized.controlPoints, normalized.weights);
+    var uOperator = undefined;
+    var vOperator = undefined;
 
     // Insertion parameters are chosen by ARC LENGTH, not parameter width. Parameter width is a
     // poor proxy on anything whose parameterization is not uniform-speed — a rational circle
@@ -3423,7 +3581,7 @@ export function refineSurfaceToControlPointCounts(surface is map, targetUCount i
     {
         const isPeriodic = normalized.isUPeriodic == true;
         const insertions = arcLengthSpanInsertions(normalized, true, targetUCount - size(normalized.controlPoints), balancedOnly);
-        const uOperator = directionRefinementOperator(normalized.uKnots, normalized.uDegree, isPeriodic, insertions);
+        uOperator = directionRefinementOperator(normalized.uKnots, normalized.uDegree, isPeriodic, insertions);
         homogeneousGrid = applyKnotRefinementOperatorDownColumns(uOperator, homogeneousGrid);
         normalized.uKnots = knotArray(uOperator.knots);
     }
@@ -3436,7 +3594,50 @@ export function refineSurfaceToControlPointCounts(surface is map, targetUCount i
         afterU.controlPoints = separatedForProfile.points;
         afterU.weights = separatedForProfile.weights;
         const insertions = arcLengthSpanInsertions(afterU, false, targetVCount - size(normalized.controlPoints[0]), balancedOnly);
-        const vOperator = directionRefinementOperator(normalized.vKnots, normalized.vDegree, isPeriodic, insertions);
+        vOperator = directionRefinementOperator(normalized.vKnots, normalized.vDegree, isPeriodic, insertions);
+        homogeneousGrid = applyKnotRefinementOperatorAcrossRows(vOperator, homogeneousGrid);
+        normalized.vKnots = knotArray(vOperator.knots);
+    }
+
+    const separated = separateSurfaceControlPointsAndWeights(homogeneousGrid);
+    normalized.controlPoints = separated.points;
+    normalized.weights = separated.weights;
+    return { "surface" : normalized, "uOperator" : uOperator, "vOperator" : vOperator };
+}
+
+/**
+ * Carry a surface through a pair of direction operators produced by
+ * refineSurfaceToControlPointCountsWithOperators — U down the columns first, then V across the rows,
+ * which is the order that produced them and therefore the order that reproduces their knot vectors.
+ *
+ * The surface must be on the knot vectors those operators were BUILT from; the operators check their
+ * own input counts, so a mismatched grid is caught rather than silently mis-refined. Geometry is
+ * unchanged, as everywhere in this module — this is knot insertion and nothing else.
+ *
+ * `undefined` for either operator means that direction is left exactly as it is, which is the case a
+ * caller hits whenever one direction has reached its ceiling while the other keeps refining.
+ *
+ * @param surface {map}
+ * @param uOperator : an operator map, or `undefined` to leave U alone
+ * @param vOperator : an operator map, or `undefined` to leave V alone
+ * @returns {map} : the refined surface definition
+ */
+export function applySurfaceDirectionOperators(surface is map, uOperator, vOperator) returns map
+{
+    var normalized = normalizeSurfaceDefinition(surface);
+    if (uOperator == undefined && vOperator == undefined)
+    {
+        return normalized;
+    }
+
+    var homogeneousGrid = combineSurfaceControlPointsAndWeights(normalized.controlPoints, normalized.weights);
+    if (uOperator != undefined)
+    {
+        homogeneousGrid = applyKnotRefinementOperatorDownColumns(uOperator, homogeneousGrid);
+        normalized.uKnots = knotArray(uOperator.knots);
+    }
+    if (vOperator != undefined)
+    {
         homogeneousGrid = applyKnotRefinementOperatorAcrossRows(vOperator, homogeneousGrid);
         normalized.vKnots = knotArray(vOperator.knots);
     }
@@ -3700,7 +3901,7 @@ function spanDensityInsertions(knots is array, degree is number, isPeriodic is b
  * Placed here beside its surface sibling rather than up in the curve section, because it shares
  * every helper above and the density DEFINITION (see spanDensityInsertions) is the part worth
  * reading once. The only real difference is the application: one point array, so direct
- * insertion, never an operator — the O(M^2) build would be discarded after a single use.
+ * insertion, never an operator — the operator build would be discarded after a single use.
  */
 export function refineSplineToSpanDensity(spline is map, spanBoundaries is array, minimumControlPointsPerSpan is number) returns map
 {
@@ -4062,6 +4263,88 @@ function directionBreakValues(knots is array, degree is number) returns array
     return append(breaks, domain.end);
 }
 
+/**
+ * The stations' ISOPARAMETRIC CURVES, collapsed once, as weighted control points plus their weight
+ * sums along the varying direction.
+ *
+ * The profile below walks hundreds of parameters along ONE direction while holding three parameters
+ * fixed in the other, and the fixed direction's basis values do not depend on where along the
+ * varying direction it is. Collapsing the net against those fixed basis values once turns every
+ * later sample from a (p+1)(q+1) double sum over the control grid into a (p+1) sum over a curve —
+ * which is what an isocurve IS. It also lets the varying direction's span search and basis values be
+ * computed once per sample and shared by all three stations, instead of recomputed per station.
+ *
+ * Exactly extractIsoparametricCurve's construction, kept private and inlined here because that
+ * function normalizes and rebuilds a homogeneous grid on every call, and this needs three curves off
+ * one already-normalized surface.
+ *
+ * @param surface {map} : normalized, so `weights` is present whenever `isRational`
+ * @param isUDirection {boolean} : which direction VARIES; the stations are in the other one
+ * @param stations {array} : fixed-direction parameters
+ * @returns {array} : one `{ weightedPoints, weights }` per station, indexed along the varying direction
+ */
+function directionStationIsocurves(surface is map, isUDirection is boolean, stations is array) returns array
+{
+    const fixedDegree = isUDirection ? surface.vDegree : surface.uDegree;
+    const fixedKnots = isUDirection ? surface.vKnots : surface.uKnots;
+    const varyingCount = isUDirection ? size(surface.controlPoints) : size(surface.controlPoints[0]);
+    const isRational = surface.isRational == true && surface.weights != undefined;
+    const zeroVector = 0 * surface.controlPoints[0][0];
+
+    var isocurves = makeArray(size(stations), 0);
+    for (var stationIndex = 0; stationIndex < size(stations); stationIndex += 1)
+    {
+        const station = stations[stationIndex];
+        const spanIndex = findEvaluationSpanIndex(fixedKnots, fixedDegree, station);
+        const basisValues = bSplineBasisValues(fixedKnots, fixedDegree, spanIndex, station);
+        const firstFixedIndex = spanIndex - fixedDegree;
+
+        var weightedPoints = makeArray(varyingCount, zeroVector);
+        var weightSums = makeArray(varyingCount, 0);
+        for (var varyingIndex = 0; varyingIndex < varyingCount; varyingIndex += 1)
+        {
+            var pointSum = zeroVector;
+            var weightSum = 0;
+            for (var basisIndex = 0; basisIndex <= fixedDegree; basisIndex += 1)
+            {
+                const rowIndex = isUDirection ? varyingIndex : firstFixedIndex + basisIndex;
+                const columnIndex = isUDirection ? firstFixedIndex + basisIndex : varyingIndex;
+                var blendValue = basisValues[basisIndex];
+                if (isRational)
+                {
+                    blendValue = blendValue * surface.weights[rowIndex][columnIndex];
+                    weightSum += blendValue;
+                }
+                pointSum = pointSum + blendValue * surface.controlPoints[rowIndex][columnIndex];
+            }
+            weightedPoints[varyingIndex] = pointSum;
+            weightSums[varyingIndex] = weightSum;
+        }
+        isocurves[stationIndex] = { "weightedPoints" : weightedPoints, "weights" : weightSums };
+    }
+    return isocurves;
+}
+
+/** One point on a collapsed station isocurve, given the varying direction's already-computed span
+    start and basis values. Rational handling mirrors evaluateBSplineSurfacePoint exactly: the weight
+    sum is accumulated and divided out only when the surface is rational. */
+function stationIsocurvePoint(isocurve is map, firstIndex is number, basisValues is array, degree is number,
+    isRational is boolean) returns Vector
+{
+    var pointSum = 0 * isocurve.weightedPoints[0];
+    var weightSum = 0;
+    for (var basisIndex = 0; basisIndex <= degree; basisIndex += 1)
+    {
+        const index = firstIndex + basisIndex;
+        pointSum = pointSum + basisValues[basisIndex] * isocurve.weightedPoints[index];
+        if (isRational)
+        {
+            weightSum += basisValues[basisIndex] * isocurve.weights[index];
+        }
+    }
+    return isRational ? pointSum / weightSum : pointSum;
+}
+
 function directionArcLengthProfile(surface is map, isUDirection is boolean) returns map
 {
     const degree = isUDirection ? surface.uDegree : surface.vDegree;
@@ -4094,23 +4377,44 @@ function directionArcLengthProfile(surface is map, isUDirection is boolean) retu
     }
     parameters[writeIndex] = domain.end;
 
+    // THE ONE PLACE IN THIS PASS WHERE THE ARITHMETIC IS REGROUPED, so it is called out rather than
+    // buried. Collapsing the fixed direction first computes sum_i uB[i] * (sum_j vB[j] w_ij P_ij)
+    // where the direct evaluator computed sum_i sum_j (uB[i] vB[j] w_ij) P_ij. Mathematically the
+    // same sum; in floating point the groupings round differently, in the last bit or two.
+    //
+    // That is acceptable HERE and would not be elsewhere in this module, for the reason the section
+    // header gives: knot placement is a HEURISTIC. Insertion is exact wherever it lands, so a
+    // parameter that moves by 1e-15 changes the distribution by 1e-15 and the geometry by nothing.
+    // Nothing downstream is a knife edge either — the allocator's tie test carries
+    // ALLOCATION_TIE_TOLERANCE at 1e-9, nine orders above the perturbation, and every cut is
+    // re-checked against its own span bounds before use.
+    const isRational = surface.isRational == true && surface.weights != undefined;
+    const isocurves = directionStationIsocurves(surface, isUDirection, stations);
+
     const sampleCount = size(parameters);
     var cumulative = makeArray(sampleCount, 0 * meter);
     var previousPoints = makeArray(size(stations), WORLD_ORIGIN);
+
+    const firstSpanIndex = findEvaluationSpanIndex(knots, degree, parameters[0]);
+    const firstBasisValues = bSplineBasisValues(knots, degree, firstSpanIndex, parameters[0]);
     for (var stationIndex = 0; stationIndex < size(stations); stationIndex += 1)
     {
-        previousPoints[stationIndex] = isUDirection
-            ? evaluateBSplineSurfacePoint(surface, parameters[0], stations[stationIndex])
-            : evaluateBSplineSurfacePoint(surface, stations[stationIndex], parameters[0]);
+        previousPoints[stationIndex] = stationIsocurvePoint(isocurves[stationIndex],
+            firstSpanIndex - degree, firstBasisValues, degree, isRational);
     }
+
     for (var index = 1; index < sampleCount; index += 1)
     {
+        // Computed once and shared by all three stations — they differ only in which isocurve they
+        // read, never in where along it they sit.
+        const spanIndex = findEvaluationSpanIndex(knots, degree, parameters[index]);
+        const basisValues = bSplineBasisValues(knots, degree, spanIndex, parameters[index]);
+        const firstIndex = spanIndex - degree;
+
         var stepLength = 0 * meter;
         for (var stationIndex = 0; stationIndex < size(stations); stationIndex += 1)
         {
-            const point = isUDirection
-                ? evaluateBSplineSurfacePoint(surface, parameters[index], stations[stationIndex])
-                : evaluateBSplineSurfacePoint(surface, stations[stationIndex], parameters[index]);
+            const point = stationIsocurvePoint(isocurves[stationIndex], firstIndex, basisValues, degree, isRational);
             stepLength += norm(point - previousPoints[stationIndex]);
             previousPoints[stationIndex] = point;
         }
@@ -6028,17 +6332,43 @@ function periodicSimplificationOperators(knots is array, degree is number, targe
         cyclicA[row] = denseRow;
     }
 
+    // Which rows actually touch each unknown. A refinement operator's rows have at most `degree + 1`
+    // nonzero terms, so each COLUMN of A is nonzero on only a handful of rows — the band the comment
+    // below names. Collecting them costs one scan of a matrix that has just been built anyway, and
+    // turns the normal-equation loop from O(targetN^2 * commonN) into O(targetN^2 * bandwidth).
+    //
+    // THIS IS EXACT, not an approximation of the sum. A skipped row contributes cyclicA[row][i] == 0
+    // times something, which is exactly zero, and adding zero to a finite running sum returns it
+    // unchanged — so every entry below is bit-for-bit what the dense triple loop produced. The
+    // surviving rows are still visited in ascending order, so even the rounding of the accumulation
+    // is untouched. That matters more here than the speed does: this matrix decides the projection,
+    // and the tester's PERIODIC-SIMPLIFY exactness check is what would catch it drifting.
+    var rowsTouchingUnknown = makeArray(targetN, []);
+    for (var row = 0; row < commonN; row += 1)
+    {
+        for (var i = 0; i < targetN; i += 1)
+        {
+            if (cyclicA[row][i] != 0)
+            {
+                rowsTouchingUnknown[i] = append(rowsTouchingUnknown[i], row);
+            }
+        }
+    }
+
     // Normal equations. transpose(A)*A is targetN x targetN, symmetric, cyclically banded, and
     // positive definite because a refinement operator between nested spline spaces is injective.
     var normalMatrix = makeArray(targetN, 0);
     for (var i = 0; i < targetN; i += 1)
     {
+        const contributingRows = rowsTouchingUnknown[i];
+        const contributingCount = size(contributingRows);
         var normalRow = makeArray(targetN, 0);
         for (var j = 0; j < targetN; j += 1)
         {
             var sum = 0;
-            for (var row = 0; row < commonN; row += 1)
+            for (var index = 0; index < contributingCount; index += 1)
             {
+                const row = contributingRows[index];
                 sum = sum + cyclicA[row][i] * cyclicA[row][j];
             }
             normalRow[j] = sum;
@@ -6934,7 +7264,7 @@ export function decomposeSurfaceIntoBezierPatches(surface is map) returns array
 
     // knotRefinementOperator, NOT refineKnotVector, on both directions — the opposite of
     // decomposeIntoSegmentsCore's choice, and for the reason stated there: the same refinement
-    // runs down every column (and then across every row), so the O(M^2) build amortizes instead
+    // runs down every column (and then across every row), so the operator build amortizes instead
     // of being discarded after one application.
     var homogeneousGrid = combineSurfaceControlPointsAndWeights(normalized.controlPoints, normalized.weights);
     if (size(uPlan.insertions) > 0)
