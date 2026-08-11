@@ -11,7 +11,9 @@ import(path : "onshape/std/curveGeometry.fs", version : "3044.0");
 import(path : "onshape/std/error.fs", version : "3044.0");
 import(path : "onshape/std/containers.fs", version : "3044.0");
 import(path : "onshape/std/manipulator.fs", version : "3044.0");
-import(path : "onshape/std/coordSystem.fs", version : "3044.0");   // WORLD_ORIGIN
+import(path : "onshape/std/coordSystem.fs", version : "3044.0");   // WORLD_ORIGIN, toWorld, fromWorld
+import(path : "onshape/std/transform.fs", version : "3044.0");     // transform, identityTransform
+import(path : "onshape/std/matrix.fs", version : "3044.0");        // matrix, svd, for the planarize fit
 import(path : "onshape/std/math.fs", version : "3044.0");
 import(path : "onshape/std/debug.fs", version : "3044.0");
 import(path : "onshape/std/approximationUtils.fs", version : "3044.0"); // DEGREE_BOUND, MAX_DEGREE
@@ -35,13 +37,12 @@ import(path : "9a2b77793cdc37bace6d915a", version : "6b2f05959547b5e81628762a");
  * Someone who knows Edit curve should not have to learn anything to use this. Where this file
  * diverges it is because a surface genuinely differs from a curve, and every such spot says so.
  *
- * The four divergences, all forced:
+ * The three divergences, all forced:
  *   1. Control points are indexed by (u, v), not by a single integer. Stored as two fields so the
  *      dialog reads "Control point (2, 3)" rather than a flat index that silently means something
  *      different the moment the net's column count changes.
  *   2. Elevation takes a target degree PER DIRECTION.
- *   3. There is no Planarize. Fitting a control net to a plane is definable but of no clear value.
- *   4. PERIODIC directions expose only the FUNDAMENTAL control points, never the stored wrap
+ *   3. PERIODIC directions expose only the FUNDAMENTAL control points, never the stored wrap
  *      padding — see applyControlPointEdits. Showing a handle for a padding row would let a user
  *      break the overlap condition that makes the surface closed, i.e. hand the kernel a surface
  *      whose representation claims closure its data does not have.
@@ -52,6 +53,28 @@ import(path : "9a2b77793cdc37bace6d915a", version : "6b2f05959547b5e81628762a");
  * a port of this one. UVN (Tangent) IS implemented and is better defined here than on a curve,
  * because a surface's normal is unambiguous where a curve needs a curvature frame that degenerates
  * at inflections.
+ *
+ * TWO PIECES COME FROM freeFormDeformation.fs RATHER THAN FROM editCurve.fs, back-ported because a
+ * control net wants them for exactly the reasons a deformation lattice does. Both act on the XYZ
+ * mode's multi-point selection, which is the thing the two features have in common that a curve's
+ * single control point does not.
+ *
+ *   A. THE SELECTION HANDLE IS A fullTriadManipulator, not a plain triad — rotation rings as well as
+ *      translation arrows. Rotating a selected block about its own centre is what twists a row of
+ *      control points or rolls a patch edge, and nothing else in the feature can express it.
+ *      EDIT_SURFACE_SPEC.md section 3 called this out as the one deliberate extension over
+ *      routingCurve.fs's template, which stores the rotation only to keep its triad oriented.
+ *      It is unconditional, which is what keeps ONE writer on the selection: see
+ *      FREE_FORM_DEFORMATION_SPEC.md section 6.5 for the class of bug two manipulators writing the
+ *      same points through different storage produced there.
+ *
+ *   B. PLANARIZE SELECTION is a BUTTON that flattens the selected control points onto their own
+ *      least-squares plane, once, writing ordinary point overrides. It is NOT editCurve.fs's
+ *      `planarize`, which is a persistent toggle that flattens the WHOLE curve against a chosen
+ *      reference plane; this is FFD's one-shot edit on a selection, and the difference is the whole
+ *      answer to the "of no clear value" note this comment used to carry. Flattening an entire net
+ *      is indeed of little value. Flattening the four points a user just dragged out of alignment,
+ *      or a boundary row that needs to sit flat, is an everyday move.
  */
 
 /**
@@ -153,12 +176,23 @@ export enum EditSurfaceResult
 
 const INDEX_MANIPULATOR = "indexManipulator";
 const INDICES_MANIPULATOR = "indicesManipulator";
-const OFFSET_MANIPULATOR = "offsetManipulator";
+const SELECTION_TRANSFORM_MANIPULATOR = "selectionTransformManipulator";
 
 const U_TANGENT_MANIPULATOR = "UTangentManipulator";
 const V_TANGENT_MANIPULATOR = "VTangentManipulator";
 const N_MANIPULATOR = "NTangentManipulator";
 const LINEAR_MANIPULATORS = [U_TANGENT_MANIPULATOR, V_TANGENT_MANIPULATOR, N_MANIPULATOR];
+
+/**
+ * The live selection rotation is stored as a FLAT nine-value array, row by row, never as a Matrix.
+ *
+ * A precondition cannot hold a Transform, so the transform a fullTriadManipulator reports has to be
+ * decomposed to be stored at all, and the flat form is the only rotation shape that round-trips —
+ * the conclusion routingCurve.fs and freeFormDeformation.fs both reached. Keeping the identity in
+ * the same shape means the default, the reset and the comparison all read the same data rather than
+ * one of them quietly holding a 3x3.
+ */
+const IDENTITY_ROTATION = [1, 0, 0, 0, 1, 0, 0, 0, 1];
 
 /**
  * A surface editing feature.
@@ -253,6 +287,14 @@ export const editSurface = defineFeature(function(context is Context, id is Id, 
                         annotation { "Name" : "V index" }
                         isInteger(selectedIndex.vIndexValue, CONTROL_POINT_INDEX_BOUND);
                     }
+
+                    // A REAL button — `isButton` is satisfied by the value staying undefined, which
+                    // is why `planarizeSelection` is absent from the defaults map below. Pressing it
+                    // reaches editSurfaceEditLogic as its `clickedButton` argument. XYZ mode only,
+                    // because it acts on a SELECTION and UVN mode has a single point.
+                    annotation { "Name" : "Planarize selection",
+                                 "Description" : "Move every selected control point onto the least-squares plane through them. Acts once, on press, and writes ordinary point overrides: there is no persistent planar constraint afterwards." }
+                    isButton(definition.planarizeSelection);
                 }
                 else
                 {
@@ -262,6 +304,24 @@ export const editSurface = defineFeature(function(context is Context, id is Id, 
                     annotation { "Name" : "V index" }
                     isInteger(definition.selectedVIndex, CONTROL_POINT_INDEX_BOUND);
                 }
+
+                // The cumulative transform of the CURRENT XYZ selection, live until the selection
+                // changes and then baked into the point overrides below. See bakeSelectionTransform
+                // for why the two-stage storage exists rather than one or the other alone. Stored
+                // decomposed because a Transform is not a precondition type: a flat nine-value
+                // rotation behind isAnything plus three lengths, the routingCurve.fs pattern.
+                //
+                // Declared OUTSIDE the mode branch above so that a transform left live by XYZ mode
+                // is still readable — and therefore still bakeable — after a switch to UVN mode.
+                annotation { "Name" : "Selection rotation", "UIHint" : UIHint.ALWAYS_HIDDEN }
+                isAnything(definition.selectionRotation);
+
+                annotation { "Name" : "Selection translation X", "UIHint" : UIHint.ALWAYS_HIDDEN }
+                isLength(definition.selectionTranslateX, ZERO_DEFAULT_LENGTH_BOUNDS);
+                annotation { "Name" : "Selection translation Y", "UIHint" : UIHint.ALWAYS_HIDDEN }
+                isLength(definition.selectionTranslateY, ZERO_DEFAULT_LENGTH_BOUNDS);
+                annotation { "Name" : "Selection translation Z", "UIHint" : UIHint.ALWAYS_HIDDEN }
+                isLength(definition.selectionTranslateZ, ZERO_DEFAULT_LENGTH_BOUNDS);
 
                 annotation { "Name" : "Points overrides", "Item name" : "point override", "Item label template" : "(#uIndex, #vIndex): #x;#y;#z", "UIHint" : [UIHint.PREVENT_ARRAY_REORDER, UIHint.COLLAPSE_ARRAY_ITEMS] }
                 definition.controlPointEdits is array;
@@ -359,14 +419,24 @@ export const editSurface = defineFeature(function(context is Context, id is Id, 
 
         if (definition.editControlPoints)
         {
+            // Three states of the net, and which is which matters:
+            //   surfaceBeforeEdits — prepared, nothing applied. The frame the UVN manipulators and
+            //                        the XYZ triad's axes are read off, so they stay put while a
+            //                        drag changes the geometry underneath them.
+            //   committedSurface   — the stored point overrides applied. This is what the live
+            //                        selection transform is measured against, so it is the triad's
+            //                        base and the state every bake reconstructs.
+            //   surface            — committed plus the live transform. What gets emitted.
             const surfaceBeforeEdits = surface;
-            surface = applyControlPointEdits(context, id, surface, definition.controlPointEdits);
+            const committedSurface = applyControlPointEdits(context, surface, definition.controlPointEdits);
             if (definition.editPointMode == EditPointMode.XYZ)
             {
-                showXYZEditManipulator(context, id, definition, surface, surface.editToCell);
+                surface = applySelectionTransform(committedSurface, surfaceBeforeEdits, definition);
+                showSelectionTransformManipulator(context, id, definition, committedSurface, surfaceBeforeEdits);
             }
             else
             {
+                surface = committedSurface;
                 showUVNTangentEditManipulators(context, id, surfaceBeforeEdits, surface, definition);
             }
         }
@@ -381,6 +451,24 @@ export const editSurface = defineFeature(function(context is Context, id is Id, 
         {
             reportFeatureInfo(context, id, "Reducing the control point count moved the surface by up to " ~
                 toString(surface.deviation) ~ ". Raise the targets to reduce that.");
+        }
+        // The other step that moves it, reported separately because the cause and the cure are
+        // different — and because it changes the u/v parameterization, which no other step here does.
+        if (surface.reparameterized == true)
+        {
+            reportFeatureInfo(context, id, "A closed (periodic) direction was re-fitted onto an even, arc-length " ~
+                "knot vector, moving the surface by up to " ~ toString(surface.uniformizationDeviation) ~
+                ". A kernel cylinder, cone or revolve arrives as rational Bezier arcs: the arc joints sit at " ~
+                "multiplicity equal to the degree, which pulls control points into a tight cluster there, and the " ~
+                "arcs run about 1.7 to 1 slower in parameter at those joints than mid-arc, which crowds the rest of " ~
+                "the net and any u/v-driven feature into the same bands. Neither is fixable by adding or removing " ~
+                "knots. This also re-maps u and v, by design.");
+        }
+        if (surface.uniformizationCapped == true)
+        {
+            reportFeatureWarning(context, id, "Evening out a closed (periodic) direction hit the control point " ~
+                "ceiling before it reached the requested tolerance. The deviation reported is what was achieved, " ~
+                "not what was asked for. Raise the tolerance.", ["approximationTolerance"]);
         }
         if (surface.periodicBudgetSkipped == true)
         {
@@ -466,7 +554,15 @@ export const editSurface = defineFeature(function(context is Context, id is Id, 
             "elevate" : false, "refine" : false, "editControlPoints" : false, "showDetails" : true,
             "editPointMode" : EditPointMode.XYZ, "selectedIndices" : [], "controlPointEdits" : [],
             "selectedUIndex" : 0, "selectedVIndex" : 0,
+            "selectionRotation" : IDENTITY_ROTATION,
+            "selectionTranslateX" : 0 * meter, "selectionTranslateY" : 0 * meter, "selectionTranslateZ" : 0 * meter,
             "result" : EditSurfaceResult.REPLACE_FACE });
+// `planarizeSelection` is deliberately absent from the defaults above: isButton is satisfied by the
+// value being undefined, so giving it a default turns the button into an ordinary parameter.
+//
+// The three selection-transform defaults ARE present, and they are what makes this change safe for
+// features built against an earlier version: a stored definition with no live transform in it comes
+// back as the identity, so nothing regenerates differently.
 
 //==================================================================
 //======================== Input Processing ========================
@@ -634,38 +730,71 @@ function reduceToControlPointCounts(surface is map, targetUCount is number, targ
  */
 function prepareSurface(surface is map, definition is map) returns map
 {
-    const targetUDegree = definition.elevate ? max(surface.uDegree, definition.uElevationDegree) : surface.uDegree;
-    const targetVDegree = definition.elevate ? max(surface.vDegree, definition.vElevationDegree) : surface.vDegree;
+    // EVEN OUT ANY CLOSED DIRECTION FIRST, before a degree or a count is chosen off it. This is the
+    // step that makes a cylinder, a cone or a revolve editable rather than merely readable, and it
+    // replaces a claim this comment used to make in the opposite direction.
+    //
+    // The old claim: a kernel cylinder carries multiplicity == degree at its Bezier arc joints;
+    // those knots are not redundant, because the CIRCLE is smooth there but its homogeneous curve —
+    // the thing the knots actually describe — corners there; so they survive removeRedundantSurfaceKnots,
+    // drag their neighbouring Greville abscissae in against them, and leave a tight cluster of
+    // handles at each arc joint "that no placement can undo". Every word of that is true and the
+    // conclusion drawn from it was wrong. It IS undoable — just not by insertion or removal, which
+    // is all that had been tried. It takes a refit, and the second half of the same defect makes the
+    // case unanswerable: a revolve's arcs are also parameterized about 1.7 : 1 slower at the joins
+    // than mid-arc, so even a net with no multiple knots left comes out crowded in the same two
+    // bands, and so does anything downstream reading the result's u/v.
+    //
+    // So: uniformize, which lands the knots evenly in arc length, drops every multiplicity to 1 and
+    // makes u/v proportional to arc length. It is lossy where the old behaviour was exact, and the
+    // deviation is reported rather than absorbed. Already-even directions are detected and skipped,
+    // so this costs one profile scan on a surface that does not need it and nothing at all on an
+    // open one. See the module's periodic uniformization section.
+    //
+    // GATED ON "Approximate", and that gate is the file's no-silent-approximation rule rather than a
+    // convenience. A refit moves the surface, so it may only run where the user has said a moved
+    // surface is acceptable and has named the number. The gate costs nothing in practice: a
+    // cylinder, a cone and a revolve are not B-spline faces, so evSurfaceDefinition refuses them and
+    // they can only be read through Approximate in the first place — every surface this fixes is
+    // already on the approximate path. With it off the read stays exact, bunched net and all.
+    const uniformization = definition.approximate ?
+        uniformizePeriodicSurfaceDirections(surface, definition.approximationTolerance) : surface;
+    const evened = uniformization.uniformized == true ? uniformization : surface;
 
+    const targetUDegree = definition.elevate ? max(evened.uDegree, definition.uElevationDegree) : evened.uDegree;
+    const targetVDegree = definition.elevate ? max(evened.vDegree, definition.vElevationDegree) : evened.vDegree;
+
+    var prepared;
     if (!definition.refine)
     {
-        return prepareSurfaceForDeformation(surface, targetUDegree, targetVDegree, 0, 0);
+        prepared = prepareSurfaceForDeformation(evened, targetUDegree, targetVDegree, 0, 0);
+    }
+    else
+    {
+        // Clean the representation BEFORE adding to it, so refinement builds on the smallest exact
+        // net rather than on whatever redundancy an earlier elevation or edit left behind. Tolerance
+        // is deliberately tight: this step is meant to cost nothing.
+        const cleaned = removeRedundantSurfaceKnots(evened, TOLERANCE.zeroLength * meter);
+
+        const targetUCount = definition.uControlPointCount + (evened.isUPeriodic == true ? targetUDegree : 0);
+        const targetVCount = definition.vControlPointCount + (evened.isVPeriodic == true ? targetVDegree : 0);
+
+        // The target goes DOWN as well as up, which needs two different operations. Above the current
+        // count it is knot INSERTION — exact, geometry untouched. Below it, knot REMOVAL, which is
+        // lossy and reports what it cost. Elevation runs first either way, since it sets the degree
+        // both work under.
+        prepared = reduceToControlPointCounts(
+            prepareSurfaceForDeformation(cleaned, targetUDegree, targetVDegree, targetUCount, targetVCount),
+            targetUCount, targetVCount);
     }
 
-    // Clean the representation BEFORE adding to it, so refinement builds on the smallest exact net
-    // rather than on whatever redundancy an earlier elevation or edit left behind. Tolerance is
-    // deliberately tight: this step is meant to cost nothing.
-    //
-    // It does NOT clean up a cylinder, and the note that used to claim it did was wrong. A kernel
-    // cylinder carries multiplicity == degree at its Bezier arc joints, and those knots are not
-    // redundant: the CIRCLE is smooth there, but its homogeneous curve — the thing the knots
-    // actually describe — corners there, which is precisely why an exact rational circle needs
-    // several segments at all. So they survive, drag their neighbouring Greville abscissae in
-    // against them, and leave a tight pair at each arc joint that no placement can undo. That is the
-    // price of the net being an exact circle, and it is a different question from where the knots
-    // between the joints go.
-    const cleaned = removeRedundantSurfaceKnots(surface, TOLERANCE.zeroLength * meter);
-
-    const targetUCount = definition.uControlPointCount + (surface.isUPeriodic == true ? targetUDegree : 0);
-    const targetVCount = definition.vControlPointCount + (surface.isVPeriodic == true ? targetVDegree : 0);
-
-    // The target goes DOWN as well as up, which needs two different operations. Above the current
-    // count it is knot INSERTION — exact, geometry untouched. Below it, knot REMOVAL, which is lossy
-    // and reports what it cost. Elevation runs first either way, since it sets the degree both work
-    // under.
-    return reduceToControlPointCounts(
-        prepareSurfaceForDeformation(cleaned, targetUDegree, targetVDegree, targetUCount, targetVCount),
-        targetUCount, targetVCount);
+    // Re-attached rather than left to survive the intervening calls: every step between here and the
+    // read returns a map derived from its input, so these WOULD carry through, and depending on that
+    // is exactly the kind of coupling that breaks the next time one of them rebuilds from scratch.
+    prepared.uniformizationDeviation = uniformization.uniformized == true ? uniformization.deviation : 0 * meter;
+    prepared.reparameterized = uniformization.uniformized == true;
+    prepared.uniformizationCapped = uniformization.uniformizationCapped == true;
+    return prepared;
 }
 
 //==================================================================
@@ -1154,10 +1283,18 @@ function surfaceDomains(surface is map) returns map
 }
 
 /**
- * Re-read the surface the edits apply ON TOP OF, for the manipulator handler, which runs outside
- * the feature body and so has no access to what it computed. Mirrors editCurve.fs's
- * computeBSplineBeforeEdit, including its tolerance for failure: if the read throws, the caller
- * only wanted a sensible default weight, and 1 is a sensible default weight.
+ * Re-read the surface the edits apply ON TOP OF, for the manipulator handler and the editing logic,
+ * both of which run outside the feature body and so have no access to what it computed. Mirrors
+ * editCurve.fs's computeBSplineBeforeEdit, including its tolerance for failure: if the read throws,
+ * the caller gets `{}` and decides for itself what that means.
+ *
+ * THIS MUST PRODUCE THE SAME NET THE FEATURE BODY DOES, which is why it goes through
+ * readSurfaceAndTrim rather than readSurfaceDefinition even though it never wants the loops. The
+ * trimmed result mode reads through evApproximateBSplineSurface — a different call, and a different
+ * control net, with its own count — so reading exactly here and approximately there would put the
+ * handles somewhere the regeneration does not, and would compute a rotation bake against positions
+ * the surface does not have. Same rule freeFormDeformation.fs states on readSourceSurfaces, and the
+ * reason `result` is a bake trigger in preparedNetChanged.
  */
 function computeSurfaceBeforeEdit(context is Context, definition is map) returns map
 {
@@ -1166,8 +1303,8 @@ function computeSurfaceBeforeEdit(context is Context, definition is map) returns
         return {};
     }
     // If the read throws it means the face is not a spline and approximation is off, or the
-    // approximation parameters are wrong. In both cases the caller only wanted a default weight and
-    // a net size, so failing quietly to {} is right — same call editCurve.fs makes.
+    // approximation parameters are wrong. Both are ordinary states during interactive editing rather
+    // than diagnosable faults, so failing quietly to {} is right — same call editCurve.fs makes.
     var surface;
     try
     {
@@ -1177,7 +1314,7 @@ function computeSurfaceBeforeEdit(context is Context, definition is map) returns
         const faces = evaluateQuery(context, definition.face);
         surface = size(faces) > 1
             ? buildMergedSurface(context, definition, faces).surface
-            : normalizeSurfaceDefinition(readSurfaceDefinition(context, definition));
+            : normalizeSurfaceDefinition(readSurfaceAndTrim(context, definition).surface);
     }
     catch
     {
@@ -1239,18 +1376,21 @@ function cellKey(uIndex is number, vIndex is number) returns string
 
 /**
  * Apply the user's offsets and weight overrides to the control net. Mirrors editCurve.fs's
- * editControlPoints, including both of its guards (out of bounds, and two edits targeting the same
- * control point) and its `editToIndex` bookkeeping, which exists so the XYZ manipulator does not
- * have to rescan the edits array per selected point.
+ * editControlPoints, including both of its guards: out of bounds, and two edits targeting the same
+ * control point.
+ *
+ * TAKES NO `id`, and that is what lets the manipulator and editing-logic paths call it. Both need
+ * the COMMITTED net — the state the live selection transform is measured against — and neither has
+ * a feature id to report against. Nothing here ever needed one: the two guards throw `regenError`,
+ * which carries its own parameter names.
  */
-function applyControlPointEdits(context is Context, id is Id, surface is map, controlPointEdits is array) returns map
+function applyControlPointEdits(context is Context, surface is map, controlPointEdits is array) returns map
 {
     const counts = fundamentalControlPointCounts(surface);
     const storedUCount = size(surface.controlPoints);
     const storedVCount = size(surface.controlPoints[0]);
 
     var editedCells = {};
-    surface.editToCell = {};
     for (var i = 0; i < size(controlPointEdits); i += 1)
     {
         const controlPointEdit = controlPointEdits[i];
@@ -1288,7 +1428,6 @@ function applyControlPointEdits(context is Context, id is Id, surface is map, co
                 surface.weights[row][column] = controlPointEdit.weight;
             }
         }
-        surface.editToCell[key] = i;
     }
     return surface;
 }
@@ -1328,58 +1467,331 @@ function flatIndexFromCell(uIndex is number, vIndex is number, vCount is number)
 }
 
 /**
- * The triad for XYZ mode, at the average of the selected control points. Mirrors editCurve.fs's
- * showXYZEditManipulator exactly, including recovering each point's UNEDITED position by
- * subtracting its current offset, so the triad sits where the geometry started and its offset
- * reads as the edit.
+ * The handle for XYZ mode: a FULL triad — translation arrows and rotation rings — on the selection's
+ * own centre, in the surface's own frame. Back-ported from freeFormDeformation.fs's
+ * showTransformManipulator, and the extension over routingCurve.fs's template that
+ * EDIT_SURFACE_SPEC.md section 3 asked for.
+ *
+ * ALWAYS the full triad, never a plain one. A fullTriadManipulator carries translation arrows as
+ * well as rotation rings, so a translate-only mode is strictly less capable at no saving, and the
+ * rotation — which nothing else in this feature can express — would be the thing hidden behind the
+ * mode selector. It also costs a whole class of bug: two manipulators writing the same selection
+ * through different storage (a live transform versus per-point overrides) have to be reconciled
+ * whenever the mode changes, and FREE_FORM_DEFORMATION_SPEC.md section 6.5 records what that looked
+ * like when they were not.
+ *
+ * Its base has to be the frame the stored transform was measured in, which is the COMMITTED net —
+ * point overrides applied, live transform not. Handing it the already-transformed positions instead
+ * would compound the transform against itself on every regeneration.
+ *
+ * @param context {Context}
+ * @param id {Id}
+ * @param definition {map}
+ * @param committedSurface {map} : the net with point overrides applied and no live transform
+ * @param surfaceBeforeEdits {map} : the prepared net with nothing applied, for the frame directions
  */
-function showXYZEditManipulator(context is Context, id is Id, definition is map, surface is map, editToCell is map)
+function showSelectionTransformManipulator(context is Context, id is Id, definition is map,
+    committedSurface is map, surfaceBeforeEdits is map)
 {
-    if (!indicesAreValid(context, id, definition.selectedIndices, surface))
+    if (!indicesAreValid(context, id, definition.selectedIndices, committedSurface))
     {
         return;
     }
-    const numSelections = size(definition.selectedIndices);
-    if (numSelections == 0)
+    // Duplicates in the list need no warning of their own any more: validSelectedCells collapses
+    // them, and one cell transformed once is exactly what a duplicate should mean. The old
+    // translate-only triad had to refuse them because a repeated cell skewed the average it took.
+    const selectedCells = validSelectedCells(definition.selectedIndices, fundamentalControlPointCounts(committedSurface));
+    if (size(selectedCells) == 0)
     {
         return;
     }
 
-    var base = WORLD_ORIGIN;
-    var offset = WORLD_ORIGIN;
-    var seenCells = {};
-    for (var i = 0; i < numSelections; i += 1)
-    {
-        const selectedIndex = definition.selectedIndices[i];
-        const key = cellKey(selectedIndex.uIndexValue, selectedIndex.vIndexValue);
-        if (seenCells[key] == true)
-        {
-            reportFeatureWarning(context, id, "Control point (" ~ selectedIndex.uIndexValue ~ ", " ~
-                selectedIndex.vIndexValue ~ ") selected multiple times", ["selectedIndices"]);
-            return;
-        }
-        seenCells[key] = true;
+    const base = selectionBaseCoordSystem(committedSurface, surfaceBeforeEdits, selectedCells);
+    const stored = storedSelectionTransform(definition);
 
-        var currentOffset = WORLD_ORIGIN;
-        if (editToCell[key] != undefined)
-        {
-            const edit = definition.controlPointEdits[editToCell[key]];
-            currentOffset = [edit.x, edit.y, edit.z] as Vector;
-        }
-        offset += currentOffset;
-        base += surface.controlPoints[selectedIndex.uIndexValue][selectedIndex.vIndexValue] - currentOffset;
-    }
-
-    base /= numSelections;
-    offset /= numSelections;
-
-    const triadManip = triadManipulator({
-                "base" : base,
-                "offset" : offset
-            });
     addManipulators(context, id, {
-                (OFFSET_MANIPULATOR) : triadManip
+                (SELECTION_TRANSFORM_MANIPULATOR) : fullTriadManipulator({
+                            "base" : base,
+                            "transform" : stored == undefined ? identityTransform() : stored,
+                            "displayEditView" : true
+                        })
             });
+}
+
+/**
+ * The frame the live selection transform acts in: origin at the selection's centroid on the
+ * COMMITTED net, axes from the surface's own frame at the selection's central control point.
+ *
+ * WHY THE SURFACE'S FRAME AND NOT THE WORLD'S. This is the editSurface answer to what
+ * freeFormDeformation.fs solves by orienting its triad to the lattice's own axes: the useful
+ * rotations are the ones the geometry defines. Rotating about the NORMAL twists a block of control
+ * points in the surface; rotating about the u tangent rolls a patch edge. Both are unusable if the
+ * rings are stuck to world X/Y/Z on a surface that is not axis-aligned.
+ *
+ * `coordSystem` requires its two named axes to be perpendicular, and they are, exactly: the normal
+ * is `normalize(cross(uTangent, vTangent))`, which is perpendicular to the u tangent by
+ * construction. The V TANGENT IS DELIBERATELY NOT USED as an axis — u and v are not orthogonal on a
+ * general surface, so it would not be a legal frame, and orthogonalizing it would cost it the very
+ * meaning that makes it worth showing. Its role stays with the UVN edit mode, which is three
+ * independent one-dimensional drags rather than a triad and so is free to be oblique.
+ *
+ * THE DIRECTIONS COME FROM THE UNEDITED NET, the centroid from the committed one. The stored
+ * transform is measured against this frame, so a frame that chased the edits would silently
+ * reinterpret it on every regeneration. Preparing (approximate, elevate, refine) does move it — and
+ * every one of those is a bake trigger in the editing logic, for exactly this reason.
+ *
+ * Falls back to world axes where the surface has no frame at all — a cone apex, a pole — which is
+ * the only honest answer there and still leaves the triad usable.
+ *
+ * @param committedSurface {map} : the net the centroid is taken from
+ * @param surfaceBeforeEdits {map} : the net the directions are taken from
+ * @param selectedCells {array} : cells, already range-checked and de-duplicated
+ * @returns {CoordSystem}
+ */
+function selectionBaseCoordSystem(committedSurface is map, surfaceBeforeEdits is map, selectedCells is array) returns CoordSystem
+{
+    var centroid = WORLD_ORIGIN;
+    var uIndexSum = 0;
+    var vIndexSum = 0;
+    for (var cell in selectedCells)
+    {
+        centroid += committedSurface.controlPoints[cell.uIndexValue][cell.vIndexValue];
+        uIndexSum += cell.uIndexValue;
+        vIndexSum += cell.vIndexValue;
+    }
+    centroid /= size(selectedCells);
+
+    const central = centralSelectedCell(selectedCells, uIndexSum / size(selectedCells), vIndexSum / size(selectedCells));
+    // try silent, matching showUVNTangentEditManipulators' call to the same function: the only thing
+    // it throws is "degenerate here", which is a shape the surface is allowed to have and which the
+    // fallback below is the answer to.
+    const frame = try silent(surfaceFrameAtControlPoint(surfaceBeforeEdits, central.uIndexValue, central.vIndexValue));
+    if (frame == undefined)
+    {
+        return coordSystem(centroid, X_DIRECTION, Z_DIRECTION);
+    }
+    return coordSystem(centroid, frame.uDirection, frame.normal);
+}
+
+/**
+ * The selected cell nearest the selection's average index, which is the one whose surface frame best
+ * represents the whole selection.
+ *
+ * Ties break on the lower u then the lower v so that the frame does not depend on the ORDER the
+ * cells were clicked in — a selection is a set, and a triad that reorients because the same points
+ * were picked in a different sequence would reinterpret a live transform for no reason.
+ *
+ * @param selectedCells {array} : at least one cell
+ * @param averageUIndex {number}
+ * @param averageVIndex {number}
+ * @returns {map} : the chosen cell
+ */
+function centralSelectedCell(selectedCells is array, averageUIndex is number, averageVIndex is number) returns map
+{
+    var best = selectedCells[0];
+    var bestDistanceSquared = squaredIndexDistance(best, averageUIndex, averageVIndex);
+    for (var cell in selectedCells)
+    {
+        const distanceSquared = squaredIndexDistance(cell, averageUIndex, averageVIndex);
+        if (distanceSquared < bestDistanceSquared ||
+            (distanceSquared == bestDistanceSquared &&
+                    (cell.uIndexValue < best.uIndexValue ||
+                        (cell.uIndexValue == best.uIndexValue && cell.vIndexValue < best.vIndexValue))))
+        {
+            best = cell;
+            bestDistanceSquared = distanceSquared;
+        }
+    }
+    return best;
+}
+
+/** A cell's squared distance from a point in INDEX space, which is unitless and has nothing to do
+    with how far apart the control points are in model space.
+
+    @param cell {map} : `uIndexValue`, `vIndexValue`
+    @param averageUIndex {number}
+    @param averageVIndex {number}
+    @returns {number} */
+function squaredIndexDistance(cell is map, averageUIndex is number, averageVIndex is number) returns number
+{
+    const uOffset = cell.uIndexValue - averageUIndex;
+    const vOffset = cell.vIndexValue - averageVIndex;
+    return uOffset * uOffset + vOffset * vOffset;
+}
+
+/**
+ * Apply the live selection transform on top of the committed point overrides.
+ *
+ * Why this is a separate stage from the overrides at all: a fullTriadManipulator reports one
+ * CUMULATIVE transform relative to the base it was last handed, not an increment, so it cannot be
+ * folded into per-point overrides on every drag frame without either composing inverses or re-reading
+ * the face hundreds of times per drag. Keeping it live and baking it exactly once, when the selection
+ * changes, does neither. bakeSelectionTransformOnSurface performs that bake and is the only other
+ * place this arithmetic appears — the two must stay in step, which is why both go through
+ * selectionTransformInWorld.
+ *
+ * @param committedSurface {map} : the net with point overrides applied
+ * @param surfaceBeforeEdits {map} : the prepared net, for the base frame's directions
+ * @param definition {map}
+ * @returns {map} : the net with the transform applied to the selected control points
+ */
+function applySelectionTransform(committedSurface is map, surfaceBeforeEdits is map, definition is map) returns map
+{
+    var surface = committedSurface;
+    const counts = fundamentalControlPointCounts(surface);
+    const selectedCells = validSelectedCells(definition.selectedIndices, counts);
+    if (size(selectedCells) == 0)
+    {
+        return surface;
+    }
+
+    const worldTransform = selectionTransformInWorld(committedSurface, surfaceBeforeEdits, selectedCells, definition);
+    if (worldTransform == undefined)
+    {
+        return surface;
+    }
+
+    const storedUCount = size(surface.controlPoints);
+    const storedVCount = size(surface.controlPoints[0]);
+    for (var cell in selectedCells)
+    {
+        const moved = worldTransform * surface.controlPoints[cell.uIndexValue][cell.vIndexValue];
+        // Every stored image of the cell, so a periodic direction's overlap condition survives by
+        // construction — the same rule applyControlPointEdits follows, for the same reason. Reading
+        // before writing is safe because distinct fundamental cells have disjoint image sets.
+        const rowImages = storedImagesOfFundamentalIndex(cell.uIndexValue, counts.u, storedUCount, surface.isUPeriodic == true);
+        const columnImages = storedImagesOfFundamentalIndex(cell.vIndexValue, counts.v, storedVCount, surface.isVPeriodic == true);
+        for (var row in rowImages)
+        {
+            for (var column in columnImages)
+            {
+                surface.controlPoints[row][column] = moved;
+            }
+        }
+    }
+    return surface;
+}
+
+/**
+ * The selection transform, sandwiched into world space, or undefined when it is the identity.
+ *
+ * The sandwich, the stored transposed rotation, and the un-inverted translation together are
+ * routingCurve.fs's convention, carried here through freeFormDeformation.fs unchanged — see
+ * docs/featurescript-guides/TRIAD_MANIPULATOR_NOTES.md. What matters is that the SAME reconstruction
+ * drives the control points and redisplays the manipulator, which is what makes a drag land where the
+ * handle went.
+ *
+ * @param committedSurface {map}
+ * @param surfaceBeforeEdits {map}
+ * @param selectedCells {array} : cells, already range-checked
+ * @param definition {map}
+ * @returns {Transform} : world-space transform, or `undefined` if there is nothing to apply
+ */
+function selectionTransformInWorld(committedSurface is map, surfaceBeforeEdits is map, selectedCells is array,
+    definition is map)
+{
+    const localTransform = storedSelectionTransform(definition);
+    if (localTransform == undefined)
+    {
+        return undefined;
+    }
+    const base = selectionBaseCoordSystem(committedSurface, surfaceBeforeEdits, selectedCells);
+    return toWorld(base) * localTransform * fromWorld(base);
+}
+
+/**
+ * Reconstruct the stored selection transform, or undefined when it is the identity and there is
+ * nothing to do.
+ *
+ * Every field is checked rather than assumed. These parameters live inside the "Edit control points"
+ * group, so a definition whose editing group has never been opened legitimately does not carry them,
+ * and every caller here is reached from paths that run with editing off.
+ *
+ * @param definition {map}
+ * @returns {Transform} : the transform in the selection's local frame, or `undefined`
+ */
+function storedSelectionTransform(definition is map)
+{
+    if (!(definition.selectionTranslateX is ValueWithUnits) || !(definition.selectionTranslateY is ValueWithUnits) ||
+        !(definition.selectionTranslateZ is ValueWithUnits))
+    {
+        return undefined;
+    }
+    const rotation = definition.selectionRotation;
+    const translation = vector(definition.selectionTranslateX, definition.selectionTranslateY,
+        definition.selectionTranslateZ);
+    const translationIsZero = tolerantEquals(translation, WORLD_ORIGIN);
+
+    if (!(rotation is array) || size(rotation) != 9)
+    {
+        return translationIsZero ? undefined : transform(identityMatrix(3), translation);
+    }
+    if (translationIsZero && rotationIsIdentity(rotation))
+    {
+        return undefined;
+    }
+    return transform(matrix([
+                    [rotation[0], rotation[1], rotation[2]],
+                    [rotation[3], rotation[4], rotation[5]],
+                    [rotation[6], rotation[7], rotation[8]]
+                ]), translation);
+}
+
+/** Whether a stored flat rotation is the identity, and so whether there is any rotation to apply.
+
+    @param rotation {array} : nine unitless values, row by row
+    @returns {boolean} */
+function rotationIsIdentity(rotation is array) returns boolean
+{
+    for (var index = 0; index < 9; index += 1)
+    {
+        if (abs(rotation[index] - IDENTITY_ROTATION[index]) > 1e-10)
+        {
+            return false;
+        }
+    }
+    return true;
+}
+
+/**
+ * The selection, filtered to cells the current net actually has, and de-duplicated.
+ *
+ * Silent rather than loud, unlike the out-of-bounds check on a stored point OVERRIDE: an override is
+ * work the user would want to hear about losing, where a stale selection is transient state with
+ * nothing in it worth recovering. indicesAreValid still warns on the display path, so an out-of-range
+ * selection is not invisible.
+ *
+ * The parameter is untyped because `selectedIndices` is declared inside a driven group, so it is
+ * legitimately absent from a definition whose editing group has never been opened.
+ *
+ * @param selectedIndices {array} : the definition's selection, or `undefined`
+ * @param counts {map} : `u` and `v` fundamental control point counts
+ * @returns {array} : cells
+ */
+function validSelectedCells(selectedIndices, counts is map) returns array
+{
+    if (!(selectedIndices is array))
+    {
+        return [];
+    }
+    var seen = {};
+    var cells = [];
+    for (var cell in selectedIndices)
+    {
+        if (cell.uIndexValue < 0 || cell.uIndexValue >= counts.u ||
+            cell.vIndexValue < 0 || cell.vIndexValue >= counts.v)
+        {
+            continue;
+        }
+        const key = cellKey(cell.uIndexValue, cell.vIndexValue);
+        if (seen[key] == true)
+        {
+            continue;
+        }
+        seen[key] = true;
+        cells = append(cells, cell);
+    }
+    return cells;
 }
 
 /**
@@ -1470,13 +1882,20 @@ function showIndexManipulators(context is Context, id is Id, surface is map, def
 
 /**
  * Manipulator change handling for surface editing. Mirrors editCurve.fs's
- * onEditCurveManipulatorChange one branch at a time.
+ * onEditCurveManipulatorChange one branch at a time, with the XYZ triad's branch replaced by the
+ * live-transform storage a fullTriadManipulator needs.
+ *
+ * THIS IS NOT THE LAST WORD ON THE DEFINITION. editSurfaceEditLogic runs after this returns, with an
+ * `oldDefinition` that predates everything written here — so anything it copies wholesale out of that
+ * old state silently reverts this function's work. bakeAgainstPreviousState documents the split that
+ * keeps the two in step; it is worth re-reading before adding a branch here.
  */
 export function onEditSurfaceManipulatorChange(context is Context, definition is map, newManipulators is map) returns map
 {
     // Read the surface ONCE for the whole handler and thread it through. editCurve.fs calls its
     // computeBSplineBeforeEdit once per multi-edit too; doing it per new control point would re-read
-    // and re-normalize the face for every point in the selection.
+    // and re-normalize the face for every point in the selection. The bakes below take it as an
+    // argument for the same reason: a bake reads geometry, and this is that geometry.
     const surfaceBeforeEdit = computeSurfaceBeforeEdit(context, definition);
     const packed = try silent(fundamentalControlPointArray(surfaceBeforeEdit));
     const vCount = packed == undefined ? 1 : packed.vCount;
@@ -1488,6 +1907,9 @@ export function onEditSurfaceManipulatorChange(context is Context, definition is
         const cell = cellFromFlatIndex(newManipulators[INDEX_MANIPULATOR].index, vCount);
         if (definition.editPointMode == EditPointMode.XYZ)
         {
+            // Any live transform belongs to the selection that is about to be replaced, so it is
+            // committed to that selection's overrides before the selection changes underneath it.
+            definition = bakeSelectionTransformOnSurface(context, definition, surfaceBeforeEdit);
             definition.selectedIndices = [cell];
         }
         else
@@ -1498,12 +1920,24 @@ export function onEditSurfaceManipulatorChange(context is Context, definition is
     }
     if (newManipulators[INDICES_MANIPULATOR] is map)
     {
+        definition = bakeSelectionTransformOnSurface(context, definition, surfaceBeforeEdit);
         definition.selectedIndices = mapArray(newManipulators[INDICES_MANIPULATOR].selectedIndices,
             flatIndex => cellFromFlatIndex(flatIndex, vCount));
     }
-    if (newManipulators[OFFSET_MANIPULATOR] is map)
+    if (newManipulators[SELECTION_TRANSFORM_MANIPULATOR] is map)
     {
-        definition = multiEditProcessing(definition, newManipulators[OFFSET_MANIPULATOR], surfaceBeforeEdit);
+        // Stored verbatim, in the same decomposition routingCurve.fs uses. It stays live — applied
+        // at regeneration by applySelectionTransform — until the selection changes.
+        const reported = newManipulators[SELECTION_TRANSFORM_MANIPULATOR].transform;
+        const transposedLinear = transpose(reported.linear);
+        definition.selectionRotation = [
+                transposedLinear[0][0], transposedLinear[0][1], transposedLinear[0][2],
+                transposedLinear[1][0], transposedLinear[1][1], transposedLinear[1][2],
+                transposedLinear[2][0], transposedLinear[2][1], transposedLinear[2][2]
+            ];
+        definition.selectionTranslateX = reported.translation[0];
+        definition.selectionTranslateY = reported.translation[1];
+        definition.selectionTranslateZ = reported.translation[2];
     }
     for (var linearManipulatorName in LINEAR_MANIPULATORS)
     {
@@ -1544,59 +1978,130 @@ function processSingleDirectionEdit(definition is map, manip is map, surfaceBefo
 }
 
 /**
- * A drag of the XYZ triad, which may be moving several control points at once. Mirrors
- * editCurve.fs's multiEditProcessing: the triad reports one absolute offset for the whole
- * selection, so subtract the selection's CURRENT average offset to get the increment, then add that
- * increment to every selected point — which keeps points that were already at different offsets at
- * their different offsets instead of collapsing them onto one another.
+ * Commit the live selection transform into per-point overrides and reset it to the identity, given
+ * the prepared net it was measured against.
+ *
+ * This is the counterpart of applySelectionTransform and MUST agree with it point for point — both
+ * go through selectionTransformInWorld for exactly that reason. It runs when the selection changes
+ * and when the dialog opens, never once per drag frame, which is the whole point of keeping the
+ * transform live in between.
+ *
+ * AN UNREADABLE NET LEAVES THE TRANSFORM ALONE. A face selection that is empty, not yet resolvable,
+ * or in need of the approximation toggle gives no geometry to bake against. The transform is then
+ * KEPT rather than reset, because resetting it there does not defer the edit, it deletes it: the
+ * overrides never received it and the live parameters no longer hold it. Reaching that path at all
+ * requires a net the feature body cannot regenerate from either, so the user is already being shown
+ * an error, while the work a reset would destroy is real and silent.
+ *
+ * An empty SELECTION is a different matter and still resets: there is nothing for the transform to
+ * act on, so it is dead weight that would otherwise attach itself to the next selection.
+ *
+ * @param context {Context}
+ * @param definition {map}
+ * @param surfaceBeforeEdits {map} : the prepared net with nothing applied, or `{}` if unreadable
+ * @returns {map} : the updated definition, with the transform reset unless it could not be baked
  */
-function multiEditProcessing(definition is map, manipulator is map, surfaceBeforeEdit is map) returns map
+function bakeSelectionTransformOnSurface(context is Context, definition is map, surfaceBeforeEdits is map) returns map
 {
-    var baseOffset = WORLD_ORIGIN;
-    var selectedCells = {};
-    for (var selectedIndex in definition.selectedIndices)
-    {
-        selectedCells[cellKey(selectedIndex.uIndexValue, selectedIndex.vIndexValue)] = selectedIndex;
-    }
-    var existingEditsIndices = [];
-    for (var i = 0; i < size(definition.controlPointEdits); i += 1)
-    {
-        const edit = definition.controlPointEdits[i];
-        const key = cellKey(edit.uIndex, edit.vIndex);
-        if (selectedCells[key] != undefined)
-        {
-            selectedCells[key] = undefined; // useful for when we need to create the edits.
-            existingEditsIndices = append(existingEditsIndices, i);
-            baseOffset += [edit.x, edit.y, edit.z] as Vector;
-        }
-    }
-    if (size(definition.selectedIndices) == 0)
+    if (storedSelectionTransform(definition) == undefined)
     {
         return definition;
     }
-    baseOffset /= size(definition.selectedIndices);
-
-    const manipulatorOffset = [manipulator.offset[0], manipulator.offset[1], manipulator.offset[2]] as Vector;
-    const offsetToAdd = manipulatorOffset - baseOffset;
-
-    for (var existingEditIndex in existingEditsIndices)
+    if (surfaceBeforeEdits.controlPoints == undefined)
     {
-        definition.controlPointEdits[existingEditIndex].x += offsetToAdd[0];
-        definition.controlPointEdits[existingEditIndex].y += offsetToAdd[1];
-        definition.controlPointEdits[existingEditIndex].z += offsetToAdd[2];
+        return definition;
     }
 
-    for (var key in keys(selectedCells))
+    // try silent because the feature body's call is the one that reports. applyControlPointEdits
+    // throws on exactly two things — an override out of bounds, or two overrides on one control
+    // point — and both are regenErrors the next regeneration raises against the right parameter.
+    // This path has no feature to report against, so bailing is all it can honestly do.
+    const committedSurface = try silent(applyControlPointEdits(context, surfaceBeforeEdits, definition.controlPointEdits));
+    if (committedSurface == undefined)
     {
-        const cell = selectedCells[key];
-        if (cell == undefined)
+        return definition;
+    }
+
+    // An EMPTY selection falls through to the reset below rather than returning early.
+    // selectionTransformInWorld is not called at all in that case — its base is the selection's
+    // centroid, which needs at least one point to average.
+    const selectedCells = validSelectedCells(definition.selectedIndices, fundamentalControlPointCounts(committedSurface));
+    if (size(selectedCells) > 0)
+    {
+        const worldTransform = selectionTransformInWorld(committedSurface, surfaceBeforeEdits, selectedCells, definition);
+        for (var cell in selectedCells)
+        {
+            const current = committedSurface.controlPoints[cell.uIndexValue][cell.vIndexValue];
+            definition = addToControlPointEdit(definition, cell.uIndexValue, cell.vIndexValue,
+                (worldTransform * current) - current,
+                weightAt(surfaceBeforeEdits, cell.uIndexValue, cell.vIndexValue));
+        }
+    }
+
+    return resetSelectionTransform(definition);
+}
+
+/** The same bake, for callers that do not already hold the prepared net. Reads it, which is the
+    expensive part, so the manipulator handler uses the variant above instead.
+
+    @param context {Context}
+    @param definition {map}
+    @returns {map} */
+function bakeSelectionTransform(context is Context, definition is map) returns map
+{
+    if (storedSelectionTransform(definition) == undefined)
+    {
+        return definition;
+    }
+    return bakeSelectionTransformOnSurface(context, definition, computeSurfaceBeforeEdit(context, definition));
+}
+
+/**
+ * Add a displacement to one control point's stored override, creating the record if there is none.
+ *
+ * Adding to `x`/`y`/`z` is right whether or not the record carries a reference vertex: the override
+ * is a displacement FROM whatever the record's origin is, so adding to it moves the point by that
+ * much either way.
+ *
+ * @param definition {map}
+ * @param uIndex {number}
+ * @param vIndex {number}
+ * @param increment {Vector} : a displacement with length units
+ * @param weight {number} : the weight a newly created record should carry
+ * @returns {map} : the updated definition
+ */
+function addToControlPointEdit(definition is map, uIndex is number, vIndex is number, increment is Vector,
+    weight is number) returns map
+{
+    for (var editIndex = 0; editIndex < size(definition.controlPointEdits); editIndex += 1)
+    {
+        var edit = definition.controlPointEdits[editIndex];
+        if (edit.uIndex != uIndex || edit.vIndex != vIndex)
         {
             continue;
         }
-        definition.controlPointEdits = append(definition.controlPointEdits,
-            newEdit(cell.uIndexValue, cell.vIndexValue, offsetToAdd,
-                weightAt(surfaceBeforeEdit, cell.uIndexValue, cell.vIndexValue)));
+        edit.x += increment[0];
+        edit.y += increment[1];
+        edit.z += increment[2];
+        definition.controlPointEdits[editIndex] = edit;
+        return definition;
     }
+
+    definition.controlPointEdits = append(definition.controlPointEdits,
+        newEdit(uIndex, vIndex, increment, weight));
+    return definition;
+}
+
+/** Clear the live selection transform back to the identity.
+
+    @param definition {map}
+    @returns {map} */
+function resetSelectionTransform(definition is map) returns map
+{
+    definition.selectionRotation = IDENTITY_ROTATION;
+    definition.selectionTranslateX = 0 * meter;
+    definition.selectionTranslateY = 0 * meter;
+    definition.selectionTranslateZ = 0 * meter;
     return definition;
 }
 
@@ -1631,35 +2136,343 @@ function weightAt(surfaceBeforeEdit is map, uIndex is number, vIndex is number) 
 //==================================================================
 
 /**
- * Editing logic for surface editing. Mirrors editCurve.fs's editCurveEditLogic: when the user
- * changes an edit's reference vertex, reset that edit's offset, because an offset measured from the
- * old reference means nothing from the new one. This is the reason array reordering is turned off
- * for controlPointEdits — the reset is positional.
+ * Editing logic for surface editing. Two jobs, one inherited and one that arrived with the full
+ * triad.
+ *
+ * THE INHERITED JOB, from editCurve.fs's editCurveEditLogic: when the user changes an edit's
+ * reference vertex, reset that edit's offset, because an offset measured from the old reference
+ * means nothing from the new one. This is the reason array reordering is turned off for
+ * controlPointEdits — the reset is positional.
+ *
+ * THE NEW JOB is the same job in every branch: the live selection transform is about to stop meaning
+ * what it meant, so bake it into overrides while the state it was measured against still exists. The
+ * stored numbers are relative to a base — the selection's centroid, in the surface's own frame — and
+ * ANYTHING that moves that base silently redefines them. Four moments qualify, plus the Planarize
+ * button, which arrives as `clickedButton` and does its own bake:
+ *
+ *   1. THE DIALOG IS OPENED (`oldDefinition == {}`). A transform left live when the dialog was last
+ *      closed lives entirely in ALWAYS_HIDDEN parameters, so the surface comes back edited while the
+ *      "Points overrides" list shows nothing that accounts for it. Baking on open is exactly
+ *      geometry-preserving — the same selectionTransformInWorld arithmetic applySelectionTransform
+ *      was already applying at every regeneration — so the only thing that changes is that the edit
+ *      becomes VISIBLE and editable as overrides.
+ *
+ *   2. THE SELECTION CHANGES through the dialog. The manipulator path has its own bake in
+ *      onEditSurfaceManipulatorChange; this covers the array being edited by hand.
+ *
+ *   3. THE PREPARED NET CHANGES. Approximate, elevate and refine all decide WHICH control points
+ *      exist and where they sit, and the face selection decides what is being read at all, so a
+ *      transform surviving one of those describes a different displacement afterwards than it did
+ *      before. This is the same re-indexing hazard EDIT_SURFACE_SPEC.md section 4 fixes by ordering
+ *      prepare before edit, seen from the transform's side.
+ *
+ *   4. THE EDIT MODE CHANGES. UVN mode drives a single point through the linear manipulators and
+ *      never writes the transform, so a live one would sit there unowned until XYZ mode came back
+ *      and re-applied it to whatever was selected by then.
  */
-export function editSurfaceEditLogic(context is Context, id is Id, oldDefinition is map, definition is map, isCreating is boolean) returns map
+export function editSurfaceEditLogic(context is Context, id is Id, oldDefinition is map, definition is map,
+    isCreating is boolean, clickedButton is string) returns map
 {
-    if (oldDefinition == {})
+    if (!definition.editControlPoints)
     {
         return definition;
     }
-    if (definition.editControlPoints)
+
+    // Case 1. There is no previous state to bake against, and none is needed: nothing has moved yet
+    // this edit round, so the transform still means what it meant when it was stored and the current
+    // definition IS the state it was measured in.
+    if (oldDefinition == {})
     {
-        const controlPointEditSize = size(definition.controlPointEdits);
-        if (controlPointEditSize == size(oldDefinition.controlPointEdits))
-        {
-            for (var i = 0; i < controlPointEditSize; i += 1)
-            {
-                if (!areQueriesEquivalent(context, definition.controlPointEdits[i].reference, oldDefinition.controlPointEdits[i].reference))
-                {
-                    definition.controlPointEdits[i].x = 0 * meter;
-                    definition.controlPointEdits[i].y = 0 * meter;
-                    definition.controlPointEdits[i].z = 0 * meter;
-                    return definition;
-                }
-            }
-        }
+        return bakeSelectionTransform(context, definition);
+    }
+
+    // Checked before the tests below, not after: a button press is not a selection change those
+    // tests would see, and planarizeSelection does its own bake anyway.
+    if (clickedButton == "planarizeSelection")
+    {
+        return planarizeSelection(context, definition);
+    }
+
+    const referenceReset = resetEditWithChangedReference(context, oldDefinition, definition);
+    if (referenceReset != undefined)
+    {
+        return referenceReset;
+    }
+
+    // Cases 2, 3 and 4.
+    if (definition.editPointMode != oldDefinition.editPointMode ||
+        !selectionsMatch(oldDefinition.selectedIndices, definition.selectedIndices) ||
+        preparedNetChanged(context, oldDefinition, definition))
+    {
+        return bakeAgainstPreviousState(context, oldDefinition, definition);
     }
     return definition;
+}
+
+/**
+ * The reference-vertex reset, unchanged in behaviour from when it was the whole of this feature's
+ * editing logic: an offset is measured from its reference, so pointing the record at a different
+ * vertex leaves the stored numbers describing nothing.
+ *
+ * Returns `undefined` rather than the definition when nothing changed, so the caller can tell "I
+ * handled this round" from "carry on" — a reference change is not a selection change and must not
+ * also provoke a bake.
+ *
+ * @param context {Context}
+ * @param oldDefinition {map}
+ * @param definition {map}
+ * @returns {map} : the updated definition, or `undefined` if no reference changed
+ */
+function resetEditWithChangedReference(context is Context, oldDefinition is map, definition is map)
+{
+    const controlPointEditSize = size(definition.controlPointEdits);
+    if (controlPointEditSize != size(oldDefinition.controlPointEdits))
+    {
+        return undefined;
+    }
+    for (var i = 0; i < controlPointEditSize; i += 1)
+    {
+        if (!areQueriesEquivalent(context, definition.controlPointEdits[i].reference, oldDefinition.controlPointEdits[i].reference))
+        {
+            definition.controlPointEdits[i].x = 0 * meter;
+            definition.controlPointEdits[i].y = 0 * meter;
+            definition.controlPointEdits[i].z = 0 * meter;
+            return definition;
+        }
+    }
+    return undefined;
+}
+
+/**
+ * Bake the live selection transform against the state it was authored in, and return the CURRENT
+ * definition carrying the result with the transform cleared.
+ *
+ * Which definition supplies what is the entire content of this function, and getting it wrong is how
+ * overrides go missing:
+ *
+ *   - the OLD definition supplies the SELECTION and the net's geometry — the face, the approximation,
+ *     elevation and refinement settings — because those are what the stored numbers are measured
+ *     against;
+ *   - the CURRENT definition supplies the OVERRIDES, because something may already have written to
+ *     them this edit round and rolling that back would destroy it.
+ *
+ * The second point is not hypothetical: onEditSurfaceManipulatorChange bakes on its own before it
+ * swaps the selection in, and this editing logic then runs on top of that with an `oldDefinition`
+ * predating the bake. Sourcing overrides from `oldDefinition` would overwrite the freshly baked array
+ * with the pre-bake one every time a selection change arrived through the manipulator — the drag
+ * vanishing from the list AND from the geometry, because the manipulator had already reset the live
+ * transform that was carrying it.
+ *
+ * When the manipulator has already baked, the transform copied across is the identity, so
+ * bakeSelectionTransform short-circuits and this is a no-op on the overrides it just wrote. That is
+ * the intended interaction between the two paths rather than a coincidence.
+ *
+ * @param context {Context}
+ * @param oldDefinition {map} : the state the transform was measured against
+ * @param definition {map} : the current state, whose overrides are authoritative
+ * @returns {map} : the current definition, overrides baked and transform reset — or untouched and the
+ *                  transform still live, if the old net could not be read
+ */
+function bakeAgainstPreviousState(context is Context, oldDefinition is map, definition is map) returns map
+{
+    var previous = oldDefinition;
+    previous.controlPointEdits = definition.controlPointEdits;
+    previous.selectionRotation = definition.selectionRotation;
+    previous.selectionTranslateX = definition.selectionTranslateX;
+    previous.selectionTranslateY = definition.selectionTranslateY;
+    previous.selectionTranslateZ = definition.selectionTranslateZ;
+
+    const bakedPrevious = bakeSelectionTransform(context, previous);
+    definition.controlPointEdits = bakedPrevious.controlPointEdits;
+
+    // A transform still live on the way back out means the bake could not run — see
+    // bakeSelectionTransformOnSurface, which keeps it rather than deleting it. Resetting here would
+    // undo that and lose the drag. It takes an unreadable OLD net to get here, and the old net is the
+    // one that regenerated a moment ago, so in practice this is the already-erroring feature.
+    if (storedSelectionTransform(bakedPrevious) != undefined)
+    {
+        return definition;
+    }
+    return resetSelectionTransform(definition);
+}
+
+/**
+ * Whether anything that DEFINES the prepared net has changed, and so whether a live selection
+ * transform has stopped describing the displacement it described before.
+ *
+ * Every input listed here feeds the net the transform's base was computed on: the face decides what
+ * is read, Approximate decides whether it is read exactly and with what budget, and elevation and
+ * refinement decide how many control points come out and where their Greville abscissae — and so the
+ * base frame's directions — land.
+ *
+ * `result` is in the list because NEW_BODY_TRIMMED reads the face through evApproximateBSplineSurface
+ * rather than evSurfaceDefinition, which is a different control net; see computeSurfaceBeforeEdit.
+ *
+ * @param context {Context}
+ * @param oldDefinition {map}
+ * @param definition {map}
+ * @returns {boolean}
+ */
+function preparedNetChanged(context is Context, oldDefinition is map, definition is map) returns boolean
+{
+    if (definition.approximate != oldDefinition.approximate ||
+        definition.elevate != oldDefinition.elevate ||
+        definition.refine != oldDefinition.refine ||
+        definition.result != oldDefinition.result)
+    {
+        return true;
+    }
+    // Each group's own parameters are only compared when the group is on, because they are declared
+    // inside a driving-parameter group and a definition that has never had it on carries only the
+    // defaults. The toggles themselves are already covered above.
+    if (definition.approximate &&
+        (definition.approximationUDegree != oldDefinition.approximationUDegree ||
+                definition.approximationVDegree != oldDefinition.approximationVDegree ||
+                definition.approximationMaxUCPs != oldDefinition.approximationMaxUCPs ||
+                definition.approximationMaxVCPs != oldDefinition.approximationMaxVCPs ||
+                definition.approximationTolerance != oldDefinition.approximationTolerance))
+    {
+        return true;
+    }
+    if (definition.elevate &&
+        (definition.uElevationDegree != oldDefinition.uElevationDegree ||
+                definition.vElevationDegree != oldDefinition.vElevationDegree))
+    {
+        return true;
+    }
+    if (definition.refine &&
+        (definition.uControlPointCount != oldDefinition.uControlPointCount ||
+                definition.vControlPointCount != oldDefinition.vControlPointCount))
+    {
+        return true;
+    }
+    return definition.face is Query && oldDefinition.face is Query &&
+        !areQueriesEquivalent(context, definition.face, oldDefinition.face);
+}
+
+/** Whether two selections name the same cells in the same order.
+
+    @param first {array}
+    @param second {array}
+    @returns {boolean} */
+function selectionsMatch(first, second) returns boolean
+{
+    if (!(first is array) || !(second is array) || size(first) != size(second))
+    {
+        return false;
+    }
+    for (var index = 0; index < size(first); index += 1)
+    {
+        if (first[index].uIndexValue != second[index].uIndexValue ||
+            first[index].vIndexValue != second[index].vIndexValue)
+        {
+            return false;
+        }
+    }
+    return true;
+}
+
+/**
+ * Flatten the selected control points onto the least-squares plane through them.
+ *
+ * A ONE-SHOT EDIT, not a constraint, and NOT editCurve.fs's `planarize` — that is a persistent toggle
+ * flattening a whole curve against a chosen reference plane, where this is
+ * freeFormDeformation.fs's button acting on a selection. It writes ordinary per-point overrides
+ * through the same addToControlPointEdit every drag uses, so the result is indistinguishable from
+ * having dragged the points there by hand and nothing keeps them coplanar afterwards. That is the
+ * honest behaviour for a button: a persistent planar constraint would have to survive elevation and
+ * refinement re-indexing the net and fight every subsequent drag, which is a different feature.
+ *
+ * The live selection transform is BAKED FIRST, because the button acts on where the points visibly
+ * ARE and the transform is part of that. Baking also means the projection it writes cannot be
+ * silently re-transformed on the next regeneration.
+ *
+ * DEGENERATE SELECTIONS NEED NO SPECIAL CASE. For collinear points the covariance matrix has rank 1,
+ * so the fitted normal is perpendicular to the line and the plane therefore CONTAINS it — every point
+ * is already on the plane and the projection moves nothing. Flattening a single net row is a no-op
+ * rather than an error, which is the right answer: a row is already as planar as a line can be. Only
+ * a selection too small to span a plane at all is rejected outright.
+ *
+ * @param context {Context}
+ * @param definition {map}
+ * @returns {map} : the updated definition
+ */
+function planarizeSelection(context is Context, definition is map) returns map
+{
+    var baked = bakeSelectionTransform(context, definition);
+
+    const surfaceBeforeEdits = computeSurfaceBeforeEdit(context, baked);
+    if (surfaceBeforeEdits.controlPoints == undefined)
+    {
+        return baked;
+    }
+    // Same try silent reasoning as the bake: an override that is out of bounds or doubled up is a
+    // regenError the next regeneration raises against the right parameter, and the button doing
+    // nothing is better than the dialog throwing.
+    const committedSurface = try silent(applyControlPointEdits(context, surfaceBeforeEdits, baked.controlPointEdits));
+    if (committedSurface == undefined)
+    {
+        return baked;
+    }
+
+    const selectedCells = validSelectedCells(baked.selectedIndices, fundamentalControlPointCounts(committedSurface));
+    if (size(selectedCells) < 3)
+    {
+        return baked;
+    }
+
+    var points = [];
+    for (var cell in selectedCells)
+    {
+        points = append(points, committedSurface.controlPoints[cell.uIndexValue][cell.vIndexValue]);
+    }
+
+    const fitted = leastSquaresPlane(points);
+    for (var cellIndex = 0; cellIndex < size(selectedCells); cellIndex += 1)
+    {
+        const cell = selectedCells[cellIndex];
+        // The signed distance to the plane, removed along the normal — the shortest move that lands
+        // the point on it, so the selection keeps its shape in plan as far as flattening allows.
+        const displacement = -dot(points[cellIndex] - fitted.origin, fitted.normal) * fitted.normal;
+        baked = addToControlPointEdit(baked, cell.uIndexValue, cell.vIndexValue, displacement,
+            weightAt(surfaceBeforeEdits, cell.uIndexValue, cell.vIndexValue));
+    }
+    return baked;
+}
+
+/**
+ * The least-squares plane through a set of points: centroid for the origin, and for the normal the
+ * eigenvector of the smallest eigenvalue of the covariance matrix `sum (p - o)(p - o)^t`.
+ *
+ * The derivation and the SVD route to it are std's own, in `editCurve.fs`'s `fitPlane` — minimizing
+ * `sum (n . (p - o))^2` subject to `n . n = 1` makes `n` an eigenvector of that matrix by Lagrange
+ * multipliers, and the smallest eigenvalue is the one that minimizes rather than maximizes.
+ * `fitPlane` is private to editCurve.fs, so this is a transcription rather than a call; the SVD
+ * orders singular values largest first, hence the LAST row of `transpose(u)`.
+ *
+ * Points are divided by `meter` before accumulating, because a Matrix holds plain numbers.
+ *
+ * @param points {array} : Vectors with length units, at least three of them
+ * @returns {map} : `origin` {Vector} with length units, `normal` {Vector} unitless and unit length
+ */
+function leastSquaresPlane(points is array) returns map
+{
+    var centre = WORLD_ORIGIN;
+    for (var point in points)
+    {
+        centre += point;
+    }
+    centre /= size(points);
+
+    var covariance = zeroMatrix(3, 3);
+    for (var point in points)
+    {
+        const offsetRow = matrix([(point - centre) / meter]);
+        covariance = covariance + transpose(offsetRow) * offsetRow;
+    }
+
+    const uTransposed = transpose(svd(covariance).u);
+    return { "origin" : centre, "normal" : normalize(uTransposed[2] as Vector) };
 }
 
 //==================================================================
@@ -1798,10 +2611,17 @@ function describeLoop(loop is array) returns string
 function emitTrimmedSurface(context is Context, id is Id, idGenerator is function, surface is map, extraction is map, domainBeforeEdits is map)
 {
     const domainNow = surfaceDomains(surface);
+    // A held domain is necessary and NOT sufficient, which is the one thing this check used to get
+    // wrong. Uniformizing a closed direction re-maps parameter to point INSIDE a domain it preserves
+    // exactly, so the four comparisons below all pass while every loop coordinate now names a
+    // different place on the surface — and by more than a rounding, since arc-length
+    // reparameterization moves a revolve's u by several degrees of arc. The flag prepareSurface sets
+    // is the only evidence of that, so it is part of the verdict rather than a footnote to it.
     const domainHeld = abs(domainNow.u.start - domainBeforeEdits.u.start) < 1e-10 &&
         abs(domainNow.u.end - domainBeforeEdits.u.end) < 1e-10 &&
         abs(domainNow.v.start - domainBeforeEdits.v.start) < 1e-10 &&
-        abs(domainNow.v.end - domainBeforeEdits.v.end) < 1e-10;
+        abs(domainNow.v.end - domainBeforeEdits.v.end) < 1e-10 &&
+        surface.reparameterized != true;
 
     // Trimmed mode approximates unconditionally — evSurfaceDefinition returns no loops, so the
     // matched pair can only come from evApproximateBSplineSurface. Say so rather than let the
@@ -1809,7 +2629,10 @@ function emitTrimmedSurface(context is Context, id is Id, idGenerator is functio
     var report = "TRIM PROBE (surface + loops both approximated at tolerance " ~ extraction.tolerance ~
         " m, since only evApproximateBSplineSurface returns loops). Surface domain u [" ~
         domainNow.u.start ~ ", " ~ domainNow.u.end ~ "] v [" ~ domainNow.v.start ~ ", " ~ domainNow.v.end ~ "]. " ~
-        "Domain preserved through normalize/elevate/edit: " ~ (domainHeld ? "YES" : "NO - loops are invalid") ~ ". " ~
+        "Parameter map preserved through normalize/uniformize/elevate/edit: " ~
+        (domainHeld ? "YES" : (surface.reparameterized == true ?
+                "NO - a closed direction was re-parameterized to arc length, loops are invalid" :
+                "NO - loops are invalid")) ~ ". " ~
         "Outer loop: " ~ describeLoop(extraction.outerLoop) ~ ". Inner loops: " ~ size(extraction.innerLoops);
     for (var loopIndex = 0; loopIndex < size(extraction.innerLoops); loopIndex += 1)
     {

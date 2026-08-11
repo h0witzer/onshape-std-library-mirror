@@ -252,6 +252,58 @@ block is a genuinely different and useful operation (twisting a row of control p
 patch edge) and is a strict superset of translate-only. Worth doing, worth calling out as a
 divergence from the template rather than an accident.
 
+### 3.1 The rotating triad and Planarize came back from FFD (2026-08-10)
+
+Both were built for `freeFormDeformation.fs` first and back-ported here, which is the right
+direction of travel: FFD's lattice points and this feature's control points are the same UI object —
+a multi-select of draggable handles with per-point offsets behind them — so a mechanism that earns
+its place on one earns it on the other. The two features now share the model rather than resembling
+it, and the shared parts are documented once, in
+[FREE_FORM_DEFORMATION_SPEC.md](FREE_FORM_DEFORMATION_SPEC.md) §6.5 and §6.9. Only what differs is
+recorded here.
+
+**The XYZ triad is now a `fullTriadManipulator`, unconditionally.** That closes the extension above:
+the rotation is applied to the selection, not merely stored to keep the handle oriented. FFD's §6.5
+argument for making it unconditional transfers whole — a full triad already carries translation
+arrows, so a translate-only mode is strictly less capable at no saving, and having two manipulators
+write one selection through two different storages is a bug generator rather than a choice.
+
+**The live-then-baked storage transfers whole too.** A cumulative transform cannot be folded into
+per-point overrides per drag frame, so it is kept live in `ALWAYS_HIDDEN` parameters and baked into
+`controlPointEdits` exactly once, at every moment the base it was measured against is about to move.
+Those moments are where this feature differs from FFD, because its base moves for different reasons:
+
+| Bake trigger | FFD's version | Edit Surface's version |
+| --- | --- | --- |
+| Selection changes | click, or the dialog's list | same |
+| Dialog opened | same | same |
+| The handles are re-indexed | lattice span counts, orientation, faces, `result` | **Approximate / Elevate / Refine** and their parameters, the face selection, `result` |
+| Mode change | n/a — one mode | **XYZ ↔ UVN**, since UVN never writes the transform |
+
+The third row is §4's re-indexing hazard seen from the transform's side, and it is the sharper case
+here than in FFD: a lattice keeps its shape when its span count changes, where elevation or
+refinement changes *which control points exist at all*.
+
+**The base frame is the one genuine divergence.** FFD orients its triad to the lattice's own axes,
+which are a `CoordSystem` already. A control net has no such frame, so the triad takes the
+**surface's** frame at the selection's central control point — u tangent for X, normal for Z, which
+`coordSystem` accepts because `normalize(cross(uTangent, vTangent))` is perpendicular to the u
+tangent exactly. The v tangent is deliberately not an axis: u and v are oblique in general, so it
+would not be a legal frame, and orthogonalizing it costs it the isoparametric meaning that makes it
+worth showing at all (§7.9's question, answered for the triad and left open for the UVN mode, which
+is three independent 1-D drags and so is free to stay oblique). The directions come from the
+*unedited* net and the origin from the *committed* one — a frame that chased the edits would
+reinterpret the live transform on every regeneration. Where the surface is degenerate — a cone apex,
+a pole — it falls back to world axes, which is the only honest answer and still leaves the handle
+usable.
+
+**One correctness fix came with it.** `computeSurfaceBeforeEdit` now reads through
+`readSurfaceAndTrim` rather than `readSurfaceDefinition`, so the manipulator path and the feature
+body build the same net in every result mode. They already had to agree for handle *placement*
+(trimmed mode reads through `evApproximateBSplineSurface`, a different call with a different control
+point count); a rotation bake makes it load-bearing, because the displacement it writes is computed
+from where the points actually are and only a translation is position-independent.
+
 ---
 
 ## 4. The two-dimensional index problem
@@ -292,6 +344,39 @@ This does not make the periodic path safe — it makes it *well defined*. A user
 fundamental control point into a shape whose seam the kernel rejects, and that is exactly the
 stress test §1.2 says we have never run. The feature should report those two kernel errors in
 terms the user can act on rather than passing the raw enum through.
+
+### 5.1 The handles on a revolve bunch, and it is not a placement problem (2026-08-10)
+
+A note in `prepareSurface` used to say that a kernel cylinder's multiplicity-`degree` arc joints
+"drag their neighbouring Greville abscissae in against them, and leave a tight pair at each arc joint
+that no placement can undo — that is the price of the net being an exact circle." **Every clause of
+that is true and the conclusion was wrong.** It *is* undoable; it just cannot be done by insertion or
+removal, which is all that had been tried. Insertion only raises multiplicity and removal cannot take
+those knots out at all, because a NURBS circle is genuinely C⁰ there in homogeneous space.
+
+And the multiple knots are only half of it. The same two half-arcs are parameterized about
+**1.7 : 1 slower at the joints than mid-arc**, so even a net with every multiplicity already at 1
+comes out crowded in the same two bands — as does any downstream feature reading the result's `u`/`v`.
+Refinement cannot fix that either: the doubling schedule gives every span exactly one arc-length cut,
+so the ratio survives at every count.
+
+`prepareSurface` therefore calls `uniformizePeriodicSurfaceDirections` **first**, before a degree or a
+count is chosen off the surface — an arc-length refit onto uniform, all-simple knots. On the kernel's
+own cylinder numbers the chord-spacing ratio at evenly spaced parameters goes from 1.98 to 1.0006.
+Derivation in [SPLINE_REFINEMENT_UTILITY_SPEC.md](SPLINE_REFINEMENT_UTILITY_SPEC.md) §2.2.0b.
+
+Three feature-side rules come with it:
+
+- **Gated on "Approximate".** The refit moves the surface, so it may only run where the user has said
+  a moved surface is acceptable and has named the number — the standing no-silent-approximation rule.
+  This costs nothing real: a cylinder, cone or revolve is not a B-spline face (§2.2), so it can only
+  be read through Approximate in the first place. Every surface this fixes is already on that path.
+- **Reported separately from the count reduction**, because the cause and the cure are different, and
+  because it is the only step here that changes the `u`/`v` map at all.
+- **It invalidates trim loops, and the domain check cannot see that.** The refit preserves the domain
+  start and the period exactly, so the four comparisons in `emitTrimmedSurface` all pass while every
+  loop coordinate now names a different place on the surface. `prepareSurface` sets a
+  `reparameterized` flag and the probe's verdict reads it — a held domain no longer implies a held map.
 
 ---
 
@@ -727,7 +812,8 @@ per direction) starts earning its place.
 weight override, on clamped surfaces only. The narrowest thing that is actually an editor.
 
 **Phase E4 — multi-point editing.** `togglePointsManipulator` + `fullTriadManipulator`, the §3
-template including the rotation extension.
+template including the rotation extension. *Shipped 2026-08-10, back-ported from
+`freeFormDeformation.fs` along with Planarize; see §3.1 for what transferred and what did not.*
 
 **Phase E5 — periodic surfaces**, per §5. Deliberately last: it is where the kernel says no, and
 it wants the rest of the feature to be trustworthy before it becomes the variable under test.
@@ -758,8 +844,19 @@ Open, and worth a decision before E3:
    workflow. The case against: it changes the feature from "edit a face" to "edit part of a
    face", which is a different mental model and needs its own UI for picking the rectangle.
    Leaning toward a later phase.
-8. **Is there a surface analog of `editCurve.fs`'s `planarize` worth having?** Fitting a control
-   net to a plane is well defined but of unclear value. Probably not.
+8. ~~**Is there a surface analog of `editCurve.fs`'s `planarize` worth having?** Fitting a control
+   net to a plane is well defined but of unclear value. Probably not.~~ **Settled 2026-08-10: yes,
+   but not that one.** The question assumed the *curve* feature's shape — a persistent toggle that
+   flattens the whole thing against a chosen reference plane — and for a whole control net that
+   really is of little value. `freeFormDeformation.fs` built a different shape and it is obviously
+   worth having: a **button** that flattens the current *selection* onto its own least-squares plane,
+   once, writing ordinary point overrides with nothing constrained afterwards. Flattening four points
+   just dragged out of alignment, or a boundary row that needs to sit flat, is an everyday move.
+   Back-ported verbatim, including the fit (§6.9 of [FREE_FORM_DEFORMATION_SPEC.md](FREE_FORM_DEFORMATION_SPEC.md),
+   itself a transcription of std `editCurve.fs`'s private `fitPlane`) and the degenerate case:
+   collinear points give a rank-1 covariance whose fitted plane *contains* the line, so pressing it
+   on a single net row is a no-op rather than an error. Fewer than three points is refused outright.
+   See §3.1.
 9. **How much of `editCurve.fs`'s UVN edit mode carries over?** Its N direction is the curve
    normal; a surface's is unambiguous (§1.4), but its U and V would be the isoparametric
    tangents, which are not orthogonal in general. Whether to orthogonalize (and lose the

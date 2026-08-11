@@ -242,6 +242,80 @@ despite §10's general preference is that no exact alternative exists: a NURBS c
 only C⁰ at its arc joins in homogeneous space, the projected curve being smooth solely through weight
 cancellation. A deformer needs C¹-by-structure, and no exact operation can supply it.
 
+### 2.2.0b Removing the C⁰ knots is not the same as removing the BUNCHING (2026-08-10)
+
+§2.2.0 makes a revolve deformable. It does not make it *even*, and it cannot, because a projection
+preserves the parameterization it projects: `S_tgt(t)` approximates `S_cur(t)` at the same `t`.
+
+The kernel's revolve is two rational cubic Bézier half-arcs, and that parameterization is nowhere
+near unit speed. Evaluated on the fixture: `t = 0.0625 → 16.3°`, `0.125 → 36.9°`, `0.1875 → 61.9°`,
+`0.25 → 90°`. **Parameter speed varies about 1.7 : 1 across each half-arc, slowest exactly at the arc
+joints.** So the projection's own target — the existing breakpoints bisected, which is uniform in
+*parameter* — comes back deformable and ~1.7 : 1 crowded at θ = 0 and θ = 180. Refinement cannot heal
+it: `arcLengthSpanInsertions` is arc-length aware, but the doubling schedule hands it a budget equal
+to the span count, so every span gets exactly one cut and the ratio survives at every level. Two
+visible bands of crowded control points on every deformed or edited revolve, and every downstream
+feature keyed on `u`/`v` inherits them.
+
+`uniformizePeriodicSurfaceDirections` is the answer, and it has to be a **refit** rather than a
+projection: the parameterization *is* the defect, so no map that preserves it can remove it. Target
+knots uniform on the same domain, all multiplicity 1; station `m` sits at new parameter
+`s_m = a + P·m/M` and reads the current direction at the old parameter carrying arc-length fraction
+`m/M`; solve the cyclic least-squares system. Out comes: knot spans equal in arc length, control
+points evenly spread in space, nothing at multiplicity `degree`, and `u`/`v` proportional to arc
+length to `O((2π/n)²)` — all four from one solve. It **subsumes** §2.2.0's guarantee; §2.2.0 stays
+for callers that need exactness and do not care where the knots sit.
+
+Four things were learned building it, each of which was a measured wrong answer first:
+
+- **The gauge is worth two to three orders of magnitude.** A rational surface is a ratio of two sums
+  over the same grid, so scaling *every* row's homogeneous function by one common scalar function of
+  the fitted direction leaves the surface identically unchanged. Using that freedom is not an
+  optimization, it is the difference between a usable operation and an unusable one: in arc length a
+  circle is **analytic**, but its homogeneous representation still has a genuine **corner** at every
+  arc joint, so fitting the raw homogeneous rows converges like a fit to a cornered function.
+  Dividing by the rows' shared weight profile removes the corner exactly — for any `w_ij = a_i·b_j`,
+  which covers every surface of revolution, torus, cylinder, cone and trivially every non-rational
+  surface. Measured worst radial error on the revolve fixture at 50 mm radius: `n = 12`, 1.258 mm raw
+  against 0.0056 mm gauged; `n = 48`, 0.0135 mm against 0.000024 mm. That is 48 control points per
+  period versus 12 for the same budget. On a torus rational in *both* directions: 2.77 mm against
+  0.0122 mm at `n = 12`.
+- **Certify on isocurves, not on grid rows.** Bounding the row curves is sound on non-rational input
+  — partition of unity — and wrong on rational input, because the surface is
+  `Σ N_i A_i / Σ N_i W_i`, a combination whose *coefficients* are made of the weights the refit
+  moves. Measured on the torus: 0.0139 mm claimed against 0.0156 mm actual. Collapsing against the
+  other direction's basis first removes the problem instead of bounding it — `Σ N_i(u*) H_i` **is**
+  the surface — and is cheaper for any grid with more rows than stations.
+- **Certification stations must be coprime with the fit's, not offset from them.** Offsetting by half
+  a step avoids reading where the least-squares residual is smallest, but it steps over every knot —
+  and a uniform spline approximating a circle has its error **peak at the knots**. 5 against 4 gets
+  both properties at once: one shared station per period, and every knot landing on every fifth.
+  Measured: 0.0109 mm offset, 0.0122 mm unoffset, 0.0122 mm converged.
+- **The measure is distance to the CURVE, and a windowed minimum rather than a tangent projection.**
+  Residual that slides *along* the original is a relabelling, not a shape error — reparameterizing is
+  the whole point — and it dominates: at `n = 32` on the revolve, shape error 0.049 mm against slip
+  0.196 mm, so charging for it would triple the control point count on every revolve. But removing it
+  by projecting perpendicular to the tangent is only first-order valid, and a periodic direction is
+  allowed a genuine corner (multiplicity == degree is what this removes). On the cornered arc-joint
+  fixture the projection reported 3.89 mm and 1.91 mm at `n = 8` and `16` where the true distances
+  were 5.21 mm and 2.64 mm — an **under-report**, the one outcome this module must never produce. A
+  windowed minimum reported 5.49 mm and 2.66 mm, and is identical to the projection on the
+  well-behaved fixtures.
+
+Two costs, against §2.2.0's two guarantees, and both are stated rather than hidden. **The bound is
+sampled, not structural** — the two curves no longer share a basis or even a parameter, so there is
+nothing to bound with. **The parameter-to-point map moves by design**, not merely by the deviation,
+so anything measured in the old map is void: trim loops above all. `freeFormDeformation.fs` already
+emits a uniformized face untrimmed; `editSurface.fs`'s trim probe now reports reparameterization as a
+distinct reason the loops are invalid, since a held *domain* no longer implies a held *map*.
+
+The operation is **idempotent** by an explicit gate — all-simple, evenly spaced in parameter, and
+every span carrying an equal share of the arc length, each within 2%. Without it the doubling loop
+re-fits its own output every regeneration and walks the surface away a tolerance at a time. The
+`PERIODIC-UNIFORMIZE` vector asserts the gate, the chord-spacing ratio before (~1.98) and after
+(~1.0006) on the kernel's own cylinder numbers, and that the reported deviation bounds an
+independently measured radius error.
+
 ### 2.2.1 A5.8 has to be *finished* before it can be used lossily (2026-08-09)
 
 A second divergence from the book, found while chasing a one-sided lean in Edit Surface's merged

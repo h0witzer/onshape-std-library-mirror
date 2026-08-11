@@ -523,6 +523,40 @@ For a revolve the cost is negligible and the net gets *smaller*, not larger: a u
 on a circle carries radial error about `r·(2π/n)⁴/384`, so n = 16 lands at 0.007 mm and n = 24 at
 0.0014 mm on a 100 mm part, against a default tolerance of 0.055 mm.
 
+### 6.12 …and then it has to be EVEN as well (2026-08-10)
+
+§6.11 makes a revolve deformable. It leaves it **bunched**, and that is a separate defect with a
+separate fix — now `uniformizePeriodicSurfaceDirections`, which step zero calls instead.
+
+A projection preserves the parameterization it projects, and a revolve's two rational cubic half-arcs
+run about **1.7 : 1 slower in parameter at the arc joints than mid-arc** (`t = 0.0625 → 16.3°`,
+`0.125 → 36.9°`, `0.25 → 90°`). §6.11's target — the existing breakpoints bisected — is uniform in
+*parameter*, so the net comes back deformable and ~1.7 : 1 crowded in two bands at θ = 0 and θ = 180.
+**The refinement loop cannot heal it**, and that is the part worth remembering: doubling hands
+`arcLengthSpanInsertions` a budget equal to the span count, so every span receives exactly one
+arc-length cut and the ratio is preserved at every level, forever. The deformed body inherits the
+bands, and so does every downstream feature that reads its `u`/`v`.
+
+The refit lands the knots evenly in arc length *and* makes `u`/`v` proportional to it — on the
+kernel's own cylinder numbers, the chord-spacing ratio at evenly spaced parameters goes from 1.98
+to 1.0006, at 12 control points per period. Full derivation and the four measured wrong answers
+behind it in [SPLINE_REFINEMENT_UTILITY_SPEC.md](SPLINE_REFINEMENT_UTILITY_SPEC.md) §2.2.0b.
+
+Three FFD-side consequences, replacing §6.11's:
+
+1. **The tolerance accounting is unchanged** — still half the budget, still added to the certified
+   deviation by the triangle inequality, still reported as `uniformizationDeviation`. What changed is
+   that the number is now a *measured* distance to the original surface rather than a structural sup
+   bound, so it is measured perpendicular-ish (a windowed minimum to the original curve, which
+   ignores relabelling but stays honest at a corner) and on true isocurves rather than grid rows.
+2. **`trimDropped` is now a stronger claim, not a weaker one.** §6.11's note said the parameter map
+   shifts "by up to the deviation". It now shifts *by design* — on a revolve a given `u` moves by
+   several degrees of arc — so a uniformized face must be emitted untrimmed. A held domain no longer
+   implies a held map, and the domain check cannot see the difference.
+3. **It is idempotent.** A direction already all-simple, evenly spaced and even in arc length inside
+   2% is returned untouched, so a regeneration does not re-fit its own output and walk the surface
+   away a tolerance at a time.
+
 ## 7. Not built
 
 - **§9.1.1 step 6**: automatic re-refine on a failed certification. Currently certify-and-warn (§4.2).

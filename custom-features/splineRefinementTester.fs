@@ -138,6 +138,7 @@ export const splineRefinementTester = defineFeature(function(context is Context,
         runTightPeriodicSplineVector(passCount, failures, definition.printPassingChecks);
         runPeriodicOperatorVector(passCount, failures, definition.printPassingChecks);
         runPeriodicSimplificationVector(passCount, failures, definition.printPassingChecks);
+        runPeriodicUniformizationVector(passCount, failures, definition.printPassingChecks);
         runSurfacePeriodicVector(passCount, failures, definition.printPassingChecks);
         runSurfaceRewindowVector(passCount, failures, definition.printPassingChecks);
         runBezierArcSeamVector(passCount, failures, definition.printPassingChecks);
@@ -1810,6 +1811,174 @@ function makeClosedClampedCylinderFixture() returns map
             "uKnots" : circle.knots,
             "vKnots" : [0, 0, 1, 1]
         };
+}
+
+// ============================================================================================
+// PERIODIC-UNIFORMIZE — arc-length refit of a closed direction.
+//
+// The regression vector for the defect the refit exists to remove, measured on the kernel's OWN
+// revolve numbers rather than on an approximation of them: makeClosedClampedCylinderFixture is an
+// exact circle stored as two rational cubic Bezier half-arcs, which is what evApproximateBSplineSurface
+// returns for a cylinder.
+//
+// The defect is not visible in any structural property, which is why it survived so long and why
+// this vector measures GEOMETRY. Sampling the closed direction at evenly spaced parameters and
+// looking at the chord lengths shows the fixture running 1.98 : 1 faster mid-arc than at the arc
+// joints — so a control net, and every downstream feature keyed on u, crowds into two bands. The
+// check below asserts that ratio before and after, since asserting only "the knots are uniform"
+// would pass on the parameter-uniform net that HAS the bug.
+// ============================================================================================
+
+/** The ratio of longest to shortest chord between evenly spaced parameters along one closed
+    direction — the direct measure of whether the net and the parameterization bunch. 1 is perfect.
+
+    @param surface {map} : normalized
+    @param isUDirection {boolean} : the periodic direction to walk
+    @param sampleCount {number} */
+function periodicChordSpacingRatio(surface is map, isUDirection is boolean, sampleCount is number) returns number
+{
+    const knots = isUDirection ? surface.uKnots : surface.vKnots;
+    const degree = isUDirection ? surface.uDegree : surface.vDegree;
+    const domain = knotDomain(knots, degree);
+    const otherKnots = isUDirection ? surface.vKnots : surface.uKnots;
+    const otherDomain = knotDomain(otherKnots, isUDirection ? surface.vDegree : surface.uDegree);
+    const station = 0.5 * (otherDomain.start + otherDomain.end);
+
+    // Seeded from a real evaluation rather than an origin constant, so the array carries the
+    // control points' own length units whatever they are.
+    var points = makeArray(sampleCount, isUDirection ?
+            evaluateBSplineSurfacePoint(surface, domain.start, station) :
+            evaluateBSplineSurfacePoint(surface, station, domain.start));
+    for (var index = 1; index < sampleCount; index += 1)
+    {
+        const parameter = domain.start + (domain.end - domain.start) * index / sampleCount;
+        points[index] = isUDirection ? evaluateBSplineSurfacePoint(surface, parameter, station)
+            : evaluateBSplineSurfacePoint(surface, station, parameter);
+    }
+
+    var shortest = undefined;
+    var longest = 0 * meter;
+    for (var index = 0; index < sampleCount; index += 1)
+    {
+        // Closed, so the last chord wraps back to the first point like any other.
+        const chord = norm(points[(index + 1) % sampleCount] - points[index]);
+        shortest = shortest == undefined ? chord : min(shortest, chord);
+        longest = max(longest, chord);
+    }
+    return shortest <= 0 * meter ? 0 : longest / shortest;
+}
+
+/** Worst departure from `radius` over evenly spaced parameters of a closed direction whose true
+    geometry is a circle about the Z axis — an INDEPENDENT read of what the refit cost, owing nothing
+    to the module's own certification. */
+function circleRadiusError(surface is map, isUDirection is boolean, radius is ValueWithUnits, sampleCount is number) returns ValueWithUnits
+{
+    const knots = isUDirection ? surface.uKnots : surface.vKnots;
+    const degree = isUDirection ? surface.uDegree : surface.vDegree;
+    const domain = knotDomain(knots, degree);
+    const otherKnots = isUDirection ? surface.vKnots : surface.uKnots;
+    const otherDomain = knotDomain(otherKnots, isUDirection ? surface.vDegree : surface.uDegree);
+    const station = 0.5 * (otherDomain.start + otherDomain.end);
+
+    var worst = 0 * meter;
+    for (var index = 0; index < sampleCount; index += 1)
+    {
+        const parameter = domain.start + (domain.end - domain.start) * index / sampleCount;
+        const point = isUDirection ? evaluateBSplineSurfacePoint(surface, parameter, station)
+            : evaluateBSplineSurfacePoint(surface, station, parameter);
+        worst = max(worst, abs(norm(vector(point[0], point[1])) - radius));
+    }
+    return worst;
+}
+
+/** True when one period's knots are evenly spaced, within a relative tolerance. */
+function periodicKnotsAreEvenlySpaced(knots is array, degree is number, relativeTolerance is number) returns boolean
+{
+    const n = size(knots) - 2 * degree - 1;
+    const domain = knotDomain(knots, degree);
+    const evenStep = (domain.end - domain.start) / n;
+    for (var index = 0; index < n; index += 1)
+    {
+        if (abs(knots[degree + index + 1] - knots[degree + index] - evenStep) > relativeTolerance * evenStep)
+        {
+            return false;
+        }
+    }
+    return true;
+}
+
+function runPeriodicUniformizationVector(passCount is box, failures is box, printPassing is boolean)
+{
+    try
+    {
+        const radius = 0.0352842599367892 * meter; // makeClosedClampedCircleFixture's own radius
+        const before = normalizeSurfaceDefinition(makeClosedClampedCylinderFixture());
+        const tolerance = 1e-5 * meter;
+
+        // The fixture is an EXACT circle, so anything the refit costs is genuinely the refit's.
+        recordCheck(passCount, failures, circleRadiusError(before, true, radius, 240) < 1e-9 * meter,
+            "PERIODIC-UNIFORMIZE: the fixture starts as an exact circle", printPassing);
+
+        // THE DEFECT ITSELF. Parameter-even sampling is ~2:1 uneven in space, and no structural
+        // property of the knot vector says so.
+        const ratioBefore = periodicChordSpacingRatio(before, true, 240);
+        recordCheck(passCount, failures, ratioBefore > 1.5,
+            "PERIODIC-UNIFORMIZE: the kernel's own revolve form IS badly bunched to begin with (chord ratio " ~
+            toString(ratioBefore) ~ ", expected ~1.98)", printPassing);
+        recordCheck(passCount, failures, periodicMaximumKnotMultiplicity(before.uKnots, before.uDegree) == before.uDegree,
+            "PERIODIC-UNIFORMIZE: and carries multiplicity == degree at its arc joints", printPassing);
+
+        const after = uniformizePeriodicSurfaceDirections(before, tolerance);
+
+        recordCheck(passCount, failures, after.uniformized == true,
+            "PERIODIC-UNIFORMIZE: a bunched closed direction is reported as uniformized", printPassing);
+        recordCheck(passCount, failures, after.uniformizationCapped != true,
+            "PERIODIC-UNIFORMIZE: a circle reaches the tolerance without hitting the count ceiling", printPassing);
+        recordCheck(passCount, failures, after.isUPeriodic == true,
+            "PERIODIC-UNIFORMIZE: the direction is still periodic afterwards", printPassing);
+        recordCheck(passCount, failures, columnOverlapConditionHolds(after.controlPoints, after.uDegree),
+            "PERIODIC-UNIFORMIZE: the wrap overlap condition holds in the refitted net", printPassing);
+        recordCheck(passCount, failures, periodicMaximumKnotMultiplicity(after.uKnots, after.uDegree) == 1,
+            "PERIODIC-UNIFORMIZE: every knot comes out simple, so no deformation can crease it", printPassing);
+        recordCheck(passCount, failures, periodicKnotsAreEvenlySpaced(after.uKnots, after.uDegree, 1e-9),
+            "PERIODIC-UNIFORMIZE: the refitted knot vector is uniform", printPassing);
+
+        // THE FIX, measured the same way the defect was.
+        const ratioAfter = periodicChordSpacingRatio(after, true, 240);
+        recordCheck(passCount, failures, ratioAfter < 1.05,
+            "PERIODIC-UNIFORMIZE: parameter-even sampling is now arc-length-even (chord ratio " ~
+            toString(ratioAfter) ~ ", expected ~1.0006)", printPassing);
+
+        // HONESTY OF THE REPORTED NUMBER, against a measurement that owes it nothing: the true
+        // geometry is a circle of known radius, so the deviation from it is knowable exactly.
+        const trueError = circleRadiusError(after, true, radius, 480);
+        recordCheck(passCount, failures, after.deviation <= tolerance,
+            "PERIODIC-UNIFORMIZE: the reported deviation is inside the requested tolerance (" ~
+            toString(after.deviation) ~ ")", printPassing);
+        recordCheck(passCount, failures, after.deviation >= trueError,
+            "PERIODIC-UNIFORMIZE: the reported deviation BOUNDS the independently measured error (" ~
+            toString(after.deviation) ~ " >= " ~ toString(trueError) ~ ")", printPassing);
+        recordCheck(passCount, failures, trueError <= tolerance,
+            "PERIODIC-UNIFORMIZE: and the true error really is inside the tolerance", printPassing);
+
+        // IDEMPOTENCE. Without this gate the doubling loop re-fits its own output on every
+        // regeneration and walks the surface away from the original a tolerance at a time.
+        const again = uniformizePeriodicSurfaceDirections(after, tolerance);
+        recordCheck(passCount, failures, again.uniformized != true,
+            "PERIODIC-UNIFORMIZE: running it a second time recognizes the result and does nothing", printPassing);
+        recordCheck(passCount, failures, again.deviation == 0 * meter,
+            "PERIODIC-UNIFORMIZE: the second run therefore costs no further deviation", printPassing);
+        recordCheck(passCount, failures, knotVectorsMatch(again.uKnots, after.uKnots),
+            "PERIODIC-UNIFORMIZE: and leaves the knot vector untouched", printPassing);
+
+        // A direction that is not periodic is not this operation's business at all.
+        recordCheck(passCount, failures, knotVectorsMatch(after.vKnots, before.vKnots),
+            "PERIODIC-UNIFORMIZE: the CLAMPED direction is left completely alone", printPassing);
+    }
+    catch (error)
+    {
+        recordCheck(passCount, failures, false, "PERIODIC-UNIFORMIZE: threw - " ~ toString(error), printPassing);
+    }
 }
 
 function runClosedClampedSurfaceVector(passCount is box, failures is box, printPassing is boolean)

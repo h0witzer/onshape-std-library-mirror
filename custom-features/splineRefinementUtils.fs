@@ -127,6 +127,73 @@ export const SPARSE_WEIGHT_CUTOFF = 1e-12;
 export const PERIODIC_SIMPLIFICATION_MAX_CONTROL_POINTS = 128;
 
 /**
+ * Chord-sum samples per existing span in an arc-length profile built for INSERTION PLACEMENT.
+ * Per-span rather than per-domain so a span occupying one percent of the parameter range is
+ * resolved as well as a wide one — see directionArcLengthProfile.
+ */
+const ARC_LENGTH_PROFILE_SAMPLES_PER_SPAN = 24;
+
+/**
+ * Chord-sum samples per PERIOD in an arc-length profile built for UNIFORMIZATION, which inverts the
+ * profile rather than bisecting it. A per-period budget, not a per-span one: a revolve's closed
+ * direction has two spans, so a per-span rule would hand 128 target stations a grid of 48 chords,
+ * and every station in a span would interpolate off the same few. 1024 keeps at least eight profile
+ * segments inside each target span all the way to the cap, at a cost — three collapsed isocurve
+ * evaluations per sample — that is trivial next to the solve it feeds.
+ */
+const ARC_LENGTH_PROFILE_UNIFORMIZATION_SAMPLES = 1024;
+
+/**
+ * How far a periodic direction's spans may depart from carrying an equal share of the arc length,
+ * relative to that equal share, before uniformization refits it. Also applied to the knot values'
+ * departure from even parameter spacing.
+ *
+ * Two percent is well below anything that reads as bunching on screen and well above what chord-sum
+ * quadrature's own error contributes, which is what makes the check a stable IDEMPOTENCE gate: a
+ * surface this module has already uniformized comes back through unchanged and un-refit, so a
+ * feature that runs twice does not pay the approximation twice.
+ */
+const ARC_LENGTH_UNIFORMITY_TOLERANCE = 0.02;
+
+/**
+ * Least-squares stations per target span for the uniformizing refit, and the certification stations
+ * per target span used to measure what it cost.
+ *
+ * Four stations per span makes the system comfortably overdetermined — the normal matrix stays
+ * positive definite with room to spare, which is what choleskyFactor's pivot check would otherwise
+ * catch as a caller error.
+ *
+ * THE TWO COUNTS ARE COPRIME, AND THAT IS THE WHOLE DESIGN. Certification must not read only where
+ * the fit was told to match, since a least-squares residual is smallest there; 5 against 4 shares
+ * exactly one station per period, the seam, so it barely reads there at all. It must also not MISS
+ * the knots, and that is the half of it a first version got wrong: certification stations were
+ * offset half a step precisely to avoid the fit stations, which stepped over every knot — and a
+ * uniform spline approximating a circle has its error PEAK at the knots, so the offset was skipping
+ * the answer. Measured on the torus fixture, the offset version reported 0.0109 mm where the true
+ * worst was 0.0122 mm; unoffset, with knots landing on every fifth station, it reports 0.0122 mm.
+ * Coprimality gets both properties at once, which offsetting cannot.
+ */
+const UNIFORMIZATION_FIT_STATIONS_PER_SPAN = 4;
+const UNIFORMIZATION_CERTIFICATION_STATIONS_PER_SPAN = 5;
+
+/**
+ * How many isocurves of the OTHER direction the certification measures along — see
+ * directionCertificationIsocurves for why it measures isocurves rather than grid rows at all.
+ * Spanning that direction's domain with its ends included, so a deviation peaking at a boundary
+ * isocurve is covered.
+ */
+const UNIFORMIZATION_CERTIFICATION_ISOCURVES = 5;
+
+/**
+ * How many stations either side of its own a fitted station may look for the nearest point on the
+ * original curve — the window that turns the certification from a point-to-POINT distance into a
+ * point-to-CURVE one. See uniformizedDirectionDeviation for why that distinction decides whether the
+ * reported number is honest at a corner. Three stations is about half a target span, comfortably
+ * more than the correspondence slip and far less than anything that could match across a thin shape.
+ */
+const UNIFORMIZATION_CERTIFICATION_SEARCH_WINDOW = 3;
+
+/**
  * The algorithm used to build a refinement refinementOperator. BOEHM inserts the requested parameters
  * one at a time (Boehm single knot insertion). A future OSLO entry (Oslo / discrete B-spline
  * algorithm, whole knot set in one pass) can be added here without changing any caller —
@@ -4347,6 +4414,23 @@ function stationIsocurvePoint(isocurve is map, firstIndex is number, basisValues
 
 function directionArcLengthProfile(surface is map, isUDirection is boolean) returns map
 {
+    return directionArcLengthProfile(surface, isUDirection, ARC_LENGTH_PROFILE_SAMPLES_PER_SPAN);
+}
+
+/**
+ * Resolution-selecting overload.
+ *
+ * The default is sized for CHOOSING INSERTION PARAMETERS, where the profile is asked for one cut per
+ * existing span and a chord-sum grid a couple of dozen wide across each span resolves that easily.
+ * INVERTING the profile — "which parameter carries this much arc length" — is a different demand:
+ * its accuracy is set by how many profile segments fall inside the answer's own neighbourhood, and a
+ * revolve arrives with TWO spans in its closed direction, so the default grid puts a segment every
+ * ~3.7 degrees of arc. Asking that grid for 128 evenly spaced stations reads them all off the same
+ * handful of chords. The uniformization pass below therefore requests a per-period budget instead of
+ * a per-span one; see ARC_LENGTH_PROFILE_UNIFORMIZATION_SAMPLES.
+ */
+function directionArcLengthProfile(surface is map, isUDirection is boolean, samplesPerSpan is number) returns map
+{
     const degree = isUDirection ? surface.uDegree : surface.vDegree;
     const knots = isUDirection ? surface.uKnots : surface.vKnots;
     const domain = knotDomain(knots, degree);
@@ -4363,7 +4447,6 @@ function directionArcLengthProfile(surface is map, isUDirection is boolean) retu
     // where that misleads. Per-span sampling resolves every span equally regardless of width, at
     // the cost of a non-uniform grid the lookups below have to search rather than index.
     const breaks = directionBreakValues(knots, degree);
-    const samplesPerSpan = 24;
     var parameters = makeArray((size(breaks) - 1) * samplesPerSpan + 1, domain.start);
     var writeIndex = 0;
     for (var spanIndex = 0; spanIndex < size(breaks) - 1; spanIndex += 1)
@@ -6509,6 +6592,14 @@ function simplifyPeriodicDirectionToTolerance(pointArrays is array, knots is arr
  * it. See this section's block comment for why that is the requirement and why insertion and
  * removal both cannot meet it.
  *
+ * NOT THE ENTRY POINT TO REACH FOR WHEN DENSITY MATTERS, which for a deformer or an editor is
+ * always: this preserves the parameterization it projects, so a revolve comes back deformable and
+ * still 1.7 : 1 bunched at its arc joints. uniformizePeriodicSurfaceDirections subsumes this
+ * guarantee and fixes the density too; see its section comment. What this keeps that the refit
+ * cannot is EXACTNESS — a structural sup bound, and an identically zero residual whenever the
+ * knots really were removable — so it remains the right call for a caller that must not move the
+ * surface by more than it can prove, and that does not care where the knots sit.
+ *
  * A direction that is not periodic, or that already cannot crease, is left completely alone — so
  * this is safe to call on any surface and costs one knot scan when there is nothing to do. The
  * returned map carries `deviation` (worst certified control-point displacement, zero when the
@@ -6586,6 +6677,786 @@ export function simplifySurfacePeriodicDirections(surface is map, tolerance is V
     normalized.weights = separated.weights;
     normalized.deviation = worstDeviation;
     normalized.simplified = anySimplified;
+    return normalized;
+}
+
+// ============================================================================================
+// PERIODIC UNIFORMIZATION BY ARC-LENGTH REFIT.
+//
+// What the section above cannot do, and why a second periodic operation exists.
+//
+// Cyclic projection removes the C0 knots, which is what makes a revolve DEFORMABLE. It does not
+// make the direction EVEN, and it cannot, because a projection preserves the parameterization it
+// projects: S_tgt(t) approximates S_cur(t) at the same t. A revolve's closed direction arrives as
+// two rational cubic Bezier half-arcs — control points [P0, (r,2r), (-r,2r), (-r,0), (-r,-2r),
+// (r,-2r), P0], weights [1, 1/3, 1/3, 1, 1/3, 1/3, 1], knots [0 x4, .5 x3, 1 x4] — and that
+// parameterization is nowhere near unit speed. Evaluating it: t = 0.0625 lands at 16.3 degrees,
+// 0.125 at 36.9, 0.1875 at 61.9, 0.25 at 90. Parameter speed varies about 1.7 : 1 across each
+// half-arc, SLOWEST exactly at the two arc joints.
+//
+// So a target knot vector picked by bisecting the existing breakpoints — which is what the
+// projection above does, and it is uniform in PARAMETER — comes out 1.7 : 1 tighter in SPACE at
+// theta = 0 and theta = 180. Refinement cannot heal it either, and the reason is worth stating
+// because it looks like it should: arcLengthSpanInsertions is arc-length aware, but the doubling
+// schedule hands it a budget equal to the span count, so every span gets exactly one cut and the
+// ratio survives at every level, forever. Two visible bands of crowded control points on every
+// deformed or edited revolve, and every downstream feature keyed on u/v inherits them.
+//
+// THE FIX IS A REFIT, NOT A PROJECTION, and it has to be: the parameterization is the defect, and
+// no map that preserves it can remove it. Given a target count n:
+//
+//   1. Build an arc-length profile of the direction (directionArcLengthProfile, at the per-period
+//      resolution ARC_LENGTH_PROFILE_UNIFORMIZATION_SAMPLES, since this INVERTS the profile).
+//   2. Take the target knots UNIFORM in the new parameter, all multiplicity 1, on the same domain.
+//   3. Station m of the fit sits at new parameter s_m = a + P*m/M, and reads the current direction
+//      at the old parameter t_m carrying arc-length fraction m/M. Equal steps in s therefore mean
+//      equal steps ALONG THE SURFACE, which is the definition of the reparameterization.
+//   4. Divide each station's sample by the GAUGE — the rows' shared weight profile. This is the
+//      step that makes the whole thing affordable rather than merely correct, and periodicGaugeWeights
+//      carries the derivation and the measurements: two to three orders of magnitude of accuracy,
+//      because in arc length the circle is analytic while its homogeneous representation still has
+//      a corner at every arc joint, and the gauge is exactly what divides that corner out.
+//   5. Solve the cyclic least-squares system for the fundamental control points.
+//
+// WHAT COMES OUT: knot spans equal in arc length, control points evenly spread in space (their
+// Greville abscissae are averages of evenly spaced knots), every multiplicity 1 so nothing can
+// crease and no Greville crowds against a multiple knot, and u/v proportional to arc length to
+// O((2*pi/n)^2). All four at once, from one solve.
+//
+// STILL ONE OPERATOR, which is the property that keeps this affordable. The stations are chosen
+// from the KNOT VECTORS AND THE PROFILE ALONE, never from the control points, so transpose(B)*B and
+// transpose(B)*E compose into a single matrix that is applied down every row or column of the grid
+// by the ordinary tensor appliers. No sample point is ever formed. That is the same amortization
+// the whole operator layer exists for, and it is why a refit here costs about what the projection
+// costs rather than costing per-row fitting.
+//
+// TWO HONEST COSTS, against the projection's two guarantees:
+//
+//   - THE ERROR BOUND IS SAMPLED, not structural. The projection compares control points in a
+//     shared basis and gets a partition-of-unity sup bound over the whole domain for free. Nothing
+//     like that is available here, because the two curves are no longer expressible in one basis —
+//     they do not even share a parameter. So the deviation is measured directly, at
+//     UNIFORMIZATION_CERTIFICATION_STATIONS_PER_SPAN stations per target span, a count COPRIME with
+//     the fit's so it neither reads where the residual was minimized by construction nor steps over
+//     the knots, on isocurves rather than grid rows so every compared point is on the surface. What
+//     is measured is the distance to the original CURVE rather than to the corresponding point;
+//     uniformizedDirectionDeviation carries the argument for why the along-curve part of the
+//     residual is a relabelling rather than an error, and why that has to be a windowed minimum
+//     rather than a tangent projection to stay honest at a corner.
+//   - THE PARAMETER-TO-POINT MAP MOVES, and by design — that IS the fix — not merely by the
+//     deviation. Anything measured in the old map is invalidated: trim loops above all. Callers
+//     must emit untrimmed or re-derive, exactly as freeFormDeformation.fs already does for a
+//     simplified face, and editSurface.fs's trim probe now reports it as a reason loops are void.
+//
+// The fit is least squares in HOMOGENEOUS coordinates — the standard NURBS choice, and the only one
+// that stays linear. Each of the four components is fitted independently against the same normal
+// matrix, so the operator is genuinely unit-free and the result does not depend on whether the part
+// is modelled in metres or inches. What it does mean is that x*w and w are fitted rather than x,
+// so the Euclidean error is not the quantity minimized. That is what the certification is for.
+//
+// IDEMPOTENT, deliberately. A direction already all-simple, already even in parameter and already
+// even in arc length inside ARC_LENGTH_UNIFORMITY_TOLERANCE is returned untouched, so a feature
+// that runs this twice pays the approximation once. Without that gate the doubling loop below would
+// re-fit its own output every regeneration and walk the surface away from the original.
+// ============================================================================================
+
+/** Total arc length a profile covers. `cumulative[0]` is zero by construction; subtracting it
+    anyway keeps the reading independent of that. */
+function profileTotalLength(profile is map) returns ValueWithUnits
+{
+    return profile.cumulative[size(profile.cumulative) - 1] - profile.cumulative[0];
+}
+
+/** An arc-length profile at the resolution UNIFORMIZATION needs, which is a per-PERIOD budget
+    rather than the per-span one insertion placement uses — see
+    ARC_LENGTH_PROFILE_UNIFORMIZATION_SAMPLES. */
+function uniformizationProfile(surface is map, isUDirection is boolean) returns map
+{
+    const knots = isUDirection ? surface.uKnots : surface.vKnots;
+    const degree = isUDirection ? surface.uDegree : surface.vDegree;
+    const spanCount = size(directionBreakValues(knots, degree)) - 1;
+    return directionArcLengthProfile(surface, isUDirection, max(ARC_LENGTH_PROFILE_SAMPLES_PER_SPAN,
+            ceil(ARC_LENGTH_PROFILE_UNIFORMIZATION_SAMPLES / spanCount)));
+}
+
+/**
+ * True when a periodic direction is ALREADY what the refit would produce: every knot simple, the
+ * knot values evenly spaced in parameter, and every span carrying an equal share of the arc length
+ * — all three inside ARC_LENGTH_UNIFORMITY_TOLERANCE.
+ *
+ * This is the idempotence gate. All three conditions are needed and none implies another: simple
+ * knots without even spacing still bunch, even spacing in parameter without even arc length is
+ * exactly the state cyclic projection leaves a revolve in, and even arc length with a multiple knot
+ * still crowds Grevilles against that knot.
+ *
+ * @param profile {map} : from uniformizationProfile, for this direction
+ * @param knots {array} : STORED periodic knot array
+ * @param degree {number}
+ * @returns {boolean}
+ */
+function periodicDirectionIsArcLengthUniform(profile is map, knots is array, degree is number) returns boolean
+{
+    const n = size(knots) - 2 * degree - 1;
+    if (n < 1 || periodicMaximumKnotMultiplicity(knots, degree) > 1)
+    {
+        return false;
+    }
+
+    const domain = knotDomain(knots, degree);
+    const evenParameterStep = (domain.end - domain.start) / n;
+    const totalLength = profileTotalLength(profile);
+    if (totalLength <= 0 * meter)
+    {
+        // A direction the profile measures as having no length carries no evenness to restore, and
+        // a refit driven by it would be dividing by nothing. Leave it exactly as it is.
+        return true;
+    }
+    const evenLengthShare = totalLength / n;
+
+    var previousLength = profile.cumulative[0];
+    for (var index = 0; index < n; index += 1)
+    {
+        const spanWidth = knots[degree + index + 1] - knots[degree + index];
+        if (abs(spanWidth - evenParameterStep) > ARC_LENGTH_UNIFORMITY_TOLERANCE * evenParameterStep)
+        {
+            return false;
+        }
+        const spanEndLength = arcLengthAt(profile, knots[degree + index + 1]);
+        if (abs(spanEndLength - previousLength - evenLengthShare) > ARC_LENGTH_UNIFORMITY_TOLERANCE * evenLengthShare)
+        {
+            return false;
+        }
+        previousLength = spanEndLength;
+    }
+    return true;
+}
+
+/**
+ * One point of a homogeneous control array, DEHOMOGENIZED — the curve those points define, at the
+ * parameter whose span start and basis values are handed in.
+ *
+ * Kept separate from evaluateBSplineSurfacePoint because the arrays here are grid ROWS (or columns)
+ * rather than surfaces, and because the span search and basis values are computed once per station
+ * and shared across every array: that sharing is most of the certification pass's cost.
+ */
+function homogeneousArrayPoint(homogeneousPoints is array, firstIndex is number, basisValues is array, degree is number) returns Vector
+{
+    var accumulated = basisValues[0] * homogeneousPoints[firstIndex];
+    for (var offset = 1; offset <= degree; offset += 1)
+    {
+        accumulated = accumulated + basisValues[offset] * homogeneousPoints[firstIndex + offset];
+    }
+    return subArray(accumulated, 0, 3) / accumulated[3];
+}
+
+/**
+ * The GAUGE: a weight array whose curve is divided out of every row before fitting, and the single
+ * change that decides whether this operation costs a sane number of control points or four times
+ * one. The mean of the arrays' own weights, index by index.
+ *
+ * WHY A GAUGE EXISTS AT ALL. A rational surface is a ratio of two sums over the same grid, so
+ * multiplying EVERY row's homogeneous function by one common scalar function of the fitted
+ * direction — numerator and denominator alike — leaves the surface identically unchanged. That
+ * freedom is exact, not approximate, and it is free to use.
+ *
+ * WHY USING IT MATTERS SO MUCH. The thing being fitted is the surface as a function of arc length,
+ * and in arc length a revolve's circular direction is ANALYTIC — it is a circle. Its homogeneous
+ * representation is not: the arc joints carry multiplicity == degree, so the numerator and the
+ * weight function each have a genuine CORNER there, and the smooth curve only emerges when they are
+ * divided. Fitting the cornered functions with an all-simple uniform spline converges like a fit to
+ * a cornered function, which is to say badly, while fitting the ratio converges like a fit to a
+ * circle. Dividing by the shared weight profile turns the first problem into the second: for any
+ * surface whose weights factor as w_ij = a_i * b_j — every surface of revolution, every torus,
+ * every cylinder and cone, and trivially every non-rational surface — the b_j factor IS the gauge,
+ * so the rows come out as (constant * point curve, constant) and the corner is gone.
+ *
+ * MEASURED, on the standard revolve fixture at a 50 mm radius, worst radial error:
+ *
+ *      n        raw homogeneous      gauge-normalized
+ *      12          1.258 mm             0.0056 mm
+ *      24          0.124 mm             0.00033 mm
+ *      48          0.0135 mm            0.000024 mm
+ *
+ * — two to three orders of magnitude, which is the difference between needing 48 control points per
+ * period for a 0.0275 mm budget and needing 12. Confirmed on a tensor case too, a torus rational
+ * and periodic in BOTH directions: 2.77 mm raw against 0.0122 mm gauged at n = 12.
+ *
+ * The mean rather than any particular row, because a single row can be degenerate (a cone apex) and
+ * because for separable weights every choice is equivalent anyway — the gauge only ever has to
+ * capture the factor the rows SHARE. Non-separable weights are still handled correctly, the gauge
+ * being exact whatever it is; they simply keep whatever per-row weight variation the gauge could not
+ * account for, and pay for it in control points.
+ *
+ * Falls back to all ones — the ungauged fit — if any mean is non-positive, which cannot happen for
+ * a valid rational surface and would make the division meaningless if it did.
+ */
+function periodicGaugeWeights(pointArrays is array) returns array
+{
+    const arrayCount = size(pointArrays);
+    const pointCount = size(pointArrays[0]);
+    var gauge = makeArray(pointCount, 1);
+    for (var index = 0; index < pointCount; index += 1)
+    {
+        var weightSum = 0;
+        for (var arrayIndex = 0; arrayIndex < arrayCount; arrayIndex += 1)
+        {
+            weightSum += pointArrays[arrayIndex][index][3];
+        }
+        if (weightSum <= 0)
+        {
+            return makeArray(pointCount, 1);
+        }
+        gauge[index] = weightSum / arrayCount;
+    }
+    return gauge;
+}
+
+/**
+ * A few true SURFACE ISOCURVES of the direction being refitted, in homogeneous form: the grid
+ * arrays collapsed against the OTHER direction's basis at evenly spaced stations.
+ *
+ * WHAT THIS FIXES, and it is a real error rather than a refinement. The obvious thing to certify is
+ * the grid arrays themselves, which is what the projection above does and what this did first. On a
+ * NON-rational surface that is sound — the surface is a partition-of-unity combination of the row
+ * curves, so a bound on every row bounds the surface. On a RATIONAL one it is not: the surface is
+ * sum_i N_i A_i / sum_i N_i W_i, a combination whose COEFFICIENTS are themselves made of the
+ * weights, and a refit moves the weights. Bounding the row curves leaves the coefficient
+ * perturbation unaccounted for, and the result is an under-report — measured on the exact torus,
+ * 0.0139 mm claimed against 0.0156 mm actual, which is exactly the outcome the module's own rule
+ * says must not happen.
+ *
+ * Collapsing first removes the problem instead of bounding it. sum_i N_i(u*) H_i is the homogeneous
+ * isocurve at u*, so its dehomogenized value IS the surface point — no combination left to perturb,
+ * and the certification becomes a direct measurement of the surface rather than a bound on its
+ * ingredients. It is also CHEAPER for any grid with more rows than stations, and it composes with
+ * the fit for free: the operator is linear, so collapsing then fitting equals fitting then
+ * collapsing, and only the few collapsed arrays ever go through it.
+ *
+ * Five stations spanning the other direction's domain ENDS INCLUDED, since a deviation that peaks at
+ * a boundary isocurve is exactly what interior-only sampling would miss. The error being measured
+ * varies smoothly in the other direction — it is the refit's error in THIS one — so it does not need
+ * dense coverage there.
+ *
+ * @param pointArrays {array} : homogeneous arrays indexed by the OTHER direction's control index
+ * @param otherKnots {array} : that direction's knot vector
+ * @param otherDegree {number}
+ * @returns {array} : UNIFORMIZATION_CERTIFICATION_ISOCURVES homogeneous arrays along the refitted
+ *                    direction, each a genuine isocurve of the surface
+ */
+function directionCertificationIsocurves(pointArrays is array, otherKnots is array, otherDegree is number) returns array
+{
+    const otherDomain = knotDomain(otherKnots, otherDegree);
+    const pointCount = size(pointArrays[0]);
+    var isocurves = makeArray(UNIFORMIZATION_CERTIFICATION_ISOCURVES, 0);
+
+    for (var stationIndex = 0; stationIndex < UNIFORMIZATION_CERTIFICATION_ISOCURVES; stationIndex += 1)
+    {
+        const station = otherDomain.start + (otherDomain.end - otherDomain.start) *
+                stationIndex / (UNIFORMIZATION_CERTIFICATION_ISOCURVES - 1);
+        const spanIndex = findEvaluationSpanIndex(otherKnots, otherDegree, station);
+        const basisValues = bSplineBasisValues(otherKnots, otherDegree, spanIndex, station);
+        const firstIndex = spanIndex - otherDegree;
+
+        var isocurve = makeArray(pointCount, pointArrays[0][0]);
+        for (var index = 0; index < pointCount; index += 1)
+        {
+            var accumulated = basisValues[0] * pointArrays[firstIndex][index];
+            for (var offset = 1; offset <= otherDegree; offset += 1)
+            {
+                accumulated = accumulated + basisValues[offset] * pointArrays[firstIndex + offset][index];
+            }
+            isocurve[index] = accumulated;
+        }
+        isocurves[stationIndex] = isocurve;
+    }
+    return isocurves;
+}
+
+/** Whether every fitted homogeneous point still carries a positive weight. A least-squares fit is
+    not constrained to keep weights positive, and a non-positive one is not a slightly wrong surface
+    — it is a pole in the rational map and an invalid body. Cheaper to detect than to reason about,
+    and the caller's answer is simply to spend more control points. */
+function homogeneousArraysHavePositiveWeights(pointArrays is array) returns boolean
+{
+    for (var pointArray in pointArrays)
+    {
+        for (var point in pointArray)
+        {
+            if (point[3] <= 0)
+            {
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
+/**
+ * The single operator carrying one periodic direction from its current knot vector onto `targetCount`
+ * UNIFORM knots in an arc-length parameterization: current STORED points in, target STORED points
+ * out, with the trailing `degree` output rows literal copies of the leading ones so the wrap
+ * invariant Q[i] == Q[i + n] holds by construction rather than by arithmetic.
+ *
+ * The composition is the point. Writing B for the target basis at the fit stations and E for the
+ * sampling map that reads the CURRENT direction at each station's arc-length preimage, the fit is
+ *
+ *     Q = inverse(transpose(B)*B) * transpose(B) * E * P
+ *
+ * and every factor depends only on knots and the profile. So the whole chain collapses to one
+ * matrix before any control point is touched — no sampled points are ever materialized, and the
+ * result drives the ordinary tensor appliers.
+ *
+ * E carries the GAUGE — see periodicGaugeWeights. Each station's sampling row is divided by the
+ * gauge curve's value there, which is a fixed scalar per station and so leaves E a plain linear map
+ * and the composition above untouched. The output rows therefore live in the gauge-transformed
+ * representation, which describes the same surface exactly; nothing downstream has to know, because
+ * every consumer reads the ratio.
+ *
+ * `targetCount` must exceed `degree`, or the folded target indices of a single station collide and
+ * the normal matrix is singular; the caller's schedule starts at degree + 1.
+ *
+ * @param knots {array} : STORED periodic knot array
+ * @param degree {number}
+ * @param profile {map} : from uniformizationProfile, for this direction
+ * @param targetCount {number} : fundamental control points per period after the refit
+ * @param gaugeWeights {array} : from periodicGaugeWeights, indexed like the STORED input points
+ * @returns {map} : an operator map in the module's standard shape
+ */
+function periodicArcLengthFitOperator(knots is array, degree is number, profile is map, targetCount is number,
+    gaugeWeights is array) returns map
+{
+    const inputCount = size(knots) - degree - 1;
+    const domain = knotDomain(knots, degree);
+    const period = domain.end - domain.start;
+    const totalLength = profileTotalLength(profile);
+
+    var targetFundamental = makeArray(targetCount, domain.start);
+    for (var index = 0; index < targetCount; index += 1)
+    {
+        targetFundamental[index] = domain.start + period * index / targetCount;
+    }
+    const targetKnots = buildPeriodicKnotArray(targetFundamental, period, degree, targetCount + 2 * degree + 1);
+
+    // Per station: the target unknowns it touches, folded onto the fundamental cycle, with their
+    // basis weights; and where in the CURRENT stored array its right-hand side reads, with theirs.
+    const stationCount = targetCount * UNIFORMIZATION_FIT_STATIONS_PER_SPAN;
+    var targetIndices = makeArray(stationCount, 0);
+    var targetWeights = makeArray(stationCount, 0);
+    var sourceFirstIndex = makeArray(stationCount, 0);
+    var sourceWeights = makeArray(stationCount, 0);
+
+    for (var station = 0; station < stationCount; station += 1)
+    {
+        const fraction = station / stationCount;
+        const newParameter = domain.start + period * fraction;
+        // The seam is pinned rather than inverted: fraction zero is the domain start on both sides
+        // by definition, and asking the profile for it would answer with its own interpolation.
+        const oldParameter = station == 0 ? domain.start
+                : parameterAtArcLength(profile, profile.cumulative[0] + totalLength * fraction);
+
+        const targetSpan = findEvaluationSpanIndex(targetKnots, degree, newParameter);
+        var folded = makeArray(degree + 1, 0);
+        for (var offset = 0; offset <= degree; offset += 1)
+        {
+            const stored = targetSpan - degree + offset;
+            folded[offset] = stored - floor(stored / targetCount) * targetCount;
+        }
+        targetIndices[station] = folded;
+        targetWeights[station] = bSplineBasisValues(targetKnots, degree, targetSpan, newParameter);
+
+        const sourceSpan = findEvaluationSpanIndex(knots, degree, oldParameter);
+        const sourceFirst = sourceSpan - degree;
+        var sourceBasis = bSplineBasisValues(knots, degree, sourceSpan, oldParameter);
+
+        // Divide this station's sample by the gauge curve. On a non-rational surface the gauge is
+        // all ones and this is exactly 1 by partition of unity, so the scaling is a no-op rather
+        // than a near-no-op — worth knowing, since it means the common case pays nothing and can
+        // lose nothing.
+        var gaugeValue = 0;
+        for (var offset = 0; offset <= degree; offset += 1)
+        {
+            gaugeValue += sourceBasis[offset] * gaugeWeights[sourceFirst + offset];
+        }
+        if (gaugeValue > 0)
+        {
+            for (var offset = 0; offset <= degree; offset += 1)
+            {
+                sourceBasis[offset] = sourceBasis[offset] / gaugeValue;
+            }
+        }
+        sourceFirstIndex[station] = sourceFirst;
+        sourceWeights[station] = sourceBasis;
+    }
+
+    // Accumulate transpose(B)*B and transpose(B)*E in one pass. Each station touches at most
+    // degree + 1 unknowns, so this is O(stationCount * (degree + 1)^2) rather than anything
+    // quadratic in the counts.
+    var normalMatrix = makeArray(targetCount, 0);
+    var rightHandSides = makeArray(targetCount, 0);
+    for (var row = 0; row < targetCount; row += 1)
+    {
+        normalMatrix[row] = makeArray(targetCount, 0);
+        rightHandSides[row] = makeArray(inputCount, 0);
+    }
+
+    for (var station = 0; station < stationCount; station += 1)
+    {
+        const rows = targetIndices[station];
+        const weights = targetWeights[station];
+        const firstSource = sourceFirstIndex[station];
+        const source = sourceWeights[station];
+        for (var i = 0; i <= degree; i += 1)
+        {
+            const rowIndex = rows[i];
+            var normalRow = normalMatrix[rowIndex];
+            for (var j = 0; j <= degree; j += 1)
+            {
+                normalRow[rows[j]] = normalRow[rows[j]] + weights[i] * weights[j];
+            }
+            normalMatrix[rowIndex] = normalRow;
+
+            var rightHandSideRow = rightHandSides[rowIndex];
+            for (var k = 0; k <= degree; k += 1)
+            {
+                rightHandSideRow[firstSource + k] = rightHandSideRow[firstSource + k] + weights[i] * source[k];
+            }
+            rightHandSides[rowIndex] = rightHandSideRow;
+        }
+    }
+
+    const fundamentalRows = choleskySolve(choleskyFactor(normalMatrix), rightHandSides);
+
+    var denseRows = makeArray(targetCount + degree, 0);
+    for (var row = 0; row < targetCount + degree; row += 1)
+    {
+        denseRows[row] = fundamentalRows[row < targetCount ? row : row - targetCount];
+    }
+
+    return {
+            "degree" : degree,
+            "inputCount" : inputCount,
+            "outputCount" : targetCount + degree,
+            "knots" : knotArray(targetKnots),
+            "rows" : sparsifyCoefficientRows(denseRows)
+        };
+}
+
+/**
+ * What the refit cost, in length: the worst DISTANCE FROM THE FITTED CURVE TO THE ORIGINAL ONE, as
+ * a curve — the smallest separation from each fitted station to the original within a window of
+ * neighbouring stations, not the separation to its own corresponding station.
+ *
+ * WHY IT IS A DISTANCE TO THE CURVE AND NOT TO THE CORRESPONDING POINT, since discarding part of a
+ * measured error needs a reason and this one is load-bearing. Reparameterizing is the operation's
+ * whole purpose, so the fitted curve is deliberately NOT trying to hold new(s) == old(s); it is
+ * trying to hold new(s) == old(t(s)) for an arc-length correspondence t that is itself only known to
+ * the profile's resolution and that no spline space represents exactly. Residual that slides ALONG
+ * the original curve is therefore a relabelling error, not a shape error: the surface passes through
+ * the same points, and the kernel body and any downstream deformation see the same geometry.
+ * Measured on the standard revolve fixture, the slip is not a rounding detail but the DOMINANT term
+ * — at 32 control points per period the shape error is 0.049 mm and the slip 0.196 mm, four times
+ * larger — so charging for it would demand three to four times the control points the geometry
+ * needs, on every revolve.
+ *
+ * A WINDOWED MINIMUM RATHER THAN A TANGENT PROJECTION, and the difference is not stylistic. The
+ * first version removed the slip by projecting the separation perpendicular to the original's
+ * tangent, which is the first-order point-to-curve distance and is correct only while the slip is
+ * small against the radius of curvature. A periodic direction is allowed to have a genuine CORNER —
+ * multiplicity == degree is exactly what this operation exists to remove — and at a corner the
+ * tangent line is not a local stand-in for the curve at all, so the projection reads a fraction of
+ * the true distance. Measured on the tester's cornered arc-joint fixture, projection reported
+ * 3.89 mm and 1.91 mm at 8 and 16 control points where the true worst distances were 5.21 mm and
+ * 2.64 mm: an UNDER-report, which is the one outcome this module says it must never produce. The
+ * windowed minimum reported 5.49 mm and 2.66 mm at the same counts — conservative at both, and
+ * identical to the projection on the well-behaved fixtures (the revolve lands on the same 12 control
+ * points and the same 5.560 um either way).
+ *
+ * The window is small on purpose. It exists to absorb the correspondence slip, which is a fraction
+ * of one target span; widening it toward the whole period would turn a point-to-curve distance into
+ * a global nearest-point search and could start matching the far side of a thin shape.
+ *
+ * MEASURED, not bounded — see the section comment. The station count is coprime with the fit's, so
+ * the measurement neither reads where the fit was told to match nor steps over the knots where a
+ * uniform spline's error actually peaks; UNIFORMIZATION_FIT_STATIONS_PER_SPAN carries that argument
+ * and the measurement behind it.
+ *
+ * The arrays handed in are the collapsed ISOCURVES, not grid rows, so every point compared here is a
+ * point ON THE SURFACE and nothing is being bounded by proxy — see directionCertificationIsocurves
+ * for why the proxy was wrong on rational input and what it cost.
+ */
+function uniformizedDirectionDeviation(originalArrays is array, originalKnots is array, fittedArrays is array,
+    fittedKnots is array, degree is number, profile is map, targetCount is number) returns ValueWithUnits
+{
+    const domain = knotDomain(originalKnots, degree);
+    const period = domain.end - domain.start;
+    const totalLength = profileTotalLength(profile);
+    const stationCount = targetCount * UNIFORMIZATION_CERTIFICATION_STATIONS_PER_SPAN;
+    const arrayCount = size(originalArrays);
+
+    // Both curves at every station first. The search below then reads each ORIGINAL point from up to
+    // 2 * window + 1 different fitted points, so evaluating once and searching over points is the
+    // difference between one evaluation per station and a dozen.
+    var originalPoints = makeArray(arrayCount, 0);
+    var fittedPoints = makeArray(arrayCount, 0);
+    for (var arrayIndex = 0; arrayIndex < arrayCount; arrayIndex += 1)
+    {
+        originalPoints[arrayIndex] = makeArray(stationCount, WORLD_ORIGIN);
+        fittedPoints[arrayIndex] = makeArray(stationCount, WORLD_ORIGIN);
+    }
+
+    for (var station = 0; station < stationCount; station += 1)
+    {
+        const fraction = station / stationCount;
+        const newParameter = domain.start + period * fraction;
+        const oldParameter = parameterAtArcLength(profile, profile.cumulative[0] + totalLength * fraction);
+
+        // Span and basis once per station, shared by every array — the whole reason this loop is
+        // ordered stations-outside rather than arrays-outside.
+        const newSpan = findEvaluationSpanIndex(fittedKnots, degree, newParameter);
+        const newBasis = bSplineBasisValues(fittedKnots, degree, newSpan, newParameter);
+        const oldSpan = findEvaluationSpanIndex(originalKnots, degree, oldParameter);
+        const oldBasis = bSplineBasisValues(originalKnots, degree, oldSpan, oldParameter);
+
+        for (var arrayIndex = 0; arrayIndex < arrayCount; arrayIndex += 1)
+        {
+            var originalRow = originalPoints[arrayIndex];
+            originalRow[station] = homogeneousArrayPoint(originalArrays[arrayIndex], oldSpan - degree,
+                    oldBasis, degree);
+            originalPoints[arrayIndex] = originalRow;
+
+            var fittedRow = fittedPoints[arrayIndex];
+            fittedRow[station] = homogeneousArrayPoint(fittedArrays[arrayIndex], newSpan - degree,
+                    newBasis, degree);
+            fittedPoints[arrayIndex] = fittedRow;
+        }
+    }
+
+    // Squared throughout, rooted once at the end: every comparison here is between distances, and
+    // sqrt is monotonic, so taking it inside the loop would be size(arrays) * stationCount *
+    // (2 * window + 1) square roots computed to be thrown away.
+    var worstSquared = 0 * meter * meter;
+    for (var arrayIndex = 0; arrayIndex < arrayCount; arrayIndex += 1)
+    {
+        const originalRow = originalPoints[arrayIndex];
+        const fittedRow = fittedPoints[arrayIndex];
+        for (var station = 0; station < stationCount; station += 1)
+        {
+            var closestSquared = squaredNorm(fittedRow[station] - originalRow[station]);
+            for (var offset = 1; offset <= UNIFORMIZATION_CERTIFICATION_SEARCH_WINDOW; offset += 1)
+            {
+                // Cyclic, which costs nothing to say and is exactly right: the direction is
+                // periodic, so the station before the seam is a genuine neighbour of the one after.
+                const before = (station - offset + stationCount) % stationCount;
+                const after = (station + offset) % stationCount;
+                closestSquared = min(closestSquared, squaredNorm(fittedRow[station] - originalRow[before]));
+                closestSquared = min(closestSquared, squaredNorm(fittedRow[station] - originalRow[after]));
+            }
+            worstSquared = max(worstSquared, closestSquared);
+        }
+    }
+    return sqrt(worstSquared);
+}
+
+/**
+ * Refit one periodic direction onto uniform, arc-length-parameterized knots, doubling the target
+ * count until the measured deviation fits `tolerance`.
+ *
+ * `pointArrays` is a list of same-length HOMOGENEOUS arrays sharing this direction's knot vector —
+ * one per row (or column) of a surface grid — refitted JOINTLY through one operator, which is what
+ * keeps every row landing on an identical knot vector.
+ *
+ * Returns `{ pointArrays, knots, deviation, changed, capped }`. `changed` is false for a direction
+ * that was already uniform (the idempotence gate) or one whose current count is already past the
+ * solve ceiling; `capped` is true when the schedule ran out of room, in which case the best result
+ * so far is returned WITH its true deviation rather than a claim it cannot support.
+ *
+ * The schedule never starts BELOW the direction's own count. Uniformizing is not an excuse to
+ * throw away detail the surface already carries, and the count a caller asked for is a separate
+ * question handled by refinement afterwards.
+ *
+ * `otherKnots` and `otherDegree` describe the direction the arrays are INDEXED by, and are here for
+ * the certification alone: it measures true surface isocurves rather than the arrays themselves, for
+ * the reason directionCertificationIsocurves gives.
+ */
+function uniformizePeriodicDirection(pointArrays is array, knots is array, degree is number,
+    otherKnots is array, otherDegree is number, profile is map, tolerance is ValueWithUnits) returns map
+{
+    const currentCount = size(knots) - 2 * degree - 1;
+    const startCount = max(degree + 1, currentCount);
+    if (currentCount < 1 || periodicDirectionIsArcLengthUniform(profile, knots, degree) ||
+        profileTotalLength(profile) <= 0 * meter)
+    {
+        return { "pointArrays" : pointArrays, "knots" : knots, "deviation" : 0 * meter,
+                "changed" : false, "capped" : false };
+    }
+    if (startCount > PERIODIC_SIMPLIFICATION_MAX_CONTROL_POINTS)
+    {
+        return { "pointArrays" : pointArrays, "knots" : knots, "deviation" : 0 * meter,
+                "changed" : false, "capped" : true };
+    }
+
+    // Both computed once, from the arrays as they arrive, and shared by every target count the
+    // schedule tries — they depend on the INPUT, which does not move.
+    const gaugeWeights = periodicGaugeWeights(pointArrays);
+    const certificationOriginals = directionCertificationIsocurves(pointArrays, otherKnots, otherDegree);
+
+    var best = undefined;
+    var targetCount = startCount;
+    while (targetCount <= PERIODIC_SIMPLIFICATION_MAX_CONTROL_POINTS)
+    {
+        const fitOperator = periodicArcLengthFitOperator(knots, degree, profile, targetCount, gaugeWeights);
+        var fittedArrays = makeArray(size(pointArrays), 0);
+        for (var arrayIndex = 0; arrayIndex < size(pointArrays); arrayIndex += 1)
+        {
+            fittedArrays[arrayIndex] = applyKnotRefinementOperator(fitOperator, pointArrays[arrayIndex]);
+        }
+
+        // A fit that produced a non-positive weight is not a worse answer, it is not an answer:
+        // skip it entirely rather than let it compete on deviation, and spend more control points.
+        if (homogeneousArraysHavePositiveWeights(fittedArrays))
+        {
+            // The operator is linear, so fitting the collapsed isocurves gives exactly what
+            // collapsing the fitted grid would — at a few arrays instead of all of them.
+            var certificationFitted = makeArray(size(certificationOriginals), 0);
+            for (var stationIndex = 0; stationIndex < size(certificationOriginals); stationIndex += 1)
+            {
+                certificationFitted[stationIndex] = applyKnotRefinementOperator(fitOperator,
+                        certificationOriginals[stationIndex]);
+            }
+
+            const deviation = uniformizedDirectionDeviation(certificationOriginals, knots, certificationFitted,
+                    fitOperator.knots, degree, profile, targetCount);
+            best = { "pointArrays" : fittedArrays, "knots" : fitOperator.knots, "deviation" : deviation,
+                    "changed" : true, "capped" : false };
+            if (deviation <= tolerance)
+            {
+                return best;
+            }
+        }
+        targetCount = 2 * targetCount;
+    }
+
+    if (best == undefined)
+    {
+        return { "pointArrays" : pointArrays, "knots" : knots, "deviation" : 0 * meter,
+                "changed" : false, "capped" : true };
+    }
+    best.capped = true;
+    return best;
+}
+
+/**
+ * Make every PERIODIC direction of a surface UNIFORM: uniform knots, every multiplicity 1, and a
+ * parameterization proportional to arc length — so control points spread evenly around the closed
+ * direction and so does anything downstream that reads u or v.
+ *
+ * This is the entry point a feature wants whenever DENSITY matters, which on a revolve is always;
+ * see the section comment for why the exact cyclic projection cannot deliver it, and for the two
+ * costs it trades away. It SUBSUMES simplifySurfacePeriodicDirections' guarantee — nothing survives
+ * at multiplicity `degree`, so no deformation can crease the result — and adds the evenness.
+ *
+ * A direction that is not periodic, or already uniform inside ARC_LENGTH_UNIFORMITY_TOLERANCE, is
+ * left completely alone, so this is safe to call unconditionally and safe to call twice.
+ *
+ * NOT applied to clamped directions. A clamped direction's ends legitimately sit at multiplicity
+ * degree + 1 and its parameterization is the caller's to own; periodic is where the kernel's own
+ * delivery format forces the problem.
+ *
+ * THE TWO DIRECTIONS' DEVIATIONS ADD, they do not max. Each pass is measured against the surface AS
+ * IT STANDS when that pass runs, so V bounds |S' - S| and U bounds |S'' - S'|; the quantity a caller
+ * needs is |S'' - S| and the triangle inequality is what connects them. Taking the max instead
+ * under-reports whenever both directions move, which on a torus is always — measured on the exact
+ * torus fixture, the two passes report 0.011 mm each against a true surface error of 0.019 mm, above
+ * the max and comfortably under the sum. Each pass's own tolerance is still the full budget rather
+ * than half of it: a surface periodic in both directions is rare enough that halving every revolve's
+ * budget to pay for it is the wrong trade, and the returned sum tells the caller what actually
+ * happened either way.
+ *
+ * @param surface {map}
+ * @param tolerance {ValueWithUnits} : the most the refit may move the surface, per direction
+ * @returns {map} : the surface, plus `deviation` (MEASURED displacement, summed over the directions
+ *                  that moved, zero when nothing changed), `uniformized` {boolean}, and
+ *                  `uniformizationCapped` {boolean} — true when the count ceiling was reached before
+ *                  the tolerance was, so `deviation` is above what was asked for and the caller
+ *                  should say so
+ */
+export function uniformizePeriodicSurfaceDirections(surface is map, tolerance is ValueWithUnits) returns map
+{
+    var normalized = normalizeSurfaceDefinition(surface);
+    var totalDeviation = 0 * meter;
+    var anyUniformized = false;
+    var capped = false;
+
+    if (normalized.isVPeriodic == true)
+    {
+        // V runs across rows, which the grid already stores directly — no transpose needed.
+        const profile = uniformizationProfile(normalized, false);
+        const result = uniformizePeriodicDirection(
+                combineSurfaceControlPointsAndWeights(normalized.controlPoints, normalized.weights),
+                normalized.vKnots, normalized.vDegree, normalized.uKnots, normalized.uDegree,
+                profile, tolerance);
+        if (result.changed)
+        {
+            const separated = separateSurfaceControlPointsAndWeights(result.pointArrays);
+            normalized.controlPoints = separated.points;
+            normalized.weights = separated.weights;
+            normalized.vKnots = knotArray(result.knots);
+            totalDeviation += result.deviation;
+            anyUniformized = true;
+        }
+        capped = capped || result.capped;
+    }
+
+    if (normalized.isUPeriodic == true)
+    {
+        // Measured on the grid AS IT STANDS, so a V pass that has already moved the surface is what
+        // U's profile sees — the same re-read refineSurfaceToControlPointCountsWithOperators does
+        // between its two directions.
+        const profile = uniformizationProfile(normalized, true);
+        const homogeneousGrid = combineSurfaceControlPointsAndWeights(normalized.controlPoints, normalized.weights);
+
+        // U runs down columns, so work on the transposed view and put it back.
+        const rowCount = size(homogeneousGrid);
+        const columnCount = size(homogeneousGrid[0]);
+        var columns = makeArray(columnCount, 0);
+        for (var columnIndex = 0; columnIndex < columnCount; columnIndex += 1)
+        {
+            var column = makeArray(rowCount, homogeneousGrid[0][0]);
+            for (var rowIndex = 0; rowIndex < rowCount; rowIndex += 1)
+            {
+                column[rowIndex] = homogeneousGrid[rowIndex][columnIndex];
+            }
+            columns[columnIndex] = column;
+        }
+
+        const result = uniformizePeriodicDirection(columns, normalized.uKnots, normalized.uDegree,
+                normalized.vKnots, normalized.vDegree, profile, tolerance);
+        if (result.changed)
+        {
+            const newRowCount = size(result.pointArrays[0]);
+            var rebuilt = makeArray(newRowCount, 0);
+            for (var rowIndex = 0; rowIndex < newRowCount; rowIndex += 1)
+            {
+                var row = makeArray(columnCount, result.pointArrays[0][0]);
+                for (var columnIndex = 0; columnIndex < columnCount; columnIndex += 1)
+                {
+                    row[columnIndex] = result.pointArrays[columnIndex][rowIndex];
+                }
+                rebuilt[rowIndex] = row;
+            }
+            const separated = separateSurfaceControlPointsAndWeights(rebuilt);
+            normalized.controlPoints = separated.points;
+            normalized.weights = separated.weights;
+            normalized.uKnots = knotArray(result.knots);
+            totalDeviation += result.deviation;
+            anyUniformized = true;
+        }
+        capped = capped || result.capped;
+    }
+
+    normalized.deviation = totalDeviation;
+    normalized.uniformized = anyUniformized;
+    normalized.uniformizationCapped = capped;
     return normalized;
 }
 

@@ -481,7 +481,7 @@ export const freeFormDeformation = defineFeature(function(context is Context, id
         var anyBudgetHit = false;
         var anyTrimDropped = false;
         var anyElevationBlocked = false;
-        var anySimplified = false;
+        var anyUniformized = false;
 
         for (var faceIndex = 0; faceIndex < size(sourceSurfaces); faceIndex += 1)
         {
@@ -495,7 +495,7 @@ export const freeFormDeformation = defineFeature(function(context is Context, id
                 sourceSurfaces[faceIndex], face, tolerance);
             anyTrimDropped = anyTrimDropped || outcome.trimDropped;
             anyElevationBlocked = anyElevationBlocked || outcome.elevationBlocked;
-            anySimplified = anySimplified || outcome.simplified;
+            anyUniformized = anyUniformized || outcome.uniformized;
 
             worstCertifiedDeviation = max(worstCertifiedDeviation, outcome.certifiedDeviation);
             worstControlPointCount = max(worstControlPointCount, outcome.controlPointCount);
@@ -517,13 +517,16 @@ export const freeFormDeformation = defineFeature(function(context is Context, id
                 ["refinementBudget", "refinementIterations"]);
         }
 
-        if (anySimplified)
+        if (anyUniformized)
         {
-            reportFeatureInfo(context, id, "A closed (periodic) direction was re-fitted onto a smoother knot vector " ~
-                "before deforming. A revolve arrives as circular arcs joined with only C0 continuity, which is smooth " ~
-                "solely because its control points happen to be arranged for it - and a deformation does not preserve " ~
-                "that arrangement, so the kernel would reject the deformed body as not smooth. The re-fit is exact " ~
-                "wherever it can be, and its cost is measured and included in the deviation reported above.");
+            reportFeatureInfo(context, id, "A closed (periodic) direction was re-fitted onto an even, arc-length " ~
+                "knot vector before deforming. Two things make that necessary. A revolve arrives as circular arcs " ~
+                "joined with only C0 continuity, smooth solely because its control points happen to be arranged for " ~
+                "it - and a deformation does not preserve that arrangement, so the kernel would reject the deformed " ~
+                "body as not smooth. Those arcs are also far from evenly parameterized, about 1.7 to 1 across each " ~
+                "arc, which would leave the control net and the resulting u/v crowded in bands at the arc joins. The " ~
+                "re-fit costs a measured deviation, included in the number reported above, and it changes the " ~
+                "surface's u/v parameterization by design.");
         }
 
         if (anyElevationBlocked)
@@ -1423,16 +1426,18 @@ function deformOneFace(context is Context, id is Id, idGenerator is function, de
     // domain means the loops describe a region of a parameter space that no longer exists, and
     // trimming with them would silently cut the wrong shape — so the trim is dropped and the caller
     // says so, which is the one outcome worse than untrimmed avoided.
-    // Simplifying a closed direction is the OTHER thing that invalidates the loops, and it does so
+    // Uniformizing a closed direction is the OTHER thing that invalidates the loops, and it does so
     // without moving the domain: the re-fit preserves the domain start and the period, so
-    // `domainHeld` stays true, but the parameter-to-point map itself shifts by up to the reported
-    // deviation. Trim curves are measured in that map, so they no longer describe quite the region
-    // they were read from. Small, but the wrong shape cut silently is the one outcome worse than
-    // untrimmed, so a simplified face is emitted untrimmed and the caller says why.
+    // `domainHeld` stays true. What it changes is the parameter-to-point map INSIDE that domain, and
+    // not by a little — reparameterizing to arc length is the entire point of the step, so on a
+    // revolve a given u moves by up to several degrees of arc. Trim curves are measured in that map
+    // and would cut a visibly wrong shape. So a uniformized face is emitted untrimmed and the caller
+    // says why. (This is a stronger reason than the domain check above, not a weaker one: a moved
+    // domain is detectable, a re-mapped interior is not.)
     const domainHeld = parameterDomainsAgree(domainBefore, surfaceParameterDomains(converged.undeformed));
     const wantTrim = definition.result == FFDResult.NEW_BODY_TRIMMED &&
         (size(sourceRecord.outerLoop) > 0 || size(sourceRecord.innerLoops) > 0);
-    const trimDropped = wantTrim && (!domainHeld || converged.simplified);
+    const trimDropped = wantTrim && (!domainHeld || converged.uniformized);
 
     // Printed BEFORE the emission that may throw, so the structure of a surface the kernel is about
     // to reject is still on the console when it does.
@@ -1478,11 +1483,11 @@ function deformOneFace(context is Context, id is Id, idGenerator is function, de
         printRefinementDetails(converged, certifiedDeviation, tolerance);
     }
     // Two independent error sources against one tolerance, added by the triangle inequality: the
-    // simplification moved the surface before the deformation ran, and the certification below
-    // cannot see that because it measures against the SIMPLIFIED surface's own true deformation.
+    // uniformization moved the surface before the deformation ran, and the certification below
+    // cannot see that because it measures against the UNIFORMIZED surface's own true deformation.
     // Reporting only the certified half would understate the total whenever a closed face was
-    // simplified.
-    const totalDeviation = certifiedDeviation + converged.simplificationDeviation;
+    // uniformized.
+    const totalDeviation = certifiedDeviation + converged.uniformizationDeviation;
     if (totalDeviation > tolerance)
     {
         // `delta` is only a measurement if the loop actually compared two levels. When the surface
@@ -1494,12 +1499,12 @@ function deformOneFace(context is Context, id is Id, idGenerator is function, de
             "control-net measure never compared two levels. " :
             "The deformed surface is within " ~ toString(converged.delta) ~
             " by the control-net measure that drove refinement, but ";
-        const simplificationClause = converged.simplified ?
+        const uniformizationClause = converged.uniformized ?
             " Preparing the closed direction for deformation accounts for " ~
-            toString(converged.simplificationDeviation) ~ " of that." : "";
+            toString(converged.uniformizationDeviation) ~ " of that." : "";
         reportFeatureWarning(context, id, controlNetClause ~ "the kernel certifies " ~
             toString(certifiedDeviation) ~ " against it, for a total of " ~ toString(totalDeviation) ~
-            " above the tolerance of " ~ toString(tolerance) ~ "." ~ simplificationClause ~ " The " ~
+            " above the tolerance of " ~ toString(tolerance) ~ "." ~ uniformizationClause ~ " The " ~
             "lattice has a feature finer than the current span spacing. Raise the refinement budget, or lower the " ~
             "lattice resolution.");
     }
@@ -1515,7 +1520,7 @@ function deformOneFace(context is Context, id is Id, idGenerator is function, de
             "budgetHit" : converged.budgetHit,
             "trimDropped" : trimDropped,
             "elevationBlocked" : converged.elevationBlocked,
-            "simplified" : converged.simplified
+            "uniformized" : converged.uniformized
         };
 }
 
@@ -1577,16 +1582,26 @@ function deformToTolerance(context is Context, id is Id, definition is map, comp
     // deformation below WILL crease it, because a lattice is a nonlinear map and does not carry the
     // collinear control points that were holding the join smooth to collinear images. The kernel
     // then refuses the body — NOT_SMOOTH at the seam, NOT_G1 in the interior. Neither refinement nor
-    // elevation can prevent it: both only ever RAISE multiplicity. See the module's periodic
-    // simplification section for why this is a projection rather than a knot removal.
+    // elevation can prevent it: both only ever RAISE multiplicity.
+    //
+    // It is a UNIFORMIZING REFIT rather than the exact cyclic projection, and the difference is
+    // visible on every revolve. The projection removes the C0 knots while preserving the
+    // parameterization it projects, and a revolve's closed direction is a pair of rational cubic
+    // arcs whose parameter runs about 1.7 : 1 slower at the joins than mid-arc. Its net therefore
+    // comes back deformable and BUNCHED, in two bands at the arc joins, which the refinement loop
+    // below cannot undo: doubling gives every span exactly one arc-length cut, so the ratio is
+    // preserved at every level. The refit lands the knots evenly in arc length and makes u and v
+    // proportional to it, which is what stops the deformed body's control net — and every downstream
+    // feature reading its u/v — from crowding at those two places. See the module's periodic
+    // uniformization section.
     //
     // Half the budget, because this and the refinement loop below are independent error sources
     // against one tolerance and the certification cannot see this one: it measures the emitted body
-    // against the deformed SIMPLIFIED surface, which is the right target for the loop and the wrong
+    // against the deformed UNIFORMIZED surface, which is the right target for the loop and the wrong
     // one for this step. The caller adds the two.
-    const simplification = simplifySurfacePeriodicDirections(sourceSurface, 0.5 * tolerance);
-    const preparedSource = simplification.simplified ? simplification : sourceSurface;
-    const simplificationDeviation = simplification.simplified ? simplification.deviation : 0 * meter;
+    const uniformization = uniformizePeriodicSurfaceDirections(sourceSurface, 0.5 * tolerance);
+    const preparedSource = uniformization.uniformized ? uniformization : sourceSurface;
+    const uniformizationDeviation = uniformization.uniformized ? uniformization.deviation : 0 * meter;
 
     const uPeriodic = preparedSource.isUPeriodic == true;
     const vPeriodic = preparedSource.isVPeriodic == true;
@@ -1595,12 +1610,16 @@ function deformToTolerance(context is Context, id is Id, definition is map, comp
     const elevationBlocked = periodicBlockedElevation(definition.continuity, preparedSource.uDegree, uPeriodic) ||
         periodicBlockedElevation(definition.continuity, preparedSource.vDegree, vPeriodic);
 
-    if (definition.printRefinementDetails == true && simplification.simplified)
+    if (definition.printRefinementDetails == true && uniformization.uniformized)
     {
-        println("=== FFD periodic simplification ===");
-        printSurfaceStructure("after simplifying closed directions", preparedSource);
-        println("  certified simplification deviation: " ~ toString(simplificationDeviation) ~
+        println("=== FFD periodic uniformization ===");
+        printSurfaceStructure("after uniformizing closed directions", preparedSource);
+        println("  measured uniformization deviation: " ~ toString(uniformizationDeviation) ~
             " (half-budget " ~ toString(0.5 * tolerance) ~ ")");
+        if (uniformization.uniformizationCapped == true)
+        {
+            println("  WARNING: hit the control point ceiling before the tolerance");
+        }
     }
 
     // Elevate only — the current counts are passed as the refinement targets, which
@@ -1665,7 +1684,8 @@ function deformToTolerance(context is Context, id is Id, definition is map, comp
 
     return { "undeformed" : undeformed, "deformed" : deformed, "delta" : delta, "passes" : passes,
             "budgetHit" : budgetHit, "elevationBlocked" : elevationBlocked,
-            "simplificationDeviation" : simplificationDeviation, "simplified" : simplification.simplified };
+            "uniformizationDeviation" : uniformizationDeviation, "uniformized" : uniformization.uniformized,
+            "uniformizationCapped" : uniformization.uniformizationCapped };
 }
 
 /**
