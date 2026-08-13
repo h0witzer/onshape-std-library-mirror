@@ -1,30 +1,31 @@
-FeatureScript ✨; /* Automatically generated version */
+FeatureScript 2892; /* Automatically generated version */
 // This module is part of the FeatureScript Standard Library and is distributed under the MIT License.
 // See the LICENSE tab for the license text.
 // Copyright (c) 2013-Present PTC Inc.
 
 // Imports used in interface
-export import(path : "onshape/std/query.fs", version : "✨");
-export import(path : "onshape/std/tool.fs", version : "✨");
+export import(path : "onshape/std/query.fs", version : "2892.0");
+export import(path : "onshape/std/tool.fs", version : "2892.0");
 
 // Features using manipulators must export manipulator.fs.
-export import(path : "onshape/std/manipulator.fs", version : "✨");
-export import(path : "onshape/std/sidegeometryrule.gen.fs", version : "✨");
+export import(path : "onshape/std/manipulator.fs", version : "2892.0");
+export import(path : "onshape/std/sidegeometryrule.gen.fs", version : "2892.0");
 
 // Imports used internally
-import(path : "onshape/std/boolean.fs", version : "✨");
-import(path : "onshape/std/booleanHeuristics.fs", version : "✨");
-import(path : "onshape/std/containers.fs", version : "✨");
-import(path : "onshape/std/evaluate.fs", version : "✨");
-import(path : "onshape/std/feature.fs", version : "✨");
-import(path : "onshape/std/math.fs", version : "✨");
-import(path : "onshape/std/string.fs", version : "✨");
-import(path : "onshape/std/surfaceGeometry.fs", version : "✨");
-import(path : "onshape/std/topologyUtils.fs", version : "✨");
-import(path : "onshape/std/transform.fs", version : "✨");
-import(path : "onshape/std/units.fs", version : "✨");
-import(path : "onshape/std/valueBounds.fs", version : "✨");
-import(path : "onshape/std/vector.fs", version : "✨");
+import(path : "onshape/std/boolean.fs", version : "2892.0");
+import(path : "onshape/std/booleanHeuristics.fs", version : "2892.0");
+import(path : "onshape/std/containers.fs", version : "2892.0");
+import(path : "onshape/std/evaluate.fs", version : "2892.0");
+import(path : "onshape/std/feature.fs", version : "2892.0");
+import(path : "onshape/std/geomOperations.fs", version : "2892.0");
+import(path : "onshape/std/math.fs", version : "2892.0");
+import(path : "onshape/std/string.fs", version : "2892.0");
+import(path : "onshape/std/surfaceGeometry.fs", version : "2892.0");
+import(path : "onshape/std/topologyUtils.fs", version : "2892.0");
+import(path : "onshape/std/transform.fs", version : "2892.0");
+import(path : "onshape/std/units.fs", version : "2892.0");
+import(path : "onshape/std/valueBounds.fs", version : "2892.0");
+import(path : "onshape/std/vector.fs", version : "2892.0");
 
 /**
  * Specifies an end condition for one side of a loft.
@@ -113,6 +114,11 @@ export const loft = defineFeature(function(context is Context, id is Id, definit
                                     || EntityType.VERTEX }
                 profile.sheetProfileEntities is Query;
             }
+
+            annotation { "Name" : "Handle nested profiles", "Default" : false,
+                         "UIHint" : UIHint.REMEMBER_PREVIOUS_VALUE,
+                         "Description" : "When enabled, automatically separates nested profile regions into individual lofts and combines the results. Each profile station must contain the same number of distinct closed regions. Regions are matched across stations by area (largest to smallest)." }
+            definition.handleNestedProfiles is boolean;
         }
         else
         {
@@ -408,6 +414,14 @@ export const loft = defineFeature(function(context is Context, id is Id, definit
         {
             thinLoft(context, id, definition);
         }
+        else if (definition.bodyType == ExtendedToolBodyType.SOLID && definition.handleNestedProfiles == true)
+        {
+            // Nested-profile path: groups multi-region profiles by nesting level, lofts each group
+            // separately, then boolean-combines the results (odd-indexed groups subtract material,
+            // even-indexed groups add it back). Falls through to the standard path when only one
+            // region is detected at each station.
+            executeNestedProfileLoft(context, id, definition);
+        }
         else
         {
             // it is not a subfeature, but need to remap parameter ids
@@ -426,6 +440,10 @@ export const loft = defineFeature(function(context is Context, id is Id, definit
             if (definition.bodyType == ExtendedToolBodyType.THIN)
             {
                 try silent(thinLoft(context, id, definition));
+            }
+            else if (definition.bodyType == ExtendedToolBodyType.SOLID && definition.handleNestedProfiles == true)
+            {
+                try silent(executeNestedProfileLoft(context, id, definition));
             }
             else
             {
@@ -454,7 +472,7 @@ export const loft = defineFeature(function(context is Context, id is Id, definit
         }
 
     }, { makePeriodic : false, bodyType : ExtendedToolBodyType.SOLID, operationType : NewBodyOperationType.NEW,
-        addGuides : false, matchConnections : false,
+        addGuides : false, matchConnections : false, handleNestedProfiles : false,
         startCondition : LoftEndDerivativeType.DEFAULT, endCondition : LoftEndDerivativeType.DEFAULT,
         startMagnitude : 1, endMagnitude : 1, surfaceOperationType : NewSurfaceOperationType.NEW,
         addSections : false, sectionCount : 0, defaultSurfaceScope : true,
@@ -1248,5 +1266,558 @@ function thinLoft(context is Context, id is Id, definition is map)
 
     opDeleteBodies(context, id + "deleteTempSupportingGeometry", {
                 "entities" : qCreatedBy(tempSupportingGeometryId, EntityType.BODY) });
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Nested-profile loft helpers
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Sorts an array of individual face queries in descending order of their bounding box
+ * diagonal, placing the outermost (largest enclosing) face at index 0.
+ *
+ * Area-based sorting is intentionally avoided here because an annular (donut-shaped)
+ * sketch region has a smaller face area than the inner solid when the hole occupies
+ * more than half the outer boundary.  The axis-aligned bounding box diagonal, however,
+ * always strictly contains the bounding boxes of all regions nested inside a given
+ * profile face, making it a robust proxy for nesting depth.
+ *
+ * @param context {Context}
+ * @param faceQueries {array} : Each element is a Query that resolves to one face.
+ * @returns {array} : The same queries re-ordered, largest bounding box first (outermost first).
+ */
+function sortFaceQueriesByBoundingBoxDescending(context is Context, faceQueries is array) returns array
+{
+    const faceCount = size(faceQueries);
+    if (faceCount <= 1)
+    {
+        return faceQueries;
+    }
+
+    // Pair each face query with the squared length of its tight bounding box diagonal
+    // so comparisons are cheap and unit-safe.
+    var facesWithSizes = [];
+    for (var faceQuery in faceQueries)
+    {
+        var bbox = evBox3d(context, { "topology" : faceQuery, "tight" : true });
+        var diagonal = bbox.maxCorner - bbox.minCorner;
+        var diagonalSquared = squaredNorm(diagonal);
+        facesWithSizes = append(facesWithSizes, {
+            "faceQuery"       : faceQuery,
+            "diagonalSquared" : diagonalSquared
+        });
+    }
+
+    // Selection sort – O(n^2) is fine for the small region counts expected here.
+    var sortedFaceQueries = [];
+    var remaining = facesWithSizes;
+    while (size(remaining) > 0)
+    {
+        var maxSizeIndex = 0;
+        for (var checkIndex = 1; checkIndex < size(remaining); checkIndex += 1)
+        {
+            if (remaining[checkIndex].diagonalSquared > remaining[maxSizeIndex].diagonalSquared)
+            {
+                maxSizeIndex = checkIndex;
+            }
+        }
+        sortedFaceQueries = append(sortedFaceQueries, remaining[maxSizeIndex].faceQuery);
+        remaining = removeElementAt(remaining, maxSizeIndex);
+    }
+
+    return sortedFaceQueries;
+}
+
+/**
+ * Splits the per-station profile subqueries into nesting-level groups.
+ *
+ * At each profile station the selected faces are evaluated individually,
+ * sorted by bounding box diagonal (largest = outermost), and matched by
+ * index to the same position at every other station.  The returned array
+ * has one entry per nesting level; each entry is itself an array of one
+ * query per profile station.  Group 0 contains the outermost (largest)
+ * region at each station, group 1 the next region inward, and so on.
+ *
+ * Station queries that resolve to sheet bodies (e.g., the user selected an
+ * entire sketch body rather than individual region faces) are expanded to
+ * the non-construction faces owned by that body before counting regions,
+ * so that selecting a whole sketch is equivalent to selecting all its faces.
+ *
+ * Returns a single-element array wrapping the original profileSubqueries
+ * when every station has exactly one region (no nesting detected), so
+ * callers can use the same code path for both cases.
+ *
+ * @param context {Context}
+ * @param profileSubqueries {array} : One query per profile station.
+ * @returns {array} : Array of nesting groups; profileGroups[regionIndex][stationIndex].
+ */
+function groupNestedProfilesByNestingLevel(context is Context, profileSubqueries is array) returns array
+{
+    const stationCount = size(profileSubqueries);
+    if (stationCount == 0)
+    {
+        return [profileSubqueries];
+    }
+
+    // Evaluate and sort face regions at every station.
+    var stationSortedRegions = [];
+    var regionCount = -1;
+
+    for (var stationIndex = 0; stationIndex < stationCount; stationIndex += 1)
+    {
+        var stationQuery = profileSubqueries[stationIndex];
+        var faceEntities = evaluateQuery(context, qEntityFilter(stationQuery, EntityType.FACE));
+
+        if (size(faceEntities) == 0)
+        {
+            // stationQuery may resolve to a sheet body (e.g., the user selected an entire
+            // sketch body rather than picking individual region faces).  Expand it to the
+            // non-construction faces owned by that body so that multi-region nesting can be
+            // detected correctly.  If the query is truly a vertex or non-face entity, the
+            // owned-face lookup returns empty and the vertex/point branch below is taken.
+            faceEntities = evaluateQuery(context, qConstructionFilter(
+                qOwnedByBody(stationQuery, EntityType.FACE), ConstructionObject.NO));
+        }
+
+        if (size(faceEntities) == 0)
+        {
+            // Vertex or point profile – treat as a single region with no area sorting.
+            stationSortedRegions = append(stationSortedRegions, [stationQuery]);
+            if (regionCount == -1)
+            {
+                regionCount = 1;
+            }
+            else if (regionCount != 1)
+            {
+                throw regenError("All profile stations must contain the same number of regions. "
+                    ~ "When using nested profiles with a vertex or point profile, all other stations must contain exactly one region.");
+            }
+        }
+        else
+        {
+            var sortedFaces = sortFaceQueriesByBoundingBoxDescending(context, faceEntities);
+            if (regionCount == -1)
+            {
+                regionCount = size(sortedFaces);
+            }
+            else if (size(sortedFaces) != regionCount)
+            {
+                throw regenError("Profile station region count mismatch: expected " ~ toString(regionCount)
+                    ~ " region(s) at each station but found " ~ toString(size(sortedFaces))
+                    ~ ". Ensure every profile sketch contains the same number of closed loops when nested profiles are enabled.");
+            }
+            stationSortedRegions = append(stationSortedRegions, sortedFaces);
+        }
+    }
+
+    if (regionCount <= 1)
+    {
+        // No nesting – return the unchanged original array wrapped in one group.
+        return [profileSubqueries];
+    }
+
+    // Transpose: profileGroups[regionIndex] = [station0Region, station1Region, ...]
+    var profileGroups = [];
+    for (var regionIndex = 0; regionIndex < regionCount; regionIndex += 1)
+    {
+        var group = [];
+        for (var stationIndex = 0; stationIndex < stationCount; stationIndex += 1)
+        {
+            group = append(group, stationSortedRegions[stationIndex][regionIndex]);
+        }
+        profileGroups = append(profileGroups, group);
+    }
+
+    return profileGroups;
+}
+
+/**
+ * Routes each user-defined connection to the profile group whose boundary
+ * edges contain the connection's edge queries.  This allows each nesting
+ * level to carry its own connection / matching strategy independently.
+ *
+ * A connection is assigned to the first group (lowest index) whose profile
+ * faces are adjacent to at least one of the connection's edges.  If no
+ * group matches, the connection is assigned to the outer group (index 0).
+ *
+ * @param context {Context}
+ * @param connections {array}     : The connections array from the loft definition.
+ * @param profileGroups {array}   : As returned by groupNestedProfilesByNestingLevel.
+ * @returns {array} : One connections sub-array per profile group.
+ */
+function routeConnectionsToProfileGroups(context is Context, connections is array, profileGroups is array) returns array
+{
+    const groupCount = size(profileGroups);
+
+    // Pre-compute the set of edges adjacent to each group's profiles so the
+    // inner loop only runs the query once per group.
+    var groupAdjacentEdges = [];
+    for (var groupIndex = 0; groupIndex < groupCount; groupIndex += 1)
+    {
+        var groupProfileQuery = qUnion(profileGroups[groupIndex]);
+        groupAdjacentEdges = append(groupAdjacentEdges,
+            qAdjacent(groupProfileQuery, AdjacencyType.EDGE, EntityType.EDGE));
+    }
+
+    // Build a separate connections list for each group, starting with empty arrays.
+    var groupConnectionArrays = [];
+    for (var groupIndex = 0; groupIndex < groupCount; groupIndex += 1)
+    {
+        groupConnectionArrays = append(groupConnectionArrays, []);
+    }
+
+    for (var connection in connections)
+    {
+        var connectionEdges = evaluateQuery(context, connection.connectionEdgeQueries);
+        var assignedGroupIndex = 0;  // Default: outer group
+
+        for (var groupIndex = 0; groupIndex < groupCount; groupIndex += 1)
+        {
+            var foundMatchForGroup = false;
+            for (var connectionEdge in connectionEdges)
+            {
+                if (!isQueryEmpty(context, qIntersection([connectionEdge, groupAdjacentEdges[groupIndex]])))
+                {
+                    foundMatchForGroup = true;
+                    break;
+                }
+            }
+            if (foundMatchForGroup)
+            {
+                assignedGroupIndex = groupIndex;
+                break;
+            }
+        }
+
+        // Append the connection to the matched group's list.
+        groupConnectionArrays[assignedGroupIndex] =
+            append(groupConnectionArrays[assignedGroupIndex], connection);
+    }
+
+    return groupConnectionArrays;
+}
+
+/**
+ * Builds the derivativeInfo array for a single profile group.
+ * Re-evaluates the start and end profile derivative conditions using the
+ * group's specific profile queries (so that plane normals and adjacent faces
+ * reflect the actual geometry of that nesting level).  Guide derivatives from
+ * the original definition are preserved and appended unchanged, because guides
+ * are shared across all nesting levels.
+ *
+ * @param context {Context}
+ * @param definition {map}                  : The full loft feature definition.
+ * @param groupProfileSubqueries {array}    : One query per station for this group.
+ * @returns {array} : derivativeInfo array suitable for passing to opLoft.
+ */
+function buildDerivativeInfoForGroup(context is Context, definition is map, groupProfileSubqueries is array) returns array
+{
+    var derivatives = [];
+    const groupLastIndex = size(groupProfileSubqueries) - 1;
+
+    if (definition.startCondition != LoftEndDerivativeType.DEFAULT)
+    {
+        var startResult = try(createProfileConditions(context, definition.startCondition,
+                                  groupProfileSubqueries[0], 0,
+                                  definition.startMagnitude,
+                                  definition.adjacentFacesStart,
+                                  definition.startDirection));
+        if (startResult != undefined)
+        {
+            derivatives = append(derivatives, startResult);
+        }
+    }
+
+    if (definition.endCondition != LoftEndDerivativeType.DEFAULT)
+    {
+        var endResult = try(createProfileConditions(context, definition.endCondition,
+                                groupProfileSubqueries[groupLastIndex], groupLastIndex,
+                                definition.endMagnitude,
+                                definition.adjacentFacesEnd,
+                                definition.endDirection));
+        if (endResult != undefined)
+        {
+            derivatives = append(derivatives, endResult);
+        }
+    }
+
+    // Carry over guide-related derivative constraints unchanged; guides are
+    // geometrically shared and apply equally to every nesting level.
+    for (var derivative in definition.derivativeInfo)
+    {
+        if (derivative.forGuide == true)
+        {
+            derivatives = append(derivatives, derivative);
+        }
+    }
+
+    return derivatives;
+}
+
+/**
+ * Executes a solid loft that supports nested (hollow) profile regions.
+ *
+ * Algorithm:
+ *   1. Call groupNestedProfilesByNestingLevel to separate the multi-region
+ *      profiles into ordered groups (group 0 = outermost, group 1 = first
+ *      inner region, group 2 = next deeper region, etc.).
+ *   2. If only one group is found (no nesting), a single opLoft is performed
+ *      under a child id so processNewBodyIfNeeded still resolves it correctly.
+ *   3. For each group, a temporary clean planar fill surface is created at each
+ *      profile station before calling opLoft.  The clean surface covers the
+ *      entire closed region for that group (outer boundary only, no inner loops).
+ *      opExtractSurface combines the group's face with all faces nested inside it
+ *      into a temporary sheet body; edges shared between those faces become
+ *      TWO_SIDED while the outer perimeter remains ONE_SIDED.
+ *      qEdgeTopologyFilter(ONE_SIDED) then isolates the single outer closed loop,
+ *      which opFillSurface fills into a clean, simply-connected profile face for
+ *      opLoft.  The clean profile bodies are deleted after all loft and boolean
+ *      operations.
+ *   4. Profile station queries that resolve to sheet bodies (e.g., the user
+ *      selected an entire sketch body rather than individual region faces) are
+ *      transparently expanded to the non-construction faces owned by that body,
+ *      so that multi-region nesting is detected correctly in both the grouping
+ *      step and the per-station boundary extraction step.
+ *   5. User-defined connections are routed to the appropriate group via
+ *      routeConnectionsToProfileGroups so that each nesting level can carry
+ *      independent connection strategies.  Start/end derivative conditions are
+ *      rebuilt per-group via buildDerivativeInfoForGroup (using the original face
+ *      queries so that sketch-plane geometry is evaluated correctly).
+ *   5. Boolean combination:
+ *        - Even-indexed groups (0, 2, 4, …) add material (outer → inner-inner).
+ *        - Odd-indexed groups  (1, 3, 5, …) remove material (inner cavities).
+ *
+ * All operations use child ids of the caller's id so that qCreatedBy(id, …)
+ * correctly finds the final body for processNewBodyIfNeeded.
+ *
+ * @param context {Context}
+ * @param id {Id}           : Top-level feature id.
+ * @param definition {map}  : The loft feature definition (after profile subquery
+ *                            resolution and derivativeInfo construction).
+ */
+function executeNestedProfileLoft(context is Context, id is Id, definition is map)
+{
+    var profileGroups = groupNestedProfilesByNestingLevel(context, definition.profileSubqueries);
+    const groupCount = size(profileGroups);
+
+    if (groupCount <= 1)
+    {
+        // Even when only one region is detected per station, the profile face may
+        // have inner edge loops (e.g., an annular sketch face selected directly as
+        // the profile rather than via the full sketch body).  Apply the same
+        // outer-boundary extraction used by the multi-group path so that opLoft
+        // always receives simply-connected, inner-loop-free profile faces.
+        // Sheet body queries (entire sketch body selected) are expanded to their
+        // owned non-construction faces before the boundary extraction is applied.
+        const singleGroupStationCount = size(definition.profileSubqueries);
+        var cleanProfiles = [];
+        var singleGroupTempFillBodyQueries = [];
+
+        for (var stationIndex = 0; stationIndex < singleGroupStationCount; stationIndex += 1)
+        {
+            var stationQuery = definition.profileSubqueries[stationIndex];
+            var faceEntities = evaluateQuery(context, qEntityFilter(stationQuery, EntityType.FACE));
+
+            if (size(faceEntities) == 0)
+            {
+                // stationQuery may resolve to a sheet body rather than individual face entities.
+                // Expand to owned non-construction faces so that annular sketch bodies receive
+                // the same outer-boundary extraction as explicitly selected face entities.
+                faceEntities = evaluateQuery(context, qConstructionFilter(
+                    qOwnedByBody(stationQuery, EntityType.FACE), ConstructionObject.NO));
+            }
+
+            if (size(faceEntities) > 0)
+            {
+                // In the original sketch body, edges shared between adjacent sketch regions
+                // are TWO_SIDED while edges on the true outer perimeter are ONE_SIDED.
+                // Filtering to ONE_SIDED edges therefore excludes inner-loop edges on any
+                // annular (donut-shaped) profile face, giving opFillSurface a single closed
+                // outer loop rather than the inner+outer double-loop that qLoopEdges returns.
+                var boundaryEdges = qAdjacent(qUnion(faceEntities), AdjacencyType.EDGE, EntityType.EDGE);
+                var outerBoundaryEdges = qEdgeTopologyFilter(boundaryEdges, EdgeTopology.ONE_SIDED);
+
+                if (isQueryEmpty(context, outerBoundaryEdges))
+                {
+                    // All boundary edges are TWO_SIDED: the face is from a solid body and
+                    // cannot have inner loops – pass through unchanged.
+                    cleanProfiles = append(cleanProfiles, stationQuery);
+                }
+                else
+                {
+                    var fillId = id + ("singleLoftFill_station" ~ stationIndex);
+                    opFillSurface(context, fillId, { "edgesG0" : outerBoundaryEdges });
+                    cleanProfiles = append(cleanProfiles, qCreatedBy(fillId, EntityType.FACE));
+                    singleGroupTempFillBodyQueries = append(singleGroupTempFillBodyQueries,
+                        qBodyType(qCreatedBy(fillId, EntityType.BODY), BodyType.SHEET));
+                }
+            }
+            else
+            {
+                // Vertex or point profile – no inner loops possible, pass through unchanged.
+                cleanProfiles = append(cleanProfiles, stationQuery);
+            }
+        }
+
+        var cleanDefinition = definition;
+        cleanDefinition.profileSubqueries = cleanProfiles;
+        opLoft(context, id + "nestedSingleLoft", cleanDefinition);
+
+        if (size(singleGroupTempFillBodyQueries) > 0)
+        {
+            opDeleteBodies(context, id + "singleLoftFillCleanup", {
+                "entities" : qUnion(singleGroupTempFillBodyQueries)
+            });
+        }
+        return;
+    }
+
+    // Route connections to their respective profile groups.
+    // When connections exist, delegate fully to routeConnectionsToProfileGroups which
+    // always returns a correctly-sized array.  Otherwise build one empty array per group.
+    var groupConnectionArrays;
+    if (definition.matchConnections && size(definition.connections) > 0)
+    {
+        groupConnectionArrays = routeConnectionsToProfileGroups(context, definition.connections, profileGroups);
+    }
+    else
+    {
+        groupConnectionArrays = [];
+        for (var groupIndex = 0; groupIndex < groupCount; groupIndex += 1)
+        {
+            groupConnectionArrays = append(groupConnectionArrays, []);
+        }
+    }
+
+    // Build clean profile face queries for each group at each station.
+    //
+    // The faces stored in profileGroups may be annular (have inner edge loops)
+    // because each sketch region only covers the space between its outer boundary
+    // and the next inner boundary.  opLoft in solid mode rejects such faces with
+    // LOFT_PROFILE_NO_INNER_LOOPS.
+    //
+    // Fix: for group K at station S, opExtractSurface is used on the combined faces
+    // from group K through the innermost group.  In the resulting sheet body, shared
+    // interior edges between the collected faces become TWO_SIDED while the outer
+    // perimeter edges remain ONE_SIDED.  qEdgeTopologyFilter with ONE_SIDED then
+    // reliably isolates the single outer closed loop, which opFillSurface fills into
+    // a clean, simply-connected profile face for opLoft.
+    const stationCount = size(profileGroups[0]);
+    var cleanProfileGroups = [];
+    var tempFillBodyQueries = [];
+
+    for (var groupIndex = 0; groupIndex < groupCount; groupIndex += 1)
+    {
+        var cleanGroupProfiles = [];
+        for (var stationIndex = 0; stationIndex < stationCount; stationIndex += 1)
+        {
+            // Collect this group's face and all faces from inner groups at the same station.
+            // The combined region's outer boundary is computed via opExtractSurface below.
+            var combinedFacesAtStation = [];
+            for (var innerGroupIndex = groupIndex; innerGroupIndex < groupCount; innerGroupIndex += 1)
+            {
+                combinedFacesAtStation = append(combinedFacesAtStation,
+                    profileGroups[innerGroupIndex][stationIndex]);
+            }
+            var combinedFaceQuery = qUnion(combinedFacesAtStation);
+
+            // Extract the combined faces into a temporary sheet body.
+            // In this extracted body, edges that are shared between two of the collected
+            // faces become TWO_SIDED, while edges on the outer perimeter of the combined
+            // region remain ONE_SIDED.  Filtering to ONE_SIDED edges therefore reliably
+            // isolates the outer boundary at any nesting depth – unlike qLoopEdges, which
+            // returns all loops (inner + outer) of the original face.
+            var extractId = id + ("nestedExtract_group" ~ groupIndex ~ "_station" ~ stationIndex);
+            opExtractSurface(context, extractId, { "faces" : combinedFaceQuery });
+
+            var extractedBody = qBodyType(qCreatedBy(extractId, EntityType.BODY), BodyType.SHEET);
+            var ownedEdges = qOwnedByBody(extractedBody, EntityType.EDGE);
+            var outerBoundaryEdges = qEdgeTopologyFilter(ownedEdges, EdgeTopology.ONE_SIDED);
+
+            // Create a temporary planar fill surface body whose single face serves
+            // as a clean, inner-loop-free profile for this group's solid loft.
+            var fillId = id + ("nestedFill_group" ~ groupIndex ~ "_station" ~ stationIndex);
+            opFillSurface(context, fillId, {
+                "edgesG0" : outerBoundaryEdges
+            });
+
+            cleanGroupProfiles = append(cleanGroupProfiles, qCreatedBy(fillId, EntityType.FACE));
+            // Track both the extracted sheet body and the fill surface body for cleanup.
+            tempFillBodyQueries = append(tempFillBodyQueries, extractedBody);
+            tempFillBodyQueries = append(tempFillBodyQueries,
+                qBodyType(qCreatedBy(fillId, EntityType.BODY), BodyType.SHEET));
+        }
+        cleanProfileGroups = append(cleanProfileGroups, cleanGroupProfiles);
+    }
+
+    // Loft every group using its clean (inner-loop-free) profile faces.
+    // Derivative conditions are rebuilt from the original sketch-face queries so
+    // that evPlane and evOwnerSketchPlane see the correct sketch geometry.
+    var groupBodyQueries = [];
+
+    for (var groupIndex = 0; groupIndex < groupCount; groupIndex += 1)
+    {
+        var groupDefinition = definition;
+        groupDefinition.profileSubqueries = cleanProfileGroups[groupIndex];
+        groupDefinition.connections       = groupConnectionArrays[groupIndex];
+        groupDefinition.matchConnections  = size(groupConnectionArrays[groupIndex]) > 0;
+        groupDefinition.derivativeInfo    = buildDerivativeInfoForGroup(context, definition,
+                                               profileGroups[groupIndex]);
+
+        var groupLoftId = id + ("nestedLoft" ~ groupIndex);
+        opLoft(context, groupLoftId, groupDefinition);
+
+        groupBodyQueries = append(groupBodyQueries,
+            qBodyType(qCreatedBy(groupLoftId, EntityType.BODY), BodyType.SOLID));
+    }
+
+    // Combine: group 0 is the base.  Odd-indexed groups hollow it out;
+    // even-indexed groups (2, 4, …) re-add material for deeper solid cores.
+    var outerBodyQuery = groupBodyQueries[0];
+
+    for (var groupIndex = 1; groupIndex < groupCount; groupIndex += 1)
+    {
+        var innerBodyQuery = groupBodyQueries[groupIndex];
+        var booleanId = id + ("nestedBoolean" ~ groupIndex);
+
+        // Guard: verify the inner loft produced a solid body before attempting the boolean.
+        // An empty query here means opLoft for this group created no solid (e.g., all profiles
+        // were degenerate), which would silently leave the outer body unmodified.
+        if (isQueryEmpty(context, innerBodyQuery))
+        {
+            throw regenError("Nested profile loft group " ~ toString(groupIndex)
+                ~ " did not produce a solid body and cannot be combined. "
+                ~ "Check that all profile stations at this nesting level contain valid closed regions.");
+        }
+
+        if (groupIndex % 2 == 1)
+        {
+            // Odd: subtract the inner loft body from the outer, creating a hollow region.
+            opBoolean(context, booleanId, {
+                "operationType" : BooleanOperationType.SUBTRACTION,
+                "tools"         : innerBodyQuery,
+                "targets"       : outerBodyQuery,
+                "keepTools"     : false
+            });
+        }
+        else
+        {
+            // Even (depth 2, 4, …): union back to restore a solid core inside the previous cavity.
+            opBoolean(context, booleanId, {
+                "operationType" : BooleanOperationType.UNION,
+                "tools"         : qUnion([outerBodyQuery, innerBodyQuery])
+            });
+        }
+    }
+
+    // Remove the temporary fill surface bodies now that all loft and boolean
+    // operations are complete.  The solid loft bodies are independent and
+    // unaffected by this cleanup.
+    if (size(tempFillBodyQueries) > 0)
+    {
+        opDeleteBodies(context, id + "nestedFillCleanup", {
+            "entities" : qUnion(tempFillBodyQueries)
+        });
+    }
 }
 
