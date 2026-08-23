@@ -9,6 +9,7 @@ import(path : "onshape/std/common.fs", version : "3044.0");
 // module's body in place of that import line.
 import(path : "8b495c3bb1037b467ca1d02e", version : "3968d1ef5b507302198a917b"); //bernsteinPolynomialUtils.fs
 import(path : "eca0e7b6ed29c5239f39f868/c6d53360a1b2036a47b2b076/9a2b77793cdc37bace6d915a", version : "a0777a349ec1b79fe71095ce"); //splineRefinementUtils.fs
+import(path : "8dba215569bb1c9f8f1bf700", version : "0000000000000000000000ff"); //swTestHarness.fs
 
 /**
  * SOLID SWEEP - envelope function layer (spec: docs/specs/SOLID_SWEEP_SPEC.md sections 6.0
@@ -301,13 +302,10 @@ export const sweepEnvelopeMathSelfTest = defineFeature(function(context is Conte
             productBuildCount ~ " lazy product builds, " ~ materializedCount ~
             " coefficient grids materialized across " ~ (productBuildCount * size(spansC)) ~ " blocks");
 
-        const verdict = (failures == "") ?
-            "PASS: factored coefficients match the independent pointwise path to machine precision on " ~
-                "both motions and across spans; loose screen kills all blocks under +Z translation; tilted " ~
-                "translation leaves a live grazing set; strip function and f_t verified." :
-            ("FAIL:" ~ failures);
-        println("[ENVELOPE MATH SELF TEST] VERDICT: " ~ verdict);
-        reportFeatureInfo(context, id, verdict);
+        reportTestVerdict(context, id, "ENVELOPE MATH SELF TEST", failures,
+            "factored coefficients match the independent pointwise path to machine precision on " ~
+            "both motions and across spans; loose screen kills all blocks under +Z translation; tilted " ~
+            "translation leaves a live grazing set; strip function and f_t verified.");
     });
 
 // ============================= Motion span polynomials =============================

@@ -2,6 +2,7 @@ FeatureScript 3044;
 import(path : "onshape/std/common.fs", version : "3044.0");
 
 import(path : "8b495c3bb1037b467ca1d02e", version : "3968d1ef5b507302198a917b"); //bernsteinPolynomialUtils.fs
+import(path : "8dba215569bb1c9f8f1bf700", version : "0000000000000000000000ff"); //swTestHarness.fs
 
 /**
  * BERNSTEIN POLYNOMIAL UTILS TESTER - fixed validation vectors for every exported function of
@@ -336,21 +337,3 @@ export const bernsteinPolynomialUtilsTester = defineFeature(function(context is 
 
 // ===================== Tester helpers =====================
 
-/**
- * True when two coefficient arrays have the same size and agree elementwise within tolerance.
- */
-function coefficientsNear(actual is array, expected is array, tolerance is number) returns boolean
-{
-    if (size(actual) != size(expected))
-    {
-        return false;
-    }
-    for (var index = 0; index < size(actual); index += 1)
-    {
-        if (abs(actual[index] - expected[index]) > tolerance)
-        {
-            return false;
-        }
-    }
-    return true;
-}

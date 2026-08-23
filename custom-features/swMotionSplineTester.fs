@@ -5,6 +5,7 @@ import(path : "onshape/std/splineUtils.fs", version : "3044.0");     // evaluate
 
 // export import: MotionFrameSource is used as a dialog parameter type below.
 export import(path : "e32b4de68532811bf7e189be", version : "b50d8aa6085738408921225f");//swMotionSpline.fs
+import(path : "8dba215569bb1c9f8f1bf700", version : "0000000000000000000000ff"); //swTestHarness.fs
 
 /**
  * MOTION SPLINE TESTER - live validation of swMotionSpline.fs against a user-picked path.
@@ -233,31 +234,3 @@ export const swMotionSplineTester = defineFeature(function(context is Context, i
 
 // ===================== Tester helpers =====================
 
-/**
- * The worst deviation of three rotation columns from orthonormality:
- * max |dot(ci, cj) - delta_ij|.
- */
-function orthonormalityDefect(columns is array) returns number
-{
-    var defect = abs(dot(columns[0], columns[0]) - 1);
-    defect = max(defect, abs(dot(columns[1], columns[1]) - 1));
-    defect = max(defect, abs(dot(columns[2], columns[2]) - 1));
-    defect = max(defect, abs(dot(columns[0], columns[1])));
-    defect = max(defect, abs(dot(columns[0], columns[2])));
-    defect = max(defect, abs(dot(columns[1], columns[2])));
-    return defect;
-}
-
-/**
- * Reattaches meters to an array of unitless control points (for handing a module-side spline
- * to kernel-facing std functions).
- */
-function attachMeters(unitlessPoints is array) returns array
-{
-    var withUnits = makeArray(size(unitlessPoints), 0);
-    for (var index = 0; index < size(unitlessPoints); index += 1)
-    {
-        withUnits[index] = unitlessPoints[index] * meter;
-    }
-    return withUnits;
-}

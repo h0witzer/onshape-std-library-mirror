@@ -8,6 +8,7 @@ import(path : "onshape/std/curveGeometry.fs", version : "3044.0");   // Line, Ci
 // evaluateBSplineSurfacePoint, and evaluateBSplineSurfaceDerivatives (the rational-aware
 // derivative rectangle the point inversion consumes). Bump the version id on republish.
 import(path : "eca0e7b6ed29c5239f39f868/c6d53360a1b2036a47b2b076/9a2b77793cdc37bace6d915a", version : "a0777a349ec1b79fe71095ce"); //splineRefinementUtils.fs
+import(path : "8dba215569bb1c9f8f1bf700", version : "0000000000000000000000ff"); //swTestHarness.fs
 
 /**
  * SOLID SWEEP - extraction layer (spec: docs/specs/SOLID_SWEEP_SPEC.md section 5). Reads the
@@ -79,17 +80,7 @@ export const sweepEmitExtractionSelfTest = defineFeature(function(context is Con
 
         // Fixture 2: created bicubic patch - expect one exact BSPLINE record whose calibration
         // is affine, and a clean inversion round trip.
-        var rows = makeArray(4);
-        for (var rowIndex = 0; rowIndex < 4; rowIndex += 1)
-        {
-            var row = makeArray(4);
-            for (var columnIndex = 0; columnIndex < 4; columnIndex += 1)
-            {
-                row[columnIndex] = vector(0.1 + columnIndex * 0.01, rowIndex * 0.01,
-                            0.005 * sin(90 * degree * columnIndex) + 0.004 * cos(60 * degree * rowIndex)) * meter;
-            }
-            rows[rowIndex] = row;
-        }
+        const rows = wavyBicubicPatchNet();
         opCreateBSplineSurface(context, id + "patch", {
                     "bSplineSurface" : bSplineSurface({
                                 "uDegree" : 3,
@@ -282,16 +273,326 @@ export const sweepEmitExtractionSelfTest = defineFeature(function(context is Con
             }
         }
 
-        const verdict = (failures == "") ?
-            "PASS: faces classify on all fixtures; inversion at machine precision; co-edges carry class, " ~
-                "convexity, sides, one-sided normals, and pcurves within tolerance; box vertices assemble " ~
-                "3 edges and 3 cone normals each." :
-            ("FAIL:" ~ failures);
-        println("[EMIT SELF TEST] VERDICT: " ~ verdict);
-        reportFeatureInfo(context, id, verdict);
+        reportTestVerdict(context, id, "EMIT SELF TEST", failures,
+            "faces classify on all fixtures; inversion at machine precision; co-edges carry class, " ~
+            "convexity, sides, one-sided normals, and pcurves within tolerance; box vertices assemble " ~
+            "3 edges and 3 cone normals each.");
+    });
+
+annotation { "Feature Type Name" : "Sweep Emit - Trim Loop Self Test" }
+export const sweepEmitTrimLoopSelfTest = defineFeature(function(context is Context, id is Id, definition is map)
+    precondition
+    {
+    }
+    {
+        // Selection-free: every fixture is a hand-built 2D curve or sample array whose answer is
+        // known in closed form, so the whole trim converter is checked without any geometry.
+        var failures = "";
+
+        // A square from four degree-1 curves, handed over out of order with one reversed. A
+        // degree-1 curve is its own polyline, so this isolates the chaining.
+        const corners = [vector(0.1, 0.2), vector(0.9, 0.2), vector(0.9, 0.8), vector(0.1, 0.8)];
+        var squareCurves = makeArray(4);
+        for (var index = 0; index < 4; index += 1)
+        {
+            squareCurves[index] = uvLineCurve(corners[index], corners[(index + 1) % 4]);
+        }
+        const scrambledSquare = [squareCurves[2], uvLineCurve(corners[1], corners[0]),
+                squareCurves[3], squareCurves[1]];
+        var squareSegments = makeArray(4);
+        var squareBound = 0;
+        for (var index = 0; index < 4; index += 1)
+        {
+            const sampled = polylineFromUvCurve(scrambledSquare[index], 1e-9);
+            squareSegments[index] = sampled.points;
+            squareBound = max(squareBound, sampled.certifiedBound);
+            if (sampled.samplesPerSpan != 1)
+            {
+                failures = failures ~ " a degree-1 trim curve needed " ~ sampled.samplesPerSpan ~
+                    " samples per span.";
+            }
+        }
+        const squareLoops = chainUvPolylinesIntoLoops(squareSegments, 1e-9);
+        println("[TRIM SELF TEST] scrambled square: " ~ size(squareLoops) ~ " loop(s), " ~
+            (size(squareLoops) == 1 ? (size(squareLoops[0].points) ~ " points, gap " ~
+                    squareLoops[0].closureGap) : "") ~ ", chord bound " ~ squareBound);
+        if (size(squareLoops) != 1 || size(squareLoops[0].points) != 4 || !squareLoops[0].closed ||
+            squareLoops[0].closureGap > 1e-15 || squareBound > 1e-15)
+        {
+            failures = failures ~ " scrambled square did not chain into one exact 4-point loop.";
+        }
+
+        // An exact rational-quadratic circle: the polyline bound must track the equal-angle
+        // sagitta of the segment count it settled on, and must quarter when the count doubles.
+        const circleCentre = vector(0.5, 0.5);
+        const circleRadius = 0.25;
+        const circleCurve = uvCircleCurve(circleCentre, circleRadius);
+        var worstRadiusError = 0;
+        for (var parameter in [0, 0.13, 0.37, 0.5, 0.9])
+        {
+            const onCurve = evaluateBSplineCurveDerivatives(circleCurve, parameter, 0)[0];
+            worstRadiusError = max(worstRadiusError,
+                abs(sqrt(squaredNorm(onCurve - circleCentre)) - circleRadius));
+        }
+        println("[TRIM SELF TEST] rational circle radius error at five parameters: " ~ worstRadiusError);
+        if (worstRadiusError > 1e-14)
+        {
+            failures = failures ~ " the rational circle fixture is not exact (" ~ worstRadiusError ~ ").";
+        }
+        const circleTolerances = [1e-3, 1e-4, 1e-5];
+        const expectedSegmentCounts = [64, 128, 512];
+        var previousBound = 0;
+        var previousSegments = 0;
+        for (var toleranceIndex = 0; toleranceIndex < 3; toleranceIndex += 1)
+        {
+            const tolerance = circleTolerances[toleranceIndex];
+            const sampled = polylineFromUvCurve(circleCurve, tolerance);
+            const segmentCount = size(sampled.points) - 1;
+            const equalAngleSagitta = circleRadius * (1 - cos(PI / segmentCount * radian));
+            const sagittaRatio = sampled.certifiedBound / equalAngleSagitta;
+            println("[TRIM SELF TEST] circle at tolerance " ~ tolerance ~ ": " ~ segmentCount ~
+                " segments, bound " ~ sampled.certifiedBound ~ ", equal-angle sagitta " ~
+                equalAngleSagitta ~ ", ratio " ~ sagittaRatio);
+            if (segmentCount != expectedSegmentCounts[toleranceIndex] ||
+                sampled.certifiedBound > tolerance || sagittaRatio < 1 || sagittaRatio > 1.15)
+            {
+                failures = failures ~ " circle polyline at tolerance " ~ tolerance ~
+                    " gave " ~ segmentCount ~ " segments at bound " ~ sampled.certifiedBound ~ ".";
+            }
+            if (previousSegments > 0)
+            {
+                // Uniform-in-parameter refinement is second order, so the bound falls with the
+                // square of the segment count whatever the parameterization does inside a span.
+                const convergenceFactor = previousBound / sampled.certifiedBound /
+                    ((segmentCount / previousSegments) * (segmentCount / previousSegments));
+                println("[TRIM SELF TEST]   second-order convergence factor: " ~ convergenceFactor);
+                if (abs(convergenceFactor - 1) > 0.02)
+                {
+                    failures = failures ~ " circle polyline refinement is not second order (" ~
+                        convergenceFactor ~ ").";
+                }
+            }
+            previousBound = sampled.certifiedBound;
+            previousSegments = segmentCount;
+        }
+
+        // The whole converter on a face record: a square boundary with a circular hole, on the
+        // approximation path, at the default tolerances for a unit uv domain.
+        const holeRecord = {
+                "faceIndex" : 0,
+                "spline" : flatUnitDomainSurface(),
+                "trimLoops" : { "boundary" : squareCurves, "inner" : [[circleCurve]] }
+            };
+        const holeTrim = buildFaceTrimLoops(holeRecord, [], {});
+        println("[TRIM SELF TEST] square with a hole: " ~ summarizeTrimLoops(holeTrim));
+        var holeLoopSizes = makeArray(size(holeTrim.loops), 0);
+        for (var loopIndex = 0; loopIndex < size(holeTrim.loops); loopIndex += 1)
+        {
+            holeLoopSizes[loopIndex] = size(holeTrim.loops[loopIndex].points);
+        }
+        println("[TRIM SELF TEST]   loop sizes " ~ toString(holeLoopSizes));
+        if (holeTrim.source != "approximation" || holeTrim.loopCount != 2 || !holeTrim.usable ||
+            holeTrim.windingLoopCount != 0 || holeLoopSizes[0] != 4 || holeLoopSizes[1] != 64 ||
+            holeTrim.worstClosureGap > 1e-15 || abs(holeTrim.worstCertifiedBound - 3.3454290863e-4) > 1e-12 ||
+            abs(holeTrim.maxChordLength - 0.8) > 1e-15)
+        {
+            failures = failures ~ " the square-with-hole record did not convert to a 4-point and a " ~
+                "64-point loop.";
+        }
+
+        // Seam-aware chaining at period 1: a trim that spans the whole seam has ends a period
+        // apart, so a plain distance would call the loop open. Both sample densities matter -
+        // eight segments, and the ONE chord the kernel can hand over for a degree-1 uv line,
+        // which is the only legitimate two-point loop there is.
+        for (var seamSegmentCount in [8, 1])
+        {
+            const wholeSeamLoops = chainUvPolylinesIntoLoops(
+                    [uvArcSamples(0.2, 0, 1, seamSegmentCount), uvArcSamples(0.8, 0, 1, seamSegmentCount)],
+                    1e-9, 1);
+            var wholeSeamWindings = makeArray(size(wholeSeamLoops), 0);
+            var wholeSeamSizes = makeArray(size(wholeSeamLoops), 0);
+            var wholeSeamClosed = true;
+            for (var loopIndex = 0; loopIndex < size(wholeSeamLoops); loopIndex += 1)
+            {
+                wholeSeamWindings[loopIndex] = wholeSeamLoops[loopIndex].winding;
+                wholeSeamSizes[loopIndex] = size(wholeSeamLoops[loopIndex].points);
+                wholeSeamClosed = wholeSeamClosed && wholeSeamLoops[loopIndex].closed;
+            }
+            println("[TRIM SELF TEST] whole-seam trims at " ~ seamSegmentCount ~ " segment(s): " ~
+                size(wholeSeamLoops) ~ " loop(s), windings " ~ toString(wholeSeamWindings) ~
+                ", sizes " ~ toString(wholeSeamSizes) ~ ", closed " ~ wholeSeamClosed);
+            // A winding loop KEEPS its tail: it is the head one period along, and dropping it
+            // would delete the segment that covers the seam.
+            if (size(wholeSeamLoops) != 2 || !wholeSeamClosed ||
+                wholeSeamWindings[0] != 1 || wholeSeamWindings[1] != 1 ||
+                wholeSeamSizes[0] != seamSegmentCount + 1 || wholeSeamSizes[1] != seamSegmentCount + 1)
+            {
+                failures = failures ~ " whole-seam trim curves at " ~ seamSegmentCount ~
+                    " segment(s) did not close as two winding loops keeping every sample.";
+            }
+        }
+
+        // The same two trims split into arcs, shuffled, one reversed - the joins now land both
+        // inside the domain and across the seam.
+        const splitSeamLoops = chainUvPolylinesIntoLoops([uvArcSamples(0.2, 0, 0.5, 4),
+                    uvArcSamples(0.8, 0.5, 1, 4), uvArcSamples(0.2, 1, 0.5, 4),
+                    uvArcSamples(0.8, 0, 0.5, 4)], 1e-9, 1);
+        var splitSeamWindingSum = 0;
+        for (var splitLoop in splitSeamLoops)
+        {
+            splitSeamWindingSum += abs(splitLoop.winding);
+        }
+        println("[TRIM SELF TEST] split whole-seam trims: " ~ size(splitSeamLoops) ~
+            " loop(s), total |winding| " ~ splitSeamWindingSum);
+        if (size(splitSeamLoops) != 2 || splitSeamWindingSum != 2)
+        {
+            failures = failures ~ " split whole-seam trim arcs did not chain into two winding loops.";
+        }
+
+        // A hole straddling the seam, arriving as two pcurve pieces folded into the domain. The
+        // per-segment unwrap plus the periodic joins must give one loop of span 0.1 that does
+        // NOT wind - the loop is a hole, not a wrap.
+        const foldedUpper = unwrapLoopU(foldedHoleSamples(0.05, 1, 8), 1);
+        const foldedLower = unwrapLoopU(foldedHoleSamples(0.05, -1, 8), 1);
+        const foldedLoops = chainUvPolylinesIntoLoops([foldedUpper, reverse(foldedLower)], 1e-9, 1);
+        var foldedSpan = 0;
+        var foldedWinding = 0;
+        if (size(foldedLoops) == 1)
+        {
+            var spanMin = foldedLoops[0].points[0][0];
+            var spanMax = foldedLoops[0].points[0][0];
+            for (var loopPoint in foldedLoops[0].points)
+            {
+                spanMin = min(spanMin, loopPoint[0]);
+                spanMax = max(spanMax, loopPoint[0]);
+            }
+            foldedSpan = spanMax - spanMin;
+            foldedWinding = foldedLoops[0].winding;
+        }
+        println("[TRIM SELF TEST] seam-straddling hole: " ~ size(foldedLoops) ~ " loop(s), winding " ~
+            foldedWinding ~ ", u span " ~ foldedSpan);
+        if (size(foldedLoops) != 1 || foldedWinding != 0 || abs(foldedSpan - 0.1) > 1e-12)
+        {
+            failures = failures ~ " a seam-straddling hole did not chain into one 0.1-wide loop.";
+        }
+
+        // Folded input reads as no winding whichever kind of loop it is, which is why the
+        // converter unwraps before it measures.
+        var foldedRamp = makeArray(33, vector(0, 0.4));
+        for (var index = 0; index < 33; index += 1)
+        {
+            foldedRamp[index] = vector(positiveModulo(0.3 + index / 32, 1), 0.4);
+        }
+        const foldedRampWinding = loopUWinding(foldedRamp, 1);
+        const unwrappedRampWinding = loopUWinding(unwrapLoopU(foldedRamp, 1), 1);
+        println("[TRIM SELF TEST] a folded winding ramp reads winding " ~ foldedRampWinding ~
+            " folded and " ~ unwrappedRampWinding ~ " unwrapped");
+        if (foldedRampWinding != 0 || unwrappedRampWinding != 1)
+        {
+            failures = failures ~ " unwrapping did not recover the winding of a folded ramp.";
+        }
+
+        reportTestVerdict(context, id, "TRIM LOOP SELF TEST", failures,
+            "certified polyline conversion, seam-aware chaining, winding classification, " ~
+            "and the record-level trim loop build all match their closed-form answers.");
     });
 
 // ============================= Face extraction =============================
+
+/**
+ * Relative spread below which a weight grid counts as uniform, and absolute spread (meters
+ * implied) below which a boundary control row counts as collapsed to a point. Both are read
+ * off exact structure - a revolve's pole row is byte-identical, a non-rational net's weights
+ * are exactly one - so the thresholds only have to survive arithmetic noise.
+ */
+export const UNIFORM_WEIGHT_TOLERANCE = 1e-12;
+export const DEGENERATE_ROW_TOLERANCE = 1e-12;
+
+/**
+ * A stripped surface with a uniform weight grid re-declared NON-RATIONAL, weights dropped.
+ * `normalizeSurfaceDefinition` gives every surface a weight grid and flags it rational, so a
+ * genuinely non-rational net arrives here flagged rational with weights all equal; a constant
+ * weight scale cancels in the projective divide, so dropping it is exact. Nets whose weights
+ * actually vary pass through untouched, still flagged rational.
+ */
+export function dropUniformWeights(strippedSurface is map) returns map
+{
+    var surface = strippedSurface;
+    if (surface.isRational != true || surface.weights == undefined)
+    {
+        surface.isRational = false;
+        surface.weights = undefined;
+        return surface;
+    }
+    const reference = surface.weights[0][0];
+    if (abs(reference) < UNIFORM_WEIGHT_TOLERANCE)
+    {
+        return surface;
+    }
+    for (var weightRow in surface.weights)
+    {
+        for (var weight in weightRow)
+        {
+            if (abs(weight - reference) > UNIFORM_WEIGHT_TOLERANCE * abs(reference))
+            {
+                return surface;
+            }
+        }
+    }
+    surface.isRational = false;
+    surface.weights = undefined;
+    return surface;
+}
+
+/**
+ * Which of a stripped surface's four control-net boundaries collapse to a single point - the
+ * poles of a surface of revolution. A collapsed row is a PARAMETERIZATION artifact that the
+ * envelope solver has to know about: the surface normal S_u x S_v vanishes identically there,
+ * so the contact function f = <A.n, velocity> is identically zero along the whole row whatever
+ * the motion. Those zeros are not contact, and a funnel census that believes them connects
+ * every real component through the pole (spec section 7.5).
+ *
+ * Returns { uStart, uEnd, vStart, vEnd } booleans - uStart/uEnd name collapsed control ROWS
+ * (constant u), vStart/vEnd collapsed control COLUMNS (constant v).
+ */
+export function degenerateSplineBoundaries(strippedSurface is map, tolerance is number) returns map
+{
+    const controlPoints = strippedSurface.controlPoints;
+    const rowCount = size(controlPoints);
+    const columnCount = size(controlPoints[0]);
+    return {
+            "uStart" : rowIsCollapsed(controlPoints[0], tolerance),
+            "uEnd" : rowIsCollapsed(controlPoints[rowCount - 1], tolerance),
+            "vStart" : columnIsCollapsed(controlPoints, 0, tolerance),
+            "vEnd" : columnIsCollapsed(controlPoints, columnCount - 1, tolerance)
+        };
+}
+
+/** Whether every point of a control row equals the first within tolerance. */
+function rowIsCollapsed(row is array, tolerance is number) returns boolean
+{
+    for (var index = 1; index < size(row); index += 1)
+    {
+        if (squaredNorm(row[index] - row[0]) > tolerance * tolerance)
+        {
+            return false;
+        }
+    }
+    return true;
+}
+
+/** Whether every point of a control column equals the first within tolerance. */
+function columnIsCollapsed(controlPoints is array, columnIndex is number, tolerance is number) returns boolean
+{
+    for (var rowIndex = 1; rowIndex < size(controlPoints); rowIndex += 1)
+    {
+        if (squaredNorm(controlPoints[rowIndex][columnIndex] - controlPoints[0][columnIndex]) > tolerance * tolerance)
+        {
+            return false;
+        }
+    }
+    return true;
+}
 
 /** Classification of a tool face's underlying surface, driving which solver path it takes. */
 export enum SweepSurfaceClass
@@ -315,19 +616,50 @@ export enum SweepSurfaceClass
  *     surfaceClass {SweepSurfaceClass},
  *     analytic {map} : the typed evSurfaceDefinition value for analytic classes, else undefined,
  *     spline {map} : normalized, unit-stripped BSplineSurface data for BSPLINE and OTHER
- *         classes (exact for BSPLINE, approximated at faceExtractTolerance for OTHER),
- *         else undefined,
- *     splineIsExact {boolean},
+ *         classes - exact for BSPLINE, approximated at faceExtractTolerance for OTHER. A net
+ *         whose weights are UNIFORM is re-declared non-rational and the weights dropped (exact:
+ *         a constant weight scale cancels in the projective divide); one whose weights genuinely
+ *         vary stays rational, which every pointwise consumer handles. Only the coefficient path
+ *         (spec 6.0) needs non-rational input - see the four-argument overload,
+ *     splineIsExact {boolean} : false whenever the approximation route was taken,
  *     periodic {array} : [uPeriodic, vPeriodic] from evFacePeriodicity,
  *     trimLoops {map} : { boundary, inner } 2D UV BSplineCurves in the approximated spline's
  *         domain - present only on the approximation path (exact and analytic faces get their
  *         loops from co-edge pcurves in the edge extraction pass),
- *     calibration {map} : UvCalibration for spline-bearing records, else undefined
+ *     calibration {map} : UvCalibration for spline-bearing records, else undefined,
+ *     degenerate {map} : { uStart, uEnd, vStart, vEnd } collapsed control-net boundaries -
+ *         the revolve poles the funnel census must mask (degenerateSplineBoundaries)
  * }
  *
  * faceExtractTolerance is a plain number, meters implied.
  */
 export function extractToolFaceRecords(context is Context, toolBody is Query, faceExtractTolerance is number) returns array
+{
+    return extractToolFaceRecords(context, toolBody, faceExtractTolerance, false);
+}
+
+/**
+ * Same, with control over whether freeform approximations are forced NON-RATIONAL.
+ *
+ * LIVE FINDING (2026-08-23): `forceNonRational` is not free, and on a periodic face it is not
+ * even usable. Asked for the wall of an elliptical extrude at 1e-6, the kernel answers
+ * rationally with a 7 x 2 net whose U knots are clean closed-clamped ([0,0,0,0, .5,.5,.5,
+ * 1,1,1,1]) and whose end control rows coincide to 0 m - the form normalizeSurfaceDefinition
+ * converts to wrap form exactly. Forced non-rational, the SAME face comes back as a 58 x 2 net
+ * with every knot doubled, a knot range overrunning the domain by a span at each end, end rows
+ * 2 mm apart, and a wrap relation off by exactly one knot step: a third periodic spelling, which
+ * normalizeSurfaceDefinition refuses to guess at rather than silently mis-read. The revolved
+ * ellipsoid shows the same appetite - 99 x 49 forced against a handful of control points
+ * rational.
+ *
+ * Nothing in the pointwise path needs the conversion: evaluateBSplineSurfaceDerivatives is
+ * NURBS Book A4.4, so marching, seeding, lifting, inversion, fitting, and certification are all
+ * rational-correct. Only swEnvelopeMath's coefficient path (spec 6.0) requires non-rational
+ * input, and per spec 7.6 that path wants its own coarse extraction anyway. So the default is
+ * FALSE, and a caller that turns it on owns the spelling problem.
+ */
+export function extractToolFaceRecords(context is Context, toolBody is Query, faceExtractTolerance is number,
+    forceNonRational is boolean) returns array
 {
     const faces = evaluateQuery(context, qOwnedByBody(toolBody, EntityType.FACE));
     var records = makeArray(size(faces));
@@ -345,27 +677,17 @@ export function extractToolFaceRecords(context is Context, toolBody is Query, fa
             "splineIsExact" : false,
             "periodic" : evFacePeriodicity(context, { "face" : face }),
             "trimLoops" : undefined,
-            "calibration" : undefined
+            "calibration" : undefined,
+            "degenerate" : undefined
         };
         if (surfaceClass == SweepSurfaceClass.BSPLINE)
         {
-            record.spline = stripSurfaceUnits(normalizeSurfaceDefinition(surfaceDefinition));
+            record.spline = dropUniformWeights(stripSurfaceUnits(normalizeSurfaceDefinition(surfaceDefinition)));
             record.splineIsExact = true;
         }
         else if (surfaceClass == SweepSurfaceClass.OTHER)
         {
-            // Non-rational is required by swEnvelopeMath's coefficient path; the kernel
-            // absorbs the conversion cost here, at the same tolerance.
-            const approximated = evApproximateBSplineSurface(context, {
-                        "face" : face,
-                        "tolerance" : faceExtractTolerance,
-                        "forceNonRational" : true
-                    });
-            record.spline = stripSurfaceUnits(normalizeSurfaceDefinition(approximated.bSplineSurface));
-            record.trimLoops = {
-                "boundary" : approximated.boundaryBSplineCurves,
-                "inner" : approximated.innerLoopBSplineCurves
-            };
+            record = readApproximatedFace(context, record, face, faceExtractTolerance, forceNonRational);
         }
         else
         {
@@ -374,10 +696,34 @@ export function extractToolFaceRecords(context is Context, toolBody is Query, fa
         if (record.spline != undefined)
         {
             record.calibration = buildUvCalibration(context, face, record.spline);
+            record.degenerate = degenerateSplineBoundaries(record.spline, DEGENERATE_ROW_TOLERANCE);
         }
         records[faceIndex] = record;
     }
     return records;
+}
+
+/**
+ * Read one face as a B-spline approximation and fill the record's spline, trim
+ * loops, and exactness. `forceNonRational` is passed straight through - see the four-argument
+ * extractToolFaceRecords for why it defaults to false and what it costs when it is true.
+ */
+function readApproximatedFace(context is Context, record is map, face is Query, faceExtractTolerance is number,
+    forceNonRational is boolean) returns map
+{
+    var updated = record;
+    const approximated = evApproximateBSplineSurface(context, {
+                "face" : face,
+                "tolerance" : faceExtractTolerance,
+                "forceNonRational" : forceNonRational
+            });
+    updated.spline = dropUniformWeights(stripSurfaceUnits(normalizeSurfaceDefinition(approximated.bSplineSurface)));
+    updated.splineIsExact = false;
+    updated.trimLoops = {
+        "boundary" : approximated.boundaryBSplineCurves,
+        "inner" : approximated.innerLoopBSplineCurves
+    };
+    return updated;
 }
 
 /** One line of per-class counts and calibration flags for an array of ToolFaceRecords. */
@@ -391,6 +737,9 @@ export function summarizeFaceRecords(records is array) returns string
             (record.trimLoops != undefined ? (" loops " ~ size(record.trimLoops.boundary) ~ "+" ~
                         size(record.trimLoops.inner)) : "") ~
             (record.calibration != undefined ? (" affine " ~ record.calibration.isAffine) : "") ~
+            (record.spline != undefined && record.spline.isRational == true ? " RATIONAL" : "") ~
+            (record.degenerate != undefined ? (" poles " ~ record.degenerate.uStart ~ "/" ~ record.degenerate.uEnd ~
+                        "/" ~ record.degenerate.vStart ~ "/" ~ record.degenerate.vEnd) : "") ~
             " periodic " ~ record.periodic[0] ~ "/" ~ record.periodic[1] ~ ";";
     }
     return summary;
@@ -958,6 +1307,648 @@ export function surfaceKnotDomain(surface is map) returns map
         };
 }
 
+// ============================= Trim loop plumbing =============================
+
+/**
+ * Default polyline and join tolerances, as fractions of the smaller uv domain span. The
+ * polyline fraction sits two orders of magnitude below one cell of a nine-node census grid, so
+ * a mask decision never turns on the chord approximation. The join fraction is the ceiling on
+ * how far two independently inverted pcurve ends of the same vertex may land apart before the
+ * chain is reported open.
+ */
+export const TRIM_POLYLINE_TOLERANCE_FRACTION = 1e-3;
+export const TRIM_JOIN_TOLERANCE_FRACTION = 1e-5;
+
+/** Upper bound on samples per knot span, so a pathological trim curve stops rather than spins. */
+export const TRIM_POLYLINE_SAMPLE_CAP = 256;
+
+/**
+ * The census-ready trim loops of one face record: what spec section 6.3 step 3 masks its
+ * coarse sign grid with. Extraction records trim data in two different shapes and neither is a
+ * polyline, which is the gap this closes.
+ *
+ * Source selection follows what the record actually carries:
+ *   - "approximation": the 2D B-spline trim curves evApproximateBSplineSurface returned
+ *     alongside the surface. They live in the parameter space of the surface from that same
+ *     call, which is the record's spline up to the periodic re-spelling normalizeSurfaceDefinition
+ *     applies - a conversion that preserves parameter VALUES and can only shift a periodic
+ *     domain by whole periods, which the fold below absorbs.
+ *   - "coEdges": the pcurve sample arrays of every co-edge side that names this face. This is
+ *     the only source for an exactly extracted face, whose surface came from
+ *     evSurfaceDefinition and has no loops attached.
+ *   - "untrimmed": neither is present, so the whole knot rectangle is valid and the census
+ *     needs no mask at all. "noSpline" is the analytic-face answer, which the coarse grid
+ *     never sees.
+ *
+ * Curves from every loop are pooled and chained together rather than trusted in the groups the
+ * kernel returned them in: `evApproximateBSplineSurface` documents outer and inner loops as
+ * not clearly defined on a periodic face, and the even-odd mask does not need to know which
+ * loop is which anyway.
+ *
+ * options: { polylineTolerance, joinTolerance {number} } - both optional, defaulting to the
+ * fractions above times the smaller uv domain span.
+ *
+ * Returns {
+ *     loops {array} : one { points {array of 2D Vector}, winding {number} } per loop, exactly
+ *         the shape censusFunnelComponents accepts,
+ *     source {string},
+ *     loopCount, openLoopCount, windingLoopCount {number},
+ *     worstClosureGap {number} : the largest distance a chain's tail landed from its head,
+ *     worstCertifiedBound {number} : the largest held-out chord deviation over all curves
+ *         (zero on the co-edge path, where the samples ARE the data),
+ *     maxChordLength {number} : the longest polyline segment, for comparison against the
+ *         census cell size,
+ *     usable {boolean} : no open chains, so every loop bounds something,
+ *     vPeriodicUnhandled {boolean} : the face is periodic in V, which the masks do not model.
+ *         Only u is cyclic downstream - the census flags a seam in u, and section 7.8's
+ *         transposeSurface normalizes an extracted revolve's circumferential direction INTO u
+ *         for exactly that reason - so a v-periodic face here means the transpose was skipped.
+ *         Loops are still folded into the v domain, but a loop WRAPPING the v seam would be
+ *         read as a self-closing one, which is why this is reported rather than guessed at
+ * }
+ */
+export function buildFaceTrimLoops(faceRecord is map, coEdgeRecords is array, options is map) returns map
+{
+    if (faceRecord.spline == undefined)
+    {
+        // An analytic face never reaches the coarse sign grid: spec section 6.5 solves it in
+        // closed form and trims it with its own boundary machinery.
+        return emptyTrimLoopResult("noSpline");
+    }
+    const domain = surfaceKnotDomain(faceRecord.spline);
+    const smallerSpan = min(domain.uEnd - domain.uStart, domain.vEnd - domain.vStart);
+    const resolved = mergeMaps({
+                "polylineTolerance" : TRIM_POLYLINE_TOLERANCE_FRACTION * smallerSpan,
+                "joinTolerance" : TRIM_JOIN_TOLERANCE_FRACTION * smallerSpan
+            }, options);
+
+    var segments = [];
+    var worstCertifiedBound = 0;
+    var source = "untrimmed";
+    if (faceRecord.trimLoops != undefined && trimCurveCount(faceRecord.trimLoops) > 0)
+    {
+        source = "approximation";
+        const sampled = sampleTrimCurveLoops(faceRecord.trimLoops, resolved.polylineTolerance);
+        segments = sampled.segments;
+        worstCertifiedBound = sampled.worstCertifiedBound;
+    }
+    else
+    {
+        segments = coEdgePcurveSegments(faceRecord.faceIndex, coEdgeRecords);
+        if (size(segments) > 0)
+        {
+            source = "coEdges";
+        }
+    }
+    if (size(segments) == 0)
+    {
+        return emptyTrimLoopResult("untrimmed");
+    }
+
+    const uPeriodic = faceRecord.spline.isUPeriodic == true;
+    const vPeriodic = faceRecord.spline.isVPeriodic == true;
+    const uPeriod = domain.uEnd - domain.uStart;
+    if (uPeriodic && source == "coEdges")
+    {
+        // Interior folding first, then the chainer handles the joins BETWEEN segments: a pcurve
+        // whose edge crosses the seam comes back folded mid-array, because a step whose seeded
+        // inversion is refused re-seeds from the in-domain grid, and no join comparison can see
+        // a fold that sits inside a segment.
+        //
+        // ONLY the co-edge path. Folding is an artifact of point inversion; a kernel trim curve
+        // is continuous in the surface's own parameter space by construction, and it may cross
+        // the whole seam in ONE chord - a degree-1 uv line from (uStart, v) to (uEnd, v) samples
+        // to exactly two points. Unwrapping reads that chord as a fold and collapses it.
+        segments = unwrapSegmentsU(segments, uPeriod);
+    }
+    const chained = chainUvPolylinesIntoLoops(segments, resolved.joinTolerance, uPeriodic ? uPeriod : 0);
+
+    var loops = makeArray(size(chained));
+    var openLoopCount = 0;
+    var windingLoopCount = 0;
+    var worstClosureGap = 0;
+    var maxChordLength = 0;
+    for (var loopIndex = 0; loopIndex < size(chained); loopIndex += 1)
+    {
+        const chain = chained[loopIndex];
+        var points = chain.points;
+        if (uPeriodic)
+        {
+            points = shiftLoopIntoDomain(points, domain.uStart, uPeriod);
+        }
+        if (vPeriodic)
+        {
+            points = shiftLoopIntoDomainV(points, domain.vStart, domain.vEnd - domain.vStart);
+        }
+        const winding = uPeriodic ? chain.winding : 0;
+        loops[loopIndex] = { "points" : points, "winding" : winding };
+        if (!chain.closed)
+        {
+            openLoopCount += 1;
+        }
+        if (winding != 0)
+        {
+            windingLoopCount += 1;
+        }
+        worstClosureGap = max(worstClosureGap, chain.closureGap);
+        maxChordLength = max(maxChordLength, longestChord(points, winding == 0));
+    }
+    return {
+            "loops" : loops,
+            "source" : source,
+            "loopCount" : size(loops),
+            "openLoopCount" : openLoopCount,
+            "windingLoopCount" : windingLoopCount,
+            "worstClosureGap" : worstClosureGap,
+            "worstCertifiedBound" : worstCertifiedBound,
+            "maxChordLength" : maxChordLength,
+            "usable" : openLoopCount == 0,
+            "vPeriodicUnhandled" : vPeriodic
+        };
+}
+
+/** One line of trim loop counts, tolerances achieved, and usability for the printouts. */
+export function summarizeTrimLoops(trimResult is map) returns string
+{
+    return trimResult.source ~ ": " ~ trimResult.loopCount ~ " loop(s), " ~
+        trimResult.windingLoopCount ~ " winding, " ~ trimResult.openLoopCount ~ " open, gap " ~
+        trimResult.worstClosureGap ~ ", chord bound " ~ trimResult.worstCertifiedBound ~
+        ", longest chord " ~ trimResult.maxChordLength ~ ", usable " ~ trimResult.usable ~
+        (trimResult.vPeriodicUnhandled ? " V-PERIODIC (untransposed)" : "");
+}
+
+/**
+ * Sample a 2D uv trim curve into a polyline whose chord deviation is CERTIFIED: the curve is
+ * sampled uniformly inside every distinct knot span and the count per span is doubled until the
+ * held-out mid-parameter sample of every chord sits within `tolerance` of that chord.
+ *
+ * The held-out samples are the certification, the same way the fit certifies its rows (spec
+ * 7.2): the points that decide the answer are never points the answer was built from. A
+ * degree-1 trim curve - the kernel's usual answer for a straight boundary - certifies at one
+ * segment per span with a zero bound, so a box's loops cost one evaluation each.
+ *
+ * Returns { points {array of 2D Vector}, certifiedBound {number}, samplesPerSpan {number} }.
+ */
+export function polylineFromUvCurve(uvCurve is map, tolerance is number) returns map
+{
+    const breaks = distinctSpanBreaks(uvCurve);
+    var samplesPerSpan = 1;
+    var sampling = sampleUvCurveUniformly(uvCurve, breaks, samplesPerSpan);
+    while (sampling.certifiedBound > tolerance && samplesPerSpan < TRIM_POLYLINE_SAMPLE_CAP)
+    {
+        samplesPerSpan *= 2;
+        sampling = sampleUvCurveUniformly(uvCurve, breaks, samplesPerSpan);
+    }
+    return sampling;
+}
+
+/** Chain with no periodic direction: every join is an ordinary uv distance. */
+export function chainUvPolylinesIntoLoops(segments is array, joinTolerance is number) returns array
+{
+    return chainUvPolylinesIntoLoops(segments, joinTolerance, 0);
+}
+
+/**
+ * Chain uv polyline segments into closed loops by nearest endpoint, reversing a segment when
+ * its far end is the nearer one. Segments may arrive in any order and either direction, and
+ * more than one loop may be present - a chain that returns to its own head ends that loop and
+ * the next unused segment seeds the next, which separates a boundary from its holes without
+ * anyone having to say which is which.
+ *
+ * Growing forward only is enough for closed input: a cycle traversed forward from any of its
+ * segments comes back to that segment's head. A chain that stalls instead is therefore genuine
+ * evidence of a gap upstream, and it is returned open, with the gap it stalled at, rather than
+ * closed across it.
+ *
+ * `uPeriod` nonzero makes every join comparison use the NEAREST PERIODIC IMAGE in u, and shifts
+ * each attached segment onto that image. Two things fall out of that. A trim curve running the
+ * full seam joins its neighbour whose u values sit a period away - without this it would look
+ * like a period-wide gap and the loop would be reported open. And the chain that results is
+ * already unwrapped: it accumulated its shifts from the joins themselves, rather than from a
+ * jump heuristic that cannot tell a fold from a chord spanning the seam.
+ *
+ * Each returned loop drops the repeated closing point, matching the census convention that
+ * closure is implicit, and reports the WINDING it closed with: the number of periods between
+ * its head and the image of its head that its tail landed on. Reading the winding off the join
+ * is exact at any sample density, where re-deriving it from the truncated point list would need
+ * the loop to be sampled finely enough that a lost closing segment is obviously short.
+ *
+ * Returns an array of { points, closureGap, closed, winding }.
+ */
+export function chainUvPolylinesIntoLoops(segments is array, joinTolerance is number, uPeriod is number) returns array
+{
+    const segmentCount = size(segments);
+    const joinToleranceSquared = joinTolerance * joinTolerance;
+    var totalPointCount = 0;
+    for (var segment in segments)
+    {
+        totalPointCount += size(segment);
+    }
+    var used = makeArray(segmentCount, false);
+    var loops = makeArray(segmentCount);
+    var loopCount = 0;
+    var usedCount = 0;
+    var nextSeed = 0;
+    while (usedCount < segmentCount)
+    {
+        while (used[nextSeed])
+        {
+            nextSeed += 1;
+        }
+        var chain = makeArray(totalPointCount, segments[nextSeed][0]);
+        var chainLength = 0;
+        for (var point in segments[nextSeed])
+        {
+            chain[chainLength] = point;
+            chainLength += 1;
+        }
+        used[nextSeed] = true;
+        usedCount += 1;
+
+        var growing = true;
+        while (growing)
+        {
+            growing = false;
+            if (chainClosesHere(chain, chainLength, uPeriod, joinTolerance))
+            {
+                break;
+            }
+            var bestIndex = -1;
+            var bestDistanceSquared = 0;
+            var bestReversed = false;
+            for (var candidate = 0; candidate < segmentCount; candidate += 1)
+            {
+                if (used[candidate])
+                {
+                    continue;
+                }
+                const candidatePoints = segments[candidate];
+                const headDistanceSquared = nearestImageSquaredDistance(chain[chainLength - 1],
+                        candidatePoints[0], uPeriod);
+                const tailDistanceSquared = nearestImageSquaredDistance(chain[chainLength - 1],
+                        candidatePoints[size(candidatePoints) - 1], uPeriod);
+                const reversed = tailDistanceSquared < headDistanceSquared;
+                const distanceSquared = reversed ? tailDistanceSquared : headDistanceSquared;
+                if (bestIndex < 0 || distanceSquared < bestDistanceSquared)
+                {
+                    bestIndex = candidate;
+                    bestDistanceSquared = distanceSquared;
+                    bestReversed = reversed;
+                }
+            }
+            if (bestIndex < 0 || bestDistanceSquared > joinToleranceSquared)
+            {
+                break;
+            }
+            const attached = segments[bestIndex];
+            const attachedCount = size(attached);
+            const joinEnd = bestReversed ? attached[attachedCount - 1] : attached[0];
+            const uShift = nearestImageShift(chain[chainLength - 1], joinEnd, uPeriod);
+            for (var offset = 1; offset < attachedCount; offset += 1)
+            {
+                const attachedPoint = bestReversed ? attached[attachedCount - 1 - offset] : attached[offset];
+                chain[chainLength] = uShift == 0 ? attachedPoint :
+                    vector(attachedPoint[0] + uShift, attachedPoint[1]);
+                chainLength += 1;
+            }
+            used[bestIndex] = true;
+            usedCount += 1;
+            growing = true;
+        }
+
+        const closureShift = nearestImageShift(chain[chainLength - 1], chain[0], uPeriod);
+        const closureGap = sqrt(nearestImageSquaredDistance(chain[chainLength - 1], chain[0], uPeriod));
+        const winding = uPeriod == 0 ? 0 : round(closureShift / uPeriod);
+        const closed = chainClosesHere(chain, chainLength, uPeriod, joinTolerance);
+        // A loop that closes on itself repeats its head as its tail, and the census convention
+        // is implicit closure, so that repeat comes off. A WINDING loop's tail is a different
+        // point - its head one period along - and dropping it would delete the segment that
+        // covers the seam, leaving a stretch of u where the mask counts no crossings at all.
+        loops[loopCount] = {
+                "points" : subArray(chain, 0, (closed && winding == 0) ? chainLength - 1 : chainLength),
+                "closureGap" : closureGap,
+                "closed" : closed,
+                "winding" : winding
+            };
+        loopCount += 1;
+    }
+    return subArray(loops, 0, loopCount);
+}
+
+/**
+ * Unwrap a loop's u values into one continuous run: whenever consecutive samples jump by more
+ * than half the period, every later sample is shifted by a whole period.
+ *
+ * A trim loop that crosses the extraction seam arrives with its u values folded into the
+ * domain, and folded coordinates turn its seam segment into a period-long jump that no
+ * crossing test can read. Unwrapped, a loop that merely straddles the seam runs a little past
+ * the domain edge (the cyclic mask tests every periodic image, so that is fine) and a loop that
+ * wraps the seam ends one whole period from where it started, which is what makes its winding
+ * measurable.
+ */
+export function unwrapLoopU(loopPoints is array, uPeriod is number) returns array
+{
+    const pointCount = size(loopPoints);
+    var unwrapped = makeArray(pointCount, loopPoints[0]);
+    var shift = 0;
+    for (var index = 1; index < pointCount; index += 1)
+    {
+        const rawDelta = loopPoints[index][0] - loopPoints[index - 1][0];
+        if (rawDelta > 0.5 * uPeriod)
+        {
+            shift -= uPeriod;
+        }
+        else if (rawDelta < -0.5 * uPeriod)
+        {
+            shift += uPeriod;
+        }
+        unwrapped[index] = vector(loopPoints[index][0] + shift, loopPoints[index][1]);
+    }
+    return unwrapped;
+}
+
+/**
+ * How many times a loop winds the periodic u direction: how far its stored u travelled from
+ * first sample to last, read against the period.
+ *
+ * Zero means the loop closes on itself - a hole, or the boundary of a face that is not closed
+ * in u - so its implicit closing segment is part of the polygon. Plus or minus one means the
+ * loop wraps the seam: its stored samples already span a full period, its two ends are the same
+ * point one period apart, and there is no closing segment to add. That distinction is the whole
+ * difference between the two kinds of loop a periodic face produces, and it is why the loops
+ * carry it rather than leaving the census to guess.
+ *
+ * Only meaningful on UNWRAPPED input. Folded u telescopes back to nearly zero however the loop
+ * runs, so a winding loop read straight out of the kernel reports zero - unwrapLoopU first.
+ */
+export function loopUWinding(loopPoints is array, uPeriod is number) returns number
+{
+    const travel = loopPoints[size(loopPoints) - 1][0] - loopPoints[0][0];
+    if (abs(abs(travel) - uPeriod) < 0.5 * uPeriod)
+    {
+        return travel > 0 ? 1 : -1;
+    }
+    return 0;
+}
+
+// ----------------------------- trim loop internals -----------------------------
+
+/** The result for a face with nothing to mask: an empty loop set the census reads as all-valid. */
+function emptyTrimLoopResult(source is string) returns map
+{
+    return {
+            "loops" : [],
+            "source" : source,
+            "loopCount" : 0,
+            "openLoopCount" : 0,
+            "windingLoopCount" : 0,
+            "worstClosureGap" : 0,
+            "worstCertifiedBound" : 0,
+            "maxChordLength" : 0,
+            "usable" : true,
+            "vPeriodicUnhandled" : false
+        };
+}
+
+/** Total 2D curves across a record's boundary loop and its inner loops. */
+function trimCurveCount(trimLoops is map) returns number
+{
+    var total = trimLoops.boundary == undefined ? 0 : size(trimLoops.boundary);
+    if (trimLoops.inner != undefined)
+    {
+        for (var innerLoop in trimLoops.inner)
+        {
+            total += size(innerLoop);
+        }
+    }
+    return total;
+}
+
+/** Every trim curve of a record, boundary and inner pooled, sampled to certified polylines. */
+function sampleTrimCurveLoops(trimLoops is map, tolerance is number) returns map
+{
+    var curves = makeArray(trimCurveCount(trimLoops));
+    var curveCount = 0;
+    if (trimLoops.boundary != undefined)
+    {
+        for (var curve in trimLoops.boundary)
+        {
+            curves[curveCount] = curve;
+            curveCount += 1;
+        }
+    }
+    if (trimLoops.inner != undefined)
+    {
+        for (var innerLoop in trimLoops.inner)
+        {
+            for (var curve in innerLoop)
+            {
+                curves[curveCount] = curve;
+                curveCount += 1;
+            }
+        }
+    }
+    var segments = makeArray(curveCount);
+    var worstCertifiedBound = 0;
+    for (var curveIndex = 0; curveIndex < curveCount; curveIndex += 1)
+    {
+        const sampled = polylineFromUvCurve(curves[curveIndex], tolerance);
+        segments[curveIndex] = sampled.points;
+        worstCertifiedBound = max(worstCertifiedBound, sampled.certifiedBound);
+    }
+    return { "segments" : segments, "worstCertifiedBound" : worstCertifiedBound };
+}
+
+/**
+ * The pcurve sample arrays of every co-edge side naming this face. A seam edge names the same
+ * face on both sides and contributes both, which is correct: on a face whose domain carries the
+ * seam as two opposite edges, both are part of the boundary.
+ */
+function coEdgePcurveSegments(faceIndex is number, coEdgeRecords is array) returns array
+{
+    var segments = makeArray(2 * size(coEdgeRecords));
+    var segmentCount = 0;
+    for (var record in coEdgeRecords)
+    {
+        if (record.faceIndexLeft == faceIndex && record.uvCurves.left != undefined)
+        {
+            segments[segmentCount] = record.uvCurves.left.uvSamples;
+            segmentCount += 1;
+        }
+        if (record.faceIndexRight == faceIndex && record.uvCurves.right != undefined)
+        {
+            segments[segmentCount] = record.uvCurves.right.uvSamples;
+            segmentCount += 1;
+        }
+    }
+    return subArray(segments, 0, segmentCount);
+}
+
+/** The distinct knot values bounding a curve's spans, both domain ends included. */
+function distinctSpanBreaks(uvCurve is map) returns array
+{
+    const domain = knotDomain(uvCurve.knots, uvCurve.degree);
+    var breaks = makeArray(size(uvCurve.knots), domain.start);
+    var breakCount = 1;
+    for (var knot in uvCurve.knots)
+    {
+        if (knot > domain.start + KNOT_PARAMETER_TOLERANCE && knot < domain.end - KNOT_PARAMETER_TOLERANCE &&
+            knot > breaks[breakCount - 1] + KNOT_PARAMETER_TOLERANCE)
+        {
+            breaks[breakCount] = knot;
+            breakCount += 1;
+        }
+    }
+    breaks[breakCount] = domain.end;
+    return subArray(breaks, 0, breakCount + 1);
+}
+
+/**
+ * One pass of the certified sampler: `samplesPerSpan` chords inside every span, plus the
+ * held-out mid-parameter evaluation of each chord that measures the bound.
+ */
+function sampleUvCurveUniformly(uvCurve is map, breaks is array, samplesPerSpan is number) returns map
+{
+    const spanCount = size(breaks) - 1;
+    const pointCount = spanCount * samplesPerSpan + 1;
+    var parameters = makeArray(pointCount, breaks[spanCount]);
+    for (var spanIndex = 0; spanIndex < spanCount; spanIndex += 1)
+    {
+        for (var offset = 0; offset < samplesPerSpan; offset += 1)
+        {
+            parameters[spanIndex * samplesPerSpan + offset] = breaks[spanIndex] +
+                (breaks[spanIndex + 1] - breaks[spanIndex]) * offset / samplesPerSpan;
+        }
+    }
+    var points = makeArray(pointCount, vector(0, 0));
+    for (var index = 0; index < pointCount; index += 1)
+    {
+        points[index] = evaluateBSplineCurveDerivatives(uvCurve, parameters[index], 0)[0];
+    }
+    var worstDeviationSquared = 0;
+    for (var index = 0; index < pointCount - 1; index += 1)
+    {
+        const heldOut = evaluateBSplineCurveDerivatives(uvCurve,
+                0.5 * (parameters[index] + parameters[index + 1]), 0)[0];
+        worstDeviationSquared = max(worstDeviationSquared,
+            squaredNorm(heldOut - 0.5 * (points[index] + points[index + 1])));
+    }
+    return {
+            "points" : points,
+            "certifiedBound" : sqrt(worstDeviationSquared),
+            "samplesPerSpan" : samplesPerSpan
+        };
+}
+
+/**
+ * Shift a whole unwrapped loop by an integer number of periods so its first sample lands in
+ * [domainStart, domainStart + period). Shifting the loop as a unit is the point: folding each
+ * sample on its own would undo the unwrapping.
+ */
+function shiftLoopIntoDomain(loopPoints is array, domainStart is number, period is number) returns array
+{
+    const first = loopPoints[0][0];
+    const shift = domainStart + positiveModulo(first - domainStart, period) - first;
+    if (abs(shift) < KNOT_PARAMETER_TOLERANCE)
+    {
+        return loopPoints;
+    }
+    var shifted = makeArray(size(loopPoints), loopPoints[0]);
+    for (var index = 0; index < size(loopPoints); index += 1)
+    {
+        shifted[index] = vector(loopPoints[index][0] + shift, loopPoints[index][1]);
+    }
+    return shifted;
+}
+
+/** The same whole-loop shift in the v direction, for the rare v-periodic face. */
+function shiftLoopIntoDomainV(loopPoints is array, domainStart is number, period is number) returns array
+{
+    const first = loopPoints[0][1];
+    const shift = domainStart + positiveModulo(first - domainStart, period) - first;
+    if (abs(shift) < KNOT_PARAMETER_TOLERANCE)
+    {
+        return loopPoints;
+    }
+    var shifted = makeArray(size(loopPoints), loopPoints[0]);
+    for (var index = 0; index < size(loopPoints); index += 1)
+    {
+        shifted[index] = vector(loopPoints[index][0], loopPoints[index][1] + shift);
+    }
+    return shifted;
+}
+
+/**
+ * Whether a chain has come back to its own head. Three or more points close on proximity alone;
+ * TWO points close only when they sit a whole period apart in u, which is the one legitimate
+ * two-point loop - a trim running straight across the seam, which the kernel can hand over as a
+ * single degree-1 chord. Without that case such a face reports an open loop and its whole mask
+ * is refused.
+ */
+function chainClosesHere(chain is array, chainLength is number, uPeriod is number,
+    joinTolerance is number) returns boolean
+{
+    if (chainLength < 2)
+    {
+        return false;
+    }
+    if (nearestImageSquaredDistance(chain[chainLength - 1], chain[0], uPeriod) > joinTolerance * joinTolerance)
+    {
+        return false;
+    }
+    return chainLength > 2 ||
+        (uPeriod != 0 && nearestImageShift(chain[chainLength - 1], chain[0], uPeriod) != 0);
+}
+
+/** unwrapLoopU applied to every segment, fixing folding INSIDE a segment before any joining. */
+function unwrapSegmentsU(segments is array, uPeriod is number) returns array
+{
+    var unwrapped = makeArray(size(segments));
+    for (var index = 0; index < size(segments); index += 1)
+    {
+        unwrapped[index] = unwrapLoopU(segments[index], uPeriod);
+    }
+    return unwrapped;
+}
+
+/**
+ * How far `candidate` is from `reference` once it is slid to its nearest periodic image in u.
+ * `uPeriod` zero is the ordinary uv distance.
+ */
+function nearestImageSquaredDistance(reference is Vector, candidate is Vector, uPeriod is number) returns number
+{
+    const shift = nearestImageShift(reference, candidate, uPeriod);
+    const deltaU = reference[0] - candidate[0] - shift;
+    const deltaV = reference[1] - candidate[1];
+    return deltaU * deltaU + deltaV * deltaV;
+}
+
+/** The whole number of periods to add to `candidate`'s u to bring it nearest `reference`. */
+function nearestImageShift(reference is Vector, candidate is Vector, uPeriod is number) returns number
+{
+    if (uPeriod == 0)
+    {
+        return 0;
+    }
+    return round((reference[0] - candidate[0]) / uPeriod) * uPeriod;
+}
+
+/** The longest polyline segment, counting the implicit closing segment only when it exists. */
+function longestChord(loopPoints is array, includeClosure is boolean) returns number
+{
+    const pointCount = size(loopPoints);
+    var longestSquared = 0;
+    for (var index = 1; index < pointCount; index += 1)
+    {
+        longestSquared = max(longestSquared, squaredNorm(loopPoints[index] - loopPoints[index - 1]));
+    }
+    if (includeClosure)
+    {
+        longestSquared = max(longestSquared, squaredNorm(loopPoints[0] - loopPoints[pointCount - 1]));
+    }
+    return sqrt(longestSquared);
+}
+
 // ============================= Internal helpers =============================
 
 /** Map an evSurfaceDefinition result onto SweepSurfaceClass. */
@@ -1345,4 +2336,73 @@ function applyTwoDimensionalAffineMap(affineMap is map, sourcePoint is Vector) r
     return vector(
         affineMap.matrix[0][0] * sourcePoint[0] + affineMap.matrix[0][1] * sourcePoint[1] + affineMap.offset[0],
         affineMap.matrix[1][0] * sourcePoint[0] + affineMap.matrix[1][1] * sourcePoint[1] + affineMap.offset[1]);
+}
+
+/** A degree-1 2D trim curve between two uv points. */
+function uvLineCurve(startPoint is Vector, endPoint is Vector) returns map
+{
+    return {
+            "degree" : 1, "dimension" : 2, "isRational" : false, "isPeriodic" : false,
+            "controlPoints" : [startPoint, endPoint], "knots" : [0, 0, 1, 1]
+        };
+}
+
+/**
+ * An exact circle in uv as a rational quadratic in four quarter spans - the standard NURBS
+ * circle, with corner weights of sqrt(1/2).
+ */
+function uvCircleCurve(centre is Vector, radius is number) returns map
+{
+    const cornerWeight = sqrt(0.5);
+    const ring = [vector(1, 0), vector(1, 1), vector(0, 1), vector(-1, 1), vector(-1, 0),
+            vector(-1, -1), vector(0, -1), vector(1, -1), vector(1, 0)];
+    var controlPoints = makeArray(9, centre);
+    for (var index = 0; index < 9; index += 1)
+    {
+        controlPoints[index] = centre + radius * ring[index];
+    }
+    return {
+            "degree" : 2, "dimension" : 2, "isRational" : true, "isPeriodic" : false,
+            "controlPoints" : controlPoints,
+            "weights" : [1, cornerWeight, 1, cornerWeight, 1, cornerWeight, 1, cornerWeight, 1],
+            "knots" : [0, 0, 0, 0.25, 0.25, 0.5, 0.5, 0.75, 0.75, 1, 1, 1]
+        };
+}
+
+/** A bilinear unit patch - just enough surface for a record to carry a uv domain of [0, 1]^2. */
+function flatUnitDomainSurface() returns map
+{
+    return {
+            "uDegree" : 1, "vDegree" : 1,
+            "uKnots" : [0, 0, 1, 1], "vKnots" : [0, 0, 1, 1],
+            "controlPoints" : [[vector(0, 0, 0), vector(0, 1, 0)], [vector(1, 0, 0), vector(1, 1, 0)]],
+            "isRational" : false, "isUPeriodic" : false, "isVPeriodic" : false
+        };
+}
+
+/** A v-constant uv sample run from one u to another - a trim arc on a closed face. */
+function uvArcSamples(v is number, uFrom is number, uTo is number, segmentCount is number) returns array
+{
+    var samples = makeArray(segmentCount + 1, vector(uFrom, v));
+    for (var index = 0; index <= segmentCount; index += 1)
+    {
+        samples[index] = vector(uFrom + (uTo - uFrom) * index / segmentCount, v);
+    }
+    return samples;
+}
+
+/**
+ * Half of a small circular hole centred exactly on the seam, with its u values FOLDED into
+ * [0, 1) the way an inverted pcurve arrives. `side` picks the upper or lower half.
+ */
+function foldedHoleSamples(radius is number, side is number, segmentCount is number) returns array
+{
+    var samples = makeArray(segmentCount + 1, vector(0, 0.5));
+    for (var index = 0; index <= segmentCount; index += 1)
+    {
+        const centred = -radius + 2 * radius * index / segmentCount;
+        const height = sqrt(max(radius * radius - centred * centred, 0));
+        samples[index] = vector(positiveModulo(centred, 1), 0.5 + side * height);
+    }
+    return samples;
 }

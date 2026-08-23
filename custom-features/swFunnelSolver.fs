@@ -9,6 +9,7 @@ import(path : "onshape/std/common.fs", version : "3044.0");
 import(path : "8b495c3bb1037b467ca1d02e", version : "3968d1ef5b507302198a917b"); //bernsteinPolynomialUtils.fs
 import(path : "eede4083ca591e1a7adb8440", version : "3968d1ef5b507302198a917b"); //swEnvelopeMath.fs (owner combined tab; fix version on paste)
 import(path : "eca0e7b6ed29c5239f39f868/c6d53360a1b2036a47b2b076/9a2b77793cdc37bace6d915a", version : "a0777a349ec1b79fe71095ce"); //splineRefinementUtils.fs
+import(path : "8dba215569bb1c9f8f1bf700", version : "0000000000000000000000ff"); //swTestHarness.fs
 
 /**
  * SOLID SWEEP - funnel solver (spec: docs/specs/SOLID_SWEEP_SPEC.md sections 6.3 and 6.4).
@@ -234,12 +235,9 @@ export const sweepFunnelPointwiseSelfTest = defineFeature(function(context is Co
                 ", lift error " ~ firstLiftError ~ ").";
         }
 
-        const verdict = (failures == "") ?
-            "PASS: contact roots, g_t, vertex intervals, strip marching, envelope gradient, and " ~
-                "section march/resample/lift all match their analytic answers." :
-            ("FAIL:" ~ failures);
-        println("[FUNNEL POINTWISE SELF TEST] VERDICT: " ~ verdict);
-        reportFeatureInfo(context, id, verdict);
+        reportTestVerdict(context, id, "FUNNEL POINTWISE SELF TEST", failures,
+            "contact roots, g_t, vertex intervals, strip marching, envelope gradient, and " ~
+            "section march/resample/lift all match their analytic answers.");
     });
 
 annotation { "Feature Type Name" : "Sweep Funnel Factored Self Test" }
@@ -378,12 +376,9 @@ export const sweepFunnelFactoredSelfTest = defineFeature(function(context is Con
                 ", pointwise residual " ~ worstExtremeResidual ~ ").";
         }
 
-        const verdict = (failures == "") ?
-            "PASS: sliding audit, factored cell isolation, native subdivision, and island " ~
-                "t-extremes all match their analytic answers." :
-            ("FAIL:" ~ failures);
-        println("[FUNNEL FACTORED SELF TEST] VERDICT: " ~ verdict);
-        reportFeatureInfo(context, id, verdict);
+        reportTestVerdict(context, id, "FUNNEL FACTORED SELF TEST", failures,
+            "sliding audit, factored cell isolation, native subdivision, and island " ~
+            "t-extremes all match their analytic answers.");
     });
 
 annotation { "Feature Type Name" : "Sweep Funnel Census Self Test" }
@@ -472,12 +467,176 @@ export const sweepFunnelCensusSelfTest = defineFeature(function(context is Conte
             failures = failures ~ " periodic seam census expected 2 open / 1 wrapped seam-crossing component.";
         }
 
-        const verdict = (failures == "") ?
-            "PASS: census components (plain island, trimmed caps, periodic seam wrap) and the " ~
-                "even-odd trim classification all match their analytic answers." :
-            ("FAIL:" ~ failures);
-        println("[FUNNEL CENSUS SELF TEST] VERDICT: " ~ verdict);
-        reportFeatureInfo(context, id, verdict);
+        reportTestVerdict(context, id, "FUNNEL CENSUS SELF TEST", failures,
+            "census components (plain island, trimmed caps, periodic seam wrap) and the " ~
+            "even-odd trim classification all match their analytic answers.");
+    });
+
+annotation { "Feature Type Name" : "Sweep Funnel Mask Self Test" }
+export const sweepFunnelMaskSelfTest = defineFeature(function(context is Context, id is Id, definition is map)
+    precondition
+    {
+    }
+    {
+        // The two census masks: the cyclic trim mask a closed face needs, and the degeneracy
+        // mask that keeps a collapsed net boundary from joining every component through itself.
+        // Selection-free; the fixtures' answers are all closed-form. Split from the census self
+        // test so each feature's step count stays inside one regeneration budget.
+        var failures = "";
+        const singleSpanKnots = [0, 0, 0, 0, 1, 1, 1, 1];
+
+        // Two trim loops that WIND the u seam, bounding the band 0.25 + 0.05 sin(2 pi u) to 0.75.
+        // Both are given as { points, winding } records, which is what buildFaceTrimLoops emits.
+        const lowerTrim = { "points" : sinusoidalSeamLoop(0.25, 0.05, 32), "winding" : 1 };
+        const upperTrim = { "points" : sinusoidalSeamLoop(0.75, 0, 32), "winding" : 1 };
+        const band = [lowerTrim, upperTrim];
+        var bandFailures = 0;
+        for (var u in [0, 0.2, 0.5, 0.95])
+        {
+            if (!uvPointInsideLoopsCyclic(band, u, 0.5, 1))
+            {
+                bandFailures += 1;
+            }
+            if (uvPointInsideLoopsCyclic(band, u, 0.05, 1) || uvPointInsideLoopsCyclic(band, u, 0.95, 1))
+            {
+                bandFailures += 1;
+            }
+        }
+        // At u = 0.25 the wavy trim sits at exactly 0.30, so 0.28 is out and 0.32 is in - the
+        // mask resolves the loop's shape, not just its average height.
+        if (uvPointInsideLoopsCyclic(band, 0.25, 0.28, 1) || !uvPointInsideLoopsCyclic(band, 0.25, 0.32, 1))
+        {
+            bandFailures += 1;
+        }
+        println("[FUNNEL MASK SELF TEST] cyclic band: " ~ bandFailures ~ " misclassification(s) of 13");
+        if (bandFailures != 0)
+        {
+            failures = failures ~ " the cyclic band mask misclassified " ~ bandFailures ~ " point(s).";
+        }
+
+        // A hole centred on the seam, unwrapped to u in [-0.06, 0.06] and handed over as a bare
+        // point array - the census reads that shape as a closed loop of winding zero. It must
+        // mask from BOTH sides of the seam, which is what the periodic images are for.
+        const seamHole = seamStraddlingHole(0.06, 24);
+        const bandWithHole = [lowerTrim, upperTrim, seamHole];
+        var holeFailures = 0;
+        for (var u in [0, 0.03, 0.97, 0.999])
+        {
+            if (uvPointInsideLoopsCyclic(bandWithHole, u, 0.5, 1))
+            {
+                holeFailures += 1;
+            }
+        }
+        for (var u in [0.2, 0.5, 0.8])
+        {
+            if (!uvPointInsideLoopsCyclic(bandWithHole, u, 0.5, 1))
+            {
+                holeFailures += 1;
+            }
+        }
+        println("[FUNNEL MASK SELF TEST] seam-straddling hole: " ~ holeFailures ~
+            " misclassification(s) of 7");
+        if (holeFailures != 0)
+        {
+            failures = failures ~ " the seam-straddling hole was misclassified at " ~ holeFailures ~
+                " point(s).";
+        }
+
+        // The seam fixture again (see the census self test for its algebra), now masked. First a
+        // band that excludes nothing: every node runs through the crossing test and not one
+        // verdict may change.
+        const seamSurface = seamFixtureSurface();
+        const seamFactors = buildEnvelopePatchFactors(seamSurface);
+        const seamSpans = buildMotionSpanPolynomials(translationMotionFromQuadraticVelocity(
+                    [1, 1, 1], [0, 0, 0], [0.02, 0.02, 0.02], singleSpanKnots));
+        var seamOptions = { "uNodesPerPatch" : 9, "vNodesPerPatch" : 9, "tNodesPerSpan" : 5,
+                "valueTolerance" : 0, "trimLoops" : [], "uPeriodic" : true };
+        const unmasked = censusFunnelComponents(seamFactors, seamSpans, seamOptions);
+        var wideOptions = seamOptions;
+        wideOptions.trimLoops = [{ "points" : sinusoidalSeamLoop(-0.1, 0, 32), "winding" : 1 },
+                { "points" : sinusoidalSeamLoop(1.1, 0, 32), "winding" : 1 }];
+        const wideMasked = censusFunnelComponents(seamFactors, seamSpans, wideOptions);
+        println("[FUNNEL MASK SELF TEST] seam fixture unmasked: " ~ size(unmasked.components) ~
+            " component(s), " ~ unmasked.components[0].cellCount ~ " cells; band excluding nothing: " ~
+            size(wideMasked.components) ~ " component(s), " ~
+            (size(wideMasked.components) == 1 ? (wideMasked.components[0].cellCount ~ " cells, trim " ~
+                    wideMasked.components[0].touchesTrimBoundary ~ ", seam " ~
+                    wideMasked.components[0].crossesUSeam) : ""));
+        if (size(unmasked.components) != 1 || unmasked.components[0].cellCount != 80 ||
+            size(wideMasked.components) != 1 || wideMasked.components[0].cellCount != 80 ||
+            wideMasked.components[0].touchesTrimBoundary || !wideMasked.components[0].crossesUSeam)
+        {
+            failures = failures ~ " a trim band that excludes nothing changed the seam census.";
+        }
+
+        // Now a band that cuts: v in [0.3, 0.7] keeps only the two mid-v arcs of the contact
+        // curve, which no longer meet across the seam - one wrapped component becomes two
+        // trim-touching ones.
+        var tightOptions = seamOptions;
+        tightOptions.trimLoops = [{ "points" : sinusoidalSeamLoop(0.3, 0, 32), "winding" : 1 },
+                { "points" : sinusoidalSeamLoop(0.7, 0, 32), "winding" : 1 }];
+        const tightMasked = censusFunnelComponents(seamFactors, seamSpans, tightOptions);
+        var tightTrimTouching = 0;
+        var tightSeamCrossing = 0;
+        var tightCells = 0;
+        for (var component in tightMasked.components)
+        {
+            tightTrimTouching += component.touchesTrimBoundary ? 1 : 0;
+            tightSeamCrossing += component.crossesUSeam ? 1 : 0;
+            tightCells += component.cellCount;
+        }
+        println("[FUNNEL MASK SELF TEST] band [0.3, 0.7]: " ~ size(tightMasked.components) ~
+            " component(s), " ~ tightCells ~ " cells total, " ~ tightTrimTouching ~
+            " trim-touching, " ~ tightSeamCrossing ~ " seam-crossing");
+        if (size(tightMasked.components) != 2 || tightCells != 16 || tightTrimTouching != 2 ||
+            tightSeamCrossing != 0)
+        {
+            failures = failures ~ " the cutting trim band did not split the seam component in two.";
+        }
+
+        // The degeneracy mask. On the pole fixture f = v (1 - a(t) c'(u)) with c' = 0.6 u (1 - u)
+        // and a(t) = 8 + 12 t, so the contact set is two sheets at u = 0.5 +/- sqrt(0.25 - 1 /
+        // (0.6 a)) - well inside the domain and separate everywhere except v = 0, where the
+        // collapsed control row makes f vanish identically. Unmasked, that zero slab joins them.
+        const poleSurface = poleFixtureSurface();
+        const poleFactors = buildEnvelopePatchFactors(poleSurface);
+        const poleSpans = buildMotionSpanPolynomials(translationMotionFromQuadraticVelocity(
+                    [8, 14, 20], [0, 0, 0], [1, 1, 1], singleSpanKnots));
+        var poleOptions = { "uNodesPerPatch" : 9, "vNodesPerPatch" : 9, "tNodesPerSpan" : 9,
+                "valueTolerance" : 0, "trimLoops" : [], "uPeriodic" : false };
+        const poleUnmasked = censusFunnelComponents(poleFactors, poleSpans, poleOptions);
+        var poleMaskedOptions = poleOptions;
+        poleMaskedOptions.degenerate = { "uStart" : false, "uEnd" : false, "vStart" : true, "vEnd" : false };
+        const poleMasked = censusFunnelComponents(poleFactors, poleSpans, poleMaskedOptions);
+        var poleCells = "";
+        var poleReported = 0;
+        var poleIslands = 0;
+        for (var component in poleMasked.components)
+        {
+            poleCells = poleCells ~ " " ~ component.cellCount;
+            poleReported += component.touchesDegenerateBoundary ? 1 : 0;
+            poleIslands += component.isIsland ? 1 : 0;
+        }
+        println("[FUNNEL MASK SELF TEST] pole fixture unmasked: " ~ size(poleUnmasked.components) ~
+            " component(s), " ~ poleUnmasked.components[0].cellCount ~ " cells; masked: " ~
+            size(poleMasked.components) ~ " component(s), cells" ~ poleCells ~ ", " ~ poleReported ~
+            " reporting the pole, " ~ poleIslands ~ " island(s)");
+        if (size(poleUnmasked.components) != 1 || poleUnmasked.components[0].cellCount != 204)
+        {
+            failures = failures ~ " the unmasked pole fixture was expected to flood into one " ~
+                "204-cell component.";
+        }
+        if (size(poleMasked.components) != 2 || poleReported != 2 || poleIslands != 0 ||
+            poleMasked.components[0].cellCount != 70 || poleMasked.components[1].cellCount != 70)
+        {
+            failures = failures ~ " the degeneracy mask did not split the pole fixture into two " ~
+                "70-cell sheets.";
+        }
+
+        reportTestVerdict(context, id, "FUNNEL MASK SELF TEST", failures,
+            "the cyclic trim mask (band, wave, seam-straddling hole), a trim band that " ~
+            "excludes nothing, a band that cuts, and the degeneracy mask all match their " ~
+            "closed-form answers.");
     });
 
 // ============================= Sliding audit (spec 6.4) =============================
@@ -772,10 +931,24 @@ function splitCellSpan(cellSpan is map) returns map
  *     uNodesPerPatch, vNodesPerPatch, tNodesPerSpan {number} : grid nodes per patch/span
  *         (>= 3 recommended),
  *     valueTolerance {number} : |value| below this counts as a zero sign,
- *     trimLoops {array} : uv polyline loops ([ [u, v], ... ], implicitly closed) in the
- *         face's knot domain; empty means the whole rectangle is valid; a node is valid when
- *         an even-odd crossing count over all loops is odd,
- *     uPeriodic {boolean} : link the first and last u cell columns during flood fill
+ *     trimLoops {array} : uv trim loops in the face's knot domain; empty means the whole
+ *         rectangle is valid; a node is valid when an even-odd crossing count over all loops
+ *         is odd. Each entry is either a bare point array ([ [u, v], ... ], implicitly closed)
+ *         or the { points, winding } record swSweepEmit's buildFaceTrimLoops produces - the
+ *         winding is what tells a loop that WRAPS a periodic seam (stored open, its ends one
+ *         period apart) from one that closes on itself,
+ *     uPeriodic {boolean} : link the first and last u cell columns during flood fill, and mask
+ *         with the cyclic +v ray instead of the +u one,
+ *     trimBoundaryTolerance {number} : a node within this distance of a trim loop counts as
+ *         VALID whatever the crossing test says. The trim boundary belongs to the face, and a
+ *         face that fills its whole surface has a trim loop lying exactly ON the domain
+ *         rectangle - where an even-odd ray cast is a coin flip that would silently delete the
+ *         boundary cell rows, which is precisely where co-edge components live. Defaults to
+ *         1e-6 of the smaller domain span,
+ *     degenerate {map} : { uStart, uEnd, vStart, vEnd } booleans, straight from the face
+ *         record's `degenerate` - the collapsed control-net boundaries where the surface normal
+ *         vanishes. f is identically zero along such a boundary, so without masking it every
+ *         real component that reaches the pole floods through it into every other one
  * }
  *
  * Returns { components {array}, uNodes, vNodes, tNodes {arrays of global parameters} }.
@@ -784,14 +957,16 @@ function splitCellSpan(cellSpan is map) returns map
  *     parameterBounds {map} : uMin..tMax over member cell corners (seam-crossing components
  *         smear across the seam - read crossesUSeam first),
  *     touchesTStart, touchesTEnd, touchesDomainBoundaryUv, touchesTrimBoundary,
- *     crossesUSeam, isIsland {booleans},
+ *     touchesDegenerateBoundary, crossesUSeam, isIsland {booleans},
  *     minTCellCenter, maxTCellCenter {maps} : { u, v, t } cell centers at the component's
  *         t-extremes - Newton seeds for island refinement
  * }
  */
 export function censusFunnelComponents(patchFactors is map, spans is array, censusOptions is map) returns map
 {
-    const options = mergeMaps({ "valueTolerance" : 0, "trimLoops" : [], "uPeriodic" : false }, censusOptions);
+    const options = mergeMaps({ "valueTolerance" : 0, "trimLoops" : [], "uPeriodic" : false,
+                "degenerate" : { "uStart" : false, "uEnd" : false, "vStart" : false, "vEnd" : false } },
+            censusOptions);
     const uNodesPerPatch = options.uNodesPerPatch;
     const vNodesPerPatch = options.vNodesPerPatch;
     const tNodesPerSpan = options.tNodesPerSpan;
@@ -885,25 +1060,58 @@ export function censusFunnelComponents(patchFactors is map, spans is array, cens
         }
     }
 
-    // Trim mask per uv node (even-odd; empty loop set means everything is valid).
+    // Two uv node masks, both independent of t. The trim mask is even-odd against the loops -
+    // cast in +v when u is cyclic, since a ray along a cyclic direction has no outside to start
+    // from. The degeneracy mask is the collapsed control-net boundaries: f vanishes identically
+    // there, so the pole line reads as one connected zero set joining everything that reaches
+    // it.
+    const uPeriodForMask = uNodes[uNodeCount - 1] - uNodes[0];
+    const resolvedBoundaryTolerance = options.trimBoundaryTolerance != undefined ?
+        options.trimBoundaryTolerance :
+        1e-6 * min(uNodes[uNodeCount - 1] - uNodes[0], vNodes[vNodeCount - 1] - vNodes[0]);
+    const degenerate = options.degenerate;
+    const hasTrimLoops = size(options.trimLoops) > 0;
+    const hasDegenerateBoundary = degenerate.uStart == true || degenerate.uEnd == true ||
+        degenerate.vStart == true || degenerate.vEnd == true;
     var nodeValid = makeArray(uNodeCount);
+    var nodeDegenerate = makeArray(uNodeCount);
     for (var uIndex = 0; uIndex < uNodeCount; uIndex += 1)
     {
         var validRow = makeArray(vNodeCount, true);
-        if (size(options.trimLoops) > 0)
+        var degenerateRow = makeArray(vNodeCount, false);
+        if (hasTrimLoops || hasDegenerateBoundary)
         {
+            const uOnDegenerateBoundary = (degenerate.uStart == true && uIndex == 0) ||
+                (degenerate.uEnd == true && uIndex == uNodeCount - 1);
             for (var vIndex = 0; vIndex < vNodeCount; vIndex += 1)
             {
-                validRow[vIndex] = uvPointInsideLoops(options.trimLoops, uNodes[uIndex], vNodes[vIndex]);
+                if (hasTrimLoops)
+                {
+                    validRow[vIndex] = options.uPeriodic ?
+                        uvPointInsideLoopsCyclic(options.trimLoops, uNodes[uIndex], vNodes[vIndex], uPeriodForMask) :
+                        uvPointInsideLoops(options.trimLoops, uNodes[uIndex], vNodes[vIndex]);
+                    if (!validRow[vIndex])
+                    {
+                        // Only a rejected node can be rescued by the boundary tolerance, so the
+                        // distance sweep runs on the minority of nodes rather than all of them.
+                        validRow[vIndex] = uvPointOnLoops(options.trimLoops, uNodes[uIndex], vNodes[vIndex],
+                            resolvedBoundaryTolerance, options.uPeriodic ? uPeriodForMask : 0);
+                    }
+                }
+                degenerateRow[vIndex] = uOnDegenerateBoundary ||
+                    (degenerate.vStart == true && vIndex == 0) ||
+                    (degenerate.vEnd == true && vIndex == vNodeCount - 1);
             }
         }
         nodeValid[uIndex] = validRow;
+        nodeDegenerate[uIndex] = degenerateRow;
     }
 
-    // Cell classification: 0 invalid (a trim-masked corner), 1 uniform sign, 2 mixed.
+    // Cell classification: 0 invalid (a trim-masked or pole corner), 1 uniform sign, 2 mixed.
     const cellCountU = uNodeCount - 1;
     const cellCountV = vNodeCount - 1;
     const cellCountT = tNodeCount - 1;
+    var mixedCellCount = 0;
     var cellClass = makeArray(cellCountU);
     for (var i = 0; i < cellCountU; i += 1)
     {
@@ -911,7 +1119,7 @@ export function censusFunnelComponents(patchFactors is map, spans is array, cens
         for (var j = 0; j < cellCountV; j += 1)
         {
             var classColumn = makeArray(cellCountT, 1);
-            if (!nodeValid[i][j] || !nodeValid[i + 1][j] || !nodeValid[i][j + 1] || !nodeValid[i + 1][j + 1])
+            if (cellHasMaskedCorner(nodeValid, i, j) || cellHasDegenerateCorner(nodeDegenerate, i, j))
             {
                 for (var k = 0; k < cellCountT; k += 1)
                 {
@@ -933,6 +1141,10 @@ export function censusFunnelComponents(patchFactors is map, spans is array, cens
                         maximumSign = max(maximumSign, cornerSign);
                     }
                     classColumn[k] = (minimumSign < 1 && maximumSign > -1) ? 2 : 1;
+                    if (classColumn[k] == 2)
+                    {
+                        mixedCellCount += 1;
+                    }
                 }
             }
             classPlane[j] = classColumn;
@@ -951,6 +1163,10 @@ export function censusFunnelComponents(patchFactors is map, spans is array, cens
         }
         visited[i] = visitedPlane;
     }
+    // One queue for every component: append() copies, so growing one per component makes the
+    // flood fill quadratic in the component size. Every mixed cell is visited exactly once
+    // across all components, so a single buffer of that length is enough for all of them.
+    var queue = makeArray(max(mixedCellCount, 1), [0, 0, 0]);
     var components = [];
     for (var i = 0; i < cellCountU; i += 1)
     {
@@ -968,6 +1184,7 @@ export function censusFunnelComponents(patchFactors is map, spans is array, cens
                 var touchesTEnd = false;
                 var touchesDomainBoundaryUv = false;
                 var touchesTrimBoundary = false;
+                var touchesDegenerateBoundary = false;
                 var uMin = uNodes[uNodeCount - 1];
                 var uMax = uNodes[0];
                 var vMin = vNodes[vNodeCount - 1];
@@ -976,10 +1193,11 @@ export function censusFunnelComponents(patchFactors is map, spans is array, cens
                 var tMax = tNodes[0];
                 var minTCell = undefined;
                 var maxTCell = undefined;
-                var queue = [[i, j, k]];
+                queue[0] = [i, j, k];
+                var queueLength = 1;
                 var queueCursor = 0;
                 visited[i][j][k] = true;
-                while (queueCursor < size(queue))
+                while (queueCursor < queueLength)
                 {
                     const currentCell = queue[queueCursor];
                     queueCursor += 1;
@@ -1035,7 +1253,16 @@ export function censusFunnelComponents(patchFactors is map, spans is array, cens
                         }
                         if (cellClass[ni][nj][nk] == 0)
                         {
-                            touchesTrimBoundary = true;
+                            // Which mask blocked it is a uv question, so the node masks answer
+                            // it directly - a cell can be blocked by both.
+                            if (cellHasMaskedCorner(nodeValid, ni, nj))
+                            {
+                                touchesTrimBoundary = true;
+                            }
+                            if (cellHasDegenerateCorner(nodeDegenerate, ni, nj))
+                            {
+                                touchesDegenerateBoundary = true;
+                            }
                             continue;
                         }
                         if (cellClass[ni][nj][nk] != 2 || visited[ni][nj][nk])
@@ -1047,7 +1274,8 @@ export function censusFunnelComponents(patchFactors is map, spans is array, cens
                             crossesUSeam = true;
                         }
                         visited[ni][nj][nk] = true;
-                        queue = append(queue, [ni, nj, nk]);
+                        queue[queueLength] = [ni, nj, nk];
+                        queueLength += 1;
                     }
                 }
                 components = append(components, {
@@ -1058,8 +1286,10 @@ export function censusFunnelComponents(patchFactors is map, spans is array, cens
                             "touchesTEnd" : touchesTEnd,
                             "touchesDomainBoundaryUv" : touchesDomainBoundaryUv,
                             "touchesTrimBoundary" : touchesTrimBoundary,
+                            "touchesDegenerateBoundary" : touchesDegenerateBoundary,
                             "crossesUSeam" : crossesUSeam,
-                            "isIsland" : !touchesDomainBoundaryUv && !touchesTrimBoundary && !touchesTStart && !touchesTEnd,
+                            "isIsland" : !touchesDomainBoundaryUv && !touchesTrimBoundary &&
+                                !touchesDegenerateBoundary && !touchesTStart && !touchesTEnd,
                             "minTCellCenter" : cellCenter(uNodes, vNodes, tNodes, minTCell),
                             "maxTCellCenter" : cellCenter(uNodes, vNodes, tNodes, maxTCell)
                         });
@@ -1070,15 +1300,20 @@ export function censusFunnelComponents(patchFactors is map, spans is array, cens
 }
 
 /**
- * Even-odd point-in-loops classification: casts a ray in +u and counts crossings over every
- * loop (each an array of [u, v] points, implicitly closed). Odd count = inside. Orientation
+ * Even-odd point-in-loops classification for a face that is not cyclic in u: casts a ray in +u
+ * and counts crossings over every loop, each implicitly closed. Odd count = inside. Orientation
  * of the loops does not matter, so boundary-plus-holes trim sets work unmodified.
+ *
+ * Loop entries take either shape the census accepts: a bare point array or a { points, winding }
+ * record. Winding is meaningless here - a face with a winding trim loop is cyclic in u by
+ * construction, and that is uvPointInsideLoopsCyclic's job.
  */
 export function uvPointInsideLoops(trimLoops is array, u is number, v is number) returns boolean
 {
     var crossings = 0;
-    for (var trimLoop in trimLoops)
+    for (var trimLoopEntry in trimLoops)
     {
+        const trimLoop = trimLoopPoints(trimLoopEntry);
         const pointCount = size(trimLoop);
         for (var index = 0; index < pointCount; index += 1)
         {
@@ -1095,6 +1330,130 @@ export function uvPointInsideLoops(trimLoops is array, u is number, v is number)
         }
     }
     return crossings % 2 == 1;
+}
+
+/**
+ * Even-odd point-in-loops classification for a face that is CYCLIC in u: casts the ray in +v
+ * and counts crossings against every periodic image of the test point.
+ *
+ * The +u ray of uvPointInsideLoops has no outside to start from on a closed face, because a ray
+ * along a cyclic direction never leaves the domain. The v direction always does, and casting it
+ * handles both kinds of loop a closed face produces with one test:
+ *   - a loop that WINDS the seam is stored as an open chain whose two ends are the same point
+ *     one period apart, so its segments are walked with no implicit closing segment. The ray
+ *     crosses such a loop once from below, which is what makes the band between two winding
+ *     trims come out odd and everything outside it even.
+ *   - a loop that does not wind closes on itself, and if it straddles the seam its u values run
+ *     a little past the domain edge. Testing every periodic image of the point is what finds it
+ *     from both sides of the seam.
+ *
+ * Loop entries take either shape the census accepts: a bare point array (winding 0) or a
+ * { points, winding } record.
+ */
+export function uvPointInsideLoopsCyclic(trimLoops is array, u is number, v is number, uPeriod is number) returns boolean
+{
+    var crossings = 0;
+    for (var trimLoop in trimLoops)
+    {
+        const loopPoints = trimLoopPoints(trimLoop);
+        const pointCount = size(loopPoints);
+        const segmentCount = trimLoopWinding(trimLoop) != 0 ? pointCount - 1 : pointCount;
+        var uMin = loopPoints[0][0];
+        var uMax = loopPoints[0][0];
+        for (var loopPoint in loopPoints)
+        {
+            uMin = min(uMin, loopPoint[0]);
+            uMax = max(uMax, loopPoint[0]);
+        }
+        const firstImage = floor((uMin - u) / uPeriod);
+        const lastImage = ceil((uMax - u) / uPeriod);
+        for (var index = 0; index < segmentCount; index += 1)
+        {
+            const start = loopPoints[index];
+            const end = loopPoints[(index + 1) % pointCount];
+            for (var image = firstImage; image <= lastImage; image += 1)
+            {
+                const imageU = u + image * uPeriod;
+                if ((start[0] > imageU) != (end[0] > imageU))
+                {
+                    const crossingV = start[1] + (imageU - start[0]) / (end[0] - start[0]) * (end[1] - start[1]);
+                    if (crossingV > v)
+                    {
+                        crossings += 1;
+                    }
+                }
+            }
+        }
+    }
+    return crossings % 2 == 1;
+}
+
+/**
+ * Whether (u, v) lies within `tolerance` of any trim loop segment - the on-the-boundary case
+ * that no even-odd ray cast can decide. `uPeriod` nonzero also tests the point's periodic
+ * images, matching the cyclic mask; a winding loop is walked without its implicit closure, the
+ * same way.
+ */
+export function uvPointOnLoops(trimLoops is array, u is number, v is number, tolerance is number,
+    uPeriod is number) returns boolean
+{
+    const toleranceSquared = tolerance * tolerance;
+    for (var trimLoop in trimLoops)
+    {
+        const loopPoints = trimLoopPoints(trimLoop);
+        const pointCount = size(loopPoints);
+        const segmentCount = trimLoopWinding(trimLoop) != 0 ? pointCount - 1 : pointCount;
+        for (var index = 0; index < segmentCount; index += 1)
+        {
+            const start = loopPoints[index];
+            const end = loopPoints[(index + 1) % pointCount];
+            const imageU = uPeriod == 0 ? u : u + round((0.5 * (start[0] + end[0]) - u) / uPeriod) * uPeriod;
+            if (pointToSegmentSquaredDistance(vector(imageU, v), start, end) <= toleranceSquared)
+            {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+/** Squared distance from a uv point to a segment, clamped to the segment's ends. */
+function pointToSegmentSquaredDistance(point is Vector, start is Vector, end is Vector) returns number
+{
+    const along = end - start;
+    const alongLengthSquared = squaredNorm(along);
+    if (alongLengthSquared == 0)
+    {
+        return squaredNorm(point - start);
+    }
+    const projection = dot(point - start, along) / alongLengthSquared;
+    const clamped = max(0, min(1, projection));
+    return squaredNorm(point - (start + clamped * along));
+}
+
+/** The points of a trim loop given in either accepted shape. */
+function trimLoopPoints(trimLoop) returns array
+{
+    return trimLoop is array ? trimLoop : trimLoop.points;
+}
+
+/** The u winding of a trim loop; a bare point array is a closed polygon, so zero. */
+function trimLoopWinding(trimLoop) returns number
+{
+    return trimLoop is array ? 0 : trimLoop.winding;
+}
+
+/** Whether any of the four uv corners of cell (i, j) is trimmed away. */
+function cellHasMaskedCorner(nodeValid is array, i is number, j is number) returns boolean
+{
+    return !nodeValid[i][j] || !nodeValid[i + 1][j] || !nodeValid[i][j + 1] || !nodeValid[i + 1][j + 1];
+}
+
+/** Whether any of the four uv corners of cell (i, j) sits on a collapsed net boundary. */
+function cellHasDegenerateCorner(nodeDegenerate is array, i is number, j is number) returns boolean
+{
+    return nodeDegenerate[i][j] || nodeDegenerate[i + 1][j] || nodeDegenerate[i][j + 1] ||
+        nodeDegenerate[i + 1][j + 1];
 }
 
 /** The center of one census cell in global parameters. */
@@ -1644,7 +2003,7 @@ function knotDomainOfStrippedSurface(strippedSurface is map) returns map
 }
 
 /** Clamp a value to [low, high]. */
-function clampToRange(value is number, low is number, high is number) returns number
+export function clampToRange(value is number, low is number, high is number) returns number
 {
     return value < low ? low : (value > high ? high : value);
 }
@@ -1695,64 +2054,6 @@ function clampMagnitude(value is number, limit is number) returns number
 }
 
 // ============================= Self-test fixtures =============================
-
-/**
- * A single-span cubic translation motion with identity rotation whose VELOCITY is the given
- * degree-2 Bernstein polynomial per component ([x0,x1,x2], [y...], [z...]): control points
- * integrate as P_{k+1} = P_k + q_k / 3 from the origin.
- */
-function translationMotionFromQuadraticVelocity(velocityX is array, velocityY is array, velocityZ is array,
-    knots is array) returns map
-{
-    var controlPoints = makeArray(4);
-    controlPoints[0] = vector(0, 0, 0);
-    for (var k = 0; k < 3; k += 1)
-    {
-        controlPoints[k + 1] = controlPoints[k] + vector(velocityX[k], velocityY[k], velocityZ[k]) / 3;
-    }
-    var columns = makeArray(3);
-    for (var columnIndex = 0; columnIndex < 3; columnIndex += 1)
-    {
-        var axis = vector(columnIndex == 0 ? 1 : 0, columnIndex == 1 ? 1 : 0, columnIndex == 2 ? 1 : 0);
-        columns[columnIndex] = {
-                "degree" : 3, "knots" : knots, "isRational" : false,
-                "controlPoints" : [axis, axis, axis, axis]
-            };
-    }
-    return {
-            "columnX" : columns[0], "columnY" : columns[1], "columnZ" : columns[2],
-            "translation" : { "degree" : 3, "knots" : knots, "isRational" : false, "controlPoints" : controlPoints }
-        };
-}
-
-/**
- * The island fixture: S = (u, v, z) with z = 0.8 (u^2/2 - u^3/3) v(1 - v), so that
- * z_u = 0.8 u(1-u) v(1-v) peaks at exactly 0.05 at the patch center. Degrees (3, 2),
- * single Bezier patch, non-rational.
- */
-function islandFixtureSurface() returns map
-{
-    const uCoefficients = [0, 0, 1 / 6, 1 / 6];
-    const vCoefficients = [0, 0.5, 0];
-    const greville3 = [0, 1 / 3, 2 / 3, 1];
-    const greville2 = [0, 0.5, 1];
-    var net = makeArray(4);
-    for (var i = 0; i < 4; i += 1)
-    {
-        var row = makeArray(3);
-        for (var j = 0; j < 3; j += 1)
-        {
-            row[j] = vector(greville3[i], greville2[j], 0.8 * uCoefficients[i] * vCoefficients[j]);
-        }
-        net[i] = row;
-    }
-    return {
-            "uDegree" : 3, "vDegree" : 2,
-            "uKnots" : [0, 0, 0, 0, 1, 1, 1, 1], "vKnots" : [0, 0, 0, 1, 1, 1],
-            "controlPoints" : net, "isRational" : false,
-            "isUPeriodic" : false, "isVPeriodic" : false
-        };
-}
 
 /**
  * The seam fixture: z = 0.8 ((u - 0.5)^3/3 + 1/24) v(1 - v), so that
@@ -1807,26 +2108,59 @@ function planeFixtureSurface() returns map
 }
 
 /**
- * The section fixture: S = (u, v, 0.15 u^2 - 0.18 u + 0.05 u v), degrees (2, 1). Under
- * velocity (1, 0, 0.06) the envelope function is exactly f = 0.24 - 0.3 u - 0.05 v.
+ * A trim loop that WINDS the u seam: v = base + amplitude sin(2 pi u), sampled over one full
+ * period with both ends included. Its first and last samples are the same point one period
+ * apart, which is the stored form the cyclic mask expects of a winding loop.
  */
-function slantFixtureSurface() returns map
+function sinusoidalSeamLoop(base is number, amplitude is number, segmentCount is number) returns array
 {
-    const zGrid = [[0, 0], [-0.09, -0.065], [-0.03, 0.02]];
-    const greville2 = [0, 0.5, 1];
-    var net = makeArray(3);
-    for (var i = 0; i < 3; i += 1)
+    var samples = makeArray(segmentCount + 1, vector(0, base));
+    for (var index = 0; index <= segmentCount; index += 1)
     {
-        var row = makeArray(2);
-        for (var j = 0; j < 2; j += 1)
-        {
-            row[j] = vector(greville2[i], j, zGrid[i][j]);
-        }
-        net[i] = row;
+        const u = index / segmentCount;
+        samples[index] = vector(u, base + amplitude * sin(2 * PI * u * radian));
+    }
+    return samples;
+}
+
+/**
+ * A small circular hole centred on the seam, UNWRAPPED so its u runs from minus to plus the
+ * radius. Returned as a bare point array - the shape the census reads as a closed loop of
+ * winding zero.
+ */
+function seamStraddlingHole(radius is number, sampleCount is number) returns array
+{
+    var samples = makeArray(sampleCount, vector(0, 0.5));
+    for (var index = 0; index < sampleCount; index += 1)
+    {
+        const angle = 2 * PI * index / sampleCount * radian;
+        samples[index] = vector(radius * cos(angle), 0.5 + radius * sin(angle));
+    }
+    return samples;
+}
+
+/**
+ * The pole fixture: S(u, v) = v (u, 1, c(u)) with c = 0.3 u^2 - 0.2 u^3, degrees (3, 1). The
+ * v = 0 control row is collapsed onto the origin, so S_u vanishes along it and the normal with
+ * it - f is identically zero on that whole boundary, byte-exactly, because the control-row
+ * differences the coefficient nets are built from are exactly zero.
+ *
+ * Under velocity (a(t), 0, 1) the envelope function is exactly f = v (1 - a(t) c'(u)) with
+ * c' = 0.6 u (1 - u), so the contact set is two sheets at u = 0.5 +/- sqrt(0.25 - 1 / (0.6 a)) -
+ * separate everywhere except along v = 0.
+ */
+function poleFixtureSurface() returns map
+{
+    const greville3 = [0, 1 / 3, 2 / 3, 1];
+    const heightCoefficients = [0, 0, 0.1, 0.1];
+    var net = makeArray(4);
+    for (var i = 0; i < 4; i += 1)
+    {
+        net[i] = [vector(0, 0, 0), vector(greville3[i], 1, heightCoefficients[i])];
     }
     return {
-            "uDegree" : 2, "vDegree" : 1,
-            "uKnots" : [0, 0, 0, 1, 1, 1], "vKnots" : [0, 0, 1, 1],
+            "uDegree" : 3, "vDegree" : 1,
+            "uKnots" : [0, 0, 0, 0, 1, 1, 1, 1], "vKnots" : [0, 0, 1, 1],
             "controlPoints" : net, "isRational" : false,
             "isUPeriodic" : false, "isVPeriodic" : false
         };
