@@ -85,6 +85,21 @@ const cutFaces = qFacesParallelToDirection(flatFaces, zDirection);
 
 **Manual vector math is almost always a sign you have not tried hard enough to use the appropriate functions and must only be used after confirming that an appropriate query, ev, or coordinate transformation function does not exist, when it is relied on explain what the intention of the function was and why it was not found in the standard library**
 
+## Onshape MCP — Metered, Use Sparingly
+
+This repo is connected to Onshape's FeatureScript MCP server (`onshape-featurescript`,
+configured in `.mcp.json`). **Every MCP tool call spends real API calls from a metered
+Onshape account** — currently the API developer account, temporarily. The full rules are in
+`docs/featurescript-guides/ONSHAPE_MCP_USAGE.md`; the short version:
+
+- Work from the mirrored standard library and FsDoc by default. A session that never touches
+  the MCP is the normal outcome — everything in this repo so far was built that way.
+- The MCP is only for targeted live tests of work that is already finished and validated
+  locally, or for reading real document state that cannot be inferred from the mirror.
+- Never use it for reference lookups, syntax iteration, trial-and-error fixes, or polling.
+  If a live test fails, fix locally, then make one targeted re-test.
+- On rate or quota errors, stop and report — do not retry-loop.
+
 ## Testing Instructions
 - Since there is no way to run Onshape in a localized environment here we will rely mostly on comparing code samples with existing functions in the standard library and against the reference docs to ensure consistency with the code base
 - Debugging will be done largely via reports delivered via console log

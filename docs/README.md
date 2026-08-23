@@ -30,6 +30,7 @@ Cross-cutting FeatureScript knowledge that applies to more than one feature. Rea
 before writing new code in the same area.
 
 - [FEATURESCRIPT_ID_CONCATENATION.md](featurescript-guides/FEATURESCRIPT_ID_CONCATENATION.md) — how `Id` and string concatenation operators (`~`, `+`) actually behave, and the rules for building ids safely.
+- [ONSHAPE_MCP_USAGE.md](featurescript-guides/ONSHAPE_MCP_USAGE.md) — the Onshape FeatureScript MCP connection and the rules for using it: mirror-first, MCP only for targeted live tests, never for reference lookups.
 - [TRACKING_QUERIES.md](featurescript-guides/TRACKING_QUERIES.md) — when `qCreatedBy` is not enough and how to carry references through operations that split, replace, or transform geometry.
 - [SHEET_METAL_GOTCHAS.md](featurescript-guides/SHEET_METAL_GOTCHAS.md) — non-obvious requirements when building sheet metal features, including the `sheetMetalStart` naming requirement.
 - [SHEET_METAL_QUERY_LESSONS.md](featurescript-guides/SHEET_METAL_QUERY_LESSONS.md) — sheet metal architecture, association attributes, query function selection, and mapping between flat and folded representations.
@@ -42,6 +43,7 @@ derivation; the code may not match them yet.
 
 - [DISPLACEMENT_MAP_TILING_SPEC.md](specs/DISPLACEMENT_MAP_TILING_SPEC.md) — tiling one image as a memoized unit cell via per-tile Boehm knot refinement, for `custom-features/displacementMap.fs`.
 - [FREE_FORM_DEFORMATION_SPEC.md](specs/FREE_FORM_DEFORMATION_SPEC.md) — consolidating the point-lattice and plane-manipulation FFD features into one `custom-features/freeFormDeformation.fs`: UVN naming, multi-select selection scopes, and the refinement-before-deformation pipeline that removes the classic FFD detail ceiling.
+- [SOLID_SWEEP_SPEC.md](specs/SOLID_SWEEP_SPEC.md) — generalized solid sweep: sweep a solid tool body along a path and emit the swept volume's true envelope boundary (Adsul–Machchhar–Sohoni framework adapted to FeatureScript: B-spline motion, kernel isocline oracle, funnel Newton solver, certified B-spline fits). Design stage; probes in `custom-features/swSweepProbes.fs`.
 - [SPLINE_REFINEMENT_UTILITY_SPEC.md](specs/SPLINE_REFINEMENT_UTILITY_SPEC.md) — a shared `splineRefinementUtils.fs` module for exact B-spline refinement (knot insertion, Bezier decomposition, degree elevation), replacing duplicated and broken copies in `displacementMap.fs`, `tweenSurfaces.fs`, and `tweenCurves.fs`, and underpinning an exact flex/deform feature.
 - [T_SPLINE_SUPPORT_SPEC.md](specs/T_SPLINE_SUPPORT_SPEC.md) — companion to the spline refinement spec: T-spline surfaces via exact NURBS extraction and knit, including full arbitrary topology — star points handled by exact subdivision rings plus Karčiauskas–Peters G² caps. Design stage; nothing built.
 - [TIPPY_BUCKET_PIVOT_SPEC.md](specs/TIPPY_BUCKET_PIVOT_SPEC.md) — material-aware pivot placement from empty and filled centers of mass, for `custom-features/tippyBucketPivot.fs`.
