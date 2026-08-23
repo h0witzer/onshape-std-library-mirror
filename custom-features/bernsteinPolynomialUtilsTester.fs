@@ -19,6 +19,12 @@ export const bernsteinPolynomialUtilsTester = defineFeature(function(context is 
     {
         annotation { "Name" : "Print passing checks too" }
         definition.printPassingChecks is boolean;
+        // OFF by default: the caught throw this check provokes surfaces as an INFO evaluation
+        // notice, and ANY notice makes the MCP harness return notices INSTEAD of the console
+        // (measured 2026-08-22). Enable interactively in a real document; harness payloads
+        // must stay notice-clean.
+        annotation { "Name" : "Provoke the identically-zero throw guard", "Default" : false }
+        definition.provokeZeroPolynomialThrow is boolean;
     }
     {
         var failures = [];
@@ -155,19 +161,22 @@ export const bernsteinPolynomialUtilsTester = defineFeature(function(context is 
         {
             failures = append(failures, "ROOTS: positive polynomial should isolate no roots");
         }
-        // The identically-zero polynomial must throw (the sliding case). The console prints
-        // swallowed throws, so announce it first - the stack trace below is the test PASSING.
-        println("[BERNSTEIN TESTER] the throw printed next is EXPECTED (provoking the identically-zero guard):");
-        checkCount += 1;
-        var sawZeroPolynomialThrow = true;
-        try
+        // The identically-zero polynomial must throw (the sliding case). Gated: see the
+        // precondition note - the caught throw's INFO notice hides the harness console.
+        if (definition.provokeZeroPolynomialThrow)
         {
-            isolateBernsteinRoots([0, 0, 0], 1e-12, rootTolerance);
-            sawZeroPolynomialThrow = false;
-        }
-        if (!sawZeroPolynomialThrow)
-        {
-            failures = append(failures, "ROOTS: identically-zero polynomial must throw, did not");
+            println("[BERNSTEIN TESTER] the throw printed next is EXPECTED (provoking the identically-zero guard):");
+            checkCount += 1;
+            var sawZeroPolynomialThrow = true;
+            try
+            {
+                isolateBernsteinRoots([0, 0, 0], 1e-12, rootTolerance);
+                sawZeroPolynomialThrow = false;
+            }
+            if (!sawZeroPolynomialThrow)
+            {
+                failures = append(failures, "ROOTS: identically-zero polynomial must throw, did not");
+            }
         }
 
         // ---------- VECTOR (univariate) ----------
@@ -243,6 +252,24 @@ export const bernsteinPolynomialUtilsTester = defineFeature(function(context is 
                 failures = append(failures, "GRID subdivide high parity at (" ~ pair[0] ~ ", " ~ pair[1] ~ ")");
             }
         }
+        // v-direction subdivision parity at 0.35 (the native right-multiplication path).
+        const gridSplitV = subdivideBernsteinGridV(gridProduct, 0.35);
+        for (var pair in gridPairs)
+        {
+            checkCount += 2;
+            const lowExpected = evaluateBernsteinGrid(gridProduct, pair[0], 0.35 * pair[1]);
+            const lowActual = evaluateBernsteinGrid(gridSplitV.low, pair[0], pair[1]);
+            if (abs(lowExpected - lowActual) > loose)
+            {
+                failures = append(failures, "GRID subdivide-V low parity at (" ~ pair[0] ~ ", " ~ pair[1] ~ ")");
+            }
+            const highExpected = evaluateBernsteinGrid(gridProduct, pair[0], 0.35 + 0.65 * pair[1]);
+            const highActual = evaluateBernsteinGrid(gridSplitV.high, pair[0], pair[1]);
+            if (abs(highExpected - highActual) > loose)
+            {
+                failures = append(failures, "GRID subdivide-V high parity at (" ~ pair[0] ~ ", " ~ pair[1] ~ ")");
+            }
+        }
         // Grid range and zero exclusion.
         checkCount += 2;
         if (!bernsteinGridExcludesZero([[1, 2], [3, 0.5]], 1e-9))
@@ -305,7 +332,7 @@ export const bernsteinPolynomialUtilsTester = defineFeature(function(context is 
             (size(failures) ~ " of " ~ checkCount ~ " checks FAILED - see console.");
         println("[BERNSTEIN TESTER] " ~ summary);
         reportFeatureInfo(context, id, summary);
-    });
+    }, { printPassingChecks : true, provokeZeroPolynomialThrow : false });
 
 // ===================== Tester helpers =====================
 

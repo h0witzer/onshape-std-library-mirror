@@ -9,11 +9,11 @@ import(path : "onshape/std/common.fs", version : "3044.0");
  * STATUS (2026-08-22): the 2D grid layer is formulated over native matrix builtins - grid
  * multiplication runs as binomial cwise masks + per-kernel-row Toeplitz matrix products with
  * native shifted sums, elevation as closed-form E*G*E^T operator products, differentiation as
- * banded matrix products, and add/subtract/scale as native matrix operations. Validated live
- * through swEnvelopeMath's factored-vs-pointwise consistency test (1e-19 relative, owner
- * profile 1.88 s on the stress workload). The 84-check tester last ran in full against the
- * 2026-08-21 loop implementations; re-run it after the next edit that touches subdivision or
- * root isolation, which the consistency test does not exercise.
+ * banded matrix products, add/subtract/scale as native matrix operations, and grid subdivision
+ * as split-operator matrix products (the de Casteljau split is linear; operators assembled
+ * row-locally). Validated live through swEnvelopeMath's factored-vs-pointwise consistency test
+ * (1e-19 relative, owner profile 1.88 s on the stress workload) and the tester's full run
+ * (93 checks green 2026-08-22, including u- and v-direction native subdivision parity).
  *
  * This module is deliberately STANDALONE and dependency-free (standard library only). It is
  * NOT part of splineRefinementUtils.fs, so refining the solid sweep never forces a republish
@@ -600,49 +600,33 @@ export function differentiateBernsteinGridV(grid is array) returns array
 }
 
 /**
- * Splits a grid at `parameter` in the u direction (per-column de Casteljau).
+ * Splits a grid at `parameter` in the u direction.
  * Output: map { low, high } - `low` covers u in [0, parameter], `high` covers [parameter, 1].
  */
 export function subdivideBernsteinGridU(grid is array, parameter is number) returns map
 {
     checkBernsteinGrid(grid);
-    const rowCount = size(grid);
-    const columnCount = size(grid[0]);
-    var low = constantBernsteinGrid(0, rowCount - 1, columnCount - 1);
-    var high = constantBernsteinGrid(0, rowCount - 1, columnCount - 1);
-    for (var columnIndex = 0; columnIndex < columnCount; columnIndex += 1)
-    {
-        var column = makeArray(rowCount, 0);
-        for (var rowIndex = 0; rowIndex < rowCount; rowIndex += 1)
-        {
-            column[rowIndex] = grid[rowIndex][columnIndex];
-        }
-        const split = subdivideBernstein(column, parameter);
-        for (var rowIndex = 0; rowIndex < rowCount; rowIndex += 1)
-        {
-            low[rowIndex][columnIndex] = split.left[rowIndex];
-            high[rowIndex][columnIndex] = split.right[rowIndex];
-        }
-    }
-    return { "low" : low, "high" : high };
+    // The de Casteljau split is a linear operator per direction: one native matrix product
+    // against each of the left/right operator matrices, assembled row-locally.
+    const operators = bernsteinSubdivisionOperators(size(grid) - 1, parameter);
+    return {
+            "low" : (operators.left as Matrix) * (grid as Matrix),
+            "high" : (operators.right as Matrix) * (grid as Matrix)
+        };
 }
 
 /**
- * Splits a grid at `parameter` in the v direction (per-row de Casteljau).
+ * Splits a grid at `parameter` in the v direction.
  * Output: map { low, high }.
  */
 export function subdivideBernsteinGridV(grid is array, parameter is number) returns map
 {
     checkBernsteinGrid(grid);
-    var low = makeArray(size(grid));
-    var high = makeArray(size(grid));
-    for (var rowIndex = 0; rowIndex < size(grid); rowIndex += 1)
-    {
-        const split = subdivideBernstein(grid[rowIndex], parameter);
-        low[rowIndex] = split.left;
-        high[rowIndex] = split.right;
-    }
-    return { "low" : low, "high" : high };
+    const operators = bernsteinSubdivisionOperators(size(grid[0]) - 1, parameter);
+    return {
+            "low" : (grid as Matrix) * (transposeOperatorRows(operators.left) as Matrix),
+            "high" : (grid as Matrix) * (transposeOperatorRows(operators.right) as Matrix)
+        };
 }
 
 /**
@@ -807,6 +791,61 @@ function bernsteinElevationMatrixTransposed(fromDegree is number, toDegree is nu
         operatorRows[i] = row;
     }
     return operatorRows;
+}
+
+/**
+ * The de Casteljau subdivision operators at `parameter` for one degree n, as { left, right }:
+ * (n + 1)-square lower/upper triangular matrices of rows with
+ * left[k][j] = C(k, j) * p^j * (1-p)^(k-j) for j <= k and
+ * right[k][j] = C(n-k, j-k) * p^(j-k) * (1-p)^(n-j) for j >= k,
+ * so that splitLeft = left * coefficients and splitRight = right * coefficients.
+ */
+function bernsteinSubdivisionOperators(degree is number, parameter is number) returns map
+{
+    var parameterPowers = makeArray(degree + 1, 1);
+    var complementPowers = makeArray(degree + 1, 1);
+    for (var index = 1; index <= degree; index += 1)
+    {
+        parameterPowers[index] = parameterPowers[index - 1] * parameter;
+        complementPowers[index] = complementPowers[index - 1] * (1 - parameter);
+    }
+    var leftRows = makeArray(degree + 1);
+    var rightRows = makeArray(degree + 1);
+    for (var k = 0; k <= degree; k += 1)
+    {
+        const leftBinomials = binomialRow(k);
+        const rightBinomials = binomialRow(degree - k);
+        var leftRow = makeArray(degree + 1, 0);
+        for (var j = 0; j <= k; j += 1)
+        {
+            leftRow[j] = leftBinomials[j] * parameterPowers[j] * complementPowers[k - j];
+        }
+        var rightRow = makeArray(degree + 1, 0);
+        for (var j = k; j <= degree; j += 1)
+        {
+            rightRow[j] = rightBinomials[j - k] * parameterPowers[j - k] * complementPowers[degree - j];
+        }
+        leftRows[k] = leftRow;
+        rightRows[k] = rightRow;
+    }
+    return { "left" : leftRows, "right" : rightRows };
+}
+
+/** The transpose of a square operator (array of rows), for right-multiplication. */
+function transposeOperatorRows(operatorRows is array) returns array
+{
+    const count = size(operatorRows);
+    var transposed = makeArray(count);
+    for (var rowIndex = 0; rowIndex < count; rowIndex += 1)
+    {
+        var row = makeArray(count, 0);
+        for (var columnIndex = 0; columnIndex < count; columnIndex += 1)
+        {
+            row[columnIndex] = operatorRows[columnIndex][rowIndex];
+        }
+        transposed[rowIndex] = row;
+    }
+    return transposed;
 }
 
 /**

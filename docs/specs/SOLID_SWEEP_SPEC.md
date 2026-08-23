@@ -641,9 +641,9 @@ Build order (each step live-validated before the next):
    **FINAL PROFILE (2026-08-22): 1.88 s, PASS — 14.84 s → 5.77 → 3.77 → 1.88 across three
    doctrine passes, each gated by the 1e-19 consistency test. Performance chase closed;
    the envelope function layer is done.** Carry-forward note for the solver:
-   `subdivideBernsteinGridU/V` still carry the original per-cell loops — convert them to
-   native split-matrix products (the de Casteljau split is a linear operator) when the
-   funnel solver first leans on them.
+   `subdivideBernsteinGridU/V` still carried the original per-cell loops — converted to
+   native split-operator matrix products at the start of the funnel-solver work (2026-08-22,
+   93 tester checks green; see the funnel solver entry below).
    CONSTRAINT adopted: the coefficient path requires NON-RATIONAL patches (rational input
    would push bicubic blocks from 9×9×6 to ~19×19×6 via the homogeneous-numerator route);
    extraction therefore supplies freeform faces with `forceNonRational` (swSweepEmit change
@@ -651,10 +651,56 @@ Build order (each step live-validated before the next):
    (`evaluateEnvelopePointwise`, `evaluateEnvelopeTimeDerivativePointwise`,
    `evaluateContactFunctionAtPoint`, `buildStripFunctionGrid`) are the polish/certification
    path and run on the module's own spline evaluators end to end.
-   **Remaining in step 5:** `swFunnelSolver.fs` — root isolation on live blocks (subdivision
-   via bernsteinPolynomialUtils), vertex brackets, co-edge marching on strip grids, funnel
-   component census with the oracle, section extraction, the §6.4 sliding audit, and the
-   periodic seam strategy above.
+   **Funnel solver DONE (2026-08-22, all four harness runs PASS first try):**
+   `swFunnelSolver.fs` — pure, three selection-free self-test features (split so each MCP
+   payload stays inside size discipline). Prerequisite landed first:
+   `subdivideBernsteinGridU/V` converted to native split-operator matrix products (the de
+   Casteljau split is a linear operator; left[k][j] = C(k,j)p^j(1-p)^(k-j),
+   right[k][j] = C(n-k,j-k)p^(j-k)(1-p)^(n-j)), validated by the tester's 93 checks including
+   new v-direction parity anchors. The layers, with live results:
+   - *Sliding audit (§6.4)*: per-block screen → materialize → whole-tensor range test; live
+     blocks keep their coefficient tensors for downstream reuse. Plane under in-plane
+     translation slides (f materializes to exactly 0); normal translation is screen-dead.
+   - *Factored cell isolation*: recursive (u, v, t) subdivision splitting the S/N grids
+     (native) and the twelve t-polynomials per cell, re-screened with range products at every
+     node — f is never materialized during the descent. Island fixture
+     (z_u = 0.8·u(1-u)v(1-v) peaking at 0.05, w = (1, 0, wz(t)) with wz dipping below the
+     peak exactly on t ∈ (0.3, 0.7)): 88 live cells from 367 screens at 1/8 resolution,
+     covering all four exact contact anchors, zero cells outside the t-window.
+   - *Island refinement*: 3-variable Newton on (f, f_u, f_v) = 0 with EXACT partials from
+     differentiated coefficient nets of the materialized block — birth/death recovered at
+     (0.5, 0.5, 0.3)/(0.5, 0.5, 0.7) to 1.1e-16 coordinate error, independent pointwise
+     |f| = 1.4e-17.
+   - *Vertex layer*: station-grid brackets + bisection-safeguarded Newton on g(t) (analytic
+     g_t = ⟨A'n, A'p+b'⟩ + ⟨An, A''p+b''⟩, verified vs central differences to 1.9e-12);
+     parabolic-velocity fixture roots at 0.3/0.7 to 1e-16. Sharp-vertex contact intervals
+     from cone-normal sign patterns recover (0.3, 0.7) exactly.
+   - *Co-edge strip marching*: per-column roots on the SHARED sample arrays chained into
+     branches by linear prediction (first link 4×station spacing, then slope-aware windows —
+     the tight first-link window was the one pre-run bug caught in review). Swinging-velocity
+     circle fixture: exactly the analytic 3 branches (5/9/5 columns), roots vs
+     t = (1+0.8·tan 2πs)/2 to 7e-13.
+   - *Envelope gradient + section layer*: order-2 pointwise gradient (all four components vs
+     central differences of the independent pointwise path, 7.3e-12 worst, rotation terms
+     included), predictor-corrector section marching, 3D-arc-length resampling at fixed q
+     fractions with re-Newton polish, rigid lift Φ = A·S + b. Slanted-line fixture
+     (f = 0.24 − 0.3u − 0.05v): marched |f| ≤ 2.8e-16, resample residual 2.6e-16, lift vs
+     hand value 3.5e-18.
+   - *Funnel census*: coarse value grid filled block-wise (dead blocks take their certified
+     screen sign, live blocks evaluate their materialized tensors — never pointwise splines),
+     even-odd trim masking, 6-connected flood fill with explicit u-seam wrap. Island fixture:
+     one component, isIsland true. Square trim mask [0.35, 0.65]²: the mid-life loop exits
+     the valid square, splitting the shell into exactly 2 trim-touching caps as predicted
+     node-by-node in design. Seam fixture (z_u = 0.8(u−0.5)²v(1−v), one lobe against each u
+     edge): 2 components open, 1 wrapped with crossesUSeam — the deferred periodic-seam
+     strategy's detection half; the rewindow-vs-presplit decision (calibration invalidated →
+     3D inversion crossings) lives at fit assembly, keyed off that flag.
+   Harness lesson banked: a DELIBERATELY provoked caught throw (the tester's
+   identically-zero guard check) surfaces as an INFO notice and hides the console; the check
+   is now gated behind a default-false parameter so harness payloads stay notice-clean.
+   Payload discipline: four runs — bernstein+tester (49 KB), pointwise (37 KB, only the
+   pointwise envelope functions inlined), factored and census (66/60 KB, comment-stripped by
+   mechanical line filter, bases byte-identical) — assembled by sed from the repo files.
 6. Fitting module + the first certified live envelope patch.
 7. Smooth-only watertight solid (e.g. an ellipsoid along a spline), volume/deviation checks.
 8. Sharp features + the topology walk.
