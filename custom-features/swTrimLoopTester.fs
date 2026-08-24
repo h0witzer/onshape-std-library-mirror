@@ -234,14 +234,14 @@ export const sweepTrimLoopLiveTest = defineFeature(function(context is Context, 
         // The census, which is the whole point: the same face, masked with its own trim loops.
         const factors = buildEnvelopePatchFactors(faceRecords[annulusIndex].spline);
         const spans = buildMotionSpanPolynomials(constantVelocityTranslationMotion(vector(1, 0, 0.5)));
-        // valueTolerance must NOT be zero here. This fixture's contact set lands exactly ON the
-        // u = 0.5 node line, where f is zero in closed form but comes out of the coefficient path
-        // at ~1e-18 with a sign that is pure rounding - so with a zero tolerance the cell columns
-        // either side of the line count as sign-mixed or not PER V NODE, and the component comes
-        // out a ragged 10 uv cells instead of a clean 16 (measured: 80 cells, not 128). 1e-12 is
-        // twelve orders below this fixture's own |f| range of 0.0075.
+        // No sign tolerance is supplied, and none is needed: this fixture's contact set lands
+        // exactly ON the u = 0.5 node line, where f is zero in closed form but comes out of the
+        // coefficient path at ~1e-18 with a sign that is pure rounding, and the census derives
+        // its own threshold from each block's value range. The guessed 1e-12 this test used to
+        // pass is what spec 12.1 item 5 removed; with an absolute zero the slab came out a ragged
+        // 80 cells instead of 128, per v node.
         var censusOptions = { "uNodesPerPatch" : 9, "vNodesPerPatch" : 9, "tNodesPerSpan" : 9,
-                "valueTolerance" : 1e-12, "trimLoops" : [], "uPeriodic" : false };
+                "valueTolerance" : 0, "trimLoops" : [], "uPeriodic" : false };
         const unmasked = censusFunnelComponents(factors, spans, censusOptions);
         var maskedOptions = censusOptions;
         maskedOptions.trimLoops = annulusTrim.loops;
@@ -256,6 +256,9 @@ export const sweepTrimLoopLiveTest = defineFeature(function(context is Context, 
             maskedCellTotal += component.cellCount;
             maskedTrimTouching += component.touchesTrimBoundary ? 1 : 0;
         }
+        println("[TRIM LIVE TEST] census sign tolerance derived from the block range: " ~
+            unmasked.signTolerance.minimum ~ ", " ~ unmasked.signTolerance.zeroSignNodeCount ~
+            " zero-sign node(s) of 729 (closed form: the 81 of the u = 0.5 plane)");
         println("[TRIM LIVE TEST] census unmasked: " ~ size(unmasked.components) ~ " component(s), " ~
             (size(unmasked.components) > 0 ? (unmasked.components[0].cellCount ~ " cells") : "") ~
             "; masked with the face's own loops: " ~ size(masked.components) ~ " component(s), cells" ~

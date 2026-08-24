@@ -193,6 +193,19 @@ export function translationMotionFromQuadraticVelocity(velocityX is array, veloc
 }
 
 /**
+ * The exact integral from 0 to t of one component of the above velocity - the translation that
+ * motion actually carries, for tests that check a fitted point against the swept family in
+ * closed form. With B(s) the degree-2 Bernstein polynomial of `coefficients`,
+ *     integral = q0 (t - t^2 + t^3/3) + q1 (t^2 - 2t^3/3) + q2 t^3/3.
+ */
+export function quadraticVelocityIntegral(coefficients is array, t is number) returns number
+{
+    return coefficients[0] * (t - t ^ 2 + t ^ 3 / 3) +
+        coefficients[1] * (t ^ 2 - 2 * t ^ 3 / 3) +
+        coefficients[2] * t ^ 3 / 3;
+}
+
+/**
  * The constant-velocity case of the above over t in [0, 1]: the derivative is exactly
  * velocity everywhere. Unit-stripped, meters implied, matching the records extraction
  * produces.
@@ -203,6 +216,51 @@ export function constantVelocityTranslationMotion(velocity is Vector) returns ma
         [velocity[0], velocity[0], velocity[0]],
         [velocity[1], velocity[1], velocity[1]],
         [velocity[2], velocity[2], velocity[2]]);
+}
+
+/**
+ * A rotation-dominant motion: `A(t) = I + t [w]x` for angular velocity `w`, with `b` held at
+ * the origin so that `b'` is EXACTLY zero - the station class spec 2.2 calls `|b'| -> 0`.
+ *
+ * `A` is the degree-1 Taylor polynomial of `exp(t [w]x)`: exactly orthonormal at t = 0, exactly
+ * `[w]x` in its derivative there, and drifting from SO(3) as O(t^2 |w|^2) after - the regime
+ * spec 2.1 already accepts, since the envelope is computed exactly with respect to the FITTED
+ * motion. Being polynomial is what matters here: the coefficient path needs A's columns as
+ * splines, and every quantity a test asserts against a closed form has to be exact.
+ *
+ * The four splines are degree 3 on one clamped knot vector, matching the translation fixtures
+ * above, so a test can swap one for the other without touching the span decomposition.
+ */
+export function firstOrderRotationMotion(angularVelocity is Vector, knots is array) returns map
+{
+    var columns = makeArray(3);
+    for (var columnIndex = 0; columnIndex < 3; columnIndex += 1)
+    {
+        const axis = vector(columnIndex == 0 ? 1 : 0, columnIndex == 1 ? 1 : 0, columnIndex == 2 ? 1 : 0);
+        const columnDerivative = cross(angularVelocity, axis);
+        var controlPoints = makeArray(4, axis);
+        for (var k = 0; k < 4; k += 1)
+        {
+            controlPoints[k] = axis + columnDerivative * (k / 3);
+        }
+        columns[columnIndex] = {
+                "degree" : 3, "knots" : knots, "isRational" : false,
+                "controlPoints" : controlPoints
+            };
+    }
+    return {
+            "columnX" : columns[0], "columnY" : columns[1], "columnZ" : columns[2],
+            "translation" : {
+                    "degree" : 3, "knots" : knots, "isRational" : false,
+                    "controlPoints" : makeArray(4, vector(0, 0, 0))
+                }
+        };
+}
+
+/** The single-span case of the above: knots [0, 0, 0, 0, 1, 1, 1, 1] over t in [0, 1]. */
+export function firstOrderRotationMotion(angularVelocity is Vector) returns map
+{
+    return firstOrderRotationMotion(angularVelocity, [0, 0, 0, 0, 1, 1, 1, 1]);
 }
 
 // ===================== Shared surface fixtures =====================

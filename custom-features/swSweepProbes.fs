@@ -45,6 +45,11 @@ import(path : "eca0e7b6ed29c5239f39f868/c6d53360a1b2036a47b2b076/9a2b77793cdc37b
  *           one core: the interactive probe takes a selected face; the Self Test variant is
  *           selection-free (builds a cylinder and a freeform patch itself) so the MCP test
  *           harness can execute it.
+ * Probe 8 - Named Surface Classes: which faces does evSurfaceDefinition name, and for the
+ *           REVOLVED and EXTRUDED cases, what does the definition map actually carry and what
+ *           does the profile curve look like when cut out with a plane through the axis (or
+ *           normal to the extrusion)? Gates whether REVOLVED and EXTRUDED become analytic
+ *           classes in spec section 6.5 and therefore what section 3's v1 face list accepts.
  */
 
 // ============================= Probe 1 - Edge Of Solid Sweep =============================
@@ -821,3 +826,183 @@ function applyTwoDimensionalAffineMap(affineMap is map, sourcePoint is Vector) r
         affineMap.matrix[0][0] * sourcePoint[0] + affineMap.matrix[0][1] * sourcePoint[1] + affineMap.offset[0],
         affineMap.matrix[1][0] * sourcePoint[0] + affineMap.matrix[1][1] * sourcePoint[1] + affineMap.offset[1]);
 }
+
+// ========================= Probe 8 - Named Surface Classes =========================
+
+/**
+ * Report the analytic class of one face and, for the two profile-driven classes, the profile
+ * curve itself. Returns a one-line summary; the detail goes to the console.
+ *
+ * REVOLVED: the axis comes from evAxis, and the profile is the intersection of the face with a
+ * plane containing that axis. That plane's origin is the face bounding box center projected onto
+ * the axis, so the finite construction rectangle straddles the face rather than the axis line's
+ * own origin, which may sit far away.
+ *
+ * EXTRUDED: the direction comes from two tangent-plane origins a full v-span apart, and the
+ * cross section is the intersection with a plane normal to it through the box center.
+ */
+function probeSurfaceClassOfFace(context is Context, nextId is function, face is Query,
+    faceLabel is string, approximationTolerance is number, keepGeometry is boolean) returns string
+{
+    const surfaceDefinition = evSurfaceDefinition(context, { "face" : face });
+
+    // Named structs answer `is`; everything else carries a surfaceType field. A REVOLVED or
+    // EXTRUDED face reports neither a struct nor a BSplineSurface, which is the case extraction
+    // has been routing to approximation on class alone.
+    var className = "UNRECOGNIZED";
+    if (surfaceDefinition is Plane)
+        className = "Plane (struct)";
+    else if (surfaceDefinition is Cylinder)
+        className = "Cylinder (struct)";
+    else if (surfaceDefinition is Cone)
+        className = "Cone (struct)";
+    else if (surfaceDefinition is Sphere)
+        className = "Sphere (struct)";
+    else if (surfaceDefinition is Torus)
+        className = "Torus (struct)";
+    else if (surfaceDefinition is BSplineSurface)
+        className = "BSplineSurface (struct)";
+    else if (surfaceDefinition.surfaceType != undefined)
+        className = "surfaceType " ~ surfaceDefinition.surfaceType;
+
+    println("[SURFACE CLASS PROBE] " ~ faceLabel ~ ": " ~ className);
+    println("[SURFACE CLASS PROBE] " ~ faceLabel ~ " definition keys: " ~ keys(surfaceDefinition));
+
+    // What the coefficient path would otherwise have to swallow, for comparison against the
+    // profile curve reported below.
+    // evApproximateBSplineSurface nests the net under .bSplineSurface alongside the boundary and
+    // inner-loop curves; the net itself is the BSplineSurface struct.
+    var approximationSummary = "approximation unavailable";
+    try silent
+    {
+        const approximated = evApproximateBSplineSurface(context,
+                    { "face" : face, "tolerance" : approximationTolerance }).bSplineSurface;
+        approximationSummary = "approximated net " ~ size(approximated.controlPoints) ~ " x " ~
+            size(approximated.controlPoints[0]) ~ ", degree " ~ approximated.uDegree ~ " x " ~
+            approximated.vDegree ~ ", rational " ~ (approximated.isRational == true);
+    }
+    println("[SURFACE CLASS PROBE] " ~ faceLabel ~ ": " ~ approximationSummary);
+
+    const isRevolved = surfaceDefinition.surfaceType == SurfaceType.REVOLVED;
+    const isExtruded = surfaceDefinition.surfaceType == SurfaceType.EXTRUDED;
+    if (!isRevolved && !isExtruded)
+    {
+        return faceLabel ~ ": " ~ className ~ "; " ~ approximationSummary;
+    }
+
+    const box = evBox3d(context, { "topology" : face, "tight" : false });
+    const boxCenter = 0.5 * (box.minCorner + box.maxCorner);
+    const planeSize = 2 * norm(box.maxCorner - box.minCorner);
+
+    var cuttingPlane;
+    var directionSummary;
+    if (isRevolved)
+    {
+        const axis is Line = evAxis(context, { "axis" : face });
+        const alongAxis = dot(boxCenter - axis.origin, axis.direction);
+        cuttingPlane = plane(axis.origin + alongAxis * axis.direction, perpendicularVector(axis.direction));
+        directionSummary = "axis through " ~ axis.origin ~ " along " ~ axis.direction;
+    }
+    else
+    {
+        // Two tangent-plane origins a full v-span apart differ only along the extrusion, so
+        // their difference is the direction regardless of how the face is parameterized.
+        const tangentPlanes = evFaceTangentPlanes(context,
+            { "face" : face, "parameters" : [vector(0.5, 0), vector(0.5, 1)] });
+        const extrusionDirection = normalize(tangentPlanes[1].origin - tangentPlanes[0].origin);
+        cuttingPlane = plane(boxCenter, extrusionDirection);
+        directionSummary = "extrusion direction " ~ extrusionDirection;
+    }
+    println("[SURFACE CLASS PROBE] " ~ faceLabel ~ ": " ~ directionSummary);
+
+    const planeId = nextId();
+    opPlane(context, planeId, { "plane" : cuttingPlane, "width" : planeSize, "height" : planeSize });
+
+    const intersectId = nextId();
+    var intersectSucceeded = true;
+    try
+    {
+        opIntersectFaces(context, intersectId,
+            { "tools" : qCreatedBy(planeId, EntityType.FACE), "targets" : face });
+    }
+    catch
+    {
+        intersectSucceeded = false;
+    }
+    if (!intersectSucceeded)
+    {
+        println("[SURFACE CLASS PROBE] " ~ faceLabel ~ ": opIntersectFaces THREW against the cutting plane.");
+        return faceLabel ~ ": " ~ className ~ ", " ~ directionSummary ~ ", intersection FAILED";
+    }
+
+    const profileEdges = evaluateQuery(context, qCreatedBy(intersectId, EntityType.EDGE));
+    println("[SURFACE CLASS PROBE] " ~ faceLabel ~ ": intersection produced " ~ size(profileEdges) ~ " edge(s).");
+
+    var profileSummary = size(profileEdges) ~ " profile edge(s)";
+    for (var edgeIndex = 0; edgeIndex < size(profileEdges); edgeIndex += 1)
+    {
+        const curveDefinition = evCurveDefinition(context, { "edge" : profileEdges[edgeIndex] });
+        var curveDescription = "keys " ~ keys(curveDefinition);
+        if (curveDefinition is Line)
+            curveDescription = "Line along " ~ curveDefinition.direction;
+        else if (curveDefinition is Circle)
+            curveDescription = "Circle radius " ~ curveDefinition.radius;
+        else if (curveDefinition is Ellipse)
+            curveDescription = "Ellipse " ~ curveDefinition.majorRadius ~ " x " ~ curveDefinition.minorRadius;
+        else if (curveDefinition is BSplineCurve)
+            curveDescription = "BSplineCurve degree " ~ curveDefinition.degree ~ ", " ~
+                size(curveDefinition.controlPoints) ~ " control points, rational " ~
+                (curveDefinition.isRational == true) ~ ", knots " ~ curveDefinition.knots;
+        println("[SURFACE CLASS PROBE] " ~ faceLabel ~ " profile " ~ edgeIndex ~ ": " ~ curveDescription);
+        if (edgeIndex == 0)
+        {
+            profileSummary = profileSummary ~ ", first is " ~ curveDescription;
+        }
+    }
+
+    if (!keepGeometry)
+    {
+        opDeleteBodies(context, nextId(), { "entities" :
+                    qUnion([qCreatedBy(planeId, EntityType.BODY), qCreatedBy(intersectId, EntityType.BODY)]) });
+    }
+
+    return faceLabel ~ ": " ~ className ~ ", " ~ directionSummary ~ ", " ~ profileSummary ~
+        "; " ~ approximationSummary;
+}
+
+annotation { "Feature Type Name" : "Sweep Probe - Named Surface Classes" }
+export const sweepProbeNamedSurfaceClasses = defineFeature(function(context is Context, id is Id, definition is map)
+    precondition
+    {
+        annotation { "Name" : "Faces to interrogate", "Filter" : EntityType.FACE }
+        definition.faces is Query;
+
+        annotation { "Name" : "Approximation tolerance for comparison" }
+        isReal(definition.approximationTolerance, { (unitless) : [1e-8, 1e-7, 1e-4] } as RealBoundSpec);
+
+        annotation { "Name" : "Keep cutting planes and profile curves" }
+        definition.keepGeometry is boolean;
+    }
+    {
+        const faces = evaluateQuery(context, definition.faces);
+        if (size(faces) == 0)
+        {
+            throw regenError("Select at least one face.", ["faces"]);
+        }
+
+        const nextId = getUnstableIncrementingId(id);
+        var verdictLines = makeArray(size(faces), "");
+        for (var faceIndex = 0; faceIndex < size(faces); faceIndex += 1)
+        {
+            verdictLines[faceIndex] = probeSurfaceClassOfFace(context, nextId, faces[faceIndex],
+                    "face " ~ faceIndex, definition.approximationTolerance, definition.keepGeometry);
+        }
+
+        var verdict = "";
+        for (var faceIndex = 0; faceIndex < size(faces); faceIndex += 1)
+        {
+            verdict = verdict ~ (faceIndex == 0 ? "" : " | ") ~ verdictLines[faceIndex];
+        }
+        println("[SURFACE CLASS PROBE] VERDICT: " ~ verdict);
+        return verdict;
+    }, { "approximationTolerance" : 1e-7, "keepGeometry" : true });

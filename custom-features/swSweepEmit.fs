@@ -780,6 +780,12 @@ export enum SweepCurveClass
  *         sheet-boundary edge has one side and the other index is undefined,
  *     sampleParameters {array} : arc-length parameters 0..1 including both ends,
  *     edgePoints {array} : unit-stripped 3D points on the edge at sampleParameters,
+ *     edgeTangents {array} : UNIT tangents of the edge at the same parameters, in the edge's
+ *         default (arc-length increasing) direction - the tangent plane's own x axis, which
+ *         with usingFaceOrientation left off is the edge tangent rather than a walking
+ *         direction, so both sides agree. Spec 6.4's SWEEP_EDGE_SWEEP_SINGULARITY needs e'
+ *         on exactly these samples, and 8.x's sharp-edge sheets need it again; taking it from
+ *         the tangent-plane call that already ran costs no ev-call,
  *     sideNormals {map} : { left, right } arrays of one-sided unit normals at the same
  *         parameters (undefined side omitted),
  *     uvCurves {map} : { left, right } pcurve data { uvSamples, maxResidual } in that face's
@@ -886,6 +892,7 @@ export function extractCoEdgeRecords(context is Context, toolBody is Query, face
             "faceIndexRight" : rightSide == undefined ? undefined : rightSide.faceIndex,
             "sampleParameters" : sampleParameters,
             "edgePoints" : pointsSource == undefined ? undefined : pointsSource.edgePoints,
+            "edgeTangents" : pointsSource == undefined ? undefined : pointsSource.edgeTangents,
             "sideNormals" : {
                 "left" : leftSide == undefined ? undefined : leftSide.normals,
                 "right" : rightSide == undefined ? undefined : rightSide.normals
@@ -2037,10 +2044,12 @@ function extractCoEdgeSide(context is Context, edge is Query, faceQuery, faceRec
             });
     var normals = makeArray(size(tangentPlanes));
     var edgePoints = makeArray(size(tangentPlanes));
+    var edgeTangents = makeArray(size(tangentPlanes));
     for (var planeIndex = 0; planeIndex < size(tangentPlanes); planeIndex += 1)
     {
         normals[planeIndex] = tangentPlanes[planeIndex].normal;
         edgePoints[planeIndex] = (1 / meter) * tangentPlanes[planeIndex].origin;
+        edgeTangents[planeIndex] = tangentPlanes[planeIndex].x;
     }
     var uvCurve = undefined;
     if (faceIndex != undefined && faceRecords[faceIndex].spline != undefined)
@@ -2051,6 +2060,7 @@ function extractCoEdgeSide(context is Context, edge is Query, faceQuery, faceRec
             "faceIndex" : faceIndex,
             "normals" : normals,
             "edgePoints" : edgePoints,
+            "edgeTangents" : edgeTangents,
             "uvCurve" : uvCurve
         };
 }

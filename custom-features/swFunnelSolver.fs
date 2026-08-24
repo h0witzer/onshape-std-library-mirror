@@ -34,6 +34,14 @@ import(path : "8dba215569bb1c9f8f1bf700", version : "0000000000000000000000ff");
  *     blocks (never pointwise), trim masking by even-odd ray crossings, flood fill over
  *     mixed-sign cells with an explicit u-seam wrap for periodic faces, and component
  *     classification (boundary-touching vs grazing island, seam-crossing flagged).
+ *   - Certified census: the census is a sign grid, so on its own it cannot tell an empty
+ *     region from a component too small to resolve. The isolation's dead certificates can, so
+ *     the two are compared on the census's own lattice - a live region carrying no sign-mixed
+ *     cell is the only shape a missed component can take - and the cell size is halved until
+ *     the comparison is clean AND the component set agrees with itself across one halving.
+ *     This is what makes the census the topology oracle of spec 2.2 with no kernel call in it,
+ *     including at rotation-dominant stations where |b'| is zero and no contact DIRECTION
+ *     exists to imprint an isocline along.
  *   - Island refinement: 3-variable Newton on (f, f_u, f_v) = 0 with EXACT partials read off
  *     differentiated coefficient nets of a materialized block - t-extremes of grazing islands
  *     to machine precision, no sampling.
@@ -467,10 +475,246 @@ export const sweepFunnelCensusSelfTest = defineFeature(function(context is Conte
             failures = failures ~ " periodic seam census expected 2 open / 1 wrapped seam-crossing component.";
         }
 
+        // A contact set lying exactly ON a grid node line (spec 6.7). f = 0.03 (0.5 - u)
+        // here, so the whole contact set is the plane u = 0.5 - and on a nine-node grid that
+        // plane IS the middle node line. In closed form f is zero along it; out of the
+        // coefficient path it is ~1e-18 with a sign that is pure rounding, so with an absolute
+        // zero threshold each v node decided independently whether the cell columns either
+        // side of the line were sign-mixed and the slab came out a ragged 80 cells of 128.
+        // The threshold now comes from the block's own value range, and no caller supplies a
+        // number at all.
+        const nodeContactFactors = buildEnvelopePatchFactors(nodeContactFixtureSurface());
+        const nodeContactSpans = buildMotionSpanPolynomials(
+            constantVelocityTranslationMotion(vector(1, 0, 0.5)));
+        const nodeContactCensus = censusFunnelComponents(nodeContactFactors, nodeContactSpans,
+                { "uNodesPerPatch" : 9, "vNodesPerPatch" : 9, "tNodesPerSpan" : 9,
+                        "valueTolerance" : 0, "trimLoops" : [], "uPeriodic" : false });
+        const nodeContactCells = size(nodeContactCensus.components) == 1 ?
+            nodeContactCensus.components[0].cellCount : 0;
+        println("[FUNNEL SELF TEST] node-contact census: " ~ size(nodeContactCensus.components) ~
+            " component(s), " ~ nodeContactCells ~ " cells (closed form: one 128-cell slab); " ~
+            "derived sign tolerance " ~ nodeContactCensus.signTolerance.minimum ~ ", " ~
+            nodeContactCensus.signTolerance.zeroSignNodeCount ~ " zero-sign node(s) of 729");
+        // The zero-sign nodes are exactly the u = 0.5 plane: 9 v nodes x 9 t nodes.
+        if (size(nodeContactCensus.components) != 1 || nodeContactCells != 128 ||
+            nodeContactCensus.signTolerance.zeroSignNodeCount != 81)
+        {
+            failures = failures ~ " the node-landing contact set was expected to census as one " ~
+                "128-cell slab with 81 zero-sign nodes, got " ~ size(nodeContactCensus.components) ~
+                " component(s), " ~ nodeContactCells ~ " cells, " ~
+                nodeContactCensus.signTolerance.zeroSignNodeCount ~ " zero-sign node(s).";
+        }
+        if (nodeContactCensus.signTolerance.minimum <= 0)
+        {
+            failures = failures ~ " the census derived no sign tolerance from the block range.";
+        }
+
         reportTestVerdict(context, id, "FUNNEL CENSUS SELF TEST", failures,
-            "census components (plain island, trimmed caps, periodic seam wrap) and the " ~
-            "even-odd trim classification all match their analytic answers.");
+            "census components (plain island, trimmed caps, periodic seam wrap), a contact " ~
+            "set landing on a node line, and the even-odd trim classification all match " ~
+            "their analytic answers.");
     });
+
+annotation { "Feature Type Name" : "Sweep Funnel Certified Census Self Test" }
+export const sweepFunnelCertifiedCensusSelfTest = defineFeature(function(context is Context, id is Id, definition is map)
+    precondition
+    {
+    }
+    {
+        var tally = newCheckTally();
+
+        // ---- The rotation-dominant station: b' is exactly zero, so there is no translation
+        // direction at all. f = 0.6 x (y - t x) with x = u + 1, y = v + 0.3.
+        const rotationSurface = rotationFixtureSurface();
+        const rotationFactors = buildEnvelopePatchFactors(rotationSurface);
+        const rotationMotion = firstOrderRotationMotion(vector(0, 0, 1));
+        const rotationSpans = buildMotionSpanPolynomials(rotationMotion);
+
+        var translationDotsZero = true;
+        for (var i = 0; i < 3; i += 1)
+        {
+            for (var coefficient in rotationSpans[0].translationDots[i])
+            {
+                translationDotsZero = translationDotsZero && coefficient == 0;
+            }
+        }
+        tally = checkThat(tally, translationDotsZero,
+            "the rotation fixture's translation dot polynomials are not all exactly zero, so " ~
+            "|b'| is not exactly zero and the fixture does not test what it is for.");
+
+        const rotationBlock = materializeEnvelopeBlock(
+            buildEnvelopePatchProducts(rotationFactors.patches[0][0]), rotationSpans[0]);
+        var worstClosedForm = 0;
+        var worstPointwise = 0;
+        for (var probe in [[0, 0, 0], [0.3, 0.7, 0.4], [0.5, 0.5, 0.5], [1, 1, 1],
+                    [0.25, 0.125, 0.875], [0.9, 0.2, 0.35]])
+        {
+            const x = probe[0] + 1;
+            const y = probe[1] + 0.3;
+            const exact = 0.6 * x * (y - probe[2] * x);
+            worstClosedForm = max(worstClosedForm,
+                abs(evaluateMaterializedBlock(rotationBlock, probe[0], probe[1], probe[2]) - exact));
+            worstPointwise = max(worstPointwise,
+                abs(evaluateEnvelopePointwise(rotationMotion, rotationSurface, probe[0], probe[1], probe[2]) - exact));
+        }
+        println("[FUNNEL CERTIFIED CENSUS] rotation f vs 0.6 x (y - t x): coefficient path " ~
+            worstClosedForm ~ ", pointwise path " ~ worstPointwise);
+        tally = checkWithin(tally, worstClosedForm, 1e-14, "the coefficient path's f against the closed form");
+        tally = checkWithin(tally, worstPointwise, 1e-14, "the pointwise path's f against the closed form");
+
+        // Sliding under rotation, both ways round: the fixture grazes, and a plane rotating
+        // about its own normal slides - the case with no translation direction to imprint an
+        // isocline along even in principle.
+        const rotationAudit = auditEnvelopeSliding(rotationFactors, rotationSpans, 1e-12);
+        const planeFactors = buildEnvelopePatchFactors(planeFixtureSurface());
+        const planeAudit = auditEnvelopeSliding(planeFactors, rotationSpans, 1e-12);
+        const planeBlock = materializeEnvelopeBlock(
+            buildEnvelopePatchProducts(planeFactors.patches[0][0]), rotationSpans[0]);
+        var planeCoefficientsZero = true;
+        for (var grid in planeBlock)
+        {
+            for (var row in grid)
+            {
+                for (var coefficient in row)
+                {
+                    planeCoefficientsZero = planeCoefficientsZero && coefficient == 0;
+                }
+            }
+        }
+        println("[FUNNEL CERTIFIED CENSUS] rotation sliding audit: fixture slides " ~
+            rotationAudit.slides ~ " (live " ~ size(rotationAudit.liveBlocks) ~ "); plane slides " ~
+            planeAudit.slides ~ " (" ~ size(planeAudit.slidingBlocks) ~ " block(s)), every plane " ~
+            "coefficient exactly zero " ~ planeCoefficientsZero);
+        tally = checkThat(tally, !rotationAudit.slides && size(rotationAudit.liveBlocks) == 1,
+            "the rotation fixture should be one live non-sliding block.");
+        tally = checkThat(tally, planeAudit.slides && size(planeAudit.slidingBlocks) == 1,
+            "a plane rotating about its own normal axis should be reported as sliding.");
+        tally = checkThat(tally, planeCoefficientsZero,
+            "the sliding plane's block coefficients should be exactly zero, not merely small.");
+
+        // ---- The certified census on the rotation fixture. One component: it is born inside
+        // the t range (the contact line enters the domain at t = 0.15) and is still alive at
+        // t = 1, and it reaches the uv boundary throughout.
+        const baseOptions = { "uNodesPerPatch" : 9, "vNodesPerPatch" : 9, "tNodesPerSpan" : 17,
+                "valueTolerance" : 0, "trimLoops" : [], "uPeriodic" : false };
+        const rotationCensus = censusFunnelComponentsCertified(rotationFactors, rotationSpans, baseOptions);
+        printCensusPasses("rotation", rotationCensus);
+        tally = checkThat(tally, rotationCensus.certified && rotationCensus.refinements == 1 &&
+            rotationCensus.resolution.tNodesPerSpan == 33,
+            "the rotation census should certify after exactly one refinement, at 17/17/33.");
+        tally = checkThat(tally, size(rotationCensus.components) == 1,
+            "the rotation census should find exactly one component, got " ~
+            size(rotationCensus.components) ~ ".");
+        if (size(rotationCensus.components) == 1)
+        {
+            const rotationComponent = rotationCensus.components[0];
+            tally = checkThat(tally, !rotationComponent.isIsland && !rotationComponent.touchesTStart &&
+                rotationComponent.touchesTEnd && rotationComponent.touchesDomainBoundaryUv &&
+                !rotationComponent.crossesUSeam,
+                "the rotation component's flags should be born-inside / alive-at-tEnd / uv-touching.");
+            tally = checkWithin(tally, rotationComponent.parameterBounds.tMin - 0.125, 1e-12,
+                "the rotation component's birth cell (the contact line enters at t = 0.15, so the " ~
+                "cell below it starts at 0.125)");
+            tally = checkWithin(tally, rotationComponent.parameterBounds.tMax - 1, 1e-12,
+                "the rotation component's death t");
+        }
+        tally = checkThat(tally, rotationCensus.coverage.contradictions == 0,
+            "the interval screen and the pointwise block evaluation disagreed on where f can " ~
+            "vanish (" ~ rotationCensus.coverage.contradictions ~ " mixed cells outside every live cell).");
+
+        reportCheckTally(context, id, "FUNNEL CERTIFIED CENSUS SELF TEST", tally,
+            "a rotation-dominant station with |b'| exactly zero censuses and certifies with no " ~
+            "kernel oracle, and sliding is exact under rotation both ways round.");
+    });
+
+annotation { "Feature Type Name" : "Sweep Funnel Census Certificate Self Test" }
+export const sweepFunnelCensusCertificateSelfTest = defineFeature(function(context is Context, id is Id, definition is map)
+    precondition
+    {
+    }
+    {
+        var tally = newCheckTally();
+        const baseOptions = { "uNodesPerPatch" : 9, "vNodesPerPatch" : 9, "tNodesPerSpan" : 17,
+                "valueTolerance" : 0, "trimLoops" : [], "uPeriodic" : false };
+
+        // ---- The island fixture: the same loop on a known grazing island, where the interval
+        // screen is exactly as tight as the sign grid - every live cell is a mixed cell.
+        const islandFactors = buildEnvelopePatchFactors(islandFixtureSurface());
+        const islandSpans = buildMotionSpanPolynomials(translationMotionFromQuadraticVelocity(
+                [1, 1, 1], [0, 0, 0], [0.134, -0.066, 0.134]));
+        const islandCensus = censusFunnelComponentsCertified(islandFactors, islandSpans, baseOptions);
+        printCensusPasses("island", islandCensus);
+        tally = checkThat(tally, islandCensus.certified && islandCensus.refinements == 1 &&
+            size(islandCensus.components) == 1 && islandCensus.components[0].isIsland,
+            "the island census should certify after one refinement as exactly one island.");
+        var islandScreenTight = true;
+        for (var pass in islandCensus.passes)
+        {
+            islandScreenTight = islandScreenTight && pass.liveCellCount == pass.mixedCellCount;
+        }
+        tally = checkThat(tally, islandScreenTight,
+            "on the island fixture every live cell should also be sign-mixed - the interval " ~
+            "screen is exactly as tight as the sign grid there.");
+
+        // ---- Why the stability half is not optional: on the seam fixture's two lobes a 3/3/3
+        // grid reads ONE component, and coverage certifies it, because both lobes share a
+        // single live region at that cell size. Only refinement separates them.
+        const seamFactors = buildEnvelopePatchFactors(seamFixtureSurface());
+        const seamSpans = buildMotionSpanPolynomials(translationMotionFromQuadraticVelocity(
+                [1, 1, 1], [0, 0, 0], [0.02, 0.02, 0.02]));
+        var coarseOptions = baseOptions;
+        coarseOptions.uNodesPerPatch = 3;
+        coarseOptions.vNodesPerPatch = 3;
+        coarseOptions.tNodesPerSpan = 3;
+        coarseOptions.minimumNodesPerPatch = 3;
+        coarseOptions.minimumNodesPerSpan = 3;
+        const seamCensus = censusFunnelComponentsCertified(seamFactors, seamSpans, coarseOptions);
+        printCensusPasses("seam from 3/3/3", seamCensus);
+        tally = checkThat(tally, size(seamCensus.passes) >= 2 && seamCensus.passes[0].componentCount == 1 &&
+            seamCensus.passes[0].unresolvedRegionCount == 0,
+            "the seam fixture's first pass should merge both lobes into one COVERAGE-CLEAN " ~
+            "component - that is the case the stability half exists to catch.");
+        tally = checkThat(tally, seamCensus.certified && size(seamCensus.components) == 2 &&
+            seamCensus.refinements == 2,
+            "the seam census should separate into two components and certify after two refinements.");
+
+        // ---- And the limit of the stability half, pinned rather than described: two
+        // consecutive resolutions that are both too coarse agree with each other and are wrong
+        // together. Here the grazing island is reported as reaching the uv boundary, and the
+        // loop certifies it. minimumNodesPerPatch is what keeps a caller out of this.
+        var coarseIslandOptions = coarseOptions;
+        coarseIslandOptions.tNodesPerSpan = 5;
+        coarseIslandOptions.maxRefinements = 1;
+        const coarseIslandCensus = censusFunnelComponentsCertified(islandFactors, islandSpans, coarseIslandOptions);
+        printCensusPasses("island from 3/3/5", coarseIslandCensus);
+        tally = checkThat(tally, coarseIslandCensus.certified &&
+            size(coarseIslandCensus.components) == 1 && !coarseIslandCensus.components[0].isIsland,
+            "the too-coarse island run should certify a WRONG answer (island reported as " ~
+            "uv-touching) - if it no longer does, the floor's justification has changed.");
+
+        reportCheckTally(context, id, "FUNNEL CENSUS CERTIFICATE SELF TEST", tally,
+            "coverage and stability each catch what the other cannot: the screen is exactly as " ~
+            "tight as the sign grid on the island, a coarse grid merges the seam's two lobes " ~
+            "past a clean coverage proof, and two coarse passes can agree while both are wrong.");
+    });
+
+/** Prints one line per refinement pass, so a run records what the certificate cost. */
+function printCensusPasses(name is string, certifiedCensus is map)
+{
+    for (var pass in certifiedCensus.passes)
+    {
+        println("[FUNNEL CERTIFIED CENSUS] " ~ name ~ " " ~ pass.uNodesPerPatch ~ "/" ~
+            pass.vNodesPerPatch ~ "/" ~ pass.tNodesPerSpan ~ ": components " ~ pass.componentCount ~
+            ", mixed " ~ pass.mixedCellCount ~ ", live " ~ pass.liveCellCount ~ ", unresolved " ~
+            pass.unresolvedRegionCount ~ ", contradictions " ~ pass.contradictions ~ ", stable " ~
+            pass.stable);
+    }
+    println("[FUNNEL CERTIFIED CENSUS] " ~ name ~ " -> certified " ~ certifiedCensus.certified ~
+        " after " ~ certifiedCensus.refinements ~ " refinement(s), " ~
+        size(certifiedCensus.components) ~ " component(s); isolation screens " ~
+        certifiedCensus.coverage.screenedCount ~ ", dead " ~ certifiedCensus.coverage.deadCount ~
+        ", leaves " ~ certifiedCensus.coverage.liveLeafCount);
+}
 
 annotation { "Feature Type Name" : "Sweep Funnel Mask Self Test" }
 export const sweepFunnelMaskSelfTest = defineFeature(function(context is Context, id is Id, definition is map)
@@ -930,7 +1174,14 @@ function splitCellSpan(cellSpan is map) returns map
  * options: {
  *     uNodesPerPatch, vNodesPerPatch, tNodesPerSpan {number} : grid nodes per patch/span
  *         (>= 3 recommended),
- *     valueTolerance {number} : |value| below this counts as a zero sign,
+ *     valueTolerance {number} : absolute FLOOR on the threshold below which a value counts
+ *         as a zero sign. The threshold itself is derived per block from that block's own
+ *         loose value range (screenEnvelopeBlockScaled), because no absolute number can be
+ *         right for every block of a face: the same number is a certificate on a block whose
+ *         |f| runs to 1e-2 and pure noise on one that runs to 1e-14. Leave it 0 unless a
+ *         caller knows a physical noise floor the coefficients do not show,
+ *     relativeValueTolerance {number} : the fraction of a block's own value range that
+ *         derives its threshold (default ENVELOPE_RELATIVE_SIGN_TOLERANCE),
  *     trimLoops {array} : uv trim loops in the face's knot domain; empty means the whole
  *         rectangle is valid; a node is valid when an even-odd crossing count over all loops
  *         is odd. Each entry is either a bare point array ([ [u, v], ... ], implicitly closed)
@@ -951,7 +1202,9 @@ function splitCellSpan(cellSpan is map) returns map
  *         real component that reaches the pole floods through it into every other one
  * }
  *
- * Returns { components {array}, uNodes, vNodes, tNodes {arrays of global parameters} }.
+ * Returns { components {array}, uNodes, vNodes, tNodes {arrays of global parameters},
+ * cellClass {3D array} : 0 masked / 1 uniform sign / 2 sign-mixed per cell, and
+ * mixedCellCount {number} - what certifyCensusCoverage checks the isolation against }.
  * Component: {
  *     cellCount {number},
  *     parameterBounds {map} : uMin..tMax over member cell corners (seam-crossing components
@@ -965,6 +1218,7 @@ function splitCellSpan(cellSpan is map) returns map
 export function censusFunnelComponents(patchFactors is map, spans is array, censusOptions is map) returns map
 {
     const options = mergeMaps({ "valueTolerance" : 0, "trimLoops" : [], "uPeriodic" : false,
+                "relativeValueTolerance" : ENVELOPE_RELATIVE_SIGN_TOLERANCE,
                 "degenerate" : { "uStart" : false, "uEnd" : false, "vStart" : false, "vEnd" : false } },
             censusOptions);
     const uNodesPerPatch = options.uNodesPerPatch;
@@ -1005,9 +1259,14 @@ export function censusFunnelComponents(patchFactors is map, spans is array, cens
         }
     }
 
-    // Block-wise value fill: dead blocks get their certified constant sign, live blocks are
-    // materialized once and evaluated on their local node grid.
-    var values = makeArray(uNodeCount);
+    // Block-wise SIGN fill: dead blocks get their certified constant sign, live blocks are
+    // materialized once and evaluated on their local node grid. What is stored is the sign
+    // rather than the value, because the threshold a value must clear to HAVE a sign is a
+    // property of the block that produced it - derived from that block's own loose range - and
+    // the block is known here and not in the cell loop below. A node shared by two blocks is
+    // written by each of them; the values agree to rounding, and so, away from the threshold,
+    // do the signs.
+    var signs = makeArray(uNodeCount);
     for (var uIndex = 0; uIndex < uNodeCount; uIndex += 1)
     {
         var plane = makeArray(vNodeCount);
@@ -1015,8 +1274,11 @@ export function censusFunnelComponents(patchFactors is map, spans is array, cens
         {
             plane[vIndex] = makeArray(tNodeCount, 0);
         }
-        values[uIndex] = plane;
+        signs[uIndex] = plane;
     }
+    var minSignTolerance = undefined;
+    var maxSignTolerance = 0;
+    var zeroSignNodeCount = 0;
     for (var uSegment = 0; uSegment < patchFactors.uSegments; uSegment += 1)
     {
         for (var vSegment = 0; vSegment < patchFactors.vSegments; vSegment += 1)
@@ -1025,12 +1287,17 @@ export function censusFunnelComponents(patchFactors is map, spans is array, cens
             var products = undefined;
             for (var spanIndex = 0; spanIndex < size(spans); spanIndex += 1)
             {
-                const screen = screenEnvelopeBlock(patch, spans[spanIndex], options.valueTolerance);
+                const screen = screenEnvelopeBlockScaled(patch, spans[spanIndex],
+                        options.relativeValueTolerance, options.valueTolerance);
+                const blockTolerance = screen.signTolerance;
+                minSignTolerance = minSignTolerance == undefined ? blockTolerance :
+                    min(minSignTolerance, blockTolerance);
+                maxSignTolerance = max(maxSignTolerance, blockTolerance);
                 var blockGrids = undefined;
-                var fillValue = 0;
+                var fillSign = 0;
                 if (!screen.canVanish)
                 {
-                    fillValue = screen.looseMin > 0 ? screen.looseMin : screen.looseMax;
+                    fillSign = screen.looseMin > 0 ? 1 : -1;
                 }
                 else
                 {
@@ -1051,8 +1318,19 @@ export function censusFunnelComponents(patchFactors is map, spans is array, cens
                         for (var tOffset = 0; tOffset < tNodesPerSpan; tOffset += 1)
                         {
                             const tIndex = spanIndex * (tNodesPerSpan - 1) + tOffset;
-                            values[uIndex][vIndex][tIndex] = blockGrids == undefined ? fillValue :
-                                evaluateMaterializedBlock(blockGrids, localU, localV, tOffset / (tNodesPerSpan - 1));
+                            var nodeSign = fillSign;
+                            if (blockGrids != undefined)
+                            {
+                                const nodeValue = evaluateMaterializedBlock(blockGrids, localU, localV,
+                                    tOffset / (tNodesPerSpan - 1));
+                                nodeSign = nodeValue > blockTolerance ? 1 :
+                                    (nodeValue < -blockTolerance ? -1 : 0);
+                            }
+                            if (nodeSign == 0)
+                            {
+                                zeroSignNodeCount += 1;
+                            }
+                            signs[uIndex][vIndex][tIndex] = nodeSign;
                         }
                     }
                 }
@@ -1134,9 +1412,7 @@ export function censusFunnelComponents(patchFactors is map, spans is array, cens
                     var maximumSign = -1;
                     for (var corner = 0; corner < 8; corner += 1)
                     {
-                        const cornerValue = values[i + (corner % 2)][j + (floor(corner / 2) % 2)][k + floor(corner / 4)];
-                        const cornerSign = cornerValue > options.valueTolerance ? 1 :
-                            (cornerValue < -options.valueTolerance ? -1 : 0);
+                        const cornerSign = signs[i + (corner % 2)][j + (floor(corner / 2) % 2)][k + floor(corner / 4)];
                         minimumSign = min(minimumSign, cornerSign);
                         maximumSign = max(maximumSign, cornerSign);
                     }
@@ -1296,7 +1572,465 @@ export function censusFunnelComponents(patchFactors is map, spans is array, cens
             }
         }
     }
-    return { "components" : components, "uNodes" : uNodes, "vNodes" : vNodes, "tNodes" : tNodes };
+    return { "components" : components, "uNodes" : uNodes, "vNodes" : vNodes, "tNodes" : tNodes,
+            "cellClass" : cellClass, "mixedCellCount" : mixedCellCount,
+            "signTolerance" : { "minimum" : minSignTolerance == undefined ? 0 : minSignTolerance,
+                "maximum" : maxSignTolerance, "zeroSignNodeCount" : zeroSignNodeCount } };
+}
+
+// ===================== The certified census (spec 2.2, 6.3 step 3) =====================
+
+/**
+ * Certify that one census SAW every component there is (spec 2.2). The census reads signs on a
+ * grid, so on its own it cannot tell "no component here" from "a component too small for this
+ * grid". The factored isolation can: a screen-dead cell is a proof that f has no zero in it, so
+ * the live cells are a certified COVER of the whole zero set.
+ *
+ * The two are compared on the census's own cell lattice. Every census cell overlapping an
+ * isolation live cell is marked live; the marked cells are then flood-filled into regions, and a
+ * region carrying no sign-mixed cell is somewhere the zero set may live and the census reported
+ * nothing - the only shape a missed component can take. Cells the census masked out (trim,
+ * poles) are excluded: those are not part of the face.
+ *
+ * The reverse direction is a cross-path check rather than a certificate. A sign-mixed census cell
+ * outside every live cell would mean the pointwise block evaluation and the interval screen
+ * disagree about whether f can vanish there, which is a bug in one of them, not a topology
+ * finding - so `contradictions` is expected to be 0 always.
+ *
+ * The isolation runs at the census's OWN cell size as its leaf floor, so a live leaf lands in one
+ * census cell wherever the two lattices align and in at most a few where they do not. Its zero
+ * threshold is the block's derived sign tolerance, the same number the census gave the signs it
+ * is being checked against.
+ *
+ * options: {
+ *     valueTolerance, relativeValueTolerance {number} : as censusFunnelComponents,
+ *     uPeriodic {boolean} : wrap the first and last u cell columns when filling regions,
+ *     maxSplitDepth {number} : isolation safety cap (default 24),
+ *     unresolvedReportLimit {number} : how many unresolved regions to return in full (default 4)
+ * }
+ *
+ * Returns {
+ *     certified {boolean} : no unresolved region and no contradiction,
+ *     unresolvedRegionCount {number}, unresolvedRegions {array} : the first few in full,
+ *     contradictions {number},
+ *     liveCellCount {number} : census cells marked live, regionCount {number},
+ *     liveLeafCount, screenedCount, deadCount {number} : the isolation's own tally,
+ *     isolationFloor {map} : the leaf sizes used, as local fractions of a patch/span
+ * }
+ */
+export function certifyCensusCoverage(patchFactors is map, spans is array, censusResult is map,
+    options is map) returns map
+{
+    const filled = mergeMaps({ "valueTolerance" : 0,
+                "relativeValueTolerance" : ENVELOPE_RELATIVE_SIGN_TOLERANCE, "uPeriodic" : false,
+                "maxSplitDepth" : 24, "unresolvedReportLimit" : 4 }, options);
+    const uNodes = censusResult.uNodes;
+    const vNodes = censusResult.vNodes;
+    const tNodes = censusResult.tNodes;
+    const cellClass = censusResult.cellClass;
+    const cellCountU = size(uNodes) - 1;
+    const cellCountV = size(vNodes) - 1;
+    const cellCountT = size(tNodes) - 1;
+    const uNodesPerPatch = cellCountU / patchFactors.uSegments + 1;
+    const vNodesPerPatch = cellCountV / patchFactors.vSegments + 1;
+    const tNodesPerSpan = cellCountT / size(spans) + 1;
+    const isolationOptions = {
+            "minCellWidthU" : 1 / (uNodesPerPatch - 1),
+            "minCellWidthV" : 1 / (vNodesPerPatch - 1),
+            "minCellWidthT" : 1 / (tNodesPerSpan - 1),
+            "maxSplitDepth" : filled.maxSplitDepth
+        };
+
+    var live = makeArray(cellCountU);
+    for (var i = 0; i < cellCountU; i += 1)
+    {
+        var plane = makeArray(cellCountV);
+        for (var j = 0; j < cellCountV; j += 1)
+        {
+            plane[j] = makeArray(cellCountT, false);
+        }
+        live[i] = plane;
+    }
+
+    var liveLeafCount = 0;
+    var screenedCount = 0;
+    var deadCount = 0;
+    var liveCellCount = 0;
+    for (var uSegment = 0; uSegment < patchFactors.uSegments; uSegment += 1)
+    {
+        for (var vSegment = 0; vSegment < patchFactors.vSegments; vSegment += 1)
+        {
+            const patch = patchFactors.patches[uSegment][vSegment];
+            for (var spanIndex = 0; spanIndex < size(spans); spanIndex += 1)
+            {
+                const screen = screenEnvelopeBlockScaled(patch, spans[spanIndex],
+                        filled.relativeValueTolerance, filled.valueTolerance);
+                screenedCount += 1;
+                if (!screen.canVanish)
+                {
+                    deadCount += 1;
+                    continue;
+                }
+                const isolation = isolateEnvelopeCells(patch, spans[spanIndex],
+                        mergeMaps(isolationOptions, { "valueTolerance" : screen.signTolerance }));
+                liveLeafCount += size(isolation.liveCells);
+                screenedCount += isolation.screenedCount;
+                deadCount += isolation.deadCount;
+                for (var cell in isolation.liveCells)
+                {
+                    const uRange = overlappingCellRange(uNodes, cell.globalUStart, cell.globalUEnd);
+                    const vRange = overlappingCellRange(vNodes, cell.globalVStart, cell.globalVEnd);
+                    const tRange = overlappingCellRange(tNodes, cell.globalTStart, cell.globalTEnd);
+                    for (var i = uRange.start; i <= uRange.end; i += 1)
+                    {
+                        for (var j = vRange.start; j <= vRange.end; j += 1)
+                        {
+                            for (var k = tRange.start; k <= tRange.end; k += 1)
+                            {
+                                if (!live[i][j][k])
+                                {
+                                    live[i][j][k] = true;
+                                    liveCellCount += 1;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    var contradictions = 0;
+    for (var i = 0; i < cellCountU; i += 1)
+    {
+        for (var j = 0; j < cellCountV; j += 1)
+        {
+            for (var k = 0; k < cellCountT; k += 1)
+            {
+                if (cellClass[i][j][k] == 2 && !live[i][j][k])
+                {
+                    contradictions += 1;
+                }
+            }
+        }
+    }
+
+    const regions = fillLiveRegions(live, cellClass, uNodes, vNodes, tNodes, filled.uPeriodic,
+            liveCellCount);
+    var unresolvedRegionCount = 0;
+    var unresolvedRegions = [];
+    for (var region in regions)
+    {
+        if (region.mixedCellCount > 0)
+        {
+            continue;
+        }
+        unresolvedRegionCount += 1;
+        if (size(unresolvedRegions) < filled.unresolvedReportLimit)
+        {
+            unresolvedRegions = append(unresolvedRegions, region);
+        }
+    }
+    return {
+            "certified" : unresolvedRegionCount == 0 && contradictions == 0,
+            "unresolvedRegionCount" : unresolvedRegionCount,
+            "unresolvedRegions" : unresolvedRegions,
+            "contradictions" : contradictions,
+            "liveCellCount" : liveCellCount,
+            "regionCount" : size(regions),
+            "liveLeafCount" : liveLeafCount,
+            "screenedCount" : screenedCount,
+            "deadCount" : deadCount,
+            "isolationFloor" : { "u" : isolationOptions.minCellWidthU,
+                "v" : isolationOptions.minCellWidthV, "t" : isolationOptions.minCellWidthT }
+        };
+}
+
+/**
+ * The inclusive index range of the cells of `nodes` that overlap [low, high]. A leaf sitting
+ * exactly on cell boundaries claims the one cell it fills rather than its two neighbours, which
+ * is what keeps an aligned lattice one-to-one; a leaf narrower than a cell still claims that
+ * cell, since containment is what the certificate needs.
+ */
+function overlappingCellRange(nodes is array, low is number, high is number) returns map
+{
+    const cellCount = size(nodes) - 1;
+    const tolerance = 1e-9 * (nodes[cellCount] - nodes[0]);
+    var start = -1;
+    var end = -1;
+    for (var index = 0; index < cellCount; index += 1)
+    {
+        if (nodes[index + 1] > low + tolerance && nodes[index] < high - tolerance)
+        {
+            start = start < 0 ? index : start;
+            end = index;
+        }
+    }
+    if (start >= 0)
+    {
+        return { "start" : start, "end" : end };
+    }
+    // A leaf thinner than the overlap tolerance: give it the cell that contains it.
+    for (var index = 0; index < cellCount; index += 1)
+    {
+        if (nodes[index] - tolerance <= low && high <= nodes[index + 1] + tolerance)
+        {
+            return { "start" : index, "end" : index };
+        }
+    }
+    return { "start" : 0, "end" : -1 };
+}
+
+/**
+ * Flood fill the live cells into 6-connected regions (u wrap when periodic), skipping cells the
+ * census masked out. Each region reports how many of its cells the census found sign-mixed.
+ * One preallocated queue serves every region: every live cell is visited exactly once across all
+ * of them, and append() copies.
+ */
+function fillLiveRegions(live is array, cellClass is array, uNodes is array, vNodes is array,
+    tNodes is array, uPeriodic is boolean, liveCellCount is number) returns array
+{
+    const cellCountU = size(uNodes) - 1;
+    const cellCountV = size(vNodes) - 1;
+    const cellCountT = size(tNodes) - 1;
+    var visited = makeArray(cellCountU);
+    for (var i = 0; i < cellCountU; i += 1)
+    {
+        var plane = makeArray(cellCountV);
+        for (var j = 0; j < cellCountV; j += 1)
+        {
+            plane[j] = makeArray(cellCountT, false);
+        }
+        visited[i] = plane;
+    }
+    var queue = makeArray(max(liveCellCount, 1), [0, 0, 0]);
+    var regions = [];
+    for (var i = 0; i < cellCountU; i += 1)
+    {
+        for (var j = 0; j < cellCountV; j += 1)
+        {
+            for (var k = 0; k < cellCountT; k += 1)
+            {
+                if (visited[i][j][k] || !live[i][j][k] || cellClass[i][j][k] == 0)
+                {
+                    continue;
+                }
+                var cellCount = 0;
+                var mixedCellCount = 0;
+                var crossesUSeam = false;
+                var uMin = uNodes[cellCountU];
+                var uMax = uNodes[0];
+                var vMin = vNodes[cellCountV];
+                var vMax = vNodes[0];
+                var tMin = tNodes[cellCountT];
+                var tMax = tNodes[0];
+                queue[0] = [i, j, k];
+                var queueLength = 1;
+                var queueCursor = 0;
+                visited[i][j][k] = true;
+                while (queueCursor < queueLength)
+                {
+                    const currentCell = queue[queueCursor];
+                    queueCursor += 1;
+                    const ci = currentCell[0];
+                    const cj = currentCell[1];
+                    const ck = currentCell[2];
+                    cellCount += 1;
+                    if (cellClass[ci][cj][ck] == 2)
+                    {
+                        mixedCellCount += 1;
+                    }
+                    uMin = min(uMin, uNodes[ci]);
+                    uMax = max(uMax, uNodes[ci + 1]);
+                    vMin = min(vMin, vNodes[cj]);
+                    vMax = max(vMax, vNodes[cj + 1]);
+                    tMin = min(tMin, tNodes[ck]);
+                    tMax = max(tMax, tNodes[ck + 1]);
+                    for (var direction = 0; direction < 6; direction += 1)
+                    {
+                        var ni = ci + (direction == 0 ? 1 : (direction == 1 ? -1 : 0));
+                        const nj = cj + (direction == 2 ? 1 : (direction == 3 ? -1 : 0));
+                        const nk = ck + (direction == 4 ? 1 : (direction == 5 ? -1 : 0));
+                        var wrapped = false;
+                        if (uPeriodic && ni < 0)
+                        {
+                            ni = cellCountU - 1;
+                            wrapped = true;
+                        }
+                        if (uPeriodic && ni > cellCountU - 1)
+                        {
+                            ni = 0;
+                            wrapped = true;
+                        }
+                        if (ni < 0 || ni > cellCountU - 1 || nj < 0 || nj > cellCountV - 1 ||
+                            nk < 0 || nk > cellCountT - 1)
+                        {
+                            continue;
+                        }
+                        if (visited[ni][nj][nk] || !live[ni][nj][nk] || cellClass[ni][nj][nk] == 0)
+                        {
+                            continue;
+                        }
+                        if (wrapped)
+                        {
+                            crossesUSeam = true;
+                        }
+                        visited[ni][nj][nk] = true;
+                        queue[queueLength] = [ni, nj, nk];
+                        queueLength += 1;
+                    }
+                }
+                regions = append(regions, {
+                            "cellCount" : cellCount,
+                            "mixedCellCount" : mixedCellCount,
+                            "crossesUSeam" : crossesUSeam,
+                            "parameterBounds" : { "uMin" : uMin, "uMax" : uMax, "vMin" : vMin,
+                                "vMax" : vMax, "tMin" : tMin, "tMax" : tMax }
+                        });
+            }
+        }
+    }
+    return regions;
+}
+
+/**
+ * The census of spec 6.3 step 3 with its topology certified rather than assumed: run the census,
+ * certify its coverage, and refine by halving the cell size until the certificate holds - or
+ * report that it does not.
+ *
+ * Two independent things have to be true before a component set is the answer.
+ *
+ * 1. *Nothing hides.* certifyCensusCoverage proves it from the interval screen's dead
+ *    certificates. This half is a proof.
+ * 2. *Nothing merged.* Coverage cannot see two zero-set components sharing one live region: at a
+ *    coarse enough cell size two separate contact loops read as one. So the component set must
+ *    also AGREE with the set found at half the cell size - same count, same flags. This half is
+ *    a convergence check, not a proof: two consecutive resolutions that are both too coarse can
+ *    agree with each other and be wrong together, which is what `minimumNodesPerPatch` exists to
+ *    keep a caller away from.
+ *
+ * A refinement doubles the cells per patch in every direction (n nodes become 2n - 1), which
+ * keeps a power-of-two node count aligned with the isolation's halving lattice, so live leaves and
+ * census cells stay one-to-one.
+ *
+ * options: censusFunnelComponents's options, plus {
+ *     minimumNodesPerPatch, minimumNodesPerSpan {number} : the floor the first pass starts from
+ *         whatever the caller asked for (defaults 9),
+ *     maxRefinements {number} : how many doublings to spend before giving up (default 2),
+ *     requireStability {boolean} : demand the stability half (default true; false accepts the
+ *         coverage proof alone, for a caller that already knows the topology)
+ * }
+ *
+ * Returns censusFunnelComponents's record for the final pass, plus {
+ *     certified {boolean}, stable {boolean}, coverage {map} : the final certificate,
+ *     refinements {number}, resolution {map} : the node counts that produced the answer,
+ *     passes {array} : one summary per pass, so a caller can report what refinement cost
+ * }
+ */
+export function censusFunnelComponentsCertified(patchFactors is map, spans is array,
+    censusOptions is map) returns map
+{
+    const options = mergeMaps({ "minimumNodesPerPatch" : 9, "minimumNodesPerSpan" : 9,
+                "maxRefinements" : 2, "requireStability" : true }, censusOptions);
+    var uNodesPerPatch = max(options.uNodesPerPatch, options.minimumNodesPerPatch);
+    var vNodesPerPatch = max(options.vNodesPerPatch, options.minimumNodesPerPatch);
+    var tNodesPerSpan = max(options.tNodesPerSpan, options.minimumNodesPerSpan);
+    var result = undefined;
+    var coverage = undefined;
+    var previousSignatures = undefined;
+    var stable = false;
+    var refinements = 0;
+    var passes = [];
+    for (var attempt = 0; attempt <= options.maxRefinements; attempt += 1)
+    {
+        var passOptions = options;
+        passOptions.uNodesPerPatch = uNodesPerPatch;
+        passOptions.vNodesPerPatch = vNodesPerPatch;
+        passOptions.tNodesPerSpan = tNodesPerSpan;
+        result = censusFunnelComponents(patchFactors, spans, passOptions);
+        coverage = certifyCensusCoverage(patchFactors, spans, result, passOptions);
+        const signatures = componentFlagSignatures(result.components);
+        stable = previousSignatures != undefined &&
+            signatureMultisetsAgree(previousSignatures, signatures);
+        refinements = attempt;
+        passes = append(passes, {
+                    "uNodesPerPatch" : uNodesPerPatch, "vNodesPerPatch" : vNodesPerPatch,
+                    "tNodesPerSpan" : tNodesPerSpan,
+                    "componentCount" : size(result.components),
+                    "mixedCellCount" : result.mixedCellCount,
+                    "liveCellCount" : coverage.liveCellCount,
+                    "unresolvedRegionCount" : coverage.unresolvedRegionCount,
+                    "contradictions" : coverage.contradictions,
+                    "stable" : stable
+                });
+        if (coverage.certified && (stable || !options.requireStability))
+        {
+            break;
+        }
+        previousSignatures = signatures;
+        uNodesPerPatch = 2 * uNodesPerPatch - 1;
+        vNodesPerPatch = 2 * vNodesPerPatch - 1;
+        tNodesPerSpan = 2 * tNodesPerSpan - 1;
+    }
+    return mergeMaps(result, {
+                "certified" : coverage.certified && (stable || !options.requireStability),
+                "stable" : stable,
+                "coverage" : coverage,
+                "refinements" : refinements,
+                "resolution" : { "uNodesPerPatch" : passes[size(passes) - 1].uNodesPerPatch,
+                    "vNodesPerPatch" : passes[size(passes) - 1].vNodesPerPatch,
+                    "tNodesPerSpan" : passes[size(passes) - 1].tNodesPerSpan },
+                "passes" : passes
+            });
+}
+
+/** One string per component, encoding the seven boolean flags the stability check compares. */
+function componentFlagSignatures(components is array) returns array
+{
+    var signatures = makeArray(size(components), "");
+    for (var index = 0; index < size(components); index += 1)
+    {
+        const component = components[index];
+        signatures[index] =
+            (component.isIsland ? "1" : "0") ~
+            (component.touchesTStart ? "1" : "0") ~
+            (component.touchesTEnd ? "1" : "0") ~
+            (component.touchesDomainBoundaryUv ? "1" : "0") ~
+            (component.touchesTrimBoundary ? "1" : "0") ~
+            (component.touchesDegenerateBoundary ? "1" : "0") ~
+            (component.crossesUSeam ? "1" : "0");
+    }
+    return signatures;
+}
+
+/** True when two signature arrays hold the same strings with the same multiplicities. */
+function signatureMultisetsAgree(first is array, second is array) returns boolean
+{
+    if (size(first) != size(second))
+    {
+        return false;
+    }
+    for (var signature in first)
+    {
+        if (countSignature(first, signature) != countSignature(second, signature))
+        {
+            return false;
+        }
+    }
+    return true;
+}
+
+function countSignature(signatures is array, signature is string) returns number
+{
+    var count = 0;
+    for (var candidate in signatures)
+    {
+        if (candidate == signature)
+        {
+            count += 1;
+        }
+    }
+    return count;
 }
 
 /**
@@ -1408,7 +2142,7 @@ export function uvPointOnLoops(trimLoops is array, u is number, v is number, tol
             const start = loopPoints[index];
             const end = loopPoints[(index + 1) % pointCount];
             const imageU = uPeriod == 0 ? u : u + round((0.5 * (start[0] + end[0]) - u) / uPeriod) * uPeriod;
-            if (pointToSegmentSquaredDistance(vector(imageU, v), start, end) <= toleranceSquared)
+            if (pointToSegmentSquaredDistance(imageU, v, start, end) <= toleranceSquared)
             {
                 return true;
             }
@@ -1418,17 +2152,28 @@ export function uvPointOnLoops(trimLoops is array, u is number, v is number, tol
 }
 
 /** Squared distance from a uv point to a segment, clamped to the segment's ends. */
-function pointToSegmentSquaredDistance(point is Vector, start is Vector, end is Vector) returns number
+/**
+ * Squared uv distance from (pointU, pointV) to the segment start..end, component-wise on plain
+ * numbers. The endpoints are left untyped and indexed rather than taken as Vectors, because the
+ * census documents a trim loop as EITHER an array of 2D Vectors (what buildFaceTrimLoops emits)
+ * or bare [u, v] pairs (what every hand-built fixture uses), and Vector arithmetic accepts only
+ * the first. Indexing accepts both, and allocates nothing in what is the mask's inner loop.
+ */
+function pointToSegmentSquaredDistance(pointU is number, pointV is number, start, end) returns number
 {
-    const along = end - start;
-    const alongLengthSquared = squaredNorm(along);
-    if (alongLengthSquared == 0)
+    const alongU = end[0] - start[0];
+    const alongV = end[1] - start[1];
+    const alongLengthSquared = alongU * alongU + alongV * alongV;
+    var offsetU = pointU - start[0];
+    var offsetV = pointV - start[1];
+    if (alongLengthSquared > 0)
     {
-        return squaredNorm(point - start);
+        const projection = (offsetU * alongU + offsetV * alongV) / alongLengthSquared;
+        const clamped = max(0, min(1, projection));
+        offsetU -= clamped * alongU;
+        offsetV -= clamped * alongV;
     }
-    const projection = dot(point - start, along) / alongLengthSquared;
-    const clamped = max(0, min(1, projection));
-    return squaredNorm(point - (start + clamped * along));
+    return offsetU * offsetU + offsetV * offsetV;
 }
 
 /** The points of a trim loop given in either accepted shape. */
@@ -1779,7 +2524,16 @@ export function marchStripZeroCurves(strippedMotion is map, normals is array, po
  * The pointwise envelope function and its full gradient at one (u, v, t) - the polish and
  * marching evaluator (order-2 surface derivatives; rational-correct through the
  * splineRefinementUtils evaluators).
- * Returns { value, uDerivative, vDerivative, tDerivative }.
+ *
+ * `tDerivativeScale` and `valueScale` are the Cauchy-Schwarz bounds on |f_t| and |f| built from
+ * the same four vectors, |A'N||v| + |AN||a| and |AN||v|. They are what a caller needs in order
+ * to tell a genuinely small f_t from one that is small only because every term feeding it is: a
+ * constant-velocity translation has f_t identically zero AND its scale zero, so the ratio of
+ * the two says nothing and only `valueScale` - the size of f itself - is left to measure
+ * against. That is a STATIONARY section rather than a tangency (spec 6.4, detector 2). Both are
+ * free here; the vectors already exist.
+ *
+ * Returns { value, uDerivative, vDerivative, tDerivative, tDerivativeScale, valueScale }.
  */
 export function evaluateEnvelopeGradientPointwise(strippedMotion is map, strippedSurface is map,
     u is number, v is number, t is number) returns map
@@ -1794,14 +2548,18 @@ export function evaluateEnvelopeGradientPointwise(strippedMotion is map, strippe
     const sample = evaluateMotionSample(strippedMotion, t);
     const velocity = sample.rotationDerivative * surfacePoint + sample.translationDerivative;
     const acceleration = sample.rotationSecondDerivative * surfacePoint + sample.translationSecondDerivative;
+    const transportedNormal = sample.rotation * normal;
+    const turnedNormal = sample.rotationDerivative * normal;
     return {
-            "value" : dot(sample.rotation * normal, velocity),
+            "value" : dot(transportedNormal, velocity),
             "uDerivative" : dot(sample.rotation * uNormalDerivative, velocity) +
-                dot(sample.rotation * normal, sample.rotationDerivative * uTangent),
+                dot(transportedNormal, sample.rotationDerivative * uTangent),
             "vDerivative" : dot(sample.rotation * vNormalDerivative, velocity) +
-                dot(sample.rotation * normal, sample.rotationDerivative * vTangent),
-            "tDerivative" : dot(sample.rotationDerivative * normal, velocity) +
-                dot(sample.rotation * normal, acceleration)
+                dot(transportedNormal, sample.rotationDerivative * vTangent),
+            "tDerivative" : dot(turnedNormal, velocity) + dot(transportedNormal, acceleration),
+            "tDerivativeScale" : norm(turnedNormal) * norm(velocity) +
+                norm(transportedNormal) * norm(acceleration),
+            "valueScale" : norm(transportedNormal) * norm(velocity)
         };
 }
 
@@ -1968,7 +2726,19 @@ function refineContactRoot(strippedMotion is map, normal is Vector, point is Vec
     return { "t" : t, "value" : value };
 }
 
-/** Newton corrector onto f(., ., tGlobal) = 0 along the uv gradient, clamped to the domain. */
+/**
+ * Newton corrector onto f(., ., tGlobal) = 0 along the uv gradient, clamped to the domain.
+ * This overload reads the domain off the surface, for callers outside this module that hold a
+ * seed and need it on the section - spec 6.4's tangency refinement iterates through it.
+ */
+export function correctPointOntoSection(strippedMotion is map, strippedSurface is map,
+    tGlobal is number, seedUv is array, tolerance is number) returns array
+{
+    return correctOntoSection(strippedMotion, strippedSurface, tGlobal, seedUv,
+        knotDomainOfStrippedSurface(strippedSurface), tolerance);
+}
+
+/** As above, for callers inside this module that already hold the domain. */
 function correctOntoSection(strippedMotion is map, strippedSurface is map, tGlobal is number,
     seedUv is array, domain is map, tolerance is number) returns array
 {
@@ -2056,6 +2826,37 @@ function clampMagnitude(value is number, limit is number) returns number
 // ============================= Self-test fixtures =============================
 
 /**
+ * The node-contact fixture (spec 6.7): S(u, v) = (0.2u, 0.15v, 0.1u^2). Degrees (2, 2) on one
+ * Bezier patch reproduce it exactly, since x and y are linear and z is quadratic in u alone.
+ * S_u = (0.2, 0, 0.2u), S_v = (0, 0.15, 0), N = (-0.03u, 0, 0.03), so under the constant
+ * velocity (1, 0, 0.5) the envelope function is exactly f = 0.03 (0.5 - u): the contact set is
+ * the plane u = 0.5, which every odd-node grid puts ON a node line. The same surface is the
+ * sheet swTrimLoopTester builds in the kernel, so the two tests read one geometry.
+ */
+function nodeContactFixtureSurface() returns map
+{
+    const xCoefficients = [0, 0.1, 0.2];
+    const yCoefficients = [0, 0.075, 0.15];
+    const zCoefficients = [0, 0, 0.1];
+    var net = makeArray(3);
+    for (var i = 0; i < 3; i += 1)
+    {
+        var row = makeArray(3);
+        for (var j = 0; j < 3; j += 1)
+        {
+            row[j] = vector(xCoefficients[i], yCoefficients[j], zCoefficients[i]);
+        }
+        net[i] = row;
+    }
+    return {
+            "uDegree" : 2, "vDegree" : 2,
+            "uKnots" : [0, 0, 0, 1, 1, 1], "vKnots" : [0, 0, 0, 1, 1, 1],
+            "controlPoints" : net, "isRational" : false,
+            "isUPeriodic" : false, "isVPeriodic" : false
+        };
+}
+
+/**
  * The seam fixture: z = 0.8 ((u - 0.5)^3/3 + 1/24) v(1 - v), so that
  * z_u = 0.8 (u - 0.5)^2 v(1 - v) peaks against BOTH u edges - one contact lobe per edge under
  * constant w = (1, 0, 0.02), the same physical band on a closed face.
@@ -2079,6 +2880,43 @@ function seamFixtureSurface() returns map
     return {
             "uDegree" : 3, "vDegree" : 2,
             "uKnots" : [0, 0, 0, 0, 1, 1, 1, 1], "vKnots" : [0, 0, 0, 1, 1, 1],
+            "controlPoints" : net, "isRational" : false,
+            "isUPeriodic" : false, "isVPeriodic" : false
+        };
+}
+
+/**
+ * The rotation fixture: a parabolic cylinder shifted off both parameter origins,
+ * S = (x, y, 0.3 x^2) with x = u + 1 and y = v + 0.3, degrees (2, 1). Under the harness's
+ * first-order rotation about +Z at unit rate - where `b'` is EXACTLY zero - the envelope
+ * function is exactly
+ *
+ *     f = 0.6 x (y - t x)
+ *
+ * so the contact set is the single line v = t(u + 1) - 0.3, which enters the unit domain at
+ * t = 0.15 and is still inside it at t = 1. Both offsets are load-bearing: x is kept away from
+ * zero so the zero set is one line rather than a line plus the whole u = 0 edge, and y is offset
+ * by 0.3 so the birth t does not land on a grid node, where the birth cell's verdict would come
+ * down to the sign of a rounding error.
+ */
+function rotationFixtureSurface() returns map
+{
+    const xControls = [1, 1.5, 2];
+    const yControls = [0.3, 1.3];
+    const zControls = [0.3, 0.6, 1.2];
+    var net = makeArray(3);
+    for (var i = 0; i < 3; i += 1)
+    {
+        var row = makeArray(2);
+        for (var j = 0; j < 2; j += 1)
+        {
+            row[j] = vector(xControls[i], yControls[j], zControls[i]);
+        }
+        net[i] = row;
+    }
+    return {
+            "uDegree" : 2, "vDegree" : 1,
+            "uKnots" : [0, 0, 0, 1, 1, 1], "vKnots" : [0, 0, 1, 1],
             "controlPoints" : net, "isRational" : false,
             "isUPeriodic" : false, "isVPeriodic" : false
         };

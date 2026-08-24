@@ -569,6 +569,39 @@ export function screenEnvelopeBlock(patchFactor is map, spanPolynomials is map) 
 }
 
 /**
+ * The relative floor below which a value coming out of the coefficient path carries no sign:
+ * one block's f is a twelve-term sum of degree-elevated grid products, so cancellation there
+ * costs a few thousand machine epsilons of the terms' own magnitude. Four orders above that,
+ * and - measured on the spec 6.7 fixture - ten orders below a real block's |f| range.
+ */
+export const ENVELOPE_RELATIVE_SIGN_TOLERANCE = 1e-12;
+
+/**
+ * screenEnvelopeBlock with the zero threshold taken from the BLOCK'S OWN value range rather
+ * than from an absolute number a caller guessed: `relativeTolerance` times the larger end of
+ * the loose range, never below `absoluteFloor`. Returns screenEnvelopeBlock's record plus
+ * `signTolerance` - the threshold, which the caller uses for every sign test it makes on this
+ * block, so that screening and the signs it later reads agree on what zero means.
+ *
+ * An absolute threshold cannot work here: the same number is a certificate on a block whose
+ * |f| runs to 1e-2 and pure noise on one that runs to 1e-14, and nothing upstream of a block
+ * knows which it is.
+ */
+export function screenEnvelopeBlockScaled(patchFactor is map, spanPolynomials is map,
+    relativeTolerance is number, absoluteFloor is number) returns map
+{
+    const loose = screenEnvelopeBlock(patchFactor, spanPolynomials, 0);
+    const signTolerance = max(absoluteFloor,
+        relativeTolerance * max(abs(loose.looseMin), abs(loose.looseMax)));
+    return {
+            "canVanish" : loose.looseMin <= signTolerance && loose.looseMax >= -signTolerance,
+            "looseMin" : loose.looseMin,
+            "looseMax" : loose.looseMax,
+            "signTolerance" : signTolerance
+        };
+}
+
+/**
  * Materialize one block's full coefficient tensor: f on the block as a Bernstein polynomial
  * in local t whose coefficients are uv grids - result[m] is the grid multiplying the m-th
  * Bernstein basis function in t. The whole accumulation is ONE native matrix product per

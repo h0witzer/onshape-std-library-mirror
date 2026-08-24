@@ -19,6 +19,8 @@ MODULES = [
     "swEnvelopeMath.fs",
     "swFunnelSolver.fs",
     "swOrientation.fs",
+    "swDegeneracy.fs",
+    "swDegeneracyTester.fs",
     "swSweepEmit.fs",
     "swEnvelopeFit.fs",
 ]
@@ -122,7 +124,10 @@ def doc_start(src, at):
     m = re.search(r'(/\*\*(?:(?!\*/)[\s\S])*\*/\s*)$', head)
     if m:
         return m.start(1)
-    m = re.search(r'((?:^[ \t]*//[^\n]*\n)+)$', head, re.M)
+    # \Z, not $: with re.M a `$` matches at EVERY line end, so this found the FIRST // run in
+    # the file and swallowed everything from there down to the declaration - 2682 lines for a
+    # twenty-line corrector. Only a run that ENDS where the declaration begins is its comment.
+    m = re.search(r'((?:^[ \t]*//[^\n]*\n)+)\Z', head, re.M)
     return m.start(1) if m else at
 
 
