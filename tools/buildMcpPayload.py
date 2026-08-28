@@ -13,20 +13,22 @@ import io, os, re, sys
 
 CF = "c:/Github/Onshape Featurescript Repository/onshape-std-library-mirror/custom-features"
 
+# The whole stack is two files now (tools/consolidateSweepStack.py). This tool survives the
+# consolidation because the MCP harness runs in the server's OWN scratch document, where a
+# same-document import of the utils tab cannot resolve - so a harness run still needs one
+# self-contained, reachability-pruned file.
 MODULES = [
-    "swTestHarness.fs",
-    "bernsteinPolynomialUtils.fs",
-    "swEnvelopeMath.fs",
-    "swFunnelSolver.fs",
-    "swOrientation.fs",
-    "swDegeneracy.fs",
-    "swDegeneracyTester.fs",
-    "swSweepEmit.fs",
-    "swEnvelopeFit.fs",
+    "solidSweepUtils.fs",
+    "solidSweepTester.fs",
 ]
 
 KEEP_IMPORTS = [
     'import(path : "onshape/std/common.fs", version : "3044.0");',
+    # geometry.fs, not just common.fs: ProjectionType is re-exported by projectCurves.fs and
+    # splitpart.fs alone, and an unresolved name in FeatureScript degrades to a missing OPERATION
+    # rather than a compile error, so leaving it out shows up as geometry that silently fails to
+    # draw.
+    'import(path : "onshape/std/geometry.fs", version : "3044.0");',
     'import(path : "onshape/std/surfaceGeometry.fs", version : "3044.0");',
     'import(path : "onshape/std/curveGeometry.fs", version : "3044.0");',
     'import(path : "eca0e7b6ed29c5239f39f868/c6d53360a1b2036a47b2b076/9a2b77793cdc37bace6d915a", '
@@ -150,6 +152,14 @@ def collect(path):
         end = brace_match(src, m.start())
         decls.append(("function", m.group(1), src[doc_start(src, m.start()):end]))
 
+    # Enums are brace-matched like functions. They were missed entirely until 2026-08-23, when a
+    # payload came out referring to SweepSurfaceClass without carrying it - the reachability walk
+    # was right, the collector simply never saw the declaration. Types and predicates have no
+    # instances in these modules yet; add them here the same way when they appear.
+    for m in re.finditer(r'^(?:export )?enum (\w+)', src, re.M):
+        end = brace_match(src, m.start())
+        decls.append(("enum", m.group(1), src[doc_start(src, m.start()):end]))
+
     # Constants are taken WITHOUT the doc-comment lookback: a const is a line or two, and
     # letting doc_start reach backwards here swallowed whole files (3167 lines for a 1e-4).
     for m in re.finditer(r'^(?:export )?const ([A-Za-z_]\w*)\s*=', src, re.M):
@@ -207,10 +217,11 @@ def main():
         for text in table[nm]:
             queue.extend(code_idents(text))
 
-    # Constants first: a module's own text may define them below the functions that read them,
-    # and the merged payload should not depend on top-level resolution order.
+    # Enums, then constants, then functions: a module's own text may define any of them below
+    # the code that reads them, and the merged payload must not depend on top-level resolution
+    # order.
     emitted, out, current = set(), [], None
-    for wanted_kind in ("const", "function"):
+    for wanted_kind in ("enum", "const", "function"):
         for mod, dname, kind in order:
             if kind != wanted_kind or dname not in seen or dname in emitted:
                 continue

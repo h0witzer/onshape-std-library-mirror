@@ -1245,9 +1245,14 @@ export function checkWithin(tally is map, worst is number, tolerance is number,
 export function reportCheckTally(context is Context, id is Id, testName is string,
     tally is map, passSummary is string)
 {
+    // The summary rides on the FAILING verdict too. It carries the run's own measurements - the
+    // census counts, the stage reached, the emitted and refused totals - and a failure reported
+    // without them says only that something went wrong, which is the one run where the numbers
+    // were worth keeping.
     const verdict = tally.failures == 0 ?
         ("PASS: " ~ tally.checks ~ " checks - " ~ passSummary) :
-        ("FAIL (" ~ tally.failures ~ " of " ~ tally.checks ~ " checks):" ~ tally.notes);
+        ("FAIL (" ~ tally.failures ~ " of " ~ tally.checks ~ " checks):" ~ tally.notes ~
+            " | " ~ passSummary);
     println("[" ~ testName ~ "] VERDICT: " ~ verdict);
     reportFeatureInfo(context, id, verdict);
 }
@@ -5401,14 +5406,14 @@ export const sweepEllipsoidRouteAbLiveTest = defineFeature(function(context is C
         isLength(definition.extractTolerance, ASSEMBLY_EXTRACT_BOUNDS);
     }
     {
-        // Spec 12.3 tier 0 item 0g, first half. THE question this answers: was the sampling ever
+        // Spec 12.3 the proof-fixture work, first half. THE question this answers: was the sampling ever
         // necessary for this face? The section-9.4 fixture is a SurfaceType.REVOLVED ellipsoid whose
         // generator is one untrimmed iso-curve away, and section 11.6 measured that 87% of its build
         // is the spline evaluator serving a solve it does not need. So: same tool, same motion, same
         // stations, two routes to the contact curve, and a cross-check that owes neither route
         // anything.
         //
-        // What this does NOT cover: the emitted solid. That needs tier 0 items 0a-0c wired, and the
+        // What this does NOT cover: the emitted solid. That needs the routing work wired, and the
         // solid-vs-solid half of 0g stays open until they are. The contact curve is the part that
         // settles whether the closed form is the right answer; emission is downstream of it.
         //
@@ -8147,7 +8152,7 @@ export const sweepAnalyticProfileLiveTest = defineFeature(function(context is Co
     {
     }
     {
-        // Tier 1 item 3's done-when, on real kernel faces: a revolved-spline face and an
+        // The profile-driven-class work's done-when, on real kernel faces: a revolved-spline face and an
         // extruded-spline face each reach the analytic layer, and NEITHER touches
         // evApproximateBSplineSurface. What is proved here that the self test cannot prove is that
         // the RECOVERED generator is the face's own - every check measures the closed form against
@@ -9763,6 +9768,59 @@ export enum SweepClosureStage
     KNIT
 }
 
+/**
+ * Which KIND of polyhedral patch an emission run is restricted to.
+ *
+ * A bisection instrument. `opBoolean` answering `BOOLEAN_INVALID` names neither the sheet it
+ * objected to nor what was wrong with it, and a polyhedral shell is built by two different pieces
+ * of arithmetic - a plane face's exactly-ruled grazing patch, and a sharp edge's funnel sheet. The
+ * envelope is incomplete under either restriction, so the only question a restricted run answers is
+ * whether the sheets it did emit are valid bodies that sew where they meet each other.
+ */
+export enum SweepPatchKindFilter
+{
+    annotation { "Name" : "Every patch" }
+    ALL,
+    annotation { "Name" : "Sharp-edge sheets only" }
+    EDGES_ONLY,
+    annotation { "Name" : "Plane-face sheets only" }
+    FACES_ONLY
+}
+
+/** `patches` restricted to one `patchKind`. */
+function filterPatchesByKind(patches is array, patchKind is string) returns array
+{
+    var kept = [];
+    for (var patchPlan in patches)
+    {
+        if (patchPlan.patchKind == patchKind)
+        {
+            kept = append(kept, patchPlan);
+        }
+    }
+    return kept;
+}
+
+/**
+ * `patches` restricted to owners in [from, to].
+ *
+ * The other half of the bisection instrument. A union that refuses names no body, so the way to
+ * find the sheet it objects to is to halve the set and ask again - and an owner range is the right
+ * unit to halve on, because one owner's patches are the ones that share seams with each other.
+ */
+function filterPatchesByOwnerRange(patches is array, from is number, to is number) returns array
+{
+    var kept = [];
+    for (var patchPlan in patches)
+    {
+        if (patchPlan.ownerIndex >= from && patchPlan.ownerIndex <= to)
+        {
+            kept = append(kept, patchPlan);
+        }
+    }
+    return kept;
+}
+
 /** The `stopAfter` string `assembleSweptSolid` takes, for a chosen stage. */
 function closureStageName(stage is SweepClosureStage) returns string
 {
@@ -10397,6 +10455,9 @@ const SWEEP_CUBE_TILT_BOUNDS = { (degree) : [0, 12, 180] } as AngleBoundSpec;
 
 const SWEEP_CUBE_EDGE_SAMPLE_BOUNDS = { (unitless) : [3, 9, 129] } as IntegerBoundSpec;
 
+/** Owner index range for the emission bisection instrument; 0..99 means every owner. */
+const SWEEP_OWNER_RANGE_BOUNDS = { (unitless) : [0, 99, 99] } as IntegerBoundSpec;
+
 const SWEEP_CUBE_STATION_BOUNDS = { (unitless) : [2, 9, 65] } as IntegerBoundSpec;
 
 /**
@@ -10504,6 +10565,24 @@ export const sweepRotatingCubeLiveTest = defineFeature(function(context is Conte
         annotation { "Name" : "Stations for the contact breakpoint scan" }
         isInteger(definition.breakpointStations, SWEEP_CUBE_BREAKPOINT_BOUNDS);
 
+        annotation { "Name" : "Solve contact breakpoints on coefficients" }
+        definition.exactBreakpoints is boolean;
+
+        annotation { "Name" : "Emit only" }
+        definition.emitPatchKind is SweepPatchKindFilter;
+
+        annotation { "Name" : "Emit only owners from" }
+        isInteger(definition.emitOwnerFrom, SWEEP_OWNER_RANGE_BOUNDS);
+
+        annotation { "Name" : "Emit only owners to" }
+        isInteger(definition.emitOwnerTo, SWEEP_OWNER_RANGE_BOUNDS);
+
+        annotation { "Name" : "Emit only segments from" }
+        isInteger(definition.emitSegmentFrom, SWEEP_OWNER_RANGE_BOUNDS);
+
+        annotation { "Name" : "Emit only segments to" }
+        isInteger(definition.emitSegmentTo, SWEEP_OWNER_RANGE_BOUNDS);
+
         annotation { "Name" : "Attempt closure to a solid" }
         definition.attemptClosure is boolean;
 
@@ -10520,6 +10599,9 @@ export const sweepRotatingCubeLiveTest = defineFeature(function(context is Conte
 
             annotation { "Name" : "Try the sheet union before the enclose", "Default" : true }
             definition.unionFirst is boolean;
+
+            annotation { "Name" : "Report the cap-to-lateral correspondence" }
+            definition.describeCorrespondence is boolean;
         }
 
         annotation { "Name" : "Keep the tool body" }
@@ -10575,7 +10657,8 @@ export const sweepRotatingCubeLiveTest = defineFeature(function(context is Conte
         // ---------- The plan ----------
         const plan = planPolyhedralEnvelope(motion, tool.faceRecords, tool.coEdgeRecords, {
                     "breakpointStations" : definition.breakpointStations == undefined ?
-                        385 : definition.breakpointStations
+                        385 : definition.breakpointStations,
+                    "exactBreakpoints" : definition.exactBreakpoints == true
                 });
         println("[ROTATING CUBE] " ~ summarizePolyhedralPlan(plan));
         for (var entry in plan.skipped)
@@ -10617,13 +10700,195 @@ export const sweepRotatingCubeLiveTest = defineFeature(function(context is Conte
             boundingByFace[faceIndex] = faceBoundingCoEdges(tool.coEdgeRecords, faceIndex);
         }
         const nextId = getUnstableIncrementingId(id + "patch");
+        // Emitting one KIND of patch is a bisection, not a feature: a union that refuses a whole
+        // shell says nothing about which sheet it objected to, and the two kinds are built by
+        // different arithmetic. The envelope is incomplete either way, so the question this
+        // answers is only whether the surviving sheets are valid bodies that sew where they meet.
+        var restricted = plan.patches;
+        if (definition.emitPatchKind != undefined &&
+            definition.emitPatchKind != SweepPatchKindFilter.ALL)
+        {
+            restricted = filterPatchesByKind(restricted,
+                definition.emitPatchKind == SweepPatchKindFilter.EDGES_ONLY ? "edge" : "face");
+        }
+        if (definition.emitOwnerFrom != undefined && definition.emitOwnerTo != undefined &&
+            !(definition.emitOwnerFrom == 0 && definition.emitOwnerTo >= 99))
+        {
+            restricted = filterPatchesByOwnerRange(restricted, definition.emitOwnerFrom,
+                definition.emitOwnerTo);
+        }
+        if (definition.emitSegmentFrom != undefined && definition.emitSegmentTo != undefined &&
+            !(definition.emitSegmentFrom == 0 && definition.emitSegmentTo >= 99))
+        {
+            var bySegment = [];
+            for (var patchPlan in restricted)
+            {
+                if (patchPlan.segmentIndex >= definition.emitSegmentFrom &&
+                    patchPlan.segmentIndex <= definition.emitSegmentTo)
+                {
+                    bySegment = append(bySegment, patchPlan);
+                }
+            }
+            restricted = bySegment;
+        }
+        const emissionPlan = size(restricted) == size(plan.patches) ? plan :
+            mergeMaps(plan, { "patches" : restricted });
         const emission = emitPolyhedralEnvelope(context, nextId, motion, tool.faceRecords,
-            tool.coEdgeRecords, plan, {
+            tool.coEdgeRecords, emissionPlan, {
                     "stationCount" : definition.patchStations,
                     "colorPatches" : definition.colorPatches,
                     "namePatches" : !definition.attemptClosure
                 });
+        // Does the cross-section close at every station? A seam census cannot answer this: an arc
+        // that was never planned leaves no unpaired edge behind, it leaves two other edges paired
+        // with each other, and the shell then has a slit running down it in t.
+        var loopFailures = 0;
+        for (var probeIndex = 0; probeIndex <= 24; probeIndex += 1)
+        {
+            const probeT = probeIndex / 24;
+            const loop = certifyCrossSectionLoop(motion, tool.coEdgeRecords, boundingByFace, plan,
+                probeT, 1e-7);
+            if (!loop.closed)
+            {
+                loopFailures += 1;
+                var detail = "";
+                for (var cluster in loop.clusters)
+                {
+                    if (cluster.count != 2)
+                    {
+                        detail = detail ~ " | " ~ cluster.count ~ "x " ~ toString(cluster.owners);
+                    }
+                }
+                println("[LOOP t=" ~ roundToPrecision(probeT, 4) ~ "] " ~ loop.arcCount ~
+                    " arc(s), " ~ loop.orphans ~ " orphan(s), " ~ loop.branches ~ " branch(es)" ~
+                    detail);
+            }
+        }
+        println("[LOOP] " ~ loopFailures ~ " of 25 stations do not close");
         println("[ROTATING CUBE] " ~ summarizePolyhedralEmission(emission));
+        // Indexed, because a seam census reports an unmatched edge by the position of its BODY in
+        // the shell and the only thing that turns that number back into an owner and an interval
+        // is the emission order itself.
+        // A restricted emission is always dumped: the only reason to restrict one is to find which
+        // sheet the kernel objects to, and that is unreadable without the per-patch lines.
+        if ((definition.describeCorrespondence == true ||
+                    (definition.emitPatchKind != undefined &&
+                        definition.emitPatchKind != SweepPatchKindFilter.ALL)) &&
+            emission.refusedCount == 0)
+        {
+            // The breakpoints UNROUNDED. Two owners can reach the same geometric event at times
+            // that print identically and are not the same number, and the gap between them is
+            // what every owner cut on the shared partition inherits.
+            for (var index = 0; index < size(plan.breakpoints); index += 1)
+            {
+                println("[BREAKPOINT " ~ index ~ "] " ~ toString(plan.breakpoints[index]) ~
+                    (index > 0 ? ("  gap " ~ toString(plan.breakpoints[index] -
+                                plan.breakpoints[index - 1])) : ""));
+            }
+            const patchLines = describePolyhedralPatches(emission);
+            for (var index = 0; index < size(patchLines); index += 1)
+            {
+                const report = emission.patchReports[index];
+                // The shortest ruling UNROUNDED. A patch that tapers reports its collapsed end as
+                // a rounded zero, and the difference between a true zero and a sub-micron sliver
+                // is the difference between a degenerate edge the kernel expects and one it does
+                // not - which is not visible at seven digits.
+                println("[PATCH " ~ index ~ "] " ~ patchLines[index] ~ " || shortestRuling " ~
+                    toString(report.shortestRuling) ~ ", refits " ~ toString(report.refits));
+            }
+        }
+        if (definition.describeCorrespondence == true && emission.refusedCount == 0)
+        {
+            // Whether each strip is part of the sweep's BOUNDARY or lies inside it. A point of a
+            // certified strip grazes the tool at its own time by construction; a strip whose
+            // points sit strictly inside the moving tool at OTHER times is interior to the swept
+            // volume - it bounds nothing there, and dropping or trimming it is what stops the
+            // shell from crossing itself. The test is exact and needs no kernel: back in tool
+            // coordinates at each sample time, a convex tool contains a point iff the point is
+            // behind every one of its face planes.
+            var facePlanes = [];
+            for (var faceIndex = 0; faceIndex < size(tool.faceRecords); faceIndex += 1)
+            {
+                const bounding = boundingByFace[faceIndex];
+                const boundingRecord = tool.coEdgeRecords[bounding[0].edgeIndex];
+                facePlanes = append(facePlanes, {
+                            "normal" : boundingRecord.sideNormals[bounding[0].side][0],
+                            "point" : boundingRecord.edgePoints[0]
+                        });
+            }
+            var motionFrames = [];
+            for (var tauIndex = 0; tauIndex <= 96; tauIndex += 1)
+            {
+                const frame = evaluateMotionSample(motion, tauIndex / 96, 1);
+                motionFrames = append(motionFrames, {
+                            "inverseRotation" : transpose(frame.rotation),
+                            "translation" : frame.translation
+                        });
+            }
+            for (var reportIndex = 0; reportIndex < size(emission.patchReports); reportIndex += 1)
+            {
+                const report = emission.patchReports[reportIndex];
+                if (report.refused)
+                {
+                    continue;
+                }
+                const resample = fitRuledEnvelopePatchAtStations(motion, tool.coEdgeRecords,
+                    report.patchKind == "face" ? boundingByFace[report.ownerIndex] : [],
+                    report, {}, 5);
+                if (resample.failed)
+                {
+                    println("[INTERIOR " ~ reportIndex ~ "] resample failed: " ~ resample.reason);
+                    continue;
+                }
+                var insidePoints = 0;
+                var totalPoints = 0;
+                var deepest = 0;
+                for (var stationIndex = 0; stationIndex < size(resample.grid); stationIndex += 1)
+                {
+                    const row = resample.grid[stationIndex];
+                    const rowPoints = [row[0], 0.5 * (row[0] + row[size(row) - 1]),
+                                row[size(row) - 1]];
+                    for (var samplePoint in rowPoints)
+                    {
+                        totalPoints += 1;
+                        var depth = -1e9;
+                        for (var frame in motionFrames)
+                        {
+                            const toolPoint = frame.inverseRotation *
+                                (samplePoint - frame.translation);
+                            var clearance = 1e9;
+                            for (var plane in facePlanes)
+                            {
+                                const behind = -dot(plane.normal, toolPoint - plane.point);
+                                if (behind < clearance)
+                                {
+                                    clearance = behind;
+                                }
+                            }
+                            if (clearance > depth)
+                            {
+                                depth = clearance;
+                            }
+                        }
+                        if (depth > 1e-5)
+                        {
+                            insidePoints += 1;
+                            if (depth > deepest)
+                            {
+                                deepest = depth;
+                            }
+                        }
+                    }
+                }
+                if (insidePoints > 0)
+                {
+                    println("[INTERIOR " ~ reportIndex ~ "] " ~ report.patchKind ~ " " ~
+                        report.ownerIndex ~ " seg " ~ report.segmentIndex ~ ": " ~ insidePoints ~
+                        " of " ~ totalPoints ~ " sample(s) strictly inside the sweep, deepest " ~
+                        roundToPrecision(deepest, 6) ~ " m");
+                }
+            }
+        }
         if (emission.refusedCount > 0)
         {
             // A refusal is only diagnosable next to the patches that did NOT refuse, so when one
@@ -10659,9 +10924,10 @@ export const sweepRotatingCubeLiveTest = defineFeature(function(context is Conte
             }
         }
         tally = checkThat(tally, emission.refusedCount == 0,
-            emission.refusedCount ~ " of " ~ size(plan.patches) ~ " patch(es) were refused.");
-        tally = checkThat(tally, emission.emittedCount == size(plan.patches),
-            "only " ~ emission.emittedCount ~ " of " ~ size(plan.patches) ~ " planned patches emitted.");
+            emission.refusedCount ~ " of " ~ size(emissionPlan.patches) ~ " patch(es) were refused.");
+        tally = checkThat(tally, emission.emittedCount == size(emissionPlan.patches),
+            "only " ~ emission.emittedCount ~ " of " ~ size(emissionPlan.patches) ~
+            " planned patches emitted.");
         if (emission.emittedCount == 0)
         {
             reportCheckTally(context, id, "ROTATING CUBE", tally,
@@ -10677,7 +10943,7 @@ export const sweepRotatingCubeLiveTest = defineFeature(function(context is Conte
 
         // ---------- Certification against fresh envelope points ----------
         const freshPoints = freshPolyhedralEnvelopePoints(motion, tool.coEdgeRecords,
-            boundingByFace, plan, 0);
+            boundingByFace, emissionPlan, 0);
         const sheetBodies = qUnion(emission.bodies);
         var reportedDeviation = -1;
         if (size(freshPoints) > 0)
@@ -10719,7 +10985,7 @@ export const sweepRotatingCubeLiveTest = defineFeature(function(context is Conte
         // numbers are needed after the fact cannot depend on one. A part name is readable from the
         // parts list in a single API call, always.
         const headline = "RUN " ~ definition.pathType ~ "/" ~ definition.rotationType ~
-            " | " ~ emission.emittedCount ~ " of " ~ size(plan.patches) ~ " emitted, " ~
+            " | " ~ emission.emittedCount ~ " of " ~ size(emissionPlan.patches) ~ " emitted, " ~
             emission.refusedCount ~ " refused, " ~ emission.refittedCount ~ " refit | " ~
             size(plan.skipped) ~ " skipped | deviation " ~
             roundToPrecision(reportedDeviation, 9) ~ " | drift " ~ roundToPrecision(drift, 12);
@@ -10763,6 +11029,21 @@ export const sweepRotatingCubeLiveTest = defineFeature(function(context is Conte
             {
                 closureLine = closureLine ~ " | skipped " ~ note;
             }
+            // What each cap's boundary is made of against what the lateral sheets arriving there
+            // expect to meet. A cap carrying no trim curves is the state this fixture has been in
+            // since the polyhedral route landed, and the count alone does not say whether the
+            // faces graze at a point, slide, or were never in contact at that station.
+            if (definition.describeCorrespondence)
+            {
+                for (var capTime in [0, 1])
+                {
+                    for (var reportLine in describeCapContactCorrespondence(motion,
+                        tool.faceRecords, tool.coEdgeRecords, capTime, 0))
+                    {
+                        println("[CORRESPONDENCE t=" ~ capTime ~ "] " ~ reportLine);
+                    }
+                }
+            }
 
             // Whether the shell CAN be sewn, asked before the union is asked to sew it. It is
             // its own switch because it is not free: every sheet's every edge is sampled against
@@ -10775,6 +11056,39 @@ export const sweepRotatingCubeLiveTest = defineFeature(function(context is Conte
                 " pair(s) of " ~ toString(lateral.edgeCount) ~ " free edge(s), " ~
                 toString(lateral.unmatchedCount) ~ " unmatched, worst pair " ~
                 toString(roundToPrecision(lateral.worstPairGap, 9));
+                // A lateral edge with no lateral partner is one of two different things, and the
+                // distinction decides where the work goes: a boundary AT a cap station, which
+                // correctly has no lateral neighbour and must be matched to the cap, or an
+                // interior seam that should have had one and does not.
+                if (definition.describeCorrespondence)
+                {
+                    for (var index = 0; index < lateral.unmatchedCount; index += 1)
+                    {
+                        const point = lateral.unmatchedPoints[index];
+                        const atStart = locateWorldPointOnToolEdges(motion, tool.coEdgeRecords,
+                            point, 0, 33);
+                        const atEnd = locateWorldPointOnToolEdges(motion, tool.coEdgeRecords,
+                            point, 1, 33);
+                        // The edge's own LENGTH is what says which boundary of its patch it is: a
+                        // t-boundary is a ruling, as long as the patch is wide, and a q-boundary
+                        // is a directrix, as long as the patch's transverse travel. The two need
+                        // different partners, so the report has to tell them apart.
+                        var edgeLength = -1;
+                        try silent
+                        {
+                            edgeLength = evLength(context,
+                                    { "entities" : lateral.unmatchedEdges[index] }) / meter;
+                        }
+                        println("[UNMATCHED LATERAL] body " ~ lateral.unmatchedOwners[index] ~
+                            " len " ~ toString(edgeLength) ~
+                            " at " ~ toString(point) ~ " | t=0 edge " ~ atStart.edgeIndex ~
+                            " s " ~ toString(roundToPrecision(atStart.s, 4)) ~ " " ~
+                            toString(roundToPrecision(atStart.distance, 7)) ~ " m" ~
+                            " | t=1 edge " ~ atEnd.edgeIndex ~ " s " ~
+                            toString(roundToPrecision(atEnd.s, 4)) ~ " " ~
+                            toString(roundToPrecision(atEnd.distance, 7)) ~ " m");
+                    }
+                }
             }
 
             const assembly = assembleSweptSolid(context, id + "assembly", {
@@ -10825,6 +11139,24 @@ export const sweepRotatingCubeLiveTest = defineFeature(function(context is Conte
                 " seam pair(s) of " ~ toString(assembly.seams.edgeCount) ~ " free edge(s), " ~
                 toString(assembly.seams.unmatchedCount) ~ " unmatched, worst pair " ~
                 toString(roundToPrecision(assembly.seams.worstPairGap, 9));
+                // The unmatched edges, by the tool entity that owns them. Three coordinates say a
+                // seam did not close; an owner and an edge parameter say WHICH one, and whether it
+                // sits at a cap station at all.
+                for (var unmatched in assembly.seams.unmatchedPoints)
+                {
+                    for (var capTime in [0, 1])
+                    {
+                        const located = locateWorldPointOnToolEdges(motion, tool.coEdgeRecords,
+                            unmatched, capTime, 33);
+                        if (located != undefined)
+                        {
+                            println("[UNMATCHED] " ~ toString(unmatched) ~ " nearest tool edge " ~
+                                located.edgeIndex ~ " at s " ~
+                                toString(roundToPrecision(located.s, 6)) ~ ", t=" ~ capTime ~ ", " ~
+                                toString(roundToPrecision(located.distance, 9)) ~ " m off");
+                        }
+                    }
+                }
             }
             // Which cap failed, and how many faces it kept, is the whole of the diagnosis - and it
             // has to survive on a body NAME, because a run read after the fact had no watcher to
@@ -10893,11 +11225,18 @@ export const sweepRotatingCubeLiveTest = defineFeature(function(context is Conte
             "samplesPerEdge" : 9,
             "patchStations" : 9,
             "breakpointStations" : 385,
+            "exactBreakpoints" : false,
+            "emitPatchKind" : SweepPatchKindFilter.ALL,
+            "emitOwnerFrom" : 0,
+            "emitOwnerTo" : 99,
+            "emitSegmentFrom" : 0,
+            "emitSegmentTo" : 99,
             "attemptClosure" : false,
             "closureStage" : SweepClosureStage.KNIT,
             "measureShellSeams" : false,
             "encloseFallback" : true,
             "unionFirst" : true,
+            "describeCorrespondence" : false,
             "keepTool" : true,
             "colorPatches" : true
         });
@@ -11006,11 +11345,18 @@ export const sweepShellClosureTest = defineFeature(function(context is Context, 
 
             annotation { "Name" : "Cap the ends" , "Default" : true }
             definition.buildCaps is boolean;
+
+            annotation { "Name" : "Report the cap-to-lateral correspondence" }
+            definition.describeCorrespondence is boolean;
         }
         else
         {
+            // Its OWN name, not the fixture's `cubeSize`. A parameter declared in both arms of a
+            // precondition is one parameter with two declarations, and the two here do not agree
+            // on their bounds - which fails the precondition analysis for the whole feature and
+            // takes every parameter's dialog entry down with it, this branch's included.
             annotation { "Name" : "Cube size" }
-            isLength(definition.cubeSize, LENGTH_BOUNDS);
+            isLength(definition.probeCubeSize, LENGTH_BOUNDS);
         }
 
         annotation { "Name" : "Census the seams first" , "Default" : true }
@@ -11028,9 +11374,11 @@ export const sweepShellClosureTest = defineFeature(function(context is Context, 
         {
             // Frozen to the bodies that exist NOW. The caps this feature is about to build
             // become sheets themselves the moment they are trimmed, and a live query would then
-            // include them in the set it was supposed to be closing.
+            // include them in the set it was supposed to be closing. Construction planes and
+            // sketch regions are sheet bodies too, and this Part Studio has three of the former
+            // by default, so the shell is gathered through `qSweptShellSheets`.
             const existing = qUnion(evaluateQuery(context,
-                    qBodyType(qEverything(EntityType.BODY), BodyType.SHEET)));
+                    qSweptShellSheets(qEverything(EntityType.BODY))));
             const sheetCount = size(evaluateQuery(context, existing));
             const freeEdges = evaluateQuery(context, qEdgeTopologyFilter(
                         qOwnedByBody(existing, EntityType.EDGE), EdgeTopology.ONE_SIDED));
@@ -11063,15 +11411,40 @@ export const sweepShellClosureTest = defineFeature(function(context is Context, 
             // boundary but the sheets themselves, because the motion is deterministic in the
             // dialog's own numbers and this feature rebuilds it from the same predicate.
             var assembly = undefined;
+            // Held past the cap block so the census below can name an unmatched free edge by the
+            // tool entity that owns it. The records are plain arrays - points, normals, sample
+            // parameters - so they outlive the fixture body this feature deletes.
+            var fixtureMotion = undefined;
+            var fixtureCoEdges = undefined;
             if (definition.buildCaps)
             {
                 const fixture = sweepTestCubeFixture(context, id, definition);
+                fixtureMotion = fixture.motion;
+                fixtureCoEdges = fixture.tool.coEdgeRecords;
                 const startCurves = polyhedralCapContactCurves(fixture.motion,
                     fixture.tool.faceRecords, fixture.tool.coEdgeRecords, 0, 0);
                 const endCurves = polyhedralCapContactCurves(fixture.motion,
                     fixture.tool.faceRecords, fixture.tool.coEdgeRecords, 1, 0);
                 existingLine = existingLine ~ " | caps " ~ toString(size(startCurves.curves)) ~
                 "+" ~ toString(size(endCurves.curves)) ~ " contact segment(s)";
+                // Why each cap carries what it carries. A cap with no trim curves is the state
+                // this fixture has been in all along, and a count of zero does not say whether
+                // the faces were examined, refused, or found to graze at a point.
+                for (var refusal in concatenateArrays([startCurves.skipped, endCurves.skipped]))
+                {
+                    println("[CAP CONTACT] " ~ refusal);
+                }
+                if (definition.describeCorrespondence)
+                {
+                    for (var capTime in [0, 1])
+                    {
+                        for (var reportLine in describeCapContactCorrespondence(fixture.motion,
+                            fixture.tool.faceRecords, fixture.tool.coEdgeRecords, capTime, 0))
+                        {
+                            println("[CORRESPONDENCE t=" ~ capTime ~ "] " ~ reportLine);
+                        }
+                    }
+                }
                 assembly = assembleSweptSolid(context, id + "assembly", {
                             "toolBody" : fixture.tool.body,
                             "shellBodies" : existing,
@@ -11124,6 +11497,28 @@ export const sweepShellClosureTest = defineFeature(function(context is Context, 
                 " pair(s) of " ~ toString(seams.edgeCount) ~ ", " ~
                 toString(seams.unmatchedCount) ~ " unmatched, worst " ~
                 toString(roundToPrecision(seams.worstPairGap, 9));
+                // An unmatched edge reported as three coordinates says a seam did not close and
+                // nothing about which one. Located against the tool at both cap stations, it says
+                // which tool edge owns it and how far along - which is the difference between a
+                // count to chase and a defect to fix.
+                if (fixtureCoEdges != undefined)
+                {
+                    for (var unmatched in seams.unmatchedPoints)
+                    {
+                        for (var capTime in [0, 1])
+                        {
+                            const located = locateWorldPointOnToolEdges(fixtureMotion,
+                                fixtureCoEdges, unmatched, capTime, 33);
+                            if (located != undefined)
+                            {
+                                println("[UNMATCHED] " ~ toString(unmatched) ~
+                                    " nearest tool edge " ~ located.edgeIndex ~ " at s " ~
+                                    toString(roundToPrecision(located.s, 6)) ~ ", t=" ~ capTime ~
+                                    ", " ~ toString(roundToPrecision(located.distance, 9)) ~ " m off");
+                            }
+                        }
+                    }
+                }
             }
 
             if (definition.knitExisting)
@@ -11167,9 +11562,12 @@ export const sweepShellClosureTest = defineFeature(function(context is Context, 
                                 });
                         // The sheets have done their job. They also sit exactly on the solid's
                         // own faces, so leaving them in place hides the thing that was built.
+                        // Scoped through `qSweptShellSheets` because the Part Studio's default
+                        // planes are sheet bodies and this is a DELETE.
                         opDeleteBodies(context, id + "dropSheets", {
-                                    "entities" : qSubtraction(qBodyType(qEverything(EntityType.BODY),
-                                            BodyType.SHEET), knit.solidBody)
+                                    "entities" : qSubtraction(
+                                            qSweptShellSheets(qEverything(EntityType.BODY)),
+                                            knit.solidBody)
                                 });
                     }
                 }
@@ -11192,7 +11590,7 @@ export const sweepShellClosureTest = defineFeature(function(context is Context, 
         }
         fCuboid(context, id + "box", {
                     "corner1" : vector(0, 0, 0) * meter,
-                    "corner2" : vector(1, 1, 1) * definition.cubeSize
+                    "corner2" : vector(1, 1, 1) * definition.probeCubeSize
                 });
         const faces = evaluateQuery(context, qCreatedBy(id + "box", EntityType.FACE));
         opExtractSurface(context, id + "sheetA", {
@@ -11238,7 +11636,8 @@ export const sweepShellClosureTest = defineFeature(function(context is Context, 
             "the two extracted faces did not match on exactly one seam.");
         reportCheckTally(context, id, "SHELL CLOSURE", tally, line);
     }, { "useExistingSheets" : false, "evaluateMidpoints" : true, "knitExisting" : false,
-            "buildCaps" : true, "cubeSize" : 0.05 * meter,
+            "buildCaps" : true, "describeCorrespondence" : false, "cubeSize" : 0.05 * meter,
+            "probeCubeSize" : 0.05 * meter,
             "pathType" : SweepTestPathType.ARC,
             "rotationType" : SweepTestRotationType.TWO_AXIS,
             "cubeTilt" : 12 * degree, "travel" : 0.20 * meter, "pathRadius" : 0.15 * meter,
@@ -11264,16 +11663,293 @@ export const sweepShellKnitTest = defineFeature(function(context is Context, id 
         annotation { "Name" : "Census the seams and hand them to the union", "Default" : true }
         definition.censusSeams is boolean;
 
+        // The discriminator for a union that answers BOOLEAN_INVALID. One error code covers both
+        // "these bodies are not acceptable" and "no solid can be made of bodies that were fine",
+        // and asking for the sew WITHOUT a solid is what separates them.
+        annotation { "Name" : "Sew only - do not ask for a solid" }
+        definition.sewOnly is boolean;
+
+        // Handed a complete set of matches, recomputing them is not a safety net, it is the
+        // kernel's worst case run on purpose: it re-derives where the sheets meet by intersecting
+        // them, and neighbouring envelope patches meet TANGENTIALLY. That search does not refuse,
+        // it grinds, which is how a knit takes the regeneration down instead of reporting.
+        annotation { "Name" : "Let the kernel recompute matches as well" }
+        definition.recomputeMatches is boolean;
+
+        annotation { "Name" : "Ask opEnclose when the union does not close" }
+        definition.encloseFallback is boolean;
+
+        // A transversal crossing between two sheets is unbounded input to the union AND to the
+        // enclose. Split along the mutual intersections first and the enclose can cell the
+        // complex; the union of the cells then erases every piece that lay inside the sweep.
+        annotation { "Name" : "Split crossing sheets before the enclose" }
+        definition.splitCrossings is boolean;
+
+        // Sheets that TOUCH where they are not neighbours are the one input condition a boolean
+        // cannot be talked out of: the envelope of a sweep that is not simple contains pieces that
+        // lie inside the swept volume, and handing those to a union is handing it a self-crossing
+        // shell. Adjacent sheets share a seam and read as zero distance too, so the report is by
+        // pair and the reader excludes the neighbours.
+        annotation { "Name" : "Probe the sheets for interference first" }
+        definition.probeInterference is boolean;
+
+        annotation { "Name" : "Erase mergeable seam edges while sewing", "Default" : true }
+        definition.eraseImprintedEdges is boolean;
+
         annotation { "Name" : "Delete the sheets once the solid exists", "Default" : true }
         definition.dropSheets is boolean;
     }
     {
         var tally = newCheckTally();
         const shell = qUnion(evaluateQuery(context,
-                qBodyType(qEverything(EntityType.BODY), BodyType.SHEET)));
+                qSweptShellSheets(qEverything(EntityType.BODY))));
         const sheetCount = size(evaluateQuery(context, shell));
         var line = "KNIT: " ~ sheetCount ~ " sheet(s)";
         tally = checkThat(tally, sheetCount > 0, "there are no sheets in this Part Studio to knit.");
+
+        if (definition.probeInterference && sheetCount > 1)
+        {
+            // Every SHEET in the studio, not just the ones the shell query admits, and each one
+            // measured. Two bodies with the same area and the same centroid are the same surface
+            // emitted twice, which is the one input a boolean cannot resolve: coincident faces over
+            // an AREA rather than along a seam.
+            const everySheet = evaluateQuery(context, qBodyType(qEverything(EntityType.BODY),
+                    BodyType.SHEET));
+            const everySolid = evaluateQuery(context, qBodyType(qEverything(EntityType.BODY),
+                    BodyType.SOLID));
+            println("[INVENTORY] " ~ size(everySheet) ~ " sheet body/bodies in the studio, " ~
+                size(everySolid) ~ " solid, shell query admits " ~ sheetCount);
+            var signatures = [];
+            for (var sheet in evaluateQuery(context, shell))
+            {
+                var area = -1;
+                try silent
+                {
+                    area = evArea(context, { "entities" : sheet }) / meter ^ 2;
+                }
+                signatures = append(signatures, roundToPrecision(area, 12));
+            }
+            var duplicatePairs = 0;
+            for (var first = 0; first < size(signatures); first += 1)
+            {
+                for (var second = first + 1; second < size(signatures); second += 1)
+                {
+                    if (signatures[first] > 0 && signatures[first] == signatures[second])
+                    {
+                        duplicatePairs += 1;
+                        println("[DUPLICATE AREA] " ~ first ~ " and " ~ second ~ ": " ~
+                            toString(signatures[first]) ~ " m^2");
+                    }
+                }
+            }
+            println("[INVENTORY] " ~ duplicatePairs ~ " pair(s) share an area exactly");
+            const probeBodies = evaluateQuery(context, shell);
+            var touching = [];
+            var overlapping = [];
+            for (var first = 0; first < size(probeBodies); first += 1)
+            {
+                for (var second = first + 1; second < size(probeBodies); second += 1)
+                {
+                    var gap = -1;
+                    try silent
+                    {
+                        gap = evDistance(context, {
+                                        "side0" : probeBodies[first],
+                                        "side1" : probeBodies[second]
+                                    }).distance / meter;
+                    }
+                    // Touching is not the question - neighbours touch along their shared seam
+                    // and so do sheets that meet at a vertex. The question is whether one sheet's
+                    // INTERIOR lies on the other, which is an overlap over an area and the one
+                    // input condition a boolean cannot resolve.
+                    if (gap >= 0 && gap < 1e-6)
+                    {
+                        touching = append(touching, first ~ "-" ~ second);
+                        var interiorGap = -1;
+                        try silent
+                        {
+                            const faces = evaluateQuery(context,
+                                qOwnedByBody(probeBodies[first], EntityType.FACE));
+                            const middle = evFaceTangentPlane(context, {
+                                            "face" : faces[0],
+                                            "parameter" : vector(0.5, 0.5)
+                                        }).origin;
+                            interiorGap = evDistance(context, {
+                                            "side0" : middle,
+                                            "side1" : probeBodies[second]
+                                        }).distance / meter;
+                        }
+                        if (interiorGap >= 0 && interiorGap < 1e-6)
+                        {
+                            overlapping = append(overlapping, first ~ "-" ~ second);
+                        }
+                    }
+                }
+            }
+            println("[SHEET OVERLAP] " ~ size(overlapping) ~
+                " pair(s) where one sheet's INTERIOR lies on the other: " ~ toString(overlapping));
+            println("[SHEET GAP] " ~ size(touching) ~ " touching pair(s) of " ~
+                (size(probeBodies) * (size(probeBodies) - 1) / 2) ~ ": " ~ toString(touching));
+
+            // The kernel's own classification of every sheet-sheet interaction, not a sampled
+            // one. Seam neighbours abut; INTERFERE is a genuine crossing - the one condition
+            // that makes a shell self-crossing however well its seams match - and the
+            // containment classes name coincidence over an area outright.
+            const collisions = evCollision(context, { "tools" : shell, "targets" : shell });
+            var typeCounts = {};
+            var crossingPairs = [];
+            for (var collision in collisions)
+            {
+                const clashKind = collision["type"];
+                var toolIndex = -1;
+                var targetIndex = -1;
+                for (var bodyIndex = 0; bodyIndex < size(probeBodies); bodyIndex += 1)
+                {
+                    if (toolIndex < 0 && size(evaluateQuery(context,
+                                qIntersection([collision.toolBody, probeBodies[bodyIndex]]))) > 0)
+                    {
+                        toolIndex = bodyIndex;
+                    }
+                    if (targetIndex < 0 && size(evaluateQuery(context,
+                                qIntersection([collision.targetBody, probeBodies[bodyIndex]]))) > 0)
+                    {
+                        targetIndex = bodyIndex;
+                    }
+                    if (toolIndex >= 0 && targetIndex >= 0)
+                    {
+                        break;
+                    }
+                }
+                if (toolIndex == targetIndex || toolIndex > targetIndex)
+                {
+                    continue;
+                }
+                const label = toString(clashKind);
+                typeCounts[label] = (typeCounts[label] == undefined ? 0 : typeCounts[label]) + 1;
+                if (clashKind != ClashType.ABUT_NO_CLASS && clashKind != ClashType.NONE &&
+                    clashKind != ClashType.EXISTS)
+                {
+                    // How DEEP the two sheets cross decides what the crossing is. Two strips
+                    // whose shared boundary was refined independently cross by the refinement
+                    // mismatch - nanometres - and the cure is one shared value; strips that
+                    // genuinely cover each other cross by millimetres and the cure is trimming.
+                    // The boundary edge nearest the partner carries that number.
+                    var boundaryMismatch = -1;
+                    try silent
+                    {
+                        for (var freeEdge in evaluateQuery(context, qEdgeTopologyFilter(
+                                    qOwnedByBody(probeBodies[toolIndex], EntityType.EDGE),
+                                    EdgeTopology.ONE_SIDED)))
+                        {
+                            var samples = [];
+                            for (var step = 0; step <= 8; step += 1)
+                            {
+                                samples = append(samples, evEdgeTangentLine(context, {
+                                                "edge" : freeEdge,
+                                                "parameter" : step / 8,
+                                                "arcLengthParameterization" : false
+                                            }).origin);
+                            }
+                            const worst = evPointsDeviation(context, {
+                                            "points" : samples,
+                                            "topologies" : probeBodies[targetIndex]
+                                        })[0].deviation / meter;
+                            if (boundaryMismatch < 0 || worst < boundaryMismatch)
+                            {
+                                boundaryMismatch = worst;
+                            }
+                        }
+                    }
+                    crossingPairs = append(crossingPairs,
+                        toolIndex ~ "-" ~ targetIndex ~ " " ~ label ~
+                        " nearest-boundary deviation " ~ toString(boundaryMismatch));
+                }
+            }
+            println("[SHEET CLASH] by type: " ~ toString(typeCounts));
+            println("[SHEET CLASH] " ~ size(crossingPairs) ~
+                " pair(s) beyond plain abutment: " ~ toString(crossingPairs));
+
+            // Which BODY the kernel objects to. BOOLEAN_INVALID is a statement about input, and
+            // one opEnclose per sheet isolates it completely: a valid open sheet answers
+            // ENCLOSE_NO_REGION - it bounds nothing, which is the honest answer - and a body the
+            // kernel will not accept answers BOOLEAN_INVALID all by itself.
+            var refusedAlone = [];
+            for (var probeIndex = 0; probeIndex < size(probeBodies); probeIndex += 1)
+            {
+                const probeId = id + ("validity" ~ probeIndex);
+                try silent
+                {
+                    opEnclose(context, probeId, { "entities" : probeBodies[probeIndex] });
+                }
+                const aloneError = getFeatureError(context, probeId);
+                try silent
+                {
+                    opDeleteBodies(context, probeId + "drop", {
+                                "entities" : qCreatedBy(probeId, EntityType.BODY) });
+                }
+                if (aloneError != undefined && toString(aloneError) != "ENCLOSE_NO_REGION")
+                {
+                    refusedAlone = append(refusedAlone, probeIndex ~ ": " ~ toString(aloneError));
+                }
+            }
+            println("[SHEET VALIDITY] " ~ size(refusedAlone) ~
+                " sheet(s) the kernel refuses ALONE: " ~ toString(refusedAlone));
+
+            // And if every sheet is acceptable alone, the objection is to a COMBINATION. Growing
+            // the set one sheet at a time finds the first member that turns a valid input invalid,
+            // and stops there - the pair (prefix, culprit) is the geometry to look at.
+            if (size(refusedAlone) == 0)
+            {
+                var prefixVerdict = "never became invalid";
+                for (var prefixEnd = 1; prefixEnd < size(probeBodies); prefixEnd += 1)
+                {
+                    const prefixId = id + ("prefix" ~ prefixEnd);
+                    try silent
+                    {
+                        opEnclose(context, prefixId, {
+                                    "entities" : qUnion(subArray(probeBodies, 0, prefixEnd + 1)) });
+                    }
+                    const prefixError = getFeatureError(context, prefixId);
+                    try silent
+                    {
+                        opDeleteBodies(context, prefixId + "drop", {
+                                    "entities" : qCreatedBy(prefixId, EntityType.BODY) });
+                    }
+                    if (prefixError != undefined && toString(prefixError) != "ENCLOSE_NO_REGION")
+                    {
+                        prefixVerdict = "sheets 0.." ~ (prefixEnd - 1) ~ " acceptable; adding sheet " ~
+                        prefixEnd ~ " reports " ~ toString(prefixError);
+                        // The prefix says WHEN the set went bad, not WITH WHOM. Pairing the new
+                        // sheet against each earlier one alone names the partner(s); an empty
+                        // answer means the objection needs three or more bodies at once.
+                        var partners = [];
+                        for (var earlier = 0; earlier < prefixEnd; earlier += 1)
+                        {
+                            const pairId = id + ("pair" ~ earlier);
+                            try silent
+                            {
+                                opEnclose(context, pairId, { "entities" : qUnion([
+                                                    probeBodies[earlier], probeBodies[prefixEnd]]) });
+                            }
+                            const pairError = getFeatureError(context, pairId);
+                            try silent
+                            {
+                                opDeleteBodies(context, pairId + "drop", {
+                                            "entities" : qCreatedBy(pairId, EntityType.BODY) });
+                            }
+                            if (pairError != undefined && toString(pairError) != "ENCLOSE_NO_REGION")
+                            {
+                                partners = append(partners, earlier ~ ": " ~ toString(pairError));
+                            }
+                        }
+                        println("[SHEET PAIR] sheet " ~ prefixEnd ~ " refused with " ~
+                            size(partners) ~ " earlier sheet(s) alone: " ~ toString(partners));
+                        break;
+                    }
+                }
+                println("[SHEET PREFIX] " ~ prefixVerdict);
+            }
+        }
 
         var seams = undefined;
         if (definition.censusSeams && sheetCount > 0)
@@ -11287,18 +11963,35 @@ export const sweepShellKnitTest = defineFeature(function(context is Context, id 
         if (sheetCount > 0)
         {
             const knit = knitSweptShell(context, id + "knit", shell, {
-                        "makeSolid" : true,
-                        "fallbackToEnclose" : true,
+                        "splitCrossings" : definition.splitCrossings,
+                        "makeSolid" : !definition.sewOnly,
+                        // A sew-only run must not fall through to the enclose: the enclose answers
+                        // a different question and would mask the sew's own verdict, which is the
+                        // whole point of asking.
+                        "fallbackToEnclose" : definition.encloseFallback && !definition.sewOnly,
+                        "recomputeMatches" : definition.recomputeMatches,
+                        "eraseImprintedEdges" : definition.eraseImprintedEdges,
                         "tryUnion" : seams != undefined,
                         "matchSeams" : seams != undefined,
                         "seamMatches" : seams == undefined ? undefined : seams.matches
                     });
             line = line ~ " | " ~ (knit.failed ? ("FAILED " ~ toString(knit.reason)) :
-                    ("closed by " ~ toString(knit.closedBy))) ~ ", " ~
+                    ("closed by " ~ toString(knit.closedBy) ~ " " ~ toString(knit.reason))) ~ ", " ~
             toString(knit.bodyCountAfter) ~ " body/bodies out, " ~ toString(knit.solidCount) ~
             " solid";
             tally = checkThat(tally, !knit.failed, "the shell did not close: " ~ toString(knit.reason));
-            if (!knit.failed)
+            if (!knit.failed && definition.sewOnly)
+            {
+                // What a sewn shell is made of. A sew that succeeds says the bodies were acceptable
+                // all along, and the free-edge count on the sewn body says how far from closed it
+                // is in the only unit that matters - unpaired boundary.
+                const sewnEdges = size(evaluateQuery(context, qEdgeTopologyFilter(
+                                qOwnedByBody(shell, EntityType.EDGE), EdgeTopology.ONE_SIDED)));
+                const sewnFaces = size(evaluateQuery(context, qOwnedByBody(shell, EntityType.FACE)));
+                line = line ~ " | sewn body carries " ~ toString(sewnFaces) ~ " face(s) and " ~
+                toString(sewnEdges) ~ " one-sided edge(s)";
+            }
+            if (!knit.failed && !definition.sewOnly)
             {
                 const faceCount = size(evaluateQuery(context,
                         qOwnedByBody(knit.solidBody, EntityType.FACE)));
@@ -11313,9 +12006,12 @@ export const sweepShellKnitTest = defineFeature(function(context is Context, id 
                         });
                 if (definition.dropSheets)
                 {
+                    // Scoped through `qSweptShellSheets` because the Part Studio's default planes
+                    // are sheet bodies and this is a DELETE.
                     opDeleteBodies(context, id + "dropSheets", {
-                                "entities" : qSubtraction(qBodyType(qEverything(EntityType.BODY),
-                                        BodyType.SHEET), knit.solidBody)
+                                "entities" : qSubtraction(
+                                        qSweptShellSheets(qEverything(EntityType.BODY)),
+                                        knit.solidBody)
                             });
                 }
             }
@@ -11333,4 +12029,6 @@ export const sweepShellKnitTest = defineFeature(function(context is Context, id 
                     "value" : line
                 });
         reportCheckTally(context, id, "SHELL KNIT", tally, line);
-    }, { "censusSeams" : true, "dropSheets" : true });
+    }, { "censusSeams" : true, "sewOnly" : false, "recomputeMatches" : false,
+            "encloseFallback" : false, "probeInterference" : false,
+            "eraseImprintedEdges" : true, "dropSheets" : true });

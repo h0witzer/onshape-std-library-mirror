@@ -1706,7 +1706,7 @@ function sliceVector3(packedValue is Vector, offset is number) returns Vector
 function evaluatePackedPoint(packedSpline is map, parameter is number) returns Vector
 {
     const degree = packedSpline.degree;
-    const spanIndex = findEvaluationSpanIndex(packedSpline.knots, degree, parameter);
+    const spanIndex = leanEvaluationSpanIndex(packedSpline.knots, degree, parameter);
     const basisValues = bSplineBasisValues(packedSpline.knots, degree, spanIndex, parameter);
     var point = basisValues[0] * packedSpline.controlPoints[spanIndex - degree];
     for (var basisIndex = 1; basisIndex <= degree; basisIndex += 1)
@@ -2140,6 +2140,48 @@ const LEAN_TRIANGLE_V_ORDER = [0, 0, 1, 0, 1, 2];
  *
  * None of that changes a number: same recurrence, same operands, same order.
  */
+/**
+ * The evaluation span index of `parameter`, by binary search.
+ *
+ * Answers exactly what `findEvaluationSpanIndex` answers - the largest non-degenerate span whose
+ * knot does not exceed the parameter, falling back to `degree` when the parameter sits at or
+ * below the domain start - and reaches it in a number of steps that grows with the LOGARITHM of
+ * the span count rather than with the count. The published module's form walks the knot vector
+ * downward one span at a time, which is why a motion fitted at hundreds of stations pays for
+ * every one of them on every evaluation.
+ *
+ * The step back over degenerate spans runs at most `degree` times: that is the largest
+ * multiplicity an interior knot may carry.
+ */
+function leanEvaluationSpanIndex(knots is array, degree is number, parameter is number) returns number
+{
+    const highestSpan = size(knots) - degree - 2;
+    if (highestSpan < degree || knots[degree] > parameter)
+    {
+        return degree;
+    }
+    var low = degree;
+    var high = highestSpan;
+    while (low < high)
+    {
+        const middle = low + floor((high - low + 1) / 2);
+        if (knots[middle] <= parameter)
+        {
+            low = middle;
+        }
+        else
+        {
+            high = middle - 1;
+        }
+    }
+    var spanIndex = low;
+    while (spanIndex > degree && knots[spanIndex] >= knots[spanIndex + 1])
+    {
+        spanIndex -= 1;
+    }
+    return knots[spanIndex] < knots[spanIndex + 1] ? spanIndex : degree;
+}
+
 function leanBasisDerivatives(knots is array, degree is number, spanIndex is number,
     parameter is number, maxOrder is number) returns array
 {
@@ -2271,8 +2313,8 @@ export function leanSurfaceDerivatives(surface is map, uParameter is number, vPa
 {
     const uDegree = surface.uDegree;
     const vDegree = surface.vDegree;
-    const uSpanIndex = findEvaluationSpanIndex(surface.uKnots, uDegree, uParameter);
-    const vSpanIndex = findEvaluationSpanIndex(surface.vKnots, vDegree, vParameter);
+    const uSpanIndex = leanEvaluationSpanIndex(surface.uKnots, uDegree, uParameter);
+    const vSpanIndex = leanEvaluationSpanIndex(surface.vKnots, vDegree, vParameter);
     // Flat: basis[order * (degree + 1) + functionIndex].
     const uBasis = leanBasisDerivatives(surface.uKnots, uDegree, uSpanIndex, uParameter, maxTotalOrder);
     const vBasis = leanBasisDerivatives(surface.vKnots, vDegree, vSpanIndex, vParameter, maxTotalOrder);
@@ -2464,7 +2506,7 @@ export function leanCurveDerivatives(curve is map, parameter is number, maxOrder
 {
     const degree = curve.degree;
     const knots = curve.knots;
-    const spanIndex = findEvaluationSpanIndex(knots, degree, parameter);
+    const spanIndex = leanEvaluationSpanIndex(knots, degree, parameter);
     // Flat: basis[order * (degree + 1) + functionIndex].
     const basis = leanBasisDerivatives(knots, degree, spanIndex, parameter, maxOrder);
     const stride = degree + 1;
@@ -2648,7 +2690,7 @@ function leanAcceleration(motionSample is map, toolTriple is array) returns arra
  * varies t - a contact-root bisection, a branch time extremum - would otherwise return one
  * station's state for every t it was asked about, and the answer would look plausible.
  */
-export function evaluateMotionSample(strippedMotion is map, t is number) returns map
+export function evaluateMotionSample(strippedMotion is map, t is number, maxOrder is number) returns map
 {
     if (strippedMotion.sampledAt != undefined)
     {
@@ -2658,21 +2700,54 @@ export function evaluateMotionSample(strippedMotion is map, t is number) returns
                 " was evaluated at t = " ~ t ~ ". Freeze a motion only where t is held fixed for " ~
                 "the whole subtree that reads it.";
         }
+        if (strippedMotion.sampledOrder != undefined && strippedMotion.sampledOrder < maxOrder)
+        {
+            throw "solidSweepUtils: a motion sample frozen to order " ~ strippedMotion.sampledOrder ~
+                " was read at order " ~ maxOrder ~ ". Freeze at the highest order the subtree reads.";
+        }
         return strippedMotion;
     }
-    const xDerivatives = evaluateBSplineCurveDerivatives(strippedMotion.columnX, t, 2);
-    const yDerivatives = evaluateBSplineCurveDerivatives(strippedMotion.columnY, t, 2);
-    const zDerivatives = evaluateBSplineCurveDerivatives(strippedMotion.columnZ, t, 2);
-    const translationDerivatives = evaluateBSplineCurveDerivatives(strippedMotion.translation, t, 2);
-    return {
-            "rotation" : matrixFromColumns(xDerivatives[0], yDerivatives[0], zDerivatives[0]),
-            "rotationDerivative" : matrixFromColumns(xDerivatives[1], yDerivatives[1], zDerivatives[1]),
-            "rotationSecondDerivative" : matrixFromColumns(xDerivatives[2], yDerivatives[2], zDerivatives[2]),
-            "translation" : translationDerivatives[0],
-            "translationDerivative" : translationDerivatives[1],
-            "translationSecondDerivative" : translationDerivatives[2],
-            "sampledAt" : t
+    // The lean curve evaluator, not the general one. A motion column is a non-rational cubic on
+    // plain-number control points, and the general NURBS reader allocates Vectors and a binomial
+    // table to serve it. Both run the same A2.3 recurrence in the same summation order; this one
+    // returns its orders flat, indexed `3 * order + component`.
+    const xDerivatives = leanCurveDerivatives(strippedMotion.columnX, t, maxOrder);
+    const yDerivatives = leanCurveDerivatives(strippedMotion.columnY, t, maxOrder);
+    const zDerivatives = leanCurveDerivatives(strippedMotion.columnZ, t, maxOrder);
+    const translationDerivatives = leanCurveDerivatives(strippedMotion.translation, t, maxOrder);
+    var sample = {
+            "rotation" : matrix([[xDerivatives[0], yDerivatives[0], zDerivatives[0]],
+                        [xDerivatives[1], yDerivatives[1], zDerivatives[1]],
+                        [xDerivatives[2], yDerivatives[2], zDerivatives[2]]]),
+            "rotationDerivative" : matrix([[xDerivatives[3], yDerivatives[3], zDerivatives[3]],
+                        [xDerivatives[4], yDerivatives[4], zDerivatives[4]],
+                        [xDerivatives[5], yDerivatives[5], zDerivatives[5]]]),
+            "translation" : vector(translationDerivatives[0], translationDerivatives[1],
+                translationDerivatives[2]),
+            "translationDerivative" : vector(translationDerivatives[3], translationDerivatives[4],
+                translationDerivatives[5]),
+            "sampledAt" : t,
+            "sampledOrder" : maxOrder
         };
+    if (maxOrder >= 2)
+    {
+        sample.rotationSecondDerivative =
+            matrix([[xDerivatives[6], yDerivatives[6], zDerivatives[6]],
+                    [xDerivatives[7], yDerivatives[7], zDerivatives[7]],
+                    [xDerivatives[8], yDerivatives[8], zDerivatives[8]]]);
+        sample.translationSecondDerivative = vector(translationDerivatives[6],
+            translationDerivatives[7], translationDerivatives[8]);
+    }
+    return sample;
+}
+
+/**
+ * The motion state at t through second order - what a caller reading acceleration needs, and the
+ * order every consumer got before the order became a choice.
+ */
+export function evaluateMotionSample(strippedMotion is map, t is number) returns map
+{
+    return evaluateMotionSample(strippedMotion, t, 2);
 }
 
 /**
@@ -2713,7 +2788,8 @@ export function evaluateEnvelopeTimeDerivativePointwise(strippedMotion is map, s
  */
 export function evaluateContactFunctionAtPoint(strippedMotion is map, normal is Vector, point is Vector, t is number) returns number
 {
-    const sample = evaluateMotionSample(strippedMotion, t);
+    // Order 1: the contact function reads A, A' and b' and no acceleration term.
+    const sample = evaluateMotionSample(strippedMotion, t, 1);
     return dotTriples(applyRowsToTriple(sample.rotation, normal[0], normal[1], normal[2]),
         leanVelocity(sample, point));
 }
@@ -10612,6 +10688,34 @@ export const CAP_CONTACT_CURVE_MINIMUM_LENGTH = 1e-7;
 export const SHELL_SEAM_MATCH_TOLERANCE = 1e-5;
 
 /**
+ * `candidates` with construction objects and sketch objects removed - the form in which a set of
+ * bodies may be handed to a boolean, an enclose, a seam census or a delete.
+ *
+ * `BodyType.SHEET` admits construction planes and sketch regions, so a shell gathered by body
+ * type alone contains the Part Studio's default planes. Each consumer misreads them differently
+ * and none of them refuses: `opEnclose` treats a plane as a BOUNDING WALL and returns the cells
+ * that plane cuts the swept region into rather than the region itself; `opBoolean` takes it as a
+ * tool; the seam census counts its boundary edges as unmatched free edges; and a cleanup that
+ * subtracts the result from "every sheet" names it for deletion. The standard library applies
+ * this same pair at every one of those entry points - `boolean.fs` spells its selection filter
+ * `BodyType.SHEET && ConstructionObject.NO && SketchObject.NO`, and `enclose.fs` re-applies both
+ * to its own entities before deleting them.
+ */
+export function qWithoutConstructionOrSketchObjects(candidates is Query) returns Query
+{
+    return qSketchFilter(qConstructionFilter(candidates, ConstructionObject.NO), SketchObject.NO);
+}
+
+/**
+ * Every sheet body in `candidates` that is real geometry: `BodyType.SHEET` narrowed by
+ * [qWithoutConstructionOrSketchObjects]. This is the form a swept shell is gathered in.
+ */
+export function qSweptShellSheets(candidates is Query) returns Query
+{
+    return qWithoutConstructionOrSketchObjects(qBodyType(candidates, BodyType.SHEET));
+}
+
+/**
  * The coincident one-sided edge pairs of a sheet shell - the `matches` an `opBoolean` UNION needs
  * in order to SEW a shell instead of intersecting it.
  *
@@ -10635,7 +10739,7 @@ export const SHELL_SEAM_MATCH_TOLERANCE = 1e-5;
  */
 export function matchShellSeamEdges(context is Context, shellBodies is Query, tolerance is number) returns map
 {
-    const bodies = evaluateQuery(context, shellBodies);
+    const bodies = evaluateQuery(context, qWithoutConstructionOrSketchObjects(shellBodies));
     var edges = [];
     var owners = [];
     var midPoints = [];
@@ -10713,18 +10817,27 @@ export function matchShellSeamEdges(context is Context, shellBodies is Query, to
 
     var unmatchedCount = 0;
     var unmatchedPoints = [];
+    var unmatchedOwners = [];
+    var unmatchedEdges = [];
     for (var index = 0; index < edgeCount; index += 1)
     {
         if (partner[index] == -1)
         {
             unmatchedCount += 1;
             unmatchedPoints = append(unmatchedPoints, midPoints[index]);
+            unmatchedOwners = append(unmatchedOwners, owners[index]);
+            unmatchedEdges = append(unmatchedEdges, edges[index]);
         }
     }
     return {
             "matches" : matches, "pairCount" : size(matches), "edgeCount" : edgeCount,
             "unmatchedCount" : unmatchedCount, "worstPairGap" : worstPairGap,
-            "unmatchedPoints" : unmatchedPoints
+            "unmatchedPoints" : unmatchedPoints,
+            // Which body each unmatched edge belongs to, and the edge itself. A midpoint says a
+            // seam did not close; the owner says which sheet is missing a neighbour, which is the
+            // half of the report that names something.
+            "unmatchedOwners" : unmatchedOwners,
+            "unmatchedEdges" : unmatchedEdges
         };
 }
 
@@ -10754,15 +10867,35 @@ export function knitSweptShell(context is Context, id is Id, shellBodies is Quer
 {
     const settings = mergeMaps({ "makeSolid" : true, "fallbackToEnclose" : true,
                 "seamTolerance" : SHELL_SEAM_MATCH_TOLERANCE, "recomputeMatches" : true,
-                "matchSeams" : false, "tryUnion" : true }, options);
-    const before = size(evaluateQuery(context, shellBodies));
-    const seams = !settings.matchSeams ?
-        { "matches" : [], "pairCount" : 0, "edgeCount" : -1, "unmatchedCount" : -1,
-            "worstPairGap" : 0, "unmatchedPoints" : [] } :
-        settings.seamMatches != undefined ?
-        { "matches" : settings.seamMatches, "pairCount" : size(settings.seamMatches),
-            "edgeCount" : -1, "unmatchedCount" : -1, "worstPairGap" : 0, "unmatchedPoints" : [] } :
-        matchShellSeamEdges(context, shellBodies, settings.seamTolerance);
+                "matchSeams" : false, "tryUnion" : true,
+                // Neighbouring envelope patches meet TANGENTIALLY, so every seam in this shell is
+                // a mergeable edge and erasing them asks the kernel to merge the whole shell into
+                // as few faces as it can while it is still sewing it. That is the standard
+                // library's default because a normal surface join meets at creases, where there is
+                // nothing to merge.
+                "eraseImprintedEdges" : true }, options);
+    // What the kernel is handed. `shellBodies` itself stays unfiltered below, because after the
+    // union it is also how the surviving body is read back, and by then that body is a SOLID.
+    const knittableBodies = qWithoutConstructionOrSketchObjects(shellBodies);
+    const before = size(evaluateQuery(context, knittableBodies));
+    // Explicit branches, never a chained conditional: FeatureScript's `?:` needs parentheses
+    // around a nested conditional, and a map-literal branch in the wrong slot is evaluated AS a
+    // condition, which fails at run time with no location attached (tools/fsLint.py TERNARY).
+    var seams = undefined;
+    if (!settings.matchSeams)
+    {
+        seams = { "matches" : [], "pairCount" : 0, "edgeCount" : -1, "unmatchedCount" : -1,
+            "worstPairGap" : 0, "unmatchedPoints" : [] };
+    }
+    else if (settings.seamMatches != undefined)
+    {
+        seams = { "matches" : settings.seamMatches, "pairCount" : size(settings.seamMatches),
+            "edgeCount" : -1, "unmatchedCount" : -1, "worstPairGap" : 0, "unmatchedPoints" : [] };
+    }
+    else
+    {
+        seams = matchShellSeamEdges(context, shellBodies, settings.seamTolerance);
+    }
     var reason = "";
     const unionId = id + "union";
     // `tryUnion` false goes straight to the enclose. The two ask different questions and only
@@ -10782,23 +10915,28 @@ export function knitSweptShell(context is Context, id is Id, shellBodies is Quer
         // feature made rolled back. Every boolean in boolean.fs is guarded this way, and the
         // status on the operation's own id is how the outcome is read afterwards.
         try(opBoolean(context, unionId, {
-                        "tools" : shellBodies,
+                        "tools" : knittableBodies,
                         "operationType" : BooleanOperationType.UNION,
                         "allowSheets" : true,
                         "makeSolid" : settings.makeSolid,
                         "matches" : seams.matches,
                         "recomputeMatches" : size(seams.matches) == 0 ? true : settings.recomputeMatches,
-                        "eraseImprintedEdges" : true
+                        "eraseImprintedEdges" : settings.eraseImprintedEdges
                     }));
     }
     // An operation can fail by SETTING A STATUS on its own id rather than by throwing, which a
     // catch never sees.
     if (reason == "" && settings.tryUnion && featureHasNonTrivialStatus(context, unionId))
     {
-        reason = "SWEEP_KNIT_REFUSED: the union reported a non-OK status.";
+        // The kernel's OWN message, not the fact that there was one. "A non-OK status" names the
+        // operation that refused and nothing about what it objected to, which is the difference
+        // between a diagnosis and another round of guessing at the geometry.
+        const unionError = getFeatureError(context, unionId);
+        reason = "SWEEP_KNIT_REFUSED: the union reported " ~
+            (unionError == undefined ? "a non-OK status with no message." : toString(unionError));
     }
-    const remaining = evaluateQuery(context, shellBodies);
-    const solids = evaluateQuery(context, qBodyType(shellBodies, BodyType.SOLID));
+    const remaining = evaluateQuery(context, knittableBodies);
+    const solids = evaluateQuery(context, qBodyType(knittableBodies, BodyType.SOLID));
     if (reason == "" && size(remaining) != 1)
     {
         reason = "SWEEP_KNIT_OPEN: the union left " ~ size(remaining) ~ " bodies where one was " ~
@@ -10815,7 +10953,21 @@ export function knitSweptShell(context is Context, id is Id, shellBodies is Quer
                 "failed" : false, "reason" : "", "closedBy" : "union", "seams" : seams,
                 "bodyCountBefore" : before, "bodyCountAfter" : size(remaining),
                 "solidCount" : size(solids),
-                "solidBody" : qBodyType(shellBodies, BodyType.SOLID)
+                "solidBody" : qBodyType(knittableBodies, BodyType.SOLID)
+            };
+    }
+    // SEW-ONLY succeeds on one body, solid or not. Spec 9.3's certified open sheet set is a result
+    // in its own right, and it is also the diagnostic that separates the two things `opBoolean`
+    // reports with one error code: bodies it will not accept, and a solid it cannot make from
+    // bodies that were fine. Asking for the sew alone is how the shell says which.
+    if (reason == "" && !settings.makeSolid && size(remaining) == 1)
+    {
+        return {
+                "failed" : false, "reason" : "SWEEP_KNIT_SEWN: the shell sewed into one open sheet " ~
+                "body; no solid was requested.",
+                "closedBy" : "sew", "seams" : seams,
+                "bodyCountBefore" : before, "bodyCountAfter" : size(remaining),
+                "solidCount" : size(solids), "solidBody" : qNothing()
             };
     }
     if (!settings.fallbackToEnclose)
@@ -10832,27 +10984,156 @@ export function knitSweptShell(context is Context, id is Id, shellBodies is Quer
     // interval sub-sweep, and it answers a different question than the union does - which is
     // the whole reason it is worth one more operation to ask it. Reported separately so a
     // run always says WHICH route closed the body.
-    try(opEnclose(context, id + "enclose", { "entities" : shellBodies }));
+    //
+    // First, though, the one input condition the enclose shares with the union: sheets that
+    // CROSS each other. An envelope's local pieces are each exact where they graze the tool and
+    // still pass through one another where responsibility changes hands, and a transversal
+    // crossing is unbounded input to both operations. Splitting every crossing pair along its
+    // mutual intersection turns the crossings into shared edges: the enclose can then cell the
+    // complex, and the union of the cells erases every piece that lay inside the sweep. This is
+    // the kernel performing spec 10's trim.
+    var splitPairs = 0;
+    var splitsAccepted = 0;
+    if (settings.splitCrossings == true)
+    {
+        println("[KNIT split] scanning for crossings");
+        const shellList = evaluateQuery(context, knittableBodies);
+        const collisions = evCollision(context, {
+                    "tools" : knittableBodies, "targets" : knittableBodies });
+        println("[KNIT split] " ~ size(collisions) ~ " collision record(s)");
+        var seen = {};
+        for (var collision in collisions)
+        {
+            if (collision["type"] != ClashType.INTERFERE)
+            {
+                continue;
+            }
+            var toolIndex = -1;
+            var targetIndex = -1;
+            for (var bodyIndex = 0; bodyIndex < size(shellList); bodyIndex += 1)
+            {
+                if (toolIndex < 0 && size(evaluateQuery(context,
+                            qIntersection([collision.toolBody, shellList[bodyIndex]]))) > 0)
+                {
+                    toolIndex = bodyIndex;
+                }
+                if (targetIndex < 0 && size(evaluateQuery(context,
+                            qIntersection([collision.targetBody, shellList[bodyIndex]]))) > 0)
+                {
+                    targetIndex = bodyIndex;
+                }
+                if (toolIndex >= 0 && targetIndex >= 0)
+                {
+                    break;
+                }
+            }
+            const pairKey = min(toolIndex, targetIndex) ~ "-" ~ max(toolIndex, targetIndex);
+            if (toolIndex < 0 || targetIndex < 0 || toolIndex == targetIndex ||
+                seen[pairKey] == true)
+            {
+                continue;
+            }
+            seen[pairKey] = true;
+            // Both directions, body-level: each sheet is divided into separate bodies along the
+            // intersection, so the crossing becomes a set of pieces that only share edges. The
+            // pieces belong to the split operations, which is why a caller's shell query has to
+            // be LIVE (the tester's is) for the enclose below to see them.
+            println("[KNIT split] pair " ~ pairKey ~ " forward split");
+            const splitAId = id + ("splitA" ~ splitPairs);
+            const forward = try(opSplitPart(context, splitAId, {
+                            "targets" : shellList[toolIndex],
+                            "tool" : shellList[targetIndex],
+                            "keepTools" : true
+                        }));
+            if (forward == undefined)
+            {
+                println("[KNIT split] pair " ~ pairKey ~ " forward REFUSED: " ~
+                    toString(getFeatureError(context, splitAId)));
+            }
+            // The partner is split by every PIECE the first split left, because the first body
+            // no longer exists whole to serve as the tool.
+            const pieces = evaluateQuery(context, qUnion([shellList[toolIndex],
+                            qCreatedBy(splitAId, EntityType.BODY)]));
+            println("[KNIT split] pair " ~ pairKey ~ " backward split over " ~ size(pieces) ~ " piece(s)");
+            var backward = undefined;
+            for (var pieceIndex = 0; pieceIndex < size(pieces); pieceIndex += 1)
+            {
+                const piece = try(opSplitPart(context,
+                        id + ("splitB" ~ splitPairs ~ "p" ~ pieceIndex), {
+                            "targets" : shellList[targetIndex],
+                            "tool" : pieces[pieceIndex],
+                            "keepTools" : true
+                        }));
+                if (piece != undefined)
+                {
+                    backward = piece;
+                }
+            }
+            if (forward != undefined || backward != undefined)
+            {
+                splitsAccepted += 1;
+            }
+            splitPairs += 1;
+        }
+    }
+    const splitSummary = splitPairs == 0 ? "" :
+        (" " ~ splitsAccepted ~ " of " ~ splitPairs ~ " crossing pair(s) split.");
+    println("[KNIT split] splits done (" ~ splitsAccepted ~ " of " ~ splitPairs ~ ")");
+    if (splitPairs > 0 && splitsAccepted == 0)
+    {
+        return {
+                "failed" : true,
+                "reason" : reason ~ " Every crossing split was refused, so the enclose was not " ~
+                    "asked; the sheets still cross.",
+                "closedBy" : "", "seams" : seams,
+                "bodyCountBefore" : before, "bodyCountAfter" : before,
+                "solidCount" : 0, "solidBody" : qNothing()
+            };
+    }
+    try(opEnclose(context, id + "enclose", { "entities" : knittableBodies }));
+    const encloseError = getFeatureError(context, id + "enclose");
     const encloseReason = featureHasNonTrivialStatus(context, id + "enclose") ?
-        " opEnclose reported a non-OK status." : "";
+        (" opEnclose reported " ~ (encloseError == undefined ?
+                "a non-OK status with no message." : toString(encloseError))) : "";
     const enclosed = evaluateQuery(context, qBodyType(qCreatedBy(id + "enclose", EntityType.BODY),
             BodyType.SOLID));
-    if (size(enclosed) == 1)
+    // A self-crossing shell bounds MORE than one cell: envelope pieces that dip inside the swept
+    // volume wall it into compartments, and every compartment is inside the sweep. The swept
+    // solid is their union - a solid-solid union, the kernel's ordinary case, nothing like
+    // sewing tangent sheets. This is also why the union above refuses the same shell: sheets
+    // that cross each other over an area are not a sewable input, but they bound cells fine.
+    var cells = enclosed;
+    if (size(enclosed) > 1)
+    {
+        try(opBoolean(context, id + "cellUnion", {
+                        "tools" : qCreatedBy(id + "enclose", EntityType.BODY),
+                        "operationType" : BooleanOperationType.UNION,
+                        "eraseImprintedEdges" : true
+                    }));
+        cells = evaluateQuery(context, qBodyType(qCreatedBy(id + "enclose", EntityType.BODY),
+                BodyType.SOLID));
+    }
+    if (size(cells) == 1)
     {
         return {
                 "failed" : false,
                 "reason" : "SWEEP_KNIT_ENCLOSED: the sheet union did not close (" ~ reason ~
-                ") but opEnclose did; the seam gap is inside the kernel's enclosure tolerance " ~
-                "and outside its sewing tolerance.",
+                ") but opEnclose did" ~
+                (splitPairs > 0 ? (" after" ~ splitSummary) : "") ~
+                (size(enclosed) > 1 ? (", bounding " ~ size(enclosed) ~
+                        " cells unioned into one solid") : "") ~
+                "; the shell bounds a region even where it does not sew.",
                 "closedBy" : "enclose", "seams" : seams,
                 "bodyCountBefore" : before, "bodyCountAfter" : size(remaining),
-                "solidCount" : size(enclosed),
+                "solidCount" : size(cells),
                 "solidBody" : qBodyType(qCreatedBy(id + "enclose", EntityType.BODY), BodyType.SOLID)
             };
     }
     return {
             "failed" : true,
-            "reason" : reason ~ " Enclose produced " ~ size(enclosed) ~ " solid(s)." ~ encloseReason,
+            "reason" : reason ~ " Enclose produced " ~ size(enclosed) ~ " solid cell(s)" ~
+                (size(enclosed) > 1 ? (" that would not union into one (" ~ size(cells) ~
+                        " left)") : "") ~ "." ~ splitSummary ~ encloseReason,
             "closedBy" : "", "seams" : seams,
             "bodyCountBefore" : before, "bodyCountAfter" : size(remaining),
             "solidCount" : size(solids), "solidBody" : qNothing()
@@ -12467,7 +12748,7 @@ export function interpolatePeriodicRow(points is array, degree is number, parame
     for (var dataIndex = 0; dataIndex < count; dataIndex += 1)
     {
         var row = makeArray(count, 0);
-        const spanIndex = findEvaluationSpanIndex(knots, degree, parameters[dataIndex]);
+        const spanIndex = leanEvaluationSpanIndex(knots, degree, parameters[dataIndex]);
         const basisValues = bSplineBasisValues(knots, degree, spanIndex, parameters[dataIndex]);
         for (var offset = 0; offset <= degree; offset += 1)
         {
@@ -13197,7 +13478,7 @@ function islandCenterAt(birth is map, death is map, t is number) returns array
 
 /**
  * The contact loop of a REVOLVED tool face at one station, as a closed 3-D polyline, with no
- * marching and no surface evaluation (spec 6.10, tier 0 item 0c).
+ * marching and no surface evaluation (spec 6.10, the exact-emission rung).
  *
  * This is the seam the fitting layer was missing. `fitTubeComponent` consumed `tubeLoopSamples`,
  * which takes a control net and marches it; the analytic layer could produce contact curves but had
@@ -15284,6 +15565,23 @@ function stripRootFloors(values is array, valueScale is number) returns array
 /** Bracket width at which a strip-function root in the edge's arc-length parameter is settled. */
 const STRIP_ROOT_PARAMETER_TOLERANCE = 1e-13;
 
+/**
+ * How far outside [0, 1] a strip-function root may land and still be read as sitting ON the
+ * edge's vertex, in the edge's own parameter.
+ *
+ * This is a statement about the PARTITION, not about the root solve, which is why it is not the
+ * bracket tolerance above. A face's contact line reaches a vertex at that face's own breakpoint,
+ * and a shared time partition asks every owner for a station at every OTHER owner's breakpoint -
+ * so a face is routinely asked for its contact line a hair outside the interval where it has one,
+ * and the honest answer is the vertex it just left. The margin has to cover the partition's
+ * residue mapped into edge parameter: on a 60 mm edge whose contact line sweeps its length in
+ * 0.035 of the sweep, this is sixty nanometres of edge, and the residue it absorbs is ten.
+ *
+ * Rejecting those roots instead reports the face as having NO contact line at that station, which
+ * fails the patch outright rather than degrading it.
+ */
+const STRIP_ROOT_VERTEX_MARGIN = 1e-6;
+
 /** Iteration cap for one strip-function root solve. */
 const STRIP_ROOT_ITERATION_LIMIT = 60;
 
@@ -15305,8 +15603,19 @@ const DEFAULT_PATCH_STATION_COUNT = 9;
     ruling is a straight segment, which it always is on a plane face and on a straight edge. */
 const DEFAULT_PATCH_RULING_COLUMNS = 2;
 
-/** A ruling shorter than this collapses the patch to a point at that station. */
-const PATCH_RULING_COLLAPSE_TOLERANCE = 1e-9;
+/**
+ * A ruling shorter than this collapses the patch to a point at that station, and is SNAPPED to
+ * one rather than merely reported.
+ *
+ * Ten times the kernel's own `TOLERANCE.zeroLength`, and above it rather than below it, because
+ * the band between the two is where an unusable edge lives: long enough that the kernel builds it,
+ * short enough that it bounds nothing and no neighbour can sew to it. A shared time partition
+ * puts rulings in that band routinely - every owner is cut at every OTHER owner's breakpoints, so
+ * an owner whose contact line collapses at its own root is asked for that root's neighbour
+ * instead, and the residue is the root gap times the rate the contact line grows. The tolerance
+ * has to bound that residue, not the arithmetic that produced it.
+ */
+const PATCH_RULING_COLLAPSE_TOLERANCE = 1e-7;
 
 /**
  * How many times a refused patch is refitted at half the stations before it is given up on.
@@ -15515,9 +15824,14 @@ export function coEdgeStripValueAt(strippedMotion is map, coEdgeRecord is map, s
  * }
  */
 export function findCoEdgeStripRootsAtTime(strippedMotion is map, coEdgeRecord is map, side is string,
-    t is number, scanSamples is number) returns map
+    t is number, scanSamples is number, descriptor is map) returns map
 {
-    const frozen = evaluateMotionSample(strippedMotion, t);
+    // Order 1: every read below is the contact function's value, which carries no acceleration.
+    const frozen = evaluateMotionSample(strippedMotion, t, 1);
+    if (descriptor.isAffine)
+    {
+        return coEdgeStripRootsFromDescriptor(frozen, descriptor, side);
+    }
     const sampleCount = max(scanSamples, size(coEdgeRecord.sampleParameters));
     var parameters = makeArray(sampleCount, 0);
     var values = makeArray(sampleCount, 0);
@@ -15572,6 +15886,18 @@ export function findCoEdgeStripRootsAtTime(strippedMotion is map, coEdgeRecord i
 }
 
 /**
+ * Where one side's contact line crosses a co-edge, describing the edge on the spot. A caller
+ * asking about one edge repeatedly should build the descriptor once and use the six-argument
+ * overload.
+ */
+export function findCoEdgeStripRootsAtTime(strippedMotion is map, coEdgeRecord is map,
+    side is string, t is number, scanSamples is number) returns map
+{
+    return findCoEdgeStripRootsAtTime(strippedMotion, coEdgeRecord, side, t, scanSamples,
+        affineCoEdgeContactDescriptor(coEdgeRecord));
+}
+
+/**
  * One strip-function root inside a bracket the caller found, by Illinois false position.
  *
  * False position rather than plain bisection because `g` is AFFINE in s wherever the edge is a
@@ -15623,9 +15949,237 @@ function solveStripRootInBracket(frozenSample is map, coEdgeRecord is map, side 
 }
 
 /**
+ * How far a sampled co-edge point may sit off the chord, and a side normal off the first
+ * sample's, and still be called straight and planar. Relative to the edge's own length and to a
+ * unit normal.
+ */
+const AFFINE_COEDGE_RELATIVE_TOLERANCE = 1e-9;
+
+/**
+ * The closed-form description of a co-edge whose strip function is exact in one division: a
+ * STRAIGHT edge bounded by two PLANAR faces, so each side's normal is constant along it.
+ *
+ * Both conditions are read off the shared sample arrays rather than assumed. Where they hold,
+ * `p(s) = origin + s * direction` and each side's normal is a constant `n`, so
+ *
+ *     g(s, t) = <A n, A' origin + b'> + s * <A n, A' direction>
+ *
+ * is AFFINE in the edge parameter. Its root is `-constant / slope`, its extreme values are its
+ * two endpoint values, and the funnel between two such functions is an interval bounded by their
+ * roots - none of which needs a sample.
+ *
+ * Returns { isAffine {boolean}, origin, direction, leftNormal, rightNormal } - Vectors,
+ * unit-stripped, in the tool frame. `isAffine` false routes the caller to the sampled scan,
+ * which is what a curved edge or a non-planar adjacent face takes.
+ */
+export function affineCoEdgeContactDescriptor(coEdgeRecord is map) returns map
+{
+    const refusal = { "isAffine" : false, "origin" : vector(0, 0, 0), "direction" : vector(0, 0, 0),
+            "leftNormal" : vector(0, 0, 0), "rightNormal" : vector(0, 0, 0) };
+    const leftNormals = coEdgeRecord.sideNormals.left;
+    const rightNormals = coEdgeRecord.sideNormals.right;
+    const points = coEdgeRecord.edgePoints;
+    const parameters = coEdgeRecord.sampleParameters;
+    if (leftNormals == undefined || rightNormals == undefined || points == undefined ||
+        parameters == undefined || size(points) < 2)
+    {
+        return refusal;
+    }
+
+    const lastIndex = size(points) - 1;
+    const origin = points[0];
+    const direction = points[lastIndex] - origin;
+    const edgeLength = norm(direction);
+    if (edgeLength <= 0)
+    {
+        return refusal;
+    }
+    const pointTolerance = AFFINE_COEDGE_RELATIVE_TOLERANCE * edgeLength;
+    const spanParameter = parameters[lastIndex] - parameters[0];
+    if (spanParameter <= 0)
+    {
+        return refusal;
+    }
+
+    for (var index = 1; index < lastIndex; index += 1)
+    {
+        const fraction = (parameters[index] - parameters[0]) / spanParameter;
+        if (norm(points[index] - (origin + fraction * direction)) > pointTolerance)
+        {
+            return refusal;
+        }
+    }
+    for (var index = 1; index <= lastIndex; index += 1)
+    {
+        if (norm(leftNormals[index] - leftNormals[0]) > AFFINE_COEDGE_RELATIVE_TOLERANCE ||
+            norm(rightNormals[index] - rightNormals[0]) > AFFINE_COEDGE_RELATIVE_TOLERANCE)
+        {
+            return refusal;
+        }
+    }
+    return { "isAffine" : true, "origin" : origin, "direction" : direction,
+            "leftNormal" : leftNormals[0], "rightNormal" : rightNormals[0] };
+}
+
+/**
+ * The sharp edge's funnel at one station, solved in closed form from an affine descriptor.
+ *
+ * Both strip functions are affine in s, so each contributes at most one root and the two roots
+ * partition [0, 1] into at most three sub-intervals. Membership is decided once per sub-interval
+ * on the sign product at its midpoint, which is the same criterion the sampled scan applies at
+ * every sample and reaches the same answer because an affine function changes sign only at its
+ * root. A sub-interval count of three is what admits the two-span case, where the funnel occupies
+ * both ends of the edge and not its middle.
+ *
+ * Returns the shape `sharpEdgeFunnelSpansAtTime` returns.
+ */
+export function sharpEdgeFunnelSpansFromDescriptor(frozenSample is map, descriptor is map) returns map
+{
+    const leftRotated = applyRowsToTriple(frozenSample.rotation, descriptor.leftNormal[0],
+        descriptor.leftNormal[1], descriptor.leftNormal[2]);
+    const rightRotated = applyRowsToTriple(frozenSample.rotation, descriptor.rightNormal[0],
+        descriptor.rightNormal[1], descriptor.rightNormal[2]);
+    const originVelocity = leanVelocity(frozenSample, descriptor.origin);
+    const directionRate = applyRowsToTriple(frozenSample.rotationDerivative, descriptor.direction[0],
+        descriptor.direction[1], descriptor.direction[2]);
+
+    const leftConstant = dotTriples(leftRotated, originVelocity);
+    const leftSlope = dotTriples(leftRotated, directionRate);
+    const rightConstant = dotTriples(rightRotated, originVelocity);
+    const rightSlope = dotTriples(rightRotated, directionRate);
+
+    const leftScale = max(abs(leftConstant), abs(leftConstant + leftSlope));
+    const rightScale = max(abs(rightConstant), abs(rightConstant + rightSlope));
+    const endVelocity = addTriples(originVelocity, directionRate);
+    const speedScale = max(sqrt(dotTriples(originVelocity, originVelocity)),
+        sqrt(dotTriples(endVelocity, endVelocity)));
+    const slidingFloor = STRIP_SLIDING_RELATIVE_FLOOR * max(speedScale, 1e-300);
+    if (leftScale <= slidingFloor || rightScale <= slidingFloor)
+    {
+        return { "found" : false, "spans" : [], "sliding" : true,
+                "leftScale" : leftScale, "rightScale" : rightScale };
+    }
+
+    const leftFloor = STRIP_ROOT_RELATIVE_FLOOR * leftScale;
+    const rightFloor = STRIP_ROOT_RELATIVE_FLOOR * rightScale;
+
+    // The breakpoints of the sign pattern: the ends, plus whichever side's root falls strictly
+    // inside. A slope under its own floor is a constant function, which has no root to add.
+    var breakParameters = [0];
+    var breakSources = ["startVertex"];
+    const leftRoot = abs(leftSlope) > leftFloor ? -leftConstant / leftSlope : undefined;
+    const rightRoot = abs(rightSlope) > rightFloor ? -rightConstant / rightSlope : undefined;
+    const leftInside = leftRoot != undefined && leftRoot > 0 && leftRoot < 1;
+    const rightInside = rightRoot != undefined && rightRoot > 0 && rightRoot < 1;
+    if (leftInside && rightInside)
+    {
+        breakParameters = append(breakParameters, min(leftRoot, rightRoot));
+        breakSources = append(breakSources, leftRoot <= rightRoot ? "left" : "right");
+        breakParameters = append(breakParameters, max(leftRoot, rightRoot));
+        breakSources = append(breakSources, leftRoot <= rightRoot ? "right" : "left");
+    }
+    else if (leftInside)
+    {
+        breakParameters = append(breakParameters, leftRoot);
+        breakSources = append(breakSources, "left");
+    }
+    else if (rightInside)
+    {
+        breakParameters = append(breakParameters, rightRoot);
+        breakSources = append(breakSources, "right");
+    }
+    breakParameters = append(breakParameters, 1);
+    breakSources = append(breakSources, "endVertex");
+
+    var spans = [];
+    var runStart = -1;
+    for (var index = 0; index < size(breakParameters) - 1; index += 1)
+    {
+        const middle = 0.5 * (breakParameters[index] + breakParameters[index + 1]);
+        const leftValue = leftConstant + middle * leftSlope;
+        const rightValue = rightConstant + middle * rightSlope;
+        const leftSign = abs(leftValue) <= leftFloor ? 0 : (leftValue > 0 ? 1 : -1);
+        const rightSign = abs(rightValue) <= rightFloor ? 0 : (rightValue > 0 ? 1 : -1);
+        const inside = leftSign * rightSign <= 0;
+        if (inside && runStart < 0)
+        {
+            runStart = index;
+        }
+        if (!inside || index == size(breakParameters) - 2)
+        {
+            if (runStart >= 0)
+            {
+                const runEnd = inside ? index + 1 : index;
+                spans = append(spans, {
+                            "sLow" : breakParameters[runStart], "sHigh" : breakParameters[runEnd],
+                            "lowSource" : breakSources[runStart], "highSource" : breakSources[runEnd]
+                        });
+                runStart = -1;
+            }
+        }
+    }
+    return { "found" : size(spans) > 0, "spans" : spans, "sliding" : false,
+            "leftScale" : leftScale, "rightScale" : rightScale };
+}
+
+/**
+ * Where ONE side's contact line crosses an affine co-edge, in closed form.
+ *
+ * The strip function is `g(s) = constant + s * slope`, so it has at most one root and that root
+ * is a division. A slope under the value floor is a constant function, which crosses nowhere; a
+ * root outside [0, 1] is a crossing the edge does not reach. This answers the same question as
+ * the sampled scan in [findCoEdgeStripRootsAtTime] and reaches the same root without bracketing
+ * for it.
+ *
+ * Returns { roots {array} : [{ s, value }], valueScale {number}, sliding {boolean} }.
+ */
+export function coEdgeStripRootsFromDescriptor(frozenSample is map, descriptor is map,
+    side is string) returns map
+{
+    const normal = side == "left" ? descriptor.leftNormal : descriptor.rightNormal;
+    const rotated = applyRowsToTriple(frozenSample.rotation, normal[0], normal[1], normal[2]);
+    const originVelocity = leanVelocity(frozenSample, descriptor.origin);
+    const directionRate = applyRowsToTriple(frozenSample.rotationDerivative, descriptor.direction[0],
+        descriptor.direction[1], descriptor.direction[2]);
+    const constantTerm = dotTriples(rotated, originVelocity);
+    const slope = dotTriples(rotated, directionRate);
+
+    const valueScale = max(abs(constantTerm), abs(constantTerm + slope));
+    const endVelocity = addTriples(originVelocity, directionRate);
+    const speedScale = max(sqrt(dotTriples(originVelocity, originVelocity)),
+        sqrt(dotTriples(endVelocity, endVelocity)));
+    if (valueScale <= STRIP_SLIDING_RELATIVE_FLOOR * max(speedScale, 1e-300))
+    {
+        return { "roots" : [], "valueScale" : valueScale, "sliding" : true };
+    }
+
+    const floor = STRIP_ROOT_RELATIVE_FLOOR * valueScale;
+    if (abs(slope) <= floor)
+    {
+        return { "roots" : [], "valueScale" : valueScale, "sliding" : false };
+    }
+    const root = -constantTerm / slope;
+    // A root a hair outside the edge is one that landed on a vertex, which the sampled form
+    // reports as the endpoint sample sitting on zero.
+    if (root < -STRIP_ROOT_VERTEX_MARGIN || root > 1 + STRIP_ROOT_VERTEX_MARGIN)
+    {
+        return { "roots" : [], "valueScale" : valueScale, "sliding" : false };
+    }
+    const clamped = min(1, max(0, root));
+    return {
+            "roots" : [{ "s" : clamped, "value" : constantTerm + clamped * slope }],
+            "valueScale" : valueScale, "sliding" : false
+        };
+}
+
+/**
  * The sharp edge's FUNNEL at one station (spec 8): the s intervals where the two adjacent
  * faces' strip functions differ in sign, `g_left * g_right <= 0` - the papers' 4.1 criterion,
  * two dot products on arrays that are already built.
+ *
+ * This overload takes a descriptor from [affineCoEdgeContactDescriptor]. An affine one is
+ * answered in closed form; anything else falls through to the sampled scan below. Callers that
+ * ask about the same edge at many times build the descriptor once and pass it here.
  *
  * The interval ends are exactly where one side's contact line crosses the edge, so they are the
  * SAME roots `findCoEdgeStripRootsAtTime` hands the adjacent grazing patch; an end that reaches
@@ -15640,14 +16194,19 @@ function solveStripRootInBracket(frozenSample is map, coEdgeRecord is map, side 
  * }
  */
 export function sharpEdgeFunnelSpansAtTime(strippedMotion is map, coEdgeRecord is map, t is number,
-    scanSamples is number) returns map
+    scanSamples is number, descriptor is map) returns map
 {
     if (coEdgeRecord.sideNormals.left == undefined || coEdgeRecord.sideNormals.right == undefined)
     {
         return { "found" : false, "spans" : [], "sliding" : false,
                 "leftScale" : 0, "rightScale" : 0 };
     }
-    const frozen = evaluateMotionSample(strippedMotion, t);
+    // Order 1: every read below is the contact function's value, which carries no acceleration.
+    const frozen = evaluateMotionSample(strippedMotion, t, 1);
+    if (descriptor.isAffine)
+    {
+        return sharpEdgeFunnelSpansFromDescriptor(frozen, descriptor);
+    }
     const sampleCount = max(scanSamples, size(coEdgeRecord.sampleParameters));
     var parameters = makeArray(sampleCount, 0);
     var leftValues = makeArray(sampleCount, 0);
@@ -15717,6 +16276,17 @@ export function sharpEdgeFunnelSpansAtTime(strippedMotion is map, coEdgeRecord i
     }
     return { "found" : size(spans) > 0, "spans" : spans, "sliding" : false,
             "leftScale" : leftScale, "rightScale" : rightScale };
+}
+
+/**
+ * The sharp edge's funnel at one station, describing the edge on the spot. A caller asking about
+ * one edge at many times should build the descriptor once and use the five-argument overload.
+ */
+export function sharpEdgeFunnelSpansAtTime(strippedMotion is map, coEdgeRecord is map, t is number,
+    scanSamples is number) returns map
+{
+    return sharpEdgeFunnelSpansAtTime(strippedMotion, coEdgeRecord, t, scanSamples,
+        affineCoEdgeContactDescriptor(coEdgeRecord));
 }
 
 /**
@@ -15851,7 +16421,7 @@ export function faceBoundingCoEdges(coEdgeRecords is array, faceIndex is number)
 export function planarFaceCrossingsAtTime(strippedMotion is map, coEdgeRecords is array,
     boundingCoEdges is array, t is number, scanSamples is number) returns map
 {
-    const frozen = evaluateMotionSample(strippedMotion, t);
+    const frozen = evaluateMotionSample(strippedMotion, t, 1);
     var crossings = [];
     var sliding = false;
     var valueScale = 0;
@@ -15886,7 +16456,7 @@ export function planarFaceCrossingsAtTime(strippedMotion is map, coEdgeRecords i
 export function sharpEdgeSpanEndPoints(strippedMotion is map, coEdgeRecord is map, span is map,
     t is number) returns array
 {
-    const frozen = evaluateMotionSample(strippedMotion, t);
+    const frozen = evaluateMotionSample(strippedMotion, t, 1);
     const lowPoint = interpolateCoEdgePoint(coEdgeRecord, span.sLow).point;
     const highPoint = interpolateCoEdgePoint(coEdgeRecord, span.sHigh).point;
     return [
@@ -15908,17 +16478,108 @@ export function sharpEdgeSpanEndPoints(strippedMotion is map, coEdgeRecord is ma
  * Returns { parameters {array}, samples {array} } - a sample's `sampledAt` guards it against
  * being read at any other t.
  */
+/** Knots nearer than this are one knot, so the span between them is not a span. */
+const MOTION_SPAN_MINIMUM_WIDTH = 1e-12;
+
+/**
+ * The station parameters a contact-root scan needs over [tStart, tEnd], derived from the MOTION
+ * rather than from a constant.
+ *
+ * The function being bracketed is `g(t) = <A(t) n, A'(t) p + b'(t)>`. A(t) is a spline of degree
+ * `d`, so `A'` and `b'` are degree `d - 1` and g is piecewise polynomial of degree `2d - 1` -
+ * degree 5 for the cubic motion this module fits. A polynomial of that degree has at most
+ * `2d - 1` roots per knot span, so `2d` sub-intervals per span cannot miss a sign change, and
+ * that is a BOUND rather than a heuristic.
+ *
+ * This also makes the grid density-aware for free. The motion's knot vector already records where
+ * the motion is busy: spec section 4.1 densifies stations until orthogonality drift certifies, so
+ * a fast-turning path arrives carrying more spans. A uniform grid discards that and is wrong in
+ * both directions - wasteful on a simple motion, and capable of MISSING ROOTS on a dense one,
+ * where a fixed count leaves under one sample per span.
+ *
+ * `minimumStations` is a floor for motions with very few spans; the count only ever grows from
+ * the span bound.
+ */
+export function motionContactStationParameters(strippedMotion is map, tStart is number,
+    tEnd is number, minimumStations is number) returns array
+{
+    const degree = strippedMotion.columnX.degree;
+    const knots = strippedMotion.columnX.knots;
+    // Span boundaries: the sweep's own ends plus every distinct interior knot.
+    var boundaries = [tStart];
+    for (var index = 0; index < size(knots); index += 1)
+    {
+        const knot = knots[index];
+        if (knot > boundaries[size(boundaries) - 1] + MOTION_SPAN_MINIMUM_WIDTH && knot < tEnd)
+        {
+            boundaries = append(boundaries, knot);
+        }
+    }
+    boundaries = append(boundaries, tEnd);
+
+    const spanCount = size(boundaries) - 1;
+    var subIntervalsPerSpan = 2 * degree;
+    if (spanCount * subIntervalsPerSpan + 1 < minimumStations)
+    {
+        subIntervalsPerSpan = ceil((minimumStations - 1) / spanCount);
+    }
+
+    var parameters = makeArray(spanCount * subIntervalsPerSpan + 1, 0);
+    var writeIndex = 0;
+    for (var spanIndex = 0; spanIndex < spanCount; spanIndex += 1)
+    {
+        const spanStart = boundaries[spanIndex];
+        const spanWidth = boundaries[spanIndex + 1] - spanStart;
+        for (var step = 0; step < subIntervalsPerSpan; step += 1)
+        {
+            parameters[writeIndex] = spanStart + spanWidth * step / subIntervalsPerSpan;
+            writeIndex += 1;
+        }
+    }
+    parameters[writeIndex] = tEnd;
+    return parameters;
+}
+
+/**
+ * The motion sampled at parameters derived from its own knot vector - see
+ * [motionContactStationParameters]. `minimumStations` floors the count.
+ */
 export function buildMotionStationGrid(strippedMotion is map, tStart is number, tEnd is number,
-    stationCount is number) returns map
+    minimumStations is number, densityAware is boolean) returns map
+{
+    const parameters = densityAware ?
+        motionContactStationParameters(strippedMotion, tStart, tEnd, minimumStations) :
+        uniformStationParameters(tStart, tEnd, minimumStations);
+    var samples = makeArray(size(parameters));
+    for (var index = 0; index < size(parameters); index += 1)
+    {
+        // Order 1. Every consumer of this grid reads the contact function's VALUE, which is
+        // `<A n, A' p + b'>` - no acceleration term appears in it.
+        samples[index] = evaluateMotionSample(strippedMotion, parameters[index], 1);
+    }
+    return { "parameters" : parameters, "samples" : samples };
+}
+
+/** `stationCount` parameters spread evenly across [tStart, tEnd]. */
+function uniformStationParameters(tStart is number, tEnd is number, stationCount is number) returns array
 {
     var parameters = makeArray(stationCount, 0);
-    var samples = makeArray(stationCount);
     for (var index = 0; index < stationCount; index += 1)
     {
         parameters[index] = tStart + (tEnd - tStart) * index / (stationCount - 1);
-        samples[index] = evaluateMotionSample(strippedMotion, parameters[index]);
     }
-    return { "parameters" : parameters, "samples" : samples };
+    return parameters;
+}
+
+export function buildMotionStationGrid(strippedMotion is map, tStart is number, tEnd is number,
+    minimumStations is number) returns map
+{
+    // Uniform, pending the sliver merge of spec section 9.2. The density-aware grid above is
+    // correct and finds contact transitions this one misses; on the rotating-cube fixture one of
+    // those transitions cuts a segment the kernel then refuses as a transverse sliver, and a
+    // refused patch costs more deviation than the missed transition does. Turn this to `true` in
+    // the same change that lands segment merging.
+    return buildMotionStationGrid(strippedMotion, tStart, tEnd, minimumStations, false);
 }
 
 /**
@@ -15969,6 +16630,237 @@ export function findContactFunctionRootsOnGrid(strippedMotion is map, stationGri
  * The contact breakpoints of one set of (point, normal) pairs: every time the contact function
  * `<A n, A' p + b'>` vanishes at one of them, with the sweep's own ends bracketing them.
  */
+/**
+ * How small a Bernstein coefficient counts as zero, relative to the largest coefficient of the
+ * polynomial it belongs to. The threshold belongs to the polynomial that produced the value, not
+ * to the caller, which is the same rule the census applies to its block screen.
+ */
+const CONTACT_COEFFICIENT_RELATIVE_TOLERANCE = 1e-12;
+
+/** How narrowly root isolation brackets before Newton takes over, in a span's local parameter. */
+const CONTACT_ROOT_ISOLATION_WIDTH = 1e-4;
+
+/**
+ * The contact function `g(t) = <A(t) n, A'(t) p + b'(t)>` on one motion span, as Bernstein
+ * coefficients in that span's local [0, 1] parameter.
+ *
+ * No spline is evaluated. Expanding the inner product over the columns of A,
+ *
+ *     g = SUM_i SUM_j n_i p_j <C_i, C_j'>  +  SUM_i n_i <C_i, b'>
+ *
+ * and `buildMotionSpanPolynomials` has already built those twelve coefficient arrays per span and
+ * elevated them to one shared degree, so the whole contact function of a constant normal at a
+ * constant point is a WEIGHTED SUM of polynomials the motion computed once. Twelve numbers per
+ * span, and the motion never appears again - the same reduction section 6.5 makes for the analytic
+ * face classes, one dimension down.
+ *
+ * `includeTranslation` false drops the `b'` term, which is what turns this into the RULING
+ * coefficient of a straight edge: with `p` replaced by the edge's direction, `<A n, A' d>` is the
+ * slope of the affine strip function along that edge.
+ */
+export function contactFunctionSpanCoefficients(motionSpan is map, normal is Vector, point is Vector,
+    includeTranslation is boolean) returns array
+{
+    const length = size(motionSpan.translationDots[0]);
+    var coefficients = makeArray(length, 0);
+    for (var i = 0; i < 3; i += 1)
+    {
+        const normalWeight = normal[i];
+        if (normalWeight == 0)
+        {
+            continue;
+        }
+        if (includeTranslation)
+        {
+            const translationRow = motionSpan.translationDots[i];
+            for (var index = 0; index < length; index += 1)
+            {
+                coefficients[index] = coefficients[index] + normalWeight * translationRow[index];
+            }
+        }
+        for (var j = 0; j < 3; j += 1)
+        {
+            const weight = normalWeight * point[j];
+            if (weight == 0)
+            {
+                continue;
+            }
+            const velocityRow = motionSpan.velocityDots[i][j];
+            for (var index = 0; index < length; index += 1)
+            {
+                coefficients[index] = coefficients[index] + weight * velocityRow[index];
+            }
+        }
+    }
+    return coefficients;
+}
+
+/**
+ * A root of a Bernstein polynomial inside an isolating interval, by Newton safeguarded with
+ * bisection, entirely on the coefficients. `derivativeCoefficients` is the polynomial's own
+ * derivative, differentiated once by the caller rather than per iteration.
+ */
+function polishBernsteinRoot(coefficients is array, derivativeCoefficients is array,
+    bracketLow is number, bracketHigh is number, parameterTolerance is number) returns number
+{
+    var low = bracketLow;
+    var high = bracketHigh;
+    const lowValue = evaluateBernstein(coefficients, low);
+    var parameter = 0.5 * (low + high);
+    for (var iteration = 0; iteration < 24; iteration += 1)
+    {
+        const value = evaluateBernstein(coefficients, parameter);
+        if (value == 0)
+        {
+            return parameter;
+        }
+        if (value * lowValue > 0)
+        {
+            low = parameter;
+        }
+        else
+        {
+            high = parameter;
+        }
+        const slope = evaluateBernstein(derivativeCoefficients, parameter);
+        var next = slope == 0 ? undefined : parameter - value / slope;
+        if (next == undefined || next <= low || next >= high)
+        {
+            next = 0.5 * (low + high);
+        }
+        if (abs(next - parameter) < parameterTolerance)
+        {
+            return next;
+        }
+        parameter = next;
+    }
+    return parameter;
+}
+
+/**
+ * Every root of the contact function on [tStart, tEnd], in closed form.
+ *
+ * The function is piecewise polynomial in t, so each motion span is screened by the convex hull of
+ * its own coefficients - a span whose coefficients share a sign is PROVEN root-free and costs one
+ * pass over `2d` numbers - and only the survivors are subdivided into isolating intervals and
+ * polished. Nothing here evaluates a spline, brackets against a station grid, or bisects on a
+ * sampled sign, so no root can hide between stations.
+ *
+ * A span whose coefficients all vanish is the sliding case and is skipped; the degeneracy audit of
+ * section 6.4 owns it.
+ *
+ * Returns [{ t, value }] sorted ascending, with roots closer than `tTolerance` merged.
+ */
+export function contactFunctionRootsExact(motionSpans is array, normal is Vector, point is Vector,
+    tStart is number, tEnd is number, tTolerance is number) returns array
+{
+    var roots = [];
+    for (var motionSpan in motionSpans)
+    {
+        if (motionSpan.tEnd <= tStart || motionSpan.tStart >= tEnd)
+        {
+            continue;
+        }
+        const spanWidth = motionSpan.tEnd - motionSpan.tStart;
+        if (spanWidth <= 0)
+        {
+            continue;
+        }
+        const coefficients = contactFunctionSpanCoefficients(motionSpan, normal, point, true);
+        const range = bernsteinRange(coefficients);
+        const scale = max(abs(range.minimum), abs(range.maximum));
+        if (scale <= 0)
+        {
+            continue;
+        }
+        const valueTolerance = CONTACT_COEFFICIENT_RELATIVE_TOLERANCE * scale;
+        if (bernsteinExcludesZero(coefficients, valueTolerance))
+        {
+            continue;
+        }
+        const derivativeCoefficients = differentiateBernstein(coefficients);
+        const localTolerance = max(tTolerance / spanWidth, 1e-15);
+        for (var interval in isolateBernsteinRoots(coefficients, valueTolerance,
+                CONTACT_ROOT_ISOLATION_WIDTH))
+        {
+            const local = polishBernsteinRoot(coefficients, derivativeCoefficients,
+                interval.start, interval.end, localTolerance);
+            const t = motionSpan.tStart + local * spanWidth;
+            if (t < tStart - tTolerance || t > tEnd + tTolerance)
+            {
+                continue;
+            }
+            // CROSSINGS only. A breakpoint marks a change of contact type, and an
+            // even-multiplicity root is a touch rather than a change - `g` returns to the side it
+            // came from, so nothing about the sweep's combinatorics differs across it and cutting
+            // there manufactures a patch of no extent. Coefficient root isolation finds these
+            // where a sampled sign grid structurally cannot, so the test has to be made explicitly
+            // rather than inherited from the sampling. Tangencies belong to the grazing and
+            // degeneracy machinery of sections 6.4 and 7.4, which reads them from `f_t`.
+            const probe = max(100 * localTolerance, 1e-7);
+            const beforeValue = evaluateBernstein(coefficients, max(0, local - probe));
+            const afterValue = evaluateBernstein(coefficients, min(1, local + probe));
+            if (beforeValue * afterValue > 0)
+            {
+                continue;
+            }
+            roots = append(roots, {
+                        "t" : min(tEnd, max(tStart, t)),
+                        "value" : evaluateBernstein(coefficients, local)
+                    });
+        }
+    }
+    if (size(roots) == 0)
+    {
+        return roots;
+    }
+    roots = sort(roots, function(first, second)
+        {
+            return first.t - second.t;
+        });
+    var deduplicated = [roots[0]];
+    for (var index = 1; index < size(roots); index += 1)
+    {
+        if (roots[index].t - deduplicated[size(deduplicated) - 1].t > 10 * tTolerance)
+        {
+            deduplicated = append(deduplicated, roots[index]);
+        }
+    }
+    return deduplicated;
+}
+
+/**
+ * The sweep-wide breakpoint times contributed by a set of contact pairs, solved on coefficients.
+ * Returns the sorted, deduplicated times including both sweep ends.
+ */
+function contactBreakpointsExact(motionSpans is array, contactPairs is array, tStart is number,
+    tEnd is number, tTolerance is number) returns array
+{
+    var times = [tStart, tEnd];
+    for (var contactPair in contactPairs)
+    {
+        for (var root in contactFunctionRootsExact(motionSpans, contactPair.normal,
+                contactPair.point, tStart, tEnd, tTolerance))
+        {
+            times = append(times, root.t);
+        }
+    }
+    times = sort(times, function(first, second)
+        {
+            return first - second;
+        });
+    var deduplicated = [times[0]];
+    for (var index = 1; index < size(times); index += 1)
+    {
+        if (times[index] - deduplicated[size(deduplicated) - 1] > 10 * tTolerance)
+        {
+            deduplicated = append(deduplicated, times[index]);
+        }
+    }
+    deduplicated[size(deduplicated) - 1] = tEnd;
+    return deduplicated;
+}
+
 function contactBreakpointsForPairs(strippedMotion is map, stationGrid is map, contactPairs is array,
     tTolerance is number) returns array
 {
@@ -16029,6 +16921,47 @@ function mergeSortedTimes(existing is array, incoming is array, tolerance is num
  * reaches one of its corners, which are exactly the times the line's two boundary crossings
  * change which edge they ride - so they are this face's OWN breakpoints and nothing else's.
  */
+/**
+ * How near two contact pairs' points and normals must be to be the same pair. Points are
+ * unit-stripped meters and normals are unit vectors, so one absolute floor serves both: a tool
+ * whose distinct vertices sit this close has already lost to the kernel's own resolution.
+ */
+const CONTACT_PAIR_MATCH_TOLERANCE = 1e-10;
+
+/**
+ * `existing` with every pair of `incoming` that it does not already hold appended.
+ *
+ * A contact pair is a constant normal at a constant point, so it defines one scalar function of
+ * time and its roots are the same whichever owner asked for them. Owners overlap heavily - a
+ * face corner belongs to two of that face's bounding co-edges and to every sharp edge meeting
+ * there - so pooling before the root pass is what stops the same function being solved several
+ * times over.
+ */
+export function mergeContactPairs(existing is array, incoming is array) returns array
+{
+    var merged = existing;
+    for (var candidate in incoming)
+    {
+        var isNew = true;
+        for (var held in merged)
+        {
+            if (squaredNorm(held.point - candidate.point) <=
+                CONTACT_PAIR_MATCH_TOLERANCE * CONTACT_PAIR_MATCH_TOLERANCE &&
+                squaredNorm(held.normal - candidate.normal) <=
+                CONTACT_PAIR_MATCH_TOLERANCE * CONTACT_PAIR_MATCH_TOLERANCE)
+            {
+                isNew = false;
+                break;
+            }
+        }
+        if (isNew)
+        {
+            merged = append(merged, candidate);
+        }
+    }
+    return merged;
+}
+
 export function planarFaceCornerPairs(coEdgeRecords is array, boundingCoEdges is array) returns array
 {
     var contactPairs = [];
@@ -16093,11 +17026,14 @@ function sharpEdgeFunnelTransitions(strippedMotion is map, stationGrid is map, c
     tTolerance is number, scanSamples is number) returns array
 {
     const stationCount = size(stationGrid.parameters);
+    // Described once for the whole pass. On a polyhedral tool this makes every funnel question
+    // below four dot products and two divisions instead of a scan across the edge's samples.
+    const descriptor = affineCoEdgeContactDescriptor(coEdgeRecord);
     var occupied = makeArray(stationCount, false);
     for (var index = 0; index < stationCount; index += 1)
     {
         occupied[index] = sharpEdgeFunnelSpansAtTime(stationGrid.samples[index], coEdgeRecord,
-            stationGrid.parameters[index], scanSamples).found;
+            stationGrid.parameters[index], scanSamples, descriptor).found;
     }
     var transitions = [];
     for (var index = 1; index < stationCount; index += 1)
@@ -16114,8 +17050,8 @@ function sharpEdgeFunnelTransitions(strippedMotion is map, stationGrid is map, c
         while (high - low > tTolerance)
         {
             const middle = 0.5 * (low + high);
-            if (sharpEdgeFunnelSpansAtTime(strippedMotion, coEdgeRecord, middle, scanSamples).found
-                == lowOccupied)
+            if (sharpEdgeFunnelSpansAtTime(strippedMotion, coEdgeRecord, middle, scanSamples,
+                    descriptor).found == lowOccupied)
             {
                 low = middle;
             }
@@ -16173,9 +17109,14 @@ export function planPolyhedralEnvelope(strippedMotion is map, faceRecords is arr
                 "tStart" : 0, "tEnd" : 1,
                 "breakpointStations" : 97,
                 "tTolerance" : 1e-12,
-                "scanSamples" : 0
+                "scanSamples" : 0,
+                "exactBreakpoints" : false
             }, options);
     const sweepSpan = settings.tEnd - settings.tStart;
+    // The motion's own per-span Bernstein polynomials, built once and shared by every contact
+    // question this pass asks. The station grid below still serves the funnel occupancy scan.
+    const motionSpans = settings.exactBreakpoints == true ?
+        buildMotionSpanPolynomials(strippedMotion) : [];
     const stationGrid = buildMotionStationGrid(strippedMotion, settings.tStart, settings.tEnd,
         settings.breakpointStations);
 
@@ -16198,6 +17139,15 @@ export function planPolyhedralEnvelope(strippedMotion is map, faceRecords is arr
     // cut is a sub-interval of one the owner already had, so no patch spans a change in its own
     // contact type. Sub-intervals where an owner has no contact are dropped by the same midpoint
     // tests that always decided that.
+    // Every owner's contact pairs are POOLED and deduplicated before a single root pass runs over
+    // them. A (normal, point) pair is a scalar function of t alone, and the same one belongs to
+    // every owner incident to it: a square face generates each of its corners twice, once per
+    // bounding co-edge, and every sharp edge's end pair repeats one of its own faces' corners.
+    // A cube offers 96 pairs and holds 24 distinct ones. Pooling is exact here because the
+    // partition is sweep-wide - each owner's roots are merged into ONE timeline above, so the
+    // owner a root arrived through never mattered.
+    var contactPairs = [];
+    var funnelTransitions = [];
     var eligibleFaces = [];
     for (var faceIndex = 0; faceIndex < size(faceRecords); faceIndex += 1)
     {
@@ -16210,10 +17160,8 @@ export function planPolyhedralEnvelope(strippedMotion is map, faceRecords is arr
             continue;
         }
         const boundingCoEdges = faceBoundingCoEdges(coEdgeRecords, faceIndex);
-        breakpoints = mergeSortedTimes(breakpoints,
-            contactBreakpointsForPairs(strippedMotion, stationGrid,
-                planarFaceCornerPairs(coEdgeRecords, boundingCoEdges), settings.tTolerance),
-            settings.tTolerance);
+        contactPairs = mergeContactPairs(contactPairs,
+            planarFaceCornerPairs(coEdgeRecords, boundingCoEdges));
         eligibleFaces = append(eligibleFaces, faceIndex);
     }
 
@@ -16236,15 +17184,61 @@ export function planPolyhedralEnvelope(strippedMotion is map, faceRecords is arr
                         " is outside v1's scope." });
             continue;
         }
-        breakpoints = mergeSortedTimes(breakpoints, mergeSortedTimes(
-                contactBreakpointsForPairs(strippedMotion, stationGrid,
-                    sharpEdgeEndPairs(coEdgeRecord), settings.tTolerance),
-                sharpEdgeFunnelTransitions(strippedMotion, stationGrid, coEdgeRecord,
-                    settings.tTolerance, settings.scanSamples),
-                settings.tTolerance),
-            settings.tTolerance);
+        contactPairs = mergeContactPairs(contactPairs, sharpEdgeEndPairs(coEdgeRecord));
+        funnelTransitions = concatenateArrays([funnelTransitions,
+                    sharpEdgeFunnelTransitions(strippedMotion, stationGrid, coEdgeRecord,
+                        settings.tTolerance, settings.scanSamples)]);
         eligibleEdges = append(eligibleEdges, edgeIndex);
     }
+
+    // `exactBreakpoints` solves the contact roots on coefficients instead of bracketing them on
+    // the station grid: `g` is piecewise polynomial in t, so every pair's roots come out of the
+    // motion's own span polynomials behind a convex-hull screen, and no root can sit between two
+    // samples. It is measured correct and measured to find crossings the grid misses - which is
+    // why it is not yet the default. Those extra crossings cut segments whose patches the kernel
+    // refuses as transverse slivers, and a refused patch leaves a larger hole than the missed
+    // crossing does. Turn this on in the same change that lands the segment merge of section 9.2.
+    const pairRoots = settings.exactBreakpoints == true ?
+        contactBreakpointsExact(motionSpans, contactPairs, settings.tStart, settings.tEnd,
+            settings.tTolerance) :
+        contactBreakpointsForPairs(strippedMotion, stationGrid, contactPairs, settings.tTolerance);
+
+    // ONE time per event. A funnel opens or closes exactly when a contact root crosses an edge
+    // end, so the occupancy bisection above and the root refinement find the SAME transitions -
+    // but the bisection detects a span only once it is wide enough to catch a scan sample, so
+    // its answer lands late by a few nanoseconds of t. Kept as two partition entries they cut a
+    // sub-resolution sliver segment: every owner's patches then stop and restart across a gap
+    // smaller than the kernel's own resolution, which one seam sews across and three sheets
+    // around the same ring stack into BOOLEAN_INVALID. The refined root is the true event, so a
+    // transition within the emission's own minimum-interval floor of a root is that root said
+    // worse and is dropped in its favour; a transition with no root nearby - a funnel closing in
+    // the edge's interior - stands on its own. Merging at the same floor is provably harmless:
+    // any segment narrower than it is dropped unplanned below.
+    const duplicateEventWindow = MINIMUM_CONTACT_INTERVAL_FRACTION * sweepSpan;
+    var interiorTransitions = [];
+    for (var transition in funnelTransitions)
+    {
+        var matchesRoot = false;
+        for (var root in pairRoots)
+        {
+            if (abs(transition - root) < duplicateEventWindow)
+            {
+                matchesRoot = true;
+                break;
+            }
+        }
+        if (!matchesRoot)
+        {
+            interiorTransitions = append(interiorTransitions, transition);
+        }
+    }
+    breakpoints = mergeSortedTimes(breakpoints, pairRoots, 0.1 * duplicateEventWindow);
+    breakpoints = mergeSortedTimes(breakpoints, interiorTransitions, 0.1 * duplicateEventWindow);
+    // The partition's ends are the sweep's own, never a root that landed a window short of them:
+    // a cluster keeps its smallest member, and losing tEnd would leave the last patches ending
+    // before the cap they must close against.
+    breakpoints[0] = settings.tStart;
+    breakpoints[size(breakpoints) - 1] = settings.tEnd;
 
     // ---- Pass two: cut every owner on the shared partition ----
     const partition = breakpoints;
@@ -16348,7 +17342,7 @@ export function planPolyhedralEnvelope(strippedMotion is map, faceRecords is arr
     }
 
     return {
-            "breakpoints" : breakpoints,
+            "breakpoints" : partition,
             "patches" : patches,
             "segmentCounts" : { "face" : faceSegments, "edge" : edgeSegments },
             "skipped" : skipped,
@@ -16445,15 +17439,24 @@ export function fitRuledEnvelopePatchAtStations(strippedMotion is map, coEdgeRec
                     "netExtent" : 0, "minParameterGap" : 0,
                     "transverseTravel" : 0, "netOvershoot" : 0 };
         }
+        const collapsed = squaredNorm(ends.endPoint - ends.startPoint) <
+            PATCH_RULING_COLLAPSE_TOLERANCE * PATCH_RULING_COLLAPSE_TOLERANCE;
+        // A collapsed ruling is SNAPPED to its own midpoint, so every column of the row is the
+        // same point and the row is exactly degenerate. Reporting the collapse and then handing
+        // the kernel the residue is what leaves a sliver edge: the apex a taper is supposed to
+        // produce becomes an edge a few nanometres long, which is real enough to be built and too
+        // short to bound anything, so the patch is refused and whatever survives has a free edge
+        // no neighbour can match. An exact apex is a shape the kernel accepts.
+        const rulingMidpoint = 0.5 * (ends.startPoint + ends.endPoint);
         var row = makeArray(columnCount, vector(0, 0, 0));
         for (var columnIndex = 0; columnIndex < columnCount; columnIndex += 1)
         {
             const blend = columnIndex / (columnCount - 1);
-            row[columnIndex] = (1 - blend) * ends.startPoint + blend * ends.endPoint;
+            row[columnIndex] = collapsed ? rulingMidpoint :
+                (1 - blend) * ends.startPoint + blend * ends.endPoint;
         }
         grid[stationIndex] = row;
-        if (squaredNorm(ends.endPoint - ends.startPoint) <
-            PATCH_RULING_COLLAPSE_TOLERANCE * PATCH_RULING_COLLAPSE_TOLERANCE)
+        if (collapsed)
         {
             if (stationIndex == 0)
             {
@@ -16469,6 +17472,14 @@ export function fitRuledEnvelopePatchAtStations(strippedMotion is map, coEdgeRec
             }
         }
     }
+
+    // Every sheet of one shell has to face the same way before any of them is built. Nothing
+    // upstream chooses the ruling's direction, and the direction is what decides which side the
+    // sheet calls outside - see `orientRuledGridOutward`.
+    const oriented = orientRuledGridOutward(grid,
+        patchOutwardReferenceInTool(coEdgeRecords, patchPlan),
+        evaluateMotionSample(strippedMotion, stations[floor(0.5 * stationCount)], 1));
+    grid = oriented.grid;
 
     // Two measures of the patch's own shape, both taken before the kernel is asked for anything,
     // because CANNOT_MAKE_BSPLINESURFACE names no net and no reason.
@@ -16591,7 +17602,9 @@ export function fitRuledEnvelopePatchAtStations(strippedMotion is map, coEdgeRec
             "worstDirectrixTurn" : worstDirectrixTurn,
             "leastDirectrixTravel" : leastDirectrixTravel,
             "netExtent" : netExtent, "minParameterGap" : minParameterGap,
-            "transverseTravel" : transverseTravel, "netOvershoot" : netOvershoot };
+            "transverseTravel" : transverseTravel, "netOvershoot" : netOvershoot,
+            "reversedForOutward" : oriented.reversed,
+            "orientationDecided" : oriented.decided };
 }
 
 /**
@@ -16599,23 +17612,171 @@ export function fitRuledEnvelopePatchAtStations(strippedMotion is map, coEdgeRec
  * patch's kind defines them.
  * Returns { failed, reason, startPoint, endPoint }.
  */
+/**
+ * The direction the envelope faces AWAY from the swept material, at this patch's contact set, in
+ * TOOL coordinates - the reference a patch's own surface normal has to agree with.
+ *
+ * At a grazing contact the envelope is tangent to the moving tool, so the two share a normal, and
+ * the side the material is on is the side the TOOL's material is on. A plane face's contact line
+ * therefore faces the way that face faces; a convex sharp edge's funnel faces somewhere in the cone
+ * between its two adjacent faces, and any interior direction of that cone serves as a SIGN
+ * reference because a convex cone spans less than half a turn. Both are constant in tool
+ * coordinates on a polyhedron, so this is read once per patch rather than per station.
+ *
+ * Returns undefined where the records carry no normal for the side asked about.
+ */
+function patchOutwardReferenceInTool(coEdgeRecords is array, patchPlan is map)
+{
+    if (patchPlan.patchKind == "edge")
+    {
+        const coEdgeRecord = coEdgeRecords[patchPlan.ownerIndex];
+        const leftNormals = coEdgeRecord.sideNormals.left;
+        const rightNormals = coEdgeRecord.sideNormals.right;
+        if (leftNormals == undefined || rightNormals == undefined)
+        {
+            return undefined;
+        }
+        const middle = floor(0.5 * size(leftNormals));
+        const summed = leftNormals[middle] + rightNormals[middle];
+        if (squaredNorm(summed) < 1e-20)
+        {
+            return undefined;
+        }
+        return normalize(summed);
+    }
+    // A face patch names the co-edge and the SIDE its own directrix rides, and that side's normal
+    // array is this face's own normal - which is what makes the reference readable without the
+    // face records.
+    const source = patchPlan.directrixSources[0];
+    const normals = coEdgeRecords[source.edgeIndex].sideNormals[source.side];
+    if (normals == undefined || size(normals) == 0)
+    {
+        return undefined;
+    }
+    return normals[floor(0.5 * size(normals))];
+}
+
+/**
+ * `grid` with every row's columns reversed where the net's own surface normal opposes the envelope's
+ * outward direction, so that every emitted sheet of one shell faces the same way.
+ *
+ * A tensor-product sheet's normal is the cross product of its u and v partials, so the ruling's
+ * DIRECTION decides which way the sheet faces - and nothing upstream chooses that direction. A
+ * plane face's two directrices arrive in the order its bounding co-edges happen to sit in the
+ * co-edge array, and a sharp edge's arrive in the order of that edge's own parameterization: both
+ * are arbitrary with respect to the material. A shell whose sheets disagree about which side is
+ * outside has no coherent inside, which is what `opBoolean` refuses when it is asked to make a
+ * solid of it, and reversing the ruling changes the parameterization and not one point of the
+ * geometry.
+ *
+ * The comparison is taken at the station whose ruling is LONGEST, because a patch that tapers has
+ * no ruling direction at all at its apex and a near-degenerate one carries no reliable sign.
+ *
+ * Returns { grid {array}, reversed {boolean}, decided {boolean} } - `decided` false when no
+ * reference or no usable ruling was available, in which case the grid is returned untouched.
+ */
+function orientRuledGridOutward(grid is array, outwardInTool, frozenSample is map) returns map
+{
+    if (outwardInTool == undefined || size(grid) < 2)
+    {
+        return { "grid" : grid, "reversed" : false, "decided" : false };
+    }
+    const columnCount = size(grid[0]);
+    var bestStation = -1;
+    var bestSquared = 0;
+    for (var stationIndex = 0; stationIndex < size(grid); stationIndex += 1)
+    {
+        const spread = squaredNorm(grid[stationIndex][columnCount - 1] - grid[stationIndex][0]);
+        if (spread > bestSquared)
+        {
+            bestStation = stationIndex;
+            bestSquared = spread;
+        }
+    }
+    if (bestStation < 0)
+    {
+        return { "grid" : grid, "reversed" : false, "decided" : false };
+    }
+    const ruling = grid[bestStation][columnCount - 1] - grid[bestStation][0];
+    // The u step is taken across the longest-ruling station, from whichever neighbours exist.
+    const after = min(size(grid) - 1, bestStation + 1);
+    const before = max(0, bestStation - 1);
+    const step = grid[after][0] - grid[before][0];
+    const natural = cross(step, ruling);
+    if (squaredNorm(natural) < 1e-24)
+    {
+        return { "grid" : grid, "reversed" : false, "decided" : false };
+    }
+    const outward = frozenSample.rotation * outwardInTool;
+    if (dot(natural, outward) >= 0)
+    {
+        return { "grid" : grid, "reversed" : false, "decided" : true };
+    }
+    var flipped = makeArray(size(grid));
+    for (var stationIndex = 0; stationIndex < size(grid); stationIndex += 1)
+    {
+        var row = makeArray(columnCount, vector(0, 0, 0));
+        for (var columnIndex = 0; columnIndex < columnCount; columnIndex += 1)
+        {
+            row[columnIndex] = grid[stationIndex][columnCount - 1 - columnIndex];
+        }
+        flipped[stationIndex] = row;
+    }
+    return { "grid" : flipped, "reversed" : true, "decided" : true };
+}
+
 function directrixEndsAtStation(strippedMotion is map, coEdgeRecords is array, faceBounding is array,
     patchPlan is map, t is number, scanSamples is number) returns map
 {
-    const frozen = evaluateMotionSample(strippedMotion, t);
+    const frozen = evaluateMotionSample(strippedMotion, t, 1);
     if (patchPlan.patchKind == "edge")
     {
         const coEdgeRecord = coEdgeRecords[patchPlan.ownerIndex];
         const funnel = sharpEdgeFunnelSpansAtTime(frozen, coEdgeRecord, t, scanSamples);
-        if (size(funnel.spans) != 1)
+        if (size(funnel.spans) == 1)
         {
-            return { "failed" : true,
-                    "reason" : "SWEEP_EDGE_FUNNEL_UNSTABLE: " ~ size(funnel.spans) ~
-                    " funnel span(s) inside a segment planned with one.",
-                    "startPoint" : undefined, "endPoint" : undefined };
+            const ends = sharpEdgeSpanEndPoints(frozen, coEdgeRecord, funnel.spans[0], t);
+            return { "failed" : false, "reason" : "", "startPoint" : ends[0], "endPoint" : ends[1] };
         }
-        const ends = sharpEdgeSpanEndPoints(frozen, coEdgeRecord, funnel.spans[0], t);
-        return { "failed" : false, "reason" : "", "startPoint" : ends[0], "endPoint" : ends[1] };
+        // A segment boundary can sit EXACTLY on the funnel's own opening or closing - the
+        // partition holds one time per event, and that event is this funnel's. The span there is
+        // a point, not missing, but a zero-width span has no sign change to find. A probe a hair
+        // inside the segment says WHERE on the edge the span lives; the apex is that parameter
+        // evaluated at the boundary's own time, snapped to the vertex when the span opens from
+        // one - so both patches sharing the event compute the identical point. A missing span at
+        // an INTERIOR station stays a refusal: the segment was planned around a funnel it does
+        // not have.
+        const segmentWidth = patchPlan.tEnd - patchPlan.tStart;
+        const atStart = abs(t - patchPlan.tStart) <= abs(patchPlan.tEnd - t);
+        const boundaryGap = atStart ? abs(t - patchPlan.tStart) : abs(patchPlan.tEnd - t);
+        if (size(funnel.spans) == 0 && segmentWidth > 0 && boundaryGap < 1e-3 * segmentWidth)
+        {
+            const probeT = atStart ? t + 1e-6 * segmentWidth : t - 1e-6 * segmentWidth;
+            const probe = sharpEdgeFunnelSpansAtTime(strippedMotion, coEdgeRecord, probeT,
+                scanSamples);
+            if (size(probe.spans) == 1)
+            {
+                const span = probe.spans[0];
+                var apexS = 0.5 * (span.sLow + span.sHigh);
+                if (span.lowSource == "startVertex" || span.sLow < STRIP_ROOT_VERTEX_MARGIN)
+                {
+                    apexS = 0;
+                }
+                else if (span.highSource == "endVertex" || span.sHigh > 1 - STRIP_ROOT_VERTEX_MARGIN)
+                {
+                    apexS = 1;
+                }
+                const apex = sharpEdgeSpanEndPoints(frozen, coEdgeRecord,
+                    { "sLow" : apexS, "sHigh" : apexS,
+                        "lowSource" : span.lowSource, "highSource" : span.highSource }, t);
+                return { "failed" : false, "reason" : "",
+                        "startPoint" : apex[0], "endPoint" : apex[1] };
+            }
+        }
+        return { "failed" : true,
+                "reason" : "SWEEP_EDGE_FUNNEL_UNSTABLE: " ~ size(funnel.spans) ~
+                " funnel span(s) inside a segment planned with one.",
+                "startPoint" : undefined, "endPoint" : undefined };
     }
 
     const ruling = planarFaceCrossingsAtTime(frozen, coEdgeRecords, faceBounding, t, scanSamples);
@@ -16672,6 +17833,44 @@ function directrixEndsAtStation(strippedMotion is map, coEdgeRecords is array, f
  * hole where a segment was skipped, and a sliver that reports a healthy number all look alike
  * until the sheets are told apart by eye.
  */
+/**
+ * Fit one planned patch and offer it to the kernel, halving the station count and offering again
+ * on each refusal, down to the bilinear net whose control points are the data.
+ *
+ * The kernel is the acceptance test. It is the only party that knows which nets it will build, so
+ * asking it costs one refused operation where guessing a threshold costs every sound patch its
+ * accuracy. A patch that survives at full stations pays nothing.
+ *
+ * Returns { fit, emission, stationCount, refits, accepted } - `emission` undefined when the fit
+ * itself failed, and `accepted` true only when a body exists.
+ */
+function emitRuledPatchWithRefit(context is Context, nextId is function, strippedMotion is map,
+    coEdgeRecords is array, faceBounding is array, patchPlan is map, options is map,
+    requestedStations is number) returns map
+{
+    var fit = fitRuledEnvelopePatchAtStations(strippedMotion, coEdgeRecords, faceBounding,
+        patchPlan, options, requestedStations);
+    var stationCount = requestedStations;
+    var emission = fit.failed ? undefined : emitFitSurfacePatch(context, nextId(), fit.surface);
+    var refits = 0;
+    while (!fit.failed && emission.refused && stationCount > 2 && refits < PATCH_REFIT_ATTEMPTS)
+    {
+        refits += 1;
+        stationCount = max(2, floor(stationCount / 2));
+        fit = fitRuledEnvelopePatchAtStations(strippedMotion, coEdgeRecords, faceBounding,
+            patchPlan, options, stationCount);
+        if (fit.failed)
+        {
+            break;
+        }
+        emission = emitFitSurfacePatch(context, nextId(), fit.surface);
+    }
+    return {
+            "fit" : fit, "emission" : emission, "stationCount" : stationCount, "refits" : refits,
+            "accepted" : !fit.failed && !emission.refused
+        };
+}
+
 export function emitPolyhedralEnvelope(context is Context, nextId is function, strippedMotion is map,
     faceRecords is array, coEdgeRecords is array, plan is map, options is map) returns map
 {
@@ -16690,39 +17889,155 @@ export function emitPolyhedralEnvelope(context is Context, nextId is function, s
     var interiorCollapses = 0;
     var worstDirectrixTurn = 0;
     var refittedCount = 0;
+    var reversedCount = 0;
+    var undecidedCount = 0;
     const requestedStations = max(2, mergeMaps({ "stationCount" : DEFAULT_PATCH_STATION_COUNT },
                 options).stationCount);
-    for (var patchPlan in plan.patches)
+    // A patch the kernel refuses at every station count is NOT dropped. Its interval is carried
+    // into a neighbour on the same owner and the pair is emitted as one wider patch. Dropping it
+    // leaves a hole in the shell, and a hole costs more than a slightly wider patch: measured on
+    // the rotating cube, four refused slivers put the envelope 3.669938e-3 m out against a fit
+    // error of zero.
+    //
+    // Forward is the cheap direction and needs no deletion, because a refused operation makes no
+    // body - the next segment of the same owner simply starts earlier. A refusal in an owner's
+    // LAST segment has no successor, so it is absorbed backwards instead, which does mean
+    // deleting that neighbour's sheet and re-emitting it over the union.
+    //
+    // A merged patch spans a contact breakpoint, which is the one thing the shared partition
+    // exists to prevent. That trade is made deliberately and only where the kernel has already
+    // refused every faithful form of the segment; the merge reports its own span so the ledger
+    // can see what was given up.
+    var pendingStart = undefined;
+    var pendingEnd = 0;
+    var pendingOwner = "";
+    var lastAccepted = undefined;
+    var mergedForward = 0;
+    var mergedBackward = 0;
+    var unmergeableRefusals = 0;
+    var widestMergeSpan = 0;
+
+    for (var patchIndex = 0; patchIndex < size(plan.patches); patchIndex += 1)
     {
+        const patchPlan = plan.patches[patchIndex];
+        const ownerKey = patchPlan.patchKind ~ ":" ~ patchPlan.ownerIndex;
+
+        // Leaving an owner with an unemitted interval still pending: absorb it backwards.
+        if (ownerKey != pendingOwner && pendingStart != undefined)
+        {
+            if (lastAccepted == undefined)
+            {
+                unmergeableRefusals += 1;
+            }
+            else
+            {
+                const widened = mergeMaps(lastAccepted.plan, { "tEnd" : pendingEnd });
+                // A widened interval can reach into a sub-interval where this owner has no
+                // contact at all - that is often WHY the partition cut there - and the fitter
+                // is not obliged to survive being asked for a directrix that does not exist.
+                // A merge that cannot be fitted is simply not merged.
+                var retry = { "accepted" : false, "emission" : undefined };
+                try
+                {
+                    retry = emitRuledPatchWithRefit(context, nextId, strippedMotion,
+                        coEdgeRecords, lastAccepted.faceBounding, widened, options,
+                        requestedStations);
+                }
+                if (retry.accepted)
+                {
+                    opDeleteBodies(context, nextId(), {
+                                "entities" : qCreatedBy(lastAccepted.id, EntityType.BODY)
+                            });
+                    bodies[size(bodies) - 1] = qCreatedBy(retry.emission.id, EntityType.BODY);
+                    mergedBackward += 1;
+                    widestMergeSpan = max(widestMergeSpan, pendingEnd - pendingStart);
+                }
+                else
+                {
+                    unmergeableRefusals += 1;
+                }
+            }
+            pendingStart = undefined;
+        }
+        if (ownerKey != pendingOwner)
+        {
+            pendingOwner = ownerKey;
+            lastAccepted = undefined;
+        }
+
         const faceBounding = patchPlan.patchKind == "face" ?
             boundingByFace[patchPlan.ownerIndex] : [];
-        // Fit, offer it, and on a refusal refit at half the stations and offer that. The kernel
-        // is the acceptance test: it is the only party that knows which nets it will build, and
-        // asking it costs one refused operation where guessing costs every sound patch its
-        // accuracy. A patch that survives at full stations - almost all of them - pays nothing.
-        var fit = fitRuledEnvelopePatchAtStations(strippedMotion, coEdgeRecords, faceBounding,
-            patchPlan, options, requestedStations);
-        var stationCount = requestedStations;
-        var emission = fit.failed ? undefined : emitFitSurfacePatch(context, nextId(), fit.surface);
-        var refits = 0;
-        while (!fit.failed && emission.refused && stationCount > 2 && refits < PATCH_REFIT_ATTEMPTS)
+        const effectivePlan = pendingStart == undefined ? patchPlan :
+            mergeMaps(patchPlan, { "tStart" : pendingStart });
+        // Guarded for the same reason as the backward merge: a forward-merged plan starts earlier
+        // than its own segment and may reach across a sub-interval this owner does not contact.
+        // A patch that cannot be fitted is REPORTED, never allowed to take the regeneration down.
+        var attempt = { "accepted" : false, "fit" : undefined, "emission" : undefined,
+                "stationCount" : requestedStations, "refits" : 0 };
+        try
         {
-            refits += 1;
-            stationCount = max(2, floor(stationCount / 2));
-            fit = fitRuledEnvelopePatchAtStations(strippedMotion, coEdgeRecords, faceBounding,
-                patchPlan, options, stationCount);
-            if (fit.failed)
-            {
-                break;
-            }
-            emission = emitFitSurfacePatch(context, nextId(), fit.surface);
+            attempt = emitRuledPatchWithRefit(context, nextId, strippedMotion, coEdgeRecords,
+                faceBounding, effectivePlan, options, requestedStations);
         }
-        if (fit.failed)
+        // A MERGED form that will not build must not poison the rest of the owner's chain. The
+        // widened interval reaches across a segment boundary the partition put there for a
+        // reason, so when it fails the right answer is to give up on the merge, emit THIS segment
+        // on its own interval, and report the sliver as unmerged - not to widen further. Widening
+        // on failure cascades: one refused patch takes every later segment of the same owner with
+        // it, which is measurably worse than the hole it was trying to avoid.
+        if (!attempt.accepted && pendingStart != undefined)
         {
-            refusedCount += 1;
+            unmergeableRefusals += 1;
+            pendingStart = undefined;
+            attempt = { "accepted" : false, "fit" : undefined, "emission" : undefined,
+                    "stationCount" : requestedStations, "refits" : 0 };
+            try
+            {
+                attempt = emitRuledPatchWithRefit(context, nextId, strippedMotion, coEdgeRecords,
+                    faceBounding, patchPlan, options, requestedStations);
+            }
+        }
+        if (attempt.fit == undefined)
+        {
+            if (pendingStart == undefined)
+            {
+                pendingStart = patchPlan.tStart;
+            }
+            pendingEnd = patchPlan.tEnd;
             patchReports = append(patchReports, mergeMaps(patchPlan, {
-                            "stage" : "fit", "refused" : true, "reason" : fit.reason,
-                            "faceCount" : 0, "shortestRuling" : 0, "longestRuling" : 0,
+                            "stage" : "fit", "refused" : true, "mergePending" : true,
+                            "reason" : "SWEEP_PATCH_FIT_UNAVAILABLE: no fit could be built over " ~
+                            "this interval.",
+                            "stationCount" : requestedStations, "refits" : 0, "faceCount" : 0,
+                            "shortestRuling" : 0, "longestRuling" : 0,
+                            "collapsedStart" : false, "collapsedEnd" : false,
+                            "collapsedInterior" : 0, "worstDirectrixTurn" : 0,
+                            "leastDirectrixTravel" : 0, "netExtent" : 0, "minParameterGap" : 0,
+                            "transverseTravel" : 0, "netOvershoot" : 0,
+                            "netRows" : 0, "netColumns" : 0
+                        }));
+            continue;
+        }
+        const fit = attempt.fit;
+        const stationCount = attempt.stationCount;
+        const refits = attempt.refits;
+
+        if (!attempt.accepted)
+        {
+            // Carry the whole unemitted interval - this segment plus anything already pending -
+            // into the next segment of this owner.
+            if (pendingStart == undefined)
+            {
+                pendingStart = effectivePlan.tStart;
+            }
+            pendingEnd = effectivePlan.tEnd;
+            patchReports = append(patchReports, mergeMaps(effectivePlan, {
+                            "stage" : fit.failed ? "fit" : "emit",
+                            "refused" : true, "mergePending" : true,
+                            "reason" : fit.failed ? fit.reason : attempt.emission.reason,
+                            "stationCount" : stationCount, "refits" : refits,
+                            "faceCount" : 0,
+                            "shortestRuling" : 0, "longestRuling" : 0,
                             "collapsedStart" : fit.collapsedStart, "collapsedEnd" : fit.collapsedEnd,
                             "collapsedInterior" : fit.collapsedInterior,
                             "worstDirectrixTurn" : fit.worstDirectrixTurn,
@@ -16734,6 +18049,14 @@ export function emitPolyhedralEnvelope(context is Context, nextId is function, s
                         }));
             continue;
         }
+        if (pendingStart != undefined)
+        {
+            mergedForward += 1;
+            widestMergeSpan = max(widestMergeSpan, effectivePlan.tEnd - pendingStart);
+            pendingStart = undefined;
+        }
+
+        const emission = attempt.emission;
         var patchShortest = 1e300;
         var patchLongest = 0;
         for (var row in fit.grid)
@@ -16750,34 +18073,35 @@ export function emitPolyhedralEnvelope(context is Context, nextId is function, s
         {
             refittedCount += 1;
         }
-
-        if (emission.refused)
+        if (fit.reversedForOutward == true)
         {
-            refusedCount += 1;
+            reversedCount += 1;
         }
-        else
+        if (fit.orientationDecided != true)
         {
-            emittedCount += 1;
-            const patchBody = qCreatedBy(emission.id, EntityType.BODY);
-            bodies = append(bodies, patchBody);
-            if (settings.colorPatches)
-            {
-                setProperty(context, {
-                            "entities" : patchBody,
-                            "propertyType" : PropertyType.APPEARANCE,
-                            "value" : polyhedralPatchColor(patchPlan.patchKind, patchPlan.ownerIndex)
-                        });
-            }
-            // The sheet carries its own identity and the two numbers that decide whether its net
-            // is sound. A part name is readable straight off the parts list, which is one API
-            // call and no Part Studio watcher - and watchers are a limited resource that a
-            // diagnostic should not be spending.
-            //
-            // Off when the sheets are about to be knitted: naming is an operation per sheet, and
-            // the closure needs every operation this evaluation has left. A sheet consumed by
-            // the knit carries its name nowhere anyway.
-            if (settings.namePatches)
-            {
+            undecidedCount += 1;
+        }
+        emittedCount += 1;
+        const patchBody = qCreatedBy(emission.id, EntityType.BODY);
+        bodies = append(bodies, patchBody);
+        lastAccepted = { "id" : emission.id, "plan" : effectivePlan,
+                "faceBounding" : faceBounding };
+        if (settings.colorPatches)
+        {
+            setProperty(context, {
+                        "entities" : patchBody,
+                        "propertyType" : PropertyType.APPEARANCE,
+                        "value" : polyhedralPatchColor(patchPlan.patchKind, patchPlan.ownerIndex)
+                    });
+        }
+        // The sheet carries its own identity and the two numbers that decide whether its net is
+        // sound. A part name is readable straight off the parts list, which is one API call and no
+        // Part Studio watcher - and watchers are a limited resource a diagnostic should not spend.
+        //
+        // Off when the sheets are about to be knitted: naming is an operation per sheet, and the
+        // closure needs every operation this evaluation has left.
+        if (settings.namePatches)
+        {
             setProperty(context, {
                         "entities" : patchBody,
                         "propertyType" : PropertyType.NAME,
@@ -16787,10 +18111,9 @@ export function emitPolyhedralEnvelope(context is Context, nextId is function, s
                         roundToPrecision(fit.transverseTravel, 7) ~ " | overshoot " ~
                         roundToPrecision(fit.netOvershoot, 7)
                     });
-            }
         }
-        patchReports = append(patchReports, mergeMaps(patchPlan, {
-                        "stage" : "emit", "refused" : emission.refused, "reason" : emission.reason,
+        patchReports = append(patchReports, mergeMaps(effectivePlan, {
+                        "stage" : "emit", "refused" : false, "reason" : emission.reason,
                         "stationCount" : stationCount, "refits" : refits,
                         "faceCount" : emission.faceCount, "shortestRuling" : patchShortest,
                         "longestRuling" : patchLongest, "collapsedInterior" : fit.collapsedInterior,
@@ -16800,10 +18123,51 @@ export function emitPolyhedralEnvelope(context is Context, nextId is function, s
                         "netExtent" : fit.netExtent, "minParameterGap" : fit.minParameterGap,
                         "transverseTravel" : fit.transverseTravel,
                         "netOvershoot" : fit.netOvershoot,
+                        "reversedForOutward" : fit.reversedForOutward,
+                        "orientationDecided" : fit.orientationDecided,
                         "netRows" : size(fit.surface.controlPoints),
                         "netColumns" : size(fit.surface.controlPoints[0])
                     }));
     }
+
+    // The last owner's trailing refusal, if any, has no successor either.
+    if (pendingStart != undefined)
+    {
+        if (lastAccepted == undefined)
+        {
+            unmergeableRefusals += 1;
+        }
+        else
+        {
+            const widened = mergeMaps(lastAccepted.plan, { "tEnd" : pendingEnd });
+            // A widened interval can reach into a sub-interval where this owner has no
+            // contact at all - that is often WHY the partition cut there - and the fitter
+            // is not obliged to survive being asked for a directrix that does not exist.
+            // A merge that cannot be fitted is simply not merged.
+            var retry = { "accepted" : false, "emission" : undefined };
+            try
+            {
+                retry = emitRuledPatchWithRefit(context, nextId, strippedMotion,
+                    coEdgeRecords, lastAccepted.faceBounding, widened, options,
+                    requestedStations);
+            }
+            if (retry.accepted)
+            {
+                opDeleteBodies(context, nextId(), {
+                            "entities" : qCreatedBy(lastAccepted.id, EntityType.BODY)
+                        });
+                bodies[size(bodies) - 1] = qCreatedBy(retry.emission.id, EntityType.BODY);
+                mergedBackward += 1;
+                widestMergeSpan = max(widestMergeSpan, pendingEnd - pendingStart);
+            }
+            else
+            {
+                unmergeableRefusals += 1;
+            }
+        }
+    }
+    refusedCount = unmergeableRefusals;
+
     return {
             "bodies" : bodies, "patchReports" : patchReports,
             "emittedCount" : emittedCount, "refusedCount" : refusedCount,
@@ -16811,7 +18175,11 @@ export function emitPolyhedralEnvelope(context is Context, nextId is function, s
             "longestRulingLength" : longestRulingLength,
             "interiorCollapses" : interiorCollapses,
             "worstDirectrixTurn" : worstDirectrixTurn,
-            "refittedCount" : refittedCount
+            "refittedCount" : refittedCount,
+            "reversedCount" : reversedCount,
+            "undecidedOrientationCount" : undecidedCount,
+            "mergedForward" : mergedForward, "mergedBackward" : mergedBackward,
+            "widestMergeSpan" : widestMergeSpan
         };
 }
 
@@ -16829,7 +18197,7 @@ export function emitPolyhedralEnvelope(context is Context, nextId is function, s
 export function polyhedralCapContactCurves(strippedMotion is map, faceRecords is array,
     coEdgeRecords is array, t is number, scanSamples is number) returns map
 {
-    const frozen = evaluateMotionSample(strippedMotion, t);
+    const frozen = evaluateMotionSample(strippedMotion, t, 1);
     var curves = [];
     var faceIndices = [];
     var skipped = [];
@@ -16843,11 +18211,11 @@ export function polyhedralCapContactCurves(strippedMotion is map, faceRecords is
             faceBoundingCoEdges(coEdgeRecords, faceIndex), t, scanSamples);
         if (size(ruling.crossings) != 2)
         {
-            if (size(ruling.crossings) != 0)
-            {
-                skipped = append(skipped, "face " ~ faceIndex ~ ": " ~ size(ruling.crossings) ~
-                    " crossings at t = " ~ t);
-            }
+            // Every refusal is named, the empty one included. A face with no crossings is the
+            // commonest way a cap ends up with no trim curve at all, and a count of zero reported
+            // as silence is indistinguishable from a face that was never examined.
+            skipped = append(skipped, "face " ~ faceIndex ~ ": " ~ size(ruling.crossings) ~
+                " crossings at t = " ~ t ~ (ruling.sliding ? ", sliding" : ""));
             continue;
         }
         // A face that grazes at a single POINT has its two crossings on top of each other, and
@@ -16879,7 +18247,224 @@ export function polyhedralCapContactCurves(strippedMotion is map, faceRecords is
     return { "curves" : curves, "faceIndices" : faceIndices, "skipped" : skipped };
 }
 
+/**
+ * The correspondence ledger at ONE cap station: what the cap's own boundary is made of, and what
+ * the lateral patches arriving at that station expect to meet.
+ *
+ * A cap is a copy of the tool, and the shell that has to sew to it was cut on funnel SPANS. Where
+ * a span covers a whole tool edge the two boundaries are the same curve and the union sews; where
+ * it covers part of one, the cap offers a whole edge against the shell's sub-segment and the pair
+ * has no partner. This function reports which of the two every owner is in, so the unmatched edge
+ * a census counts as a number can be named by the entity that owns it.
+ *
+ * Diagnostic only: nothing downstream reads it, and it makes no operations. Every number in it
+ * comes from the same closed-form calls the emission itself uses, so a line here is the plan's own
+ * arithmetic rather than a second opinion about it.
+ *
+ * Returns an array of report lines.
+ */
+export function describeCapContactCorrespondence(strippedMotion is map, faceRecords is array,
+    coEdgeRecords is array, t is number, scanSamples is number) returns array
+{
+    const frozen = evaluateMotionSample(strippedMotion, t, 1);
+    var lines = [];
+    for (var faceIndex = 0; faceIndex < size(faceRecords); faceIndex += 1)
+    {
+        const record = faceRecords[faceIndex];
+        if (record.surfaceClass != SweepSurfaceClass.PLANE)
+        {
+            lines = append(lines, "face " ~ faceIndex ~ ": class " ~
+                toString(record.surfaceClass) ~ ", off the polyhedral route");
+            continue;
+        }
+        const ruling = planarFaceCrossingsAtTime(frozen, coEdgeRecords,
+            faceBoundingCoEdges(coEdgeRecords, faceIndex), t, scanSamples);
+        var line = "face " ~ faceIndex ~ ": " ~ size(ruling.crossings) ~ " crossing(s)" ~
+            (ruling.sliding ? " SLIDING" : "") ~ " scale " ~
+            toString(roundToPrecision(ruling.valueScale, 12));
+        for (var crossing in ruling.crossings)
+        {
+            line = line ~ " | edge " ~ crossing.edgeIndex ~ " " ~ crossing.side ~ " s " ~
+            toString(roundToPrecision(crossing.s, 9));
+        }
+        if (size(ruling.crossings) == 2)
+        {
+            line = line ~ " | chord " ~ toString(roundToPrecision(
+                        norm(ruling.crossings[1].worldPoint - ruling.crossings[0].worldPoint), 12)) ~
+            " m";
+        }
+        lines = append(lines, line);
+    }
+
+    // The edge half. A cap edge is whole; a lateral edge-sheet's t-boundary is the funnel span.
+    // Classifying every edge as covered, partial or absent is what says whether the shell can be
+    // matched to the cap COINCIDENT or needs the span expressed as a containment.
+    for (var edgeIndex = 0; edgeIndex < size(coEdgeRecords); edgeIndex += 1)
+    {
+        const coEdgeRecord = coEdgeRecords[edgeIndex];
+        const descriptor = affineCoEdgeContactDescriptor(coEdgeRecord);
+        const funnel = sharpEdgeFunnelSpansAtTime(frozen, coEdgeRecord, t, scanSamples, descriptor);
+        var line = "edge " ~ edgeIndex ~ ": " ~
+        (descriptor.isAffine ? "affine" : "sampled") ~ ", " ~
+        (funnel.sliding ? "SLIDING" : (funnel.found ? size(funnel.spans) ~ " span(s)" : "no funnel"));
+        for (var span in funnel.spans)
+        {
+            // Against the strip solver's own parameter tolerance, which is what decides whether
+            // the span's end sits ON the vertex or inside the edge.
+            const wholeLow = span.sLow <= 10 * STRIP_ROOT_PARAMETER_TOLERANCE;
+            const wholeHigh = span.sHigh >= 1 - 10 * STRIP_ROOT_PARAMETER_TOLERANCE;
+            line = line ~ " | [" ~ toString(roundToPrecision(span.sLow, 9)) ~ ", " ~
+            toString(roundToPrecision(span.sHigh, 9)) ~ "] " ~
+            (wholeLow && wholeHigh ? "WHOLE" : "PARTIAL") ~
+            " low " ~ toString(span.lowSource) ~ " high " ~ toString(span.highSource);
+        }
+        lines = append(lines, line);
+    }
+    return lines;
+}
+
+/**
+ * The tool edge nearest `worldPoint` at station `t`, with the edge parameter it lands at - the
+ * name for a point a census could only report as coordinates.
+ *
+ * A geometric search, and deliberately confined to diagnostics: it says which entity a measured
+ * free edge belongs to so a failure can be described, and nothing that decides topology may call
+ * it. Identity on the production path comes from tracking queries, never from a nearest match.
+ *
+ * Returns { edgeIndex, s, distance } in unit-stripped meters, or undefined for no records.
+ */
+export function locateWorldPointOnToolEdges(strippedMotion is map, coEdgeRecords is array,
+    worldPoint is Vector, t is number, samplesPerEdge is number) returns map
+{
+    const frozen = evaluateMotionSample(strippedMotion, t, 1);
+    const sampleCount = max(samplesPerEdge, 2);
+    var bestEdge = -1;
+    var bestParameter = 0;
+    var bestSquared = 0;
+    for (var edgeIndex = 0; edgeIndex < size(coEdgeRecords); edgeIndex += 1)
+    {
+        const coEdgeRecord = coEdgeRecords[edgeIndex];
+        if (coEdgeRecord.edgePoints == undefined)
+        {
+            continue;
+        }
+        for (var index = 0; index < sampleCount; index += 1)
+        {
+            const s = index / (sampleCount - 1);
+            const located = interpolateCoEdgePoint(coEdgeRecord, s);
+            const separation = squaredNorm(worldPoint -
+                    (frozen.rotation * located.point + frozen.translation));
+            if (bestEdge == -1 || separation < bestSquared)
+            {
+                bestEdge = edgeIndex;
+                bestParameter = s;
+                bestSquared = separation;
+            }
+        }
+    }
+    if (bestEdge == -1)
+    {
+        return undefined;
+    }
+    return { "edgeIndex" : bestEdge, "s" : bestParameter, "distance" : sqrt(bestSquared) };
+}
+
 /** The plan's breakpoints, interval count, and per-kind patch counts, for the console. */
+/**
+ * Whether the planned patches close the envelope's CROSS-SECTION at one station (spec 6.8's
+ * certified census, on the polyhedral route).
+ *
+ * At any instant the contact set of a convex tool is a single closed curve on its boundary, made
+ * of plane-face contact lines and sharp-edge funnel spans laid end to end. Each arc contributes
+ * two endpoints, and the curve closes exactly when every endpoint is shared by exactly TWO arcs.
+ * An endpoint owned by one arc is a GAP - the shell has a slit running down it in t - and one
+ * owned by three is a branch, which is a shell that crosses itself.
+ *
+ * This is the invariant a seam census cannot see. Pairing one-sided edges by midpoint asks whether
+ * each emitted sheet found a neighbour, which is a question about the sheets that were emitted; it
+ * cannot report an arc that was never planned at all, because a missing arc leaves no edge to go
+ * unpaired - it leaves two OTHER edges paired with each other.
+ *
+ * Returns { closed {boolean}, arcCount, clusters {array} : [{ point, owners {array}, count }],
+ * worstCount, orphans, branches }.
+ */
+export function certifyCrossSectionLoop(strippedMotion is map, coEdgeRecords is array,
+    faceBoundingByFace is array, plan is map, t is number, tolerance is number) returns map
+{
+    const frozen = evaluateMotionSample(strippedMotion, t, 1);
+    var endPoints = [];
+    var owners = [];
+    var arcCount = 0;
+    for (var patchPlan in plan.patches)
+    {
+        if (t < patchPlan.tStart || t > patchPlan.tEnd)
+        {
+            continue;
+        }
+        const faceBounding = patchPlan.patchKind == "face" ?
+            faceBoundingByFace[patchPlan.ownerIndex] : [];
+        const ends = directrixEndsAtStation(frozen, coEdgeRecords, faceBounding, patchPlan, t, 0);
+        if (ends.failed)
+        {
+            continue;
+        }
+        arcCount += 1;
+        const label = patchPlan.patchKind ~ " " ~ patchPlan.ownerIndex ~ "/" ~
+            patchPlan.segmentIndex;
+        endPoints = append(endPoints, ends.startPoint);
+        owners = append(owners, label);
+        endPoints = append(endPoints, ends.endPoint);
+        owners = append(owners, label);
+    }
+
+    // Cluster the endpoints. A convex tool has few arcs, so this is a small quadratic pass on
+    // numbers that are already in hand.
+    var assigned = makeArray(size(endPoints), -1);
+    var clusters = [];
+    for (var index = 0; index < size(endPoints); index += 1)
+    {
+        if (assigned[index] != -1)
+        {
+            continue;
+        }
+        var members = [owners[index]];
+        assigned[index] = size(clusters);
+        for (var other = index + 1; other < size(endPoints); other += 1)
+        {
+            if (assigned[other] != -1)
+            {
+                continue;
+            }
+            if (squaredNorm(endPoints[other] - endPoints[index]) <= tolerance * tolerance)
+            {
+                assigned[other] = size(clusters);
+                members = append(members, owners[other]);
+            }
+        }
+        clusters = append(clusters, { "point" : endPoints[index], "owners" : members,
+                    "count" : size(members) });
+    }
+
+    var orphans = 0;
+    var branches = 0;
+    var worstCount = 0;
+    for (var cluster in clusters)
+    {
+        worstCount = max(worstCount, cluster.count);
+        if (cluster.count < 2)
+        {
+            orphans += 1;
+        }
+        else if (cluster.count > 2)
+        {
+            branches += 1;
+        }
+    }
+    return { "closed" : orphans == 0 && branches == 0, "arcCount" : arcCount,
+            "clusters" : clusters, "worstCount" : worstCount, "orphans" : orphans,
+            "branches" : branches };
+}
+
 export function summarizePolyhedralPlan(plan is map) returns string
 {
     var facePatches = 0;
@@ -16925,7 +18510,10 @@ export function summarizePolyhedralEmission(emission is map) returns string
         emission.longestRulingLength ~ " m, " ~ emission.interiorCollapses ~
         " interior collapse(s), " ~ emission.refittedCount ~
         " refitted coarser after a kernel refusal, worst directrix turn " ~
-        roundToPrecision(emission.worstDirectrixTurn * 180 / PI, 1) ~ " deg";
+        roundToPrecision(emission.worstDirectrixTurn * 180 / PI, 1) ~ " deg, " ~
+        emission.reversedCount ~ " ruling(s) reversed to face outward" ~
+        (emission.undecidedOrientationCount > 0 ?
+            (", " ~ emission.undecidedOrientationCount ~ " UNDECIDED") : "");
     for (var report in emission.patchReports)
     {
         if (!report.refused && report.collapsedInterior == 0 && report.faceCount == 1)

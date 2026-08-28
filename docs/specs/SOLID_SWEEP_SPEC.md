@@ -6,10 +6,15 @@ transformed instances blended together. This is the feature class Onshape lacks 
 analytic revolve/extrude tools (cut-only), and Fusion implements via the
 Adsul–Machchhar–Sohoni framework on procedural surfaces.
 
-**Status (2026-08-23): build order steps 1–6 complete and live-validated; step 7 partial.
-No solid body has been emitted yet — §9 is entirely unbuilt. §12.3 is the single work queue;
-start there.** §12's build order records how each finished step was validated; §12.1 is the
-dated audit of §6/§7 that produced the queue.
+**Status (2026-08-27): cube-sweep closure work is HELD by owner decision — see §11.19 for the
+quantified account.** The emission layer is complete and live-verified on the rotating-cube
+fixture (42/42 certified sheets, deviation 0 m, one partition time per event, coherent
+orientation, 0 unmatched seams). The shell still cannot close because seven strip pairs
+genuinely cross at millimetre depth: the untrimmed local envelope of a rotating polyhedral tool
+is not its boundary, and the global trim tier (§10) does not exist yet. The smooth route closes:
+the ellipsoid tube fixture emits ONE solid by union (volume error 2.8e-7 relative, envelope
+deviation 5.8e-8 m) after an FS chained-ternary defect in `knitSweptShell` was fixed (§11.19).
+No further cube closure attempts until the trim (or the §10 named rejection) is designed.
 
 Related: [SPLINE_REFINEMENT_UTILITY_SPEC.md](SPLINE_REFINEMENT_UTILITY_SPEC.md) (the module
 whose evaluators, interpolation, and periodic machinery this is built on),
@@ -220,7 +225,10 @@ at the shared sampling floor. Default tolerance **1e-6, budget-derived**: drift 
 roughly drift × toolRadius of position error, so 1e-6 keeps the motion's share near 1e-7 m
 for a 100 mm tool — an order under fit tolerance. (1e-9 was the original aspiration; see the
 noise-floor finding in §4.2 for why it is unreachable on spline paths.) Cap placement and
-instance transforms use `stationFrames` raw (exactly rigid), never spline evaluations.
+instance transforms use `stationFrames` raw (exactly rigid), never spline evaluations. If exact
+rigidity is ever needed at a t no station owns, the SVD polar snap of §11.8 provides it — on the
+emission/validation side only, never inside the solve, which must keep reading the one fitted
+motion.
 
 **4.2 Frame source.** Double-reflection rotation-minimizing frames (Wang et al. 2008)
 computed from the path tangents — one batched `evPathTangentLines` call plus pure math per
@@ -381,7 +389,9 @@ the last resort, not the workhorse):
    coefficient nets.
 3. **Pointwise evaluation survives only for**: final Newton polish of isolated roots, the
    (q,t) fit grids on live patches (hundreds of points, not tens of thousands), and batched
-   kernel certification. These run on a **lean evaluator**: unit-stripped, non-rational fast
+   kernel certification. (§11.9 shrinks the polish's own remit further: its values and
+   gradients come off the materialized coefficient nets, so pointwise SURFACE evaluation
+   survives only for order-0 lifts and the fit grids.) These run on a **lean evaluator**: unit-stripped, non-rational fast
    path (the measured 1.1 ms path pays for homogeneous 4-vectors and ValueWithUnits arithmetic
    that fitted non-rational data never needs — expected several-fold cheaper; re-measure with
    probe 2 once built).
@@ -1383,7 +1393,7 @@ form", and `extractCoEdgeSide` silently yields no pcurve. And 57 signatures take
 point can even be handed a face without a control net.
 
 **Why it persisted, which matters more than the fact.** §11.6 filed the routing work under §12.3
-tier 1 item 3, whose done-when read "*each produce contact curves through the analytic layer,
+the profile-driven-class work, whose done-when read "*each produce contact curves through the analytic layer,
 cross-checked against `evaluateAnalyticContactDirect`*" — a tester agreement with no solver path in
 it. That item closed 2026-08-24 having satisfied exactly that wording, so the highest-value lever in
 this document became owned by a struck-through item. §12.3 is rewritten on one rule as a result:
@@ -1412,7 +1422,7 @@ does not.
 
 **This is a contract to define, not a pipeline to unpick.** `extractToolFaceRecords` is called only
 from the tester, `solidSweepUtils.fs` contains no `defineFeature`, and `solidSweep.fs` does not
-exist (§12.3 tier 3 item 7). The emission chain is assembled by hand inside test features. So there
+exist (the feature-and-publish work). The emission chain is assembled by hand inside test features. So there
 is no shipped caller to break, and the contract can be the one `solidSweep.fs` is built against.
 
 **Two representation-agnostic seams already exist in production code, and the contract is modelled
@@ -1434,7 +1444,7 @@ callers and the convex-hull screen is live in the census via `bernsteinGridRange
 is the *second* half — `isolateBernsteinRoots`, `bernsteinExcludesZero`,
 `bernsteinGridExcludesZero`. So §6.0 strategy 2 needs connecting, not writing.
 
-**MEASURED 2026-08-24 — the routing lever, on the section-9.4 face.** Tier 0 item 0g's first half is
+**MEASURED 2026-08-24 — the routing lever, on the section-9.4 face.** The proof-fixture item's first half is
 done: `sweepEllipsoidRouteAbLiveTest` runs both routes to the contact curve on the same ellipsoid,
 the same straight translation, and the same five stations, and the route switches let each be
 profiled alone.
@@ -2286,7 +2296,7 @@ Three facts make that so:
    in the surface point. So the zero set on the plane is a LINE, its intersection with a convex face
    is a segment, and the envelope patch that segment sweeps is **exactly ruled**. Its two directrices
    are strip-function roots on the face's own bounding co-edges: one 1-D root solve per bounding edge
-   per station. *(This is §7.0's plane exactness result, and realizing it is also tier 0 rung 0d.)*
+   per station. *(This is §7.0's plane exactness result, and realizing it is also the collapsed-emission rung.)*
 2. **A straight sharp edge's funnel span is a straight sub-segment of that edge.** Both `g_left` and
    `g_right` are affine in the edge parameter, so `{s : g_left·g_right ≤ 0}` is an interval whose ends
    are the same roots the two adjacent faces read. The sheet is again exactly ruled, between the two
@@ -2492,6 +2502,17 @@ a single solid body. The lateral shell is 45 sheets, the caps are the tool's own
 at each end, and the census over the assembled shell reads **89 seam pairs of 183 free edges, 5
 unmatched, worst pair 1.6e-8 m**.
 
+> **WITHDRAWN 2026-08-25 — measured, §11.12.** The shell query behind every count in this
+> section was `qBodyType(qEverything(EntityType.BODY), BodyType.SHEET)`, which admits the
+> default construction planes. Re-measured behind the construction-plane filter, the same fixture
+> reads **171 free edges and 83 seam pairs, 5 unmatched, worst 1.6e-8 m** — twelve plane edges
+> and six plane-to-plane "seam" pairs gone. **The enclose then produces 0 solids, so the single
+> solid, its 45 faces and its 1.009817e-3 m³ were closed by the default planes acting as
+> bounding walls and are not the swept volume.** What survives this section unchanged: the
+> shared time partition and the station-time u parameters (the seam went 5.9e-6 → 1.6e-8 m on
+> matched pairs, which is a curve-to-curve distance), the per-feature-evaluation ceiling, and
+> the finding that a union must be handed its matches. What is withdrawn is the closure.
+
 #### One shared time partition, and only then are the seams seams
 
 Patches were cut on **their own owner's breakpoints**. Two patches meet along a whole boundary
@@ -2564,17 +2585,26 @@ frugal enough to do all three in one evaluation.
   four `opCreateBSplineCurve` calls; the cap-copy stage before them passes. Emitting the segment as
   a cubic instead of a degree-1 line, and skipping zero-length segments, both leave it fatal.
   Without caps the helix shell knits to 0 solids, as it should.
-- **Five free edges on the line fixture still have no partner**, and the union declines the shell
+- ~~**Five free edges on the line fixture still have no partner**, and the union declines the shell
   because of them. The cap's kept-face boundary is made of whole tool edges while a lateral
   patch's t-boundary is a funnel SPAN of one - a sub-segment - so where a funnel does not cover a
   whole edge the two do not correspond one to one. The cap needs imprinting with the contact set
-  even where that set lies along its own edges.
+  even where that set lies along its own edges.~~ **RETIRED 2026-08-26 by measurement, §11.17.**
+  This fixture has no sub-span to express: at both cap stations every plane face reports zero
+  crossings and every funnel covers its WHOLE edge, so the caps already match one to one by
+  midpoint and consume all twelve cap-facing lateral edges. The unmatched edges were a sliver
+  ruling at the kernel's own zero-length tolerance, and the shell now censuses **0 unmatched of
+  168**. The union still refuses, which makes the emission-identity item (§11.8) the remaining
+  suspect for a different and now-isolated reason: a paired census is not a sewable shell.
 - **Building the caps in the closure feature rather than in the sweep changes the census** on the
   same fixture, 89 pairs / 5 unmatched against 77 / 29, and the second closes to two solids rather
   than one. Not yet explained.
-- **A refit breaks the seams it touches.** A patch refitted at half the stations after a kernel
+- ~~**A refit breaks the seams it touches.** A patch refitted at half the stations after a kernel
   refusal no longer shares its neighbour's u knots or degree; the line fixture refits two of 42.
-  A refit has to be shared across a segment, or avoided.
+  A refit has to be shared across a segment, or avoided.~~ **AVOIDED 2026-08-26, §11.17.** Both
+  refits on this fixture were the kernel objecting to a sliver ruling, and snapping a collapsed
+  ruling to an exact apex removed the objection: the line fixture now refits **zero** of 42. The
+  general concern stands for any refit that does still happen — this fixture no longer exercises it.
 
 ## 9. Caps, knit, assembly — `swSweepEmit.fs`
 
@@ -2729,7 +2759,12 @@ a chain rather than a curve.
 2. *Contact topology events:* loop birth/death/merge per station, read off the certified
    census's component set (§6.8) rather than recomputed.
 3. *Global collision screen:* spatial hash (cell ≈ 5·ε_fit) over all contact-curve samples;
-   close pairs from far-apart t flag global self-intersection.
+   close pairs from far-apart t flag global self-intersection. **Never implemented — and its
+   absence cost the sessions §11.19 quantifies.** The rotating-cube fixture is IN this class
+   (seven strip pairs cross at 2.6–14.7 mm), so every closure attempt was spent on a shell
+   this section says v1 must reject or trim. The kernel's `evCollision` over the emitted
+   sheets (177 abutments, 7 `INTERFERE`) is a working stand-in measured live; wiring it as an
+   emission gate is the minimum version of this detector.
 4. *The §6.4 degeneracy audit* — sliding (per-block range test, exact on analytic faces),
    `SWEEP_FUNNEL_TANGENT_TO_SLICE` per marched section, and `SWEEP_EDGE_SWEEP_SINGULARITY` per
    co-edge (§6.9). The first two are *reports the caller acts on* rather than outright
@@ -2871,7 +2906,7 @@ Two consequences, both binding:
    one. Where a number is expected rather than observed, it is labelled as an expectation — as the
    lean-evaluator multiplier above is.
 
-**Scheduling (owner, 2026-08-23).** This work is deferred to §12.3 tier 4 item 9, not cancelled.
+**Scheduling (owner, 2026-08-23).** This work is deferred to the performance reckoning, not cancelled.
 The reasoning: the cost bites on worst cases rather than on the fixtures the queue is built from,
 and the rewrite is cheaper after the tier-4 consolidation has collapsed the solvers into fewer
 functions — the Newton–Raphson solvers in particular have not had the Toeplitz treatment
@@ -2879,7 +2914,7 @@ functions — the Newton–Raphson solvers in particular have not had the Toepli
 which is the point of leaving it written down. **One trip-wire overrides the schedule:** a live
 document taking ~100 s to rebuild trivial geometry stops the queue and starts item 9.
 
-*Suspicion worth testing first (§12.3 tier 4 item 9a).* The 1.1 ms was measured on a **degree 1×3**
+*Suspicion worth testing first (the evaluator-diagnosis work).* The 1.1 ms was measured on a **degree 1×3**
 surface — eight basis products per call. Eight multiply-adds cannot cost a millisecond, so most of
 that figure is almost certainly fixed per-call overhead: span search, basis-derivative table
 construction, `makeArray`, map field reads. If so, unit-stripping attacks the wrong term and
@@ -2900,7 +2935,7 @@ spline-evaluator call overhead in the section march — is confirmed rather than
 
 Still short of §11's bar. 23 s is not sub-second and is not tens of milliseconds; what this pass
 bought is headroom away from the ~100 s stop-work trip-wire and a confirmed cost model to aim the
-next pass at. A second round of changes (item 6 below) went in after the measurement and is
+next pass at. A second round of changes (the second round below) went in after the measurement and is
 itself **untimed**.
 
 What follows is the change list and the arithmetic behind each, kept because it is what the next
@@ -3197,7 +3232,7 @@ evaluation. It reads as a free win and is a net loss — 1.81 of the 2.81 evalua
 non-converged, so a cheap pre-check gets paid for on every one of them and only saves on the last.
 
 **Where the geometric-context argument does land.** *(Header corrected 2026-08-24: it read "and it
-is already tier 1 item 3", which is how this lever came to be owned by nothing. Tier 1 item 3's
+is already the profile-driven-class work", which is how this lever came to be owned by nothing. The profile-driven-class work's
 done-when was a tester cross-check against `evaluateAnalyticContactDirect`; it was satisfied and the
 item closed on 2026-08-24 without a single solver call being routed. The lever is now §12.3's own
 item — see §6.10.)* The march's
@@ -3250,6 +3285,1049 @@ Kept here because the comments that carried them were rewritten to describe beha
   circle fixture reads 1.3e-5 of tangent change on a curve that is smooth there.
 - **MCP harness, 2026-08-22:** any evaluation notice makes the harness return notices instead of
   the console, so the throw-guard check that provokes one is off by default.
+
+---
+
+### 11.8 SVD, tracking queries, quaternion motion — evaluated against the profile (2026-08-25)
+
+Three techniques proposed as performance levers, weighed here against §11.4–§11.6's measured
+profile so the evaluation is not rebuilt from scratch later. The headline is negative in the
+useful sense: **none of the three touches the 87–92% that tier 0's routing already owns.** A
+session that wants the build faster starts at §12.3 tier 0, then lever B (held-out
+certification, 8.57 s of 23.7 s), then lever C / adaptive stepping — in that order, regardless
+of anything below. What follows records where each technique genuinely lands, where it must not
+be used, and closes one of the three permanently.
+
+**SVD — native, cheap, and correctly placed in exactly two roles.** `svd()` in std `matrix.fs`
+(line 191) wraps `@matrixSvd` — any n×p matrix at native speed, the same builtin family as
+`@matrixMultiply`. It is not a new capability to build; it is a solver to route two existing
+problems through.
+
+1. *Queue-worthy, contingent: the constrained least-squares fit that deletes the resample
+   (the least-squares fit item).* Today a freeform component's fit path is march (13.20 s in §11.5's
+   profile) → resample to shared arc-length fractions with a fresh Newton correction per point
+   (8.48 s in §11.4, 6.78 s after §11.5's rounds) → interpolate the (q,t) grid. The resample
+   exists only because interpolation demands a rectangular grid at shared q fractions. A
+   least-squares fit (NURBS book ch. 9.4.1, already in `whitepaper-references/`) takes the
+   march's own points at their own arc-length fractions — scattered in q is fine for a
+   collocation solve — so the resample and every corrector call it makes disappear from the
+   pipeline, not just get cheaper. The collocation solve goes through native `svd` rather than
+   normal equations because the rank deficiencies this pipeline has already met live exactly
+   where the fixtures are interesting — pole-collapsed island columns (§7.4) and merge-corner
+   charts (§7.10) — and std `inverse` returns **infinities** on a singular matrix rather than
+   throwing (matrix.fs line 154), while `svd` solves minimum-norm and hands back the smallest
+   singular value as a conditioning datum for the ledger. Three constraints are load-bearing,
+   not preferences: (a) **boundary rows stay the shared co-edge sample arrays, interpolated
+   exactly** — §2.3's seams-carry-no-independent-error doctrine, and §8.4 measured what happens
+   when two sides fit the same curve two ways (5.9e-6 m against 1.6e-8 m); (b) the t-direction
+   parameters stay the stations' own normalized times (§8.4's second finding); (c) the held-out
+   certification is unchanged — a least-squares residual is a fit diagnostic, not a certificate.
+   Sequencing is the whole point of "contingent": tier 0 removes the march and resample entirely
+   for the seven analytic classes and shrinks the freeform grid to §6.0 strategy 3's "hundreds
+   of points"; if the post-tier-0 profile no longer shows `resampleWrappingLoopSection`, this
+   item dissolves, and that is the good outcome. It composes with rather than competes against
+   9a's grid batching: 9a makes evaluations cheaper, this makes fewer of them.
+2. *A named tool, not a queue item: the polar snap for exact rigidity off-station.* For a 3×3
+   `A` with drift, `svd(A)` gives the nearest rotation as `R = U·diag(1, 1, det(U·Vᵀ))·Vᵀ` —
+   one native call, exact rigidity at any t. Nothing needs it today: everywhere the spec demands
+   exact rigidity it uses raw `stationFrames` (§4.1), and the certified drift floor
+   (3.861849112718474e-7 against the 1e-6 budget-derived tolerance) already sits an order under
+   its share of the ledger. The snap becomes relevant if a future tier (twist, closed paths, or
+   a validation instance at a t no station owns) needs a rigid frame off-station. **The boundary
+   rule is ONE MOTION TRUTH:** the solver, the census, the coefficient nets and the fits all
+   read the same fitted splines, and a snap applied inside the solve would make f's zero set
+   disagree with its own coefficients. The snap is legal on the emission/validation side only,
+   and any use enters the §2.3 ledger with its snap distance (bounded by drift × toolRadius).
+3. *Rejected uses, recorded so they are not retried.* Re-orthogonalizing the motion fit to cut
+   station counts — breaks the one-motion-truth rule, and the drift floor lives in the
+   `evPathTangentLines` samples (§4.2), which no representation change removes. Rank tests in
+   the degeneracy audit — §6.5's sliding detection and §6.9's detectors are coefficient-exact
+   already; a numerical rank test is a downgrade dressed as rigor. The drift certificate itself
+   — `sup |AᵀA − I|` via the packed evaluation is already lean; `svd` would measure the same
+   thing without being cheaper.
+
+**Tracking queries buy identity, not seconds — and the assembly needs identity more than it
+needs seconds.** The honest performance statement first: the caps/knit/assembly layer does not
+appear in §11.4's profile table at all, so nothing here moves the 23.7 s. What tracking removes
+is the failure class AGENTS.md documents — a geometric match that guesses wrong regenerates
+green with wrong geometry — plus the per-edge kernel census where descent already knows the
+answer. Where it lands, and where it cannot:
+
+- *Caps, by descent (the emission-identity item).* The caps are `opPattern` copies of the tool, which is
+  ancestry — so trackers started on the tool's faces and edges before the pattern resolve which
+  cap face descends from which `ToolFaceRecord` and which cap edge from which tool edge, by
+  construction instead of by re-derivation. The sign-of-f classification (§9.1) survives as the
+  arbiter of which side to KEEP; what it stops doing is doubling as the oracle for which face is
+  which. This is also the right footing for §8.4's open cap-correspondence item: the cap half of
+  a cap-to-lateral seam is the cap edge descending from the owner entity whose funnel span
+  generated the lateral patch — per-owner bookkeeping, with the funnel span's endpoints saying
+  where that edge still needs splitting.
+- *Imprint wires, by descent.* Track each contact wire through `opSplitFace`; the split edges
+  that descend from it are the cap-side halves of the contact seams, labeled instead of
+  rediscovered.
+- *The feature's boolean wrap (the feature-and-publish work).* Add/remove/intersect application follows
+  the std idiom (`boolean.fs:135`), and anything the feature must find again after its own
+  operations goes through `qUnion([entity, startTracking(context, entity)])`.
+- *Where tracking CANNOT apply, stated so nobody spends a session on it:* sheet-to-sheet seams
+  between fitted patches. Tracking follows descent, and a sheet emitted by
+  `opCreateBSplineSurface` from a fitted net descends from nothing. The replacement there is not
+  geometry either — it is the pipeline's own adjacency records. On the shared time partition
+  (§8.4) every seam is known at emission time: which owner, which sub-interval, which side, and
+  both sides interpolate the same shared boundary rows, so the seam's own midpoint is a number
+  the emitter already holds. The `matches` array should be assembled from those records keyed by
+  each sheet's op id, and `matchShellSeamEdges` demoted from source of truth to assertion — its
+  census stays as the diagnostic that finds holes, which §8.4 shows is worth keeping. The
+  midpoint search it retires is nearest-neighbour under a 1e-5 m tolerance, which is structurally
+  the coin-toss-between-coincident-candidates shape that produced a silently wrong body once
+  already in this repo; no collision has been observed on these shells, but the source of truth
+  should be the bookkeeping, not the search.
+
+**Quaternion motion is rejected, permanently, and here is the whole argument.** Proposed on the
+usual grounds — fewer scalars (4+3 against 9+3), exact orthogonality by construction, no drift
+ladder. All three dissolve against this codebase:
+
+1. §2.1's three consequences are the foundation everything downstream stands on, and all three
+   require the motion entries to be plain (non-rational) splines in t. A quaternion motion is
+   rational — `A = R(q)/|q|²` — so edge transport survives only in rational form, and `f`
+   becomes a ratio, which is precisely the property probe 8 showed has **no convex-hull
+   certificate** (§6.0.2). The §6.8 census exists because f is polynomial per patch × t-span.
+   The numerator workaround (screen `f·|q|⁴`, sign-equivalent since the denominator is positive)
+   exists but roughly doubles the t-degree of every one of the census's twelve t-polynomials and
+   every Bernstein product on them — more subdivision work in the layer that is already the
+   fallback. The performance sign is negative before counting the rewrite.
+2. FeatureScript has native matrix builtins and no quaternion builtins. Every quaternion product
+   is ~16 interpreted multiply-adds in the language whose measured bottleneck is interpreted call
+   count (§11.4–§11.5). `@matrixMultiply` beats any quaternion composition this module could
+   write.
+3. The problems quaternions solve are already solved cheaper. Drift: certified at
+   3.861849112718474e-7 against 1e-6, contributing ~1e-7 m to the ledger at a 100 mm tool, and
+   the floor lives in the tangent samples, which a quaternion fit through the same samples
+   inherits unchanged. Exact rigidity: raw `stationFrames` where it matters today, the SVD polar
+   snap above if it ever matters off-station — same exactness, no representation change.
+4. The motion is not even the cost: the module is absent from §11.4's profile table, and after
+   §11.3's freeze-hoist a build takes on the order of tens of motion spline evaluations.
+5. The same verdict was reached independently one level up (Tweakable Sweep, 2026-08-25): on a
+   path sweep the frame's forward axis is fixed by the path, the free rotational degree of
+   freedom is one roll scalar, and SLERP between full orientations tilts the profile off the
+   path only to be projected back down to that scalar.
+
+One forward-looking note for the deferred closed-path tier: quaternions would add the
+double-cover problem there (`q(t₁) = ±q(t₀)` makes periodic fitting branch-sensitive), which is
+one more reason the column representation stays. §15 carries the resolved entry.
+
+---
+
+### 11.9 The hot-path attack order (2026-08-25)
+
+The direct answer to "what actually helps the hot path", synthesized from §11.4–§11.6's
+measurements and §12.3's queue so a session of any size starts in the right place instead of
+re-ranking the levers. The hot path is one thing: ~18,000 order-2 surface evaluations
+(`leanSurfaceDerivatives`, 87% inclusive at 23.7 s) serving Newton solves — the march's
+correctors (13.20 s), the resample's (6.78 s), the held-out certification loops (8.57 s), point
+inversion (2.35 s). There are exactly three ways to make that smaller, and they nest:
+
+1. **Don't solve numerically at all — tier 0a–0c, already the front of the queue.** The seven
+   analytic classes route to closed forms: measured 38x on the contact solve, 92.8% off the
+   regen, `leanSurfaceDerivatives` absent from the analytic route's profile (§6.10). Real tools
+   are mostly analytic faces — a box is six planes, a shaft is a revolve — so this is both the
+   largest and the commonest win. Nothing below competes with it; nothing below should be
+   started before it.
+2. **Solve on the cheap function, not the expensive machinery — tier 0e's real content.** For a
+   freeform face the census already materializes `f` as a scalar Bernstein net per live block
+   (one native matmul), and at a fixed station the twelve t-factors collapse the block to ONE
+   bivariate net. Every question the section solve asks at that station — values for tracing,
+   `f_u`/`f_v` for the corrector — is then a scalar de Casteljau on that net and its
+   differentiated nets, exact with respect to the same `f` because the nets come from exact
+   control-net arithmetic; the surface evaluator survives only to LIFT accepted (u,v) points at
+   order 0. This is what §6.10's contract table already prescribes for the coefficient column
+   (sections by Bézier clipping, `f_t` and orientation off differentiated nets, lift off
+   coefficient nets); what this section adds is the profile cost sitting on the gap:
+   `envelopeGradientAt` (19.90 s in §11.4's table) and `correctedUvAndGradient` (20.25 s) exist
+   because the solve reconstructs `f` pointwise from an order-2 surface evaluation plus a motion
+   sample when the polynomial being solved is already sitting in coefficient form. Expectation,
+   labelled as one: a bivariate scalar net evaluation does a small fraction of an order-2
+   surface evaluation's work and can be written allocation-free; no number enters this section
+   until the UI readout produces it.
+3. **Make what survives grid-shaped and native — 9a, 9d, lever B.** After 1 and 2, every
+   remaining evaluation belongs to a point set known in advance (fit grids, certification
+   samples, census refinement), and 9a's grid-batched evaluator phrases each set as
+   basis-matrix products via `@matrixMultiply` with span search and basis tables hoisted per
+   row and column instead of per point — the fs-native-bulk-ops doctrine applied to the last
+   interpreted loops. Lever B's seeding rule cuts the certification count itself; 9d deletes
+   the resample where it still exists.
+
+Two knob experiments ride free ahead of all of it — no code, one owner-measured run each:
+**lever E** (drop q from 61 toward 31/21/16 until the seam stops closing — halves or quarters
+every loop in the pipeline and hands §9 the tolerance figure it is missing) and **lever C**
+(`marchStepsPerSample` 2 → 1). Both change answers, so both are experiments run with the checks
+watching, never refactors.
+
+**What will NOT help, each ruled out by measurement, kept so no session buys them again:**
+
+- a smarter root-finder or solver framework — the corrector runs at 2.81 evaluations against a
+  structural floor of 2 (§11.6), so a perfect replacement recovers at most ~12% of the build;
+- value-only convergence pre-checks — measured net loss, since 1.81 of the 2.81 evaluations are
+  non-converged and pay the pre-check for nothing (§11.6);
+- further `norm` → `squaredNorm` conversion — the audit found no hot candidate left (§11.3);
+- more unit-stripping — the hot path is already unit-stripped; the measured cost is allocation
+  and interpreted call count (§11.4);
+- micro-tuning `findEvaluationSpanIndex`, `applyRowsToTriple`, or the orientation certification
+  — under a second combined, measured (§11.4);
+- SVD, tracking queries, quaternions — §11.8: one contingent fit item, identity work, and a
+  permanent rejection respectively.
+
+The sub-second bar (§11.2) reads differently per route after this ordering. For analytic tools
+the contact solve already profiles at 430 ms on the A/B fixture (§6.10 — a contact solve, not a
+full build), so their bar is a frugal-emission problem (§8.4's per-feature-evaluation ceiling),
+not an evaluator problem. For freeform tools the bar stands or falls on items 2 and 3, and no
+measurement exists yet — which is what tier 0e's done-when is for.
+
+---
+
+### 11.10 The cube session, 2026-08-25 — the polyhedral route is slow in a layer nothing has ever profiled, and the shell query is picking up the default planes
+
+Reviewed off the code after the browser session, so **every figure below is arithmetic and is
+labelled as such** — §11's rule stands, and no cube build has ever been profiled or read off the
+UI. Two findings, and the second is a correctness bug that is probably also a large part of the
+first.
+
+**The trap, stated first, because it is the reusable part.** §11.9's attack order, §11.4's
+profile, and §11.4's "what is NOT worth touching" list were all measured on the §9.4 fixture: a
+tool with **3 faces** under a **straight translation**. The cube fixtures violate both
+assumptions maximally — 18 owners (6 faces + 12 edges), a Hermite multi-axis motion that can bind
+the tester's `HERMITE_SPAN_LIMIT = 512`, and 42–82 emitted patches. **The polyhedral route
+evaluates no surface at all (§8.1), so none of §11.9 applies to it.** It traded evaluator cost
+for topology cost, and the topology and emission layers have never been profiled — §11.4's
+"the whole caps/knit/assembly layer does not appear in the table at all" is a measurement about
+3 faces being wrongly read as a statement about the pipeline. Where the cube's time goes is an
+open question with three candidates, below, and the first thing the next session should do is
+profile a cube fixture rather than reason about it.
+
+**Candidate A — breakpoint refinement is bisection-bound at 1e-12, off the frozen grid.**
+`buildMotionStationGrid` has exactly **one call site**, the breakpoint scan, and it does what
+§8.1 item 3 claims: the 97-station occupancy pass reads `stationGrid.samples[index]`. The
+*refinement* underneath it does not. `sharpEdgeFunnelTransitions` bisects with
+`while (high - low > tTolerance)` calling `sharpEdgeFunnelSpansAtTime(strippedMotion, …)` — the
+unfrozen motion, at a midpoint that is off-grid by construction. From a station gap of 1/96 down
+to the default `tTolerance` of **1e-12** that is `log2((1/96)/1e-12) ≈ 33` iterations,
+**guaranteed, with no early exit**, per transition per edge. `refineContactRoot` is
+Newton-with-bisection-fallback to the same 1e-12 and allows up to 80 iterations. Two questions
+this raises, neither yet answered by a run: whether a patch BOUNDARY needs 1e-12 at all when
+§8.4 measures the seams it produces at 1.6e-8 m — 1e-7 would cost ~20 iterations instead of ~33
+— and whether the refinement can read the frozen grid the way the scan above it does.
+
+**Candidate B — `findEvaluationSpanIndex` is a backwards linear scan, and the cube is exactly
+the fixture that makes that expensive.** `splineRefinementUtils.fs:932` walks
+`spanIndex = size(knots) - degree - 2` **downward** to `degree`. Cost is O(spans) and is
+**asymmetric**: a parameter near the domain END returns on the first test, one near the START
+scans the whole vector. §11.4 measured it at 0.71 s and filed it under "not worth touching" — on
+the straight-translation ellipsoid, whose motion has a handful of spans. A cube fixture's motion
+is Hermite-interpolated per station and the tester documents the 512-span cap binding on the
+free-spline path, so the same function does up to two orders of magnitude more work per call
+here, and every off-grid refinement step in candidate A pays it. §8.1 item 3 already recorded
+this function as a "BACKWARDS LINEAR SCAN" and a "real Too many steps risk" — the station freeze
+answered it for the scan pass and left it standing everywhere else. The fix is answer-preserving
+and small: the NURBS Book's own A2.1 span search is a **binary** search, O(log n), returning the
+identical index. It belongs with `sweepLeanEvaluatorLiveTest` asserting equality against the
+current scan across every knot configuration the module uses, periodic included.
+
+**Candidate C — emission and knit scale with patch count, which the shared partition
+deliberately inflated.** §8.4 accepted 24 → 42 patches on the line cube and 46 → 82 on the helix
+to make the shell sewable, which was the right trade for correctness and is untimed. Each patch
+is a fit plus an `opCreateBSplineSurface`, plus the refit-on-refusal ladder (§8.3 item 6: refit
+at half stations, down to bilinear) where each refusal is a discarded fit AND a discarded kernel
+op. `matchShellSeamEdges` is then one `evEdgeTangentLine` per free edge — 183 on the line cube —
+inside an O(n²) pairing loop, and it grows `edges`, `owners` and `midPoints` with `append` in
+that loop, which copies each array every iteration ([[featurescript-append-perf]]; the same
+O(n²) shape §11.3's polyline-preallocation change already fixed in two marches). the emission-record route
+removes the search entirely rather than speeding it up.
+
+**The default planes are in the shell query. This is the correctness half, and it explains the
+missing cube.** `solidSweepUtils.fs` and `solidSweepTester.fs` contain **zero** occurrences of
+`qConstructionFilter`, `qSketchFilter`, `ConstructionObject` or `SketchObject`. The closure
+features build their shell as:
+
+```featurescript
+qUnion(evaluateQuery(context, qBodyType(qEverything(EntityType.BODY), BodyType.SHEET)))
+```
+
+and hand it to `matchShellSeamEdges`, to `opBoolean` as `tools`, and to `opEnclose` as
+`entities`. The standard library says what is wrong with that in two places. `boolean.fs:36`
+and `:341` filter sheets as `BodyType.SHEET && ConstructionObject.NO && SketchObject.NO` — those
+clauses are not decoration; they exist because **`BodyType.SHEET` alone admits construction
+planes and sketch regions**. And `enclose.fs:36` wraps its own entities in
+`qSketchFilter(qConstructionFilter(…, ConstructionObject.NO), SketchObject.NO)` under the
+comment *"Exclude construction planes and sketch regions so they don't get deleted."*
+`opEnclose`'s contract is "Bodies and faces for enclosure", so a plane handed to it is a
+**bounding wall**, not an ignored input. Consequences, in the order they bite:
+
+1. *The enclose is being asked the wrong question.* Three full-extent default planes cut the
+   swept region into as many as eight cells, so the kernel intersects a 42–82 sheet shell
+   against three planes and encloses the pieces. `size(enclosed) == 1` then fails, or succeeds
+   on a fragment — which is exactly the reported symptom, no full cube sweep.
+2. *It is a performance bug as well as a correctness one*, and plausibly a large share of
+   candidate C: shell-against-plane intersection at that patch count is real kernel work, paid
+   before anything is returned.
+3. *The union gets them as TOOLS.* Same query, same three planes, in the operation §8.4 already
+   found will take the regeneration down rather than refuse.
+4. *The seam census is contaminated.* A bounded default plane contributes free edges of its own,
+   so they enter `matchShellSeamEdges`, draw an `evEdgeTangentLine` call each, and land in the
+   unmatched tally. **§8.4's recorded "89 seam pairs of 183 free edges, 5 unmatched" was
+   measured through this query and should be re-measured before it is reasoned from again.**
+5. *The cleanup can delete the user's default planes.* `opDeleteBodies` on
+   `qSubtraction(qBodyType(qEverything(BODY), SHEET), knit.solidBody)` names them, which is the
+   precise failure `enclose.fs`'s comment is guarding against — and it would break every sketch
+   in the document downstream, presenting as something other than a sweep bug.
+
+The fix is one filter at every place the shell is named, matching std's own spelling
+(`qSketchFilter(qConstructionFilter(shell, ConstructionObject.NO), SketchObject.NO)`), and the
+durable version of it is that **the shell should be built from the emitter's own op ids, not
+discovered from the Part Studio** — `qEverything` was already banned in this project's harness
+tests for the neighbouring reason (a live query reading bodies from earlier runs, §12.2's
+findings). the emission records are that shell.
+
+**One stale doc block found on the way.** `planPolyhedralEnvelope`'s header still reads "Each
+face and each edge is split at its OWN breakpoints, not at the sweep's", which its own pass two
+contradicts — the body cuts every owner on the shared partition, and the inline comment there
+describes that correctly. §8.4 changed the behaviour and the header did not follow. AGENTS.md
+line 56 (documentation is contemporary to the code) and `tools/fsLint.py` own this class of
+defect.
+
+---
+
+### 11.11 The first cube profile, 2026-08-25 — **62% of the build is one function, and it is the 1e-12 bisection**
+
+MEASURED, `profiler-tools/report.mjs` on the **Rotating Cube** Part Studio
+(`af9d4854634dea2f548899e6`), tag `cube-baseline`, both source tabs pushed and byte-verified
+first. **24.4 s profiled** for a full regeneration (profiled time runs ~30% over a plain regen
+and is a relative measure only — §11.5). Inclusive times, aggregated per function, 101 functions
+over 562 call sites.
+
+| seconds | share | calls | µs/call | function |
+| --- | --- | --- | --- | --- |
+| 16.60 | 68.0% | 5,260 | 3155 | `sharpEdgeFunnelSpansAtTime` |
+| **15.20** | **62.3%** | **12** | 1266667 | **`sharpEdgeFunnelTransitions`** |
+| 7.46 | 30.6% | 101,109 | 74 | `interpolateCoEdgeSample` |
+| 5.67 | 23.2% | 138,197 | 41 | `evaluateContactFunctionAtPoint` |
+| 4.93 | 20.2% | 145,386 | 34 | `evaluateMotionSample` |
+| 4.91 | 20.1% | 6,260 | 784 | `evaluateBSplineCurveDerivatives` |
+| 4.53 | 18.5% | 236,139 | 19 | `norm` |
+| 4.29 | 17.6% | 102,071 | 42 | `interpolateCoEdgePoint` |
+| 3.50 | 14.3% | 45 | 77733 | `fitRuledEnvelopePatchAtStations` |
+| 2.93 | 12.0% | 388 | 7552 | `directrixEndsAtStation` |
+| 2.28 | 9.3% | 96 | 23750 | `findContactFunctionRootsOnGrid` |
+| 2.28 | 9.3% | 18 | 126667 | `contactBreakpointsForPairs` |
+| 1.13 | 4.6% | 1 | 1130000 | `buildMotionStationGrid` |
+
+**§11.10's candidate A is confirmed, and it is the whole story.** `sharpEdgeFunnelTransitions`
+is **62.3% of the build across TWELVE calls** — one per cube edge. It is the function that
+bisects `while (high - low > tTolerance)` at the default `tTolerance` of **1e-12**, with no early
+exit, calling `sharpEdgeFunnelSpansAtTime(strippedMotion, …)` — the unfrozen motion — at each
+step. Its callee accounts for 68.0% over 5,260 calls; the 97-station occupancy scan explains
+about 1,164 of those and **the bisection explains the remaining ~4,100**. Every layer under it is
+the same work seen from lower down: `interpolateCoEdgeSample` and `interpolateCoEdgePoint` at
+~100,000 calls each are the edge scan inside each span evaluation, and `evaluateMotionSample` at
+145,386 calls is the freeze not reaching this path at all.
+
+**§11.10's candidate B is refuted.** `findEvaluationSpanIndex` does not appear in the top 40 at
+all. The backwards linear scan is real and is not a cost here; §11.4's "not worth touching"
+verdict transfers after all, and the binary-search rewrite should NOT be done on this evidence.
+What *does* show at that layer is `evaluateBSplineCurveDerivatives` — 6,260 calls at **784 µs**,
+the general NURBS evaluator §6.10 already replaced with `leanCurveDerivatives` in the analytic
+layer and never here.
+
+**Candidate C is real but small.** `fitRuledEnvelopePatchAtStations` is 3.50 s over 45 patches —
+14.3%, a quarter of the transition cost. `matchShellSeamEdges` does not appear at all, so the
+O(n²) midpoint census is not a performance problem; the emission-identity item stands on identity grounds
+only. `buildMotionStationGrid` is 1.13 s for its single call — the §8.1 freeze works and is cheap.
+
+**Do not tune any of this — see §11.13.** The first reading of this table proposed cutting the
+bisection's tolerance, freezing its motion sample, and bracketing its span end as a root. All
+three are real reductions of a computation that **should not be running at all**: on a
+polyhedron the contact function is a low-degree polynomial in both parameters, and every number
+in the table above is that polynomial being sampled. `norm` at 236,139 calls and 18.5% is the
+same finding wearing a different hat — it is a constant normal being re-blended and
+re-normalized per sample.
+
+**Two other things this run reported, both honest and neither caused by the plane fix.**
+
+- *The emit stage fails its own tolerance:* `[ROTATING CUBE] VERDICT: FAIL (1 of 14 checks)` —
+  envelope deviation **2.061889315357533e-5 m** against a 1e-5 bar, measured over 252 fresh
+  envelope points. That check lives in `sweepRotatingCubeLiveTest`, which the plane fix does not
+  touch. Both caps report a seam gap of exactly 0 m.
+- *The shell does not close, and now says so truthfully:* see §11.12.
+
+---
+
+### 11.12 The default-plane fix, measured 2026-08-25 — 12 phantom edges and 6 fabricated seam pairs, and the §8.4 solid was closed by the planes
+
+The filter of the construction-plane filter is in (`qWithoutConstructionOrSketchObjects` /
+`qSweptShellSheets`, applied at the shell gather, inside `matchShellSeamEdges`, and on the
+`opBoolean` tools, the `opEnclose` entities, the post-union body count and both
+`opDeleteBodies` cleanups). The same fixture's census, before and after:
+
+| | §8.4 as recorded | with the filter |
+| --- | --- | --- |
+| free edges | 183 | **171** |
+| seam pairs | 89 | **83** |
+| unmatched | 5 | **5** |
+| worst matched pair | 1.6e-8 m | 1.6e-8 m |
+
+**Exactly 12 free edges and 6 pairs disappear — three default planes at four boundary edges
+each, which were being matched to EACH OTHER and handed to `opBoolean` as six fabricated seam
+matches.** The 5 unmatched edges are unchanged, so they are real geometry and the §8.4
+cap-correspondence hole is genuine, not an artifact of the planes.
+
+**And the shell now reports that it does not close:** `SWEEP_KNIT_REFUSED`, enclose produced
+**0 solids**, 44 bodies out. §8.4 recorded this shell closing to one solid of 1.009817e-3 m³ by
+`opEnclose`. The only thing that changed is that three full-extent planes are no longer available
+to the enclose as bounding walls — which is direct evidence that **§8.4's solid was closed BY the
+default planes and was therefore never the swept volume**. That is the owner's own reading of the
+symptom, and it is now measured rather than inferred. Two consequences:
+
+1. **§8.4's solid, its 45 faces and its 1.009817e-3 m³ are withdrawn as a result.** The
+   cap-to-lateral correspondence gap (§8.4 "still open", the emission-identity item) is what stands between
+   this shell and a real solid, and it always was — the planes were hiding it behind a body that
+   looked closed.
+2. The fix is a strict improvement even though it turned a green result red: a shell that
+   reports 0 solids is recoverable, and a solid bounded by the user's datum planes is a wrong
+   answer that regenerates.
+
+---
+
+### 11.13 145,000 evaluations for a cube — the polyhedral route samples a polynomial it can write down (2026-08-25)
+
+Owner, on the §11.11 table: *"It's a cube. It's as simple as these cases get. If we're doing
+145,000 of anything, we have done something aggressively wrong."* That is the correct reading,
+and §11.11's proposed fixes were aimed at the constant factor of a computation that should not
+exist. This subsection replaces them.
+
+**What the code does.** `sharpEdgeFunnelSpansAtTime` takes an edge and a time, samples the edge
+at `max(scanSamples, size(sampleParameters))` points — measured at ~13 — calls
+`interpolateCoEdgeSample` at each (which linearly blends the stored one-sided normals and
+**renormalizes**, one `norm` per sample per side), evaluates `g` at each, and finds the funnel by
+scanning the sign runs. `sharpEdgeFunnelTransitions` then calls that whole scan ~33 times per
+transition in a bisection. Multiply out: ~13 samples × 2 sides × ~4,100 bisection steps ≈ the
+138,197 contact evaluations and 101,109 interpolations the profile reports.
+
+**What the geometry is.** §8.1 already derived the governing fact and the implementation did not
+take it. With `W = AᵀA'` (skew) and `c = Aᵀb'`, the contact function pulled into the tool frame
+is `g = ⟨n, W(t)·p + c(t)⟩`. On a **cube**:
+
+- both faces at an edge are PLANES, so each side's normal `n` is **constant along the edge** —
+  the blend-and-renormalize per sample computes a constant ~100,000 times;
+- the edge is a STRAIGHT SEGMENT, `p(s) = p₀ + s·d`, so
+  **`g(s,t) = a(t) + s·b(t)`** exactly, with `a = ⟨n, W p₀ + c⟩` and `b = ⟨n, W d⟩`.
+
+An affine function in `s` has **one root in closed form**, `s* = −a/b`. The 13-sample scan is
+evaluating a straight line at thirteen points to locate a zero-crossing that is one division.
+The funnel span is the interval between `s*_left` and `s*_right` clipped to [0,1] — four dot
+products per station, no samples, no scan.
+
+**And the t direction is exact too, which is what removes the bisection.** `A(t)` is a
+degree-3 spline, so `A'` is degree 2 and both `W = AᵀA'` and `c = Aᵀb'` are **piecewise
+polynomials of degree 5**. Therefore `a(t)` and `b(t)` are piecewise degree-5 polynomials whose
+coefficients come from the motion's control net by pure Bernstein arithmetic, computed once. The
+funnel's transitions are then exactly the roots of polynomials:
+
+| transition | condition | degree per motion span |
+| --- | --- | --- |
+| a side's root reaches the edge's start vertex | `a(t) = 0` | 5 |
+| …reaches the end vertex | `a(t) + b(t) = 0` | 5 |
+| the two sides' roots MEET in the interior (§8.3 item 7) | `a_L·b_R − a_R·b_L = 0` | 10 |
+
+Every one of those is `isolateBernsteinRoots` — **which is written, tested, and has no production
+caller** (§6.10; the coefficient-provider work says the same of its surface-dimension sibling). The convex-hull
+screen kills most spans before any root work happens, and §8.3's own finding that the interior
+meeting has no endpoint to mark it stops being a special case: it is simply the third polynomial.
+
+**The cost this implies.** For a cube: 12 edges × 3 polynomials, plus the per-face corner
+functions, each a handful of degree-5 (or 10) coefficient formations per motion span, screened by
+sign and root-isolated only where live. That is **hundreds of arithmetic operations with zero
+spline evaluations inside any loop, zero bisection, and zero edge sampling** — against 145,386
+motion samples today. The station grid, the occupancy scan, `interpolateCoEdgeSample`,
+`stripRootFloors` and the bisection all leave the polyhedral path entirely.
+
+**This is tier 0's disease on the route that was supposed to be the cheap one.** §6.10 recorded
+that a closed-form contact layer existed for seven surface classes and nothing called it; §8.1
+derived the affine-in-p fact for planes, wrote it in its own header, and then sampled anyway.
+The rule §12.3 was rewritten on — *every done-when names a solver or emission path* — applies
+here unchanged, and the done-when below is a call count, not an agreement.
+
+**What stays sampled, honestly.** The exactness above is a statement about **planar faces and
+straight edges**. A curved sharp edge makes `p(s)` a spline and `g(s,t)` a polynomial in `s` of
+the edge's own degree — still coefficient-solvable, one rung harder, and already on §8.4's open
+list. A non-planar face is not this route's business at all; it goes to §7's grazing path. So the
+polynomial route covers the polyhedron completely and degrades to the existing scan for anything
+else, which is the same shape as the sampled/analytic/coefficient split of §6.10.
+
+---
+
+### 11.14 The affine co-edge route, implemented and measured 2026-08-25 — **24.4 s → 9.31 s, and the deviation went to zero**
+
+§11.13's first half is built and live. `affineCoEdgeContactDescriptor` reads a co-edge's shared
+sample arrays once and reports whether the edge is straight and both adjacent normals constant;
+`sharpEdgeFunnelSpansFromDescriptor` then answers the funnel from four dot products and at most
+two divisions, partitioning [0,1] at the two roots and deciding membership per sub-interval.
+`sharpEdgeFunnelSpansAtTime` gained a five-argument overload taking the descriptor — the
+four-argument form builds one and delegates, so every existing call site is covered — and
+`sharpEdgeFunnelTransitions` builds it **once per edge** for its whole pass.
+
+MEASURED, same fixture, same tags (`cube-baseline` → `cube-affine`):
+
+| | before | after |
+| --- | --- | --- |
+| **whole regen (profiled)** | 24.40 s | **9.31 s (−61.8%)** |
+| `sharpEdgeFunnelTransitions` | 15.20 s | **1.62 s** |
+| `sharpEdgeFunnelSpansAtTime` | 16.60 s | **2.33 s** |
+| `evaluateContactFunctionAtPoint` | 138,197 calls | **41,413** |
+| `evaluateMotionSample` | 145,386 calls | **48,590** |
+| `norm` | 236,139 calls / 4.53 s | **27,070 / 0.50 s** |
+| `interpolateCoEdgeSample` / `Point` | 7.46 s / 4.29 s | **absent from the table** |
+
+**The accuracy result is the one that matters more.** The emit stage had been FAILING its own
+bar at 2.061889315357533e-5 m against 1e-5 (§11.11). It now reports **`VERDICT: PASS: 14 checks`
+with sheet deviation 0 m** against the same 252 fresh envelope points. The old deviation was not
+envelope error at all — it was `interpolateCoEdgeSample` linearly interpolating a straight edge
+and the scan bracketing a root between those interpolated samples. Solving the affine function
+exactly removed the error and the cost in the same change. This is §11.13's claim demonstrated:
+the sampling was not buying accuracy, it was spending it.
+
+**The knit moved too, without being touched:** 5 unmatched free edges → **1**, and 83 → 85 seam
+pairs, because exact funnel ends make neighbouring patch boundaries land on each other. Closure
+still fails on that one edge (`SWEEP_KNIT_REFUSED`, 0 solids), which is the cap-correspondence item's
+correspondence and nothing else now.
+
+**What is now on top, and both are known items.**
+
+| seconds | share | calls | µs/call | function |
+| --- | --- | --- | --- | --- |
+| 4.69 | 50.4% | 6,252 | 750 | `evaluateBSplineCurveDerivatives` |
+| 4.27 | 45.9% | 48,590 | 88 | `evaluateMotionSample` |
+| 2.48 | 26.7% | 44 | 56455 | `fitRuledEnvelopePatchAtStations` |
+| 2.19 | 23.5% | 18 | 121667 | `contactBreakpointsForPairs` |
+| 2.19 | 23.5% | 96 | 22813 | `findContactFunctionRootsOnGrid` |
+
+1. **The general NURBS curve evaluator is now half the build** at 750 µs a call — the lean-curve-evaluator item,
+   and the identical trade §6.10 already made in the analytic layer when `leanCurveDerivatives`
+   replaced it there and never here.
+2. **`contactBreakpointsForPairs` + `findContactFunctionRootsOnGrid` are the OTHER half of item
+   0h** — the vertex-normal breakpoints, still found by scanning the station grid and refining.
+   §11.13's table gives them in closed form: they are the roots of `a(t)` and `a(t) + b(t)`,
+   piecewise degree-5 polynomials in t, and `isolateBernsteinRoots` still has no production
+   caller.
+
+**Three more rounds the same day, all measured, all PASS with deviation 0 m.** Owner, on the
+9,000-plus contact evaluations that remained: *"that still seems like an aggressively overbearing
+number of checks."* Correct again, and the causes were separate from each other.
+
+| run | total | change | what changed |
+| --- | --- | --- | --- |
+| `cube-baseline` | 24.40 s | — | the state §11.11 profiled |
+| `cube-affine` | 9.31 s | −61.8% | the affine funnel solve above |
+| `cube-pooled` | 7.31 s | −21.5% | contact pairs pooled and deduplicated |
+| `cube-leanmotion` | 6.88 s | −5.9% | motion samples onto `leanCurveDerivatives` |
+| `cube-binspan` | **6.08 s** | −11.6% | binary evaluation-span search |
+
+**Cumulative 24.40 s → 6.08 s, −75.1%**, with `VERDICT: PASS: 14 checks` and sheet deviation 0 m
+on every round.
+
+- *Pooling the contact pairs.* A (normal, point) pair is a scalar function of t, and the same one
+  belongs to every owner incident to it — a square face generates each corner twice, once per
+  bounding co-edge, and every sharp edge's end pair repeats one of its own faces' corners. **A
+  cube offers 96 pairs and holds 24 distinct ones**, which §8.1 item 2 stated as a fact about the
+  geometry while the code scanned all 96. `mergeContactPairs` pools them before one root pass:
+  `findContactFunctionRootsOnGrid` **96 → 24 calls**, `contactBreakpointsForPairs` **18 → 1**,
+  and `evaluateContactFunctionAtPoint` **41,413 → 9,272**. This is exact because §8.4 made the
+  partition sweep-wide — every owner's roots merge into one timeline, so the owner a root arrived
+  through stopped mattering.
+- *The lean curve evaluator, and why it bought so little on its own.* `evaluateMotionSample` was
+  making **four** general-NURBS calls per unfrozen sample. Moving them to `leanCurveDerivatives`
+  cost 754 → 695 µs a call — almost nothing — and that near-miss is what exposed the next item.
+- **A CORRECTION to §11.11: the backwards span scan was real after all.** §11.11 recorded
+  `findEvaluationSpanIndex` as "refuted, must not be built" because it was absent from the
+  profile. It was absent because it sits **inside the published `splineRefinementUtils`
+  evaluator**, whose internals the per-function table does not attribute separately. The moment
+  the motion moved onto this module's own lean evaluator the function surfaced at **192 µs per
+  call, 15.6% of the build** — a linear walk down a knot vector fitted at hundreds of stations,
+  paid on every evaluation. `leanEvaluationSpanIndex` answers identically by binary search and
+  removed **1.07 s**. The lesson is about the instrument, not the function: *a profiler that
+  aggregates per element cannot refute a cost inside an imported one.* The published module is
+  untouched — the binary form is local and the five call sites in this file use it.
+
+**Where the remaining 6.08 s sits.** `leanBasisDerivatives` 2.08 s at 373 µs for a cubic — the
+allocation-heavy basis table §11.4 already attacked once on the surface side, now the largest
+single item; `fitRuledEnvelopePatchAtStations` 1.89 s over 44 patches; `directrixEndsAtStation`
+1.37 s over 386 calls; `buildMotionStationGrid` 865 ms for **one** call. And the t half of item
+0h is untouched: 24 pooled pairs are still scanned across 97 stations where §11.13 gives their
+roots in closed form.
+
+**`buildMotionStationGrid`, asked about directly (owner) — 865 ms → 686 ms, `cube-order1b`
+5.81 s.** The function holds nothing but a loop: 97 iterations of `evaluateMotionSample`, so its
+cost *is* motion sampling — 388 curve evaluations plus three Matrix and three Vector
+constructions per station. Two answers, and they are different in kind.
+
+*Cut it down (done).* **Every consumer of this grid reads the contact function's VALUE**,
+`⟨A n, A' p + b'⟩`, which carries no acceleration term — yet the grid was building
+`rotationSecondDerivative` and `translationSecondDerivative` at all 97 stations. The only
+second-order consumer, `evaluateContactFunctionTimeDerivative`, is always handed the *unfrozen*
+motion by `refineContactRoot`, so it samples its own. `evaluateMotionSample` now takes a
+`maxOrder`, the grid asks for 1, and the sample records `sampledOrder` so a second-derivative
+read on a first-order sample throws instead of returning a missing field.
+
+That guard earned itself immediately: the first push **broke the build** — no sheets emitted —
+because the value-path entry points were still *requesting* order 2 while the grid froze at
+order 1. `evaluateContactFunctionAtPoint`, `sharpEdgeFunnelSpansAtTime` and
+`findCoEdgeStripRootsAtTime` now declare order 1, which is what they always read. Worth keeping:
+the failure was loud and immediate, where a missing field would have been `undefined`
+propagating into geometry.
+
+*Optimize it out (the closed-form breakpoint solve, not yet done).* The grid exists for exactly two consumers —
+`findContactFunctionRootsOnGrid` and `sharpEdgeFunnelTransitions` — and both want the same thing,
+a sign grid to bracket a root on. §11.13 gives those roots in closed form, so **the closed-form
+route deletes the grid rather than optimizing it**: `buildMotionStationGrid` (686 ms), the
+24 × 97 root scan, the 12 × 97 occupancy scan and `refineContactRoot` all go together.
+
+*One soundness note the measurement surfaced.* The 97 stations are uniform and fixed, chosen
+independently of the motion. A contact function is piecewise degree 5 in t, so its root count is
+bounded per **knot span** — a grid that does not scale with the motion's span count is
+simultaneously wasteful on a simple motion and capable of **missing roots** on a dense one. If
+0h's t half is deferred, the grid should at minimum be derived from the motion's own knot vector
+rather than from a constant.
+
+**11.14.1 The density-aware grid: built, measured, and DEFAULTED OFF pending §9.2 (2026-08-25).**
+
+Owner: *"Tweep just implemented a function that was density aware. I'm not sure why a constant
+static non density aware function was ever considered here."* The criticism lands — Tweakable
+Sweep places stations by equidistributed turning against a `TARGET_ANGULAR_STEP` that sets
+accuracy directly, and this module used a bare 97.
+
+**The density law here is stronger than Tweep's, and it is a bound rather than a monitor.**
+Tweep integrates a turning rate because what its guide curve must resolve is *interpolation
+error*, which follows the angle a span turns through. What this grid must resolve is *sign
+changes of a polynomial*: `g(t) = ⟨A(t)n, A'(t)p + b'(t)⟩` is piecewise of degree `2d − 1` in t —
+5 for the cubic motion §4.1 fits — so it has at most `2d − 1` roots **per knot span**, and `2d`
+sub-intervals per span cannot miss one. And the density signal is already computed: §4.1
+densifies the motion's stations until orthogonality drift certifies, so a fast-turning path
+arrives carrying more spans. The uniform grid was discarding information the motion already had.
+
+`motionContactStationParameters` implements exactly that, with the old count kept as a floor.
+MEASURED on the rotating cube (`cube-density`): the fixture's motion carries roughly a hundred
+spans, so the grid went **97 → ~600 stations**, and the run **failed**: `VERDICT: FAIL (3 of 14)`,
+1 of 42 patches refused, envelope deviation **0 → 2.146e-3 m**, and 2.6% slower.
+
+**What that failure actually says, because it is not a bug in the grid.** The denser grid finds a
+contact transition the 97-station grid misses. That transition cuts a segment whose patch is a
+**transverse sliver** — §8.3 item 5's failure, where the ruling and the directrix travel
+directions sit a couple of degrees apart — and `opCreateBSplineSurface` refuses it even through
+the refit ladder. **A refused patch leaves a hole worth 2.1e-3 m; the missed transition is worth
+less than the 252-point check can see.** So the uniform grid passes *because* it under-samples,
+and that is luck rather than design: on a fixture where the missed transition bounds a patch of
+real area, the same under-sampling is a wrong envelope with a green verdict.
+
+The capability is therefore in the file and the default is unchanged — `buildMotionStationGrid`'s
+fifth argument selects it, and the four-argument form passes `false` with the reason written at
+the call. **It should be switched on in the same change that lands §9.2's segment merging**, not
+before, because merging is what makes a found-but-degenerate segment harmless.
+
+**And it is one more argument for the closed-form breakpoint solve.** A *correct* sampling grid is unaffordable on the
+motions this feature must accept: the free-spline fixture binds the tester's 512-span cap, and
+`2d` samples per span is over 3,000 stations. Sampling cannot be made both correct and fast here.
+The closed form is the only route that is both, and it needs no grid at all.
+
+---
+
+### 11.15 The contact roots solved on coefficients, 2026-08-25 — built, correct, and gated behind the segment merge
+
+The breakpoint half of the closed-form polyhedral contact work is implemented. It removes
+`findContactFunctionRootsOnGrid`, `contactBreakpointsForPairs` and `evaluateContactFunctionAtPoint`
+from the profile completely, and it is **not** the default, for a reason worth reading before
+anyone turns it on.
+
+**It needed almost no new math, because the layer was already built and had no caller.**
+`buildMotionSpanPolynomials` decomposes the motion into per-span Bézier segments and forms, for
+every span, the twelve coefficient arrays `⟨C_i, C_j'⟩` and `⟨C_i, b'⟩`, elevated to one shared
+degree. Expanding the contact function over the columns of A,
+
+```
+g(t) = ⟨A(t)·n, A'(t)·p + b'(t)⟩
+     = Σ_i Σ_j n_i p_j ⟨C_i, C_j'⟩ + Σ_i n_i ⟨C_i, b'⟩
+```
+
+so **the whole contact function of a constant normal at a constant point is a weighted sum of
+twelve polynomials the motion already computed** — the same reduction §6.5 makes for the analytic
+face classes, one dimension down. That function had **zero production callers** before this
+change; it existed only in the tester. The audit §6.10 ran against the analytic layer would have
+returned the same verdict here.
+
+`contactFunctionSpanCoefficients` forms the sum, `bernsteinExcludesZero` proves a span root-free
+from the convex hull of its own coefficients, `isolateBernsteinRoots` isolates what survives, and
+`polishBernsteinRoot` finishes on the coefficients themselves. No spline is evaluated anywhere in
+the path.
+
+**Measured (`cube-exactroots` / `cube-crossings`).** `contactBreakpointsForPairs` (497 ms),
+`findContactFunctionRootsOnGrid` (496 ms) and `evaluateContactFunctionAtPoint` (367 ms) all leave
+the table. The run **fails**: 4 of 42 patches refused, envelope deviation **3.670e-3 m**, and the
+total is 6.70 s against 5.84 s.
+
+**Why it fails, and it is the same answer §11.14.1 reached by a different route.** The coefficient
+solve finds contact crossings the 97-station grid misses. A crossing filter was added first on the
+theory that the extras were tangential zeros — an even-multiplicity root is a touch, not a change
+of contact type, and coefficient isolation finds those where a sign grid structurally cannot. The
+filter changed the result **bit for bit**: deviation 3.669938200854036e-3 both ways. So the extra
+roots are **genuine sign crossings**, the grid was under-resolving, and the segments those
+crossings cut produce patches the kernel refuses as transverse slivers (§8.3's finding). A refused
+patch leaves a bigger hole than the missed crossing does.
+
+**Two independent mechanisms now agree that sampling was hiding real transitions** — the
+density-aware station grid (§11.14.1) and this — and both are blocked by the same downstream gap.
+The blocker is the segment merge of §9.2, not the root solving.
+
+**On cost, stated honestly.** With the exact route on, the build is *slower*:
+`buildMotionSpanPolynomials` costs 811 ms in one call while the station grid is still built for
+the funnel occupancy scan. The saving only materialises when the funnel transitions move to
+coefficients too — the same `a(t)`, `a(t) + b(t)` and `a_L b_R − a_R b_L` polynomials of §11.13 —
+because that is what deletes `buildMotionStationGrid` (716 ms) along with the scans. Half of a
+closed-form route pays for the machinery without collecting the refund.
+
+**State.** `planPolyhedralEnvelope` takes `exactBreakpoints`, default false, with the reason at the
+call; the span polynomials are built only when it is true. Default behaviour is unchanged and the
+fixture is `VERDICT: PASS: 14 checks`, deviation 0 m, 5.89 s. **Turn it on in the same change that
+lands segment merging, and do the funnel transitions in the same pass.**
+
+---
+
+### 11.16 The segment merge, 2026-08-25 — built, bounded, and honest about what it does not fix
+
+**What it does.** A patch the kernel refuses at every station count is no longer dropped. Its
+interval is carried into a neighbour on the same owner and the pair emits as one wider patch.
+`emitRuledPatchWithRefit` factors the fit-offer-halve-offer ladder so both directions can use it,
+and `emitPolyhedralEnvelope` walks each owner's segments carrying a pending interval:
+
+- **Forward** is the cheap direction and needs no deletion, because a refused operation makes no
+  body — the next segment of the same owner simply starts earlier.
+- **Backward** covers a refusal in an owner's last segment, which has no successor: the previous
+  sheet is deleted and re-emitted over the union.
+- Both merge attempts and the forward emission are **guarded**, because a widened interval can
+  reach across a sub-interval the owner does not contact — often the reason the partition cut
+  there — and a merge that cannot be fitted is simply not merged. A patch that cannot be built is
+  reported, never allowed to take the regeneration down, which is §9.3's rule applied one level
+  in.
+- The run reports `mergedForward`, `mergedBackward` and `widestMergeSpan`. A merged patch spans a
+  contact breakpoint, which is the one thing the shared partition exists to prevent, so the span
+  is reported rather than absorbed silently: it is a deliberate trade made only where the kernel
+  has already refused every faithful form of the segment.
+
+**Measured on the default path: neutral and green.** `VERDICT: PASS: 14 checks`, deviation 0 m,
+5.92 s against 5.84 s. No patch is refused there, so the merge path does not execute — which is
+the correct result for a change that must not alter a passing build.
+
+**RETRACTED, same day, by counting: there was no ceiling. It was a bug I wrote.** The first
+attempt to run this against the exact roots died whole, and this section originally blamed §8.4's
+per-feature-evaluation ceiling. The owner rejected that reading, and the operation counts were
+already in the profile:
+
+| | green | exact roots + merge |
+| --- | --- | --- |
+| `opCreateBSplineSurface` | 46 | **32** |
+| `emitFitSurfacePatch` | 44 | **31** |
+| `setProperty` | 42 | **30** |
+
+**The failing run asks for FEWER operations, not more.** Nothing was exhausting a budget; the run
+was stopping early. Invoking a platform limit against numbers that said the opposite was a
+rationalisation, and the phrase is retired from this document: a ceiling may be claimed only with
+an operation count that rises to meet it.
+
+**The actual defect: the forward merge cascaded.** When a widened patch also failed to fit, the
+code widened further and carried the failure into the next segment of the same owner — so one
+refused sliver took every later segment with it, turning 4 refusals into 12 fit failures. The
+widened interval reaches across a segment boundary the partition put there for a reason, and past
+a certain width no fit exists. **A merge that fails now gives up**: the segment is emitted on its
+own interval, the sliver is reported unmerged, and no cascade is possible. With that bound the
+feature runs to completion.
+
+**What the bounded merge does and does not buy.** It is safe: the default path is unchanged and
+green (`VERDICT: PASS: 14 checks`, deviation 0 m, 5.86 s). Against the exact roots it lands on
+exactly the pre-merge result — 4 of 42 refused, deviation 3.669938200854036e-3 m — because every
+merged form of those four also fails to fit. **So the merge does not rescue them, and why they
+resist it is not yet diagnosed.** The next step is data, not another mechanism: the tester's
+refused-patch dump now carries complete report fields, so one run with `exactBreakpoints` on
+prints each refused patch's stations, directrices and net, which is what says whether the
+neighbour is even t-contiguous with the sliver.
+
+---
+
+### 11.17 What actually blocks the cube, measured 2026-08-26 — a sliver ruling at the kernel's own zero-length tolerance
+
+The line cube's lateral envelope has passed at deviation 0 m since §11.14, and the shell has refused
+to close ever since. §8.4 named the cause as cap-to-lateral correspondence: a cap's kept-face
+boundary is a whole tool edge, a lateral patch's t-boundary is a funnel span of one, so where a
+funnel does not cover a whole edge the two do not correspond. **That diagnosis is wrong for this
+fixture, and one instrumented run retires it.**
+
+**What the caps actually do.** At both cap stations every plane face reports **zero** boundary
+crossings with a healthy value scale (0.0516 to 0.2243, no sliding), so no face is in contact at
+either end and `polyhedralCapContactCurves` returning nothing is the correct answer rather than a
+defect. Every funnel that exists at a cap station covers its **whole** edge, vertex to vertex — six
+edges at t = 0 (1, 2, 5, 6, 9, 10) and six at t = 1 (0, 3, 5, 6, 8, 11). There is no sub-span, so
+there is nothing for a `CONTAINED_2_IN_1` match to express. The caps then match by midpoint exactly
+as they stand: the lateral shell alone censuses 73 pairs of 159 free edges with 13 unmatched, and
+adding the two trimmed caps takes it to 85 pairs of 171 with **1** unmatched. **Twelve of the
+thirteen were cap-facing boundaries doing exactly what they should, and the caps consumed all
+twelve.**
+
+**The one real defect.** The thirteenth edge was 1.0058112316914706e-8 m long — and identical to the
+shortest ruling of the patch that owned it, face 5 segment 2, one of the two patches the kernel had
+refused at nine stations and that were refitted coarser to four. Its mechanism is arithmetic:
+
+| | value |
+|---|---|
+| duplicate breakpoint pairs in the shared partition | 4 |
+| their separation in t | 2.20e-9, 5.81e-9, 6.18e-9, 7.58e-9 |
+| `mergeSortedTimes` merge window (`10 * tTolerance`) | 1e-11 — too tight to merge any of them |
+| contact-line growth rate near the event | 0.060391 m / 0.0348 t ≈ 1.74 m per unit t |
+| residual ruling, 5.81e-9 × 1.74 | **1.0e-8 m**, the measured sliver |
+| `TOLERANCE.zeroLength` (math.fs:38) | **1e-8 m** |
+| `PATCH_RULING_COLLAPSE_TOLERANCE`, as it stood | 1e-9 — ten times *below* zeroLength |
+
+Two independent finders locate the same class of event — a face's contact line collapsing into a
+vertex — a few nanoseconds of parameter apart, and both survive into the shared partition. Every
+owner is then cut at every *other* owner's root, so the face whose own root is the second of a pair
+is asked for a segment starting after its own degeneracy. The residue is the root gap times the
+growth rate, which lands the ruling in the band **between the patch fitter's collapse tolerance and
+the kernel's zero-length tolerance**: long enough for the kernel to build an edge, short enough that
+the edge bounds nothing and no neighbour can sew to it. The patches that collapsed at their own root
+landed at 3.97e-15 and 1.71e-15 and gave no trouble at all.
+
+**The fix, and it is one line of policy.** `PATCH_RULING_COLLAPSE_TOLERANCE` is now **1e-7**, ten
+times *above* `TOLERANCE.zeroLength` rather than ten times below it, and a ruling under it is
+**snapped** to its own midpoint so the row is exactly degenerate. Reporting a collapse and then
+handing the kernel the residue is what produced the sliver; an exact apex is a shape the kernel
+accepts. The tolerance has to bound the residue a shared partition can deliver, not the arithmetic
+that produced it.
+
+Measured, same fixture, one change:
+
+| | before | after |
+|---|---|---|
+| patches refitted coarser after a kernel refusal | 2 | **0** |
+| face patches whose taper is exact | 4 of 6 | **6 of 6** |
+| lateral census | 73 pairs / 159 edges / 13 unmatched | 72 / 156 / 12 |
+| full shell census | 85 pairs / 171 edges / **1** unmatched | 84 / 168 / **0** |
+| worst matched pair gap | 1.6e-8 m | 6e-9 m |
+| sheet deviation, 252 fresh envelope points | 0 m | **0 m** |
+| verdict | PASS 14 checks | PASS 14 checks |
+
+The refits are gone because the kernel no longer objects to any patch, and the accuracy is unchanged
+because a 10 nm snap is four orders below the certification's own floor.
+
+**What still fails, and it is a new question.** `opBoolean` UNION still reports a non-OK status and
+`opEnclose` still produces 0 solids, now with **every free edge paired**. So a paired census is not
+a sewable shell, which is the distinction §11.8 was written for: the census matches on a MIDPOINT
+within 1e-5, and two edges whose midpoints coincide need not be the same curve. The worst pair gap
+of 6e-9 is the same shared-partition residue measured on the seams instead of the rulings — inside
+the kernel's tolerance, but not identical. The union call is already the standard library's own
+recipe (`joinSurfaceBodies`, boolean.fs:825 — `allowSheets`, `eraseImprintedEdges`,
+`recomputeMatches`, named matches), so the configuration is not the remaining variable and the
+geometry is. Emission identity — boundary rows shared by construction rather than fitted twice and
+matched afterwards — is the next thing to try, and it is now the only §12.3 item the cube is waiting
+on.
+
+**Narrowed further, same day, by asking the kernel what it objects to.** `knitSweptShell` reported
+"a non-OK status" because it never read the status message; it now reports `getFeatureError`, and the
+answer is **`BOOLEAN_INVALID`** from the union *and* from the enclose. That is a statement about the
+input BODIES, not about seam matching, which is why a census reading 0 unmatched of 168 did not help.
+Bisected by emitting one kind of patch at a time:
+
+| shell handed to the knit | union | enclose |
+|---|---|---|
+| 42 lateral + 2 caps, 0 unmatched | `BOOLEAN_INVALID` | `BOOLEAN_INVALID` |
+| 42 lateral only, 12 unmatched | `BOOLEAN_INVALID` | `BOOLEAN_INVALID` |
+| 36 sharp-edge sheets only, 24 unmatched | `BOOLEAN_INVALID` | **`ENCLOSE_NO_REGION`** |
+| 6 plane-face sheets only | regeneration died whole | — |
+
+**The caps are innocent** — the lateral shell alone is already invalid, so every cap-side mechanism
+is off the critical path. And the enclose's complaint changes from "your input is invalid" to "your
+input bounds no region" exactly when the six plane-face grazing patches are removed, which is the
+honest answer for a deliberately incomplete shell. **The six face patches are what the kernel calls
+invalid**, and the shell is 6 sheets to examine rather than 44.
+
+The measured shape signal on those six: the four that TAPER carry a control-net overshoot of 18–23%
+of their own transverse width (0.0026 m against 0.011 to 0.015 m), while the two full-length face
+patches sit at 4.3% — the healthy band §8.3 recorded. The overshoot is a property of the net rather
+than the surface, and the surface still certifies at 0 m, so it is a correlation and not yet a cause.
+What it points at is the u-interpolation: a cubic in t through a grid whose first or last row is a
+collapsed apex is exactly the case that bulges, and `uDegree` is `min(3, stationCount - 1)`
+unconditionally.
+
+**One theory tried and refuted, recorded so it is not tried again.** The four sub-floor intervals the
+partition carries are declined by every owner (`MINIMUM_CONTACT_INTERVAL_FRACTION`), which looked
+like four hairline slits in the shell — an interval no owner covers is a gap, not a saving, and the
+merge window (1e-11) and the interval floor (1e-6) being five orders apart is a real defect on its
+face. Collapsing the partition onto the interval floor **regressed**: 2 patches refused with
+`SWEEP_EDGE_FUNNEL_UNSTABLE`, deviation 0 m → 2.1e-3 m, unmatched 0 → 6. A single merged time cannot
+serve both neighbours, because collapsing a cluster extends one owner's interval past the end of its
+own funnel. Reverted. If the merge is revisited it needs per-owner clamping of segment bounds to that
+owner's own contact interval, and `sharpEdgeFunnelSpansFromDescriptor` needs the same
+vertex-tolerance treatment the face route now has — two mechanisms, not one constant.
+
+**Two instrument defects fixed on the way, both of which had been hiding this.**
+`polyhedralCapContactCurves` recorded a refusal only when a face had a nonzero crossing count, so
+the six faces with none were dropped in silence and a cap with no trim curves could not be
+distinguished from faces that were never examined. And `reportCheckTally` dropped its summary on
+FAIL, discarding the census counts on precisely the runs that failed. A count of zero reported as
+silence, and a measurement discarded on failure, are both how a defect stays undiagnosed across
+sessions.
+
+### 11.18 The partition now holds one time per event, and the refusal survives it — measured 2026-08-27
+
+**The doubled-breakpoint defect is fixed, correctly this time.** The occupancy bisection in
+`sharpEdgeFunnelTransitions` detects a span only once it is wide enough to catch a scan sample, so
+its answer lands a few nanoseconds of t LATE; the pooled pair roots are the true events. The fix
+that works, unlike §11.17's refuted floor-collapse: keep funnel transitions out of the partition
+until the pair roots are known, drop any transition within `MINIMUM_CONTACT_INTERVAL_FRACTION ×
+sweepSpan` of a root **in the root's favour** (an interior graze with no root nearby stands on its
+own), merge the partition at that same floor, and pin the partition's ends to tStart/tEnd. The
+four 5.8e-9–7.6e-9 doubled pairs collapse to single times; the line fixture's 10 sweep-wide
+breakpoints become 6.
+
+**Its consequence needed one more mechanism.** With the boundary AT the true root, the opening
+side's funnel has exactly zero width there and `sharpEdgeFunnelSpansAtTime` reports none — 4
+tapering patches refused `SWEEP_EDGE_FUNNEL_UNSTABLE` at station 0, deviation 2.5e-3 m from the
+holes. Fixed in `directrixEndsAtStation`: a missing span at the segment's FIRST or LAST station
+probes a hair inside the segment for WHERE the span lives, snaps to the vertex when it opens from
+one, and evaluates the degenerate span at the boundary's own time — both patches sharing the
+event compute the identical apex. Interior stations still refuse. Result: 42/42 emitted, 0
+refused, deviation 0 m, seams 84 pairs of 168, 0 unmatched.
+
+**And the union still answers BOOLEAN_INVALID — so the sub-resolution rings were real but not the
+objection.** Isolation on the clean 44-sheet population (single generation proven by inventory:
+47 studio sheets = 44 + 3 default planes; the only exact-area duplicates are the two congruent
+caps):
+- every sheet is acceptable ALONE (44 single-sheet `opEnclose` probes: all `ENCLOSE_NO_REGION`,
+  the honest open-sheet answer);
+- prefixes 0..28 are acceptable; adding sheet 29 (edge 8, main segment) turns the set invalid;
+- sheet 29 paired with each of 0..28 alone is acceptable — **the kernel's objection needs three
+  or more bodies at once**, so it is a configuration property (orientation coherence or a
+  tolerance-stacked near-coincidence), not a defective body and not any single pair.
+- `evCollision` census over the shell is written into the Knit test (`[SHEET CLASH]`) but had not
+  run when the session lost its Onshape login: the Part Studio's inserted feature regenerated on
+  a stale tester microversion (a set-params POST refreshes the pin; a push alone does not).
+
+**A second fixture regressed at the same time, which reframes the search.** The Ellipsoid AB
+tab's motion-matrix rows closed to a solid before the cube-era changes and no longer do (owner's
+report, 2026-08-27, not yet re-run live). The uncommitted diff since `efb80f8` leaves
+`assembleSweptSolid`, the caps, the tube fit and `knitSweptShell`'s default-path semantics
+byte-identical; the shared changes are `evaluateMotionSample` (lean evaluator + explicit order,
+verified index-by-index and by the cube's 0 m deviation) and the polyhedral-only machinery. The
+cube tab itself was found with `rollbackIndex: 1` silently disabling its Knit feature, so tab
+state (rollback bar, parameter drift, stale feature pin) is the leading suspect for the ellipsoid
+too — check that before blaming shared code.
+
+### 11.19 Why the cube does not close — the quantified account, and the hold (2026-08-27)
+
+Owner decision 2026-08-27: **cube-sweep closure work is HELD** until this section's diagnosis is
+answered by a design, not another experiment. This is the full ledger of what was measured, what
+was fixed, and what the remaining defect actually is.
+
+**The blocker, measured.** `evCollision` over the emitted 44-sheet shell classifies 177 pair
+interactions as plain abutment and **7 as `INTERFERE` — genuine transversal crossings**. Their
+nearest-boundary deviations (minimum over one body's boundary edges of its worst distance to the
+partner body — how far from any shared seam the crossing runs):
+
+| pair | owners | depth |
+|---|---|---|
+| 7–13 | edge 0 main × edge 2 early | 14.7 mm |
+| 7–14 | edge 0 main × edge 2 main | 13.9 mm |
+| 8–14 | edge 0 late × edge 2 main | 2.6 mm |
+| 13–29 | edge 2 early × edge 8 main | 8.3 mm |
+| 14–29 | edge 2 main × edge 8 main | 7.2 mm |
+| 7–34 | edge 0 main × edge 9 main | 7.9 mm |
+| 8–34 | edge 0 late × edge 9 main | 9.2 mm |
+
+Edges 0, 2, 8, 9 are the four edges of face 4 — one of the two tapering faces whose contact
+enters and leaves during the sweep — and every crossing involves the main contact segment
+[0.0965, 0.364], where the fixture's 60° of turn concentrates. Millimetre depths on a 60 mm tool
+are structural geometry, not tolerance.
+
+**Every earlier defect was real, was fixed, and was not the blocker.** Each row names the fix and
+the closure verdict measured immediately after it:
+
+| defect | fix, live-verified | closure after |
+|---|---|---|
+| doubled partition times (4 event pairs 5.8–7.6e-9 apart cutting sub-resolution slivers) | one time per event: funnel transitions yield to pooled refined roots within the interval floor; ends pinned (§11.18) | `BOOLEAN_INVALID` unchanged |
+| opening-boundary stations at the exact root find no funnel span | boundary probe + exact apex evaluation at the boundary's own time (§11.18) | unchanged |
+| mixed sheet orientation | 24/42 rulings reversed to a shared outward; face subsets then SEW | unchanged |
+| doubled sheet population (two features emitting into one Part Studio) | population proven by inventory census (47 = 44 + 3 default planes) | unchanged |
+| sub-resolution seam gaps | census: 84 pairs of 168 free edges, 0 unmatched, worst 5e-9 m | unchanged |
+| suspected invalid bodies | 44/44 sheets acceptable ALONE (per-sheet `opEnclose` → `ENCLOSE_NO_REGION`) | unchanged |
+
+Isolation shape: prefixes 0..28 acceptable, adding sheet 29 turns the set invalid, yet sheet 29
+with any single earlier sheet is acceptable — the kernel's objection needs **three or more
+bodies**, which is what a configuration of mutually crossing strips produces.
+
+**Kernel routes exhausted, each with its named refusal.** UNION with full matches:
+`BOOLEAN_INVALID`. `opEnclose`: `BOOLEAN_INVALID`, 0 cells. `opSplitPart` per crossing pair:
+`SPLIT_FAILED` on all pairs. `opSplitFace` with `mutualImprint`: whole-feature death. The common
+root: the crossing pairs also MEET TANGENTIALLY along shared seams, and a tangent
+surface-surface intersection is the computation the kernel refuses everywhere (it is also what
+made `recomputeMatches` grind for 480 s+). No kernel operation will perform this trim on these
+inputs.
+
+**What the implementation actually got wrong.** The pipeline emits certified LOCAL envelope
+strips — each is exactly ruled, deviation 0 m against fresh envelope points — and hands ASSEMBLY
+to the kernel. That division of labour is only correct when the local pieces are globally
+boundary-disjoint. Under rotation, a polyhedral tool's strips around a tapering face re-enter
+the volume swept at other times: the local envelope is a strict superset of the boundary, and
+the difference is millimetres, not slop. The missing stage is the Adsul–Machchhar–Sohoni GLOBAL
+TRIM — the second half of the very framework this spec is built on. §10's decision record even
+anticipated the class ("v1 detects and rejects non-simple sweeps") — but detector 3, the one
+detector that sees this (global collision), was never implemented, so the shell went to the knit
+undetected and the refusals were mis-attributed to seams, orientation, partition and population
+in turn.
+
+**Why every per-station instrument passed while the shell crossed itself.** The cross-section
+loop certificate closes at 25/25 stations because it checks ENDPOINT PAIRING at one time. The
+crossings are between material from DIFFERENT times (strip point at t₁ occupying space the tool
+covers at t₂), which no per-station view can see. The correct detectors are surface-level:
+strip-pair collision (measured, kernel-side) or an inside-the-sweep test of strip samples
+(written in the tester behind `describeCorrespondence`, pure math, UNRUN — the run was held).
+
+**The "trivial case" inversion.** The ellipsoid tube — one smooth lateral strip plus two caps,
+no strip pairs to cross — closes by plain union (volume error 2.8e-7 relative against the
+Minkowski anchor, envelope deviation 5.8e-8 m). The cube — 42 strips whose adjacency under
+rotation forces crossings — cannot close without trimming at ANY implementation quality of the
+pieces themselves. Sweep difficulty is strip adjacency under rotation, not smooth-versus-
+polyhedral, and a rotating polyhedral tool is structurally in the trim-requiring class.
+
+**Also found on the way (2026-08-27), unrelated to the cube's geometry:** `knitSweptShell`'s
+seam-census selection was written as a chained conditional `a ? {map} : b ? {map} : f()`.
+FeatureScript's conditional operator does not chain like C's: the false-branch chain
+mis-associates, a map literal lands in condition position, and evaluation dies with "Execution
+error" and no location. The cube's calls took the lucky branch; the ellipsoid's knit died at
+that line from the day it was written — which presented as "the first tab regressed around when
+the cube work started". Fixed with explicit branches; `tools/fsLint.py` now carries a TERNARY
+rule (two `?` at one nesting depth in a statement) so the form cannot land again. The ellipsoid's
+two remaining check failures (0-length edge, 0 m² face on a 3-face body) are the revolve pole's
+sliver-floor question, separate from closure.
+
+**Open questions the hold is waiting on:**
+
+1. Design the trim: cut the crossing strips against each other in OUR closed forms (both are
+   exact ruled surfaces; the intersection curve is computable where the kernel's tangent SSI is
+   not, because the shared seam can be factored out), classify regions with the inside-the-sweep
+   oracle, and emit only boundary regions — versus imprinting OUR computed intersection wires
+   with `opSplitFace edgeTools` (on-surface wires; never tested — body-by-body splits failed,
+   wire imprints may not) and deleting interior pieces.
+2. Wire §10 detector 3 as an emission gate either way, so a crossing shell is a named rejection
+   (`SWEEP_ENVELOPE_SELF_INTERSECTING`, t-range and owners attached), never a knit mystery.
+3. Is there a turn-rate regime where a rotating cube's strips stay disjoint (a trim-free class
+   worth detecting), or does any rotation cross the vertex-fan strips? Answerable offline from
+   the strip closed forms before any code.
+4. Whether the interior-classification probe's answer (fully-interior strips versus partially-
+   emergent ones) changes the trim's shape: fully-interior strips are DROPPED, not trimmed, and
+   if all seven pairs involve only fully-interior strips the "trim" reduces to omission plus a
+   re-derived seam graph. The probe exists, gated, unrun.
 
 ---
 
@@ -3518,7 +4596,7 @@ Progress on that directive, in the order the items were taken:
   which is the argument for re-running a test after every change to what it covers rather than
   trusting the last recorded verdict.
 - **§6.4 detectors 2 and 3** (§6.9, 2026-08-23, live PASS first try, both features, 42 checks) —
-  Tier 1 item 1. The audit item read as two sign scans; the work turned out to be finding that
+  The strip-decomposition work. The audit item read as two sign scans; the work turned out to be finding that
   detector 2 needs a THIRD verdict (a constant-velocity translation has `f_t` and its own scale
   both exactly zero, so a purely relative test is 0/0) and that detector 3's solutions are isolated
   points a grid cannot land on, so the grid screens and Gauss-Newton decides.
@@ -3671,12 +4749,12 @@ now construction; every item below is build work.
 >    that **87% of a build is the spline evaluator serving a solve a revolved face does not need**
 >    and ranked routing it first — and an audit of the tree on 2026-08-24 found the layer still has
 >    no caller outside `solidSweepTester.fs`. The mechanism was bookkeeping, not disagreement:
->    §11.6 filed the routing under tier 1 item 3, whose done-when was a cross-check against
+>    §11.6 filed the routing under the profile-driven-class work, whose done-when was a cross-check against
 >    `evaluateAnalyticContactDirect`, and closing that item retired the lever's only owner. **Tier 0
 >    below is the routing work, and it is the front of the queue ahead of tier 3.** §6.10 is its
 >    contract and §7.0 its emission rungs.
 >
-> -1. **Tier 1's items are built, but tier 1 item 3 did NOT deliver what §11.6 was pointing at.**
+> -1. **Tier 1's items are built, but the profile-driven-class work did NOT deliver what §11.6 was pointing at.**
 >    `REVOLVED` and `EXTRUDED` are live (§6.5.1, PASS 19/19 and 30/30), and the run measured that the
 >    recovered generator IS the kernel face's own — worst point distance 0 m, worst normal cross
 >    product 1.3e-15 over a grid, and a contact curve the kernel's own normals confirm to 1.0e-13.
@@ -3720,40 +4798,80 @@ now construction; every item below is build work.
 (owner, 2026-08-24), ahead of tier 3.** §6.10 is the contract, §7.0 the emission rungs. Every
 done-when here names a production path; none is satisfiable by a tester agreement.
 
-0a. **Carry the class to the solver.** `record.surfaceClass` is read nowhere past extraction today, so
+- **Carry the surface class to the solver.** `record.surfaceClass` is read nowhere past extraction today, so
     nothing downstream can route on it. Add provider selection at the point where the solver is
     handed a face, and make the recognizer the DEFAULT rather than a five-argument opt-in (§6.5.1).
     *Done when:* a face's provider is chosen from its class on the production path, and the
     three-argument `extractToolFaceRecords` no longer silently routes a `REVOLVED` face to
     approximation.
 
-0b. **The analytic provider answers the census and the sections.** Wire the six questions of §6.10 for
+- **Let the analytic provider answer the census and the sections.** Wire the six questions of §6.10 for
     the seven analytic classes. The census is the easier half — it already consumes `patchFactors`
     rather than a surface, so it needs a second producer, not a rewrite; the sections replace
     `marchSectionCurve` (≤400 steps × an 8-iteration corrector) with `solveAnalyticContactCurve`.
     *Done when:* a `REVOLVED` tool face completes census and section extraction with **zero calls to
     `leanSurfaceDerivatives`**, asserted by a counter rather than inferred from a clock.
 
-0c. **Rung 1 — exact emission, no fit.** Cylinder and cone under pure translation contact along whole
+- **Exact emission for cylinders and cones under translation, with no fit.** Cylinder and cone under pure translation contact along whole
     FIXED rulings, so §2.1(c)'s `Q_ij = A_j·P_i + b_j` emits the lateral patch by control-point
     arithmetic. *Done when:* the emitted net is **bit-identical** to the transport arithmetic, and the
     face carries no fit, no certification, and no sample grid at all.
 
-0d. **Rung 2 — collapsed emission.** Plane faces emit an exactly-ruled patch (degree 1 in the ruling
+- **Collapsed emission for planes and spheres.** Plane faces emit an exactly-ruled patch (degree 1 in the ruling
     direction) between two directrices taken from the co-edge pass, not from a new grid; spheres emit a
     circle family. *Done when:* for each class the emitted patch agrees with the sampled provider's
     fitted patch inside the fit's own certified bound, and the plane route consumes **no samples
     beyond the co-edge arrays §6.2 already builds**.
 
-0e. **The coefficient provider for freeform.** Connect the half of §6.0 strategy 2 that is currently
+**The segment merge for refused patches (§9.2). BUILT AND BOUNDED 2026-08-25 (§11.16) —
+    default-on, neutral and green on the default path, and it does NOT rescue the patches the
+    exact roots refuse: every merged form of those four also fails to fit, for reasons not yet
+    diagnosed.** Next step is the refused-patch dump, which now carries complete fields, not
+    another mechanism. Two correct improvements remain queued behind it: the density-aware station grid (§11.14.1) and the coefficient contact roots
+    (§11.15) each find real contact transitions the sampled grid misses, and both are defaulted off
+    because the segments those transitions cut produce patches the kernel refuses as transverse
+    slivers — and a refused patch leaves a larger hole than a missed transition. *Done when:* the rotating cube passes with `exactBreakpoints` and the
+    density-aware grid both on. First experiment, and it costs one run: turn `exactBreakpoints` on
+    and read the refused-patch dump — whether each sliver even has a t-contiguous neighbour on its
+    own owner decides whether merging is the right mechanism at all.
+
+**Closed-form polyhedral contact** (§11.13). HALF DONE 2026-08-25 — the EDGE
+    half is live and measured: 24.4 s → 9.31 s, emit deviation 2.06e-5 → 0 m, VERDICT PASS,
+    unmatched seam edges 5 → 1 (§11.14).** The **t half is built and gated** (§11.15):
+    `contactFunctionSpanCoefficients` on `buildMotionSpanPolynomials`' twelve per-span arrays, with
+    `bernsteinExcludesZero` in front and `isolateBernsteinRoots` behind, removes the grid scan
+    entirely and is correct — it waits on the segment merge above. What is still unbuilt is the
+    FUNNEL side of the same algebra, the roots of `a(t)`, `a(t) + b(t)` and `a_L b_R − a_R b_L`,
+    which is what deletes `buildMotionStationGrid` and collects the refund the t half has already
+    paid for. Original text follows. On a planar face with a straight edge, `g(s,t) = a(t) + s·b(t)` is affine in `s`
+    (one root, `s* = −a/b`, no samples) and `a`, `b` are piecewise degree-5 polynomials in `t`
+    whose coefficients come from the motion control net by Bernstein arithmetic. The funnel's
+    transitions are the roots of `a`, of `a + b`, and of `a_L b_R − a_R b_L` — all
+    `isolateBernsteinRoots`, which is written, tested and has no production caller. This deletes
+    `sharpEdgeFunnelTransitions`' bisection, `sharpEdgeFunnelSpansAtTime`' scan,
+    `interpolateCoEdgeSample`'s per-sample blend-and-renormalize, `stripRootFloors`, and the
+    station grid from this path. Keep the existing scan as the FALLBACK for curved edges and as
+    the ORACLE, the way §6.10 kept its trig-root scan.
+    *Done when:* a cube fixture completes its whole breakpoint and funnel pass with **zero calls
+    to `evaluateMotionSample` inside any loop** — asserted by a counter, not inferred from the
+    clock — the transition times agree with today's bisected ones to the bisection's own 1e-12,
+    and `sweepRotatingCubeLiveTest` reports the same patch count and the same envelope deviation.
+
+- **The coefficient provider for freeform faces.** Connect the half of §6.0 strategy 2 that is currently
     test-only — `isolateBernsteinRoots`, `bernsteinExcludesZero`, `bernsteinGridExcludesZero` — behind
-    the same contract. Screening via `bernsteinGridRange` is already live in the census.
+    the same contract. Screening via `bernsteinGridRange` is already live in the census. §11.9 item 2
+    names this item's blast radius off the profile: `envelopeGradientAt` and `correctedUvAndGradient`
+    reconstruct `f` pointwise from order-2 surface evaluations when the census already materializes
+    it as a scalar Bernstein net per live block — at a fixed station the twelve t-factors collapse
+    the block to one bivariate net, the corrector's values and `f_u`/`f_v` come off that net and its
+    differentiated nets, and the surface evaluator survives only for order-0 lifts of accepted
+    points.
     *Done when:* a non-rational freeform face reaches its fit grid through coefficient root isolation
     with no pointwise marching, and §6.0 strategy 3's stated remit — "final Newton polish of isolated
     roots, the (q,t) fit grids on live patches (hundreds of points, not tens of thousands)" — is what
     the profile actually shows.
 
-0f. ~~**Generator recovery by iso-curve.**~~ **DONE 2026-08-24.** One `opCreateCurvesOnFace` at
+- ~~**Generator recovery by iso-curve.**~~ **DONE 2026-08-24.** One `opCreateCurvesOnFace` at
     `skipTrim : true`, the meridian being the iso-curve constant in the PERIODIC direction (measured:
     DIR1 gave the circumferential circle at theta spread 2.51 rad, DIR2 the meridian at exactly 0).
     Four heuristics deleted. It also needed something this queue did not anticipate: the ellipsoid's
@@ -3766,7 +4884,7 @@ done-when here names a production path; none is satisfiable by a tester agreemen
     the plane-cut generator §6.5.1 already validates, the four placement heuristics are deleted, and
     the ellipsoid fixture extracts its exact ellipse instead of a 9 × 4 net.
 
-0g. **The two proof fixtures.** These are the item's acceptance, not decoration. **HALF DONE
+- **The two proof fixtures.** These are the item's acceptance, not decoration. **HALF DONE
     2026-08-24: the ellipsoid contact-curve A/B passed, 8 checks — 12.9x on the solve, 92.8% off the
     regen, agreement 2.28e-17, and `leanSurfaceDerivatives` absent from the analytic route's profile
     entirely (see the measurement in §6.10).** What remains is the SOLID half, which needs 0a-0c
@@ -3778,7 +4896,7 @@ done-when here names a production path; none is satisfiable by a tester agreemen
       deviation 4.207e-8 m, seam 3.387e-8 m.** *Done when:* the same answers come back with **zero
       tool-surface evaluations**, and the clock is read off Onshape's own compute-time readout.
     - *Box swept along a line.* Six planes, six exactly-ruled patches, no fitting anywhere. This needs
-      the sharp-feature layer (tier 3 item 6) for a closed solid, so it is scoped to the six lateral
+      the sharp-feature layer (the sharp-feature work) for a closed solid, so it is scoped to the six lateral
       patches until that lands, and is then re-run whole.
 
 **Tier 1 — foundation: the §6/§7 gaps from the §12.1 audit. CLOSED 2026-08-24** — all three items
@@ -3824,7 +4942,7 @@ done, the fourth deferred to tier 4 by the owner. Tier 2 closed the same day.
    approximation with the refusal recorded. Probe 8 and this run both measured the conic case coming
    back as a rational B-spline instead, so it is a hole rather than a common case.
 
-*Former tier-1 item 4, the lean evaluator, is* **deferred to tier 4 item 9 (owner, 2026-08-23)**:
+*Former tier-1 item 4, the lean evaluator, is* **deferred to the performance reckoning (owner, 2026-08-23)**:
 the cost shows up on worst cases, not on the fixtures the queue is built from, and the reckoning is
 cheaper once consolidation has collapsed the solvers into fewer functions. It is not cancelled and
 the §11 arithmetic still stands; tier 4 carries the trip-wire that pulls it forward.
@@ -3864,7 +4982,7 @@ the §11 arithmetic still stands; tier 4 carries the trip-wire that pulls it for
    trim wires, and a `Sweep Rotating Cube Live Test` driven by a path dropdown × a rotation
    dropdown. Nothing is measured yet. The route evaluates NO surface at all — the whole envelope of
    a polyhedron is the scalar contact function on the tool's own edges — which is why it also
-   discharges tier 0 rung 0d for the plane class.
+   discharges the collapsed-emission rung for the plane class.
    *Still open under this item:* the degenerate slivers a kernel will not build at any station
    count (1 patch on the arc fixture, 8 on the free-spline one — these need MERGING into a
    neighbour per §9.2, not refitting), `SWEEP_EDGE_FUNNEL_SPLIT` on two free-spline segments,
@@ -3875,11 +4993,41 @@ the §11 arithmetic still stands; tier 4 carries the trip-wire that pulls it for
    it, and the papers' loop walk — deliberately unbuilt while §9.4's plain sheet UNION holds.
    *Done when:* a filleted block — smooth faces, convex sharp edges, 3-face vertices — emits one
    solid, which needs the §7 grazing route and this one running together on the same tool.
+~~**Filter construction planes out of the shell query.**~~ **DONE 2026-08-25, measured (§11.12).**
+   `qWithoutConstructionOrSketchObjects` / `qSweptShellSheets` now gate the shell gather,
+   `matchShellSeamEdges`, the `opBoolean` tools, the `opEnclose` entities, the post-union body
+   count and both `opDeleteBodies` cleanups. The census moved 183 → **171** free edges and
+   89 → **83** pairs — exactly three default planes at four edges each, which had been pairing
+   with **each other** and feeding `opBoolean` six fabricated seam matches — with the 5 unmatched
+   unchanged. **It also withdrew §8.4's solid:** the enclose now produces 0 solids, so that body
+   was closed by the planes rather than by the envelope. The emission-identity item's cap correspondence is what
+   closes this shell for real.
+**Emission identity — seams by construction, caps by descent** (§11.8). Rides with item 6's
+   closure work — it is the identity layer under the same seams. Not a performance item (the
+   assembly is absent from §11.4's profile); it buys away the silently-wrong-geometry failure
+   class and puts the §8.4 cap-correspondence hole on solvable footing. Two halves:
+   - *Seam matches from emission records.* On the shared time partition every sheet-to-sheet
+     seam is known at emission time — owner, sub-interval, side, and a midpoint both sides
+     interpolated from the same shared boundary rows. Record that adjacency per emitted sheet,
+     keyed by op id, and assemble the union's `matches` from the records. *Done when:* the
+     `matches` array handed to `opBoolean` on the line-cube closure is assembled from emission
+     adjacency records with zero nearest-neighbour searches, and `matchShellSeamEdges` runs
+     after it as an assertion that agrees pair for pair — a diagnostic, no longer a source.
+   - *Cap correspondence by descent.* `startTracking` on the tool's faces and edges before the
+     cap `opPattern`; kept-face selection keeps sign-of-f as the arbiter of which side survives
+     while which-face-is-which comes from the trackers; contact wires tracked through
+     `opSplitFace` label the cap-side seam halves. *Done when:* the cap half of every
+     cap-to-lateral match on the line-cube closure is produced by a tracking query rather than a
+     midpoint search, and the §8.4 five-unmatched-edges finding reports its unmatched edges by
+     owner entity rather than by position.
 7. **Feature UI, detectors, live tester, publish chain** — build order step 9; `solidSweep.fs`,
    the third file of §12, does not exist yet. The §10 detectors wire in here as always-on
    gates, and §14's fixture matrix {sphere, cylinder, box, filleted block} × {line, arc, helix,
    free spline, cusp-inducing arc} is the acceptance suite — including the brute-union *rate*
    check, the one test that distinguishes a true envelope from a fine discretize-and-blend.
+   The boolean application wrap follows the std tracking idiom (`boolean.fs:135`), and anything
+   the feature must find again after its own operations goes through
+   `qUnion([entity, startTracking(context, entity)])` — §11.8.
 
 **Tier 4 — after the foundations are complete (owner, 2026-08-23)**
 
@@ -3898,7 +5046,7 @@ the §11 arithmetic still stands; tier 4 carries the trip-wire that pulls it for
    C (`marchStepsPerSample`, knob added, default unchanged) and E (the kernel's sewing ceiling,
    still the cheapest experiment on the list) are open. 9a is now a question about what remains
    rather than about where the time went — §11.1's model was confirmed. Start from §11.1's call
-   count and §11.2's ranked levers; the parts below stand unchanged. Tier 1 item 4 lands here,
+   count and §11.2's ranked levers; the parts below stand unchanged. The lean-evaluator work lands here,
    widened. It runs
    *after* item 8 deliberately: the same argument that makes consolidation worth doing makes this
    cheaper afterwards, because the Newton–Raphson solvers and the other hot utilities are easier to
@@ -3914,6 +5062,30 @@ the §11 arithmetic still stands; tier 4 carries the trip-wire that pulls it for
      interpreted grid-op chains have not had it applied. The doctrine is unchanged: a hot kernel is
      one matrix product, never a deep nested write loop.
    - *(9c) Record real numbers.* §11's figures come off Onshape's UI compute-time readout only.
+   - *~~Profile a cube fixture.~~* **DONE 2026-08-25 — §11.11, `cube-baseline`, 24.4 s
+     profiled.** The candidate list is now settled by measurement: the 1e-12 bisection is
+     **62.3% of the build over twelve calls**, and the binary span search is **refuted and must
+     not be built** (`findEvaluationSpanIndex` is absent from the top 40). Superseded by 9f.
+   - *~~Tune the funnel-transition bisection.~~*
+     **WITHDRAWN 2026-08-25 — all three tune a computation that should not exist (§11.13).**
+     Superseded by the closed-form polyhedral contact item, which deletes the scan and the bisection together.
+   - *The lean curve evaluator on the polyhedral path* (§11.11).*
+     `evaluateBSplineCurveDerivatives` runs 6,260 times at 784 µs — the general NURBS evaluator
+     that §6.10 already replaced with `leanCurveDerivatives` in the analytic layer and never
+     here. Independent of 0h and much smaller; take it after. (The companion `norm` audit is
+     **not** a separate item: §11.13 shows those 236,139 calls are a constant normal being
+     re-normalized per sample, and 0h removes them wholesale.)
+   - *The constrained least-squares fit, once routing has shrunk the sampled path* (§11.8).*
+     Fit each freeform component directly to the march's own points at their own arc-length
+     fractions, solved through native `svd` (rank-safe at the §7.4 pole columns and §7.10 merge
+     corners), deleting `resampleWrappingLoopSection` and its per-point Newton corrections from
+     the pipeline. Hard constraints from §11.8: boundary rows stay the shared co-edge sample
+     arrays interpolated exactly, t parameters stay the stations' normalized times, held-out
+     certification unchanged. CONTINGENT: run the post-tier-0 profile first; if the resample no
+     longer appears, this item dissolves and that is the good outcome. *Done when:* a freeform
+     component reaches its emitted net with `resampleWrappingLoopSection` absent from the
+     profile, boundary rows bit-identical to the shared arrays, and the certified bound computed
+     the same way as before.
    **Trip-wire that pulls this forward regardless of tier:** a live document taking ~100 s to
    rebuild trivial geometry. That is a stop-work condition, not a backlog item.
 
@@ -4021,7 +5193,7 @@ Resolved questions move to the bottom with their answer; open ones stay on top.
 
 **Open:**
 
-- **The lean evaluator's real throughput** (§12.3 tier 4 item 9a; DEFERRED there by the owner
+- **The lean evaluator's real throughput** (the evaluator-diagnosis work; DEFERRED there by the owner
   2026-08-23, with a ~100 s-rebuild trip-wire that pulls it forward) — re-run the throughput probe; the
   §11 budget assumes several-fold under the measured 1.1 ms, and the arithmetic there shows the
   plan missing the performance bar by an order of magnitude if that assumption fails. **Amended
@@ -4037,6 +5209,14 @@ Resolved questions move to the bottom with their answer; open ones stay on top.
 
 **Resolved:**
 
+- **Quaternion motion representation** (2026-08-25, §11.8) — rejected permanently. A quaternion
+  motion is rational, so `f` loses the convex-hull certificate the §6.8 census stands on and edge
+  transport survives only in rational form; FeatureScript has native matrix builtins and no
+  quaternion builtins, so the math would run interpreted in the language whose measured
+  bottleneck is interpreted call count; and the problems it solves — drift, exact rigidity — are
+  already solved two orders under budget by the column fit, raw station frames, and (if ever
+  needed off-station) one native SVD polar snap. The motion module is absent from §11.4's
+  profile, so there was never a cost here to recover.
 - **Rational freeform faces** (2026-08-23, probe 8) — answered by classification, not by new math.
   `SurfaceType.REVOLVED` and `SurfaceType.EXTRUDED` are named kernel cases the extraction had never
   asked about, and cutting such a face with a plane through its axis returns the exact generating
