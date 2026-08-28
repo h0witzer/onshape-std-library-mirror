@@ -34,11 +34,16 @@ Everything lands in `out/<TAG>.json`. Sessions are short-lived, so expect an ass
 | `node elements.mjs` | the document's tab inventory and its current microversion |
 | `node new-partstudio.mjs` | create an empty Part Studio tab (`NAME=...`) |
 | `node insert-tests.mjs <featureType>...` | insert test features from the tester tab into a Part Studio, replacing stale copies |
+| `node set-params.mjs` | change parameters on a feature ALREADY in a Part Studio (`MATCH=` its type, `SET=name=value,...`) — re-inserting to flip one toggle resets every other parameter, so two runs stop being comparable; a parameter the stored feature lacks is added, which is what a newly declared dialog toggle needs before it reads as anything but its default |
 | `node solo-insert.mjs <featureType>...` | insert each one ALONE, clearing between, so the status is a per-feature verdict |
 | `node status.mjs` | per-feature regen status for a Part Studio |
+| `node dump-features.mjs` | a Part Studio's raw feature JSON to a file (`OUT=...`), to clone rather than guess `BTMSketch`/`BTMParameter` shapes when building a feature through the API |
+| `node tweep-fixture.mjs` | build Tweep cases in a throwaway tab from own geometry and measure each (`TEMPLATE=` a dumped studio, `ONLY=` a comma list of cases, `KEEP=1` to leave the tab) |
+| `node compile-errors.mjs` | opens the FeatureScript notices panel (closed by default) and lists every compile warning with its line — the Ace gutter only marks lines scrolled into view, so gutter counts alone under-report |
+| `node dialog-shot.mjs` | open a feature's edit dialog and photograph it (`FEATURE=` its row name) — error entities are drawn red ONLY while the dialog is open, so a plain screenshot shows nothing |
 
 Environment: `FS_EID`, `SOURCE`, `PS_NAME`, `PS_EID`, `TAG`, `BASELINE`, `TOP`, `WAIT_MINUTES`,
-`TOOL`, `NAME`, `KEEP_LAST`.
+`TOOL`, `NAME`, `KEEP_LAST`, `OUT`, `MATCH`, `SET`.
 
 **A Part Studio that is already up to date answers Monitor with silence.** Output routes into a
 Feature Studio only while it watches a Part Studio, and only a REGENERATION produces any - so
