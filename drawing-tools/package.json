@@ -1,0 +1,10 @@
+{
+  "name": "onshape-drawing-tools",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Browser-session driver for the Onshape Drawings REST API (no API key, unmetered).",
+  "dependencies": {
+    "playwright": "^1.61.0"
+  }
+}
